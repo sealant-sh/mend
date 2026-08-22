@@ -51,6 +51,7 @@ import {
   SessionGitOpsRepoLive,
   SessionProcessesRepoLive,
   SessionRunsRepoLive,
+  SessionChannelTokensRepoLive,
   SessionsRepoLive,
   SettingsRepoLive,
   UserDotfilesRepoLive,
@@ -94,6 +95,8 @@ import {
   ServiceHostLive,
   SessionEngine,
   SessionEngineLive as SessionEngineBaseLive,
+  SessionChannelNetworkHostLive,
+  SessionChannelRegistryLive,
   SessionSocketHostLive,
 } from "@mend/sessions";
 import {
@@ -108,6 +111,7 @@ import {
   SecretCipherLive,
   Store,
   StoreConfig,
+  DeploymentConfigLive,
 } from "@mend/store";
 import { Config, Effect, Layer, Option, Schema } from "effect";
 import {
@@ -159,6 +163,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   BriefsRepoLive,
   BriefCommentsRepoLive,
   SessionsRepoLive,
+  SessionChannelTokensRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive));
 
 const DatabaseLive = DrizzleRepositoriesLive.pipe(
@@ -184,11 +189,24 @@ const BridgeLive: Layer.Layer<AgentBridge> = AgentBridgeLive.pipe(
 );
 const ServiceHostLayer = ServiceHostLive;
 const ProtocolHostLayer = ProtocolHostLive;
+// The session channel (docs/KUBERNETES.md): one registry shared by the per-session socket host
+// and the optional network listener; the deployment mode decides whether sockets are created.
+const SessionChannelRegistryLayer = SessionChannelRegistryLive;
+const SessionSocketHostLayer = SessionSocketHostLive.pipe(
+  Layer.provide(StoreConfig.layer),
+  Layer.provide(DeploymentConfigLive),
+  Layer.provide(SessionChannelRegistryLayer),
+);
+const SessionChannelNetworkLayer = SessionChannelNetworkHostLive.pipe(
+  Layer.provide(DeploymentConfigLive),
+  Layer.provide(SessionChannelRegistryLayer),
+);
 const SessionEngineLayer = SessionEngineBaseLive.pipe(
   Layer.provide(ProtocolHostLayer),
   Layer.provide(ServiceHostLayer),
-  Layer.provide(SessionSocketHostLive),
+  Layer.provide(SessionSocketHostLayer),
   Layer.provide(DotfilesStoreLayer),
+  Layer.provide(DeploymentConfigLive),
 );
 const FollowUpLauncherLayer = FollowUpLauncherLive.pipe(Layer.provide(SessionEngineLayer));
 const FollowUpDeliveryLayer = FollowUpDeliveryLive.pipe(Layer.provide(FollowUpLauncherLayer));
@@ -484,7 +502,9 @@ const MainLive = Layer.unwrap(
         : mode === "worker"
           ? WorkerLive
           : Layer.merge(ServerLive, WorkerLive);
-    return parts.pipe(
+    // The network session channel is a sibling service: it serves workspaces, nothing depends
+    // on it, so it must be launched explicitly rather than provided.
+    return Layer.merge(parts, SessionChannelNetworkLayer).pipe(
       // Shared by the API (enqueue on comment) and the workers (one instance).
       Layer.provide(JobRunner.pgBossLayer),
       // Follow-up delivery owns persistence → process acceptance → correlation.
@@ -492,6 +512,8 @@ const MainLive = Layer.unwrap(
       // The session engine and store serve both the API handlers and the worker.
       Layer.provide(SessionEngineLayer),
       Layer.provide(StoreLive),
+      Layer.provide(StoreConfig.layer),
+      Layer.provide(DeploymentConfigLive),
       // The per-user dotfiles store — the dotfiles API group reads/writes it directly.
       Layer.provide(DotfilesStoreLayer),
       // The machine's Mend git key (docs/GIT-ACCESS.md — the mend-key auth mode).

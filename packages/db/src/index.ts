@@ -11,6 +11,7 @@ export * from "./repos/briefs.ts";
 export * from "./repos/changes.ts";
 export * from "./repos/checkpoints.ts";
 export * from "./repos/devices.ts";
+export * from "./repos/session-channel-tokens.ts";
 export * from "./repos/follow-ups.ts";
 export * from "./repos/hot-workspaces.ts";
 export * from "./repos/inference-calls.ts";

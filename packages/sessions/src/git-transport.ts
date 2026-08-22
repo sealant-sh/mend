@@ -1,5 +1,7 @@
 import type { GitTransportKind } from "@mend/domain/workbench";
 
+import { SCRIPT_TRANSPORT_PRELUDE } from "./script-transport.ts";
+
 /**
  * The workspace git transport (docs/GIT-ACCESS.md): plain `git push`/`fetch`
  * inside a session workspace with zero credentials in the container. Git's
@@ -127,11 +129,10 @@ export const makePushSniffer = (): {
  * argument), opens the CONNECT tunnel, and pumps until the exit frame.
  */
 export const GIT_SSH_SHIM_SCRIPT = `#!/usr/bin/env node
-// mend-git-ssh — git's ssh transport, carried over /run/mend/mend.sock.
+// mend-git-ssh — git's ssh transport, carried over /run/mend/mend.sock (or the
+// authenticated session endpoint when this workspace has no socket).
 // No credential lives in this workspace: the Mend host authenticates.
-const http = require("node:http");
-
-const SOCKET = "/run/mend/mend.sock";
+${SCRIPT_TRANSPORT_PRELUDE}
 
 // ssh-shaped argv from git: [-4|-6] [-o SendEnv=GIT_PROTOCOL] [-p <port>] host "command"
 const args = process.argv.slice(2);
@@ -157,17 +158,16 @@ if (host === null || command.length === 0) {
   fail("mend-git-ssh is git's transport, not a shell — it expects: host git-<verb> '<path>'", 129);
 }
 
-const request = http.request({
-  socketPath: SOCKET,
-  method: "CONNECT",
-  path: "/git/transport",
-  headers: {
-    "x-mend-git-host": host,
-    "x-mend-git-port": port ?? "",
-    "x-mend-git-command": command.join(" "),
-    "x-mend-git-protocol": process.env.GIT_PROTOCOL ?? "",
-  },
+const options = transportOptions("CONNECT", "/git/transport", {
+  "x-mend-git-host": host,
+  "x-mend-git-port": port ?? "",
+  "x-mend-git-command": command.join(" "),
+  "x-mend-git-protocol": process.env.GIT_PROTOCOL ?? "",
 });
+if (options === null) {
+  fail(transportUnavailable() + " — remote git is unavailable in this workspace right now", 255);
+}
+const request = transportClient().request(options);
 
 // Node surfaces EVERY response to a CONNECT as this event — refusals included.
 request.on("connect", (res, socket) => {
@@ -217,7 +217,7 @@ request.on("connect", (res, socket) => {
 });
 
 request.on("error", () => {
-  fail("mend.sock is not answering — the Mend server looks down, so remote git is unavailable in this workspace right now", 255);
+  fail(transportDownMessage() + " — remote git is unavailable in this workspace right now", 255);
 });
 
 request.end();

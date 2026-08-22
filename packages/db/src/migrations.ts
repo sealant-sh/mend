@@ -1158,6 +1158,21 @@ const devicePairing = Effect.gen(function* () {
     CREATE INDEX pairing_codes_user_created_idx ON pairing_codes (user_id, created_at)`;
 });
 
+/**
+ * Network session channel tokens (docs/KUBERNETES.md): one hashed bearer token per session for
+ * workspaces that cannot mount the session socket. Only the hash is ever stored.
+ */
+const sessionChannelTokens = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE session_channel_tokens (
+      session_id text PRIMARY KEY,
+      token_hash text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      revoked_at timestamptz
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1198,4 +1213,5 @@ export const migrations = {
   "0036_agent_conversation": agentConversation,
   "0037_user_sealant_identities": userSealantIdentities,
   "0038_device_pairing": devicePairing,
+  "0039_session_channel_tokens": sessionChannelTokens,
 };

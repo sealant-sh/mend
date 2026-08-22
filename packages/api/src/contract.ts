@@ -100,6 +100,15 @@ export class AuthMiddleware extends HttpApiMiddleware.Service<
 export class HealthStatus extends Schema.Class<HealthStatus>("HealthStatus")({
   status: Schema.Literals(["ok"]),
   version: Schema.String,
+  /** `local` (host + Docker) or `kubernetes` (RWX store claim, network session channel). */
+  deploymentMode: Schema.Literals(["local", "kubernetes"]),
+  /** The central store root this instance serves; on Kubernetes the claim's mount path. */
+  storeRoot: Schema.String,
+  /** How workspaces reach their session: the per-session socket, or the network endpoint. */
+  sessionChannel: Schema.Struct({
+    mode: Schema.Literals(["unix-socket", "network"]),
+    endpoint: Schema.NullOr(Schema.String),
+  }),
 }) {}
 
 export class ProcessLogChunk extends Schema.Class<ProcessLogChunk>("ProcessLogChunk")({
