@@ -1,0 +1,12 @@
+Mend {{ include "mend.tag" . }} in {{ .Release.Namespace }}.
+
+Store claim:       {{ include "mend.storeClaim" . }} mounted at {{ .Values.store.mountPath }} (MEND_STORE_ROOT)
+Session channel:   {{ include "mend.sessionEndpointUrl" . }} (workspaces only, per-session tokens)
+Worker replicas:   {{ .Values.worker.replicaCount }} (keep 1 — see docs/KUBERNETES.md)
+
+Nothing is exposed publicly. Port-forward the web tier:
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }}-web 3105:3105
+
+Pair the Sealant chart with:
+  workspaces.volumeMappings[0].logicalRoot={{ .Values.store.mountPath }}
+  workspaces.volumeMappings[0].claimName={{ include "mend.storeClaim" . }}

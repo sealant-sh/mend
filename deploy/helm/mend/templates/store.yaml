@@ -1,0 +1,13 @@
+{{- if .Values.store.create.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ .Release.Name }}-store
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  accessModes: [ReadWriteMany]
+  {{- with .Values.store.create.storageClassName }}
+  storageClassName: {{ . }}
+  {{- end }}
+  resources: { requests: { storage: {{ .Values.store.create.size }} } }
+{{- end }}
