@@ -1,0 +1,62 @@
+# The session engine: ONE replica (in-memory supervision, no leases). Recreate strategy so two
+# engines never supervise the same sessions during a rollout.
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-session
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  selector: {{ include "mend.component" (dict "root" . "name" "worker") | nindent 4 }}
+  ports: [{ name: session, port: {{ .Values.sessionChannel.port }}, targetPort: session }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-worker
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.worker.replicaCount }}
+  strategy: { type: Recreate }
+  selector:
+    matchLabels: {{ include "mend.component" (dict "root" . "name" "worker") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{ include "mend.component" (dict "root" . "name" "worker") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets: {{ toYaml .Values.image.pullSecrets | nindent 8 }}
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: worker
+          image: {{ include "mend.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - { containerPort: 3105, name: http }
+            - { containerPort: {{ .Values.sessionChannel.port }}, name: session }
+          env:
+            {{- include "mend.commonEnv" . | nindent 12 }}
+            - { name: MEND_MODE, value: worker }
+            - { name: PORT, value: "3105" }
+            - { name: MEND_SESSION_ENDPOINT_LISTEN, value: "0.0.0.0:{{ .Values.sessionChannel.port }}" }
+            - { name: MEND_SESSION_ENDPOINT_URL, value: {{ include "mend.sessionEndpointUrl" . | quote }} }
+            {{- if .Values.sessionChannel.tls.enabled }}
+            - { name: MEND_SESSION_ENDPOINT_TLS_CERT, value: /etc/mend/session-tls/tls.crt }
+            - { name: MEND_SESSION_ENDPOINT_TLS_KEY, value: /etc/mend/session-tls/tls.key }
+            {{- end }}
+          volumeMounts:
+            - { name: store, mountPath: {{ .Values.store.mountPath }} }
+            {{- if .Values.sessionChannel.tls.enabled }}
+            - { name: session-tls, mountPath: /etc/mend/session-tls, readOnly: true }
+            {{- end }}
+          readinessProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 10
+          resources: {{ toYaml .Values.worker.resources | nindent 12 }}
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+      volumes:
+        - name: store
+          persistentVolumeClaim: { claimName: {{ include "mend.storeClaim" . }} }
+        {{- if .Values.sessionChannel.tls.enabled }}
+        - name: session-tls
+          secret: { secretName: {{ required "sessionChannel.tls.secretName" .Values.sessionChannel.tls.secretName }} }
+        {{- end }}

@@ -1,0 +1,60 @@
+# Mend on Kubernetes (docs/KUBERNETES.md). Cluster-internal by default: no Ingress.
+
+image:
+  repository: ghcr.io/sealant-sh/mend
+  tag: "" # defaults to .Chart.AppVersion
+  pullPolicy: IfNotPresent
+  pullSecrets: []
+
+# Referenced, never rendered. Keys: DATABASE_URL (when postgres.enabled=false),
+# BETTER_AUTH_SECRET, SEALANT_SERVICE_KEY, MEND_DB_PASSWORD (when postgres.enabled=true).
+secrets:
+  existingSecret: mend-secrets
+
+# The central store: ONE RWX, POSIX-semantics claim. Bring your own (Longhorn, CephFS, NFS, EFS...).
+store:
+  existingClaim: mend-store
+  # Set to create the claim here instead (storageClassName must be an RWX class on your cluster).
+  create:
+    enabled: false
+    storageClassName: ""
+    size: 100Gi
+  mountPath: /var/lib/mend/store
+
+postgres:
+  enabled: true
+  image: postgres:17-alpine
+  storage: 20Gi
+  storageClassName: ""
+
+sealant:
+  # The Sealant API inside the cluster (the sealant chart's API Service).
+  baseUrl: http://sealant-api.sealant.svc:4000
+
+# Web/API tier. Serves the UI and the HTTP API; does NOT run the session engine.
+web:
+  replicas: 1
+  appUrl: http://localhost:3105
+  resources: { requests: { cpu: 250m, memory: 512Mi }, limits: { cpu: "2", memory: 2Gi } }
+
+# The session engine. ONE replica: in-memory supervision, no leases yet (docs/KUBERNETES.md).
+worker:
+  replicaCount: 1
+  resources: { requests: { cpu: 500m, memory: 1Gi }, limits: { cpu: "4", memory: 4Gi } }
+
+# The network session channel workspaces use instead of the per-session socket.
+sessionChannel:
+  port: 3106
+  tls:
+    enabled: false
+    secretName: "" # kubernetes.io/tls secret with tls.crt/tls.key
+
+networkPolicies:
+  enabled: true
+  # Where Sealant workspace Pods live (they are the only clients of the session channel).
+  workspaceNamespace: sealant
+  # Where the Sealant API lives (the worker and web call it).
+  sealantNamespace: sealant
+
+# Extra env for both tiers (plain values only).
+extraEnv: []

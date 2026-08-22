@@ -1,0 +1,47 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-web
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  selector: {{ include "mend.component" (dict "root" . "name" "web") | nindent 4 }}
+  ports: [{ name: http, port: 3105, targetPort: http }]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-web
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  replicas: {{ .Values.web.replicas }}
+  selector:
+    matchLabels: {{ include "mend.component" (dict "root" . "name" "web") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{ include "mend.component" (dict "root" . "name" "web") | nindent 8 }}
+    spec:
+      automountServiceAccountToken: false
+      imagePullSecrets: {{ toYaml .Values.image.pullSecrets | nindent 8 }}
+      securityContext: { runAsNonRoot: true, runAsUser: 1000, fsGroup: 1000, seccompProfile: { type: RuntimeDefault } }
+      containers:
+        - name: web
+          image: {{ include "mend.image" . }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports: [{ containerPort: 3105, name: http }]
+          env:
+            {{- include "mend.commonEnv" . | nindent 12 }}
+            - { name: MEND_MODE, value: web }
+            - { name: PORT, value: "3105" }
+          volumeMounts:
+            - { name: store, mountPath: {{ .Values.store.mountPath }} }
+          readinessProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 10
+          livenessProbe:
+            httpGet: { path: /api/health, port: http }
+            periodSeconds: 30
+          resources: {{ toYaml .Values.web.resources | nindent 12 }}
+          securityContext: { allowPrivilegeEscalation: false, capabilities: { drop: [ALL] } }
+      volumes:
+        - name: store
+          persistentVolumeClaim: { claimName: {{ include "mend.storeClaim" . }} }

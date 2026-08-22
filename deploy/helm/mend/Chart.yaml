@@ -1,0 +1,10 @@
+apiVersion: v2
+name: mend
+description:
+  Mend on Kubernetes — web/API + one session worker over an RWX store claim, with the
+  cluster-internal session channel for workspaces.
+type: application
+version: 0.1.0
+appVersion: "0.6.0"
+sources:
+  - https://github.com/sealant-sh/mend

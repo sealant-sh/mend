@@ -1,0 +1,49 @@
+{{- if .Values.postgres.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-postgres
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  clusterIP: None
+  selector: {{ include "mend.component" (dict "root" . "name" "postgres") | nindent 4 }}
+  ports: [{ name: pg, port: 5432 }]
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ .Release.Name }}-postgres
+  labels: {{ include "mend.labels" . | nindent 4 }}
+spec:
+  serviceName: {{ .Release.Name }}-postgres
+  replicas: 1
+  selector:
+    matchLabels: {{ include "mend.component" (dict "root" . "name" "postgres") | nindent 6 }}
+  template:
+    metadata:
+      labels: {{ include "mend.component" (dict "root" . "name" "postgres") | nindent 8 }}
+    spec:
+      securityContext: { fsGroup: 70 }
+      containers:
+        - name: postgres
+          image: {{ .Values.postgres.image }}
+          env:
+            - { name: POSTGRES_USER, value: mend }
+            - { name: POSTGRES_DB, value: mend }
+            - name: POSTGRES_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ .Values.secrets.existingSecret }}, key: MEND_DB_PASSWORD } }
+            - { name: PGDATA, value: /var/lib/postgresql/data/pgdata }
+          ports: [{ containerPort: 5432, name: pg }]
+          readinessProbe:
+            exec: { command: [pg_isready, -U, mend, -d, mend] }
+            periodSeconds: 5
+          volumeMounts: [{ name: data, mountPath: /var/lib/postgresql/data }]
+  volumeClaimTemplates:
+    - metadata: { name: data }
+      spec:
+        accessModes: [ReadWriteOnce]
+        {{- with .Values.postgres.storageClassName }}
+        storageClassName: {{ . }}
+        {{- end }}
+        resources: { requests: { storage: {{ .Values.postgres.storage }} } }
+{{- end }}
