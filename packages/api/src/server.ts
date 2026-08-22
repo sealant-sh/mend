@@ -17,6 +17,7 @@ import {
   SealantPlatformError,
   SealantPrincipal,
 } from "@mend/sealant";
+import { DeploymentConfig, StoreConfig } from "@mend/store";
 import { Config, Effect, Layer, Option, Stream } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
@@ -85,7 +86,18 @@ export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers
         Config.orElse(() => Config.succeed("dev")),
         Effect.orDie,
       );
-      return new HealthStatus({ status: "ok", version });
+      const deployment = yield* DeploymentConfig;
+      const store = yield* StoreConfig;
+      return new HealthStatus({
+        status: "ok",
+        version,
+        deploymentMode: deployment.mode,
+        storeRoot: store.root,
+        sessionChannel:
+          deployment.sessionEndpoint === undefined
+            ? { mode: "unix-socket", endpoint: null }
+            : { mode: "network", endpoint: deployment.sessionEndpoint.url },
+      });
     }),
   ),
 );

@@ -4,9 +4,12 @@ import * as path from "node:path";
 
 import { SessionId } from "@mend/domain";
 import { SessionSocketHost, SessionSocketHostLive, makeFrameFeed, frame } from "@mend/sessions";
+import { DeploymentConfigLocal, StoreConfig } from "@mend/store";
+import { Layer } from "effect";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
+import { SessionChannelRegistryLive } from "../src/session-channel.ts";
 import type { SessionSocketApi } from "../src/session-socket.ts";
 
 /**
@@ -15,6 +18,12 @@ import type { SessionSocketApi } from "../src/session-socket.ts";
  */
 
 process.env["MEND_RUN_DIR"] = path.join(os.tmpdir(), `mend-socket-test-${process.pid}`);
+
+const SocketHostLayer = SessionSocketHostLive.pipe(
+  Layer.provide(StoreConfig.layerFor(path.join(os.tmpdir(), `mend-socket-store-${process.pid}`))),
+  Layer.provide(DeploymentConfigLocal),
+  Layer.provide(SessionChannelRegistryLive),
+);
 
 const SESSION = SessionId.make("sess-socket-1");
 
@@ -131,7 +140,7 @@ describe("SessionSocketHost", () => {
           );
           expect(refused).toBe(true);
         }),
-      ).pipe(Effect.provide(SessionSocketHostLive)),
+      ).pipe(Effect.provide(SocketHostLayer)),
     );
   });
 
@@ -247,7 +256,7 @@ describe("SessionSocketHost", () => {
 
           yield* host.stop(SESSION);
         }),
-      ).pipe(Effect.provide(SessionSocketHostLive)),
+      ).pipe(Effect.provide(SocketHostLayer)),
     );
   });
 });

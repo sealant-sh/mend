@@ -26,6 +26,7 @@ import {
   SessionsRepo,
   SettingsRepo,
   UserDotfilesRepo,
+  SessionChannelTokensRepo,
 } from "@mend/db";
 import {
   type AgentRequestId,
@@ -85,6 +86,7 @@ import {
   sessionStatePathOf,
   sshTransportArgs,
   worktreePathOf,
+  DeploymentConfig,
 } from "@mend/store";
 import type { Harness, Run as SdkRun, Workspace, WorkspaceCredentialsOptions } from "@sealant/sdk";
 import { claudeCode, codex, opencode } from "@sealant/sdk";
@@ -611,6 +613,8 @@ export class SessionEngine extends Context.Service<
 
 type SessionEngineRequirements =
   | SealantClient
+  | SessionChannelTokensRepo
+  | DeploymentConfig
   | AgentConversationRepo
   | ProtocolHost
   | SessionsRepo
@@ -695,6 +699,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           owned(sessionId)(api.gitTransportDone(opId, exitCode, refUpdates)),
       });
       const conversations = yield* AgentConversationRepo;
+      const channelTokens = yield* SessionChannelTokensRepo;
+      const deployment = yield* DeploymentConfig;
+      /**
+       * The network session channel (docs/KUBERNETES.md): when configured, every workspace is
+       * told where the channel is and handed a per-session bearer token through the SECRET env
+       * channel (so the platform's recorder redacts it). The token grants exactly what the
+       * socket grants — this session's closures — and is revoked with the workspace.
+       */
+      const sessionChannelLaunchEnv = (sessionId: SessionId) =>
+        Effect.gen(function* () {
+          const endpoint = deployment.sessionEndpoint;
+          if (endpoint === undefined) {
+            return { env: {}, secretEnv: {} };
+          }
+          const token = yield* channelTokens.issue(sessionId);
+          return {
+            env: { MEND_SESSION_ENDPOINT: endpoint.url, MEND_SESSION_ID: sessionId },
+            secretEnv: { MEND_SESSION_TOKEN: token },
+          };
+        });
       const protocolHost = yield* ProtocolHost;
       const sessions = yield* SessionsRepo;
       const hotWorkspaces = yield* HotWorkspacesRepo;
@@ -1382,6 +1406,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // in-workspace socket has nobody left to serve.
           yield* processes.reapLiveForWorkspace(workspaceId);
           yield* socketHost.stop(sessionId);
+          yield* channelTokens.revoke(sessionId).pipe(Effect.ignore);
         }).pipe(
           Effect.catch((error) =>
             Effect.logWarning("session engine: workspace stop failed").pipe(
@@ -1873,9 +1898,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.map((pairs) => Object.fromEntries(pairs)),
           report,
         );
-        const env = Object.fromEntries(
-          environment.variables.map((variable) => [variable.name, variable.value] as const),
-        );
+        const channel = yield* sessionChannelLaunchEnv(sessionId);
+        const env = {
+          ...Object.fromEntries(
+            environment.variables.map((variable) => [variable.name, variable.value] as const),
+          ),
+          ...channel.env,
+        };
+        Object.assign(secretEnv, channel.secretEnv);
         const environmentManifest = {
           environmentRevision: environment.revision,
           environmentVariableNames: environment.variables.map((variable) => variable.name),
@@ -4040,6 +4070,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             asSealantUser(entry.ownerUserId),
           );
         }
+        yield* channelTokens.revoke(entry.id).pipe(Effect.ignore);
         if (options?.keepWorktree !== true) {
           yield* socketHost.stop(entry.id).pipe(Effect.ignore);
           yield* projects.byId(entry.projectId).pipe(

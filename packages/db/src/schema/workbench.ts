@@ -455,6 +455,18 @@ export const deviceTokens = pgTable(
 );
 
 /**
+ * Per-session capability for the NETWORK session channel (Kubernetes): the sha256 of the
+ * bearer token a workspace presents instead of opening `/run/mend/mend.sock`. No FK: hot-pool
+ * ids are minted before their session row exists and become the session id at claim.
+ */
+export const sessionChannelTokens = pgTable("session_channel_tokens", {
+  sessionId: text().primaryKey(),
+  tokenHash: text().notNull(),
+  createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  revokedAt: timestamp({ mode: "date", withTimezone: true }),
+});
+
+/**
  * One short-lived pairing code, single use: claiming stamps `claimed_at` and
  * mints a device token for the code's owner.
  */

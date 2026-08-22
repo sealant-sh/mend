@@ -1,22 +1,24 @@
-import { spawn } from "node:child_process";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import type * as net from "node:net";
 import * as path from "node:path";
 
 import type { SessionId } from "@mend/domain";
-import { mendHome } from "@mend/store";
+import { DeploymentConfig, StoreConfig } from "@mend/store";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import {
   GIT_SSH_SHIM_SCRIPT,
-  frame,
-  makeFrameFeed,
-  makePushSniffer,
   type GitTransportPlan,
   type GitTransportRequest,
 } from "./git-transport.ts";
+import { SCRIPT_TRANSPORT_PRELUDE } from "./script-transport.ts";
+import {
+  handleGitConnect,
+  handleSessionRequest,
+  SessionChannelRegistry,
+} from "./session-channel.ts";
 
 /**
  * The in-workspace control surface (docs/SESSION-SERVICES.md): one unix
@@ -28,13 +30,22 @@ import {
  *
  * The host side is dumb infra: bind the socket, stage the `mend` helper
  * script beside it, route tiny JSON requests to the closures the engine
- * provides. The engine owns the semantics; this file owns the plumbing.
+ * provides. The engine owns the semantics; this file owns the plumbing —
+ * the route table and the git tunnel live in `session-channel.ts`, shared
+ * with the network listener.
  *
- * Socket dirs live under the store (`~/.config/mend/store/_run/sessions/<id>`) —
- * already inside the platform's mount allowlist, `_`-prefixed like
- * `_references`. Paths are deterministic per session, so a Mend restart
- * re-binds the same path and the running workspace's mount comes back to
- * life without touching the container.
+ * Socket dirs live under the store (`<store>/_run/sessions/<id>`) — already
+ * inside the platform's mount allowlist, `_`-prefixed like `_references`.
+ * Paths are deterministic per session, so a Mend restart re-binds the same
+ * path and the running workspace's mount comes back to life without touching
+ * the container.
+ *
+ * Kubernetes mode (docs/KUBERNETES.md): the store is an RWX claim shared with
+ * Pods on other nodes, and a Unix socket on it would be neither reachable nor
+ * sane. The directory is still staged (the helper and the git shim are
+ * mounted at /run/mend exactly as before) but NO socket is created; the
+ * session is registered for the network channel instead, and the scripts
+ * fall back to `MEND_SESSION_ENDPOINT` when `/run/mend/mend.sock` is absent.
  */
 
 /** What the engine serves over a session's socket — every closure pre-scoped. */
@@ -80,42 +91,45 @@ export class SessionSocketHost extends Context.Service<
   }
 >()("@mend/sessions/SessionSocketHost") {}
 
-const runRoot = (): string =>
-  process.env["MEND_RUN_DIR"] ?? path.join(mendHome(), "store", "_run", "sessions");
+/**
+ * Where per-session run dirs live: `MEND_RUN_DIR`, else `<store root>/_run/sessions`. Derived
+ * from the configured store root — not from the home directory — so `MEND_STORE_ROOT`
+ * (and the Kubernetes claim mount) moves the run dirs with the store.
+ */
+export const sessionRunRoot = (storeRoot: string): string =>
+  process.env["MEND_RUN_DIR"] ?? path.join(storeRoot, "_run", "sessions");
 
 /** In-container path of the mount — the helper hardcodes it. */
 export const SESSION_SOCKET_MOUNT_PATH = "/run/mend";
 
 /**
  * The helper staged beside the socket. Dependency-free node, talking HTTP
- * over the unix socket; the wire is the private pact between this script and
- * the routes below, versioned together because they ship together.
+ * over the unix socket (or the network endpoint); the wire is the private
+ * pact between this script and the routes, versioned together because they
+ * ship together.
  */
 const HELPER_SCRIPT = `#!/usr/bin/env node
-// mend — the in-workspace helper. Talks to YOUR session over /run/mend/mend.sock.
-const http = require("node:http");
-
-const SOCKET = "/run/mend/mend.sock";
-
+// mend — the in-workspace helper. Talks to YOUR session over /run/mend/mend.sock,
+// or over the authenticated session endpoint when this workspace has no socket.
+${SCRIPT_TRANSPORT_PRELUDE}
 const request = (method, route, body) =>
   new Promise((resolve, reject) => {
-    const req = http.request(
-      { socketPath: SOCKET, method, path: route, headers: { "content-type": "application/json" } },
-      (res) => {
-        let text = "";
-        res.on("data", (chunk) => (text += chunk));
-        res.on("end", () => {
-          if (res.statusCode >= 400) {
-            let message = text;
-            try { message = JSON.parse(text).message ?? text; } catch {}
-            reject(new Error(message));
-            return;
-          }
-          resolve(text === "" ? null : JSON.parse(text));
-        });
-      },
-    );
-    req.on("error", () => reject(new Error("mend.sock is not answering — is the Mend server up?")));
+    const options = transportOptions(method, route, { "content-type": "application/json" });
+    if (options === null) { reject(new Error(transportUnavailable())); return; }
+    const req = transportClient().request(options, (res) => {
+      let text = "";
+      res.on("data", (chunk) => (text += chunk));
+      res.on("end", () => {
+        if (res.statusCode >= 400) {
+          let message = text;
+          try { message = JSON.parse(text).message ?? text; } catch {}
+          reject(new Error(message));
+          return;
+        }
+        resolve(text === "" ? null : JSON.parse(text));
+      });
+    });
+    req.on("error", () => reject(new Error(transportDownMessage())));
     if (body !== undefined) req.write(JSON.stringify(body));
     req.end();
   });
@@ -232,134 +246,31 @@ if (args[0] === "service" && args[1] !== undefined &&
 main();
 `;
 
+/** Exported for the script-level tests (run the staged helper under node). */
+export const SESSION_HELPER_SCRIPT = HELPER_SCRIPT;
+
 interface ActiveSocket {
   readonly server: http.Server;
 }
 
-const readBody = (request: http.IncomingMessage): Promise<unknown> =>
-  new Promise((resolve) => {
-    let text = "";
-    request.on("data", (chunk) => {
-      text += chunk;
-    });
-    request.on("end", () => {
-      let parsed: unknown = {};
-      if (text !== "") {
-        try {
-          parsed = JSON.parse(text);
-        } catch {
-          parsed = {};
-        }
-      }
-      resolve(parsed);
-    });
-  });
-
-const asRecord = (value: unknown): Record<string, unknown> =>
-  typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
-
-/**
- * The CONNECT tunnel: one workspace git op end to end. Resolve the plan
- * through the engine (refusals become a readable HTTP error the shim
- * prints), spawn ssh on the host, then pump frames — client bytes to ssh
- * stdin, ssh stdout/stderr back as frames, exit code last, and for pushes
- * sniff the opening pkt-lines so the op log can name the refs.
- */
-const handleGitConnect = async (
-  api: SessionSocketApi,
-  request: http.IncomingMessage,
-  socket: net.Socket,
-  head: Buffer,
-): Promise<void> => {
-  // A CONNECT response has no body by spec (node's client won't surface one),
-  // so the readable reason travels as a header the shim prints —
-  // percent-encoded, because headers are latin-1 and the messages carry
-  // real punctuation (observed live: an em dash arriving as "â").
-  const refuse = (status: string, message: string): void => {
-    const reason = encodeURIComponent(message.replace(/[\r\n]+/g, " · ").slice(0, 900));
-    socket.write(`HTTP/1.1 ${status}\r\nx-mend-refusal: ${reason}\r\nconnection: close\r\n\r\n`);
-    socket.end();
-  };
-  if ((request.url ?? "") !== "/git/transport") {
-    return refuse("404 Not Found", "unknown tunnel target");
-  }
-  const header = (name: string): string => {
-    const value = request.headers[name];
-    return typeof value === "string" ? value : "";
-  };
-  const host = header("x-mend-git-host");
-  const command = header("x-mend-git-command");
-  const protocol = header("x-mend-git-protocol");
-  const portRaw = header("x-mend-git-port");
-  const port = portRaw === "" ? null : Number(portRaw);
-  if (host === "" || command === "" || (port !== null && !Number.isInteger(port))) {
-    return refuse("400 Bad Request", "the git transport request is missing its target");
-  }
-  let plan: GitTransportPlan;
-  try {
-    plan = await Effect.runPromise(api.gitTransport({ host, port, command }));
-  } catch (error) {
-    return refuse(
-      "422 Unprocessable Entity",
-      error instanceof Error ? error.message : String(error),
-    );
-  }
-  socket.write("HTTP/1.1 200 Connection Established\r\n\r\n");
-  const [executable, ...argv] = plan.argv;
-  const child = spawn(executable ?? "ssh", argv, {
-    env: {
-      ...process.env,
-      ...(protocol === "" ? {} : { GIT_PROTOCOL: protocol }),
-      ...plan.env,
-    },
-  });
-  const sniffer = plan.kind === "push" ? makePushSniffer() : null;
-  let closed = false;
-  child.stdout.on("data", (chunk: Buffer) => socket.write(frame("o", chunk)));
-  child.stderr.on("data", (chunk: Buffer) => socket.write(frame("e", chunk)));
-  child.on("error", (error) => {
-    if (closed) return;
-    closed = true;
-    socket.write(
-      frame("e", Buffer.from(`mend: could not run ssh on the host: ${error.message}\n`)),
-    );
-    socket.write(frame("x", Buffer.from([255])));
-    socket.end();
-  });
-  child.on("close", (code) => {
-    if (!closed) {
-      closed = true;
-      socket.write(
-        frame("x", Buffer.from([code === null ? 255 : Math.min(Math.max(code, 0), 255)])),
-      );
-      socket.end();
-    }
-    void Effect.runPromise(
-      api.gitTransportDone(plan.opId, code, sniffer === null ? null : sniffer.updates()),
-    ).catch(() => {});
-  });
-  const feed = makeFrameFeed((type, payload) => {
-    if (type === "i") {
-      sniffer?.feed(payload);
-      child.stdin.write(payload);
-    } else if (type === "q") {
-      child.stdin.end();
-    }
-  });
-  if (head.length > 0) feed(head);
-  socket.on("data", feed);
-  const reap = (): void => {
-    child.kill();
-  };
-  socket.on("close", reap);
-  socket.on("error", reap);
-  // A dying client must not crash the host on a mid-pump write (EPIPE).
-  child.stdin.on("error", () => {});
+/** Stage the helper + shim into `<dir>/bin` (idempotent, overwrite in place). */
+const stageScripts = (dir: string): void => {
+  fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
+  fs.writeFileSync(path.join(dir, "bin", "mend"), HELPER_SCRIPT, { mode: 0o755 });
+  fs.writeFileSync(path.join(dir, "bin", "mend-git-ssh"), GIT_SSH_SHIM_SCRIPT, { mode: 0o755 });
 };
 
-export const SessionSocketHostLive: Layer.Layer<SessionSocketHost> = Layer.effect(
+export const SessionSocketHostLive: Layer.Layer<
+  SessionSocketHost,
+  never,
+  StoreConfig | DeploymentConfig | SessionChannelRegistry
+> = Layer.effect(
   SessionSocketHost,
   Effect.gen(function* () {
+    const storeConfig = yield* StoreConfig;
+    const deployment = yield* DeploymentConfig;
+    const registry = yield* SessionChannelRegistry;
+    const runRoot = sessionRunRoot(storeConfig.root);
     const active = new Map<SessionId, ActiveSocket>();
 
     const stopSync = (sessionId: SessionId): void => {
@@ -368,7 +279,8 @@ export const SessionSocketHostLive: Layer.Layer<SessionSocketHost> = Layer.effec
         active.delete(sessionId);
         entry.server.close();
       }
-      fs.rmSync(path.join(runRoot(), sessionId), { recursive: true, force: true });
+      registry.unregister(sessionId);
+      fs.rmSync(path.join(runRoot, sessionId), { recursive: true, force: true });
     };
 
     // Shutdown: close every socket or the process cannot exit gracefully.
@@ -381,60 +293,6 @@ export const SessionSocketHostLive: Layer.Layer<SessionSocketHost> = Layer.effec
         }
       }),
     );
-
-    const handle = async (
-      api: SessionSocketApi,
-      request: http.IncomingMessage,
-      response: http.ServerResponse,
-    ): Promise<void> => {
-      const respond = (status: number, payload: unknown): void => {
-        response.writeHead(status, { "content-type": "application/json" });
-        response.end(JSON.stringify(payload));
-      };
-      const url = new URL(request.url ?? "/", "http://mend.sock");
-      const route = `${request.method} ${url.pathname}`;
-      try {
-        if (route === "GET /recipes") return respond(200, await Effect.runPromise(api.recipes()));
-        if (route === "GET /services")
-          return respond(200, await Effect.runPromise(api.listServices()));
-        if (route === "POST /services/recipe") {
-          const body = asRecord(await readBody(request));
-          const name = typeof body["name"] === "string" ? body["name"] : "";
-          if (name === "") return respond(400, { message: "name is required" });
-          return respond(200, await Effect.runPromise(api.runServiceRecipe(name)));
-        }
-        if (route === "POST /services/run") {
-          const body = asRecord(await readBody(request));
-          const argv = Array.isArray(body["argv"]) ? body["argv"].map(String) : [];
-          const port = Number(body["port"]);
-          const name = typeof body["name"] === "string" ? body["name"] : null;
-          const protocol = body["protocol"] === "udp" ? ("udp" as const) : ("tcp" as const);
-          if (argv.length === 0 || !Number.isInteger(port)) {
-            return respond(400, { message: "argv and port are required" });
-          }
-          return respond(200, await Effect.runPromise(api.runService(argv, port, name, protocol)));
-        }
-        if (route === "POST /services/add") {
-          const body = asRecord(await readBody(request));
-          const port = Number(body["port"]);
-          const name = typeof body["name"] === "string" ? body["name"] : null;
-          const protocol = body["protocol"] === "udp" ? ("udp" as const) : ("tcp" as const);
-          if (!Number.isInteger(port)) return respond(400, { message: "port is required" });
-          return respond(200, await Effect.runPromise(api.addService(port, name, protocol)));
-        }
-        const action = /^POST \/services\/([^/]+)\/(stop|restart)$/.exec(route);
-        if (action?.[1] !== undefined) {
-          const effect =
-            action[2] === "stop" ? api.stopService(action[1]) : api.restartService(action[1]);
-          return respond(200, await Effect.runPromise(effect));
-        }
-        return respond(404, { message: `unknown route: ${route}` });
-      } catch (error) {
-        return respond(422, {
-          message: error instanceof Error ? error.message : String(error),
-        });
-      }
-    };
 
     const start = Effect.fn("SessionSocketHost.start")(function* (
       sessionId: SessionId,
@@ -451,17 +309,20 @@ export const SessionSocketHostLive: Layer.Layer<SessionSocketHost> = Layer.effec
         active.delete(sessionId);
         entry.server.close();
       }
-      const dir = path.join(runRoot(), sessionId);
+      const dir = path.join(runRoot, sessionId);
       const socketPath = path.join(dir, "mend.sock");
+      // The network channel (when configured) serves this session from now on, whichever
+      // listener the workspace ends up using.
+      registry.register(sessionId, api);
       yield* Effect.promise(async () => {
-        fs.mkdirSync(path.join(dir, "bin"), { recursive: true });
+        stageScripts(dir);
         fs.rmSync(socketPath, { force: true });
-        fs.writeFileSync(path.join(dir, "bin", "mend"), HELPER_SCRIPT, { mode: 0o755 });
-        fs.writeFileSync(path.join(dir, "bin", "mend-git-ssh"), GIT_SSH_SHIM_SCRIPT, {
-          mode: 0o755,
-        });
+        if (deployment.mode === "kubernetes") {
+          // No socket on a shared RWX claim: the helper finds none and uses the endpoint.
+          return;
+        }
         const server = http.createServer((request, response) => {
-          void handle(api, request, response);
+          void handleSessionRequest(api, request, response);
         });
         server.on("connect", (request, socket, head) => {
           void handleGitConnect(api, request, socket as net.Socket, head);

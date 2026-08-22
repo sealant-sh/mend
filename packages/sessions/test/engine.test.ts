@@ -32,6 +32,7 @@ import {
   type NewSession,
   type NewSessionProcess,
   type NewSessionRun,
+  SessionChannelTokensRepoMemory,
 } from "@mend/db";
 import {
   AgentTurnId,
@@ -88,6 +89,7 @@ import {
   SecretCipher,
   Store,
   StoreConfig,
+  DeploymentConfigLocal,
 } from "@mend/store";
 import type {
   CreateOptions,
@@ -1223,6 +1225,8 @@ const withEngine = <A, E>(
     ),
     Layer.provide(serviceHostStubLayer),
     Layer.provide(sessionSocketStubLayer),
+    Layer.provide(SessionChannelTokensRepoMemory),
+    Layer.provide(DeploymentConfigLocal),
     Layer.provide(mendKeysStubLayer),
     Layer.provide(agentBridgeStubLayer),
     Layer.provide(gitOpsStubLayer),
@@ -3040,6 +3044,8 @@ describe("SessionEngine", () => {
       ),
       Layer.provide(serviceHostStubLayer),
       Layer.provide(sessionSocketStubLayer),
+      Layer.provide(SessionChannelTokensRepoMemory),
+      Layer.provide(DeploymentConfigLocal),
       Layer.provide(mendKeysStubLayer),
       Layer.provide(agentBridgeStubLayer),
       Layer.provide(gitOpsStubLayer),
