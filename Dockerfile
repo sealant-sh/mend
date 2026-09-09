@@ -3,10 +3,9 @@
 # this build never imports Core source or its database schema. Sealant 0.29.0 runs its job queue
 # in Postgres and keeps workspace images in the host Docker Engine, so the bundle carries no
 # RabbitMQ and no registry.
-# TODO(release): re-pin these three references by digest once Sealant 0.29.0 is published.
-FROM ghcr.io/sealant-sh/sealant-api:0.29.0 AS sealant-api
-FROM ghcr.io/sealant-sh/sealant-worker:0.29.0 AS sealant-worker
-FROM ghcr.io/sealant-sh/sealant-ssh-gateway:0.29.0 AS sealant-ssh-gateway
+FROM ghcr.io/sealant-sh/sealant-api@sha256:0ca16620259a2f483381f9b0904a008d6fe46c7c37e028327a59c1ba80396433 AS sealant-api
+FROM ghcr.io/sealant-sh/sealant-worker@sha256:c99d9bec9d06477387861d7484f18e4608b0d32c48a3b896c9eb2876bcaafad1 AS sealant-worker
+FROM ghcr.io/sealant-sh/sealant-ssh-gateway@sha256:bd7ef3c223cbcdc689d719c16323e49079d24f6bd72e30fb1faf82b8d80b7664 AS sealant-ssh-gateway
 
 # Mend's API server and web front are esbuild-bundled here (tooling/scripts/bundle-app.mjs and
 # apps/web/scripts/build-server.mjs), so the runtime ships two self-contained files plus the

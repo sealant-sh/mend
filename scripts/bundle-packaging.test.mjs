@@ -105,9 +105,9 @@ test("the bundle pins published Sealant 0.29.0 artifacts and its official migrat
   assert.deepEqual(contract.runtimeContainers, ["mend", "postgres"]);
   assert.equal(contract.registry, undefined);
   assert.match(dockerfile, /MEND_VERSION=\$\{MEND_VERSION\}/);
-  assert.match(dockerfile, /sealant-api:0\.29\.0/);
-  assert.match(dockerfile, /sealant-worker:0\.29\.0/);
-  assert.match(dockerfile, /sealant-ssh-gateway:0\.29\.0/);
+  assert.match(dockerfile, /sealant-api@sha256:0ca16620/);
+  assert.match(dockerfile, /sealant-worker@sha256:c99d9bec/);
+  assert.match(dockerfile, /sealant-ssh-gateway@sha256:bd7ef3c2/);
   assert.doesNotMatch(dockerfile, /FROM rabbitmq|zot-minimal|\/opt\/zot|rabbitmq-server/i);
   assert.doesNotMatch(supervisor, /RABBITMQ_URL|REGISTRY_/);
   // Both Mend processes run from bundles; the runtime image carries no workspace or node_modules.
