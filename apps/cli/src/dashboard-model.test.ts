@@ -7,6 +7,7 @@ import {
   type CreatingState,
   deriveRows,
   deriveWorktrees,
+  enterTargetOf,
   filterBranches,
   foldGroupStatus,
   liveProtocolOf,
@@ -233,6 +234,30 @@ describe("liveProtocolOf", () => {
       ]),
     ).toBeNull();
     expect(liveProtocolOf([])).toBeNull();
+  });
+});
+
+describe("enterTargetOf", () => {
+  it("attaches the newest live conversation that has a terminal", () => {
+    const target = enterTargetOf([
+      session({ id: "new", status: "starting" }),
+      session({ id: "old", status: "running" }),
+    ]);
+    expect(target).toEqual({ kind: "attach", session: session({ id: "old", status: "running" }) });
+  });
+
+  it("waits on a starting session — the workspace has no PTY yet, so an attach would only bounce", () => {
+    expect(enterTargetOf([session({ id: "boot", status: "starting" })])).toEqual({
+      kind: "wait",
+      session: session({ id: "boot", status: "starting" }),
+    });
+  });
+
+  it("answers none when nothing is live — the picker (resume) is then the honest verb", () => {
+    expect(
+      enterTargetOf([session({ id: "done" }), session({ id: "failed", status: "failed" })]),
+    ).toEqual({ kind: "none" });
+    expect(enterTargetOf([])).toEqual({ kind: "none" });
   });
 });
 

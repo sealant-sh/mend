@@ -443,6 +443,27 @@ export const liveProtocolOf = (
   null;
 
 /**
+ * What Enter means for a set of conversations (a session row, or every
+ * member of a worktree header): `attach` the newest live one, `wait` because
+ * the only live one is still starting, or `none` — nothing live, open the
+ * picker. A `starting` row is a launch in flight: the workspace is still
+ * booting and has no PTY yet, so attaching would suspend the dashboard, be
+ * refused, and bounce straight back — once per Enter when the key is held.
+ */
+export type EnterTarget =
+  | { readonly kind: "attach"; readonly session: SessionDto }
+  | { readonly kind: "wait"; readonly session: SessionDto }
+  | { readonly kind: "none" };
+
+export const enterTargetOf = (sessions: ReadonlyArray<SessionDto>): EnterTarget => {
+  const live = sessions.filter((session) => LIVE_STATUSES.has(session.status));
+  const attachable = live.find((session) => session.status !== "starting");
+  if (attachable !== undefined) return { kind: "attach", session: attachable };
+  const starting = live[0];
+  return starting === undefined ? { kind: "none" } : { kind: "wait", session: starting };
+};
+
+/**
  * The optimistic stop: the row settles AND its live process/service fact
  * lines drop in the same paint — the server's refetch only confirms.
  */

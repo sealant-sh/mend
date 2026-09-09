@@ -29,6 +29,7 @@ import {
   worktreeDisplayName,
   fetchWorkbench,
   type HarnessItem,
+  enterTargetOf,
   liveProtocolOf,
   liveShellOf,
   mapWorkbenchSessions,
@@ -1166,6 +1167,19 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     if (row !== undefined) setSessionKey(rowKeyOf(row));
   };
 
+  /**
+   * Enter on a session whose workspace is still booting. Our own launch or
+   * resume attaches by itself when the server answers; one started elsewhere
+   * (the web, a phone) needs another Enter once its row reads running.
+   */
+  const sayStillStarting = (session: SessionDto): void => {
+    say(
+      busy !== null
+        ? `still starting · ${worktreeDisplayName(session)} — attaches when the workspace answers`
+        : `still starting · ${worktreeDisplayName(session)} — enter attaches once the row reads running`,
+    );
+  };
+
   const activate = (): void => {
     if (picker !== null) {
       const choice = pickerItems[pickerIndex];
@@ -1194,11 +1208,11 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     if (selectedRow?.kind === "worktree") {
       // Enter on the place: attach its newest live conversation, or open a
       // new one when nothing is live.
-      const live = selectedRow.group.sessions.find((item) =>
-        LIVE_STATUSES.has(item.session.status),
-      );
-      if (live !== undefined) {
-        void attachFlow(live.session);
+      const target = enterTargetOf(selectedRow.group.sessions.map((item) => item.session));
+      if (target.kind === "attach") {
+        void attachFlow(target.session);
+      } else if (target.kind === "wait") {
+        sayStillStarting(target.session);
       } else if (selectedRow.group.id !== null) {
         openPicker(null, selectedRow.group);
       }
@@ -1208,8 +1222,13 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     if (item === null) return;
     if (isPendingId(item.session.id)) {
       say("still provisioning — the row fills in when the workspace answers");
-    } else if (LIVE_STATUSES.has(item.session.status)) {
-      void attachFlow(item.session);
+      return;
+    }
+    const target = enterTargetOf([item.session]);
+    if (target.kind === "attach") {
+      void attachFlow(target.session);
+    } else if (target.kind === "wait") {
+      sayStillStarting(target.session);
     } else {
       openPicker(item.session);
     }
