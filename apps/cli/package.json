@@ -1,6 +1,6 @@
 {
   "name": "@sealant/mend",
-  "version": "0.24.2",
+  "version": "0.25.0",
   "description": "The mend CLI: adopt a repository into Mend's store, launch your coding agent in a recorded session worktree, detach and reattach from any terminal",
   "keywords": [
     "claude-code",
