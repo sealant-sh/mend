@@ -2599,7 +2599,7 @@ _mend() {
         compadd setup status start stop restart logs upgrade
       else
         case $words[3] in
-          setup) compadd -- --version --assets-dir --offline --context --port --ssh-port --registry-port --bind --url --origin --docker-socket ;;
+          setup) compadd -- --version --assets-dir --offline --context --port --ssh-port --bind --url --origin --docker-socket ;;
           upgrade) compadd -- --version --assets-dir --offline ;;
           start|restart) compadd -- --offline ;;
           logs) compadd -- --tail ;;
@@ -2629,7 +2629,7 @@ const BASH_COMPLETIONS = `_mend() {
         options="setup status start stop restart logs upgrade"
       else
         case \${COMP_WORDS[2]} in
-          setup) options="--version --assets-dir --offline --context --port --ssh-port --registry-port --bind --url --origin --docker-socket" ;;
+          setup) options="--version --assets-dir --offline --context --port --ssh-port --bind --url --origin --docker-socket" ;;
           upgrade) options="--version --assets-dir --offline" ;;
           start|restart) options="--offline" ;;
           logs) options="--tail" ;;

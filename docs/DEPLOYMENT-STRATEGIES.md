@@ -61,16 +61,17 @@ voice rules: state the observed capability gap, never a judgment.
 
 **Tier 1 — hosted workspaces, containerized control plane (moderate).** Sealant's `cloudflare`
 adapter + bridge Worker run the workspace body in Cloudflare Sandboxes while api/worker keep running
-as containers against Postgres and RabbitMQ. Mend prerequisites: the `SessionRepository` hosted
-adapter and a non-mount workspace source at the SDK boundary (recorded in `PLATFORM-FEEDBACK.md`).
-The vertical slice to prove: adopt → session in a sandbox → live record → checkpoint → stop →
-restore → reviewable diff.
+as containers against Postgres. Mend prerequisites: the `SessionRepository` hosted adapter and a
+non-mount workspace source at the SDK boundary (recorded in `PLATFORM-FEEDBACK.md`). The vertical
+slice to prove: adopt → session in a sandbox → live record → checkpoint → stop → restore →
+reviewable diff.
 
 **Tier 2 — Workers-native control plane (large).** Durable Object per run/session (sealant's
 telemetry supervisor map and run-exec ownership are the natural DOs), Cloudflare Queues replacing
-the three RabbitMQ queues, Cron Triggers replacing the interval reapers, Hyperdrive to Postgres (D1
-cannot hold the record schema: `jsonb`, `bytea` artifacts, uint64 sequences), and a rebuilt
-inference path (the current engines spawn CLIs). None of this blocks Tier 1.
+the three Sealant job queues (pg-boss in Postgres), Cron Triggers replacing the interval reapers,
+Hyperdrive to Postgres (D1 cannot hold the record schema: `jsonb`, `bytea` artifacts, uint64
+sequences), and a rebuilt inference path (the current engines spawn CLIs). None of this blocks
+Tier 1.
 
 **Correctness pre-work (done, sealant #197):** at-least-once delivery with more than one consumer
 required the build-job claim to be race-free and run-exec to be at-most-once. Those hold now

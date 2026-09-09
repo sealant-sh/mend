@@ -3,4 +3,4 @@
 # Manual Compose use must pre-create store/control volumes and supply a private env file.
 name: mend
 include:
-  - path: deploy/docker/compose.v1.yaml
+  - path: deploy/docker/compose.v2.yaml

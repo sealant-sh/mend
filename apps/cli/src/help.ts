@@ -574,7 +574,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "this machine",
     summary: "install or repair the local Mend server",
     synopsis: [
-      "[--context <name>] [--version <version|latest>] [--bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--registry-port <n>] [--docker-socket <path>] [--assets-dir <dir>] [--offline]",
+      "[--context <name>] [--version <version|latest>] [--bind <ip>] [--url <origin>] [--origin <origin>...] [--port <n>] [--ssh-port <n>] [--docker-socket <path>] [--assets-dir <dir>] [--offline]",
     ],
     description: [
       "Checks a local Unix-socket Docker context and the Compose plugin, downloads the compose and Postgres initialization assets for one Mend release, preserves existing data and secrets, and starts the server. Re-running repairs the same pinned version. A changed --version is refused; use mend server upgrade. Updating this CLI never updates an existing server pin.",
@@ -598,18 +598,17 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "additional exact browser origin; repeat for more than one",
       },
       { flag: "--port <n>", text: "external web port. Default: 3105" },
-      { flag: "--ssh-port <n>", text: "external workspace SSH port. Default: 2222" },
       {
-        flag: "--registry-port <n>",
-        text: "loopback registry port. Default: 5000; all three ports must differ",
+        flag: "--ssh-port <n>",
+        text: "external workspace SSH port. Default: 2222; must differ from --port",
       },
       {
         flag: "--assets-dir <dir>",
-        text: "copy compose.v1.yaml and postgres-init.sh from a release directory; fresh setup requires --version",
+        text: "copy compose.v2.yaml and postgres-init.sh from a release directory; fresh setup requires --version",
       },
       {
         flag: "--offline",
-        text: "use retained or supplied assets and preloaded images only; no GitHub requests or release-image pulls; exact image label, health version and a loopback registry roundtrip required",
+        text: "use retained or supplied assets and preloaded images only; no GitHub requests or release-image pulls; exact image label and health version required",
       },
       { flag: "--docker-socket <path>", text: "daemon-side socket mount override for diagnostics" },
     ],
@@ -621,8 +620,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
         text: "explicit tailnet exposure",
       },
       {
-        command:
-          "mend server setup --version 0.23.0 --assets-dir ./release-assets --offline --registry-port 5501",
+        command: "mend server setup --version 0.25.0 --assets-dir ./release-assets --offline",
         text: "install from local release assets and preloaded images",
       },
     ],
@@ -644,14 +642,9 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "start the selected server generation",
     synopsis: ["[--offline]"],
     description: [
-      "Reuses the saved context, generation, credentials and exact pin. Uses preloaded release images, with no release-image pulls or asset downloads, even without --offline. Exact image label, health version and a loopback registry roundtrip are required.",
+      "Reuses the saved context, generation, credentials and exact pin. Uses preloaded release images, with no release-image pulls or asset downloads, even without --offline. Exact image label and health version are required.",
     ],
-    options: [
-      {
-        flag: "--offline",
-        text: "use local release images and assets; still probe the loopback registry",
-      },
-    ],
+    options: [{ flag: "--offline", text: "use local release images and assets" }],
     see: ["server status", "server upgrade"],
   },
   {
@@ -670,14 +663,9 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "restart Mend using the same generation and pin",
     synopsis: ["[--offline]"],
     description: [
-      "Checks preloaded images before stopping Mend, then starts the saved generation and verifies exact-version health and a loopback registry roundtrip. Postgres stays running. Connections are interrupted; workspace containers and data remain, but active work may need reconnection.",
+      "Checks preloaded images before stopping Mend, then starts the saved generation and verifies exact-version health. Postgres stays running. Connections are interrupted; workspace containers and data remain, but active work may need reconnection.",
     ],
-    options: [
-      {
-        flag: "--offline",
-        text: "use local release images and assets; still probe the loopback registry",
-      },
-    ],
+    options: [{ flag: "--offline", text: "use local release images and assets" }],
     see: ["server status", "server logs"],
   },
   {
@@ -708,11 +696,11 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       },
       {
         flag: "--assets-dir <dir>",
-        text: "copy target compose.v1.yaml and postgres-init.sh from local release assets",
+        text: "copy target compose.v2.yaml and postgres-init.sh from local release assets",
       },
       {
         flag: "--offline",
-        text: "no GitHub requests or release-image pulls; target assets and exact-version images must be local; still probe the loopback registry",
+        text: "no GitHub requests or release-image pulls; target assets and exact-version images must be local",
       },
     ],
     examples: [

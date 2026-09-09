@@ -73,22 +73,14 @@ const parseConfiguration = async () => {
     mkdir(SOCKET_ROOT, { recursive: true }),
     mkdir("/var/lib/mend/config", { recursive: true }),
     mkdir("/var/lib/mend/ssh", { recursive: true }),
-    mkdir("/var/lib/registry", { recursive: true }),
     mkdir("/run/mend-bundle", { recursive: true }),
     rm(READY_FILE, { force: true }),
   ]);
 
-  const registryPort = Number(process.env.MEND_REGISTRY_PORT ?? "5000");
-  if (!Number.isInteger(registryPort) || registryPort < 1 || registryPort > 65_535) {
-    throw new Error("MEND_REGISTRY_PORT must be an integer from 1 through 65535");
-  }
-
   return {
     appUrl,
-    registryPort,
     mendDatabaseUrl: required("DATABASE_URL"),
     sealantDatabaseUrl: required("SEALANT_DATABASE_URL"),
-    rabbitMqUrl: required("RABBITMQ_URL"),
     betterAuthSecret: required("BETTER_AUTH_SECRET"),
     serviceKey: required("SEALANT_SERVICE_KEY"),
     credentialsKey: required("SEALANT_CREDENTIALS_KEY"),
@@ -114,29 +106,15 @@ const baseSpecification = (name, command, environment = {}) => ({
 
 const startBundle = async (supervisor) => {
   const configuration = await parseConfiguration();
+  // Sealant's job queue lives in its Postgres database (pg-boss) and workspace images stay in the
+  // host Docker Engine (no registry env means the local Engine store), so the Sealant processes
+  // are the only supporting processes here.
   const sealantEnvironment = {
     DATABASE_URL: configuration.sealantDatabaseUrl,
-    RABBITMQ_URL: configuration.rabbitMqUrl,
-    REGISTRY_BASE_URL: "http://127.0.0.1:5000",
-    REGISTRY_PUSH_REGISTRY: `127.0.0.1:${String(configuration.registryPort)}`,
     SEALANT_CREDENTIALS_KEY: configuration.credentialsKey,
   };
 
-  console.log("[bundle] starting RabbitMQ and the workspace image registry");
-  await supervisor.start(
-    baseSpecification("rabbitmq", ["/usr/local/bin/docker-entrypoint.sh", "rabbitmq-server"]),
-  );
-  await supervisor.start(
-    baseSpecification("registry", ["/usr/local/bin/zot", "serve", "/etc/zot/config.json"]),
-  );
-  await Promise.all([
-    supervisor.waitFor("RabbitMQ", () =>
-      commandSucceeds("gosu", ["rabbitmq", "rabbitmq-diagnostics", "-q", "ping"]),
-    ),
-    supervisor.waitFor("workspace image registry", () => httpResponds("http://127.0.0.1:5000/v2/")),
-  ]);
-
-  console.log("[bundle] applying Sealant 0.28.0 migrations from its published API image");
+  console.log("[bundle] applying Sealant 0.29.0 migrations from its published API image");
   await supervisor.run(
     baseSpecification("sealant-migrate", ["node", "/opt/sealant/api/dist/migrate.js"], {
       DATABASE_URL: configuration.sealantDatabaseUrl,
@@ -180,7 +158,7 @@ const startBundle = async (supervisor) => {
     }),
   );
   await supervisor.start(
-    baseSpecification("mend-api", ["node", "/app/apps/api/src/main.ts"], {
+    baseSpecification("mend-api", ["node", "/app/apps/api/dist/main.js"], {
       PORT: "3101",
       MEND_WEB_PORT: "3105",
       MEND_MODE: "all",
@@ -194,7 +172,7 @@ const startBundle = async (supervisor) => {
   );
   await supervisor.waitFor("Mend API", () => httpResponds("http://127.0.0.1:3101/api/health"));
   await supervisor.start(
-    baseSpecification("mend-web", ["node", "/app/apps/web/src/entry/main.ts"], {
+    baseSpecification("mend-web", ["node", "/app/apps/web/.output/front.mjs"], {
       PORT: "3105",
       MEND_API_URL: "http://127.0.0.1:3101",
     }),
@@ -210,7 +188,7 @@ const startBundle = async (supervisor) => {
     ),
   ]);
   await writeFile(READY_FILE, `${new Date().toISOString()}\n`, { mode: 0o644 });
-  console.log("[bundle] ready: Mend web, Sealant API/worker/SSH, RabbitMQ, and registry");
+  console.log("[bundle] ready: Mend web and the Sealant API, worker and SSH gateway");
 };
 
 await supervise(startBundle, { shutdownGraceMs: 20_000 });

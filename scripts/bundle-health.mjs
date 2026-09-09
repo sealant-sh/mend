@@ -26,8 +26,6 @@ try {
   await Promise.all([
     checkHttp("http://127.0.0.1:3105/api/health"),
     checkHttp("http://127.0.0.1:4000/healthz"),
-    checkHttp("http://127.0.0.1:5000/v2/"),
-    checkTcp(5672),
     checkTcp(2222),
   ]);
 } catch (error) {

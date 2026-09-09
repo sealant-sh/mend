@@ -56,7 +56,7 @@ const setupRuntime = (configDir: string): ServerSetupRuntime => {
         : {
             status: 200,
             body: fixtureAsset(
-              url.endsWith("/compose.v1.yaml") ? "compose.v1.yaml" : "postgres-init.sh",
+              url.endsWith("/compose.v2.yaml") ? "compose.v2.yaml" : "postgres-init.sh",
             ),
           },
   };
@@ -343,7 +343,7 @@ describe.skipIf(!composeAvailable)(
           .map((name) => [name, fs.readFileSync(path.join(previous, name), "utf8")]);
         const identity = fs.readFileSync(path.join(configDir, "identity.env"), "utf8");
         const assets = temporary();
-        let compose = fixtureAsset("compose.v1.yaml");
+        let compose = fixtureAsset("compose.v2.yaml");
         if (scenario.image !== undefined) {
           // Keep the contract fragments as a comment: only resolved Compose proves the pin.
           compose = compose.replace(
@@ -358,7 +358,7 @@ describe.skipIf(!composeAvailable)(
             `image: ${scenario.postgres} # image: postgres:17-alpine`,
           );
         }
-        fs.writeFileSync(path.join(assets, "compose.v1.yaml"), compose);
+        fs.writeFileSync(path.join(assets, "compose.v2.yaml"), compose);
         fs.writeFileSync(path.join(assets, "postgres-init.sh"), fixtureAsset("postgres-init.sh"));
         const mutations: Array<ReadonlyArray<string>> = [];
         const configs: Array<string> = [];

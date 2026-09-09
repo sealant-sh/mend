@@ -118,7 +118,7 @@ const fixture = async () => {
   };
   const assets = path.join(root, "release assets");
   fs.mkdirSync(assets);
-  for (const name of ["compose.v1.yaml", "postgres-init.sh"]) {
+  for (const name of ["compose.v2.yaml", "postgres-init.sh"]) {
     fs.copyFileSync(
       new URL(`../test-fixtures/docker/${name}`, import.meta.url),
       path.join(assets, name),
@@ -151,8 +151,6 @@ const fixture = async () => {
         url,
         "--port",
         String(address.port),
-        "--registry-port",
-        "5501",
         "--assets-dir",
         assets,
         "--offline",
@@ -248,7 +246,7 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
               !call.poisoned &&
               !call.args.includes("down") &&
               !call.args.includes("prune") &&
-              (!call.args.includes("pull") || call.args.at(-1)?.includes("/mend-registry-probe/")),
+              !call.args.includes("pull"),
           ),
       ).toBe(true);
       expect(fs.readdirSync(path.join(f.configDir, "generations"))).toHaveLength(1);
@@ -409,7 +407,7 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
       expect(await f.setup()).toEqual({ _tag: "ok" });
       const old = f.active();
       if (failure === "assets")
-        fs.writeFileSync(path.join(f.assets, "compose.v1.yaml"), "services: invalid");
+        fs.writeFileSync(path.join(f.assets, "compose.v2.yaml"), "services: invalid");
       if (failure === "image-missing") f.update({ images: { "0.23.0": "0.23.0" } });
       if (failure === "image-label")
         f.update({ images: { "0.23.0": "0.23.0", "0.24.0": "0.99.0" } });
@@ -474,7 +472,7 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
     ).toBe(true);
   });
 
-  it.each(["target-start", "health-mismatch", "target-registry"])(
+  it.each(["target-start", "health-mismatch"])(
     "never rolls back after %s once target migrations may have begun",
     async (failure) => {
       const f = await fixture();
@@ -612,7 +610,7 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
     },
   );
 
-  it("status and logs allocate nothing; each start probes with fresh nonces and forwards deadlines", async () => {
+  it("status and logs allocate nothing; start and restart draw no randomness and forward deadlines", async () => {
     const f = await fixture();
     expect(await f.setup()).toEqual({ _tag: "ok" });
     const count = f.calls().length;
@@ -630,13 +628,10 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
     ).toBe(true);
     for (const command of ["start", "restart"])
       expect(await serverCommand([command], f.runtime)).toEqual({ _tag: "ok" });
-    const imports = f.runCalls.filter((call) => call.args[3] === "import");
-    expect(imports).toHaveLength(3);
-    expect(new Set(imports.map((call) => call.args.at(-1))).size).toBe(3);
-    expect(imports.every((call) => call.options?.timeoutMs === 60_000)).toBe(true);
+    // No registry probe any more: nothing is imported, pushed, pulled or removed on start.
     expect(
-      f.runCalls.some((call) => call.args[3] === "rm" && call.options?.timeoutMs === 15_000),
-    ).toBe(true);
+      f.runCalls.some((call) => ["import", "push", "pull", "rm"].includes(call.args[3] ?? "")),
+    ).toBe(false);
     const starts = f.runCalls.filter((call) => call.args.includes("up"));
     expect(
       starts.every(
@@ -646,26 +641,6 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
       ),
     ).toBe(true);
   });
-
-  it.each(["start", "restart"])(
-    "does not report %s success when the registry fails, and prints cleanup warnings",
-    async (command) => {
-      const f = await fixture();
-      expect(await f.setup()).toEqual({ _tag: "ok" });
-      f.lines.splice(0);
-      f.update({ fail: "registry-push-cleanup" });
-      expect(await serverCommand([command], f.runtime)).toMatchObject({
-        _tag: "error",
-        message: expect.stringContaining("registry"),
-      });
-      expect(f.lines.some((line) => line.includes("is reachable"))).toBe(false);
-      expect(f.lines.some((line) => line.startsWith("Warning:"))).toBe(true);
-      f.lines.splice(0);
-      f.update({ fail: "registry-cleanup" });
-      expect(await serverCommand([command], f.runtime)).toEqual({ _tag: "ok" });
-      expect(f.lines.some((line) => line.startsWith("Warning:"))).toBe(true);
-    },
-  );
 
   it("terminates a real stalled dump and its descendant before old-app recovery or lock release", async () => {
     const f = await fixture();

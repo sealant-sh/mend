@@ -4,6 +4,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "build": "BUNDLE_ENTRIES=src/main.ts BUNDLE_EXTERNAL=bufferutil,utf-8-validate,pg-native,@opentelemetry/api node ../../tooling/scripts/bundle-app.mjs",
     "dev": "tsx watch src/main.ts",
     "lint": "oxlint .",
     "start": "node --experimental-strip-types src/main.ts",
@@ -27,6 +28,7 @@
   },
   "devDependencies": {
     "@mend/typescript": "workspace:*",
+    "esbuild": "catalog:",
     "tsx": "catalog:",
     "vitest": "catalog:"
   }

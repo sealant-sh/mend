@@ -1,6 +1,8 @@
-# Mend bundle deployment contract v1. The only long-running containers are Mend and official
-# Postgres. The Mend image supervises its web/API processes plus Sealant 0.28.0 API, worker, SSH
-# gateway, RabbitMQ, and zot. Generate and persist the required values in a private .env file.
+# Mend bundle deployment contract v2. The only long-running containers are Mend and official
+# Postgres. The Mend image supervises its web/API processes plus the Sealant 0.29.0 API, worker
+# and SSH gateway. Sealant's job queue lives in Postgres and workspace images live in the host
+# Docker Engine, so nothing else runs. Generate and persist the required values in a private .env
+# file.
 name: mend
 
 services:
@@ -17,13 +19,9 @@ services:
     ports:
       - "${MEND_BIND_HOST:-127.0.0.1}:${MEND_PORT:-3105}:3105"
       - "${MEND_BIND_HOST:-127.0.0.1}:${MEND_SSH_PORT:-2222}:2222"
-      # The host Docker daemon pushes and pulls workspace images here. Loopback is deliberate:
-      # widening this binding would expose an unauthenticated OCI registry.
-      - "127.0.0.1:${MEND_REGISTRY_PORT:-5000}:5000"
     environment:
       APP_URL: ${APP_URL:?set APP_URL in .env}
       MEND_ALLOWED_ORIGINS: ${MEND_ALLOWED_ORIGINS:-[]}
-      MEND_REGISTRY_PORT: ${MEND_REGISTRY_PORT:-5000}
       MEND_SSH_PORT: ${MEND_SSH_PORT:-2222}
       SEALANT_SSH_HOST: ${SEALANT_SSH_HOST:-localhost}
       DATABASE_URL:
@@ -31,11 +29,6 @@ services:
       SEALANT_DATABASE_URL:
         postgresql://sealant:${SEALANT_DB_PASSWORD:?set SEALANT_DB_PASSWORD in
         .env}@postgres:5432/sealant_control_plane
-      RABBITMQ_URL:
-        amqp://sealant:${MEND_RABBITMQ_PASSWORD:?set MEND_RABBITMQ_PASSWORD in .env}@127.0.0.1:5672
-      RABBITMQ_DEFAULT_USER: sealant
-      RABBITMQ_DEFAULT_PASS: ${MEND_RABBITMQ_PASSWORD:?set MEND_RABBITMQ_PASSWORD in .env}
-      RABBITMQ_NODENAME: rabbit@mend
       BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
       SEALANT_CREDENTIALS_KEY: ${SEALANT_CREDENTIALS_KEY:?set SEALANT_CREDENTIALS_KEY in .env}
       SEALANT_SERVICE_KEY: ${SEALANT_SERVICE_KEY:?set SEALANT_SERVICE_KEY in .env}
@@ -50,8 +43,6 @@ services:
       - mend-control:/run/sealant/sockets
       - mend-config:/var/lib/mend/config
       - mend-ssh:/var/lib/mend/ssh
-      - mend-rabbitmq:/var/lib/rabbitmq
-      - mend-registry:/var/lib/registry
 
   postgres:
     image: postgres:17-alpine
@@ -96,6 +87,4 @@ volumes:
     name: ${MEND_CONTROL_VOLUME_NAME:-mend-control}
   mend-config:
   mend-ssh:
-  mend-rabbitmq:
-  mend-registry:
   mend-postgres:

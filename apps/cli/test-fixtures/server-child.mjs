@@ -72,7 +72,7 @@ if (operation === "oversized-generation") {
         await pause("health");
         return { status: 200, body: '{"status":"ok","version":"0.23.0"}' };
       }
-      const file = url.endsWith("/compose.v1.yaml") ? "compose.v1.yaml" : "postgres-init.sh";
+      const file = url.endsWith("/compose.v2.yaml") ? "compose.v2.yaml" : "postgres-init.sh";
       return {
         status: 200,
         body: fs.readFileSync(new URL(`./docker/${file}`, import.meta.url), "utf8"),

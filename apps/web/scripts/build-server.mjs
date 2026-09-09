@@ -10,5 +10,11 @@ await build({
   target: "node22",
   format: "esm",
   outfile: ".output/front.mjs",
+  // Same source-width discipline as tooling/scripts/bundle-app.mjs: ASCII-only output with
+  // comments stripped so V8 keeps the resident source one byte per character.
+  charset: "ascii",
+  minifyWhitespace: true,
+  lineLimit: 160,
+  legalComments: "none",
   logLevel: "warning",
 });

@@ -2,8 +2,9 @@
 
 Install the CLI on each client. Run server setup on the machine that will keep your projects. Mend
 manages one application container and one official Postgres container. The application contains its
-pinned Sealant runtime, RabbitMQ, and workspace registry. You choose a Mend version, not a separate
-Sealant version. Session workspaces can create additional containers.
+pinned Sealant runtime. Sealant's job queue runs in Postgres, and workspace images are built and
+launched in the host Docker Engine through the mounted daemon socket. You choose a Mend version, not
+a separate Sealant version. Session workspaces can create additional containers.
 
 ## Install and start
 
@@ -74,16 +75,15 @@ Code extension uses the Mend URL's hostname and the advertised SSH port, not a s
 path. SSH configuration requires consent and a usable client key. See
 [workspace SSH](WORKSPACE-SSH.md), including explicit host-key verification and rotation.
 
-The workspace registry always binds to loopback. Setup must prove that the Docker daemon can push
-and pull through that published loopback address. If a runtime cannot, do not expose the
-unauthenticated registry more widely to make the check pass. Postgres publishes no host port.
+Workspace images stay in the host Docker Engine; the bundle publishes no image registry. The only
+Docker requirement is the mounted daemon socket, which the application uses to build and launch
+workspaces. Postgres publishes no host port.
 
-Ports default to web `3105`, SSH `2222`, and registry `5000`. They must be distinct. Change occupied
-ports explicitly, for example:
+Ports default to web `3105` and SSH `2222`. They must differ. Change occupied ports explicitly, for
+example:
 
 ```sh
-mend server setup --port 3205 --ssh-port 2322 --registry-port 5501 \
-  --url http://localhost:3205
+mend server setup --port 3205 --ssh-port 2322 --url http://localhost:3205
 ```
 
 Setup reruns retain saved settings unless you explicitly change them. Changing the Docker context
@@ -105,8 +105,8 @@ and keeps Postgres running. Start and restart reuse the saved generation and req
 already present; they do not download a new release.
 
 These commands never delete volumes or prune Docker resources. Stop, restart, and upgrade interrupt
-web, SSH, and registry connections. Workspace containers remain, but active sessions can lose
-connectivity and may need reconnection. Finish or pause important work before planned maintenance.
+web and SSH connections. Workspace containers remain, but active sessions can lose connectivity and
+may need reconnection. Finish or pause important work before planned maintenance.
 
 ## Offline setup
 
@@ -116,7 +116,7 @@ Obtain the exact release assets and images on a connected machine. Transfer the 
 - `ghcr.io/sealant-sh/mend:VERSION`
 - `postgres:17-alpine`
 
-Put `compose.v1.yaml` and `postgres-init.sh` from that same release in a local directory, then:
+Put `compose.v2.yaml` and `postgres-init.sh` from that same release in a local directory, then:
 
 ```sh
 mend server setup --version VERSION --assets-dir ./release-assets --offline
@@ -124,8 +124,8 @@ mend server setup --version VERSION --assets-dir ./release-assets --offline
 
 Local assets pass the same validation as downloaded assets and are copied into the private
 installation. You can remove the source directory afterward. Fresh setup with local assets requires
-an explicit version. Offline mode forbids release downloads and image pulls, not local health or
-registry checks. It does not make future Git, harness, or provider traffic offline.
+an explicit version. Offline mode forbids release downloads and image pulls, not local health
+checks. It does not make future Git, harness, or provider traffic offline.
 
 ## Upgrade deliberately
 
@@ -140,6 +140,16 @@ mend server upgrade --version latest
 
 Offline upgrades accept `--assets-dir DIR --offline` with the target images preloaded. Downgrades
 are refused. A same-version upgrade does not restart the app; use `start` or `restart` instead.
+
+An installation created by an older CLI uses the `mend-docker-v1` bundle, which ran RabbitMQ and a
+loopback workspace registry. Upgrade moves it to `mend-docker-v2`, which has neither: the saved
+registry port is dropped, while `identity.env` is carried over byte for byte because it anchors
+Docker volume ownership. Sealant 0.29.0 runs its job queue on pg-boss in Postgres and keeps
+workspace images in the host Docker Engine, so dropping both services substantially reduces the
+bundle's idle memory. Setup refuses to repair a v1 installation in place and points at upgrade. Any
+Sealant job still queued in RabbitMQ when the upgrade runs is lost, so restart a session that was
+mid-launch. Once the upgraded server is healthy, `docker volume rm mend-rabbitmq mend-registry`
+reclaims the old volumes; nothing reads them again.
 
 Upgrade validates target assets and image versions before stopping the app. It prepares an immutable
 configuration generation, records recovery information, stops application writers, then streams a
@@ -190,7 +200,7 @@ Directories are mode `0700`; secret/configuration files and backups are `0600`. 
 mount. It contains environment references, not generated credentials. Each generation is complete
 and immutable. An atomic `active` symlink chooses one generation. Keep the installation identity,
 generations, and Docker volumes together in backups. A database upgrade dump alone does not back up
-repositories, worktrees, harness state, SSH host keys, registry images, or RabbitMQ data.
+repositories, worktrees, harness state, SSH host keys, or workspace images.
 
 The canonical store and control volumes are external to Compose. Setup claims them using a label
 whose value is the SHA-256 fingerprint of the persisted installation identity. A different

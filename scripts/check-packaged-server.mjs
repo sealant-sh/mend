@@ -8,7 +8,7 @@
  * Set MEND_TEST_OFFLINE=1 for preloaded Mend and Postgres images, with no setup pulls.
  *
  * Required public setup contract: --version, --assets-dir, --offline, --port, --ssh-port,
- * --registry-port, --url. Assets come from deploy/docker, validated by setup exactly
+ * --url. Assets come from deploy/docker, validated by setup exactly
  * like release downloads. Required lifecycle commands: server restart, stop, start.
  * Missing commands/flags FAIL acceptance; there is no direct-Compose fallback.
  *
@@ -383,11 +383,11 @@ async function installation(expectedVersion = version, expectedAssets = assets, 
   );
   const config = JSON.parse(await readFile(join(directory, "server.json"), "utf8"));
   check(
-    config.serverVersion === expectedVersion && config.assetContract === "mend-docker-v1",
+    config.serverVersion === expectedVersion && config.assetContract === "mend-docker-v2",
     "Saved config must pin the requested version and asset contract",
   );
   check(
-    values["compose.yaml"] === hash(await readFile(join(expectedAssets, "compose.v1.yaml"))),
+    values["compose.yaml"] === hash(await readFile(join(expectedAssets, "compose.v2.yaml"))),
     "Active Compose must be the supplied release asset",
   );
   check(
@@ -583,14 +583,15 @@ async function main() {
   env.npm_config_userconfig = join(scratch, "empty.npmrc");
   await writeFile(env.npm_config_userconfig, "", { mode: 0o600 });
   configRoot = join(env.XDG_CONFIG_HOME, "mend");
-  const contract = JSON.parse(await readFile(join(assets, "setup-contract.v1.json"), "utf8"));
+  const contract = JSON.parse(await readFile(join(assets, "setup-contract.v2.json"), "utf8"));
   check(
-    contract.schemaVersion === 1 &&
-      contract.composeTemplate === "compose.v1.yaml" &&
+    contract.schemaVersion === 2 &&
+      contract.composeTemplate === "compose.v2.yaml" &&
       contract.canonicalVolumes?.store === "mend-store" &&
       contract.canonicalVolumes?.control === "mend-control" &&
-      contract.hostExposure?.ports?.registry === "MEND_REGISTRY_PORT",
-    "Assets must implement the bundle v1 setup contract including registry-port isolation",
+      contract.hostExposure?.ports?.registry === undefined &&
+      contract.registry === undefined,
+    "Assets must implement the bundle v2 setup contract, which publishes no registry",
   );
   stage = "pack/install";
   const beforeInstall = dockerFingerprint(await snapshot());
@@ -693,7 +694,6 @@ async function main() {
     "--offline",
     "--context",
     "--port",
-    "--registry-port",
     "--ssh-port",
     "--version",
     "--url",
@@ -709,7 +709,7 @@ async function main() {
     for (const flag of ["--version", "--assets-dir", "--offline"])
       check(help.includes(flag), `Integration required: server upgrade help must expose ${flag}`);
   }
-  const [port, sshPort, registryPort] = await freePorts();
+  const [port, sshPort] = await freePorts();
   const origin = `http://127.0.0.1:${port}`;
   const setupArgs = [
     "server",
@@ -725,8 +725,6 @@ async function main() {
     String(port),
     "--ssh-port",
     String(sshPort),
-    "--registry-port",
-    String(registryPort),
     "--url",
     origin,
   ];
@@ -754,29 +752,28 @@ async function main() {
   for (const [internal, external] of [
     ["3105/tcp", port],
     ["2222/tcp", sshPort],
-    ["5000/tcp", registryPort],
   ])
     check(
       bindings[internal]?.length === 1 &&
         bindings[internal][0].HostIp === "127.0.0.1" &&
         bindings[internal][0].HostPort === String(external),
-      "Web, SSH and registry must use the selected loopback ports",
+      "Web and SSH must use the selected loopback ports",
     );
+  check(
+    Object.keys(bindings).length === 2,
+    "The bundle must publish only web and SSH (no registry port)",
+  );
   check(
     Object.keys(postgres.HostConfig.PortBindings ?? {}).length === 0,
     "Product Postgres must not publish a host port",
-  );
-  check(
-    (await fetch(`http://127.0.0.1:${registryPort}/v2/`, { signal: AbortSignal.timeout(5000) })).ok,
-    "Registry must answer on the selected port",
   );
   const saved = await installation();
   check(
     saved.config.appUrl === origin &&
       saved.config.appPort === port &&
       saved.config.sshPort === sshPort &&
-      saved.config.registryPort === registryPort,
-    "Saved setup exposure must include all three selected ports",
+      saved.config.registryPort === undefined,
+    "Saved setup exposure must include both selected ports and no registry port",
   );
   const sshBefore = await sshIdentity(sshPort);
   const web = await fetch(origin, { signal: AbortSignal.timeout(10_000) });
@@ -787,7 +784,7 @@ async function main() {
     "Published bundle must serve the real web application",
   );
   console.log(
-    "PASS exact image/version, official PG, web app, idle two-container product and isolated loopback ports",
+    "PASS exact image/version, official PG, web app, idle two-container product and isolated loopback ports (no registry)",
   );
 
   stage = "real authentication";

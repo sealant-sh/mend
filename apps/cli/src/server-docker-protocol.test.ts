@@ -1,6 +1,5 @@
 import { execFile } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import * as os from "node:os";
 
 import { describe, expect, it } from "vitest";
 
@@ -10,7 +9,7 @@ import {
   verifyServerDockerVolumes,
   type ServerDockerNamespace,
 } from "./server-docker-volumes.ts";
-import { probeServerRegistry, type ServerRegistryProbeRuntime } from "./server-registry-probe.ts";
+import type { ServerSetupRuntime } from "./server-setup.ts";
 
 // Opt in with an explicit context. Never inspect, create or remove standard Mend resources.
 const context = process.env["MEND_DOCKER_TEST_CONTEXT"];
@@ -30,7 +29,7 @@ for (const key of [
 ]) {
   if (process.env[key] !== undefined) environment[key] = process.env[key];
 }
-const runtime: ServerRegistryProbeRuntime = {
+const runtime: Pick<ServerSetupRuntime, "run"> = {
   run: (command, args, options = { timeoutMs: 30_000 }) =>
     new Promise((resolve) => {
       execFile(
@@ -214,83 +213,4 @@ describe.skipIf(context === undefined)("real Docker ownership and registry proto
       await cleanVolumes(namespace, identities.map(digest));
     }
   }, 120_000);
-
-  it("roundtrips a tiny imported image through a unique loopback-only registry", async () => {
-    if (context === undefined) return;
-    const nonce = randomBytes(24).toString("hex");
-    const name = `mend-protocol-registry-${nonce}`;
-    const label = "dev.sealant.mend.protocol-test";
-    // This image is test infrastructure, not the Mend image. Docker caches it for later test runs.
-    await docker("image", "pull", "registry:2");
-    let containerId: string | undefined;
-    try {
-      containerId = await docker(
-        "container",
-        "run",
-        "--detach",
-        "--name",
-        name,
-        "--label",
-        `${label}=${nonce}`,
-        "--publish",
-        "127.0.0.1::5000",
-        "--tmpfs",
-        "/var/lib/registry",
-        "registry:2",
-      );
-      const binding = await docker("container", "port", containerId, "5000/tcp");
-      expect(binding).toMatch(/^127\.0\.0\.1:[0-9]+$/);
-      const port = Number(binding.split(":")[1]);
-      let healthy = false;
-      for (let attempt = 0; attempt < 30; attempt += 1) {
-        try {
-          const response = await fetch(`http://127.0.0.1:${port}/v2/`, {
-            signal: AbortSignal.timeout(1_000),
-          });
-          await response.arrayBuffer();
-          if (response.status === 200) {
-            healthy = true;
-            break;
-          }
-        } catch {
-          /* Registry may still be starting. */
-        }
-        await new Promise((resolve) => setTimeout(resolve, 100));
-      }
-      expect(healthy).toBe(true);
-      const result = await probeServerRegistry(runtime, {
-        dockerContext: context,
-        registryPort: port,
-        nonce,
-        temporaryDirectory: os.tmpdir(),
-      });
-      expect(result).toMatchObject({ _tag: "ok", cleanupWarnings: [] });
-      if (result._tag === "ok") {
-        expect(result.value.imageId).toMatch(/^sha256:[0-9a-f]{64}$/);
-        expect(
-          await docker(
-            "image",
-            "ls",
-            "--filter",
-            `reference=${result.value.reference}`,
-            "--format",
-            "{{.ID}}",
-          ),
-        ).toBe("");
-      }
-    } finally {
-      if (containerId !== undefined) {
-        expect(
-          await docker(
-            "container",
-            "inspect",
-            containerId,
-            "--format",
-            `{{index .Config.Labels "${label}"}}`,
-          ),
-        ).toBe(nonce);
-        await docker("container", "rm", "--force", containerId);
-      }
-    }
-  }, 180_000);
 });

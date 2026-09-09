@@ -5,7 +5,6 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import { claimServerDockerVolumes, verifyServerDockerVolumes } from "./server-docker-volumes.ts";
-import { probeServerRegistry } from "./server-registry-probe.ts";
 import {
   runServerProcess,
   serverComposeArgs,
@@ -22,12 +21,19 @@ import {
 import { cliVersion } from "./version.ts";
 
 const CONFIG_SCHEMA_VERSION = 1;
-const ASSET_CONTRACT = "mend-docker-v1";
+const ASSET_CONTRACT = "mend-docker-v2";
+/**
+ * Contracts an existing installation may still be on. v1 bundles ran RabbitMQ and a loopback
+ * registry (`MEND_RABBITMQ_PASSWORD`, `MEND_REGISTRY_PORT`); v2 bundles need neither. A v1
+ * generation stays readable so `mend server upgrade` can move it to v2 without touching the
+ * volume-ownership identity.
+ */
+const LEGACY_ASSET_CONTRACTS: ReadonlySet<string> = new Set(["mend-docker-v1"]);
 const MINIMUM_DOCKER_API = "1.45";
 const DEFAULT_APP_PORT = 3105;
 const DEFAULT_SSH_PORT = 2222;
 const DEFAULT_BIND = "127.0.0.1";
-const COMPOSE_ASSET = "compose.v1.yaml";
+const COMPOSE_ASSET = "compose.v2.yaml";
 const POSTGRES_INIT_ASSET = "postgres-init.sh";
 const RELEASE_BASE = "https://github.com/sealant-sh/Mend/releases/download";
 const LATEST_RELEASE_URL = "https://api.github.com/repos/sealant-sh/Mend/releases/latest";
@@ -61,7 +67,7 @@ export interface ServerSetupRuntime {
   ): Promise<CommandOutput>;
   /** Fetch text with a bounded request timeout. */
   fetchText(url: string, timeoutMs: number): Promise<FetchOutput>;
-  /** Generate installation credentials once and a fresh registry probe nonce on every attempt. */
+  /** Generate installation credentials once. */
   randomBytes(size: number): Buffer;
   /** Wait between advertised health probes. */
   sleep(milliseconds: number): Promise<void>;
@@ -83,7 +89,6 @@ interface SetupOptions {
   readonly appPort: number | undefined;
   readonly sshPort: number | undefined;
   readonly dockerSocket: string | undefined;
-  readonly registryPort: number | undefined;
   readonly assetsDir: string | undefined;
   readonly offline: boolean;
 }
@@ -102,14 +107,20 @@ export interface ServerConfig {
   readonly allowedOrigins: ReadonlyArray<string>;
   readonly appPort: number;
   readonly sshPort: number;
-  readonly registryPort: number;
+  /** Only on generations written under the v1 contract, which published a loopback registry. */
+  readonly registryPort?: number;
 }
 
 interface ServerSecrets {
   readonly postgresAdminPassword: string;
   readonly mendDatabasePassword: string;
   readonly sealantDatabasePassword: string;
-  readonly queuePassword: string;
+  /**
+   * Only on installations created under the v1 contract. The identity file's bytes anchor
+   * Docker volume ownership, so a value that exists is carried forward forever; new
+   * installations never generate one.
+   */
+  readonly queuePassword?: string;
   readonly betterAuthSecret: string;
   readonly sealantCredentialsKey: string;
   readonly sealantServiceKey: string;
@@ -193,7 +204,6 @@ const SETUP_FLAGS = new Set([
   "--port",
   "--ssh-port",
   "--docker-socket",
-  "--registry-port",
   "--assets-dir",
   "--offline",
 ]);
@@ -223,7 +233,6 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
   const version = flagValue("--version");
   const appPort = flagValue("--port");
   const sshPort = flagValue("--ssh-port");
-  const registryPort = flagValue("--registry-port");
   const origins = values.get("--origin");
   return {
     context: flagValue("--context"),
@@ -234,8 +243,6 @@ const parseSetupOptions = (args: ReadonlyArray<string>): SetupOptions => {
     appPort: appPort === undefined ? undefined : parsePort(appPort, "--port"),
     sshPort: sshPort === undefined ? undefined : parsePort(sshPort, "--ssh-port"),
     dockerSocket: flagValue("--docker-socket"),
-    registryPort:
-      registryPort === undefined ? undefined : parsePort(registryPort, "--registry-port"),
     assetsDir: flagValue("--assets-dir"),
     offline: values.has("--offline"),
   };
@@ -307,15 +314,11 @@ const checkExposurePair = (bind: string, appUrl: string, requireExplicitUrl: boo
 const validateExposure = (
   existing: ServerConfig | null,
   options: SetupOptions,
-): Pick<
-  ServerConfig,
-  "bind" | "appUrl" | "allowedOrigins" | "appPort" | "sshPort" | "registryPort"
-> => {
+): Pick<ServerConfig, "bind" | "appUrl" | "allowedOrigins" | "appPort" | "sshPort"> => {
   const appPort = options.appPort ?? existing?.appPort ?? DEFAULT_APP_PORT;
   const sshPort = options.sshPort ?? existing?.sshPort ?? DEFAULT_SSH_PORT;
-  const registryPort = options.registryPort ?? existing?.registryPort ?? 5000;
-  if (new Set([appPort, sshPort, registryPort]).size !== 3) {
-    throw setupError("--port, --ssh-port and --registry-port must use different ports.");
+  if (appPort === sshPort) {
+    throw setupError("--port and --ssh-port must use different ports.");
   }
 
   const bind = options.bind ?? existing?.bind ?? DEFAULT_BIND;
@@ -332,7 +335,7 @@ const validateExposure = (
   const allowedOrigins = [
     ...new Set((requestedOrigins ?? inheritedOrigins).filter((origin) => origin !== appUrl)),
   ];
-  return { bind, appUrl, allowedOrigins, appPort, sshPort, registryPort };
+  return { bind, appUrl, allowedOrigins, appPort, sshPort };
 };
 
 const parseServerConfig = (raw: string): ServerConfig => {
@@ -374,16 +377,22 @@ const parseServerConfig = (raw: string): ServerConfig => {
     ),
     appPort: requiredInteger(fields, "appPort"),
     sshPort: requiredInteger(fields, "sshPort"),
-    registryPort: fields.has("registryPort") ? requiredInteger(fields, "registryPort") : 5000,
+    ...(fields.has("registryPort")
+      ? { registryPort: requiredInteger(fields, "registryPort") }
+      : {}),
   };
-  if (config.schemaVersion !== CONFIG_SCHEMA_VERSION || config.assetContract !== ASSET_CONTRACT) {
+  if (
+    config.schemaVersion !== CONFIG_SCHEMA_VERSION ||
+    (config.assetContract !== ASSET_CONTRACT && !LEGACY_ASSET_CONTRACTS.has(config.assetContract))
+  ) {
     throw setupError(
       `Server config uses unsupported contract ${config.schemaVersion}/${config.assetContract}. Upgrade the CLI before setup.`,
     );
   }
   parsePort(String(config.appPort), "Server config appPort");
   parsePort(String(config.sshPort), "Server config sshPort");
-  parsePort(String(config.registryPort), "Server config registryPort");
+  if (config.registryPort !== undefined)
+    parsePort(String(config.registryPort), "Server config registryPort");
   validateExposure(null, {
     context: undefined,
     version: undefined,
@@ -393,7 +402,6 @@ const parseServerConfig = (raw: string): ServerConfig => {
     appPort: config.appPort,
     sshPort: config.sshPort,
     dockerSocket: undefined,
-    registryPort: config.registryPort,
     assetsDir: undefined,
     offline: false,
   });
@@ -424,7 +432,9 @@ const parseSecrets = (raw: string): ServerSecrets => {
     postgresAdminPassword: envValue(fields, "MEND_POSTGRES_ADMIN_PASSWORD"),
     mendDatabasePassword: envValue(fields, "MEND_DB_PASSWORD"),
     sealantDatabasePassword: envValue(fields, "SEALANT_DB_PASSWORD"),
-    queuePassword: envValue(fields, "MEND_RABBITMQ_PASSWORD"),
+    ...(fields.has("MEND_RABBITMQ_PASSWORD")
+      ? { queuePassword: envValue(fields, "MEND_RABBITMQ_PASSWORD") }
+      : {}),
     betterAuthSecret: envValue(fields, "BETTER_AUTH_SECRET"),
     sealantCredentialsKey: envValue(fields, "SEALANT_CREDENTIALS_KEY"),
     sealantServiceKey: envValue(fields, "SEALANT_SERVICE_KEY"),
@@ -437,7 +447,9 @@ const parseSecrets = (raw: string): ServerSecrets => {
     ["MEND_POSTGRES_ADMIN_PASSWORD", secrets.postgresAdminPassword],
     ["MEND_DB_PASSWORD", secrets.mendDatabasePassword],
     ["SEALANT_DB_PASSWORD", secrets.sealantDatabasePassword],
-    ["MEND_RABBITMQ_PASSWORD", secrets.queuePassword],
+    ...(secrets.queuePassword === undefined
+      ? []
+      : [["MEND_RABBITMQ_PASSWORD", secrets.queuePassword] as const]),
     ["WORKSPACE_SSH_GATEWAY_TOKEN", secrets.workspaceSshGatewayToken],
   ];
   for (const [name, value] of hexSecrets) {
@@ -463,7 +475,6 @@ const createSecrets = (runtime: ServerSetupRuntime): ServerSecrets => {
     postgresAdminPassword: hex(0),
     mendDatabasePassword: hex(32),
     sealantDatabasePassword: hex(64),
-    queuePassword: hex(96),
     betterAuthSecret: hex(128),
     sealantCredentialsKey: bytes.subarray(160, 192).toString("base64"),
     sealantServiceKey: `slt_svc_${hex(192)}`,
@@ -676,8 +687,6 @@ const validateComposeAsset = (body: string): void => {
     "mend-control:",
     "mend-config:",
     "mend-ssh:",
-    "mend-rabbitmq:",
-    "mend-registry:",
     "mend-postgres:",
     "/var/lib/mend/store",
     "/run/sealant/sockets",
@@ -724,7 +733,9 @@ const renderIdentity = (secrets: ServerSecrets): string =>
     `MEND_POSTGRES_ADMIN_PASSWORD=${secrets.postgresAdminPassword}`,
     `MEND_DB_PASSWORD=${secrets.mendDatabasePassword}`,
     `SEALANT_DB_PASSWORD=${secrets.sealantDatabasePassword}`,
-    `MEND_RABBITMQ_PASSWORD=${secrets.queuePassword}`,
+    ...(secrets.queuePassword === undefined
+      ? []
+      : [`MEND_RABBITMQ_PASSWORD=${secrets.queuePassword}`]),
     `BETTER_AUTH_SECRET=${secrets.betterAuthSecret}`,
     `SEALANT_CREDENTIALS_KEY=${secrets.sealantCredentialsKey}`,
     `SEALANT_SERVICE_KEY=${secrets.sealantServiceKey}`,
@@ -744,7 +755,7 @@ const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => 
     `MEND_BIND_HOST=${composeBind}`,
     `MEND_PORT=${config.appPort}`,
     `MEND_SSH_PORT=${config.sshPort}`,
-    `MEND_REGISTRY_PORT=${config.registryPort}`,
+    ...(config.registryPort === undefined ? [] : [`MEND_REGISTRY_PORT=${config.registryPort}`]),
     `SEALANT_SSH_HOST=${sshHost}`,
     "MEND_STORE_VOLUME_NAME=mend-store",
     "MEND_CONTROL_VOLUME_NAME=mend-control",
@@ -922,7 +933,7 @@ const resolveAssets = async (
     } catch (cause) {
       if (cause instanceof ServerSetupError) throw cause;
       throw setupError(
-        "Could not read release assets from --assets-dir. Supply compose.v1.yaml and postgres-init.sh.",
+        "Could not read release assets from --assets-dir. Supply compose.v2.yaml and postgres-init.sh.",
       );
     }
   }
@@ -1069,6 +1080,11 @@ const setupServer = async (
       `Setup retains Mend ${existing.config.serverVersion}. Use mend server upgrade --version ${options.version} to change the server pin.`,
     );
   }
+  if (existing !== null && existing.config.assetContract !== ASSET_CONTRACT) {
+    throw setupError(
+      `Mend ${existing.config.serverVersion} was installed under the ${existing.config.assetContract} bundle contract. Use mend server upgrade --version latest to move it to ${ASSET_CONTRACT}; setup cannot repair it in place.`,
+    );
+  }
   const selectedContext = await selectDockerContext(
     runtime,
     options.context ?? existing?.config.dockerContext,
@@ -1102,7 +1118,6 @@ const setupServer = async (
   storeValue(store.activate(generation));
   await startCompose(runtime, config, generation);
   await probeHealth(runtime, config.appUrl, config.serverVersion);
-  await verifyRegistry(runtime, config);
   runtime.writeLine(`Mend ${config.serverVersion} is reachable at ${config.appUrl}`);
   runtime.writeLine(
     `Open ${config.appUrl}, create the first account, then run: mend login --url ${config.appUrl}`,
@@ -1184,17 +1199,6 @@ const interruptionNotice = (runtime: ServerSetupRuntime): void =>
     "Connections will be interrupted. Workspace containers and data are retained, but active work can lose connectivity and may need reconnection. Mend does not stop workspace containers.",
   );
 
-const verifyRegistry = async (runtime: ServerSetupRuntime, config: ServerConfig): Promise<void> => {
-  const registry = await probeServerRegistry(runtime, {
-    dockerContext: config.dockerContext,
-    registryPort: config.registryPort,
-    nonce: runtime.randomBytes(24).toString("hex"),
-    temporaryDirectory: path.resolve(runtime.configDir),
-  });
-  for (const warning of registry.cleanupWarnings) runtime.writeLine(`Warning: ${warning.message}`);
-  if (registry._tag === "error") throw setupError(registry.error.message);
-};
-
 const startInstallation = async (
   runtime: ServerSetupRuntime,
   installation: ServerInstallation,
@@ -1209,7 +1213,6 @@ const startInstallation = async (
     "--no-build",
   ]);
   await probeHealth(runtime, installation.config.appUrl, installation.config.serverVersion);
-  await verifyRegistry(runtime, installation.config);
   runtime.writeLine(
     `Mend ${installation.config.serverVersion} is reachable at ${installation.config.appUrl}`,
   );
@@ -1253,7 +1256,15 @@ const upgradeServer = async (
   const previous = storeValue(store.readActive());
   if (previous === null) throw setupError("The active server generation is missing.");
   const assets = await resolveAssets(runtime, version, existing, store, options);
-  const config: ServerConfig = { ...existing.config, serverVersion: version };
+  // The target generation is always on the current contract: a v1 install loses its registry
+  // port here (v2 bundles publish none) while its identity, and so its volume ownership, is
+  // carried over byte for byte.
+  const { registryPort: _legacyRegistryPort, ...carried } = existing.config;
+  const config: ServerConfig = {
+    ...carried,
+    assetContract: ASSET_CONTRACT,
+    serverVersion: version,
+  };
   const secrets = parseSecrets(previous.files.identity);
   const files = {
     identity: previous.files.identity,

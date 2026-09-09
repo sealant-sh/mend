@@ -77,15 +77,13 @@ checks pass does setup activate and start Compose. Both online and offline start
 rejection leaves any old active generation and running containers untouched.
 
 The Docker ownership claim integration point is after durable preparation and read-only config
-checks, before image checks that may pull. `server-docker-volumes.ts` owns the claim protocol;
-`server-registry-probe.ts` owns the post-health Engine roundtrip.
+checks, before image checks that may pull. `server-docker-volumes.ts` owns the claim protocol.
 
 An interruption before activation leaves the old active generation intact. On first installation,
 the independently saved identity survives even if no generation was activated. Rerunning uses that
-identity without generating credentials again. Each registry probe still draws a fresh nonce.
-Partial generations and temporary files are retained, never selected implicitly or removed
-automatically. Missing or corrupt identity with existing state is an error, not permission to
-regenerate credentials.
+identity without generating credentials again. Partial generations and temporary files are retained,
+never selected implicitly or removed automatically. Missing or corrupt identity with existing state
+is an error, not permission to regenerate credentials.
 
 An interruption after activation leaves a complete selected generation. Compose or health failure
 also retains it. Retrying `up` uses the same project, volumes, pin, and credentials. There is no
@@ -154,12 +152,8 @@ Use these existing owners rather than duplicating setup internals:
   `Buffer.from(generation.files.identity)` after preparing the complete generation, before any
   Docker mutation other than the claim itself or any Compose deployment command. Read-only
   capability checks and offline image inspection can precede persistence.
-- `server-registry-probe.ts`: after Compose and app health, setup calls
-  `probeServerRegistry(runtime, { dockerContext, registryPort, nonce: runtime.randomBytes(24).toString("hex"), temporaryDirectory: path.resolve(runtime.configDir) })`.
-  Print all `cleanupWarnings` on either result. An `error` blocks the reachable/setup-success
-  message and keeps the installation for retry.
 
-### Lifecycle ownership and registry verification
+### Lifecycle ownership verification
 
 Every lifecycle command calls `verifyServerDockerVolumes` under `withServerStore`, after validating
 its selected installation and reading exact persisted `identity.env` bytes through `ServerStore`.
@@ -167,11 +161,10 @@ Verification precedes lifecycle Compose calls. Missing identity, missing volumes
 labels, and failed inspections are errors. Lifecycle commands never fall back to the claim helper.
 Status and logs perform read-only ownership checks and never allocate Docker resources.
 
-`startInstallation` probes the registry after app health and before reporting success, including
-upgrade startup and old-app recovery before target startup. Every attempt draws a fresh nonce and
-forwards probe deadlines. Both success and failure print cleanup warnings; a failed roundtrip cannot
-produce startup success. A registry failure after target startup retains the target pin, just like a
-startup timeout or health failure.
+`startInstallation` reports success only after exact-version health, including upgrade startup and
+old-app recovery before target startup. There is no post-health Engine roundtrip: workspace images
+live in the host Engine and the bundle publishes no registry. A health failure after target startup
+retains the target pin, just like a startup timeout.
 
 Low-level store file values are private serialized bytes. Upgrade parses and renders its complete
 proposed config/env pair, preserves identity bytes, then uses `prepare` to fsync an immutable target
@@ -198,12 +191,11 @@ mend server upgrade --version latest # explicit GitHub resolution and pull of mi
 ```
 
 Start and restart never download assets or pull release images, with or without `--offline`. They
-require preloaded images with the saved version label, exact-version health, and a registry
-roundtrip using their own tiny imported image. Status and logs hold the same lock but never rewrite
-configuration, change permissions, or start containers. Status reports stopped containers without
-making a health claim. If Mend is running, one bounded health request must match the saved pin.
-Missing installations produce a readable error without creating a configuration directory or running
-setup.
+require preloaded images with the saved version label and exact-version health. Status and logs hold
+the same lock but never rewrite configuration, change permissions, or start containers. Status
+reports stopped containers without making a health claim. If Mend is running, one bounded health
+request must match the saved pin. Missing installations produce a readable error without creating a
+configuration directory or running setup.
 
 Updating the CLI does not change an existing server pin. Setup repairs the same version; a changed
 `--version`, including `latest`, directs the user to upgrade. Upgrades require `--version`; latest
@@ -226,8 +218,7 @@ Upgrade proceeds under the installation lock:
    per-database consistent snapshots while Mend's writers are stopped, not a cross-database snapshot
    in the presence of unrelated writes. PostgreSQL stays running for the dump.
 4. Activate the target only after the backup completes. This is the write-ahead migration boundary.
-   Start it with `--pull never --no-build`, bounded Compose wait, exact-version health, and a
-   successful registry roundtrip.
+   Start it with `--pull never --no-build`, bounded Compose wait, and exact-version health.
 
 If assets, images, generation preparation, or recovery-directory creation fail, the old pin and app
 are untouched. If stop, backup, or activation fails or times out before target startup, reselect the
@@ -256,13 +247,13 @@ volumes, test the completed SQL dump in an isolated compatible PostgreSQL cluste
 application/migration compatibility before directing any application at the restored database. There
 is intentionally no automatic restore or rollback command. The SQL dump includes role credentials
 and both Mend and Sealant databases; do not share it or raw generation files. It is a database
-backup, not a backup of workspace/store, registry or other volumes. Back those up separately.
+backup, not a backup of workspace/store or other volumes. Back those up separately.
 
-Stop/restart/upgrade interrupt web, SSH and registry connections. Mend does not delete or stop
-workspace containers, but active work can lose connectivity and may need reconnection. None of these
-commands deletes volumes, calls `down -v`, or prunes Docker resources. Do not run another Compose
-client or mutate image tags concurrently with Mend; the filesystem lock coordinates Mend commands,
-not arbitrary Docker clients.
+Stop/restart/upgrade interrupt web and SSH connections. Mend does not delete or stop workspace
+containers, but active work can lose connectivity and may need reconnection. None of these commands
+deletes volumes, calls `down -v`, or prunes Docker resources. Do not run another Compose client or
+mutate image tags concurrently with Mend; the filesystem lock coordinates Mend commands, not
+arbitrary Docker clients.
 
 ## Docker and health
 
@@ -277,8 +268,9 @@ Linux Docker Desktop is identified from the selected daemon's `OperatingSystem`,
 `desktop-linux` context also recognised. Desktop and macOS runtimes mount the daemon-side
 `/var/run/docker.sock`, not the host context proxy. Local Linux Engine uses its Unix endpoint.
 Detected sockets are recalculated on reruns. An explicit `--docker-socket` is recorded as an
-override and retained unless the context is replaced or another override is supplied. Docker Desktop
-acceptance depends on an actual Engine registry roundtrip, not an operating-system heuristic.
+override and retained unless the context is replaced or another override is supplied. The mounted
+daemon socket is the only Docker requirement: the application builds and launches workspace images
+through it, so there is no published registry a runtime has to reach.
 
 Before activation, the resolved Compose images must be exactly `ghcr.io/sealant-sh/mend:VERSION` and
 `postgres:17-alpine`. The Mend image must carry `org.opencontainers.image.version` equal to the
@@ -286,9 +278,9 @@ requested pin, even for online setup and even after a pull. A cached wrong label
 silently replaced. Asset text checks alone do not establish what Compose will run.
 
 Success requires a 2xx `/api/health` response containing JSON with `status: "ok"` and `version`
-exactly matching the saved pin, followed by a successful Engine registry roundtrip. Extra health
-fields are allowed. HTML, malformed JSON, missing fields, wrong versions, or registry failure never
-produce a reachable-version claim.
+exactly matching the saved pin. Extra health fields are allowed. HTML, malformed JSON, missing
+fields, or wrong versions never produce a reachable-version claim. The image's own `HEALTHCHECK`
+covers Mend web, the Sealant API, and the SSH gateway port inside the container.
 
 ### Docker data ownership
 
@@ -310,26 +302,16 @@ before Docker mutations. It accepts the release template's explicit declarations
 user-authored YAML. Compose owns the remaining volumes as before. Labels establish identity
 continuity, not a mutex or protection against an administrator editing Docker state.
 
-### Registry roundtrip and cleanup
-
-The probe imports a tiny nonce-labelled image, pushes to
-`127.0.0.1:REGISTRY_PORT/mend-registry-probe/NONCE:probe`, removes the local tag, pulls it back, and
-checks both the image ID and nonce label. No build tool or external base image is needed. Each
-command has a 60-second budget; cleanup commands have 15 seconds. The tar is mode `0600` inside a
-private `0700` temporary child of `configDir`. The helper removes that child on success and failure.
-Local tag cleanup verifies ownership first and never uses force, prune, or image-ID deletion.
-Cleanup warnings do not hide the primary failure. The tiny remote manifest remains because bundle
-manifest deletion is disabled; the probe never changes registry configuration or widens its binding.
-
-The guard modules own Docker protocol parsing and resource cleanup rather than putting those
-mechanics into setup or duplicating them in lifecycle commands. Existing setup's exception handling
-remains confined to its command/store boundary; the new helpers expose expected failures as values.
-Error fields use explicit declarations so the existing Node strip-only child tests can import them.
+`server-docker-volumes.ts` owns Docker protocol parsing and resource cleanup rather than putting
+those mechanics into setup or duplicating them in lifecycle commands. Existing setup's exception
+handling remains confined to its command/store boundary; the helpers expose expected failures as
+values. Error fields use explicit declarations so the existing Node strip-only child tests can
+import them.
 
 ## Reproduce the checks
 
 ```sh
-pnpm --filter @sealant/mend exec vitest run src/server-setup.test.ts src/server-store.test.ts src/server-runtime.test.ts src/server-docker-volumes.test.ts src/server-registry-probe.test.ts
+pnpm --filter @sealant/mend exec vitest run src/server-setup.test.ts src/server-store.test.ts src/server-runtime.test.ts src/server-docker-volumes.test.ts
 pnpm --filter @sealant/mend exec vitest run --testTimeout=15000
 # Opt-in real Engine checks use unique test names, never the standard Mend resources:
 MEND_DOCKER_TEST_CONTEXT=default pnpm --filter @sealant/mend exec vitest run src/server-docker-protocol.test.ts
@@ -353,47 +335,45 @@ daemon or containers, and are explicitly skipped if the plugin is absent.
 
 Public `serverCommand` tests share `test-fixtures/docker-protocol.ts`, a stateful Engine protocol
 fixture with immutable named-volume labels and distinct local/remote image tags. They check
-persist-before-mutation ordering, cross-config identity rejection, same-identity retries,
-corruption, private probe files, fresh nonces, registry failures, and cleanup warnings without
-mocking modules. The separate opt-in Docker tests check atomic claims, competing identities, and a
-real loopback registry roundtrip. The separate official-Postgres test mounts the store-generated
-init file read-only, uses a uniquely named and labelled container with tmpfs data and no published
-ports, and checks password-authenticated connections and ownership for both databases and roles. It
-creates the container before starting it, verifies its ownership label, and cleans up only the
-acquired container ID. It never uses canonical Mend resources or removes the cached image. Store
-regressions also cover a `077` umask and same-content retries with incompatible init modes. The full
-CLI suite needs a 15-second test budget for existing login polling.
+persist-before-mutation ordering, cross-config identity rejection, same-identity retries, and
+corruption without mocking modules. The separate opt-in Docker tests check atomic claims and
+competing identities. The separate official-Postgres test mounts the store-generated init file
+read-only, uses a uniquely named and labelled container with tmpfs data and no published ports, and
+checks password-authenticated connections and ownership for both databases and roles. It creates the
+container before starting it, verifies its ownership label, and cleans up only the acquired
+container ID. It never uses canonical Mend resources or removes the cached image. Store regressions
+also cover a `077` umask and same-content retries with incompatible init modes. The full CLI suite
+needs a 15-second test budget for existing login polling.
 
 `test-fixtures/docker` copies the Compose and ownership contract from
 `../Mend-packaging/deploy/docker` at `91e1cf6`; Postgres init is unchanged from `1c2018b`. These are
 test inputs, not shipped CLI assets. Setup downloads the two assets from the selected GitHub release
-unless `--assets-dir DIR` supplies `compose.v1.yaml` and `postgres-init.sh`. Supplied files pass the
+unless `--assets-dir DIR` supplies `compose.v2.yaml` and `postgres-init.sh`. Supplied files pass the
 same contract checks and are copied into the private generation. The source directory is not
 retained or needed on reruns. Fresh setup with local assets requires an explicit `--version`.
 
 Lifecycle tests invoke public `serverCommand` with the production process runtime, a separate local
 Docker protocol fixture executable, real HTTP listeners and real files. They check order, exact
-pins/generations, failure recovery, ownership under lock, read-only status/logs, fresh registry
-probes, backup permissions and no rollback after target startup. A real stalled dump with an
-inherited-pipe descendant must terminate before old-app recovery and lock release. A real target
-startup timeout must retain the target. Runtime tests stream a 16 MiB dump directly to disk and
-exercise exclusive creation, partial failure and bounded capture. These are deterministic protocol
-tests, not a claim of live image/migration acceptance. That acceptance uses two genuinely stamped
-canonical candidate images and the public CLI flags above; changing a health response to an invented
-version is not an upgrade test.
+pins/generations, failure recovery, ownership under lock, read-only status/logs, backup permissions
+and no rollback after target startup. A real stalled dump with an inherited-pipe descendant must
+terminate before old-app recovery and lock release. A real target startup timeout must retain the
+target. Runtime tests stream a 16 MiB dump directly to disk and exercise exclusive creation, partial
+failure and bounded capture. These are deterministic protocol tests, not a claim of live
+image/migration acceptance. That acceptance uses two genuinely stamped canonical candidate images
+and the public CLI flags above; changing a health response to an invented version is not an upgrade
+test.
 
 `--offline` forbids GitHub requests and runs Compose with `--pull never --no-build`. Preload both
 `postgres:17-alpine` and `ghcr.io/sealant-sh/mend:VERSION` in the selected daemon. The Mend image's
 `org.opencontainers.image.version` label and the health response must equal the exact pin. Local
-health and Engine loopback registry probes still run. Offline setup never pulls release images, but
-does push/remove/pull its own tiny local registry probe. This flag controls installation network
+health checks still run; offline setup pulls nothing at all. This flag controls installation network
 access, not the running server's workspace/provider traffic.
 
-`--registry-port` persists the loopback registry port, default `5000`. App, SSH and registry ports
-must be valid and distinct. For a host already running Sealant's registry, choose a free port:
+`--port` persists the web port, default `3105`, and `--ssh-port` the SSH gateway port, default
+`2222`. Both must be valid and distinct. The bundle publishes no other host port:
 
 ```sh
-mend server setup --version 0.23.0 --assets-dir ./release-assets --offline --registry-port 5501
+mend server setup --version 0.24.0 --assets-dir ./release-assets --offline --port 3205 --ssh-port 2322
 mend server setup --offline
 ```
 

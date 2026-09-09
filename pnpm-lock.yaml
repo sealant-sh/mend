@@ -244,6 +244,9 @@ importers:
       '@mend/typescript':
         specifier: workspace:*
         version: link:../../tooling/typescript
+      esbuild:
+        specifier: 'catalog:'
+        version: 0.28.1
       tsx:
         specifier: 'catalog:'
         version: 4.23.12
