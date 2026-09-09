@@ -1,5 +1,14 @@
 # @sealant/mend
 
+## 0.24.2
+
+### Patch Changes
+
+- 8780acb: The dashboard no longer bounces on Enter while a session's workspace is still booting. A
+  `starting` row has no terminal to attach yet, so Enter now leaves the dashboard up and says so,
+  instead of suspending the screen once per keystroke and returning. A worktree header attaches its
+  newest live member that is past starting.
+
 ## 0.24.1
 
 ### Patch Changes
