@@ -8,22 +8,18 @@ FROM ghcr.io/sealant-sh/sealant-api:0.29.0 AS sealant-api
 FROM ghcr.io/sealant-sh/sealant-worker:0.29.0 AS sealant-worker
 FROM ghcr.io/sealant-sh/sealant-ssh-gateway:0.29.0 AS sealant-ssh-gateway
 
+# Mend's API server and web front are esbuild-bundled here (tooling/scripts/bundle-app.mjs and
+# apps/web/scripts/build-server.mjs), so the runtime ships two self-contained files plus the
+# nitro output: no node_modules, no workspace layout, no type stripping. Bundling is also what
+# keeps memory down: Node keeps every loaded module's source resident and evaluates everything a
+# barrel re-exports, so an unbundled server pays for code it never calls.
 FROM node:26-bookworm-slim AS mend-build
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH COREPACK_ENABLE_DOWNLOAD_PROMPT=0
 RUN npm install --global corepack && corepack enable
 WORKDIR /app
 COPY . .
 RUN pnpm install --frozen-lockfile
-RUN pnpm --filter @mend/web build
-
-FROM node:26-bookworm-slim AS mend-production-dependencies
-ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH COREPACK_ENABLE_DOWNLOAD_PROMPT=0
-RUN npm install --global corepack && corepack enable
-WORKDIR /app
-COPY . .
-RUN pnpm install --frozen-lockfile --prod \
-  --filter "@mend/api-server..." \
-  --filter "@mend/web..."
+RUN pnpm --filter @mend/api-server build && pnpm --filter @mend/web build
 
 # The runtime is the same slim Node image the build stages use. Sealant's published bundles
 # support this newer Node too.
@@ -45,12 +41,7 @@ COPY --from=sealant-worker /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=sealant-worker /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
 
 WORKDIR /app
-COPY --from=mend-production-dependencies /app/node_modules ./node_modules
-COPY --from=mend-production-dependencies /app/package.json /app/pnpm-workspace.yaml ./
-COPY --from=mend-production-dependencies /app/packages ./packages
-COPY --from=mend-production-dependencies /app/tooling ./tooling
-COPY --from=mend-production-dependencies /app/apps/api ./apps/api
-COPY --from=mend-production-dependencies /app/apps/web ./apps/web
+COPY --from=mend-build /app/apps/api/dist ./apps/api/dist
 COPY --from=mend-build /app/apps/web/.output ./apps/web/.output
 COPY scripts/process-supervisor.mjs scripts/process-supervisor.mjs
 COPY scripts/bundle-supervisor.mjs scripts/bundle-supervisor.mjs

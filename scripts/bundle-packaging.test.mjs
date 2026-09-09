@@ -110,6 +110,13 @@ test("the bundle pins published Sealant 0.29.0 artifacts and its official migrat
   assert.match(dockerfile, /sealant-ssh-gateway:0\.29\.0/);
   assert.doesNotMatch(dockerfile, /FROM rabbitmq|zot-minimal|\/opt\/zot|rabbitmq-server/i);
   assert.doesNotMatch(supervisor, /RABBITMQ_URL|REGISTRY_/);
+  // Both Mend processes run from bundles; the runtime image carries no workspace or node_modules.
+  assert.match(supervisor, /\/app\/apps\/api\/dist\/main\.js/);
+  assert.match(supervisor, /\/app\/apps\/web\/\.output\/front\.mjs/);
+  assert.doesNotMatch(
+    dockerfile,
+    /src\/main\.ts|mend-production-dependencies|\/app\/node_modules \.\/node_modules/,
+  );
   assert.match(supervisor, /\/opt\/sealant\/api\/dist\/migrate\.js/);
   assert.match(supervisor, /DRIZZLE_MIGRATIONS_DIR: "\/opt\/sealant\/api\/drizzle"/);
   assert.doesNotMatch(dockerfile, /Core-volume-mounts|COPY .*Core/);

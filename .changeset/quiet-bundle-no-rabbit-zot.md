@@ -10,3 +10,7 @@ Idle memory drops accordingly. The bundle asset contract moves to v2 (`compose.v
 `mend server setup`, and setup, start, restart and upgrade no longer run the loopback registry
 round-trip. Existing v1 installations upgrade in place with
 `mend server upgrade --version <target>`; their volume-ownership identity is carried over unchanged.
+
+The Mend API server and web front now run from esbuild bundles inside the images (no `node_modules`,
+no type stripping at start), which also drops code the server never calls, such as the OpenAPI
+viewers Effect re-exports.

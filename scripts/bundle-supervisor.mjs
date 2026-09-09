@@ -158,7 +158,7 @@ const startBundle = async (supervisor) => {
     }),
   );
   await supervisor.start(
-    baseSpecification("mend-api", ["node", "/app/apps/api/src/main.ts"], {
+    baseSpecification("mend-api", ["node", "/app/apps/api/dist/main.js"], {
       PORT: "3101",
       MEND_WEB_PORT: "3105",
       MEND_MODE: "all",
@@ -172,7 +172,7 @@ const startBundle = async (supervisor) => {
   );
   await supervisor.waitFor("Mend API", () => httpResponds("http://127.0.0.1:3101/api/health"));
   await supervisor.start(
-    baseSpecification("mend-web", ["node", "/app/apps/web/src/entry/main.ts"], {
+    baseSpecification("mend-web", ["node", "/app/apps/web/.output/front.mjs"], {
       PORT: "3105",
       MEND_API_URL: "http://127.0.0.1:3101",
     }),
