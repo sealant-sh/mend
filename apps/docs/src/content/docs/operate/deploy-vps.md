@@ -24,8 +24,8 @@ SSH stay on localhost. Binding `0.0.0.0` opens every IPv4 interface; setup does 
 firewall. Sign-up is open to anyone who can reach Mend, so keep those ports private. Plain HTTP on
 an untrusted network does not protect credentials.
 
-The workspace registry stays loopback-only and Postgres publishes no host port. Do not widen the
-registry binding to work around a Docker runtime that fails its push/pull check.
+Postgres publishes no host port and no image registry is published. Workspace images are built and
+launched in the host Docker Engine through the mounted daemon socket.
 
 On your laptop, install only the CLI:
 

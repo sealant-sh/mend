@@ -27,9 +27,9 @@ through the platform's SDK.
 On the single-host tiers `mend server setup` ships Sealant inside the Mend application image and you
 can ignore it. On Kubernetes you install it yourself, **before Mend**, because Mend refuses to run
 without a platform to talk to. Sealant's chart brings its own control plane — an API, a worker (the
-component that creates workspace Pods), Postgres, RabbitMQ, an image registry, an SSH gateway — plus
-the namespace workspace Pods run in, the certificate authority that secures their control channels,
-and the narrow RBAC the worker needs.
+component that creates workspace Pods), Postgres, an image registry, an SSH gateway — plus the
+namespace workspace Pods run in, the certificate authority that secures their control channels, and
+the narrow RBAC the worker needs.
 
 ## What you need
 
@@ -51,7 +51,6 @@ authenticate to Sealant — generate it here and reuse the same value in Mend's 
 kubectl create namespace sealant
 kubectl -n sealant create secret generic sealant-secrets \
   --from-literal=SEALANT_DB_PASSWORD="$(openssl rand -hex 32)" \
-  --from-literal=SEALANT_RABBITMQ_PASSWORD="$(openssl rand -hex 32)" \
   --from-literal=WORKSPACE_SSH_GATEWAY_TOKEN="$(openssl rand -hex 32)" \
   --from-literal=BETTER_AUTH_SECRET="$(openssl rand -hex 32)" \
   --from-literal=SEALANT_CREDENTIALS_KEY="$(openssl rand -base64 32)" \
@@ -72,7 +71,7 @@ name:
 
 ```sh
 kubectl -n sealant get pods
-# sealant-api, sealant-worker, sealant-web, sealant-postgres, sealant-rabbitmq, sealant-registry …
+# sealant-api, sealant-worker, sealant-web, sealant-postgres, sealant-registry …
 echo http://sealant-api.sealant.svc:4000
 ```
 

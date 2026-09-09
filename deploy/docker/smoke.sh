@@ -9,7 +9,6 @@ SCRIPT_DIR=$(
 TOKEN="mend-bundle-smoke-$(node -p 'crypto.randomUUID()')"
 PROJECT=$(printf '%s' "$TOKEN" | tr -c 'a-z0-9_-' '-')
 ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/$PROJECT.env.XXXXXX")
-PROBE_DIR=$(mktemp -d "${TMPDIR:-/tmp}/$PROJECT.registry.XXXXXX")
 STORE_VOLUME="$PROJECT-store"
 CONTROL_VOLUME="$PROJECT-control"
 IMAGE_REPOSITORY=${MEND_SMOKE_IMAGE_REPOSITORY:-mend-bundle-packaging}
@@ -25,8 +24,6 @@ free_port() {
 
 WEB_PORT=$(free_port)
 SSH_PORT=$(free_port)
-REGISTRY_PORT=$(free_port)
-PROBE_IMAGE="127.0.0.1:$REGISTRY_PORT/mend-smoke/$PROJECT:probe"
 
 cat >"$ENV_FILE" <<EOF
 MEND_IMAGE_REPOSITORY=$IMAGE_REPOSITORY
@@ -36,12 +33,10 @@ MEND_ALLOWED_ORIGINS=[]
 MEND_BIND_HOST=127.0.0.1
 MEND_PORT=$WEB_PORT
 MEND_SSH_PORT=$SSH_PORT
-MEND_REGISTRY_PORT=$REGISTRY_PORT
 SEALANT_SSH_HOST=localhost
 MEND_POSTGRES_ADMIN_PASSWORD=$(secret_hex)
 MEND_DB_PASSWORD=$(secret_hex)
 SEALANT_DB_PASSWORD=$(secret_hex)
-MEND_RABBITMQ_PASSWORD=$(secret_hex)
 BETTER_AUTH_SECRET=$(secret_hex)
 WORKSPACE_SSH_GATEWAY_TOKEN=$(secret_hex)
 SEALANT_SERVICE_KEY=slt_svc_$(secret_hex)
@@ -53,7 +48,7 @@ chmod 600 "$ENV_FILE"
 
 compose() {
   docker compose --project-name "$PROJECT" --project-directory "$SCRIPT_DIR" \
-    --env-file "$ENV_FILE" -f "$SCRIPT_DIR/compose.v1.yaml" "$@"
+    --env-file "$ENV_FILE" -f "$SCRIPT_DIR/compose.v2.yaml" "$@"
 }
 
 cleanup() {
@@ -65,8 +60,6 @@ cleanup() {
   fi
   compose down --volumes --remove-orphans >/dev/null 2>&1 || true
   docker volume rm "$STORE_VOLUME" "$CONTROL_VOLUME" >/dev/null 2>&1 || true
-  docker image rm --force "$PROBE_IMAGE" >/dev/null 2>&1 || true
-  rm -rf "$PROBE_DIR"
   rm -f "$ENV_FILE"
   exit "$status"
 }
@@ -96,14 +89,10 @@ node --input-type=module -e '
     throw Error("Health must identify the running image version");
   }
 '
-node -e "fetch('http://127.0.0.1:$REGISTRY_PORT/v2/').then(r=>{if(!r.ok)throw Error(String(r.status))})"
-printf 'registry probe\n' >"$PROBE_DIR/evidence"
-tar -C "$PROBE_DIR" -cf - evidence | docker import - "$PROBE_IMAGE" >/dev/null
-docker push "$PROBE_IMAGE" >/dev/null
-docker image rm "$PROBE_IMAGE" >/dev/null
-docker pull "$PROBE_IMAGE" >/dev/null
-docker image inspect "$PROBE_IMAGE" >/dev/null
-docker image rm "$PROBE_IMAGE" >/dev/null
+# No registry: the only published ports are web and SSH.
+[ "$(docker port "$(compose ps --quiet mend)" | wc -l | tr -d ' ')" = 2 ]
+# Sealant answers through Mend's process tree.
+compose exec --no-TTY mend node -e "fetch('http://127.0.0.1:4000/healthz').then(r=>{if(!r.ok)throw Error(String(r.status))})"
 
 compose exec --no-TTY postgres psql --username postgres --dbname postgres --tuples-only --no-align \
   --command "SELECT datname FROM pg_database WHERE datname IN ('mend','sealant_control_plane') ORDER BY datname" |
@@ -123,7 +112,7 @@ host_key_after=$(compose exec --no-TTY mend sha256sum /var/lib/mend/ssh/ssh_gate
 # A supporting-process exit must fail the bundle so Docker restarts every process as one unit.
 container=$(compose ps --quiet mend)
 restart_count=$(docker inspect --format '{{.RestartCount}}' "$container")
-compose exec --no-TTY mend sh -c 'pid=$(pgrep -f "^/usr/local/bin/zot "); test -n "$pid"; kill "$pid"'
+compose exec --no-TTY mend sh -c 'pid=$(pgrep -f "^node /opt/sealant/ssh-gateway/dist/index.js"); test -n "$pid"; kill "$pid"'
 i=0
 while :; do
   current_count=$(docker inspect --format '{{.RestartCount}}' "$container")
@@ -131,12 +120,11 @@ while :; do
   [ "$current_count" -gt "$restart_count" ] && [ "$health" = healthy ] && break
   i=$((i + 1))
   [ "$i" -lt 120 ] || {
-    printf 'bundle did not recover after the registry child exited\n' >&2
+    printf 'bundle did not recover after the SSH gateway child exited\n' >&2
     exit 1
   }
   sleep 1
 done
 compose exec --no-TTY mend grep -Fx smoke /var/lib/mend/store/.bundle-smoke >/dev/null
 
-printf 'bundle smoke passed: %s (web %s, ssh %s, registry %s)\n' \
-  "$PROJECT" "$WEB_PORT" "$SSH_PORT" "$REGISTRY_PORT"
+printf 'bundle smoke passed: %s (web %s, ssh %s)\n' "$PROJECT" "$WEB_PORT" "$SSH_PORT"

@@ -77,7 +77,7 @@ describe.skipIf(context === undefined)("real official Postgres bootstrap", () =>
           config: "{}\n",
           env: `POSTGRES_USER=postgres\nPOSTGRES_PASSWORD=${adminPassword}\nPOSTGRES_HOST_AUTH_METHOD=scram-sha-256\nMEND_DB_PASSWORD=${mendPassword}\nSEALANT_DB_PASSWORD=${sealantPassword}\n`,
           compose: fs.readFileSync(
-            new URL("../test-fixtures/docker/compose.v1.yaml", import.meta.url),
+            new URL("../test-fixtures/docker/compose.v2.yaml", import.meta.url),
             "utf8",
           ),
           postgresInit: fs.readFileSync(

@@ -1,10 +1,12 @@
 # Mend bundle: one Mend container plus one official Postgres container at runtime.
-# Sealant stays a published platform dependency. These stages copy the released 0.28.0 artifacts;
-# this build never imports Core source or its database schema.
-FROM ghcr.io/sealant-sh/sealant-api@sha256:8b171e4c7818cb634208d6253799565a69f0fec4be35f4578cc4be6c9b6eba51 AS sealant-api
-FROM ghcr.io/sealant-sh/sealant-worker@sha256:e66005128fd32c19e6cea46189ce00e0edeb258221104bf77d6e1aa2e48dfc41 AS sealant-worker
-FROM ghcr.io/sealant-sh/sealant-ssh-gateway@sha256:5c408d44c5b6e671a9540557e9d1da826d316b2b15c18547fbb0b47581438638 AS sealant-ssh-gateway
-FROM ghcr.io/project-zot/zot-minimal@sha256:346cefc8dd90c6ffe1e714460ba4bb5f867eacae9b40ca87da3c2e7e034ad31a AS zot
+# Sealant stays a published platform dependency. These stages copy the released 0.29.0 artifacts;
+# this build never imports Core source or its database schema. Sealant 0.29.0 runs its job queue
+# in Postgres and keeps workspace images in the host Docker Engine, so the bundle carries no
+# RabbitMQ and no registry.
+# TODO(release): re-pin these three references by digest once Sealant 0.29.0 is published.
+FROM ghcr.io/sealant-sh/sealant-api:0.29.0 AS sealant-api
+FROM ghcr.io/sealant-sh/sealant-worker:0.29.0 AS sealant-worker
+FROM ghcr.io/sealant-sh/sealant-ssh-gateway:0.29.0 AS sealant-ssh-gateway
 
 FROM node:26-bookworm-slim AS mend-build
 ENV PNPM_HOME=/pnpm PATH=/pnpm:$PATH COREPACK_ENABLE_DOWNLOAD_PROMPT=0
@@ -23,23 +25,21 @@ RUN pnpm install --frozen-lockfile --prod \
   --filter "@mend/api-server..." \
   --filter "@mend/web..."
 
-# RabbitMQ is a supporting process in the Mend image, not an idle Compose service. Its official
-# Ubuntu image supplies Erlang, rabbitmq-server, gosu, and the maintained container entrypoint.
-FROM rabbitmq:4.2.9-management@sha256:e70db4e9198f2e49c42a9857452436a0eb610da85875fd74a51487b648c64976 AS runtime
+# The runtime is the same slim Node image the build stages use. Sealant's published bundles
+# support this newer Node too.
+FROM node:26-bookworm-slim AS runtime
 
 ARG MEND_VERSION=dev
 LABEL org.opencontainers.image.title="Mend bundle" \
   org.opencontainers.image.version="${MEND_VERSION}" \
-  dev.sealant.mend.sealant-version="0.28.0"
+  dev.sealant.mend.sealant-version="0.29.0"
 
 # Required by Sealant's root-owned control sockets and the host Docker socket contract.
 USER root
 RUN apt-get update \
-  && apt-get install -y --no-install-recommends ca-certificates git gh libatomic1 openssh-client \
+  && apt-get install -y --no-install-recommends ca-certificates git gh libatomic1 openssh-client procps \
   && rm -rf /var/lib/apt/lists/*
 
-# Node comes from Mend's build image. Sealant's published bundles support this newer runtime too.
-COPY --from=mend-build /usr/local/bin/node /usr/local/bin/node
 # The released worker carries the Docker 27 CLI and matching buildx plugin it was tested with.
 COPY --from=sealant-worker /usr/local/bin/docker /usr/local/bin/docker
 COPY --from=sealant-worker /usr/local/libexec/docker/cli-plugins/docker-buildx /usr/local/libexec/docker/cli-plugins/docker-buildx
@@ -63,12 +63,7 @@ COPY --from=sealant-worker /app/dist /opt/sealant/worker/dist
 COPY --from=sealant-worker /app/node_modules /opt/sealant/worker/node_modules
 COPY --from=sealant-ssh-gateway /app/dist /opt/sealant/ssh-gateway/dist
 COPY --from=sealant-ssh-gateway /app/node_modules /opt/sealant/ssh-gateway/node_modules
-COPY --from=zot /usr/local/bin/ /opt/zot/
-COPY deploy/docker/zot-config.json /etc/zot/config.json
-RUN zot_binary="$(find /opt/zot -maxdepth 1 -type f -name 'zot-linux-*-minimal' -print -quit)" \
-  && test -n "$zot_binary" \
-  && ln -s "$zot_binary" /usr/local/bin/zot \
-  && mkdir -p /var/lib/mend/store /var/lib/mend/config /var/lib/mend/ssh /var/lib/registry /run/sealant/sockets /run/mend-bundle
+RUN mkdir -p /var/lib/mend/store /var/lib/mend/config /var/lib/mend/ssh /run/sealant/sockets /run/mend-bundle
 
 ENV NODE_ENV=production \
   MEND_VERSION=${MEND_VERSION} \
@@ -79,7 +74,7 @@ ENV NODE_ENV=production \
   SEALANT_MOUNT_ALLOWED_STORE_ROOTS=/var/lib/mend/store \
   SEALANT_DOCKER_VOLUME_MAPPINGS='[{"logicalRoot":"/var/lib/mend/store","volumeName":"mend-store"},{"logicalRoot":"/run/sealant/sockets","volumeName":"mend-control"}]'
 
-EXPOSE 3105 2222 5000
+EXPOSE 3105 2222
 STOPSIGNAL SIGTERM
 HEALTHCHECK --interval=15s --timeout=8s --start-period=90s --retries=4 \
   CMD ["node", "/app/scripts/bundle-health.mjs"]

@@ -42,9 +42,9 @@ test("asset verification uses anonymous exact-version downloads and byte compari
   assert.match(verification, /cmp "\$source" "\$downloads\/\$asset"/);
   assert.doesNotMatch(verification, /GH_TOKEN|Authorization/);
   for (const asset of [
-    "compose.v1.yaml",
+    "compose.v2.yaml",
     "postgres-init.sh",
-    "setup-contract.v1.json",
+    "setup-contract.v2.json",
     "install.sh",
   ]) {
     assert.ok(verification.includes(asset), `Verify required asset ${asset}`);

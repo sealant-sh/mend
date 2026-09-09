@@ -21,8 +21,11 @@ At idle, `docker ps` shows two product containers:
 - Postgres: the official Postgres image, with separate Mend and Sealant databases and users.
 
 Session workspace containers may appear while workspaces exist. Mend images contain no Postgres
-server. RabbitMQ and the registry remain inside the Mend application container until the platform
-removes those dependencies. Their removal is not a prerequisite for this packaging work.
+server.
+
+Superseded 2026-09-09: this section originally kept RabbitMQ and a workspace registry inside the
+Mend application container. Sealant 0.29.0 removed both — its job queue is pg-boss in Postgres and
+workspace images live in the host Docker Engine — so the bundle ships neither.
 
 Users choose a Mend version. That release pins its Sealant dependency internally. Setup creates the
 volumes and supplies Sealant's storage mappings automatically; users do not edit environment

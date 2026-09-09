@@ -105,7 +105,7 @@ jobs:
           VERSION="${VERSION#v}"
           flags=()
           if [[ "$VERSION" == *-* ]]; then flags+=(--prerelease); fi
-          assets=(deploy/docker/compose.v1.yaml deploy/docker/postgres-init.sh deploy/docker/setup-contract.v1.json install.sh)
+          assets=(deploy/docker/compose.v2.yaml deploy/docker/postgres-init.sh deploy/docker/setup-contract.v2.json install.sh)
           if gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             # Retry partial uploads without replacing an already published asset.
             existing="$(gh release view "$GITHUB_REF_NAME" --json assets --jq '.assets[].name')"
@@ -126,7 +126,7 @@ jobs:
           set -euo pipefail
           downloads="$(mktemp -d)"
           trap 'rm -rf "$downloads"' EXIT
-          for source in deploy/docker/compose.v1.yaml deploy/docker/postgres-init.sh deploy/docker/setup-contract.v1.json install.sh; do
+          for source in deploy/docker/compose.v2.yaml deploy/docker/postgres-init.sh deploy/docker/setup-contract.v2.json install.sh; do
             asset="${source##*/}"
             curl -q --fail --location --retry 6 --retry-all-errors --retry-delay 5 \
               --connect-timeout 10 --max-time 60 \

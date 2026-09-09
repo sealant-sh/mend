@@ -10,7 +10,7 @@ import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
 import { serverCommand, type ServerSetupRuntime } from "./server-setup.ts";
 
 const composeAsset = fs.readFileSync(
-  new URL("../test-fixtures/docker/compose.v1.yaml", import.meta.url),
+  new URL("../test-fixtures/docker/compose.v2.yaml", import.meta.url),
   "utf8",
 );
 const postgresAsset = fs.readFileSync(
@@ -154,7 +154,7 @@ const makeRuntime = (
           body: options.healthBody ?? JSON.stringify({ status: "ok", version: "0.23.0" }),
         };
       }
-      if (url.endsWith("/compose.v1.yaml")) {
+      if (url.endsWith("/compose.v2.yaml")) {
         return options.assetFailure === "compose"
           ? { status: 0, body: "", error: "connection interrupted" }
           : { status: 200, body: options.composeAsset ?? composeAsset };
@@ -252,38 +252,22 @@ describe("mend server setup", () => {
         return control.runtime.fetchText(url, timeout);
       },
     };
-    expect(await serverCommand(["setup", "--registry-port", "5501"], runtime)).toEqual({
-      _tag: "ok",
-    });
+    expect(await serverCommand(["setup"], runtime)).toEqual({ _tag: "ok" });
     const identity = fs.readFileSync(path.join(configDir, "identity.env"));
     const generation = activeDirectory(configDir);
     const env = fs.readFileSync(path.join(generation, "server.env"));
-    expect(events).toEqual([
-      "create",
-      "create",
-      "compose",
-      "health",
-      "import",
-      "push",
-      "rm",
-      "pull",
-      "rm",
-    ]);
+    expect(events).toEqual(["create", "create", "compose", "health"]);
     events.length = 0;
     expect(await serverCommand(["setup"], runtime)).toEqual({ _tag: "ok" });
-    expect(events).toEqual(["compose", "health", "import", "push", "rm", "pull", "rm"]);
+    expect(events).toEqual(["compose", "health"]);
     expect(fs.readFileSync(path.join(configDir, "identity.env"))).toEqual(identity);
     expect(fs.readFileSync(path.join(generation, "server.env"))).toEqual(env);
     expect(activeDirectory(configDir)).toBe(generation);
-    expect(control.randomSizes).toEqual([256, 24, 24]);
-    expect(control.daemon.remote.size).toBe(2);
+    // Credentials are generated exactly once; nothing else draws randomness (no registry probe).
+    expect(control.randomSizes).toEqual([256]);
+    expect(control.daemon.remote.size).toBe(0);
     expect(control.daemon.local.size).toBe(0);
-    for (const { file } of control.daemon.archives) {
-      expect(path.dirname(path.dirname(file))).toBe(configDir);
-      expect(fs.existsSync(path.dirname(file))).toBe(false);
-    }
-    for (const ref of control.daemon.remote.keys())
-      expect(ref).toMatch(/^127\.0\.0\.1:5501\/mend-registry-probe\/[a-f0-9]{48}:probe$/);
+    expect(control.daemon.archives).toEqual([]);
   });
 
   it("setup completes beside mend-dev and leaves its resources unchanged", async () => {
@@ -388,7 +372,7 @@ describe("mend server setup", () => {
   it("matches the packaging ownership contract", () => {
     const contract: unknown = JSON.parse(
       fs.readFileSync(
-        new URL("../test-fixtures/docker/setup-contract.v1.json", import.meta.url),
+        new URL("../test-fixtures/docker/setup-contract.v2.json", import.meta.url),
         "utf8",
       ),
     );
@@ -458,96 +442,17 @@ describe("mend server setup", () => {
     const generation = path.join(control.runtime.configDir, "generations", preparedName);
     control.daemon.response = () => undefined;
     expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
-    expect(control.randomSizes).toEqual([256, 24]);
+    expect(control.randomSizes).toEqual([256]);
     expect(fs.readFileSync(path.join(control.runtime.configDir, "identity.env"))).toEqual(identity);
     expect(activeDirectory(control.runtime.configDir)).not.toBe(generation);
     expect(fs.readFileSync(path.join(generation, "identity.env"))).toEqual(identity);
   });
 
-  it.each(["push", "pull"])(
-    "registry %s failure never reports setup success and remains retryable with original credentials",
-    async (operation) => {
-      const control = makeRuntime();
-      control.daemon.response = (args, timeout) =>
-        args[3] === operation || (timeout === 15_000 && args[3] === "rm")
-          ? {
-              status: 1,
-              stdout: "",
-              stderr: timeout === 15_000 ? "cleanup image busy" : "Engine loopback unreachable",
-            }
-          : undefined;
-      const result = await serverCommand(["setup"], control.runtime);
-      expect(result).toMatchObject({
-        _tag: "error",
-        message: expect.stringContaining(`Docker registry probe failed (${operation})`),
-      });
-      expect(result).toMatchObject({
-        message: expect.stringContaining("Do not widen the registry binding"),
-      });
-      expect(
-        control.lines.some((line) => line.includes("is reachable") || line.includes("mend login")),
-      ).toBe(false);
-      if (operation === "push")
-        expect(
-          control.lines.some(
-            (line) => line.startsWith("Warning:") && line.includes("cleanup image busy"),
-          ),
-        ).toBe(true);
-      const identity = fs.readFileSync(path.join(control.runtime.configDir, "identity.env"));
-      const generation = activeDirectory(control.runtime.configDir);
-      control.daemon.response = () => undefined;
-      expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
-      expect(fs.readFileSync(path.join(control.runtime.configDir, "identity.env"))).toEqual(
-        identity,
-      );
-      expect(activeDirectory(control.runtime.configDir)).toBe(generation);
-      expect(control.randomSizes).toEqual([256, 24, 24]);
-    },
-  );
-
-  it("prints cleanup warnings even when the registry roundtrip succeeds", async () => {
-    const control = makeRuntime();
-    control.daemon.response = (args, timeout) =>
-      timeout === 15_000 && args[3] === "rm"
-        ? { status: 1, stdout: "", stderr: "cleanup image busy" }
-        : undefined;
-    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
-    expect(
-      control.lines.some(
-        (line) => line.startsWith("Warning:") && line.includes("cleanup image busy"),
-      ),
-    ).toBe(true);
-    expect(control.daemon.remote.size).toBe(1);
-  });
-
-  it.each([
-    composeAsset.replaceAll("    external: true\n", ""),
-    composeAsset.replace("external: true", "external: false"),
-    composeAsset.replaceAll("${MEND_STORE_VOLUME_NAME:-mend-store}", "unclaimed-store"),
-    composeAsset.replaceAll("${MEND_CONTROL_VOLUME_NAME:-mend-control}", "unclaimed-control"),
-    composeAsset.replace("  mend-store:\n", "  mend-store:\n    labels:\n      external: true\n"),
-    composeAsset.replace("  mend-store:\n", "  mend-store: &other\n"),
-    `${composeAsset}\nvolumes: {}\n`,
-    `${composeAsset}\n  mend-store:\n    external: false\n`,
-  ])(
-    "rejects assets without the external volume contract before persistence or claim",
-    async (asset) => {
-      const control = makeRuntime({ composeAsset: asset });
-      expect(await serverCommand(["setup"], control.runtime)).toMatchObject({
-        _tag: "error",
-        message: expect.stringContaining("external: true"),
-      });
-      expect(control.randomSizes).toEqual([]);
-      expect(control.daemon.calls).toEqual([]);
-      expect(fs.existsSync(path.join(control.runtime.configDir, "active"))).toBe(false);
-    },
-  );
-
   it("checks the same external volume contract on locally supplied assets", async () => {
     const assets = temporaryDirectory("invalid-assets");
     fs.mkdirSync(assets, { recursive: true });
     fs.writeFileSync(
-      path.join(assets, "compose.v1.yaml"),
+      path.join(assets, "compose.v2.yaml"),
       composeAsset.replace("external: true", "external: false"),
     );
     fs.writeFileSync(path.join(assets, "postgres-init.sh"), postgresAsset);
@@ -563,24 +468,15 @@ describe("mend server setup", () => {
     expect(control.fetched).toEqual([]);
   });
 
-  it("copies offline assets, persists a free registry port, and no longer needs the source", async () => {
+  it("copies offline assets and no longer needs the source", async () => {
     const control = makeRuntime();
     const assets = temporaryDirectory("assets");
     fs.mkdirSync(assets, { recursive: true });
-    fs.writeFileSync(path.join(assets, "compose.v1.yaml"), composeAsset);
+    fs.writeFileSync(path.join(assets, "compose.v2.yaml"), composeAsset);
     fs.writeFileSync(path.join(assets, "postgres-init.sh"), postgresAsset);
     expect(
       await serverCommand(
-        [
-          "setup",
-          "--assets-dir",
-          assets,
-          "--offline",
-          "--version",
-          "0.23.0",
-          "--registry-port",
-          "5501",
-        ],
+        ["setup", "--assets-dir", assets, "--offline", "--version", "0.23.0"],
         control.runtime,
       ),
     ).toEqual({ _tag: "ok" });
@@ -589,30 +485,25 @@ describe("mend server setup", () => {
     expect(await serverCommand(["setup", "--offline"], control.runtime)).toEqual({ _tag: "ok" });
     expect(activeDirectory(control.runtime.configDir)).toBe(generation);
     expect(
-      readEnv(activeFile(control.runtime.configDir, "server.env")).get("MEND_REGISTRY_PORT"),
-    ).toBe("5501");
+      readEnv(activeFile(control.runtime.configDir, "server.env")).has("MEND_REGISTRY_PORT"),
+    ).toBe(false);
     expect(control.fetched.every((url) => url.endsWith("/api/health"))).toBe(true);
     for (const [, args] of control.commands.filter(([, commandArgs]) =>
       commandArgs.includes("up"),
     )) {
       expect(args.slice(-3)).toEqual(["--pull", "never", "--no-build"]);
     }
-    // Offline still probes the local registry, but never pulls release images.
-    const pulls = control.commands.filter(([, args]) => args.includes("pull"));
-    expect(pulls).toHaveLength(2);
-    expect(
-      pulls.every(([, args]) => args.at(-1)?.startsWith("127.0.0.1:5501/mend-registry-probe/")),
-    ).toBe(true);
+    // Offline never pulls anything.
+    expect(control.commands.filter(([, args]) => args.includes("pull"))).toHaveLength(0);
   });
 
   it.each([
     ["--offline", "--version", "latest"],
     ["--assets-dir", "/missing"],
     ["--offline", "--version", "0.23.0"],
-    ["--registry-port", "0"],
-    ["--registry-port", "65536"],
-    ["--registry-port", "3105"],
-    ["--registry-port", "2222"],
+    ["--registry-port", "5000"],
+    ["--port", "2222"],
+    ["--ssh-port", "3105"],
   ])("rejects invalid/offline inputs before activation: %j", async (...flags) => {
     const control = makeRuntime();
     expect((await serverCommand(["setup", ...flags], control.runtime))._tag).toBe("error");
@@ -685,7 +576,7 @@ describe("mend server setup", () => {
     const result = await serverCommand(["setup"], control.runtime);
 
     expect(result).toEqual({ _tag: "ok" });
-    expect(control.randomSizes).toEqual([256, 24]);
+    expect(control.randomSizes).toEqual([256]);
     expect(modeOf(control.runtime.configDir)).toBe(0o700);
     expect(modeOf(activeDirectory(control.runtime.configDir))).toBe(0o700);
     expect(modeOf(activeFile(control.runtime.configDir, "server.json"))).toBe(0o600);
@@ -721,8 +612,6 @@ describe("mend server setup", () => {
         "MEND_IMAGE_REPOSITORY",
         "MEND_PORT",
         "MEND_POSTGRES_ADMIN_PASSWORD",
-        "MEND_RABBITMQ_PASSWORD",
-        "MEND_REGISTRY_PORT",
         "MEND_SSH_PORT",
         "MEND_STORE_VOLUME_NAME",
         "MEND_VERSION",
@@ -793,7 +682,7 @@ describe("mend server setup", () => {
     });
     expect(await serverCommand(["setup"], second.runtime)).toEqual({ _tag: "ok" });
 
-    expect(second.randomSizes).toEqual([24]);
+    expect(second.randomSizes).toEqual([]);
     expect(second.fetched.filter((url) => !url.endsWith("/api/health"))).toEqual([]);
     expect(activeDirectory(configDir)).toBe(generationBefore);
     expect(fs.readdirSync(path.join(configDir, "generations"))).toHaveLength(1);
@@ -1073,7 +962,7 @@ describe("mend server setup", () => {
       );
       const second = makeRuntime({ configDir, daemon: first.daemon });
       expect(await serverCommand(flags, second.runtime)).toEqual({ _tag: "ok" });
-      expect(second.randomSizes).toEqual([24]);
+      expect(second.randomSizes).toEqual([]);
       expect(fs.readFileSync(activeFile(configDir, "identity.env"), "utf8")).toBe(identity);
     },
   );
@@ -1093,7 +982,7 @@ describe("mend server setup", () => {
     fs.chmodSync(path.join(configDir, "generations"), 0o700);
     const second = makeRuntime({ configDir });
     expect(await serverCommand(["setup"], second.runtime)).toEqual({ _tag: "ok" });
-    expect(second.randomSizes).toEqual([24]);
+    expect(second.randomSizes).toEqual([]);
     expect(fs.readFileSync(activeFile(configDir, "identity.env"), "utf8")).toBe(identity);
     expect(fs.readFileSync(path.join(configDir, "identity.env"), "utf8")).toBe(identity);
   });

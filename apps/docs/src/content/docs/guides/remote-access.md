@@ -37,9 +37,9 @@ mend server setup --bind 0.0.0.0 --url http://mend-host:3105 \
   --origin http://localhost:3105
 ```
 
-Postgres publishes no port and the workspace registry stays on loopback. Binding `0.0.0.0` opens
-every IPv4 interface and sign-up stays open to anyone who can reach Mend, so keep the machine on a
-network you control. Read [Install Mend](/getting-started/install/#network-boundary).
+Postgres publishes no port and no image registry is published. Binding `0.0.0.0` opens every IPv4
+interface and sign-up stays open to anyone who can reach Mend, so keep the machine on a network you
+control. Read [Install Mend](/getting-started/install/#network-boundary).
 
 Prefer Tailscale or another private network. Mend does not require public ingress for remote use. Do
 not publish the server directly to the internet.

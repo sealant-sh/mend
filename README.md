@@ -82,8 +82,7 @@ mend server setup --bind 0.0.0.0 --url http://mac-mini.local:3105 \
 
 Keep the host behind a private network or firewall. Binding `0.0.0.0` exposes web and SSH on every
 IPv4 interface; it does not configure Tailscale or a firewall for you. Sign-up remains open to
-anyone who can reach Mend. The unauthenticated workspace registry remains loopback-only, and
-Postgres has no published port.
+anyone who can reach Mend. Only web and SSH are published; Postgres has no published port.
 
 On your laptop, install just the CLI and run `mend login --url http://mac-mini.local:3105`.
 `mend connect` reads credentials from that laptop, not the server. `mend pair` offers only

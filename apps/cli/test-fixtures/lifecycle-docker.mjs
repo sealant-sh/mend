@@ -36,22 +36,6 @@ const daemon = new DockerProtocol();
 for (const kind of ["volumes", "containers", "networks", "local", "remote"]) {
   for (const [name, value] of saved[kind] ?? []) daemon[kind].set(name, value);
 }
-daemon.response = (request) => {
-  if (
-    (state.fail === "registry-push" ||
-      state.fail === "registry-push-cleanup" ||
-      (state.fail === "target-registry" && state.version !== "0.23.0")) &&
-    request[3] === "push"
-  )
-    return { status: 1, stdout: "", stderr: "registry push refused" };
-  if (
-    request[3] === "rm" &&
-    (state.fail === "registry-push-cleanup" ||
-      (state.fail === "registry-cleanup" && saved.pulled === request.at(-1)))
-  )
-    return { status: 1, stdout: "", stderr: "cleanup refused" };
-  return undefined;
-};
 // Docker cannot observe its caller's timer. Deadline forwarding is recorded at the runtime edge.
 const protocol = daemon.run("docker", args, { timeoutMs: 60_000 });
 if (protocol !== undefined) {

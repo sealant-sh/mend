@@ -153,7 +153,7 @@ describe("man pages", () => {
     const upgrade = findCommand(["server", "upgrade"]);
     if (setup === null || upgrade === null) throw new Error("Server help missing");
     const page = renderManPage(setup, "0.23.0");
-    expect(page).toContain("\\-\\-registry\\-port");
+    expect(page).toContain("\\-\\-assets\\-dir");
     expect(page).toContain("assets");
     expect(page).toContain("offline");
     const recovery = renderManPage(upgrade, "0.23.0");
@@ -163,7 +163,7 @@ describe("man pages", () => {
       const doc = findCommand(["server", name]);
       if (doc === null) throw new Error("Server help missing");
       const text = renderCommand(doc, 120).replace(/\s+/g, " ");
-      expect(text).toContain("loopback registry");
+      expect(text).not.toContain("registry");
       expect(text).not.toContain("no GitHub requests or Docker pulls");
     }
   });

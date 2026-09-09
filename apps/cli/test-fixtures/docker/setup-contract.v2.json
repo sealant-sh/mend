@@ -1,9 +1,9 @@
 {
-  "schemaVersion": 1,
-  "composeTemplate": "compose.v1.yaml",
+  "schemaVersion": 2,
+  "composeTemplate": "compose.v2.yaml",
   "environmentTemplate": "bundle.env.example",
   "mendImageRepository": "ghcr.io/sealant-sh/mend",
-  "sealantVersion": "0.28.0",
+  "sealantVersion": "0.29.0",
   "runtimeContainers": ["mend", "postgres"],
   "canonicalPaths": {
     "store": "/var/lib/mend/store",
@@ -35,7 +35,6 @@
       "MEND_POSTGRES_ADMIN_PASSWORD",
       "MEND_DB_PASSWORD",
       "SEALANT_DB_PASSWORD",
-      "MEND_RABBITMQ_PASSWORD",
       "BETTER_AUTH_SECRET",
       "WORKSPACE_SSH_GATEWAY_TOKEN"
     ],
@@ -52,18 +51,16 @@
     "defaultBindHost": "127.0.0.1",
     "ports": {
       "web": "MEND_PORT",
-      "ssh": "MEND_SSH_PORT",
-      "registry": "MEND_REGISTRY_PORT"
-    },
-    "registryBindHost": "127.0.0.1"
-  },
-  "registry": {
-    "metadataAddressInsideBundle": "http://127.0.0.1:5000",
-    "daemonPushPullAddress": "127.0.0.1:${MEND_REGISTRY_PORT}",
-    "dockerDesktop": "Docker Desktop must make its daemon's loopback reach published localhost ports. If it does not, setup must stop with an unsupported-runtime error rather than expose the registry or ask for an insecure non-loopback registry."
+      "ssh": "MEND_SSH_PORT"
+    }
   },
   "bootstrap": {
-    "sealantMigrations": "node /opt/sealant/api/dist/migrate.js from sealant-api 0.28.0",
-    "servicePrincipal": "SEALANT_SERVICE_KEY configures the platform principal; Mend provisions each user through public @sealant/sdk users.ensure on first use"
+    "sealantMigrations": "node /opt/sealant/api/dist/migrate.js from sealant-api 0.29.0",
+    "servicePrincipal": "SEALANT_SERVICE_KEY configures the platform principal; Mend provisions each user through public @sealant/sdk users.ensure on first use",
+    "jobQueue": "pg-boss inside sealant_control_plane (schema pgboss); created by the Sealant API/worker on first start"
+  },
+  "workspaceImages": {
+    "store": "host Docker Engine",
+    "note": "Sealant builds workspace images through the mounted Docker socket and launches them from the same Engine by image id. No registry runs and no port is published for one."
   }
 }

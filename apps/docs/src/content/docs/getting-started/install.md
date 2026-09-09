@@ -24,8 +24,8 @@ Install the CLI on each device. Set up the server on the machine that will keep 
 - Disk space for repositories, worktrees, images, databases, and backups.
 - A trusted private network for access from another device.
 
-Docker Desktop and OrbStack must pass the same capability and registry checks as Docker Engine.
-Physical macOS and installed VS Code acceptance are recorded separately in the
+Docker Desktop and OrbStack must pass the same capability checks as Docker Engine. Physical macOS
+and installed VS Code acceptance are recorded separately in the
 [validation checklist](https://github.com/sealant-sh/mend/blob/main/docs/MACOS-VALIDATION.md). Linux
 checks are not evidence that MacBook-to-Mac-Mini operation has been verified.
 
@@ -55,8 +55,9 @@ mend server setup
 
 At idle, two product containers run:
 
-- The complete Mend application, including its pinned Sealant API/worker/SSH runtime, RabbitMQ, and
-  workspace registry.
+- The complete Mend application, including its pinned Sealant API/worker/SSH runtime. Sealant's job
+  queue runs in Postgres; workspace images are built and launched in the host Docker Engine through
+  the mounted daemon socket.
 - Official Postgres, with separate Mend and Sealant databases and users.
 
 You manage the Mend version. There is no separate Sealant installation or version choice for this
@@ -65,8 +66,8 @@ state, database data, and SSH identity persist in Docker-managed volumes.
 
 ## Network boundary
 
-Web and SSH bind to localhost by default. Postgres has no published host port, and the workspace
-registry stays on loopback. Private access must be configured explicitly:
+Web and SSH bind to localhost by default. Postgres has no published host port, and no image registry
+is published. Private access must be configured explicitly:
 
 ```sh
 mend server setup --bind 0.0.0.0 --url http://mend-host:3105 \
