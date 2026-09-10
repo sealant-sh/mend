@@ -1,4 +1,3 @@
-import { PgClient } from "@effect/sql-pg";
 import {
   AuthMiddleware,
   BriefDetail,
@@ -29,9 +28,9 @@ import {
   BriefsRepo,
   ChangesRepo,
   IssuesRepo,
-  notifyEvent,
   PushDevicesRepo,
   RunsRepo,
+  UserEvents,
   UsersRepo,
 } from "@mend/db";
 import type { RunId } from "@mend/domain";
@@ -142,8 +141,8 @@ const accountFailure = (error: SealantPlatformError) =>
 /** The pointer every screen showing this user's accounts re-reads on (first run, Settings). */
 const accountsChanged = (userId: string) =>
   Effect.gen(function* () {
-    const sql = yield* PgClient.PgClient;
-    yield* notifyEvent(sql, { type: "user", userId, facet: "accounts" });
+    const events = yield* UserEvents;
+    yield* events.changed(userId, "accounts");
   });
 
 export const AccountsGroupLive = HttpApiBuilder.group(MendApi, "accounts", (handlers) =>

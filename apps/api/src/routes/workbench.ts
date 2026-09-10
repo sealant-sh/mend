@@ -1,6 +1,5 @@
 import * as fs from "node:fs";
 
-import { PgClient } from "@effect/sql-pg";
 import {
   ChangeDiff,
   ChangedFileView,
@@ -65,7 +64,6 @@ import {
   ProjectClusterBindingsRepo,
   ProjectEnvironmentRepo,
   ProjectMountsRepo,
-  notifyEvent,
   ProjectNotFoundError,
   ProjectSecretsRepo,
   ProjectServiceRecipesRepo,
@@ -85,6 +83,7 @@ import {
   SessionsRepo,
   SettingsRepo,
   UserDotfilesRepo,
+  UserEvents,
   UserGitAccessRepo,
 } from "@mend/db";
 import {
@@ -874,8 +873,8 @@ export const GitKeysGroupLive = HttpApiBuilder.group(MendApi, "gitKeys", (handle
 /** The pointer the first-run checklist and Settings re-read this user's git access on. */
 const gitAccessChanged = (userId: string) =>
   Effect.gen(function* () {
-    const sql = yield* PgClient.PgClient;
-    yield* notifyEvent(sql, { type: "user", userId, facet: "git-access" });
+    const events = yield* UserEvents;
+    yield* events.changed(userId, "git-access");
   });
 
 /** The calling user's git access: mode, their key (public half), the bridge's presence. */

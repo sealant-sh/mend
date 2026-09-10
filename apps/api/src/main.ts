@@ -49,6 +49,7 @@ import {
   SettingsRepoLive,
   UserDotfilesRepoLive,
   UserGitAccessRepoLive,
+  UserEventsLive,
   UsersRepoLive,
 } from "@mend/db";
 import type { ChangeId, SessionId } from "@mend/domain";
@@ -134,6 +135,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   UserDotfilesRepoLive,
   UserGitAccessRepoLive,
   UsersRepoLive,
+  UserEventsLive,
   HotWorkspacesRepoLive,
   SessionGitOpsRepoLive,
   SessionProcessesRepoLive,
