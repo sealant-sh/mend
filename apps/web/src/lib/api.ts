@@ -50,6 +50,7 @@ export type SealantIdentityDto = Outputs["platform"]["sealantIdentity"];
 export type ConnectedAccountDto = SealantIdentityDto["accounts"][number];
 export type ConnectedAccountProviderDto = ConnectedAccountDto["provider"];
 export type MachineDto = Outputs["platform"]["machine"];
+export type InstanceDto = Outputs["platform"]["instance"];
 
 export type ProjectDto = Outputs["projects"]["list"][number];
 export type WorkspaceImageDto = NonNullable<ProjectDto["workspaceImage"]>;
@@ -140,6 +141,9 @@ export interface WorkbenchEventDto {
   readonly changeId?: string;
   readonly sequence?: string;
   readonly line?: string;
+  /** `user` events: whose facts moved, and which facet (accounts · devices · git-access). */
+  readonly userId?: string;
+  readonly facet?: string;
 }
 
 // ─── Queue-era actions ──────────────────────────────────────────────────────

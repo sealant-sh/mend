@@ -34,9 +34,14 @@ delivery prompt lives with the session that builds it.
      only: run ssh with `BatchMode=yes`, surface "permission denied / host key unknown" as readable
      errors instead of dead clones.
    - _Bridge_: below.
-   - The user-level choice (`user_git_access`, `GET/PUT /me/git-access`, Settings → Git access, the
-     first-run checklist, `mend keys mode`) is between Mend key and bridge. New projects adopt with
-     it; a project's setup page overrides it.
+   - The user-level choice (`user_git_access`, `GET/PUT /me/git-access`, Settings → Git access,
+     `mend keys mode`) is between Mend key and bridge. It is asked once, as the second step of
+     creating an account (`/welcome`, right after registration): the Mend key is the default and is
+     generated before that page paints, so the visitor sees the public half to add to their git
+     account, not a button. New projects adopt with the choice; a project's setup page overrides it.
+     The key's comment is the account's email — a signed-in call passes it, and a key born under the
+     older `mend@<host>` comment (or on the shim path, which knows only the owner's id) is relabeled
+     in place with `ssh-keygen -c`; the key material and fingerprint do not change.
 
 2. **YubiKey / hardware keys: the agent bridge (shipped).** A hardware key cannot be copied and
    demands a touch per signature, so it can never back daemon fetches. The universal interface in

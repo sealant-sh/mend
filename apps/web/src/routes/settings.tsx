@@ -871,7 +871,7 @@ const AUTOMATION_ROWS: ReadonlyArray<{
  */
 function GitAccessSettingsPanel() {
   return (
-    <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+    <section id="git-access" className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
       <h2 className="font-sans text-sm font-semibold">Git access</h2>
       <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
         How Mend reaches your repositories. New projects adopt with this; a project&apos;s setup
@@ -1135,7 +1135,7 @@ function ConnectedAccountsPanel() {
   };
 
   return (
-    <section className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+    <section id="accounts" className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
       <h2 className="font-sans text-sm font-semibold">Connected accounts</h2>
       <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
         Your own subscriptions. Sessions and Mend's model calls run on these, under your platform

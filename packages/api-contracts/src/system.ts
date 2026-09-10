@@ -30,6 +30,20 @@ export const healthGroup = HttpApiGroup.make("health").add(
 );
 
 /**
+ * What a signed-out visitor may learn about this instance: whether any account exists.
+ * A fresh install's first visit is the registration, so the login page asks this before it
+ * decides which form to lead with. Nothing else about the instance is disclosed here.
+ */
+export class InstanceView extends Schema.Class<InstanceView>("InstanceView")({
+  /** `none` until the first account is created. */
+  users: Schema.Literals(["none", "some"]),
+}) {}
+
+export const instanceGroup = HttpApiGroup.make("instance").add(
+  HttpApiEndpoint.get("get", "/instance", { success: InstanceView }),
+);
+
+/**
  * The machine Mend runs on, as the shell shows it: hostname · platform, and whether a
  * tailnet address is bound (plan §7.5 — the private-network promise made visible).
  * "reachable" is an observation about the interface, not a promise about routing.

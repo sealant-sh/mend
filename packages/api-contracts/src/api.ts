@@ -21,11 +21,18 @@ import { issuesGroup, briefsGroup, runsGroup } from "./queue.ts";
 import { sessionsGroup } from "./sessions.ts";
 import { settingsGroup, dotfilesGroup } from "./settings.ts";
 import { skillsGroup } from "./skills.ts";
-import { healthGroup, machineGroup, sealantGroup, workspaceSshGroup } from "./system.ts";
+import {
+  healthGroup,
+  instanceGroup,
+  machineGroup,
+  sealantGroup,
+  workspaceSshGroup,
+} from "./system.ts";
 import { worktreesGroup } from "./worktrees.ts";
 
 export const MendApi = HttpApi.make("mend")
   .add(healthGroup)
+  .add(instanceGroup)
   .add(machineGroup)
   .add(sealantGroup)
   .add(workspaceSshGroup)

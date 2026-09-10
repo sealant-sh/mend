@@ -13,6 +13,7 @@ import {
   ServicesRepo,
   SessionProcessesRepo,
   SessionsRepo,
+  UserEvents,
   UserGitAccessRepo,
 } from "@mend/db";
 import { makePublicNetwork, PublicOrigin } from "@mend/network";
@@ -90,6 +91,9 @@ const startServer = async () => {
   // These capabilities must never run in rejected upgrade requests. Unimplemented
   // methods fail loudly; the successful bridge/key paths use real implementations.
   const unused = Layer.mergeAll(
+    // Creating a key announces it on the event channel; with no database here the
+    // announcement passes silently while every other database access stays a defect.
+    Layer.mock(UserEvents, { changed: () => Effect.void }),
     Layer.mock(UserGitAccessRepo, {}),
     Layer.mock(SealantClient, {}),
     Layer.mock(SessionsRepo, {}),
