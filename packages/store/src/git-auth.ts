@@ -64,12 +64,27 @@ export const MendKeysConfigLive: Layer.Layer<MendKeysConfig> = Layer.effect(
 export class MendKeys extends Context.Service<
   MendKeys,
   {
-    /** Generate the user's keypair if missing (first mend-key use), then describe it. */
-    readonly ensure: (userId: string | null) => Effect.Effect<MendKeyInfo, KeygenError>;
+    /**
+     * Generate the user's keypair if missing (first mend-key use), then describe it.
+     * `label` is the key's comment — the account's email when the caller knows it, so the
+     * public half reads as that person on the git host; a key born under an older label is
+     * relabeled in place (same key material, same fingerprint).
+     */
+    readonly ensure: (
+      userId: string | null,
+      label?: string,
+    ) => Effect.Effect<MendKeyInfo, KeygenError>;
     /** Describe the user's key without creating it; null when none was generated yet. */
-    readonly read: (userId: string | null) => Effect.Effect<MendKeyInfo | null, KeygenError>;
+    readonly read: (
+      userId: string | null,
+      label?: string,
+    ) => Effect.Effect<MendKeyInfo | null, KeygenError>;
   }
 >()("@mend/store/MendKeys") {}
+
+/** The comment of an OpenSSH public key line (`<type> <base64> [comment]`), "" when none. */
+export const keyComment = (publicKey: string): string =>
+  publicKey.trim().split(/\s+/).slice(2).join(" ");
 
 /** Subdirectory per user under the keys root. */
 export const USERS_DIR = "users";
@@ -144,7 +159,28 @@ export const MendKeysLive: Layer.Layer<MendKeys, never, MendKeysConfig> = Layer.
         }
       });
 
-    const describe = Effect.fn("MendKeys.describe")(function* (owner: string) {
+    /**
+     * Rewrite the comment in both halves (`ssh-keygen -c`) when it differs from the label the
+     * caller knows the owner by. The key material and fingerprint stay; only the trailing
+     * comment moves — so a pre-per-user key claimed by its owner, or one generated on the shim
+     * path where only the id was known, reads as the account's email once a signed-in call
+     * sees it. A failed relabel keeps the key usable under its old comment.
+     */
+    const relabel = Effect.fn("MendKeys.relabel")(function* (owner: string, label: string) {
+      const { privateKeyPath, publicKeyPath } = paths(owner);
+      const current = yield* Effect.sync(() =>
+        fs.existsSync(publicKeyPath) ? fs.readFileSync(publicKeyPath, "utf8") : null,
+      );
+      if (current === null || keyComment(current) === label) return;
+      yield* sshKeygen(["-q", "-c", "-C", label, "-P", "", "-f", privateKeyPath]).pipe(
+        Effect.ignore,
+      );
+    });
+
+    const describe = Effect.fn("MendKeys.describe")(function* (
+      owner: string,
+      label: string | undefined,
+    ) {
       const { privateKeyPath, publicKeyPath } = paths(owner);
       // Re-pin 0600 on every use, not only at creation: a volume's group policy
       // (Kubernetes fsGroup adds g+rw to every file at pod start) or a copy
@@ -154,6 +190,7 @@ export const MendKeysLive: Layer.Layer<MendKeys, never, MendKeysConfig> = Layer.
       yield* Effect.sync(() => {
         if (fs.existsSync(privateKeyPath)) fs.chmodSync(privateKeyPath, 0o600);
       }).pipe(Effect.orDie);
+      if (label !== undefined) yield* relabel(owner, label);
       const publicKey = yield* Effect.sync(() =>
         fs.readFileSync(publicKeyPath, "utf8").trimEnd(),
       ).pipe(Effect.orDie);
@@ -161,7 +198,7 @@ export const MendKeysLive: Layer.Layer<MendKeys, never, MendKeysConfig> = Layer.
       return { publicKey, fingerprint, privateKeyPath };
     });
 
-    const ensure = Effect.fn("MendKeys.ensure")(function* (userId: string | null) {
+    const ensure = Effect.fn("MendKeys.ensure")(function* (userId: string | null, label?: string) {
       const owner = yield* resolveOwner(userId);
       yield* claimLegacy(owner);
       const { privateKeyPath } = paths(owner);
@@ -169,22 +206,23 @@ export const MendKeysLive: Layer.Layer<MendKeys, never, MendKeysConfig> = Layer.
         yield* Effect.sync(() =>
           fs.mkdirSync(path.dirname(privateKeyPath), { recursive: true, mode: 0o700 }),
         );
-        const comment = `mend@${os.hostname()}`;
+        // The shim path knows only the owner's id; every signed-in path passes the email.
+        const comment = label ?? `mend@${os.hostname()}`;
         yield* sshKeygen(["-q", "-t", "ed25519", "-N", "", "-C", comment, "-f", privateKeyPath]);
         // ssh-keygen already writes 0600/0644; pin it anyway — the whole mode rests on this.
         yield* Effect.sync(() => fs.chmodSync(privateKeyPath, 0o600));
       }
-      return yield* describe(owner);
+      return yield* describe(owner, label);
     });
 
-    const read = Effect.fn("MendKeys.read")(function* (userId: string | null) {
+    const read = Effect.fn("MendKeys.read")(function* (userId: string | null, label?: string) {
       const owner = yield* resolveOwner(userId).pipe(
         Effect.catchTag("KeygenError", () => Effect.succeed(null)),
       );
       if (owner === null) return null;
       yield* claimLegacy(owner);
       if (!fs.existsSync(paths(owner).publicKeyPath)) return null;
-      return yield* describe(owner);
+      return yield* describe(owner, label);
     });
 
     return { ensure, read };

@@ -1,3 +1,4 @@
+import { PgClient } from "@effect/sql-pg";
 import {
   AuthMiddleware,
   BriefDetail,
@@ -5,6 +6,7 @@ import {
   CurrentUser,
   SealantUnavailable,
   HealthStatus,
+  InstanceView,
   IssueDetail,
   LossReportView,
   LossSpanView,
@@ -27,8 +29,10 @@ import {
   BriefsRepo,
   ChangesRepo,
   IssuesRepo,
+  notifyEvent,
   PushDevicesRepo,
   RunsRepo,
+  UsersRepo,
 } from "@mend/db";
 import type { RunId } from "@mend/domain";
 import { JobRunner } from "@mend/jobs";
@@ -109,6 +113,17 @@ export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers
   ),
 );
 
+/** Public by design: the login page asks this before anyone is signed in. */
+export const InstanceGroupLive = HttpApiBuilder.group(MendApi, "instance", (handlers) =>
+  handlers.handle("get", () =>
+    Effect.gen(function* () {
+      const users = yield* UsersRepo;
+      const count = yield* users.count();
+      return new InstanceView({ users: count === 0 ? "none" : "some" });
+    }),
+  ),
+);
+
 export const SealantGroupLive = HttpApiBuilder.group(MendApi, "sealant", (handlers) =>
   handlers.handle("connection", () =>
     Effect.gen(function* () {
@@ -123,6 +138,13 @@ const accountFailure = (error: SealantPlatformError) =>
   error.status !== null && error.status >= 400 && error.status < 500
     ? new AccountRejected({ message: error.message })
     : new SealantUnavailable({ code: error.code, message: error.message });
+
+/** The pointer every screen showing this user's accounts re-reads on (first run, Settings). */
+const accountsChanged = (userId: string) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    yield* notifyEvent(sql, { type: "user", userId, facet: "accounts" });
+  });
 
 export const AccountsGroupLive = HttpApiBuilder.group(MendApi, "accounts", (handlers) =>
   handlers
@@ -143,7 +165,9 @@ export const AccountsGroupLive = HttpApiBuilder.group(MendApi, "accounts", (hand
       Effect.gen(function* () {
         const clients = yield* SealantClients;
         const caller = yield* CurrentUser;
-        return yield* clients.connectedAccounts(caller.user.id).connect(payload);
+        const account = yield* clients.connectedAccounts(caller.user.id).connect(payload);
+        yield* accountsChanged(caller.user.id);
+        return account;
       }).pipe(
         Effect.catchTag("SealantPlatformError", (error) => Effect.fail(accountFailure(error))),
       ),
@@ -152,7 +176,9 @@ export const AccountsGroupLive = HttpApiBuilder.group(MendApi, "accounts", (hand
       Effect.gen(function* () {
         const clients = yield* SealantClients;
         const caller = yield* CurrentUser;
-        return yield* clients.connectedAccounts(caller.user.id).disconnect(params.id);
+        const account = yield* clients.connectedAccounts(caller.user.id).disconnect(params.id);
+        yield* accountsChanged(caller.user.id);
+        return account;
       }).pipe(
         Effect.catchTag("SealantPlatformError", (error) => Effect.fail(accountFailure(error))),
       ),
@@ -539,6 +565,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(
     Layer.mergeAll(
       HealthGroupLive,
+      InstanceGroupLive,
       MachineGroupLive,
       SealantGroupLive,
       AccountsGroupLive,

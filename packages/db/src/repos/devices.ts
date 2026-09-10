@@ -5,6 +5,7 @@ import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
+import { notifyEvent } from "../events.ts";
 import { cliAuthRequests, deviceTokens, pairingCodes } from "../schema/workbench.ts";
 
 /**
@@ -219,6 +220,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
           .returning(selectedDevice)
           .pipe(Effect.orDie);
         if (device === undefined) return yield* Effect.die("device token insert returned no row");
+        yield* notifyEvent(sql, { type: "user", userId: input.userId, facet: "devices" });
         return new PairedDevice(device);
       });
 
@@ -284,6 +286,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
           .returning(selectedDevice)
           .pipe(Effect.orDie);
         if (row === undefined) return yield* Effect.fail(new DeviceNotFoundError({ id }));
+        yield* notifyEvent(sql, { type: "user", userId, facet: "devices" });
         return new PairedDevice(row);
       });
 

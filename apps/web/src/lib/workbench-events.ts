@@ -69,6 +69,18 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
           // Worktree list annotations carry comment/follow-up counts.
           void queryClient.invalidateQueries(trpc.worktrees.pathFilter());
           break;
+        case "user":
+          // One account's own facts: the first-run checklist and Settings re-read
+          // the facet named, so `mend connect` / `mend login` / `mend pair` in a
+          // terminal land on the page without a reload.
+          if (event.facet === "accounts") {
+            void queryClient.invalidateQueries(trpc.platform.sealantIdentity.pathFilter());
+          } else if (event.facet === "devices") {
+            void queryClient.invalidateQueries(trpc.devices.pathFilter());
+          } else if (event.facet === "git-access") {
+            void queryClient.invalidateQueries(trpc.git.pathFilter());
+          }
+          break;
         default:
           break;
       }

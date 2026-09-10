@@ -27,7 +27,9 @@ published version in place of `VERSION`. The CLI downloads that release's deploy
 starts its application image with `postgres:17-alpine`. Mend and Sealant have separate databases and
 roles. Postgres is never installed in the application image.
 
-Open `http://localhost:3105`, create your account, then run:
+Open `http://localhost:3105`. A fresh instance opens on registration: create the first account,
+choose how Mend reaches your repositories (a Mend key held on the server, or your own machine's
+ssh-agent), then run:
 
 ```sh
 mend login --url http://localhost:3105

@@ -86,6 +86,14 @@ export const MendEvent = Schema.Union([
     worktreeId: Schema.String,
     projectId: Schema.String,
   }),
+  Schema.Struct({
+    // One account's own facts changed — connected accounts, paired devices and CLI
+    // sign-ins, the git access choice or key. The first-run checklist and Settings
+    // re-read the facet; nothing project-scoped moves.
+    type: Schema.Literals(["user"]),
+    userId: Schema.String,
+    facet: Schema.Literals(["accounts", "devices", "git-access"]),
+  }),
 ]);
 export type MendEvent = typeof MendEvent.Type;
 

@@ -1,5 +1,6 @@
 import * as fs from "node:fs";
 
+import { PgClient } from "@effect/sql-pg";
 import {
   ChangeDiff,
   ChangedFileView,
@@ -64,6 +65,7 @@ import {
   ProjectClusterBindingsRepo,
   ProjectEnvironmentRepo,
   ProjectMountsRepo,
+  notifyEvent,
   ProjectNotFoundError,
   ProjectSecretsRepo,
   ProjectServiceRecipesRepo,
@@ -808,7 +810,7 @@ export const GitKeysGroupLive = HttpApiBuilder.group(MendApi, "gitKeys", (handle
       Effect.gen(function* () {
         const keys = yield* MendKeys;
         const caller = yield* CurrentUser;
-        const key = yield* keys.read(caller.user.id).pipe(Effect.orDie);
+        const key = yield* keys.read(caller.user.id, caller.user.email).pipe(Effect.orDie);
         return key === null
           ? new GitKeyView({ exists: false, publicKey: null, fingerprint: null })
           : new GitKeyView({
@@ -823,13 +825,14 @@ export const GitKeysGroupLive = HttpApiBuilder.group(MendApi, "gitKeys", (handle
         const keys = yield* MendKeys;
         const caller = yield* CurrentUser;
         const key = yield* keys
-          .ensure(caller.user.id)
+          .ensure(caller.user.id, caller.user.email)
           .pipe(
             Effect.mapError(
               (error) =>
                 new StoreFailure({ message: `Could not create the Mend key: ${error.stderr}` }),
             ),
           );
+        yield* gitAccessChanged(caller.user.id);
         return new GitKeyView({
           exists: true,
           publicKey: key.publicKey,
@@ -851,11 +854,29 @@ export const GitKeysGroupLive = HttpApiBuilder.group(MendApi, "gitKeys", (handle
         const gitAccess = yield* UserGitAccessRepo;
         yield* gitAccess.setMode(caller.user.id, payload.mode);
         // Choosing the key creates it, so the page can show what to add on the git host.
-        if (payload.mode === "mend-key") yield* remoteEnvFor("mend-key", caller.user.id);
+        if (payload.mode === "mend-key") {
+          const keys = yield* MendKeys;
+          yield* keys
+            .ensure(caller.user.id, caller.user.email)
+            .pipe(
+              Effect.mapError(
+                (error) =>
+                  new StoreFailure({ message: `Could not create the Mend key: ${error.stderr}` }),
+              ),
+            );
+        }
+        yield* gitAccessChanged(caller.user.id);
         return yield* gitAccessView();
       }),
     ),
 );
+
+/** The pointer the first-run checklist and Settings re-read this user's git access on. */
+const gitAccessChanged = (userId: string) =>
+  Effect.gen(function* () {
+    const sql = yield* PgClient.PgClient;
+    yield* notifyEvent(sql, { type: "user", userId, facet: "git-access" });
+  });
 
 /** The calling user's git access: mode, their key (public half), the bridge's presence. */
 const gitAccessView = () =>
@@ -865,7 +886,7 @@ const gitAccessView = () =>
     const keys = yield* MendKeys;
     const bridge = yield* AgentBridge;
     const mode = (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
-    const key = yield* keys.read(caller.user.id).pipe(Effect.orDie);
+    const key = yield* keys.read(caller.user.id, caller.user.email).pipe(Effect.orDie);
     const bridgeStatus = yield* bridge.status();
     return new GitAccessView({
       mode,
