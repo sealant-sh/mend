@@ -29,6 +29,21 @@ const fail = () => {
   process.exit(1);
 };
 
+// Release images live in daemon state, not the probe protocol: uninstall untags them here.
+if (
+  args[2] === "image" &&
+  args[3] === "rm" &&
+  !String(args.at(-1)).includes("/mend-registry-probe/")
+) {
+  const image = args.at(-1);
+  const version = image.split(":").at(-1);
+  if (!state.images[version]) fail();
+  delete state.images[version];
+  save();
+  out(`Untagged: ${image}`);
+  process.exit(0);
+}
+
 // Persist the same named-volume and separate local/remote image protocol used by setup tests.
 const protocolFile = path.join(root, "docker-protocol.json");
 const saved = fs.existsSync(protocolFile) ? JSON.parse(fs.readFileSync(protocolFile, "utf8")) : {};
@@ -88,7 +103,13 @@ else if (args.includes("image")) {
       `mend ${state.appRunning ? "running" : "exited"}\npostgres ${state.postgresRunning ? "running" : "exited"}`,
     );
 } else if (command[0] === "logs") out("bounded fixture log");
-else if (command[0] === "stop") {
+else if (command[0] === "down") {
+  state.appRunning = false;
+  state.postgresRunning = false;
+  state.downArgs = command;
+  save();
+  if (state.fail === "down") fail();
+} else if (command[0] === "stop") {
   state.appRunning = false;
   if (command.at(-1) !== "mend") state.postgresRunning = false;
   save();

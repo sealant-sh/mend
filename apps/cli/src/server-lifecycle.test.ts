@@ -9,6 +9,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
 import { serverProcessDeadlines, type ServerProcessOptions } from "./server-runtime.ts";
 import { nodeServerRuntime, serverCommand, type ServerSetupRuntime } from "./server-setup.ts";
+import { describeUninstall, executeUninstall } from "./uninstall.ts";
 
 interface DaemonState {
   readonly appRunning: boolean;
@@ -755,5 +756,77 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
     expect((await serverCommand(["status"], f.runtime))._tag).toBe("error");
     expect((await serverCommand(["start"], f.runtime))._tag).toBe("error");
     expect(f.active()).toBe(old);
+  });
+});
+
+describe("server uninstall", { timeout: 60_000 }, () => {
+  it("takes the installation down, removes its volumes, image and files, and releases the lock", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["start", "--offline"], f.runtime)).toEqual({ _tag: "ok" });
+    const home = path.join(f.root, "home", "mend");
+    fs.mkdirSync(home, { recursive: true });
+    fs.writeFileSync(path.join(home, "cli.json"), "{}");
+    const runtime = {
+      server: f.runtime,
+      cliHome: home,
+      sshConfigFile: path.join(f.root, "home", "ssh-config"),
+      signedIn: null,
+      revokeDevice: async () => "must not be called",
+    };
+
+    const plan = await describeUninstall(runtime, "server");
+    expect(plan.home).toBeNull();
+    expect(plan.server).toEqual({
+      version: "0.23.0",
+      appUrl: expect.stringMatching(/^http:\/\/127\.0\.0\.1:\d+$/),
+      dockerContext: "saved-local",
+      generations: 1,
+      backups: 0,
+    });
+    const before = f.calls().length;
+
+    const outcome = await executeUninstall(runtime, plan);
+    expect(outcome.failures).toEqual([]);
+    const commands = f
+      .calls()
+      .slice(before)
+      .map((call) => (call.command.length > 0 ? call.command : call.args.slice(2)).join(" "));
+    expect(commands).toContain("down --volumes --remove-orphans --timeout 30");
+    expect(commands).toContain("volume rm mend-store mend-control");
+    expect(commands).toContain("image rm ghcr.io/sealant-sh/mend:0.23.0");
+    expect(f.state()).toMatchObject({ appRunning: false, postgresRunning: false });
+    expect(f.state().images["0.23.0"]).toBeUndefined();
+    for (const name of ["identity.env", "active", "generations", "server.lock"]) {
+      expect(fs.existsSync(path.join(f.configDir, name)), name).toBe(false);
+    }
+    // The home scope was not asked for: the laptop-side files stay.
+    expect(fs.existsSync(path.join(home, "cli.json"))).toBe(true);
+    expect(await serverCommand(["status"], f.runtime)).toMatchObject({
+      _tag: "error",
+      message: expect.stringContaining("No Mend server is configured"),
+    });
+    expect(outcome.leftovers).toEqual([]);
+  });
+
+  it("keeps the files when compose down fails, so a retry can still find the installation", async () => {
+    const f = await fixture();
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    f.update({ fail: "down" });
+    const runtime = {
+      server: f.runtime,
+      cliHome: path.join(f.root, "home", "mend"),
+      sshConfigFile: path.join(f.root, "home", "ssh-config"),
+      signedIn: null,
+      revokeDevice: async () => null,
+    };
+    const outcome = await executeUninstall(runtime, await describeUninstall(runtime, "server"));
+    expect(outcome.failures).toEqual([expect.stringContaining("docker compose down failed")]);
+    expect(fs.existsSync(path.join(f.configDir, "identity.env"))).toBe(true);
+    expect(fs.existsSync(path.join(f.configDir, "server.lock"))).toBe(false);
+    const volumes = JSON.parse(fs.readFileSync(path.join(f.root, "docker-protocol.json"), "utf8"));
+    expect(volumes.volumes.map(([name]: [string]) => name)).toEqual(
+      expect.arrayContaining(["mend-store", "mend-control"]),
+    );
   });
 });
