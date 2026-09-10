@@ -5,6 +5,6 @@ description:
   cluster-internal session channel for workspaces.
 type: application
 version: 0.1.0
-appVersion: "0.25.0"
+appVersion: "0.26.0"
 sources:
   - https://github.com/sealant-sh/mend
