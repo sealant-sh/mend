@@ -110,6 +110,25 @@ These commands never delete volumes or prune Docker resources. Stop, restart, an
 web and SSH connections. Workspace containers remain, but active sessions can lose connectivity and
 may need reconnection. Finish or pause important work before planned maintenance.
 
+## Uninstall
+
+```sh
+mend uninstall            # asks: everything, the server only, or this machine's files only
+mend uninstall --server   # the local installation: containers, volumes, image, configuration
+mend uninstall --home     # this machine's sign-in, workspace SSH key and ~/.ssh/config block
+mend uninstall --all --yes
+```
+
+The command prints exactly what will go before asking, and the server scope requires typing
+`delete`: it removes the Compose containers and every volume the installation owns, including
+`mend-store` (repositories, worktrees) and the database, plus the release image and the private
+configuration directory's identity, generations and backups. The external volumes are removed only
+when their ownership label matches this installation's identity; anything else stays and is named.
+Workspace containers carry no label Mend can filter on, so they are listed with the command that
+removes them. The home scope revokes this terminal's device token while the server can still answer,
+then removes `cli.json`, the workspace SSH key and the managed block. Files under the configuration
+directory that Mend did not create are left in place and listed.
+
 ## Offline setup
 
 Obtain the exact release assets and images on a connected machine. Transfer the images with

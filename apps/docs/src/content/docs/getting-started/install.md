@@ -141,6 +141,16 @@ The [self-hosting guide](https://github.com/sealant-sh/mend/blob/main/docs/SELF-
 offline assets, port selection, ownership conflicts, locks, and upgrade recovery. The retired host
 installer is not an automatic migration path into this volume-backed deployment.
 
+## Uninstall
+
+```sh
+mend uninstall
+```
+
+Choose everything, the server only, or this machine's files only. The plan is printed before
+anything is removed; taking the server down deletes its volumes (repositories, worktrees, the
+database) and asks for the word `delete`. Workspace containers are listed, not removed.
+
 ## Next steps
 
 1. [Connect provider accounts](/guides/provider-accounts/).

@@ -273,6 +273,35 @@ const removeManagedBlock = (
   return success(`${config.slice(0, begin)}${after}`);
 };
 
+/**
+ * Remove every block `mend ssh setup` ever wrote, current form and legacy, keeping every other
+ * byte. Duplicate or unterminated blocks are refused the same way reconciliation refuses them.
+ */
+export const stripManagedWorkspaceSshBlocks = (
+  existing: string,
+): WorkspaceSshResult<{ readonly config: string; readonly removed: number }> => {
+  let config = existing;
+  let removed = 0;
+  const aliases = [
+    ...config.matchAll(/^# >>> mend workspace ssh (mend-ws-[a-z0-9-]+) \(managed\) >>>$/gm),
+  ]
+    .map((match) => match[1])
+    .filter((alias): alias is string => alias !== undefined);
+  for (const alias of new Set(aliases)) {
+    const stripped = removeManagedBlock(config, blockBegin(alias), blockEnd(alias));
+    if (!stripped.ok) return stripped;
+    config = stripped.value;
+    removed += 1;
+  }
+  if (config.includes(LEGACY_BLOCK_BEGIN)) {
+    const stripped = removeManagedBlock(config, LEGACY_BLOCK_BEGIN, LEGACY_BLOCK_END);
+    if (!stripped.ok) return stripped;
+    config = stripped.value;
+    removed += 1;
+  }
+  return success({ config, removed });
+};
+
 const containsExactHost = (config: string, alias: string): boolean =>
   config.split("\n").some((line) => {
     const match = /^\s*Host\s+(.+?)\s*$/i.exec(line);

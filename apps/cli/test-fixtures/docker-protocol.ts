@@ -67,19 +67,32 @@ export class DockerProtocol {
     if (collection !== undefined) {
       if (operation === "ls") {
         const filter = args.indexOf("--filter");
-        const project =
-          filter < 0
-            ? undefined
-            : args[filter + 1]?.replace("label=com.docker.compose.project=", "");
+        const value = filter < 0 ? undefined : args[filter + 1];
+        const project = value?.startsWith("label=com.docker.compose.project=")
+          ? value.replace("label=com.docker.compose.project=", "")
+          : undefined;
+        const namePattern = value?.startsWith("name=")
+          ? new RegExp(value.replace("name=", ""))
+          : undefined;
+        const bare =
+          args.indexOf("--format") >= 0 && args[args.indexOf("--format") + 1] === "{{.Names}}";
         return ok(
           [...collection]
             .filter(
-              ([, labels]) =>
-                project === undefined || labels?.["com.docker.compose.project"] === project,
+              ([name, labels]) =>
+                (project === undefined || labels?.["com.docker.compose.project"] === project) &&
+                (namePattern === undefined || namePattern.test(name)),
             )
-            .map(([name]) => JSON.stringify(name))
+            .map(([name]) => (bare ? name : JSON.stringify(name)))
             .join("\n"),
         );
+      }
+      if (kind === "volume" && operation === "rm") {
+        const names = args.slice(4);
+        const missing = names.filter((name) => !collection.has(name));
+        if (missing.length > 0) return failed(`No such volume: ${missing.join(", ")}`);
+        for (const name of names) collection.delete(name);
+        return ok(names.join("\n"));
       }
       if (kind === "volume" && operation === "create") {
         const name = args.at(-1);

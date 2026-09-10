@@ -13,6 +13,7 @@ import {
   pickWorkspaceSshKey,
   readWorkspaceSshConfig,
   reconcileWorkspaceSshConfig,
+  stripManagedWorkspaceSshBlocks,
   workspaceSshPublicKeyFingerprint,
   writeWorkspaceSshConfig,
 } from "../src/index.ts";
@@ -600,5 +601,42 @@ describe("workspace SSH key identity", () => {
     });
     expect(recovered.ok).toBe(false);
     expect(readWorkspaceSshConfig(path.join(root, ".ssh", "missing")).ok).toBe(true);
+  });
+});
+
+describe("stripManagedWorkspaceSshBlocks", () => {
+  const server = parseWorkspaceSshTarget({
+    serverUrl: "http://mend.example:3105",
+    publishedPort: 2222,
+  });
+  const other = parseWorkspaceSshTarget({
+    serverUrl: "http://other.example:3105",
+    publishedPort: 2222,
+  });
+  if (!server.ok || !other.ok) throw new Error("targets");
+
+  it("removes every managed block, current and legacy, and keeps the rest byte for byte", () => {
+    const hand = "Host unrelated\n  HostName unrelated.example\n  ServerAliveInterval 13\n";
+    const legacy =
+      "# >>> mend workspace ssh (managed by `mend ssh setup`) >>>\nHost mend-ws\n  HostName old.example\nHost *\n# <<< mend workspace ssh <<<\n";
+    const config = `${managedWorkspaceSshBlock(server.value, null)}${managedWorkspaceSshBlock(other.value, null)}${legacy}${hand}`;
+    const stripped = stripManagedWorkspaceSshBlocks(config);
+    expect(stripped.ok).toBe(true);
+    if (!stripped.ok) return;
+    expect(stripped.value.removed).toBe(3);
+    expect(stripped.value.config).toBe(hand);
+  });
+
+  it("leaves a config without managed blocks alone", () => {
+    const stripped = stripManagedWorkspaceSshBlocks("Host a\n  HostName a.example\n");
+    expect(stripped.ok && stripped.value).toEqual({
+      config: "Host a\n  HostName a.example\n",
+      removed: 0,
+    });
+  });
+
+  it("refuses an unterminated block like reconciliation does", () => {
+    const broken = managedWorkspaceSshBlock(server.value, null).split("# <<<")[0] ?? "";
+    expect(stripManagedWorkspaceSshBlocks(broken).ok).toBe(false);
   });
 });

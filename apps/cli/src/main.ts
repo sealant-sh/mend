@@ -25,7 +25,7 @@ import {
 } from "./help.ts";
 import { loginCommand } from "./login.ts";
 import { type ApiCall, pairCommand, qrCommand } from "./pair.ts";
-import { serverCommand } from "./server-setup.ts";
+import { nodeServerRuntime, serverCommand } from "./server-setup.ts";
 import {
   isComposeFile,
   proposeFromCompose,
@@ -55,6 +55,15 @@ import {
 } from "./shared.ts";
 import { DEFAULT_SKILLS_DIR, scanSkillLibrary } from "./skills.ts";
 import { sshCommand } from "./ssh-setup.ts";
+import {
+  describeUninstall,
+  executeUninstall,
+  parseUninstallArgs,
+  planDeletesData,
+  planLines,
+  UNINSTALL_USAGE,
+  type UninstallScope,
+} from "./uninstall.ts";
 import { cliVersion, fetchServerVersion, versionLines } from "./version.ts";
 
 /**
@@ -1993,6 +2002,99 @@ const logout = async (config: CliConfig) => {
   say(`${green("✓")} signed out · ${dim(`token removed from ${CONFIG_PATH}`)}`);
 };
 
+// ─── uninstall: the one command that deletes ────────────────────────────────
+
+const UNINSTALL_CHOICES: ReadonlyArray<{ readonly scope: UninstallScope; readonly text: string }> =
+  [
+    { scope: "all", text: "everything · the server on this machine and this machine's Mend files" },
+    { scope: "server", text: "the server only · containers, volumes, configuration, backups" },
+    {
+      scope: "home",
+      text: "this machine's files only · sign-in, workspace ssh key, ~/.ssh/config block",
+    },
+  ];
+
+/** One question on a terminal; a script must say what it wants with a flag. */
+const askUninstallScope = async (): Promise<UninstallScope> => {
+  if (process.stdin.isTTY !== true || process.stdout.isTTY !== true) {
+    return fail(`${UNINSTALL_USAGE} · no terminal to ask on`);
+  }
+  say("what should go?");
+  UNINSTALL_CHOICES.forEach((choice, index) => say(`  ${index + 1}. ${choice.text}`));
+  const readline = await import("node:readline/promises");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answer = (await rl.question("  1, 2 or 3: ")).trim();
+  rl.close();
+  const chosen = UNINSTALL_CHOICES[Number(answer) - 1];
+  if (chosen === undefined) return fail(`"${answer}" is not one of the choices`);
+  return chosen.scope;
+};
+
+/** The typed word stands in for a second look: data goes, so "y" is not enough. */
+const confirmUninstall = async (word: string): Promise<boolean> => {
+  if (process.stdin.isTTY !== true) return fail("non-interactive — pass --yes to remove");
+  const readline = await import("node:readline/promises");
+  const rl = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const answer = (await rl.question(word === "y" ? "remove? [y/N] " : `type ${word} to remove: `))
+    .trim()
+    .toLowerCase();
+  rl.close();
+  return answer === word;
+};
+
+const uninstallCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const parsed = parseUninstallArgs(args);
+  if ("error" in parsed) return fail(parsed.error);
+  const scope = parsed.scope ?? (await askUninstallScope());
+  const server = nodeServerRuntime();
+  const runtime = {
+    server,
+    cliHome: mendCliHome(),
+    sshConfigFile: path.join(os.homedir(), ".ssh", "config"),
+    signedIn:
+      config.token === null || !fs.existsSync(CONFIG_PATH)
+        ? null
+        : { url: config.url, deviceId: config.deviceId },
+    revokeDevice: async (): Promise<string | null> => {
+      if (config.deviceId === null) return "no device id saved";
+      try {
+        await request(config, "DELETE", `/me/devices/${config.deviceId}`);
+        return null;
+      } catch (error) {
+        return error instanceof Error ? error.message : String(error);
+      }
+    },
+  };
+  const plan = await describeUninstall(runtime, scope);
+  say(dim(`mend uninstall · ${scope === "all" ? "everything" : scope}`));
+  for (const line of planLines(plan, server.configDir)) say(`  ${line}`);
+  const nothing =
+    (plan.server === null || plan.server === "none") &&
+    (plan.home === null ||
+      (plan.home.cliConfig === null &&
+        plan.home.sshDirectory === null &&
+        plan.home.managedSshBlocks === 0));
+  if (nothing) {
+    say(dim("nothing to remove"));
+    return;
+  }
+  if (planDeletesData(plan)) {
+    say("repositories, worktrees, the database and its backups are deleted with the server");
+  }
+  if (!parsed.yes && !(await confirmUninstall(planDeletesData(plan) ? "delete" : "y"))) {
+    say(dim("nothing removed"));
+    return;
+  }
+  const outcome = await executeUninstall(runtime, plan);
+  for (const line of outcome.leftovers) say(dim(`  kept · ${line}`));
+  if (outcome.failures.length > 0) {
+    return fail(outcome.failures.join("\n"));
+  }
+  say(
+    `${green("✓")} ${scope === "all" ? "Mend is gone from this machine" : scope === "server" ? "the server is gone from this machine" : "this machine no longer holds Mend files"}`,
+  );
+};
+
 // ─── keys: the machine's Mend deploy key (docs/GIT-ACCESS.md) ───────────────
 
 /** Print the public key with the one instruction that makes it useful. */
@@ -2579,6 +2681,7 @@ _mend() {
     'shell:open a shell in a live session workspace'
     'service:reachable ports — add, list, stop'
     'server:local server setup, lifecycle and upgrades'
+    'uninstall:remove the server, local Mend files, or both'
     'keys:the machine Mend deploy key — init, show, share'
     'skills:skill libraries — list, push'
     'accounts:your connected accounts on the platform'
@@ -2619,7 +2722,7 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach stop shell service server keys skills pair doctor continue resume rejoin refresh projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach stop shell service server uninstall keys skills pair doctor continue resume rejoin refresh projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
@@ -3550,6 +3653,8 @@ const main = async () => {
       return login(config, rest);
     case "logout":
       return logout(config);
+    case "uninstall":
+      return uninstallCommand(config, rest);
     case "keys":
       return keysCommand(config, rest);
     case "dotfiles":

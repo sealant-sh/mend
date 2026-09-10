@@ -752,6 +752,30 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     see: ["login"],
   },
   {
+    name: "uninstall",
+    section: "this machine",
+    summary: "remove the server, this machine's Mend files, or both",
+    synopsis: ["[--all | --server | --home] [--yes]"],
+    description: [
+      "Asks which scope to remove when none is given, prints exactly what will go, and requires the word delete before the server is touched. The server scope removes the local Compose installation: its containers, every volume it owns (repositories, worktrees, the database), its release image, and the private configuration with its generations and backups. The home scope revokes this terminal's device token, then removes cli.json, the workspace SSH key, and the managed block in ~/.ssh/config.",
+      "Nothing else under the configuration directory is touched; a host-run store or keys root is listed and left in place. Workspace containers carry no label Mend can filter on, so they are named with the command that removes them, never removed.",
+    ],
+    options: [
+      { flag: "--all", text: "the server and this machine's Mend files" },
+      { flag: "--server", text: "only the local server installation" },
+      { flag: "--home", text: "only this machine's sign-in, ssh key and config block" },
+      { flag: "--yes", text: "skip the confirmation; required without a terminal" },
+    ],
+    examples: [
+      { command: "mend uninstall", text: "choose a scope, then confirm" },
+      {
+        command: "mend uninstall --home --yes",
+        text: "forget this machine's sign-in without asking",
+      },
+    ],
+    see: ["server stop", "logout"],
+  },
+  {
     name: "completions",
     section: "this machine",
     summary: "print the TAB-completion hook",
