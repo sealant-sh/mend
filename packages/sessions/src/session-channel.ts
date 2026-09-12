@@ -10,6 +10,7 @@ import { DeploymentConfig } from "@mend/store";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
+import { CAPTURE_ROUTES, dispatchCaptureRoute, MAX_CAPTURE_BODY_BYTES } from "./capture-channel.ts";
 import { frame, makeFrameFeed, makePushSniffer, type GitTransportPlan } from "./git-transport.ts";
 import type { SessionSocketApi } from "./session-socket.ts";
 
@@ -64,7 +65,10 @@ export const SessionChannelRegistryLive: Layer.Layer<SessionChannelRegistry> = L
 /** Largest JSON body either listener accepts; the helper's requests are tiny. */
 export const MAX_BODY_BYTES = 64 * 1024;
 
-const readBody = (request: http.IncomingMessage): Promise<unknown> =>
+const readBody = (
+  request: http.IncomingMessage,
+  maxBytes: number = MAX_BODY_BYTES,
+): Promise<unknown> =>
   new Promise((resolve) => {
     let text = "";
     let settled = false;
@@ -76,7 +80,7 @@ const readBody = (request: http.IncomingMessage): Promise<unknown> =>
     request.on("data", (chunk: Buffer | string) => {
       if (settled) return;
       text += String(chunk);
-      if (text.length > MAX_BODY_BYTES) {
+      if (text.length > maxBytes) {
         request.destroy();
         settle({});
       }
@@ -110,6 +114,12 @@ export const handleSessionRequest = async (
   const url = new URL(request.url ?? "/", "http://mend.sock");
   const route = `${request.method} ${url.pathname}`;
   try {
+    if (request.method === "POST" && CAPTURE_ROUTES.has(url.pathname)) {
+      // sealantd's registrar (ADR-0002 "Session channel routes"): a manifest can run to
+      // megabytes, so these read a larger body than the helper's tiny requests.
+      const body = await readBody(request, MAX_CAPTURE_BODY_BYTES);
+      return await dispatchCaptureRoute(api.capture, url.pathname, body, respond);
+    }
     if (route === "GET /recipes") return respond(200, await Effect.runPromise(api.recipes()));
     if (route === "GET /services") return respond(200, await Effect.runPromise(api.listServices()));
     if (route === "POST /services/recipe") {
@@ -264,15 +274,22 @@ export const handleGitConnect = async (
 export const SESSION_ID_HEADER = "x-mend-session-id";
 const SESSION_ID_SHAPE = /^[A-Za-z0-9_-]{1,128}$/;
 
-/** Parse the bearer token and session id; undefined when either is missing or malformed. */
+/**
+ * Parse the bearer token and session id; undefined when the token is missing or malformed.
+ * The session id header is optional: sealantd's capture registrar presents the token alone
+ * (`SEALANT_CAPTURE_TOKEN`, one token under two names), and the token's hash resolves the
+ * session; the helper and the git shim keep sending the id, which is verified against it.
+ */
 export const parseChannelCredentials = (
   headers: http.IncomingHttpHeaders,
-): { readonly sessionId: SessionId; readonly token: string } | undefined => {
+): { readonly sessionId: SessionId | null; readonly token: string } | undefined => {
   const authorization = headers["authorization"];
   const sessionId = headers[SESSION_ID_HEADER];
-  if (typeof authorization !== "string" || typeof sessionId !== "string") return undefined;
+  if (typeof authorization !== "string") return undefined;
   const match = /^Bearer\s+([A-Za-z0-9_-]{16,256})$/.exec(authorization);
-  if (match?.[1] === undefined || !SESSION_ID_SHAPE.test(sessionId)) return undefined;
+  if (match?.[1] === undefined) return undefined;
+  if (sessionId === undefined) return { sessionId: null, token: match[1] };
+  if (typeof sessionId !== "string" || !SESSION_ID_SHAPE.test(sessionId)) return undefined;
   return { sessionId: SessionId.make(sessionId), token: match[1] };
 };
 
@@ -322,17 +339,22 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
           message: "session channel: missing or malformed credentials",
         };
       }
-      const valid = await Effect.runPromise(
-        tokens.verify(credentials.sessionId, credentials.token),
-      );
-      if (!valid) {
+      const sessionId =
+        credentials.sessionId === null
+          ? await Effect.runPromise(tokens.resolve(credentials.token)).then((resolved) =>
+              resolved === null ? null : SessionId.make(resolved),
+            )
+          : (await Effect.runPromise(tokens.verify(credentials.sessionId, credentials.token)))
+            ? credentials.sessionId
+            : null;
+      if (sessionId === null) {
         return {
           ok: false,
           status: 401,
           message: "session channel: the session token was not accepted",
         };
       }
-      const api = registry.lookup(credentials.sessionId);
+      const api = registry.lookup(sessionId);
       if (api === undefined) {
         return {
           ok: false,

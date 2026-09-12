@@ -5,7 +5,8 @@
   "description": "Mend's central repository store: bare clones, per-session worktrees, checkpoint refs — pure git on the host",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./testing": "./test/capture-fixture.ts"
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",

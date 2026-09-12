@@ -39,6 +39,12 @@ export class SessionChannelTokensRepo extends Context.Service<
     readonly issue: (sessionId: string) => Effect.Effect<string>;
     /** True when the presented token matches the live (unrevoked) token for that session. */
     readonly verify: (sessionId: string, token: string) => Effect.Effect<boolean>;
+    /**
+     * The session a bare token belongs to, or null. sealantd's capture registrar presents the
+     * token alone (ADR-0002 "Session channel routes": one token, two names); the hash is the
+     * lookup key, so the secret never meets a comparison the database could time.
+     */
+    readonly resolve: (token: string) => Effect.Effect<string | null>;
     /** Revoke the session's token. Idempotent. */
     readonly revoke: (sessionId: string) => Effect.Effect<void>;
   }
@@ -84,6 +90,21 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
         return constantTimeEquals(row.tokenHash, hashSessionChannelToken(token));
       });
 
+      const resolve = Effect.fn("SessionChannelTokensRepo.resolve")(function* (token: string) {
+        const rows = yield* db
+          .select({ sessionId: sessionChannelTokens.sessionId })
+          .from(sessionChannelTokens)
+          .where(
+            and(
+              eq(sessionChannelTokens.tokenHash, hashSessionChannelToken(token)),
+              isNull(sessionChannelTokens.revokedAt),
+            ),
+          )
+          .limit(1)
+          .pipe(Effect.orDie);
+        return rows[0]?.sessionId ?? null;
+      });
+
       const revoke = Effect.fn("SessionChannelTokensRepo.revoke")(function* (sessionId: string) {
         yield* db
           .update(sessionChannelTokens)
@@ -97,7 +118,7 @@ export const SessionChannelTokensRepoLive: Layer.Layer<SessionChannelTokensRepo,
           .pipe(Effect.orDie);
       });
 
-      return { issue, verify, revoke };
+      return { issue, verify, resolve, revoke };
     }),
   );
 
@@ -120,6 +141,14 @@ export const SessionChannelTokensRepoMemory: Layer.Layer<SessionChannelTokensRep
         Effect.sync(() => {
           const hash = hashes.get(sessionId);
           return hash !== undefined && constantTimeEquals(hash, hashSessionChannelToken(token));
+        }),
+      resolve: (token) =>
+        Effect.sync(() => {
+          const hash = hashSessionChannelToken(token);
+          for (const [sessionId, known] of hashes) {
+            if (constantTimeEquals(known, hash)) return sessionId;
+          }
+          return null;
         }),
       revoke: (sessionId) =>
         Effect.sync(() => {

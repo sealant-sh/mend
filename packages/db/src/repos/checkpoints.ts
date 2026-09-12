@@ -23,6 +23,8 @@ export interface NewCheckpoint {
   readonly sealantRunId: SealantRunId | null;
   readonly seq: bigint;
   readonly trigger: CheckpointTrigger;
+  /** Capture mode (ADR-0002): the registered capture this checkpoint came from. */
+  readonly captureId?: string | null;
 }
 
 /** Internal wrapper so `withWorktreeLock` can rethrow the body's error unwidened. */
@@ -74,7 +76,11 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
     const create = Effect.fn("CheckpointsRepo.create")(function* (checkpoint: NewCheckpoint) {
       const [created] = yield* db
         .insert(checkpoints)
-        .values({ id: CheckpointId.make(crypto.randomUUID()), ...checkpoint })
+        .values({
+          id: CheckpointId.make(crypto.randomUUID()),
+          ...checkpoint,
+          captureId: checkpoint.captureId ?? null,
+        })
         .returning()
         .pipe(Effect.orDie);
       if (created === undefined) return yield* Effect.die("checkpoint insert returned no row");

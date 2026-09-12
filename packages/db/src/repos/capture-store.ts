@@ -1,6 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import type { WorktreeId } from "@mend/domain";
-import { asc, eq } from "drizzle-orm";
+import { asc, eq, inArray } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -9,10 +9,15 @@ import {
   type CaptureGitFsck,
   type CaptureKind,
   type CaptureRow,
+  type CaptureSummaryRow,
   type CaptureSummaryState,
   type PackClass,
+  type PackRow,
+  type PackState,
   captures,
+  captureSummaries,
   packs,
+  worktreeChain,
 } from "../schema/workbench.ts";
 
 /**
@@ -134,6 +139,26 @@ export class CaptureStoreRepo extends Context.Service<
     readonly captureById: (captureId: string) => Effect.Effect<CaptureRow | null>;
     /** Upsert pack rows (state `uploaded` unless already further along). */
     readonly recordPacks: (records: ReadonlyArray<PackRecord>) => Effect.Effect<void>;
+    /** The posted summary row for a capture, if one was accepted. */
+    readonly summaryOf: (captureId: string) => Effect.Effect<CaptureSummaryRow | null>;
+    /** Every chain (retention walks them all; liveness is chain rows, never bucket listings). */
+    readonly listChains: () => Effect.Effect<
+      ReadonlyArray<{
+        readonly worktreeId: WorktreeId;
+        readonly headCapture: string | null;
+        readonly headN: number;
+      }>
+    >;
+    /** Drop thinned capture rows; `checkpoints.capture_id` nulls and summaries cascade. */
+    readonly deleteCaptures: (
+      worktreeId: WorktreeId,
+      captureIds: ReadonlyArray<string>,
+    ) => Effect.Effect<number>;
+    readonly listPacks: (state?: PackState) => Effect.Effect<ReadonlyArray<PackRow>>;
+    readonly setPackState: (
+      packIds: ReadonlyArray<string>,
+      state: PackState,
+    ) => Effect.Effect<void>;
   }
 >()("@mend/db/CaptureStoreRepo") {}
 
@@ -375,6 +400,69 @@ export const CaptureStoreRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
+    const summaryOf = Effect.fn("CaptureStoreRepo.summaryOf")(function* (captureId: string) {
+      const [row] = yield* db
+        .select()
+        .from(captureSummaries)
+        .where(eq(captureSummaries.captureId, captureId))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row ?? null;
+    });
+
+    const listChains = Effect.fn("CaptureStoreRepo.listChains")(function* () {
+      const rows = yield* db
+        .select({
+          worktreeId: worktreeChain.worktreeId,
+          headCapture: worktreeChain.headCapture,
+          headN: worktreeChain.headN,
+        })
+        .from(worktreeChain)
+        .pipe(Effect.orDie);
+      return rows.map((row) => ({
+        worktreeId: row.worktreeId,
+        headCapture: row.headCapture,
+        headN: Number(row.headN),
+      }));
+    });
+
+    const deleteCaptures = Effect.fn("CaptureStoreRepo.deleteCaptures")(function* (
+      worktreeId: WorktreeId,
+      captureIds: ReadonlyArray<string>,
+    ) {
+      if (captureIds.length === 0) return 0;
+      // Never the head, whatever the caller computed: the chain pointer stays consistent.
+      const rows = yield* sql<{ readonly id: string }>`
+        DELETE FROM captures c
+         USING worktree_chain ch
+         WHERE c.worktree_id = ${worktreeId}
+           AND ch.worktree_id = c.worktree_id
+           AND c.id <> ch.head_capture
+           AND c.id IN ${sql.in([...captureIds])}
+         RETURNING c.id`.pipe(Effect.orDie);
+      return rows.length;
+    });
+
+    const listPacks = Effect.fn("CaptureStoreRepo.listPacks")(function* (state?: PackState) {
+      const query = db.select().from(packs);
+      const rows = yield* (state === undefined ? query : query.where(eq(packs.state, state))).pipe(
+        Effect.orDie,
+      );
+      return rows;
+    });
+
+    const setPackState = Effect.fn("CaptureStoreRepo.setPackState")(function* (
+      packIds: ReadonlyArray<string>,
+      state: PackState,
+    ) {
+      if (packIds.length === 0) return;
+      yield* db
+        .update(packs)
+        .set({ state, updatedAt: new Date() })
+        .where(inArray(packs.id, [...packIds]))
+        .pipe(Effect.orDie);
+    });
+
     return {
       init,
       claim,
@@ -388,6 +476,11 @@ export const CaptureStoreRepoLive: Layer.Layer<
       listChain,
       captureById,
       recordPacks,
+      summaryOf,
+      listChains,
+      deleteCaptures,
+      listPacks,
+      setPackState,
     };
   }),
 );
