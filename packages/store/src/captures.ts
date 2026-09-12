@@ -132,9 +132,24 @@ export const DirEntry = Schema.Struct({
 });
 export type DirEntry = typeof DirEntry.Type;
 
-/** A dir object is the JSON array of its entries, sorted by name. */
+/** A dir object is its entries, sorted by name. */
 export const DirObject = Schema.Array(DirEntry);
 export type DirObject = typeof DirObject.Type;
+
+/**
+ * On the wire a dir object is `{"entries": [...]}` — sealantd's `tree::DirObject` (serde of a
+ * struct with one field), the form every executor-written tree has (observed: the daemon's
+ * materialiser rejects a bare array with "expected struct DirObject with 1 element"). The bare
+ * array is still read, so nothing Mend wrote before this reading is unreadable.
+ */
+const DirObjectWire = Schema.Union([
+  Schema.Struct({ entries: Schema.Array(DirEntry) }),
+  Schema.Array(DirEntry),
+]);
+
+/** The bytes of a dir object as the daemon writes and reads them. */
+export const encodeDirObject = (entries: DirObject): Uint8Array =>
+  new Uint8Array(Buffer.from(JSON.stringify({ entries }), "utf8"));
 
 // ─── Errors ─────────────────────────────────────────────────────────────────
 
@@ -226,7 +241,17 @@ const decodeJson =
     });
 
 export const decodeManifest = decodeJson(CaptureManifest, "manifest");
-export const decodeDirObject = decodeJson(DirObject, "dir object");
+const decodeDirObjectWire = decodeJson(DirObjectWire, "dir object");
+const isWrappedDirObject = (
+  wire: typeof DirObjectWire.Type,
+): wire is { readonly entries: DirObject } => !Array.isArray(wire);
+export const decodeDirObject = (
+  key: string,
+  bytes: Uint8Array,
+): Effect.Effect<DirObject, CaptureFormatError> =>
+  decodeDirObjectWire(key, bytes).pipe(
+    Effect.map((wire): DirObject => (isWrappedDirObject(wire) ? wire.entries : wire)),
+  );
 
 // ─── CDC packs ──────────────────────────────────────────────────────────────
 

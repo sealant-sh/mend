@@ -116,7 +116,10 @@ export const handleSessionRequest = async (
   try {
     if (request.method === "POST" && CAPTURE_ROUTES.has(url.pathname)) {
       // sealantd's registrar (ADR-0002 "Session channel routes"): a manifest can run to
-      // megabytes, so these read a larger body than the helper's tiny requests.
+      // megabytes, so these read a larger body than the helper's tiny requests. Arrival is
+      // logged before the body is read, so a hung executor call is visible as "received"
+      // without its "capture route" completion line.
+      console.info(`session channel: capture route received · ${route}`);
       const body = await readBody(request, MAX_CAPTURE_BODY_BYTES);
       return await dispatchCaptureRoute(api.capture, url.pathname, body, respond);
     }

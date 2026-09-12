@@ -4832,12 +4832,19 @@ describe("SessionEngine capture mode", () => {
         }),
       {
         captured: memory,
+        // Liveness is an exec probe, not the stored status: while the platform answers, the
+        // probe succeeds (`execCalls`); once it is silent, the lookup fails and the probe with it.
         sealantLayer: sealantLaunchLayer(
           created,
           undefined,
           undefined,
           undefined,
           () => executorDead,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          [],
         ),
       },
     );

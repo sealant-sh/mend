@@ -1,6 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { ProjectId, Sha, WorktreeId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
+import * as Str from "effect/String";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -26,7 +27,13 @@ const scratchUrl = (() => {
   return url.toString();
 })();
 const adminLayer = PgClient.layer({ url: Redacted.make(ADMIN_URL) });
-const scratchLayer = PgClient.layer({ url: Redacted.make(scratchUrl) });
+// The production client's name transforms (`src/client.ts`): the repositories read raw `sql`
+// results by camelCase key, and a client without the transform would pass a test the API fails.
+const scratchLayer = PgClient.layer({
+  url: Redacted.make(scratchUrl),
+  transformResultNames: Str.snakeToCamel,
+  transformQueryNames: Str.camelToSnake,
+});
 const reposLayer = Layer.mergeAll(CaptureStoreRepoLive, StoreRefsRepoLive).pipe(
   Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(scratchLayer))),
 );
@@ -273,7 +280,7 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
         const missing = yield* repo.setSummaryState("never-landed", "observed");
         const sql = yield* SqlClient.SqlClient;
         const rows = yield* sql<{
-          readonly capture_id: string;
+          readonly captureId: string;
           readonly key: string;
           readonly state: string;
         }>`
@@ -288,7 +295,7 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     expect(result.observed).toBe(true);
     expect(result.missing).toBe(false);
     expect(result.rows).toEqual([
-      { capture_id: result.oneId, key: "changes/x/1b", state: "observed" },
+      { captureId: result.oneId, key: "changes/x/1b", state: "observed" },
     ]);
   });
 
@@ -462,9 +469,9 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
               SELECT n, epoch::int AS epoch, id, parent FROM captures
                WHERE worktree_id = ${worktreeId} ORDER BY n`;
             const [chain] = yield* sql<{
-              readonly head_n: number;
-              readonly head_capture: string | null;
-              readonly head_epoch: number;
+              readonly headN: number;
+              readonly headCapture: string | null;
+              readonly headEpoch: number;
             }>`
               SELECT head_n, head_capture, head_epoch::int AS head_epoch
                 FROM worktree_chain WHERE worktree_id = ${worktreeId}`;
@@ -478,9 +485,9 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
               expect(row.epoch).toBeLessThanOrEqual(leaseEpoch);
               if (index > 0) expect(row.epoch).toBeGreaterThanOrEqual(rows[index - 1]?.epoch ?? 0);
             });
-            expect(chain?.head_n).toBe(rows.length - 1);
-            expect(chain?.head_capture).toBe(rows.at(-1)?.id ?? null);
-            expect(Number(chain?.head_epoch)).toBeGreaterThanOrEqual(rows.at(-1)?.epoch ?? 0);
+            expect(chain?.headN).toBe(rows.length - 1);
+            expect(chain?.headCapture).toBe(rows.at(-1)?.id ?? null);
+            expect(Number(chain?.headEpoch)).toBeGreaterThanOrEqual(rows.at(-1)?.epoch ?? 0);
           }
           // What each executor believes it registered is exactly what landed under its epoch.
           const landed = yield* sql<{ readonly n: number; readonly epoch: number }>`

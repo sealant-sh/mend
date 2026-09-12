@@ -50,19 +50,19 @@ export class StoreRefsRepo extends Context.Service<
 >()("@mend/db/StoreRefsRepo") {}
 
 interface StoreRefRecord {
-  readonly project_id: ProjectId;
+  readonly projectId: ProjectId;
   readonly name: string;
   readonly sha: Sha;
   readonly version: number;
-  readonly updated_at: Date;
+  readonly updatedAt: Date;
 }
 
 const toStoreRef = (row: StoreRefRecord): StoreRef => ({
-  projectId: row.project_id,
+  projectId: row.projectId,
   name: row.name,
   sha: row.sha,
   version: Number(row.version),
-  updatedAt: row.updated_at,
+  updatedAt: row.updatedAt,
 });
 
 export const StoreRefsRepoLive: Layer.Layer<StoreRefsRepo, never, PgClient.PgClient> = Layer.effect(

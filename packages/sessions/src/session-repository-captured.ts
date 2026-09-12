@@ -1,6 +1,5 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
-import * as os from "node:os";
 import * as path from "node:path";
 
 import {
@@ -17,6 +16,7 @@ import {
   captureIdOf,
   captureKeys,
   decodeManifest,
+  encodeDirObject,
   git,
   GitError,
   GitOpsRunner,
@@ -104,7 +104,11 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
       storePath: string,
       sha: Sha,
     ) {
-      const staging = fs.mkdtempSync(path.join(os.tmpdir(), "mend-base-pack-"));
+      // Staged inside the store repository's object directory, as the runner stages its derived
+      // packs: `pack-objects` renames its temporary pack into place, and a rename across
+      // filesystems fails with EXDEV (a tmpfs `/tmp` against the store's disk — observed).
+      const staging = path.join(storePath, "objects", `base-pack-${crypto.randomUUID()}`);
+      fs.mkdirSync(staging, { recursive: true });
       const attempt = Effect.gen(function* () {
         const name = yield* git(
           ["pack-objects", "-q", "--revs", path.join(staging, "p")],
@@ -210,6 +214,14 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
           );
         const finish = Effect.gen(function* () {
           const keys = captureKeys(worktreeId, claimed.epoch);
+          // The empty workspace class is a real (empty) dir object, not a `""` root: sealantd's
+          // materialiser fetches every class root by key and has no empty-root case (observed:
+          // "no GET url in plan for" with an empty key).
+          const emptyRoot = encodeDirObject([]);
+          const emptyRootKey = keys.tree(sha256Hex(emptyRoot));
+          yield* blobs
+            .put(emptyRootKey, emptyRoot, { ifAbsent: true })
+            .pipe(Effect.catch(blobFailure(project.storePath, "put")));
           const manifest: CaptureManifest = {
             worktree_id: worktreeId,
             n: 0,
@@ -229,7 +241,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
                 head: `refs/heads/${worktree.branch}`,
                 fsck: "verified",
               },
-              workspace: { root: "", packs: [] },
+              workspace: { root: emptyRootKey, packs: [] },
               bulk: "pending",
             },
             checkpoint: {

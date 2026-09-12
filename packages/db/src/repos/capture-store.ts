@@ -216,7 +216,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       epoch: number,
       ttlSeconds: number = LEASE_TTL_SECONDS,
     ) {
-      const rows = yield* sql<{ readonly worktree_id: string }>`
+      const rows = yield* sql<{ readonly worktreeId: string }>`
         UPDATE worktree_leases
            SET expires_at = now() + make_interval(secs => ${ttlSeconds})
          WHERE worktree_id = ${worktreeId} AND epoch = ${epoch}
@@ -251,9 +251,9 @@ export const CaptureStoreRepoLive: Layer.Layer<
       // Zero rows: diagnose. Same n, same id = a retry after a lost ack.
       const [existing] = yield* sql<{
         readonly id: string;
-        readonly head_n: number;
-        readonly head_capture: string | null;
-        readonly lease_epoch: number | null;
+        readonly headN: number;
+        readonly headCapture: string | null;
+        readonly leaseEpoch: number | null;
       }>`
         SELECT c.id,
                ch.head_n,
@@ -266,11 +266,11 @@ export const CaptureStoreRepoLive: Layer.Layer<
          WHERE ch.worktree_id = ${capture.worktreeId}`.pipe(Effect.orDie);
       if (existing !== undefined && existing.id === capture.id) return { lostAck: true };
       const reason: CaptureConflictReason =
-        existing === undefined || existing.lease_epoch === null
+        existing === undefined || existing.leaseEpoch === null
           ? "stale_epoch"
-          : Number(existing.lease_epoch) !== capture.epoch
+          : Number(existing.leaseEpoch) !== capture.epoch
             ? "stale_epoch"
-            : Number(existing.head_n) !== capture.n - 1
+            : Number(existing.headN) !== capture.n - 1
               ? "head_moved"
               : "wrong_parent";
       return yield* new CaptureConflictError({
@@ -284,7 +284,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       worktreeId: WorktreeId,
       epoch: number,
     ) {
-      const rows = yield* sql<{ readonly worktree_id: string }>`
+      const rows = yield* sql<{ readonly worktreeId: string }>`
         UPDATE worktree_leases
            SET expires_at = now()
          WHERE worktree_id = ${worktreeId} AND epoch = ${epoch}
@@ -297,7 +297,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       captureId: string,
       key: string,
     ) {
-      const rows = yield* sql<{ readonly capture_id: string }>`
+      const rows = yield* sql<{ readonly captureId: string }>`
         INSERT INTO capture_summaries (capture_id, worktree_id, key, state)
         SELECT ${captureId}, ${worktreeId}, ${key}, 'claimed'
           FROM worktree_chain
@@ -312,19 +312,22 @@ export const CaptureStoreRepoLive: Layer.Layer<
       captureId: string,
       state: CaptureSummaryState,
     ) {
-      const rows = yield* sql<{ readonly capture_id: string }>`
+      const rows = yield* sql<{ readonly captureId: string }>`
         UPDATE capture_summaries SET state = ${state}, updated_at = now()
          WHERE capture_id = ${captureId}
          RETURNING capture_id`.pipe(Effect.orDie);
       return rows.length > 0;
     });
 
+    // Raw `sql` reads name their result keys in camelCase: the client transforms every result name
+    // with snakeToCamel (`client.ts`), so `executor_id` arrives as `executorId` — a snake_case key
+    // here reads `undefined` and silently turns a held lease into a free one (observed in the e2e).
     const leaseOf = Effect.fn("CaptureStoreRepo.leaseOf")(function* (worktreeId: WorktreeId) {
       const [row] = yield* sql<{
-        readonly worktree_id: WorktreeId;
-        readonly executor_id: string | null;
+        readonly worktreeId: WorktreeId;
+        readonly executorId: string | null;
         readonly epoch: number;
-        readonly expires_at: Date | null;
+        readonly expiresAt: Date | null;
         readonly live: boolean;
       }>`
         SELECT worktree_id, executor_id, epoch::int AS epoch, expires_at,
@@ -333,29 +336,29 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return row === undefined
         ? null
         : {
-            worktreeId: row.worktree_id,
-            executorId: row.executor_id,
+            worktreeId: row.worktreeId,
+            executorId: row.executorId,
             epoch: Number(row.epoch),
-            expiresAt: row.expires_at,
+            expiresAt: row.expiresAt,
             live: row.live,
           };
     });
 
     const headOf = Effect.fn("CaptureStoreRepo.headOf")(function* (worktreeId: WorktreeId) {
       const [chain] = yield* sql<{
-        readonly worktree_id: WorktreeId;
-        readonly head_capture: string | null;
-        readonly head_n: number;
-        readonly head_epoch: number;
+        readonly worktreeId: WorktreeId;
+        readonly headCapture: string | null;
+        readonly headN: number;
+        readonly headEpoch: number;
       }>`
         SELECT worktree_id, head_capture, head_n, head_epoch::int AS head_epoch
           FROM worktree_chain WHERE worktree_id = ${worktreeId}`.pipe(Effect.orDie);
       if (chain === undefined) return null;
-      const head = chain.head_capture === null ? null : yield* captureById(chain.head_capture);
+      const head = chain.headCapture === null ? null : yield* captureById(chain.headCapture);
       return {
-        worktreeId: chain.worktree_id,
-        headN: Number(chain.head_n),
-        headEpoch: Number(chain.head_epoch),
+        worktreeId: chain.worktreeId,
+        headN: Number(chain.headN),
+        headEpoch: Number(chain.headEpoch),
         head,
       };
     });

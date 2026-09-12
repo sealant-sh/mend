@@ -603,6 +603,19 @@ const decodeBody =
       Effect.mapError((error) => bad(`request: ${error.message}`)),
     );
 
+/** The fields of a registrar request worth a log line: never the manifest, never a URL. */
+const asRequestSummary = (body: unknown): Record<string, string | number> => {
+  if (typeof body !== "object" || body === null) return {};
+  const record = body as Record<string, unknown>;
+  const out: Record<string, string | number> = {};
+  for (const key of ["worktree_id", "epoch", "n", "capture_id"] as const) {
+    const value = record[key];
+    if (typeof value === "string" || typeof value === "number") out[key] = value;
+  }
+  if (Array.isArray(record["keys"])) out["keys"] = record["keys"].length;
+  return out;
+};
+
 /** The POST route names, exactly as sealantd's `HttpRegistrar` appends them to the endpoint. */
 export const CAPTURE_ROUTES = new Set([
   "/plan.get",
@@ -626,22 +639,34 @@ export const dispatchCaptureRoute = (
     respond(404, { message: `unknown route: POST ${pathname}` });
     return Promise.resolve();
   }
+  // One line per registrar call, so an operator can watch an executor claim, ship and register
+  // from the API log alone (`POST /plan.get`, `POST /capture.register n=3 … 200`).
+  const requested = asRequestSummary(body);
+  const observed = (status: number, detail: string) =>
+    Effect.logInfo("session channel: capture route").pipe(
+      Effect.annotateLogs({ route: `POST ${pathname}`, ...requested, status, detail }),
+    );
   const run = <A>(effect: Effect.Effect<A, CaptureRouteError>) =>
     Effect.runPromise(
       effect.pipe(
+        Effect.tap(() => observed(200, "ok")),
         Effect.map((value) => respond(200, value)),
         Effect.catchTag("CaptureRouteError", (error) =>
-          Effect.sync(() =>
-            respond(error.status, {
-              reason: error.reason,
-              message: error.message,
-              ...(error.live_epoch === undefined ? {} : { live_epoch: error.live_epoch }),
-              ...(error.head_n === undefined ? {} : { head_n: error.head_n }),
-              ...(error.head_capture_id === undefined
-                ? {}
-                : { head_capture_id: error.head_capture_id }),
-              ...(error.missing === undefined ? {} : { missing: error.missing }),
-            }),
+          observed(error.status, `${error.reason}: ${error.message}`).pipe(
+            Effect.andThen(
+              Effect.sync(() =>
+                respond(error.status, {
+                  reason: error.reason,
+                  message: error.message,
+                  ...(error.live_epoch === undefined ? {} : { live_epoch: error.live_epoch }),
+                  ...(error.head_n === undefined ? {} : { head_n: error.head_n }),
+                  ...(error.head_capture_id === undefined
+                    ? {}
+                    : { head_capture_id: error.head_capture_id }),
+                  ...(error.missing === undefined ? {} : { missing: error.missing }),
+                }),
+              ),
+            ),
           ),
         ),
       ),

@@ -969,10 +969,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
         }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
 
+      /**
+       * Does the executor still answer? The platform's stored status is not enough: a container
+       * that was killed stays `ready` on the control plane until something touches it (observed
+       * three minutes after `docker kill` in the local proof — the Docker reaper handles expiry,
+       * stop intents and superseded runtimes, not death). So a live status is confirmed with a
+       * one-shot exec into the workspace, which fails within seconds when the container is gone
+       * (ADR-0002 "Replacement and pickup": confirm termination through the platform first).
+       */
       const workspaceAlive = (workspaceId: SealantWorkspaceId) =>
         sealant.getWorkspace(workspaceId).pipe(
-          Effect.flatMap((workspace) => Effect.promise(() => workspace.status())),
-          Effect.map(workspaceIsLive),
+          Effect.flatMap((workspace) =>
+            Effect.promise(() => workspace.status()).pipe(
+              Effect.flatMap((status) =>
+                workspaceIsLive(status)
+                  ? sealant.exec(workspace, ["true"]).pipe(
+                      Effect.map((result) => result.exitCode === 0),
+                      Effect.timeoutOption(Duration.seconds(30)),
+                      Effect.map(Option.getOrElse(() => false)),
+                    )
+                  : Effect.succeed(false),
+              ),
+            ),
+          ),
           Effect.catch(() => Effect.succeed(false)),
           Effect.catchDefect(() => Effect.succeed(false)),
         );
