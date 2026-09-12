@@ -68,7 +68,14 @@ co-located default ignores every variable below.
 
 `compose.dev.yaml` runs Garage in single-node mode on port 3900 with bucket `mend`; `garage-init`
 lays the node out and creates the key once. A `dir://` bucket needs no Docker and serves an executor
-on this machine only (its presigned URLs are `file://`).
+on this machine only (its presigned URLs are `file://`); a Docker executor needs the S3 bucket.
+
+The two `_URL` values must be reachable from inside the executor container. On Linux,
+`host.docker.internal` resolves only with `--add-host`, which the Sealant Docker runtime does not
+pass, and a host firewall (NixOS's default) drops traffic from the bridge to the host — so the
+bridge IP (`172.17.0.1`) can be unreachable too. `scripts/capture-e2e.sh` documents the workaround
+used for the local proof: a relay container on the default bridge that forwards both ports to the
+host over Unix sockets. Opening the firewall for `docker0` removes the need for it.
 
 Origins must include the correct scheme, hostname, and port, without a path. Interface discovery,
 wildcards, and incoming forwarding headers do not grant trust. Do not configure a second allowlist

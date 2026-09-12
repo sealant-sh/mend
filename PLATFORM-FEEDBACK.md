@@ -7,6 +7,49 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-12 · 0.28.0 · Capture mode end to end on one machine: what the local proof found
+
+`scripts/capture-e2e.sh` passed on this machine (Mend in capture mode, Core PR sealant#231 from
+source, sealantd PR #71 baked into the workspace image, Garage as the bucket, a Docker executor with
+no bind mount): adopt → session → capture 0 → launch (lease live 4.8 s) → an edit (first capture
+registered 3.1 s later) → checkpoint (5.2 s) → the diff served "observed at capture 1" →
+`docker kill` (settled "executor lost" 33.5 s later) → resume = pickup on a fresh executor (epoch 2
+→ 3, 5.4 s) with the edit on its disk. It needed these platform-side changes, applied as LOCAL
+uncommitted patches on a detached sealantd worktree for the proof — they are the asks:
+
+- **sealantd, `crates/sealantd/src/boot/config.rs` `is_acceptable_secret_env_name`:** the secret env
+  file rejects every `SEALANT_*` name, but the capture token is delivered in that very file as
+  `SEALANT_CAPTURE_TOKEN` (Core `CAPTURE_TOKEN_SECRET_ENV_NAME`, sealantd `TOKEN_KEY`). Every
+  capture boot fails with "entry \"SEALANT_CAPTURE_TOKEN\" is not an acceptable environment variable
+  name". Exempt the daemon's own key (it is stripped from the harness env anyway).
+- **sealantd, `crates/sealant-capture/src/gitpack.rs` `reflog_tips`:** a freshly materialised
+  repository has no reflog, and `git rev-list --no-walk=unsorted --reflog` with nothing to walk
+  exits with its usage text, so `seed_tips_from_repo` fails the boot on capture 0. An absent
+  `.git/logs` is an empty tip set.
+- **sealantd / ADR-0015 format:** the daemon's dir object is `{"entries": [...]}` (serde of
+  `tree::DirObject`), and its materialiser fetches every class root by key — a `""` root is asked
+  for as a URL. Mend now writes capture 0's empty workspace class as a real empty dir object in that
+  form and reads both forms (`packages/store/src/captures.ts`). Fix the ADR text or the daemon so
+  one form is canonical.
+- **sealantd:** the staging directory `.sealantd/capture/` lives inside the worktree and its files
+  land in the git index (`git status` in the executor shows `A .sealantd/capture/index/*.json`), so
+  they appear in Mend's change diff as added files. The daemon's own directory must stay out of the
+  index tree it snapshots.
+- **Core, Docker runtime:** a killed container stays `ready` on the control plane (observed three
+  minutes after `docker kill`; the expiry reaper handles TTL, stop intents and superseded runtimes,
+  not death). Mend now confirms a live status with a one-shot exec before treating an expired lease
+  as a paused executor (`engine.ts` `workspaceAlive`). A runtime-observed status (or an `inspect`
+  surface on the SDK) would make the probe unnecessary.
+- **Core, Docker runtime:** with the Docker service on, the executor joins a per-workspace network;
+  with it off, the default bridge. Neither resolves `host.docker.internal` (no `--add-host`), and a
+  Linux host firewall can drop bridge → host traffic — the endpoint and bucket URLs then need a
+  relay. An `--add-host host.docker.internal:host-gateway` on the executor is the small ask; the
+  firewall is the operator's.
+- **SDK 0.28.0 (in addition to the entry below):** the facade lowers an unknown source kind to
+  `{kind: "mount", hostPath: undefined}` and drops `captureToken`, and the 0.28.0 wire struct strips
+  `captureToken` on encode — so Mend posts the capture create directly to `POST /v1/workspaces`
+  (`client.ts` `postCaptureCreate`) until the SDK ships the source.
+
 ## 2026-09-12 · 0.28.0 · Capture workspace source: the SDK release Mend's capture mode waits on
 
 - **Needed:** Mend's capture mode (docs/adr/0002-session-capture-store.md) launches executors with
