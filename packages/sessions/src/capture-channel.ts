@@ -21,8 +21,8 @@ import * as Context from "effect/Context";
 
 /**
  * The capture half of the session channel (ADR-0002 "Session channel routes"): sealantd's
- * `Registrar` port as five POST routes — `plan.get`, `upload.urls`, `capture.register`,
- * `change.summary`, `lease.heartbeat` — each carrying the caller's `epoch`. Authentication is
+ * `Registrar` port as six POST routes — `plan.get`, `upload.urls`, `upload.complete`,
+ * `capture.register`, `change.summary`, `lease.heartbeat` — each carrying the caller's `epoch`. Authentication is
  * the tunnel's (the per-session token, hash-verified before the session resolves); every closure
  * here is already scoped to ONE session's worktree, so the route table has nothing to check
  * beyond what the request says about itself.
@@ -55,12 +55,46 @@ export interface PlanGetResponse {
   readonly get_urls: Readonly<Record<string, string>>;
 }
 
+/**
+ * `upload.urls` (sealantd `registrar.rs` "Wire additions"): `keys` is the plain list it always
+ * was; `sizes` (key → bytes, a subset of `keys`) names the keys the executor would upload as
+ * multipart. A registrar without `sizes` support answers `urls` alone and gets single PUTs.
+ */
 export const UploadUrlsRequest = Schema.Struct({
   worktree_id: Schema.String,
   epoch: Schema.Int,
   keys: Schema.Array(Schema.String),
+  sizes: Schema.optional(Schema.Record(Schema.String, Schema.Int)),
 });
 export type UploadUrlsRequest = typeof UploadUrlsRequest.Type;
+
+/** A multipart plan: part `i` (1-based) is PUT to `part_urls[i - 1]`, `part_size` bytes each but the last. */
+export interface MultipartPlan {
+  readonly upload_id: string;
+  readonly part_size: number;
+  readonly part_urls: ReadonlyArray<string>;
+}
+
+/**
+ * `upload.urls` response. `urls` is unchanged — one PUT URL per single-part key. A key taken
+ * as multipart is present in `multipart` and absent from `urls`. A sized key the bucket already
+ * holds is answered in `urls` like any other: the executor's single-PUT path is its own
+ * already-present check, and the wire has no third answer (sealantd reads `multipart` as
+ * plans only).
+ */
+export interface UploadUrlsResponse {
+  readonly urls: Readonly<Record<string, string>>;
+  readonly multipart: Readonly<Record<string, MultipartPlan>>;
+}
+
+export const UploadCompleteRequest = Schema.Struct({
+  worktree_id: Schema.String,
+  epoch: Schema.Int,
+  key: Schema.String,
+  upload_id: Schema.String,
+  parts: Schema.Array(Schema.Struct({ part_number: Schema.Int, etag: Schema.String })),
+});
+export type UploadCompleteRequest = typeof UploadCompleteRequest.Type;
 
 export const RegisterRequest = Schema.Struct({
   worktree_id: Schema.String,
@@ -99,6 +133,7 @@ export const CaptureRefusalReason = Schema.Literals([
   "capture-id-mismatch",
   "bad-request",
   "quota-exceeded",
+  "exists",
 ]);
 export type CaptureRefusalReason = typeof CaptureRefusalReason.Type;
 
@@ -112,6 +147,8 @@ export class CaptureRouteError extends Schema.TaggedErrorClass<CaptureRouteError
     head_n: Schema.optional(Schema.Int),
     head_capture_id: Schema.optional(Schema.String),
     missing: Schema.optional(Schema.Array(Schema.String)),
+    /** `exists`: the key whose bytes are already there. */
+    key: Schema.optional(Schema.String),
   },
 ) {}
 
@@ -120,7 +157,14 @@ export interface SessionCaptureApi {
   readonly planGet: (input: PlanGetRequest) => Effect.Effect<PlanGetResponse, CaptureRouteError>;
   readonly uploadUrls: (
     input: UploadUrlsRequest,
-  ) => Effect.Effect<{ readonly urls: Readonly<Record<string, string>> }, CaptureRouteError>;
+  ) => Effect.Effect<UploadUrlsResponse, CaptureRouteError>;
+  /**
+   * Assemble a multipart upload write-once; 409 `exists` when the key already holds bytes.
+   * `size` is the assembled object's, when the bucket reports it (the executor checks it).
+   */
+  readonly uploadComplete: (
+    input: UploadCompleteRequest,
+  ) => Effect.Effect<{ readonly size?: number }, CaptureRouteError>;
   readonly register: (
     input: RegisterRequest,
   ) => Effect.Effect<
@@ -151,6 +195,87 @@ export const LEASE_EXPIRES_IN_SECS = 30;
  * ADR-0002 "Consequences"); the first heartbeat brings it back to the 30 s cadence.
  */
 export const LAUNCH_CLAIM_TTL_SECONDS = 5 * 60;
+
+// ─── Upload policy ──────────────────────────────────────────────────────────
+
+/** Keys at or above this size are planned as multipart uploads. */
+export const MULTIPART_THRESHOLD_BYTES = 16 * 1024 * 1024;
+/** Part size; S3 and R2 refuse parts under 5 MiB except the last. */
+export const MULTIPART_PART_SIZE_BYTES = 16 * 1024 * 1024;
+/** S3's cap on parts per upload. */
+export const MULTIPART_MAX_PARTS = 10_000;
+const S3_MIN_PART_BYTES = 5 * 1024 * 1024;
+
+/**
+ * How `upload.urls` plans an upload: single PUT below the threshold, parts of `partSizeBytes`
+ * above it. A test provides small numbers against the directory store; production reads the
+ * environment.
+ */
+export class CaptureUploadPolicy extends Context.Service<
+  CaptureUploadPolicy,
+  {
+    readonly multipartThresholdBytes: number;
+    readonly partSizeBytes: number;
+  }
+>()("@mend/sessions/CaptureUploadPolicy") {}
+
+export const CaptureUploadPolicyDefault: Layer.Layer<CaptureUploadPolicy> = Layer.succeed(
+  CaptureUploadPolicy,
+  { multipartThresholdBytes: MULTIPART_THRESHOLD_BYTES, partSizeBytes: MULTIPART_PART_SIZE_BYTES },
+);
+
+export class CaptureUploadPolicyError extends Error {
+  override readonly name = "CaptureUploadPolicyError";
+}
+
+export interface CaptureUploadPolicyEnvLike {
+  readonly MEND_CAPTURE_MULTIPART_THRESHOLD?: string | undefined;
+  readonly MEND_CAPTURE_MULTIPART_PART_SIZE?: string | undefined;
+}
+
+const positiveBytes = (name: string, raw: string | undefined, fallback: number): number => {
+  const trimmed = raw?.trim();
+  if (trimmed === undefined || trimmed === "") return fallback;
+  const value = Number(trimmed);
+  if (!Number.isInteger(value) || value <= 0) {
+    throw new CaptureUploadPolicyError(
+      `${name} must be a positive integer of bytes, got "${raw}".`,
+    );
+  }
+  return value;
+};
+
+/**
+ * `MEND_CAPTURE_MULTIPART_THRESHOLD` (bytes, default 16 MiB) and
+ * `MEND_CAPTURE_MULTIPART_PART_SIZE` (bytes, default 16 MiB, at least 5 MiB for S3 and R2).
+ */
+export const resolveCaptureUploadPolicy = (
+  env: CaptureUploadPolicyEnvLike,
+): typeof CaptureUploadPolicy.Service => {
+  const partSizeBytes = positiveBytes(
+    "MEND_CAPTURE_MULTIPART_PART_SIZE",
+    env.MEND_CAPTURE_MULTIPART_PART_SIZE,
+    MULTIPART_PART_SIZE_BYTES,
+  );
+  if (partSizeBytes < S3_MIN_PART_BYTES) {
+    throw new CaptureUploadPolicyError(
+      `MEND_CAPTURE_MULTIPART_PART_SIZE must be at least ${S3_MIN_PART_BYTES} (S3's minimum part).`,
+    );
+  }
+  return {
+    multipartThresholdBytes: positiveBytes(
+      "MEND_CAPTURE_MULTIPART_THRESHOLD",
+      env.MEND_CAPTURE_MULTIPART_THRESHOLD,
+      MULTIPART_THRESHOLD_BYTES,
+    ),
+    partSizeBytes,
+  };
+};
+
+export const CaptureUploadPolicyLive: Layer.Layer<CaptureUploadPolicy> = Layer.effect(
+  CaptureUploadPolicy,
+  Effect.sync(() => resolveCaptureUploadPolicy(process.env)),
+);
 
 export interface CaptureScope {
   readonly worktreeId: WorktreeId;
@@ -192,407 +317,513 @@ const bad = (message: string) =>
 const storeError = (operation: string) => (cause: { readonly _tag: string }) =>
   Effect.die(`capture channel: ${operation} failed: ${cause._tag}`);
 
-export const CaptureChannelLive: Layer.Layer<CaptureChannel, never, CaptureStoreRepo | BlobStore> =
-  Layer.effect(
-    CaptureChannel,
-    Effect.gen(function* () {
-      const repo = yield* CaptureStoreRepo;
-      const blobs = yield* BlobStore;
-      const listeners = new Map<string, Set<RegisterListener>>();
-      const publish = (row: CaptureRow): void => {
-        const set = listeners.get(row.worktreeId);
-        if (set === undefined) return;
-        // Snapshot first: a woken listener removes itself from the set while we iterate.
-        const woken = Array.from(set);
-        for (const listener of woken) listener(row);
-      };
-      const awaitRegister = (
-        worktreeId: WorktreeId,
-        accept: (row: CaptureRow) => boolean,
-        timeout: Duration.Duration,
-      ) =>
-        Effect.callback<CaptureRow>((resume) => {
-          const set = listeners.get(worktreeId) ?? new Set<RegisterListener>();
-          listeners.set(worktreeId, set);
-          const listener: RegisterListener = (row) => {
-            if (!accept(row)) return;
-            set.delete(listener);
-            resume(Effect.succeed(row));
-          };
-          set.add(listener);
-          return Effect.sync(() => {
-            set.delete(listener);
-            if (set.size === 0) listeners.delete(worktreeId);
-          });
-        }).pipe(
-          Effect.timeoutOption(timeout),
-          Effect.map((found) => Option.getOrNull(found)),
-        );
+export const CaptureChannelLive: Layer.Layer<
+  CaptureChannel,
+  never,
+  CaptureStoreRepo | BlobStore | CaptureUploadPolicy
+> = Layer.effect(
+  CaptureChannel,
+  Effect.gen(function* () {
+    const repo = yield* CaptureStoreRepo;
+    const blobs = yield* BlobStore;
+    const policy = yield* CaptureUploadPolicy;
+    const listeners = new Map<string, Set<RegisterListener>>();
+    const publish = (row: CaptureRow): void => {
+      const set = listeners.get(row.worktreeId);
+      if (set === undefined) return;
+      // Snapshot first: a woken listener removes itself from the set while we iterate.
+      const woken = Array.from(set);
+      for (const listener of woken) listener(row);
+    };
+    const awaitRegister = (
+      worktreeId: WorktreeId,
+      accept: (row: CaptureRow) => boolean,
+      timeout: Duration.Duration,
+    ) =>
+      Effect.callback<CaptureRow>((resume) => {
+        const set = listeners.get(worktreeId) ?? new Set<RegisterListener>();
+        listeners.set(worktreeId, set);
+        const listener: RegisterListener = (row) => {
+          if (!accept(row)) return;
+          set.delete(listener);
+          resume(Effect.succeed(row));
+        };
+        set.add(listener);
+        return Effect.sync(() => {
+          set.delete(listener);
+          if (set.size === 0) listeners.delete(worktreeId);
+        });
+      }).pipe(
+        Effect.timeoutOption(timeout),
+        Effect.map((found) => Option.getOrNull(found)),
+      );
 
-      /** Per-session rolling counters; a Mend restart forgets them, which only ever relaxes. */
-      const urlLog = new Map<string, Array<number>>();
-      const bytesUsed = new Map<string, number>();
+    /** Per-session rolling counters; a Mend restart forgets them, which only ever relaxes. */
+    const urlLog = new Map<string, Array<number>>();
+    const bytesUsed = new Map<string, number>();
 
-      const apiFor = (scope: CaptureScope): SessionCaptureApi => {
-        const worktreeId = scope.worktreeId;
-        const prefixFor = (epoch: number) => `captures/${worktreeId}/${epoch}/`;
-        const byteBudget = Math.max(
-          BYTE_QUOTA_FLOOR,
-          BYTE_QUOTA_MULTIPLIER * Math.max(0, scope.footprintBytes),
-        );
-        /** The lease predicate: live and under the caller's epoch, else the 409 the caller needs. */
-        const requireLease = (epoch: number) =>
-          Effect.gen(function* () {
-            const lease = yield* repo.leaseOf(worktreeId);
-            if (lease === null || !lease.live) {
-              return yield* new CaptureRouteError({
-                status: 409,
-                reason: "lease-lost",
-                message: "the worktree lease is not live — stop shipping and pause",
-                ...(lease === null || lease.epoch === epoch ? {} : { live_epoch: lease.epoch }),
-              });
-            }
-            if (lease.epoch !== epoch) {
-              return yield* new CaptureRouteError({
-                status: 409,
-                reason: "stale-epoch",
-                message: `epoch ${epoch} is stale; the worktree is held under epoch ${lease.epoch}`,
-                live_epoch: lease.epoch,
-              });
-            }
-            return lease;
-          });
-
-        const requireWorktree = (claimed: string | null | undefined) =>
-          claimed === undefined || claimed === null || claimed === worktreeId
-            ? Effect.void
-            : Effect.fail(
-                new CaptureRouteError({
-                  status: 409,
-                  reason: "wrong-worktree",
-                  message: "this session token is scoped to another worktree",
-                }),
-              );
-
-        const planGet = Effect.fn("SessionCaptureApi.planGet")(function* (input: PlanGetRequest) {
-          yield* requireWorktree(input.worktree_id);
-          const asked = input.epoch ?? 0;
+    const apiFor = (scope: CaptureScope): SessionCaptureApi => {
+      const worktreeId = scope.worktreeId;
+      const prefixFor = (epoch: number) => `captures/${worktreeId}/${epoch}/`;
+      const byteBudget = Math.max(
+        BYTE_QUOTA_FLOOR,
+        BYTE_QUOTA_MULTIPLIER * Math.max(0, scope.footprintBytes),
+      );
+      /** The lease predicate: live and under the caller's epoch, else the 409 the caller needs. */
+      const requireLease = (epoch: number) =>
+        Effect.gen(function* () {
           const lease = yield* repo.leaseOf(worktreeId);
-          let epoch: number;
-          if (lease !== null && lease.live && (asked === 0 || asked === lease.epoch)) {
-            if (asked === 0 && lease.executorId !== scope.executorId) {
-              // Another executor holds it: a second executor for a leased worktree is refused
-              // (ADR-0002 "Decisions made here" 9); joins run inside the holder.
-              return yield* new CaptureRouteError({
-                status: 409,
-                reason: "worktree-leased",
-                message: "another executor holds this worktree's lease",
-                live_epoch: lease.epoch,
-              });
-            }
-            epoch = lease.epoch;
-          } else if (lease !== null && lease.live) {
+          if (lease === null || !lease.live) {
+            return yield* new CaptureRouteError({
+              status: 409,
+              reason: "lease-lost",
+              message: "the worktree lease is not live — stop shipping and pause",
+              ...(lease === null || lease.epoch === epoch ? {} : { live_epoch: lease.epoch }),
+            });
+          }
+          if (lease.epoch !== epoch) {
             return yield* new CaptureRouteError({
               status: 409,
               reason: "stale-epoch",
-              message: `epoch ${asked} is stale; the worktree is held under epoch ${lease.epoch}`,
+              message: `epoch ${epoch} is stale; the worktree is held under epoch ${lease.epoch}`,
               live_epoch: lease.epoch,
             });
-          } else {
-            // Not held: this plan is the claim (start, pickup, replacement — one path).
-            const claimed = yield* repo.claim(worktreeId, scope.executorId).pipe(
-              Effect.mapError(
-                () =>
-                  new CaptureRouteError({
-                    status: 409,
-                    reason: "worktree-leased",
-                    message: "another executor claimed this worktree first",
-                  }),
-              ),
-            );
-            epoch = claimed.epoch;
           }
-          const chain = yield* repo.headOf(worktreeId);
-          const head = chain?.head ?? null;
-          if (head === null) {
-            return { worktree_id: worktreeId, epoch, head: null, get_urls: {} };
-          }
-          const manifestBytes = yield* blobs
-            .get(head.manifestKey)
-            .pipe(Effect.catch(storeError("reading the head manifest")));
-          const manifest = yield* decodeManifest(head.manifestKey, manifestBytes).pipe(
-            Effect.catch(storeError("decoding the head manifest")),
-          );
-          const keys = yield* keysNeededBy(manifest).pipe(
-            Effect.provideService(BlobStore, blobs),
-            Effect.catch(storeError("walking the head capture")),
-          );
-          const urls: Record<string, string> = {};
-          for (const key of [...keys, head.manifestKey]) {
-            urls[key] = yield* blobs
-              .presign(key, "GET", PRESIGN_TTL_SECONDS)
-              .pipe(Effect.catch(storeError("presigning a GET")));
-          }
-          return {
-            worktree_id: worktreeId,
-            epoch,
-            head: {
-              n: head.n,
-              capture_id: head.id,
-              manifest_key: head.manifestKey,
-              manifest,
-            },
-            get_urls: urls,
-          } satisfies PlanGetResponse;
+          return lease;
         });
 
-        const uploadUrls = Effect.fn("SessionCaptureApi.uploadUrls")(function* (
-          input: UploadUrlsRequest,
-        ) {
-          yield* requireWorktree(input.worktree_id);
-          yield* requireLease(input.epoch);
-          const prefix = prefixFor(input.epoch);
-          // Only under the caller's own epoch prefix; anything else is dropped, never minted.
-          const keys = [...new Set(input.keys)].filter(
-            (key) => key.startsWith(prefix) && isValidBlobKey(key),
-          );
-          const now = Date.now();
-          const window = (urlLog.get(scope.executorId) ?? []).filter(
-            (at) => now - at < 60 * 60 * 1000,
-          );
-          if (window.length + keys.length > URL_QUOTA_PER_HOUR) {
-            urlLog.set(scope.executorId, window);
-            return yield* new CaptureRouteError({
-              status: 429,
-              reason: "quota-exceeded",
-              message: `URL quota: ${URL_QUOTA_PER_HOUR} per hour per session`,
-            });
-          }
-          for (let index = 0; index < keys.length; index += 1) window.push(now);
-          urlLog.set(scope.executorId, window);
-          const urls: Record<string, string> = {};
-          for (const key of keys) {
-            urls[key] = yield* blobs
-              .presign(key, "PUT", PRESIGN_TTL_SECONDS)
-              .pipe(Effect.catch(storeError("presigning a PUT")));
-          }
-          return { urls };
-        });
-
-        const conflictToRoute = (error: CaptureConflictError) =>
-          Effect.gen(function* () {
-            if (error.reason === "stale_epoch") {
-              const lease = yield* repo.leaseOf(worktreeId);
-              return new CaptureRouteError({
+      const requireWorktree = (claimed: string | null | undefined) =>
+        claimed === undefined || claimed === null || claimed === worktreeId
+          ? Effect.void
+          : Effect.fail(
+              new CaptureRouteError({
                 status: 409,
-                reason: "stale-epoch",
-                message: "the capture was registered under a stale epoch",
-                ...(lease === null || lease.epoch === error.n ? {} : { live_epoch: lease.epoch }),
-              });
-            }
-            const chain = yield* repo.headOf(worktreeId);
-            return new CaptureRouteError({
-              status: 409,
-              reason: "wrong-parent",
-              message: `the chain head is n=${chain?.headN ?? -1}, not the register's parent`,
-              head_n: chain?.headN ?? -1,
-              head_capture_id: chain?.head?.id ?? "",
-            });
-          });
-
-        const register = Effect.fn("SessionCaptureApi.register")(function* (
-          input: RegisterRequest,
-        ) {
-          yield* requireWorktree(input.worktree_id);
-          const lease = yield* requireLease(input.epoch);
-          const prefix = prefixFor(input.epoch);
-          if (!input.manifest_key.startsWith(prefix) || !isValidBlobKey(input.manifest_key)) {
-            return yield* bad("manifest_key must sit under the caller's epoch prefix");
-          }
-          const manifest = yield* Effect.try({
-            try: () => Schema.decodeUnknownSync(Schema.Unknown)(input.manifest),
-            catch: () => bad("manifest is not JSON"),
-          }).pipe(
-            Effect.flatMap((raw) =>
-              decodeManifest(
-                input.manifest_key,
-                new Uint8Array(Buffer.from(JSON.stringify(raw), "utf8")),
-              ).pipe(Effect.mapError((error) => bad(`manifest: ${error.reason}`))),
-            ),
-          );
-          if (
-            manifest.worktree_id !== worktreeId ||
-            manifest.epoch !== input.epoch ||
-            manifest.n !== input.n ||
-            manifest.parent !== input.parent
-          ) {
-            return yield* bad("the manifest's identity fields disagree with the request");
-          }
-          // The id is the digest of the bytes AS STORED — read them back rather than trust the
-          // request's copy; a lost-ack retry re-registers the same id from identical bytes.
-          const stored = yield* blobs.get(input.manifest_key).pipe(
-            Effect.catchTag("BlobNotFoundError", () =>
-              Effect.fail(
-                new CaptureRouteError({
-                  status: 422,
-                  reason: "missing-objects",
-                  message: "the manifest has not landed in the bucket",
-                  missing: [input.manifest_key],
-                }),
-              ),
-            ),
-            Effect.catch((error) =>
-              error._tag === "CaptureRouteError"
-                ? Effect.fail(error)
-                : storeError("reading the manifest")(error),
-            ),
-          );
-          if (captureIdOf(stored) !== input.capture_id) {
-            return yield* new CaptureRouteError({
-              status: 422,
-              reason: "capture-id-mismatch",
-              message: "capture_id is not the sha256 of the manifest bytes at manifest_key",
-            });
-          }
-          // HEAD every pack the manifest names (across epochs) before the CAS, and price the
-          // ones new to this epoch against the session's byte budget.
-          const packKeys: Array<{ readonly key: string; readonly cls: PackRecord["class"] }> = [
-            ...manifest.sections.git.packs.flatMap((key) => [
-              { key, cls: "git" as const },
-              { key: packIdxKeyOf(key), cls: "git" as const },
-            ]),
-            ...manifest.sections.workspace.packs.map((key) => ({ key, cls: "workspace" as const })),
-            ...(manifest.sections.bulk === "pending"
-              ? []
-              : manifest.sections.bulk.packs.map((key) => ({ key, cls: "bulk" as const }))),
-          ];
-          const missing: Array<string> = [];
-          const records: Array<PackRecord> = [];
-          let newBytes = 0;
-          for (const { key, cls } of packKeys) {
-            const head = yield* blobs.head(key).pipe(Effect.catch(storeError("HEAD on a pack")));
-            if (head === null) {
-              missing.push(key);
-              continue;
-            }
-            if (key.endsWith(".idx")) continue;
-            if (key.startsWith(prefix)) newBytes += head.size;
-            records.push({
-              key,
-              class: cls,
-              bytes: head.size,
-              worktreeId: key.startsWith(`captures/${worktreeId}/`) ? worktreeId : null,
-              epoch: key.startsWith(prefix) ? input.epoch : null,
-              platform:
-                cls === "bulk" && manifest.sections.bulk !== "pending"
-                  ? manifest.sections.bulk.platform
-                  : null,
-            });
-          }
-          if (missing.length > 0) {
-            return yield* new CaptureRouteError({
-              status: 422,
-              reason: "missing-objects",
-              message: `${missing.length} pack(s) the manifest names are not in the bucket`,
-              missing,
-            });
-          }
-          const already = yield* repo.captureById(input.capture_id);
-          const used = bytesUsed.get(scope.executorId) ?? 0;
-          if (already === null && used + newBytes > byteBudget) {
-            return yield* new CaptureRouteError({
-              status: 413,
-              reason: "quota-exceeded",
-              message: `byte quota: ${byteBudget} bytes per session (${used} used)`,
-            });
-          }
-          const outcome = yield* repo
-            .register({
-              worktreeId,
-              id: input.capture_id,
-              n: input.n,
-              parent: input.parent,
-              epoch: input.epoch,
-              seq: BigInt(manifest.seq),
-              kind: manifest.kind,
-              manifestKey: input.manifest_key,
-              sections: manifest.sections,
-              gitFsck: manifest.sections.git.fsck,
-            })
-            .pipe(
-              Effect.catch((error) => conflictToRoute(error).pipe(Effect.flatMap(Effect.fail))),
+                reason: "wrong-worktree",
+                message: "this session token is scoped to another worktree",
+              }),
             );
-          if (!outcome.lostAck) {
-            bytesUsed.set(scope.executorId, used + newBytes);
-            yield* repo.recordPacks(records);
-            const row = yield* repo.captureById(input.capture_id);
-            if (row !== null) publish(row);
-          }
-          return { head_n: input.n, head_capture_id: input.capture_id, epoch: lease.epoch };
-        });
 
-        const changeSummary = Effect.fn("SessionCaptureApi.changeSummary")(function* (
-          input: ChangeSummaryRequest,
-        ) {
-          yield* requireWorktree(input.worktree_id);
-          yield* requireLease(input.epoch);
-          const summary = yield* decodeChangeSummary(input.summary).pipe(
-            Effect.mapError((error) => bad(`summary: ${error.message}`)),
-          );
-          const capture = yield* repo.captureById(input.capture_id);
-          if (capture === null || capture.worktreeId !== worktreeId) {
+      const planGet = Effect.fn("SessionCaptureApi.planGet")(function* (input: PlanGetRequest) {
+        yield* requireWorktree(input.worktree_id);
+        const asked = input.epoch ?? 0;
+        const lease = yield* repo.leaseOf(worktreeId);
+        let epoch: number;
+        if (lease !== null && lease.live && (asked === 0 || asked === lease.epoch)) {
+          if (asked === 0 && lease.executorId !== scope.executorId) {
+            // Another executor holds it: a second executor for a leased worktree is refused
+            // (ADR-0002 "Decisions made here" 9); joins run inside the holder.
             return yield* new CaptureRouteError({
               status: 409,
-              reason: "not-head",
-              message: "the summary names a capture that never landed on this chain",
+              reason: "worktree-leased",
+              message: "another executor holds this worktree's lease",
+              live_epoch: lease.epoch,
             });
           }
-          const key = changeSummaryKey(worktreeId, capture.n);
-          yield* blobs
-            .put(key, new Uint8Array(Buffer.from(JSON.stringify(summary), "utf8")))
-            .pipe(Effect.catch(storeError("writing the summary")));
-          yield* repo.acceptSummary(worktreeId, input.capture_id, key).pipe(
+          epoch = lease.epoch;
+        } else if (lease !== null && lease.live) {
+          return yield* new CaptureRouteError({
+            status: 409,
+            reason: "stale-epoch",
+            message: `epoch ${asked} is stale; the worktree is held under epoch ${lease.epoch}`,
+            live_epoch: lease.epoch,
+          });
+        } else {
+          // Not held: this plan is the claim (start, pickup, replacement — one path).
+          const claimed = yield* repo.claim(worktreeId, scope.executorId).pipe(
             Effect.mapError(
               () =>
                 new CaptureRouteError({
                   status: 409,
-                  reason: "not-head",
-                  message: "summaries are accepted only for the chain head",
+                  reason: "worktree-leased",
+                  message: "another executor claimed this worktree first",
                 }),
             ),
           );
-          return { accepted: true as const, key };
-        });
+          epoch = claimed.epoch;
+        }
+        const chain = yield* repo.headOf(worktreeId);
+        const head = chain?.head ?? null;
+        if (head === null) {
+          return { worktree_id: worktreeId, epoch, head: null, get_urls: {} };
+        }
+        const manifestBytes = yield* blobs
+          .get(head.manifestKey)
+          .pipe(Effect.catch(storeError("reading the head manifest")));
+        const manifest = yield* decodeManifest(head.manifestKey, manifestBytes).pipe(
+          Effect.catch(storeError("decoding the head manifest")),
+        );
+        const keys = yield* keysNeededBy(manifest).pipe(
+          Effect.provideService(BlobStore, blobs),
+          Effect.catch(storeError("walking the head capture")),
+        );
+        const urls: Record<string, string> = {};
+        for (const key of [...keys, head.manifestKey]) {
+          urls[key] = yield* blobs
+            .presign(key, "GET", PRESIGN_TTL_SECONDS)
+            .pipe(Effect.catch(storeError("presigning a GET")));
+        }
+        return {
+          worktree_id: worktreeId,
+          epoch,
+          head: {
+            n: head.n,
+            capture_id: head.id,
+            manifest_key: head.manifestKey,
+            manifest,
+          },
+          get_urls: urls,
+        } satisfies PlanGetResponse;
+      });
 
-        const heartbeat = Effect.fn("SessionCaptureApi.heartbeat")(function* (
-          input: HeartbeatRequest,
+      /** Count minted URLs against the rolling hour; false = over quota (nothing minted). */
+      const reserveUrls = (count: number): boolean => {
+        const now = Date.now();
+        const window = (urlLog.get(scope.executorId) ?? []).filter(
+          (at) => now - at < 60 * 60 * 1000,
+        );
+        if (window.length + count > URL_QUOTA_PER_HOUR) {
+          urlLog.set(scope.executorId, window);
+          return false;
+        }
+        for (let index = 0; index < count; index += 1) window.push(now);
+        urlLog.set(scope.executorId, window);
+        return true;
+      };
+
+      const uploadUrls = Effect.fn("SessionCaptureApi.uploadUrls")(function* (
+        input: UploadUrlsRequest,
+      ) {
+        yield* requireWorktree(input.worktree_id);
+        yield* requireLease(input.epoch);
+        const prefix = prefixFor(input.epoch);
+        // Only under the caller's own epoch prefix; anything else is dropped, never minted.
+        // A size is only read for a key that is also listed; no size means a single PUT.
+        const sizes = input.sizes ?? {};
+        const wanted = new Map<string, number | null>();
+        for (const key of input.keys) {
+          if (!key.startsWith(prefix) || !isValidBlobKey(key)) continue;
+          const size = sizes[key];
+          wanted.set(key, size === undefined || size < 0 ? null : size);
+        }
+        const plans: Array<{ readonly key: string; readonly parts: number }> = [];
+        for (const [key, size] of wanted) {
+          if (size === null || size < policy.multipartThresholdBytes) {
+            plans.push({ key, parts: 0 });
+            continue;
+          }
+          const parts = Math.ceil(size / policy.partSizeBytes);
+          if (parts > MULTIPART_MAX_PARTS) {
+            return yield* bad(
+              `${key}: ${size} bytes is ${parts} parts of ${policy.partSizeBytes}; the cap is ${MULTIPART_MAX_PARTS}`,
+            );
+          }
+          plans.push({ key, parts });
+        }
+        // Every URL counts, a part URL as much as a PUT URL.
+        const count = plans.reduce((sum, plan) => sum + Math.max(1, plan.parts), 0);
+        if (!reserveUrls(count)) {
+          return yield* new CaptureRouteError({
+            status: 429,
+            reason: "quota-exceeded",
+            message: `URL quota: ${URL_QUOTA_PER_HOUR} per hour per session`,
+          });
+        }
+        const urls: Record<string, string> = {};
+        const multipart: Record<string, MultipartPlan> = {};
+        for (const plan of plans) {
+          const created =
+            plan.parts === 0
+              ? null
+              : yield* blobs
+                  .createMultipart(plan.key)
+                  .pipe(Effect.catch(storeError("creating a multipart upload")));
+          if (created === null || created.kind === "exists") {
+            // Below the threshold, or the bucket already holds the key: one PUT URL. For an
+            // existing key the PUT carries the same bytes by construction; no plan is opened.
+            urls[plan.key] = yield* blobs
+              .presign(plan.key, "PUT", PRESIGN_TTL_SECONDS)
+              .pipe(Effect.catch(storeError("presigning a PUT")));
+            continue;
+          }
+          const partUrls: Array<string> = [];
+          for (let partNumber = 1; partNumber <= plan.parts; partNumber += 1) {
+            partUrls.push(
+              yield* blobs
+                .presignPart(plan.key, created.uploadId, partNumber, PRESIGN_TTL_SECONDS)
+                .pipe(Effect.catch(storeError("presigning a part"))),
+            );
+          }
+          multipart[plan.key] = {
+            upload_id: created.uploadId,
+            part_size: policy.partSizeBytes,
+            part_urls: partUrls,
+          };
+        }
+        return { urls, multipart } satisfies UploadUrlsResponse;
+      });
+
+      const uploadComplete = Effect.fn("SessionCaptureApi.uploadComplete")(function* (
+        input: UploadCompleteRequest,
+      ) {
+        yield* requireWorktree(input.worktree_id);
+        yield* requireLease(input.epoch);
+        const prefix = prefixFor(input.epoch);
+        if (!input.key.startsWith(prefix) || !isValidBlobKey(input.key)) {
+          return yield* bad("key must sit under the caller's epoch prefix");
+        }
+        if (input.upload_id === "") return yield* bad("upload_id is empty");
+        const numbers = new Set(input.parts.map((part) => part.part_number));
+        if (
+          input.parts.length === 0 ||
+          numbers.size !== input.parts.length ||
+          input.parts.some((part) => part.part_number < 1 || part.etag === "")
         ) {
-          yield* requireWorktree(input.worktree_id);
-          const renewed = yield* repo.heartbeat(worktreeId, input.epoch);
-          if (renewed) return { expires_in_secs: LEASE_EXPIRES_IN_SECS };
-          const lease = yield* repo.leaseOf(worktreeId);
-          if (lease !== null && lease.epoch !== input.epoch) {
-            return yield* new CaptureRouteError({
+          return yield* bad("parts must be non-empty, distinct by part_number, each with an etag");
+        }
+        const parts = input.parts.map((part) => ({
+          partNumber: part.part_number,
+          etag: part.etag,
+        }));
+        // Any failure that is not the write-once refusal aborts the upload before the 500, so
+        // the executor's retry starts from fresh URLs rather than an upload in an unknown state.
+        const outcome = yield* blobs
+          .completeMultipart(input.key, input.upload_id, parts)
+          .pipe(
+            Effect.catch((error) =>
+              blobs
+                .abortMultipart(input.key, input.upload_id)
+                .pipe(
+                  Effect.ignore,
+                  Effect.andThen(storeError("completing a multipart upload")(error)),
+                ),
+            ),
+          );
+        if (!outcome.written) {
+          return yield* new CaptureRouteError({
+            status: 409,
+            reason: "exists",
+            message: "the key already holds bytes; the upload was discarded",
+            key: input.key,
+          });
+        }
+        // The assembled size, when the bucket reports it: the executor compares it with the
+        // file it cut into parts instead of ranging a GET for it.
+        const assembled = yield* blobs
+          .head(input.key)
+          .pipe(Effect.catch(() => Effect.succeed(null)));
+        return assembled === null ? {} : { size: assembled.size };
+      });
+
+      const conflictToRoute = (error: CaptureConflictError) =>
+        Effect.gen(function* () {
+          if (error.reason === "stale_epoch") {
+            const lease = yield* repo.leaseOf(worktreeId);
+            return new CaptureRouteError({
               status: 409,
               reason: "stale-epoch",
-              message: `epoch ${input.epoch} is stale; the worktree is held under epoch ${lease.epoch}`,
-              live_epoch: lease.epoch,
+              message: "the capture was registered under a stale epoch",
+              ...(lease === null || lease.epoch === error.n ? {} : { live_epoch: lease.epoch }),
             });
           }
-          // sealantd's registrar reads 404 on lease.heartbeat as "lease lost" (pause, never kill).
-          return yield* new CaptureRouteError({
-            status: 404,
-            reason: "lease-lost",
-            message: "no lease row renewed — stop shipping and pause",
+          const chain = yield* repo.headOf(worktreeId);
+          return new CaptureRouteError({
+            status: 409,
+            reason: "wrong-parent",
+            message: `the chain head is n=${chain?.headN ?? -1}, not the register's parent`,
+            head_n: chain?.headN ?? -1,
+            head_capture_id: chain?.head?.id ?? "",
           });
         });
 
-        return { planGet, uploadUrls, register, changeSummary, heartbeat };
-      };
+      const register = Effect.fn("SessionCaptureApi.register")(function* (input: RegisterRequest) {
+        yield* requireWorktree(input.worktree_id);
+        const lease = yield* requireLease(input.epoch);
+        const prefix = prefixFor(input.epoch);
+        if (!input.manifest_key.startsWith(prefix) || !isValidBlobKey(input.manifest_key)) {
+          return yield* bad("manifest_key must sit under the caller's epoch prefix");
+        }
+        const manifest = yield* Effect.try({
+          try: () => Schema.decodeUnknownSync(Schema.Unknown)(input.manifest),
+          catch: () => bad("manifest is not JSON"),
+        }).pipe(
+          Effect.flatMap((raw) =>
+            decodeManifest(
+              input.manifest_key,
+              new Uint8Array(Buffer.from(JSON.stringify(raw), "utf8")),
+            ).pipe(Effect.mapError((error) => bad(`manifest: ${error.reason}`))),
+          ),
+        );
+        if (
+          manifest.worktree_id !== worktreeId ||
+          manifest.epoch !== input.epoch ||
+          manifest.n !== input.n ||
+          manifest.parent !== input.parent
+        ) {
+          return yield* bad("the manifest's identity fields disagree with the request");
+        }
+        // The id is the digest of the bytes AS STORED — read them back rather than trust the
+        // request's copy; a lost-ack retry re-registers the same id from identical bytes.
+        const stored = yield* blobs.get(input.manifest_key).pipe(
+          Effect.catchTag("BlobNotFoundError", () =>
+            Effect.fail(
+              new CaptureRouteError({
+                status: 422,
+                reason: "missing-objects",
+                message: "the manifest has not landed in the bucket",
+                missing: [input.manifest_key],
+              }),
+            ),
+          ),
+          Effect.catch((error) =>
+            error._tag === "CaptureRouteError"
+              ? Effect.fail(error)
+              : storeError("reading the manifest")(error),
+          ),
+        );
+        if (captureIdOf(stored) !== input.capture_id) {
+          return yield* new CaptureRouteError({
+            status: 422,
+            reason: "capture-id-mismatch",
+            message: "capture_id is not the sha256 of the manifest bytes at manifest_key",
+          });
+        }
+        // HEAD every pack the manifest names (across epochs) before the CAS, and price the
+        // ones new to this epoch against the session's byte budget.
+        const packKeys: Array<{ readonly key: string; readonly cls: PackRecord["class"] }> = [
+          ...manifest.sections.git.packs.flatMap((key) => [
+            { key, cls: "git" as const },
+            { key: packIdxKeyOf(key), cls: "git" as const },
+          ]),
+          ...manifest.sections.workspace.packs.map((key) => ({ key, cls: "workspace" as const })),
+          ...(manifest.sections.bulk === "pending"
+            ? []
+            : manifest.sections.bulk.packs.map((key) => ({ key, cls: "bulk" as const }))),
+        ];
+        const missing: Array<string> = [];
+        const records: Array<PackRecord> = [];
+        let newBytes = 0;
+        for (const { key, cls } of packKeys) {
+          const head = yield* blobs.head(key).pipe(Effect.catch(storeError("HEAD on a pack")));
+          if (head === null) {
+            missing.push(key);
+            continue;
+          }
+          if (key.endsWith(".idx")) continue;
+          if (key.startsWith(prefix)) newBytes += head.size;
+          records.push({
+            key,
+            class: cls,
+            bytes: head.size,
+            worktreeId: key.startsWith(`captures/${worktreeId}/`) ? worktreeId : null,
+            epoch: key.startsWith(prefix) ? input.epoch : null,
+            platform:
+              cls === "bulk" && manifest.sections.bulk !== "pending"
+                ? manifest.sections.bulk.platform
+                : null,
+          });
+        }
+        if (missing.length > 0) {
+          return yield* new CaptureRouteError({
+            status: 422,
+            reason: "missing-objects",
+            message: `${missing.length} pack(s) the manifest names are not in the bucket`,
+            missing,
+          });
+        }
+        const already = yield* repo.captureById(input.capture_id);
+        const used = bytesUsed.get(scope.executorId) ?? 0;
+        if (already === null && used + newBytes > byteBudget) {
+          return yield* new CaptureRouteError({
+            status: 413,
+            reason: "quota-exceeded",
+            message: `byte quota: ${byteBudget} bytes per session (${used} used)`,
+          });
+        }
+        const outcome = yield* repo
+          .register({
+            worktreeId,
+            id: input.capture_id,
+            n: input.n,
+            parent: input.parent,
+            epoch: input.epoch,
+            seq: BigInt(manifest.seq),
+            kind: manifest.kind,
+            manifestKey: input.manifest_key,
+            sections: manifest.sections,
+            gitFsck: manifest.sections.git.fsck,
+          })
+          .pipe(Effect.catch((error) => conflictToRoute(error).pipe(Effect.flatMap(Effect.fail))));
+        if (!outcome.lostAck) {
+          bytesUsed.set(scope.executorId, used + newBytes);
+          yield* repo.recordPacks(records);
+          const row = yield* repo.captureById(input.capture_id);
+          if (row !== null) publish(row);
+        }
+        return { head_n: input.n, head_capture_id: input.capture_id, epoch: lease.epoch };
+      });
 
-      return { apiFor, awaitRegister, publish };
-    }),
-  );
+      const changeSummary = Effect.fn("SessionCaptureApi.changeSummary")(function* (
+        input: ChangeSummaryRequest,
+      ) {
+        yield* requireWorktree(input.worktree_id);
+        yield* requireLease(input.epoch);
+        const summary = yield* decodeChangeSummary(input.summary).pipe(
+          Effect.mapError((error) => bad(`summary: ${error.message}`)),
+        );
+        const capture = yield* repo.captureById(input.capture_id);
+        if (capture === null || capture.worktreeId !== worktreeId) {
+          return yield* new CaptureRouteError({
+            status: 409,
+            reason: "not-head",
+            message: "the summary names a capture that never landed on this chain",
+          });
+        }
+        const key = changeSummaryKey(worktreeId, capture.n);
+        yield* blobs
+          .put(key, new Uint8Array(Buffer.from(JSON.stringify(summary), "utf8")))
+          .pipe(Effect.catch(storeError("writing the summary")));
+        yield* repo.acceptSummary(worktreeId, input.capture_id, key).pipe(
+          Effect.mapError(
+            () =>
+              new CaptureRouteError({
+                status: 409,
+                reason: "not-head",
+                message: "summaries are accepted only for the chain head",
+              }),
+          ),
+        );
+        return { accepted: true as const, key };
+      });
+
+      const heartbeat = Effect.fn("SessionCaptureApi.heartbeat")(function* (
+        input: HeartbeatRequest,
+      ) {
+        yield* requireWorktree(input.worktree_id);
+        const renewed = yield* repo.heartbeat(worktreeId, input.epoch);
+        if (renewed) return { expires_in_secs: LEASE_EXPIRES_IN_SECS };
+        const lease = yield* repo.leaseOf(worktreeId);
+        if (lease !== null && lease.epoch !== input.epoch) {
+          return yield* new CaptureRouteError({
+            status: 409,
+            reason: "stale-epoch",
+            message: `epoch ${input.epoch} is stale; the worktree is held under epoch ${lease.epoch}`,
+            live_epoch: lease.epoch,
+          });
+        }
+        // sealantd's registrar reads 404 on lease.heartbeat as "lease lost" (pause, never kill).
+        return yield* new CaptureRouteError({
+          status: 404,
+          reason: "lease-lost",
+          message: "no lease row renewed — stop shipping and pause",
+        });
+      });
+
+      return { planGet, uploadUrls, uploadComplete, register, changeSummary, heartbeat };
+    };
+
+    return { apiFor, awaitRegister, publish };
+  }),
+);
 
 // ─── Route dispatch (shared by both listeners) ──────────────────────────────
 
@@ -608,11 +839,12 @@ const asRequestSummary = (body: unknown): Record<string, string | number> => {
   if (typeof body !== "object" || body === null) return {};
   const record = body as Record<string, unknown>;
   const out: Record<string, string | number> = {};
-  for (const key of ["worktree_id", "epoch", "n", "capture_id"] as const) {
+  for (const key of ["worktree_id", "epoch", "n", "capture_id", "key", "upload_id"] as const) {
     const value = record[key];
     if (typeof value === "string" || typeof value === "number") out[key] = value;
   }
   if (Array.isArray(record["keys"])) out["keys"] = record["keys"].length;
+  if (Array.isArray(record["parts"])) out["parts"] = record["parts"].length;
   return out;
 };
 
@@ -620,6 +852,7 @@ const asRequestSummary = (body: unknown): Record<string, string | number> => {
 export const CAPTURE_ROUTES = new Set([
   "/plan.get",
   "/upload.urls",
+  "/upload.complete",
   "/capture.register",
   "/change.summary",
   "/lease.heartbeat",
@@ -664,6 +897,7 @@ export const dispatchCaptureRoute = (
                     ? {}
                     : { head_capture_id: error.head_capture_id }),
                   ...(error.missing === undefined ? {} : { missing: error.missing }),
+                  ...(error.key === undefined ? {} : { key: error.key }),
                 }),
               ),
             ),
@@ -678,6 +912,8 @@ export const dispatchCaptureRoute = (
       return run(decodeBody(PlanGetRequest)(body).pipe(Effect.flatMap(api.planGet)));
     case "/upload.urls":
       return run(decodeBody(UploadUrlsRequest)(body).pipe(Effect.flatMap(api.uploadUrls)));
+    case "/upload.complete":
+      return run(decodeBody(UploadCompleteRequest)(body).pipe(Effect.flatMap(api.uploadComplete)));
     case "/capture.register":
       return run(decodeBody(RegisterRequest)(body).pipe(Effect.flatMap(api.register)));
     case "/change.summary":

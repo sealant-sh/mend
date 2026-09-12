@@ -4,7 +4,7 @@ import * as path from "node:path";
 
 import { CaptureStoreRepo, type CaptureRow } from "@mend/db";
 import { WorktreeId } from "@mend/domain";
-import { CaptureChannelLive, CaptureRuntimeLive } from "@mend/sessions";
+import { CaptureChannelLive, CaptureRuntimeLive, CaptureUploadPolicyDefault } from "@mend/sessions";
 import { makeMemoryCaptureStore } from "@mend/sessions/testing";
 import { BlobStore, BlobStoreFsLive, captureKeys, packIdxKeyOf } from "@mend/store";
 import { Effect, Layer } from "effect";
@@ -15,6 +15,7 @@ import {
   CaptureRetentionLive,
   KEEP_ALL_MS,
   KEEP_HOURLY_MS,
+  MULTIPART_ORPHAN_MS,
   RETENTION_GRACE_MS,
   keysOfSections,
   thinningPlan,
@@ -99,7 +100,11 @@ describe("CaptureRetention over dir://", () => {
   const blobRoot = path.join(scratch, "blobs");
   const memory = makeMemoryCaptureStore();
   const blobs = BlobStoreFsLive(blobRoot);
-  const channel = CaptureChannelLive.pipe(Layer.provide(memory.layer), Layer.provide(blobs));
+  const channel = CaptureChannelLive.pipe(
+    Layer.provide(memory.layer),
+    Layer.provide(blobs),
+    Layer.provide(CaptureUploadPolicyDefault),
+  );
   const runtime = CaptureRuntimeLive.pipe(
     Layer.provide(channel),
     Layer.provide(memory.layer),
@@ -207,6 +212,47 @@ describe("CaptureRetention over dir://", () => {
     expect(exists(cap2.manifestKey)).toBe(true);
     // Idempotent: a third pass finds nothing.
     const third = await run(Effect.flatMap(CaptureRetention, (retention) => retention.run(later)));
-    expect(third).toEqual({ chains: 1, capturesThinned: 0, packsRetired: 0, objectsRemoved: 0 });
+    expect(third).toEqual({
+      chains: 1,
+      capturesThinned: 0,
+      packsRetired: 0,
+      objectsRemoved: 0,
+      multipartAborted: 0,
+    });
+  });
+
+  it("aborts orphaned multipart uploads: under a fenced epoch at once, under the live epoch once the part URLs have lapsed", async () => {
+    // The head stands at epoch 2 (previous test); an upload under epoch 1 can never complete
+    // (no lease predicate passes for it), one under epoch 2 may still be in flight.
+    const fencedKey = captureKeys(WT, 1).pack(sha("mp-fenced"));
+    const liveKey = captureKeys(WT, 2).pack(sha("mp-live"));
+    const opened = await run(
+      Effect.gen(function* () {
+        const store = yield* BlobStore;
+        const fenced = yield* store.createMultipart(fencedKey);
+        const live = yield* store.createMultipart(liveKey);
+        return { fenced: fenced.kind, live: live.kind };
+      }),
+    );
+    expect(opened).toEqual({ fenced: "created", live: "created" });
+    const wallClock = Date.now();
+    const first = await run(
+      Effect.flatMap(CaptureRetention, (retention) => retention.run(wallClock)),
+    );
+    expect(first.multipartAborted).toBe(1);
+    const afterFirst = await run(
+      Effect.flatMap(BlobStore, (store) => store.listMultipart(`captures/${WT}/`)),
+    );
+    expect(afterFirst.map((upload) => upload.key)).toEqual([liveKey]);
+    const second = await run(
+      Effect.flatMap(CaptureRetention, (retention) =>
+        retention.run(wallClock + MULTIPART_ORPHAN_MS + 1),
+      ),
+    );
+    expect(second.multipartAborted).toBe(1);
+    const afterSecond = await run(
+      Effect.flatMap(BlobStore, (store) => store.listMultipart(`captures/${WT}/`)),
+    );
+    expect(afterSecond).toEqual([]);
   });
 });

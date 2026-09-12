@@ -28,7 +28,11 @@ import {
 } from "@mend/store";
 import { Effect, Layer } from "effect";
 
-import { type CaptureChannel, CaptureChannelLive } from "../src/capture-channel.ts";
+import {
+  type CaptureChannel,
+  CaptureChannelLive,
+  CaptureUploadPolicyDefault,
+} from "../src/capture-channel.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 
 /**
@@ -278,7 +282,11 @@ export const makeCaptureWorld = (): CaptureWorld => {
     Layer.provide(storeConfig),
     Layer.provide(blobs),
   );
-  const channel = CaptureChannelLive.pipe(Layer.provide(memory.layer), Layer.provide(blobs));
+  const channel = CaptureChannelLive.pipe(
+    Layer.provide(memory.layer),
+    Layer.provide(blobs),
+    Layer.provide(CaptureUploadPolicyDefault),
+  );
   const layer = Layer.mergeAll(
     store,
     storeConfig,

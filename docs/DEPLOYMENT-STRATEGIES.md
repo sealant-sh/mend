@@ -78,7 +78,15 @@ invariant above for remote executors: object storage plus Postgres pointers hold
 executor works on its own disk, and Mend reads the chain head through a runner. The dev stack
 (`compose.dev.yaml`) runs Garage for it; the shipped bundle (`compose.yaml` →
 `deploy/docker/compose.v2.yaml`) does not carry a bucket yet — adding Garage beside `mend-store`
-there, and the helm chart's Rook/Garage choice, are the follow-ups once the local proof holds.
+there, and the helm chart's Rook/Garage choice, are the follow-ups once the local proof holds. Packs
+at or above 16 MiB go up as multipart uploads (`upload.urls` with `sizes`, then `upload.complete`;
+`MEND_CAPTURE_MULTIPART_THRESHOLD` / `_PART_SIZE`). An executor that dies between its part PUTs and
+the complete leaves an open upload whose parts are billed until aborted: Mend's hourly retention
+pass aborts every open upload under a fenced epoch and every one older than the URL TTL plus the
+grace (`MULTIPART_ORPHAN_MS`), and a real bucket should carry the matching lifecycle rule as a
+backstop for the hours Mend is down — `AbortIncompleteMultipartUpload` after 1 day on S3 (bucket
+lifecycle configuration), R2 (object lifecycle rules, "abort multipart uploads"), and Garage (bucket
+lifecycle, the same S3 rule shape).
 
 **Correctness pre-work (done, sealant #197):** at-least-once delivery with more than one consumer
 required the build-job claim to be race-free and run-exec to be at-most-once. Those hold now

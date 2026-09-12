@@ -98,6 +98,7 @@ import { asSealantUser, SealantLiveFromEnv } from "@mend/sealant";
 import {
   CaptureChannelLive,
   CaptureRuntimeLive,
+  CaptureUploadPolicyLive,
   CaptureRuntimeOff,
   FollowUpDeliveryLive,
   FollowUpLauncherLive,
@@ -519,7 +520,10 @@ const MainLive = Layer.unwrap(
       Layer.provide(DatabaseLive),
     );
     // The capture channel (routes + register hub) and the engine's view of the capture store.
-    const captureChannel = CaptureChannelLive.pipe(Layer.provide(captureStore));
+    const captureChannel = CaptureChannelLive.pipe(
+      Layer.provide(captureStore),
+      Layer.provide(CaptureUploadPolicyLive),
+    );
     const captureRuntime = captured
       ? CaptureRuntimeLive.pipe(Layer.provide(captureChannel), Layer.provide(captureStore))
       : CaptureRuntimeOff;

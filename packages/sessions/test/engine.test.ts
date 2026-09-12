@@ -94,6 +94,7 @@ import {
   CaptureChannelLive,
   CaptureRuntimeLive,
   CaptureRuntimeOff,
+  CaptureUploadPolicyDefault,
   HarnessStateNotFoundError,
   LegacyBenchReadOnlyError,
   ProtocolHost,
@@ -1591,7 +1592,11 @@ const withEngine = <A, E>(
             Layer.provide(storeConfigLayer),
             Layer.provide(blobsLayer),
           ),
-          CaptureChannelLive.pipe(Layer.provide(options.captured.layer), Layer.provide(blobsLayer)),
+          CaptureChannelLive.pipe(
+            Layer.provide(options.captured.layer),
+            Layer.provide(blobsLayer),
+            Layer.provide(CaptureUploadPolicyDefault),
+          ),
         );
   const sessionRepositoryLayer =
     captureLayers === null

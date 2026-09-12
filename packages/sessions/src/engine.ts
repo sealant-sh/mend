@@ -944,7 +944,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return {
           planGet: (input) => scoped((api) => api.planGet(input)),
           uploadUrls: (input) => scoped((api) => api.uploadUrls(input)),
-          register: (input) => scoped((api) => api.register(input)),
+          uploadComplete: (input) => scoped((api) => api.uploadComplete(input)),
+          register: (input) => observed((api) => api.register(input)),
           changeSummary: (input) => scoped((api) => api.changeSummary(input)),
           heartbeat: (input) => scoped((api) => api.heartbeat(input)),
         };

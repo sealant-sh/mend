@@ -22,7 +22,12 @@ import { Duration, Effect, Exit, Layer, Scope } from "effect";
 import type * as Context from "effect/Context";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { CaptureChannel, CaptureChannelLive } from "../src/capture-channel.ts";
+import {
+  CaptureChannel,
+  CaptureChannelLive,
+  CaptureUploadPolicy,
+  PRESIGN_TTL_SECONDS,
+} from "../src/capture-channel.ts";
 import {
   SessionChannelNetworkHost,
   SessionChannelNetworkHostLive,
@@ -105,7 +110,14 @@ describe("capture channel routes", () => {
       Layer.provide(registry),
       Layer.provide(tokens),
     ),
-    CaptureChannelLive.pipe(Layer.provide(memory.layer), Layer.provide(blobs)),
+    CaptureChannelLive.pipe(
+      Layer.provide(memory.layer),
+      Layer.provide(blobs),
+      // Small numbers so a multipart plan is exercised with bytes a test can afford.
+      Layer.provide(
+        Layer.succeed(CaptureUploadPolicy, { multipartThresholdBytes: 64, partSizeBytes: 32 }),
+      ),
+    ),
     registry,
     tokens,
     blobs,
@@ -273,6 +285,156 @@ describe("capture channel routes", () => {
     });
     expect(healed.status).toBe(200);
     expect(healed.json["expires_in_secs"]).toBe(30);
+  });
+
+  it("upload.urls plans a multipart upload for a sized key at the threshold; upload.complete assembles it write-once", async () => {
+    const keys2 = captureKeys(WORKTREE, 2);
+    const big = keys2.pack("c".repeat(64));
+    const small = keys2.pack("d".repeat(64));
+    const unsized = keys2.pack("e".repeat(64));
+    // Policy in this file: threshold 64 bytes, parts of 32. 70 bytes = 3 parts; 10 = one PUT;
+    // a key without a size stays a single PUT whatever its bytes turn out to be; a size for a
+    // key that is not listed (or not under the prefix) mints nothing.
+    const minted = await post(address, "/upload.urls", token, {
+      worktree_id: WORKTREE,
+      epoch: 2,
+      keys: [big, small, unsized, "../x"],
+      sizes: { [big]: 70, [small]: 10, "../x": 99, [keys2.pack("0".repeat(64))]: 999 },
+    });
+    expect(minted.status).toBe(200);
+    const urls = minted.json["urls"] as Record<string, string>;
+    expect(Object.keys(urls).toSorted()).toEqual([small, unsized].toSorted());
+    const multipart = minted.json["multipart"] as Record<
+      string,
+      { upload_id: string; part_size: number; part_urls: Array<string> }
+    >;
+    expect(Object.keys(multipart)).toEqual([big]);
+    const plan = multipart[big];
+    if (plan === undefined) throw new Error("no plan");
+    expect(plan.part_size).toBe(32);
+    expect(plan.part_urls).toHaveLength(3);
+    for (const url of plan.part_urls) expect(url).toMatch(/^file:\/\//);
+    const body = Buffer.alloc(70);
+    for (let index = 0; index < body.length; index += 1) body[index] = index;
+    const parts = plan.part_urls.map((url, index) => {
+      const slice = body.subarray(index * 32, Math.min(70, (index + 1) * 32));
+      fs.writeFileSync(url.slice("file://".length), slice);
+      return { part_number: index + 1, etag: `"part-${index + 1}"` };
+    });
+    // The complete obeys the same predicates as every other route.
+    const stale = await post(address, "/upload.complete", token, {
+      worktree_id: WORKTREE,
+      epoch: 1,
+      key: big,
+      upload_id: plan.upload_id,
+      parts,
+    });
+    expect(stale.status).toBe(409);
+    expect(stale.json["reason"]).toBe("stale-epoch");
+    const outside = await post(address, "/upload.complete", token, {
+      worktree_id: WORKTREE,
+      epoch: 2,
+      key: keys1.pack("c".repeat(64)),
+      upload_id: plan.upload_id,
+      parts,
+    });
+    expect(outside.status).toBe(400);
+    const malformed = await post(address, "/upload.complete", token, {
+      worktree_id: WORKTREE,
+      epoch: 2,
+      key: big,
+      upload_id: plan.upload_id,
+      parts: [parts[0], parts[0]],
+    });
+    expect(malformed.status).toBe(400);
+    const done = await post(address, "/upload.complete", token, {
+      worktree_id: WORKTREE,
+      epoch: 2,
+      key: big,
+      upload_id: plan.upload_id,
+      parts: [parts[2], parts[0], parts[1]],
+    });
+    expect(done.status).toBe(200);
+    expect(done.json).toEqual({ size: 70 });
+    expect(Buffer.from(fs.readFileSync(path.join(blobRoot, big))).equals(body)).toBe(true);
+    // The upload is consumed; a sized key the bucket already holds gets a plain PUT URL and no
+    // plan (the wire's `multipart` carries plans only).
+    expect(fs.readdirSync(path.join(blobRoot, ".multipart"))).toEqual([]);
+    const again = await post(address, "/upload.urls", token, {
+      worktree_id: WORKTREE,
+      epoch: 2,
+      keys: [big],
+      sizes: { [big]: 70 },
+    });
+    expect(again.status).toBe(200);
+    expect(again.json["multipart"]).toEqual({});
+    expect(Object.keys(again.json["urls"] as Record<string, string>)).toEqual([big]);
+    // Two uploads opened for one key before either completes: the second complete is refused
+    // with 409 `exists` — the write-once complete, decided by the store.
+    const raced = keys2.pack("f".repeat(64));
+    const openA = await post(address, "/upload.urls", token, {
+      worktree_id: WORKTREE,
+      epoch: 2,
+      keys: [raced],
+      sizes: { [raced]: 64 },
+    });
+    const openB = await post(address, "/upload.urls", token, {
+      worktree_id: WORKTREE,
+      epoch: 2,
+      keys: [raced],
+      sizes: { [raced]: 64 },
+    });
+    const planA = (openA.json["multipart"] as Record<string, typeof plan>)[raced];
+    const planB = (openB.json["multipart"] as Record<string, typeof plan>)[raced];
+    if (planA === undefined || planB === undefined) throw new Error("no plans");
+    expect(planA.upload_id).not.toBe(planB.upload_id);
+    for (const candidate of [planA, planB]) {
+      candidate.part_urls.forEach((url, index) => {
+        fs.writeFileSync(url.slice("file://".length), Buffer.alloc(32, index + 1));
+      });
+    }
+    const two = [
+      { part_number: 1, etag: '"p1"' },
+      { part_number: 2, etag: '"p2"' },
+    ];
+    const winner = await post(address, "/upload.complete", token, {
+      worktree_id: WORKTREE,
+      epoch: 2,
+      key: raced,
+      upload_id: planA.upload_id,
+      parts: two,
+    });
+    expect(winner.status).toBe(200);
+    const loser = await post(address, "/upload.complete", token, {
+      worktree_id: WORKTREE,
+      epoch: 2,
+      key: raced,
+      upload_id: planB.upload_id,
+      parts: two,
+    });
+    expect(loser.status).toBe(409);
+    expect(loser.json["reason"]).toBe("exists");
+    expect(loser.json["key"]).toBe(raced);
+    expect(fs.readdirSync(path.join(blobRoot, ".multipart"))).toEqual([]);
+    // An upload the store does not know: 500, which the executor retries with fresh URLs.
+    const unknown = await post(address, "/upload.complete", token, {
+      worktree_id: WORKTREE,
+      epoch: 2,
+      key: raced,
+      upload_id: "never-minted",
+      parts: two,
+    });
+    expect(unknown.status).toBe(500);
+    // Part URLs count against the hourly URL quota exactly like PUT URLs.
+    const tooMany = await post(address, "/upload.urls", token, {
+      worktree_id: WORKTREE,
+      epoch: 2,
+      keys: [keys2.pack("9".repeat(64))],
+      sizes: { [keys2.pack("9".repeat(64))]: 32 * 2_000 },
+    });
+    expect(tooMany.status).toBe(429);
+    expect(tooMany.json["reason"]).toBe("quota-exceeded");
+    expect(PRESIGN_TTL_SECONDS).toBe(15 * 60);
   });
 
   it("capture.register is the CAS: 409 on a stale epoch or wrong parent, 422 on missing bytes, 200 on a lost ack", async () => {

@@ -65,6 +65,8 @@ co-located default ignores every variable below.
 | `MEND_BLOB_STORE`                             | `dir://<MEND_STORE_ROOT>/_blobs` | `dir:///abs/path` or `s3://mend?endpoint=http://localhost:3900&region=garage` (the dev Garage)                    |
 | `MEND_BLOB_STORE_PUBLIC_URL`                  | unset                            | The S3 endpoint executors resolve; presigned URLs name it, e.g. `http://host.docker.internal:3900`                |
 | `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | unset                            | Bucket credentials; the dev Garage key is `GK00000000000000000000000d` / `000…000d` (`deploy/dev/garage-init.sh`) |
+| `MEND_CAPTURE_MULTIPART_THRESHOLD`            | `16777216` (16 MiB)              | Keys at or above this many bytes are planned as multipart uploads (`upload.urls` with sizes)                      |
+| `MEND_CAPTURE_MULTIPART_PART_SIZE`            | `16777216` (16 MiB)              | Part size for those uploads; S3 and R2 refuse parts under 5 MiB                                                   |
 
 `compose.dev.yaml` runs Garage in single-node mode on port 3900 with bucket `mend`; `garage-init`
 lays the node out and creates the key once. A `dir://` bucket needs no Docker and serves an executor

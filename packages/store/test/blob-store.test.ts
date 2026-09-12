@@ -35,6 +35,13 @@ const putPart = async (url: string, body: Uint8Array): Promise<string> => {
   return etag;
 };
 
+/** "ok", or the tag of the error an operation was refused with. */
+const tagOf = <A>(effect: Effect.Effect<A, BlobStoreError>) =>
+  effect.pipe(
+    Effect.map(() => "ok"),
+    Effect.catch((error) => Effect.succeed(error._tag)),
+  );
+
 interface ContractOptions {
   /** Bytes per non-final part: S3 refuses parts under 5 MiB; the directory store takes any. */
   readonly partBytes: number;
@@ -244,11 +251,6 @@ const contract = (
             .completeMultipart(key("mp/aborted"), c.uploadId, [{ partNumber: 1, etag: "x" }])
             .pipe(
               Effect.map(() => "completed"),
-              Effect.catch((error) => Effect.succeed(error._tag)),
-            );
-          const tagOf = <A>(effect: Effect.Effect<A, BlobStoreError>) =>
-            effect.pipe(
-              Effect.map(() => "ok"),
               Effect.catch((error) => Effect.succeed(error._tag)),
             );
           const refused = yield* Effect.all([

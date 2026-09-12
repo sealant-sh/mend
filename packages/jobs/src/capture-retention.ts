@@ -1,6 +1,6 @@
 import type { CaptureRow, PackRow } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
-import { CaptureRuntime } from "@mend/sessions";
+import { CaptureRuntime, PRESIGN_TTL_SECONDS } from "@mend/sessions";
 import { packIdxKeyOf } from "@mend/store";
 import { Duration, Effect, Layer, Schedule } from "effect";
 import * as Context from "effect/Context";
@@ -19,6 +19,11 @@ import * as Context from "effect/Context";
  *   swept of everything no on-chain row references, once the head has stood for the grace
  *   period: a manifest whose CAS never ran is off-chain by definition.
  *
+ * - An open multipart upload nobody completed (an executor died between its part PUTs and
+ *   `upload.complete`, or under a fenced epoch, where no complete can ever pass the lease
+ *   predicate) is aborted once its part URLs have lapsed: the TTL plus the grace, or at once
+ *   when its epoch is below the head's.
+ *
  * CDC pack rewriting when live bytes fall below a threshold is a later slice; this pass only
  * ever removes whole objects.
  */
@@ -28,12 +33,15 @@ export const KEEP_ALL_MS = 24 * 60 * 60 * 1000;
 export const KEEP_HOURLY_MS = 7 * 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
 export const RETENTION_INTERVAL = Duration.hours(1);
+/** An open multipart upload older than this is an orphan: its part URLs have all lapsed. */
+export const MULTIPART_ORPHAN_MS = PRESIGN_TTL_SECONDS * 1000 + RETENTION_GRACE_MS;
 
 export interface RetentionReport {
   readonly chains: number;
   readonly capturesThinned: number;
   readonly packsRetired: number;
   readonly objectsRemoved: number;
+  readonly multipartAborted: number;
 }
 
 export class CaptureRetention extends Context.Service<
@@ -107,7 +115,13 @@ export const CaptureRetentionLive: Layer.Layer<CaptureRetention, never, CaptureR
       const capture = yield* CaptureRuntime;
 
       const run = Effect.fn("CaptureRetention.run")(function* (now: number = Date.now()) {
-        const report = { chains: 0, capturesThinned: 0, packsRetired: 0, objectsRemoved: 0 };
+        const report = {
+          chains: 0,
+          capturesThinned: 0,
+          packsRetired: 0,
+          objectsRemoved: 0,
+          multipartAborted: 0,
+        };
         if (!capture.enabled) return report;
         const { repo, blobs } = capture;
         const remove = (key: string) =>
@@ -192,6 +206,35 @@ export const CaptureRetentionLive: Layer.Layer<CaptureRetention, never, CaptureR
             if (epoch === null || epoch >= head.epoch) continue;
             if (live.has(entry.key) || tracked.has(entry.key)) continue;
             yield* remove(entry.key);
+          }
+        }
+
+        // 4. Abort orphaned multipart uploads: every one under a fenced epoch, and every one
+        //    older than the URL TTL plus the grace under the live epoch. An upload whose age
+        //    the store does not report is left alone — nothing here judges by guesswork.
+        for (const [worktreeId, head] of headsByWorktree) {
+          const open = yield* blobs
+            .listMultipart(`captures/${worktreeId}/`)
+            .pipe(Effect.catch(() => Effect.succeed([])));
+          for (const upload of open) {
+            const epoch = epochOfKey(worktreeId, upload.key);
+            const fenced = head !== null && epoch !== null && epoch < head.epoch;
+            const stale =
+              upload.initiatedAt !== null &&
+              now - upload.initiatedAt.getTime() >= MULTIPART_ORPHAN_MS;
+            if (!fenced && !stale) continue;
+            yield* blobs.abortMultipart(upload.key, upload.uploadId).pipe(
+              Effect.tap(() => Effect.sync(() => (report.multipartAborted += 1))),
+              Effect.catch((error) =>
+                Effect.logWarning("capture retention: multipart abort failed").pipe(
+                  Effect.annotateLogs({
+                    key: upload.key,
+                    uploadId: upload.uploadId,
+                    error: String(error),
+                  }),
+                ),
+              ),
+            );
           }
         }
 
