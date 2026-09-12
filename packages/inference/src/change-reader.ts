@@ -2,7 +2,7 @@ import { ProjectsRepo, ReviewCommentsRepo, WorktreeChangesRepo, SessionsRepo } f
 import { ChangeId } from "@mend/domain";
 import { RecordLink } from "@mend/domain/workbench";
 import type { SealantClient } from "@mend/sealant";
-import { worktreePathOf, type Store } from "@mend/store";
+import type { WorktreeReads } from "@mend/sessions";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -84,7 +84,7 @@ export class ChangeReader extends Context.Service<
       const comments = yield* ReviewCommentsRepo;
       // The pass tools need Store + SealantClient; captured here, provided
       // per job (the comment-router pattern — tool sets are built fresh).
-      const toolContext = yield* Effect.context<Store | SealantClient>();
+      const toolContext = yield* Effect.context<WorktreeReads | SealantClient>();
 
       const read = Effect.fn("ChangeReader.read")(function* (job: ReadChangeJob) {
         const change = yield* changes
@@ -112,7 +112,8 @@ export class ChangeReader extends Context.Service<
         const sealantRunId = session.sealantRunId;
 
         const pass = yield* makeSessionChangePass({
-          worktree: worktreePathOf(project.storePath, session.worktree),
+          projectId: project.id,
+          worktreeId: change.worktreeId,
           change,
           sealantRunId,
         }).pipe(Effect.provide(toolContext));

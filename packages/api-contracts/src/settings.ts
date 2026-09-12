@@ -3,7 +3,7 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
 import { AuthMiddleware } from "./common.ts";
-import { DotfilesRepositoryRequest } from "./workbench-views.ts";
+import { DotfilesRepositoryRequest, ObservationStamp } from "./workbench-views.ts";
 import {
   DotfilesSnapshotRequest,
   DotfilesView,
@@ -79,6 +79,8 @@ export class ProjectFileListing extends Schema.Class<ProjectFileListing>("Projec
   rootPath: Schema.NullOr(Schema.String),
   files: Schema.Array(Schema.String),
   truncated: Schema.Boolean,
+  /** Capture mode: the capture the listing was read from; absent for a branch tree. */
+  observation: Schema.optionalKey(ObservationStamp),
 }) {}
 
 /** One pull request exactly as gh reported it — a reference, never a verdict. */

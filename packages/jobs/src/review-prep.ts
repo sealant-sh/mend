@@ -9,7 +9,7 @@ import {
 } from "@mend/db";
 import { SessionId } from "@mend/domain";
 import { resolveAutomation } from "@mend/domain/workbench";
-import { Store, worktreePathOf } from "@mend/store";
+import { CaptureRuntime, WorktreeReads } from "@mend/sessions";
 import { Effect, Layer, Schema, Stream } from "effect";
 
 import { JobRunner } from "./job-runner.ts";
@@ -43,7 +43,8 @@ export const ReviewPrepLive: Layer.Layer<
   | WorktreeChangesRepo
   | ProjectsRepo
   | SettingsRepo
-  | Store
+  | WorktreeReads
+  | CaptureRuntime
   | JobRunner
 > = Layer.effectDiscard(
   Effect.gen(function* () {
@@ -52,7 +53,8 @@ export const ReviewPrepLive: Layer.Layer<
     const changes = yield* WorktreeChangesRepo;
     const projects = yield* ProjectsRepo;
     const settingsRepo = yield* SettingsRepo;
-    const store = yield* Store;
+    const reads = yield* WorktreeReads;
+    const capture = yield* CaptureRuntime;
     const jobs = yield* JobRunner;
 
     const lastSettled = new Map<string, boolean>();
@@ -62,6 +64,20 @@ export const ReviewPrepLive: Layer.Layer<
       const change = yield* changes.byWorktree(session.worktreeId);
       if (change === null) return;
       const project = yield* projects.byId(session.projectId);
+      // Capture mode (ADR-0002 "Review"): a summary the executor posted for the chain head is
+      // `claimed` until a runner recomputes it; queue that pass at settle so the review page
+      // reads `observed` by the time a human opens it.
+      if (capture.enabled) {
+        const head = (yield* capture.repo.headOf(session.worktreeId))?.head ?? null;
+        const summary = head === null ? null : yield* capture.repo.summaryOf(head.id);
+        if (head !== null && summary !== null && summary.state === "claimed") {
+          yield* jobs.enqueue({
+            name: "summary-observe",
+            payload: { worktreeId: session.worktreeId, captureId: head.id },
+            idempotencyKey: `summary-observe:${head.id}`,
+          });
+        }
+      }
       const settings = yield* settingsRepo.get();
       const autoTour = resolveAutomation(project.autoTour, settings.autoTour);
       const autoSuggest = resolveAutomation(project.autoSuggest, settings.autoSuggest);
@@ -69,11 +85,8 @@ export const ReviewPrepLive: Layer.Layer<
 
       // The passes read worktree-versus-base themselves; this is only the
       // cheap "is there anything at all" gate before spending inference.
-      const files = yield* store.changedFiles(
-        worktreePathOf(project.storePath, session.worktree),
-        change.baseSha,
-        null,
-      );
+      const files = (yield* reads.changedFiles(project.id, session.worktreeId, change.baseSha))
+        .value;
       if (files.length === 0) return;
 
       // Key by content, not identity: many sessions settle onto ONE worktree

@@ -5,7 +5,8 @@
   "description": "The workbench session engine: worktree provisioning, run supervision with crash-resume, checkpointing",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./testing": "./test/testing.ts"
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",

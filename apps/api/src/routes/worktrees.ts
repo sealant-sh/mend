@@ -23,8 +23,8 @@ import {
   WorktreesRepo,
 } from "@mend/db";
 import { currentAgentProcess } from "@mend/domain/workbench";
-import { SessionEngine } from "@mend/sessions";
-import { Store, worktreePathOf } from "@mend/store";
+import { SessionEngine, WorktreeReads } from "@mend/sessions";
+import { Store } from "@mend/store";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
@@ -187,10 +187,16 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         // An unreviewed diff refuses (evidence, not verdicts: the facts are
         // stated; `force=true` is the human's explicit override).
         if (query.force !== "true") {
-          const path = worktreePathOf(project.storePath, worktree.directory);
-          const diff = yield* store
-            .diffWorktree(path, worktree.baseSha)
-            .pipe(Effect.mapError((error) => new StoreFailure({ message: error.stderr })));
+          const reads = yield* WorktreeReads;
+          const diff = (yield* reads.diffWorktree(project.id, worktree.id, worktree.baseSha).pipe(
+            Effect.mapError(
+              (error) =>
+                new StoreFailure({
+                  message:
+                    error._tag === "GitError" ? error.stderr : String(error.message ?? error._tag),
+                }),
+            ),
+          )).value;
           if (diff.trim() !== "") {
             return yield* new StoreFailure({
               message:
