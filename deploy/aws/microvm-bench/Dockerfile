@@ -6,13 +6,14 @@
 #
 # Image contract:
 #   :9000  lifecycle hooks (ready, validate, run, resume, suspend, terminate)
-#   :8080  the VM endpoint (health, results, bench trigger)
+#   :8080  the VM endpoint (health, results, bench and transfer triggers)
 #   mounts NFS, so the image must be created with --additional-os-capabilities ALL
 ARG BASE_IMAGE=public.ecr.aws/lambda/microvms:al2023-minimal
 FROM ${BASE_IMAGE}
 
 RUN dnf install -y --setopt=install_weak_deps=0 \
       bash tar gzip zip unzip git nfs-utils util-linux procps-ng findutils which \
+      curl-minimal coreutils \
       nodejs npm \
     && node --version && git --version \
     && npm install -g pnpm@10 \
@@ -25,7 +26,8 @@ RUN git config --system user.name "mend-bench" \
 
 COPY hooks.mjs /opt/bench/hooks.mjs
 COPY bench.sh /opt/bench/bench.sh
-RUN chmod 0755 /opt/bench/bench.sh && mkdir -p /mend /var/tmp/bench-local
+COPY bench-transfer.sh /opt/bench/bench-transfer.sh
+RUN chmod 0755 /opt/bench/bench.sh /opt/bench/bench-transfer.sh && mkdir -p /mend /var/tmp/bench-local
 
 WORKDIR /var/tmp/bench-local
 ENV HOOK_PORT=9000 APP_PORT=8080

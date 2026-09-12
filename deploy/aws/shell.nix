@@ -10,6 +10,8 @@ pkgs.mkShell {
     kubernetes-helm
     jq
     zip
+    # boto3 signs the presigned PUT for the R1 transfer bench (`aws s3 presign` does GET only).
+    (python3.withPackages (ps: [ ps.boto3 ]))
   ];
   shellHook = ''
     export AWS_REGION=''${AWS_REGION:-eu-central-1}

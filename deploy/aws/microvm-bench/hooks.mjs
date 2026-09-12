@@ -2,7 +2,11 @@
 //
 // Two HTTP servers:
 //   :9000  Lambda MicroVM lifecycle hooks, POST /aws/lambda-microvms/runtime/v1/<hook>
-//   :8080  the VM endpoint: GET /health, GET /results, POST /bench
+//   :8080  the VM endpoint: GET /health, GET /results, POST /bench, POST /transfer
+//
+// A run payload of { "probe": true } skips the FSx mount; the R1 transfer bench
+// runs that way and receives its presigned URLs over POST /transfer afterwards
+// (they never appear in the run payload or the hook log).
 //
 // /run receives { microvmId, runHookPayload: "<json>" }. The payload names the
 // FSx export to mount and, optionally, a bench to run right away:
@@ -153,6 +157,45 @@ async function runBench(spec) {
   }
 }
 
+// R1: bucket ↔ executor transfer over presigned URLs. Same result slot and
+// polling contract as the git bench (/results answers with .bench when done).
+async function runTransfer(spec) {
+  if (state.benchRunning) throw new Error("bench already running");
+  if (typeof spec.getUrl !== "string" || typeof spec.putUrl !== "string")
+    throw new Error("transfer needs getUrl and putUrl");
+  state.benchRunning = true;
+  state.bench = null;
+  try {
+    const env = {
+      ...process.env,
+      BENCH_GET_URL: spec.getUrl,
+      BENCH_PUT_URL: spec.putUrl,
+      BENCH_S3_URI: spec.s3Uri ?? "",
+      BENCH_SIZE: String(spec.size ?? 1073741824),
+      BENCH_PARALLEL: String(spec.parallel ?? 8),
+      BENCH_EGRESS: spec.egress ?? "unknown",
+      BENCH_ID: `${state.microvmId ?? "local"}-${Date.now()}`,
+    };
+    log(`transfer: start ${JSON.stringify({ egress: env.BENCH_EGRESS, size: env.BENCH_SIZE, parallel: env.BENCH_PARALLEL })}`);
+    const { stdout, stderr } = await run("bash", ["/opt/bench/bench-transfer.sh"], {
+      env,
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: 30 * 60 * 1000,
+    });
+    const result = JSON.parse(stdout);
+    result.stderrTail = stderr.split("\n").slice(-60).join("\n");
+    state.bench = result;
+    log(`transfer: done, ${Object.keys(result.results ?? {}).length} measurements`);
+    return result;
+  } catch (err) {
+    log(`transfer: failed ${err.message}`);
+    state.bench = { error: err.message, stderr: err.stderr?.slice(-4000) };
+    throw err;
+  } finally {
+    state.benchRunning = false;
+  }
+}
+
 const hooks = http.createServer(async (req, res) => {
   if (req.method !== "POST" || !req.url.startsWith(HOOK_PREFIX))
     return json(res, 404, { error: "not a hook" });
@@ -224,6 +267,12 @@ const app = http.createServer(async (req, res) => {
       const { cmd, timeout } = JSON.parse((await readBody(req)) || "{}");
       if (typeof cmd !== "string") return json(res, 400, { error: "cmd required" });
       return json(res, 200, await sh(cmd, timeout ?? 120000));
+    }
+    if (req.method === "POST" && req.url === "/transfer") {
+      const spec = JSON.parse((await readBody(req)) || "{}");
+      json(res, 202, { status: "started", egress: spec.egress ?? null });
+      runTransfer(spec).catch(() => {});
+      return;
     }
     if (req.method === "POST" && req.url === "/bench") {
       const spec = JSON.parse((await readBody(req)) || "{}");

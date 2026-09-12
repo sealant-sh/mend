@@ -19,7 +19,7 @@ log "base image $BASE_IMAGE_ARN"
 STAMP="$(date +%Y%m%d-%H%M%S)"
 KEY="images/$IMAGE_NAME-$STAMP.zip"
 TMP="$(mktemp -d)"; trap 'rm -rf "$TMP"' EXIT
-( cd "$AWS_DIR/microvm-bench" && zip -qr "$TMP/app.zip" Dockerfile hooks.mjs bench.sh )
+( cd "$AWS_DIR/microvm-bench" && zip -qr "$TMP/app.zip" Dockerfile hooks.mjs bench.sh bench-transfer.sh )
 aws s3 cp --only-show-errors "$TMP/app.zip" "s3://$BUCKET/$KEY"
 log "uploaded s3://$BUCKET/$KEY"
 
@@ -31,7 +31,7 @@ HOOKS='{"port":9000,
 IMAGE_ARN="arn:aws:lambda:$REGION:$ACCOUNT:microvm-image:$IMAGE_NAME"
 # Update takes the whole configuration again, not a delta, so both paths share it.
 COMMON=(
-  --description "Mend AWS POC slice 0: FSx mount + git benchmark"
+  --description "Mend AWS POC: FSx mount + git benchmark; R1 bucket transfer benchmark"
   --base-image-arn "$BASE_IMAGE_ARN"
   --build-role-arn "$BUILD_ROLE"
   --code-artifact "{\"uri\":\"s3://$BUCKET/$KEY\"}"

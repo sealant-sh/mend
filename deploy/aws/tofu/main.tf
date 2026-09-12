@@ -129,8 +129,10 @@ resource "aws_security_group" "workload" {
   tags = { Name = "${local.name}-workload" }
 }
 
-# FSx accepts NFS only from the workload group.
+# FSx accepts NFS only from the workload group. Off with the rest of FSx when
+# enable_fsx is false.
 resource "aws_security_group" "fsx" {
+  count       = var.enable_fsx ? 1 : 0
   name        = "${local.name}-fsx"
   description = "FSx for OpenZFS NFS from workloads"
   vpc_id      = aws_vpc.poc.id
@@ -177,7 +179,8 @@ resource "aws_security_group" "fsx" {
 
 # ---------------------------------------------------------------- storage ----
 
-# The authoritative Mend store. Single-AZ, non-HA, SSD, smallest sensible tier.
+# The authoritative Mend store (slice 0). Gated by enable_fsx: the R1 transfer
+# measurement needs the network, the bucket and the connector, not the store. Single-AZ, non-HA, SSD, smallest sensible tier.
 # Export options: every NFS writer (engine pod uid 1000, root inside VMs) maps
 # to one owner, which ends the uid split documented in PLATFORM-FEEDBACK.md.
 # `insecure` is required: the default `secure` accepts only source ports below
@@ -185,11 +188,12 @@ resource "aws_security_group" "fsx" {
 # ephemeral port, which the server answers with NFS4ERR_PERM (mount says
 # "Operation not permitted").
 resource "aws_fsx_openzfs_file_system" "store" {
+  count               = var.enable_fsx ? 1 : 0
   deployment_type     = var.fsx_deployment_type
   storage_capacity    = var.fsx_storage_gib
   throughput_capacity = var.fsx_throughput_mbps
   subnet_ids          = [aws_subnet.private.id]
-  security_group_ids  = [aws_security_group.fsx.id]
+  security_group_ids  = [aws_security_group.fsx[0].id]
   storage_type        = "SSD"
 
   automatic_backup_retention_days   = 7
@@ -215,8 +219,9 @@ resource "aws_fsx_openzfs_file_system" "store" {
 # One child volume for the Mend store so the root stays free for snapshots and
 # a future second tenant/cell.
 resource "aws_fsx_openzfs_volume" "mend" {
+  count                 = var.enable_fsx ? 1 : 0
   name                  = "mend"
-  parent_volume_id      = aws_fsx_openzfs_file_system.store.root_volume_id
+  parent_volume_id      = aws_fsx_openzfs_file_system.store[0].root_volume_id
   data_compression_type = "LZ4"
   record_size_kib       = 128
   nfs_exports {

@@ -15,6 +15,12 @@ variable "vpc_cidr" {
   default = "10.42.0.0/16"
 }
 
+variable "enable_fsx" {
+  description = "Create the FSx for OpenZFS store, its volume and security group. Off for the bucket transfer measurement (R1)."
+  type        = bool
+  default     = false
+}
+
 variable "fsx_deployment_type" {
   description = "SINGLE_AZ_2 has the larger cache and NVMe read cache; SINGLE_AZ_1 is the cheapest tier."
   type        = string
