@@ -77,10 +77,12 @@ async function mountFsx({ dns, path }, mountPoint) {
     throw new Error(`${mountPoint} is not a mountpoint after mount`);
   const probe = `${mountPoint}/.mend-probe-${process.pid}`;
   await writeFile(probe, "ok\n");
+  // The owner the server reports for a file we just wrote shows whether the
+  // export's all_squash/anonuid mapping is in effect (expect uid 1000).
+  const st = await stat(probe);
   await run("rm", ["-f", probe]);
-  const st = await stat(mountPoint);
   log(
-    `mount: validated ${mountPoint} uid=${st.uid} gid=${st.gid} mode=${(st.mode & 0o777).toString(8)}`,
+    `mount: validated ${mountPoint}; new file owner uid=${st.uid} gid=${st.gid} (squash ${st.uid === 1000 ? "active" : "NOT active"})`,
   );
   state.mount = { dns, path, mountPoint, mountedAt: new Date().toISOString() };
 }

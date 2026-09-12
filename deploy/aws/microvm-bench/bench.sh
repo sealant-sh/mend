@@ -78,7 +78,7 @@ suite() {
   git -C "$a" checkout --quiet -b "bench/$ID-b"
   time_op "$label.switch" "$a" bash -c "git switch --quiet bench/$ID && git switch --quiet bench/$ID-b"
   time_op "$label.log" "$a" git log --oneline -200
-  time_op "$label.worktree_add_more" "$bare" bash -c "git worktree add --quiet -b bench/$ID-\$RANDOM$RANDOM $wt/w\$RANDOM $head"
+  time_op "$label.worktree_add_more" "$bare" bash -c "n=\$RANDOM\$RANDOM; git worktree add --quiet -b bench/$ID-\$n $wt/w-\$n $head"
   time_op "$label.fetch_noop" "$a" git fetch --quiet origin
   time_op "$label.count_objects" "$bare" git count-objects -v
   time_op "$label.repack" "$bare" git repack -adq
@@ -92,6 +92,22 @@ suite() {
       t1=$(now_ms)
       RESULTS["$label.pnpm_install"]=$((t1 - t0))
       time_op "$label.status_with_node_modules" "$a" git status --porcelain
+      if [[ "$label" == "fsx" ]]; then
+        # Same install, but pnpm's virtual store (node_modules/.pnpm, the bulk of
+        # the files) and content store live on the VM's local disk. Only the
+        # per-package symlink forests stay on NFS. This is the "node_modules is
+        # executor cache, not session state" design being measured.
+        rm -rf "$a/node_modules" "$a"/apps/*/node_modules "$a"/packages/*/node_modules "$a"/tooling/*/node_modules 2>/dev/null || true
+        local vs="$LOCAL_ROOT/pnpm-virtual-store-$ID" store="$LOCAL_ROOT/pnpm-store-$ID"
+        mkdir -p "$vs" "$store"
+        log "[$label] pnpm install with virtual store on local disk"
+        t0=$(now_ms)
+        (cd "$a" && pnpm install --frozen-lockfile --reporter=silent --virtual-store-dir "$vs" --store-dir "$store" >/dev/null 2>&1) || log "[$label] pnpm install (local virtual store) failed"
+        t1=$(now_ms)
+        RESULTS["$label.pnpm_install_local_vstore"]=$((t1 - t0))
+        time_op "$label.status_with_node_modules_local_vstore" "$a" git status --porcelain
+        RESULTS["$label.node_modules_on_nfs_kib"]=$(du -sk "$a/node_modules" 2>/dev/null | cut -f1)
+      fi
     else
       log "[$label] no pnpm-lock.yaml, skipping install"
     fi
