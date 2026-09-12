@@ -15,12 +15,14 @@ TAGS='{"project":"mend","environment":"aws-microvm-poc"}'
 
 log() { printf '%s %s\n' "$(date +%H:%M:%S)" "$*" >&2; }
 
-# wait_for <seconds> <interval> <cmd...>: run cmd until it prints "ok" on stdout.
+# wait_for <seconds> <interval> <cmd...>: run cmd until it prints "ok" on
+# stdout. A "failed…" or "dead…" answer is terminal and returns 1 at once.
 wait_for() {
   local deadline=$(( $(date +%s) + $1 )) interval="$2"; shift 2
   while true; do
     local r; r="$("$@" 2>/dev/null || true)"
     [[ "$r" == ok* ]] && return 0
+    if [[ "$r" == failed* || "$r" == dead* ]]; then log "$r"; return 1; fi
     if (( $(date +%s) > deadline )); then log "timeout waiting: $r"; return 1; fi
     sleep "$interval"
   done

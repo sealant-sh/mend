@@ -93,7 +93,10 @@ async function mountFsx({ dns, path }, mountPoint) {
 
 async function sh(cmd, timeout = 60000) {
   try {
-    const { stdout, stderr } = await run("bash", ["-lc", cmd], { timeout, maxBuffer: 8 * 1024 * 1024 });
+    const { stdout, stderr } = await run("bash", ["-lc", cmd], {
+      timeout,
+      maxBuffer: 8 * 1024 * 1024,
+    });
     return { code: 0, stdout, stderr };
   } catch (err) {
     return { code: err.code ?? -1, stdout: err.stdout ?? "", stderr: err.stderr ?? err.message };
@@ -176,7 +179,9 @@ async function runTransfer(spec) {
       BENCH_EGRESS: spec.egress ?? "unknown",
       BENCH_ID: `${state.microvmId ?? "local"}-${Date.now()}`,
     };
-    log(`transfer: start ${JSON.stringify({ egress: env.BENCH_EGRESS, size: env.BENCH_SIZE, parallel: env.BENCH_PARALLEL })}`);
+    log(
+      `transfer: start ${JSON.stringify({ egress: env.BENCH_EGRESS, size: env.BENCH_SIZE, parallel: env.BENCH_PARALLEL })}`,
+    );
     const { stdout, stderr } = await run("bash", ["/opt/bench/bench-transfer.sh"], {
       env,
       maxBuffer: 16 * 1024 * 1024,

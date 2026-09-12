@@ -13,7 +13,7 @@ FROM ${BASE_IMAGE}
 
 RUN dnf install -y --setopt=install_weak_deps=0 \
       bash tar gzip zip unzip git nfs-utils util-linux procps-ng findutils which \
-      curl-minimal coreutils \
+      curl-minimal \
       nodejs npm \
     && node --version && git --version \
     && npm install -g pnpm@10 \
