@@ -31,6 +31,8 @@ export interface MemoryCaptureStore {
   readonly summaries: Map<string, CaptureSummaryRow>;
 }
 
+const digestOf = (key: string) => key.slice(key.lastIndexOf("/") + 1).replace(/\.idx$/, "");
+
 export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
   const clock = { now: () => Date.now() };
   const leases = new Map<
@@ -58,8 +60,6 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
           live: live(lease),
         };
   };
-  const digestOf = (key: string) => key.slice(key.lastIndexOf("/") + 1).replace(/\.idx$/, "");
-
   const layer = Layer.succeed(CaptureStoreRepo, {
     init: (worktreeId) =>
       Effect.sync(() => {

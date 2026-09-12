@@ -79,9 +79,33 @@ export interface WorkspacePackageResolution {
  *   it here would be exactly the workaround PLATFORM-FEEDBACK.md forbids
  *   (see the 0.5.0 entry, "composition layer not exported").
  */
+/**
+ * A CAPTURE-sourced workspace (sealantd ADR-0015, Mend ADR-0002): nothing is mounted and nothing
+ * is cloned — the daemon fetches the worktree's head plan from the session channel at `endpoint`,
+ * materialises it onto its own disk and claims the lease. The channel credential rides the
+ * request top level as `captureToken`, sealed into the boot env file as `SEALANT_CAPTURE_TOKEN`.
+ *
+ * SEAM: the published `@sealant/sdk` (catalog 0.28.0) does not know this source yet; Core PR
+ * sealant#231 (branch feat/capture-workspace-source) adds it to `workspaceSourceSchema` and
+ * `CreateOptions`. Until that release lands, this is the one place Mend widens the create payload
+ * structurally — see PLATFORM-FEEDBACK.md.
+ */
+export interface WorkspaceCaptureSource {
+  readonly kind: "capture";
+  readonly endpoint: string;
+  readonly worktreeId: string;
+  /** `<os>-<arch>-<libc>` placement hint, recorded by the platform, never seen by the daemon. */
+  readonly platform?: string | undefined;
+}
+
+export type CaptureCreateOptions = Omit<CreateOptions, "source" | "mounts"> & {
+  readonly source: WorkspaceCaptureSource;
+  readonly captureToken: string;
+};
+
 export interface SealantClientShape {
   readonly createWorkspace: (
-    options: CreateOptions,
+    options: CreateOptions | CaptureCreateOptions,
   ) => Effect.Effect<Workspace, SealantPlatformError>;
   readonly getWorkspace: (id: string) => Effect.Effect<Workspace, SealantPlatformError>;
   /** Runs outlive workspaces — records are replayable long after close-out. */
@@ -269,8 +293,11 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
     const apiContext = yield* Layer.build(sealantApiClientLayer(internalConfig));
     const ownerUserId = internalConfig.hostLocal.ownerUserId;
 
-    const createWorkspace = Effect.fn("SealantClient.createWorkspace")((options: CreateOptions) =>
-      wrap(() => sealant.workspaces.create(options)),
+    const createWorkspace = Effect.fn("SealantClient.createWorkspace")(
+      (options: CreateOptions | CaptureCreateOptions) =>
+        // The SDK 0.28.0 type predates the capture source (Core PR sealant#231); the control
+        // plane on that branch validates the shape, so the payload passes through as-is.
+        wrap(() => sealant.workspaces.create(options as CreateOptions)),
     );
 
     const getWorkspace = Effect.fn("SealantClient.getWorkspace")((id: string) =>

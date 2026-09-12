@@ -106,10 +106,11 @@ export const packEditedTree = (
   };
 };
 
+const keyOf = (projectId: string, name: string) => `${projectId} ${name}`;
+
 export const memoryStoreRefs = (): Layer.Layer<StoreRefsRepo> => {
   // Rows live outside the layer so every build of it sees the same refs.
   const rows = new Map<string, StoreRef>();
-  const keyOf = (projectId: string, name: string) => `${projectId} ${name}`;
   return Layer.sync(StoreRefsRepo, () => {
     return {
       list: (projectId) =>

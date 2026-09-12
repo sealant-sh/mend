@@ -146,6 +146,11 @@ export const BYTE_QUOTA_MULTIPLIER = 4;
 export const BYTE_QUOTA_FLOOR = 512 * 1024 * 1024;
 /** Heartbeat expiry the executor is told (ADR-0002: heartbeat every 10 s against 30 s). */
 export const LEASE_EXPIRES_IN_SECS = 30;
+/**
+ * The lease Mend claims at launch must outlive the executor's boot (cold materialise ≈ 25–55 s,
+ * ADR-0002 "Consequences"); the first heartbeat brings it back to the 30 s cadence.
+ */
+export const LAUNCH_CLAIM_TTL_SECONDS = 5 * 60;
 
 export interface CaptureScope {
   readonly worktreeId: WorktreeId;
@@ -183,6 +188,10 @@ export class CaptureChannel extends Context.Service<
 const bad = (message: string) =>
   new CaptureRouteError({ status: 400, reason: "bad-request", message });
 
+/** A bucket or pointer-store failure inside a route is a defect: 500, which the executor retries. */
+const storeError = (operation: string) => (cause: { readonly _tag: string }) =>
+  Effect.die(`capture channel: ${operation} failed: ${cause._tag}`);
+
 export const CaptureChannelLive: Layer.Layer<CaptureChannel, never, CaptureStoreRepo | BlobStore> =
   Layer.effect(
     CaptureChannel,
@@ -193,7 +202,9 @@ export const CaptureChannelLive: Layer.Layer<CaptureChannel, never, CaptureStore
       const publish = (row: CaptureRow): void => {
         const set = listeners.get(row.worktreeId);
         if (set === undefined) return;
-        for (const listener of [...set]) listener(row);
+        // Snapshot first: a woken listener removes itself from the set while we iterate.
+        const woken = Array.from(set);
+        for (const listener of woken) listener(row);
       };
       const awaitRegister = (
         worktreeId: WorktreeId,
@@ -229,9 +240,6 @@ export const CaptureChannelLive: Layer.Layer<CaptureChannel, never, CaptureStore
           BYTE_QUOTA_FLOOR,
           BYTE_QUOTA_MULTIPLIER * Math.max(0, scope.footprintBytes),
         );
-        const storeError = (operation: string) => (cause: { readonly _tag: string }) =>
-          Effect.die(`capture channel: ${operation} failed: ${cause._tag}`);
-
         /** The lease predicate: live and under the caller's epoch, else the 409 the caller needs. */
         const requireLease = (epoch: number) =>
           Effect.gen(function* () {
@@ -571,8 +579,9 @@ export const CaptureChannelLive: Layer.Layer<CaptureChannel, never, CaptureStore
               live_epoch: lease.epoch,
             });
           }
+          // sealantd's registrar reads 404 on lease.heartbeat as "lease lost" (pause, never kill).
           return yield* new CaptureRouteError({
-            status: 409,
+            status: 404,
             reason: "lease-lost",
             message: "no lease row renewed — stop shipping and pause",
           });

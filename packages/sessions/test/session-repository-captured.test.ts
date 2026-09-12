@@ -3,7 +3,7 @@ import * as path from "node:path";
 
 import { CaptureStoreRepo, StoreRefsRepo } from "@mend/db";
 import { Sha } from "@mend/domain";
-import { BlobStore, WORKTREE_TREE_REF, captureIdOf, captureKeys } from "@mend/store";
+import { BlobStore, WORKTREE_TREE_REF, captureIdOf } from "@mend/store";
 import { buildManifest, uploadObjects } from "@mend/store/testing";
 import { Effect, Exit, Fiber, Layer, Scope } from "effect";
 import type * as Context from "effect/Context";

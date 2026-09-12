@@ -51,8 +51,11 @@ import { derivedPackPrefix, ensureCaptureCache } from "./worktree-reads.ts";
  * - `worktreeMount` answers undefined: nothing is co-located.
  */
 
-/** How long a Mend-requested checkpoint waits for the executor's own `checkpoint` capture. */
-export const CHECKPOINT_WAIT = Duration.seconds(5);
+/**
+ * How long a Mend-requested checkpoint waits for the executor's own `checkpoint` capture: one
+ * quiet window of sealantd's cadence (2 s quiet / 10 s maximum while dirty, ADR-0015).
+ */
+export const CHECKPOINT_WAIT = Duration.seconds(2);
 
 const checkpointRef = (worktreeId: string, index: number) =>
   `refs/mend/checkpoints/${worktreeId}/${index}`;

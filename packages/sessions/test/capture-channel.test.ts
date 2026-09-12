@@ -437,6 +437,15 @@ describe("capture channel routes", () => {
     expect(fenced.status).toBe(409);
     expect(fenced.json["reason"]).toBe("stale-epoch");
     expect(fenced.json["live_epoch"]).toBe(3);
+    // The lease row gone for good (a released worktree whose next claimer never came): 404,
+    // which sealantd's registrar reads as "lease lost".
+    memory.leases.delete(WORKTREE);
+    const lost = await post(address, "/lease.heartbeat", token, {
+      worktree_id: WORKTREE,
+      epoch: 3,
+    });
+    expect(lost.status).toBe(404);
+    expect(lost.json["reason"]).toBe("lease-lost");
     // And a booting second executor for a leased worktree is refused outright.
     const second = await post(address, "/plan.get", token, { epoch: 0 });
     expect(second.status).toBe(409);

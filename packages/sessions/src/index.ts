@@ -3,6 +3,7 @@ export * from "./engine.ts";
 export * from "./session-repository.ts";
 export * from "./session-repository-captured.ts";
 export * from "./capture-channel.ts";
+export * from "./capture-runtime.ts";
 export * from "./worktree-reads.ts";
 export * from "./protocol-host.ts";
 export * from "./follow-up-delivery.ts";
