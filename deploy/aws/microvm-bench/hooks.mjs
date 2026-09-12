@@ -64,7 +64,13 @@ async function mountFsx({ dns, path }, mountPoint) {
   } else {
     const source = `${dns}:${path}`;
     log(`mount: ${source} -> ${mountPoint} (${MOUNT_OPTS})`);
-    await run("mount", ["-t", "nfs", "-o", MOUNT_OPTS, source, mountPoint]);
+    try {
+      await run("mount", ["-t", "nfs", "-o", MOUNT_OPTS, source, mountPoint]);
+    } catch (err) {
+      log(`mount: failed: ${(err.stderr ?? err.message).trim()}`);
+      log(`mount: diag ${JSON.stringify(await diagnostics())}`);
+      throw err;
+    }
   }
   // Validate: it is a mountpoint, and it is writable by us (all_squash → anonuid).
   if (!(await isMounted(mountPoint)))
@@ -77,6 +83,31 @@ async function mountFsx({ dns, path }, mountPoint) {
     `mount: validated ${mountPoint} uid=${st.uid} gid=${st.gid} mode=${(st.mode & 0o777).toString(8)}`,
   );
   state.mount = { dns, path, mountPoint, mountedAt: new Date().toISOString() };
+}
+
+async function sh(cmd, timeout = 60000) {
+  try {
+    const { stdout, stderr } = await run("bash", ["-lc", cmd], { timeout, maxBuffer: 8 * 1024 * 1024 });
+    return { code: 0, stdout, stderr };
+  } catch (err) {
+    return { code: err.code ?? -1, stdout: err.stdout ?? "", stderr: err.stderr ?? err.message };
+  }
+}
+
+async function diagnostics() {
+  const out = {};
+  for (const [k, c] of Object.entries({
+    id: "id",
+    caps: "grep -E 'Cap(Eff|Bnd|Prm)' /proc/self/status",
+    filesystems: "grep -E 'nfs|fuse|overlay' /proc/filesystems || true",
+    kernel: "uname -a",
+    modules: "ls /lib/modules 2>/dev/null; cat /proc/modules 2>/dev/null | head -5",
+    dmesg: "dmesg 2>&1 | tail -5",
+  })) {
+    const r = await sh(c, 10000);
+    out[k] = (r.stdout + r.stderr).trim().slice(0, 800);
+  }
+  return out;
 }
 
 async function runBench(spec) {
@@ -137,6 +168,10 @@ const hooks = http.createServer(async (req, res) => {
         state.microvmId = envelope.microvmId ?? null;
         state.payload = payload;
         log(`run: microvm ${state.microvmId} payload keys ${Object.keys(payload).join(",")}`);
+        if (payload.probe) {
+          log("run: probe mode, not mounting");
+          return json(res, 200, { status: "ok", hook, probe: true });
+        }
         if (!payload.fsx?.dns || !payload.fsx?.path)
           throw new Error("run payload needs fsx.dns and fsx.path");
         await mountFsx(payload.fsx, payload.mountPoint ?? "/mend");
@@ -181,6 +216,13 @@ const app = http.createServer(async (req, res) => {
     if (req.method === "GET" && req.url === "/results")
       return json(res, 200, { bench: state.bench, log: state.log.slice(-100) });
     if (req.method === "GET" && req.url === "/log") return json(res, 200, { log: state.log });
+    if (req.method === "GET" && req.url === "/diag") return json(res, 200, await diagnostics());
+    if (req.method === "POST" && req.url === "/exec") {
+      // POC-only remote exec, reachable solely through the token-scoped endpoint.
+      const { cmd, timeout } = JSON.parse((await readBody(req)) || "{}");
+      if (typeof cmd !== "string") return json(res, 400, { error: "cmd required" });
+      return json(res, 200, await sh(cmd, timeout ?? 120000));
+    }
     if (req.method === "POST" && req.url === "/bench") {
       const spec = JSON.parse((await readBody(req)) || "{}");
       json(res, 202, { status: "started", spec });

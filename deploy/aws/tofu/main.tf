@@ -180,6 +180,10 @@ resource "aws_security_group" "fsx" {
 # The authoritative Mend store. Single-AZ, non-HA, SSD, smallest sensible tier.
 # Export options: every NFS writer (engine pod uid 1000, root inside VMs) maps
 # to one owner, which ends the uid split documented in PLATFORM-FEEDBACK.md.
+# `insecure` is required: the default `secure` accepts only source ports below
+# 1024, and MicroVM traffic arrives through the connector ENI's NAT on an
+# ephemeral port, which the server answers with NFS4ERR_PERM (mount says
+# "Operation not permitted").
 resource "aws_fsx_openzfs_file_system" "store" {
   deployment_type     = var.fsx_deployment_type
   storage_capacity    = var.fsx_storage_gib
@@ -200,7 +204,7 @@ resource "aws_fsx_openzfs_file_system" "store" {
     nfs_exports {
       client_configurations {
         clients = var.vpc_cidr
-        options = ["rw", "crossmnt", "all_squash", "anonuid=1000", "anongid=1000"]
+        options = ["rw", "crossmnt", "insecure", "all_squash", "anonuid=1000", "anongid=1000"]
       }
     }
   }
@@ -218,10 +222,11 @@ resource "aws_fsx_openzfs_volume" "mend" {
   nfs_exports {
     client_configurations {
       clients = var.vpc_cidr
-      options = ["rw", "crossmnt", "all_squash", "anonuid=1000", "anongid=1000"]
+      options = ["rw", "crossmnt", "insecure", "all_squash", "anonuid=1000", "anongid=1000"]
     }
   }
-  tags = { Name = "${local.name}-store-mend" }
+  # No Name tag here: the file system copies its tags to volumes and rejects a
+  # volume whose Name differs from its own.
 }
 
 # ------------------------------------------------------------- artifacts ----

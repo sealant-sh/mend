@@ -34,8 +34,7 @@ RUN="$(aws lambda-microvms run-microvm \
   --idle-policy '{"maxIdleDurationSeconds":3600,"suspendedDurationSeconds":600,"autoResumeEnabled":true}' \
   --maximum-duration-in-seconds 7200 \
   --logging "{\"cloudWatch\":{\"logGroup\":\"$LOG_GROUP\"}}" \
-  --run-hook-payload "$PAYLOAD" \
-  --tags "$TAGS")"
+  --run-hook-payload "$PAYLOAD")"
 VM_ID="$(jq -r .microvmId <<<"$RUN")"
 ENDPOINT="$(jq -r .endpoint <<<"$RUN")"
 T0=$(date +%s)
@@ -50,7 +49,7 @@ T1=$(date +%s)
 log "RUNNING after $((T1 - T0)) s (includes the /run hook: FSx mount + validation)"
 
 TOKEN="$(aws lambda-microvms create-microvm-auth-token --microvm-identifier "$VM_ID" \
-  --expiration-in-minutes 60 --allowed-ports '[{"port":8080}]' --query token --output text)"
+  --expiration-in-minutes 60 --allowed-ports '[{"port":8080}]' --query 'authToken."X-aws-proxy-auth"' --output text)"
 get() { curl -sf "https://$ENDPOINT$1" -H "X-aws-proxy-auth: $TOKEN" -H "X-aws-proxy-port: 8080"; }
 
 health_check() { get /health | jq -r 'if .mount then "ok" else "no mount yet" end'; }

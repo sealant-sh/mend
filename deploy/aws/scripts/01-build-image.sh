@@ -28,25 +28,24 @@ HOOKS='{"port":9000,
   "microvmHooks":{"run":"ENABLED","runTimeoutInSeconds":60,"resume":"ENABLED","resumeTimeoutInSeconds":60,
                   "suspend":"ENABLED","suspendTimeoutInSeconds":30,"terminate":"ENABLED","terminateTimeoutInSeconds":10}}'
 
-if [[ "${1:-}" == "--update" ]]; then
-  aws lambda-microvms update-microvm-image \
-    --image-identifier "arn:aws:lambda:$REGION:$ACCOUNT:microvm-image:$IMAGE_NAME" \
-    --code-artifact "{\"uri\":\"s3://$BUCKET/$KEY\"}" >/dev/null
-else
-  aws lambda-microvms create-microvm-image \
-    --name "$IMAGE_NAME" \
-    --description "Mend AWS POC slice 0: FSx mount + git benchmark" \
-    --base-image-arn "$BASE_IMAGE_ARN" \
-    --build-role-arn "$BUILD_ROLE" \
-    --code-artifact "{\"uri\":\"s3://$BUCKET/$KEY\"}" \
-    --cpu-configurations '[{"architecture":"ARM_64"}]' \
-    --resources '[{"minimumMemoryInMiB":4096}]' \
-    --additional-os-capabilities '["ALL"]' \
-    --hooks "$HOOKS" \
-    --logging "{\"cloudWatch\":{\"logGroup\":\"$LOG_GROUP\"}}" \
-    --tags "$TAGS" >/dev/null
-fi
 IMAGE_ARN="arn:aws:lambda:$REGION:$ACCOUNT:microvm-image:$IMAGE_NAME"
+# Update takes the whole configuration again, not a delta, so both paths share it.
+COMMON=(
+  --description "Mend AWS POC slice 0: FSx mount + git benchmark"
+  --base-image-arn "$BASE_IMAGE_ARN"
+  --build-role-arn "$BUILD_ROLE"
+  --code-artifact "{\"uri\":\"s3://$BUCKET/$KEY\"}"
+  --cpu-configurations '[{"architecture":"ARM_64"}]'
+  --resources '[{"minimumMemoryInMiB":4096}]'
+  --additional-os-capabilities '["ALL"]'
+  --hooks "$HOOKS"
+  --logging "{\"cloudWatch\":{\"logGroup\":\"$LOG_GROUP\"}}"
+)
+if [[ "${1:-}" == "--update" ]]; then
+  aws lambda-microvms update-microvm-image --image-identifier "$IMAGE_ARN" "${COMMON[@]}" >/dev/null
+else
+  aws lambda-microvms create-microvm-image --name "$IMAGE_NAME" --tags "$TAGS" "${COMMON[@]}" >/dev/null
+fi
 log "image build started: $IMAGE_ARN (logs: $LOG_GROUP)"
 
 state_check() {
