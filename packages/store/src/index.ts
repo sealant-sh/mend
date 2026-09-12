@@ -1,4 +1,5 @@
 export * from "./agent-bridge.ts";
+export * from "./blob-store.ts";
 export * from "./deployment.ts";
 export * from "./dotfiles-store.ts";
 export * from "./git.ts";

@@ -13,6 +13,8 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@aws-sdk/client-s3": "catalog:",
+    "@aws-sdk/s3-request-presigner": "catalog:",
     "@mend/domain": "workspace:*",
     "effect": "catalog:"
   },
