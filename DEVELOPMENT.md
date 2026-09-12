@@ -72,12 +72,15 @@ co-located default ignores every variable below.
 lays the node out and creates the key once. A `dir://` bucket needs no Docker and serves an executor
 on this machine only (its presigned URLs are `file://`); a Docker executor needs the S3 bucket.
 
-The two `_URL` values must be reachable from inside the executor container. On Linux,
-`host.docker.internal` resolves only with `--add-host`, which the Sealant Docker runtime does not
-pass, and a host firewall (NixOS's default) drops traffic from the bridge to the host — so the
-bridge IP (`172.17.0.1`) can be unreachable too. `scripts/capture-e2e.sh` documents the workaround
-used for the local proof: a relay container on the default bridge that forwards both ports to the
-host over Unix sockets. Opening the firewall for `docker0` removes the need for it.
+The two `_URL` values must be reachable from inside the executor container, and the host named in a
+presigned URL must resolve there: the executor PUTs and GETs bucket objects with the URL exactly as
+minted, so `MEND_BLOB_STORE_PUBLIC_URL` is what the container sees, not what this shell sees. On
+Linux, `host.docker.internal` resolves only with `--add-host`, which the Sealant Docker runtime does
+not pass, and a host firewall (NixOS's default) drops traffic from the bridge to the host — so the
+bridge IP (`172.17.0.1`) can be unreachable too. Two ways out: trust the bridge on the host (NixOS:
+`networking.firewall.trustedInterfaces = [ "docker0" ];`) and name the bridge IP in both `_URL`
+values, or run the relay `scripts/capture-e2e.sh` documents — a container on the default bridge that
+forwards both ports to the host over Unix sockets — and name the relay's IP.
 
 Origins must include the correct scheme, hostname, and port, without a path. Interface discovery,
 wildcards, and incoming forwarding headers do not grant trust. Do not configure a second allowlist

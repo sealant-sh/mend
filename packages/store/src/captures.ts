@@ -141,6 +141,10 @@ export type DirObject = typeof DirObject.Type;
  * struct with one field), the form every executor-written tree has (observed: the daemon's
  * materialiser rejects a bare array with "expected struct DirObject with 1 element"). The bare
  * array is still read, so nothing Mend wrote before this reading is unreadable.
+ *
+ * sealantd ADR-0015 §Capture format describes the dir object as the bare sorted array; the
+ * daemon writes the wrapped form and Mend writes what the daemon reads. That section is the
+ * text to amend — the format on the wire does not change.
  */
 const DirObjectWire = Schema.Union([
   Schema.Struct({ entries: Schema.Array(DirEntry) }),
