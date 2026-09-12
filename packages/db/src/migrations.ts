@@ -1466,6 +1466,93 @@ const skillsMigration = Effect.gen(function* () {
       ON skills (project_id, name) WHERE scope = 'project'`;
 });
 
+/**
+ * The capture store (docs/adr/0002-session-capture-store.md "Postgres schema"): the only mutable
+ * state of a remote session's work product. Leases and chain heads are keyed per worktree;
+ * captures are immutable rows named by the sha256 of their manifest; every advance is one
+ * statement (`repos/capture-store.ts`), so it survives transaction-mode pooling. `parent` has
+ * no foreign key on purpose: retention thins `auto`/`turn` captures out of the middle of a
+ * chain, and a checkpoint must keep naming the parent it had. `store_refs` is the only place a
+ * project ref moves, with a version for compare-and-swap.
+ */
+const captureStoreMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS worktree_leases (
+      worktree_id text PRIMARY KEY REFERENCES worktrees (id) ON DELETE CASCADE,
+      executor_id text,
+      epoch bigint NOT NULL DEFAULT 0,
+      expires_at timestamptz
+    )`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS worktree_chain (
+      worktree_id text PRIMARY KEY REFERENCES worktrees (id) ON DELETE CASCADE,
+      head_capture text,
+      head_n integer NOT NULL DEFAULT -1,
+      head_epoch bigint NOT NULL DEFAULT 0
+    )`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS captures (
+      id text PRIMARY KEY,
+      worktree_id text NOT NULL REFERENCES worktrees (id) ON DELETE CASCADE,
+      n integer NOT NULL,
+      parent text,
+      epoch bigint NOT NULL,
+      seq bigint NOT NULL,
+      kind text NOT NULL,
+      manifest_key text NOT NULL,
+      sections jsonb NOT NULL DEFAULT '{}'::jsonb,
+      git_fsck text NOT NULL DEFAULT 'unverified',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT captures_worktree_n_key UNIQUE (worktree_id, n),
+      CONSTRAINT captures_kind_check
+        CHECK (kind IN ('auto', 'turn', 'checkpoint', 'suspend', 'final')),
+      CONSTRAINT captures_git_fsck_check
+        CHECK (git_fsck IN ('verified', 'failed', 'unverified'))
+    )`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS packs (
+      id text PRIMARY KEY,
+      key text NOT NULL UNIQUE,
+      class text NOT NULL,
+      state text NOT NULL DEFAULT 'uploaded',
+      bytes bigint NOT NULL DEFAULT 0,
+      worktree_id text REFERENCES worktrees (id) ON DELETE SET NULL,
+      epoch bigint,
+      platform text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT packs_class_check CHECK (class IN ('git', 'workspace', 'bulk')),
+      CONSTRAINT packs_state_check
+        CHECK (state IN ('uploaded', 'verified', 'live', 'retired'))
+    )`;
+  yield* sql`CREATE INDEX IF NOT EXISTS packs_worktree_epoch_idx ON packs (worktree_id, epoch)`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS capture_summaries (
+      capture_id text PRIMARY KEY REFERENCES captures (id) ON DELETE CASCADE,
+      worktree_id text NOT NULL REFERENCES worktrees (id) ON DELETE CASCADE,
+      key text NOT NULL,
+      state text NOT NULL DEFAULT 'claimed',
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT capture_summaries_state_check CHECK (state IN ('claimed', 'observed'))
+    )`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS store_refs (
+      project_id text NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+      name text NOT NULL,
+      sha text NOT NULL,
+      version integer NOT NULL DEFAULT 1,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (project_id, name)
+    )`;
+  // The checkpoint row is inserted after the register CAS returns, keyed by the capture that
+  // carries `checkpoint: {ordinal, sha, ref}`; co-located checkpoints leave it NULL.
+  yield* sql`
+    ALTER TABLE checkpoints
+    ADD COLUMN IF NOT EXISTS capture_id text REFERENCES captures (id) ON DELETE SET NULL`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1520,4 +1607,5 @@ export const migrations = {
   "0050_session_has_transcript": sessionHasTranscriptMigration,
   "0051_user_git_access": userGitAccessMigration,
   "0052_project_inherit_user_skills": projectInheritUserSkillsMigration,
+  "0053_capture_store": captureStoreMigration,
 };
