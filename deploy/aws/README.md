@@ -12,14 +12,17 @@ Everything is tagged `project=mend`, `environment=aws-microvm-poc`, sits in one 
 
 ## Layout
 
-| Path             | What                                                                                      |
-| ---------------- | ----------------------------------------------------------------------------------------- |
-| `shell.nix`      | The tools: awscli2, opentofu, kubectl, helm, jq, zip. Nothing installed globally.         |
-| `tofu/`          | VPC, subnets, NAT, S3 gateway endpoint, FSx OpenZFS, security groups, IAM roles, the      |
-|                  | MicroVM VPC egress connector, artifact bucket, ECR repo, log group, budget alarm.         |
-| `microvm-bench/` | The bench image: Dockerfile, lifecycle-hook server (`hooks.mjs`), benchmark (`bench.sh`). |
-| `scripts/`       | Build the image, run a bench VM, terminate VMs. Read their inputs from `tofu output`.     |
-| `results/`       | Benchmark JSON per run (gitignored).                                                      |
+| Path             | What                                                                                     |
+| ---------------- | ---------------------------------------------------------------------------------------- |
+| `shell.nix`      | The tools: awscli2, opentofu, kubectl, helm, jq, zip, python3+boto3. Nothing global.     |
+| `tofu/`          | VPC, subnets, NAT, S3 gateway endpoint, FSx OpenZFS (behind `enable_fsx`), security      |
+|                  | groups, IAM roles, the MicroVM VPC egress connector, artifact bucket, ECR repo, log      |
+|                  | group, budget alarm.                                                                     |
+| `microvm-bench/` | The bench image: Dockerfile, lifecycle-hook server (`hooks.mjs`), git benchmark          |
+|                  | (`bench.sh`), bucket transfer benchmark (`bench-transfer.sh`, decision R1).              |
+| `scripts/`       | Build the image, run a bench VM, run the transfer bench, terminate VMs. Inputs come from |
+|                  | `tofu output`.                                                                           |
+| `results/`       | Benchmark JSON and logs per run (gitignored); `R1-*.md` summaries are committed.         |
 
 ## Run it
 
@@ -31,14 +34,19 @@ aws sts get-caller-identity  # sanity
 cd deploy/aws/tofu
 cp example.tfvars poc.tfvars && $EDITOR poc.tfvars
 tofu init
-tofu apply -var-file=poc.tfvars          # ~15 min, FSx is the slow part
+tofu apply -var-file=poc.tfvars          # ~3 min without FSx; enable_fsx = true adds ~15 min
 
 cd ..
 ./scripts/01-build-image.sh              # zip → S3 → CreateMicrovmImage, waits for CREATED
 ./scripts/02-run-bench.sh                # one VM, mounts FSx, runs the bench, prints results
 ./scripts/02-run-bench.sh https://github.com/some/large-repo.git 3 1   # large repo + pnpm install
 ./scripts/04-terminate.sh                # stop paying for VMs
+./scripts/09-run-transfer.sh connector   # R1: 1 GiB S3 GET/PUT over presigned URLs, VM terminated at the end
+./scripts/09-run-transfer.sh default     # same, without the egress connector
 ```
+
+The transfer bench needs no FSx: apply with `enable_fsx = false` (the default). Results and the
+2026-09-12 verdict are in `results/R1-transfer-2026-09-12.md`.
 
 Concurrency test: run `02-run-bench.sh` three times in parallel from three shells. They share the
 export; each bench writes under its own `bench-<id>` directory and leaves a JSON in `/mend/_bench`.
