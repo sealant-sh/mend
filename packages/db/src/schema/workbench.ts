@@ -1231,6 +1231,8 @@ export const checkpoints = pgTable(
     seq: bigint({ mode: "bigint" }).notNull().default(0n),
     trigger: text().$type<CheckpointTrigger>().notNull(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    /** Capture mode: the registered capture this checkpoint came from (ADR-0002); NULL co-located. */
+    captureId: text().references(() => captures.id, { onDelete: "set null" }),
   },
   (table) => [
     uniqueIndex("checkpoints_worktree_ordinal_idx").on(table.worktreeId, table.ordinal),
@@ -1297,3 +1299,112 @@ export type ReviewSliceRow = typeof reviewSlices.$inferSelect;
 export type ChangeTourRow = typeof changeTours.$inferSelect;
 export type ChangePassRow = typeof changePasses.$inferSelect;
 export type CheckpointRow = typeof checkpoints.$inferSelect;
+
+// ─── Capture store (docs/adr/0002-session-capture-store.md) ─────────────────
+
+export type CaptureKind = "auto" | "turn" | "checkpoint" | "suspend" | "final";
+export type CaptureGitFsck = "verified" | "failed" | "unverified";
+export type PackClass = "git" | "workspace" | "bulk";
+export type PackState = "uploaded" | "verified" | "live" | "retired";
+export type CaptureSummaryState = "claimed" | "observed";
+
+/** Who holds a worktree; `epoch` is the fencing token every executor call carries. */
+export const worktreeLeases = pgTable("worktree_leases", {
+  worktreeId: text()
+    .$type<WorktreeId>()
+    .primaryKey()
+    .references(() => worktrees.id, { onDelete: "cascade" }),
+  executorId: text(),
+  epoch: bigint({ mode: "number" }).notNull().default(0),
+  /** NULL = never claimed; in the past = released or expired. */
+  expiresAt: timestamp({ mode: "date", withTimezone: true }),
+});
+
+/** The chain head: the only pointer that means "truth". `head_n` is -1 before capture 0. */
+export const worktreeChain = pgTable("worktree_chain", {
+  worktreeId: text()
+    .$type<WorktreeId>()
+    .primaryKey()
+    .references(() => worktrees.id, { onDelete: "cascade" }),
+  headCapture: text(),
+  headN: integer().notNull().default(-1),
+  headEpoch: bigint({ mode: "number" }).notNull().default(0),
+});
+
+/** One row per registered capture; `id` is the sha256 of the manifest bytes. */
+export const captures = pgTable(
+  "captures",
+  {
+    id: text().primaryKey(),
+    worktreeId: text()
+      .$type<WorktreeId>()
+      .notNull()
+      .references(() => worktrees.id, { onDelete: "cascade" }),
+    n: integer().notNull(),
+    parent: text(),
+    epoch: bigint({ mode: "number" }).notNull(),
+    seq: bigint({ mode: "bigint" }).notNull(),
+    kind: text().$type<CaptureKind>().notNull(),
+    manifestKey: text().notNull(),
+    sections: jsonb().$type<unknown>().notNull().default({}),
+    gitFsck: text().$type<CaptureGitFsck>().notNull().default("unverified"),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique("captures_worktree_n_key").on(table.worktreeId, table.n)],
+);
+
+/** Pack lifecycle; the indirection compaction and retirement update. */
+export const packs = pgTable(
+  "packs",
+  {
+    id: text().primaryKey(),
+    key: text().notNull().unique(),
+    class: text().$type<PackClass>().notNull(),
+    state: text().$type<PackState>().notNull().default("uploaded"),
+    bytes: bigint({ mode: "number" }).notNull().default(0),
+    worktreeId: text()
+      .$type<WorktreeId>()
+      .references(() => worktrees.id, { onDelete: "set null" }),
+    epoch: bigint({ mode: "number" }),
+    platform: text(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("packs_worktree_epoch_idx").on(table.worktreeId, table.epoch)],
+);
+
+/** The change summary an executor posted for a capture; `observed` once a runner recomputed it. */
+export const captureSummaries = pgTable("capture_summaries", {
+  captureId: text()
+    .primaryKey()
+    .references(() => captures.id, { onDelete: "cascade" }),
+  worktreeId: text()
+    .$type<WorktreeId>()
+    .notNull()
+    .references(() => worktrees.id, { onDelete: "cascade" }),
+  key: text().notNull(),
+  state: text().$type<CaptureSummaryState>().notNull().default("claimed"),
+  createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
+/** Project refs, written only by Mend, moved by versioned compare-and-swap. */
+export const storeRefs = pgTable(
+  "store_refs",
+  {
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    name: text().notNull(),
+    sha: text().$type<Sha>().notNull(),
+    version: integer().notNull().default(1),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.projectId, table.name] })],
+);
+
+export type CaptureRow = typeof captures.$inferSelect;
+export type PackRow = typeof packs.$inferSelect;
+export type CaptureSummaryRow = typeof captureSummaries.$inferSelect;
+export type StoreRefRow = typeof storeRefs.$inferSelect;

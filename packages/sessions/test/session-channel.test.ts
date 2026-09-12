@@ -109,7 +109,11 @@ const layers = (
   mode: "local" | "kubernetes",
 ) => {
   const registry = SessionChannelRegistryLive;
-  const deployment = Layer.succeed(DeploymentConfig, { mode, sessionEndpoint: endpoint });
+  const deployment = Layer.succeed(DeploymentConfig, {
+    mode,
+    sessionEndpoint: endpoint,
+    sessionStore: "colocated",
+  });
   const store = StoreConfig.layerFor(storeRoot);
   const tokens = SessionChannelTokensRepoMemory;
   const socketHost = SessionSocketHostLive.pipe(
