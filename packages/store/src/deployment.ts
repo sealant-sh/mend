@@ -14,6 +14,15 @@ import * as Context from "effect/Context";
  */
 export type DeploymentMode = "local" | "kubernetes";
 
+/**
+ * Where a session's work product is authoritative (docs/adr/0002-session-capture-store.md):
+ * `colocated` (default) keeps the bind-mounted worktree as truth; `captured` makes the capture
+ * store (object storage + Postgres pointers) truth and the executor a disposable cache.
+ * Orthogonal to `mode`. `captured` needs the network session endpoint for its channel routes;
+ * as with `kubernetes`, the engine enforces that, not this parser (the web tier has no listener).
+ */
+export type SessionStoreKind = "colocated" | "captured";
+
 export interface SessionEndpointConfig {
   /** `host:port` the network session channel listens on. */
   readonly listen: string;
@@ -29,6 +38,7 @@ export class DeploymentConfig extends Context.Service<
     readonly mode: DeploymentMode;
     /** Present when the network session channel is configured (required in kubernetes mode). */
     readonly sessionEndpoint: SessionEndpointConfig | undefined;
+    readonly sessionStore: SessionStoreKind;
   }
 >()("@mend/store/DeploymentConfig") {}
 
@@ -38,6 +48,7 @@ export class DeploymentConfigError extends Error {
 
 export interface DeploymentEnvLike {
   readonly MEND_DEPLOYMENT_MODE?: string | undefined;
+  readonly MEND_SESSION_STORE?: string | undefined;
   readonly MEND_SESSION_ENDPOINT_LISTEN?: string | undefined;
   readonly MEND_SESSION_ENDPOINT_URL?: string | undefined;
   readonly MEND_SESSION_ENDPOINT_TLS_CERT?: string | undefined;
@@ -52,6 +63,7 @@ export const resolveDeploymentConfig = (
 ): {
   readonly mode: DeploymentMode;
   readonly sessionEndpoint: SessionEndpointConfig | undefined;
+  readonly sessionStore: SessionStoreKind;
 } => {
   const rawMode = env.MEND_DEPLOYMENT_MODE?.trim();
   const mode: DeploymentMode =
@@ -64,13 +76,24 @@ export const resolveDeploymentConfig = (
               `MEND_DEPLOYMENT_MODE must be "local" or "kubernetes", got "${rawMode}".`,
             );
           })();
+  const rawStore = env.MEND_SESSION_STORE?.trim();
+  const sessionStore: SessionStoreKind =
+    rawStore === undefined || rawStore === "" || rawStore === "colocated"
+      ? "colocated"
+      : rawStore === "captured"
+        ? "captured"
+        : (() => {
+            throw new DeploymentConfigError(
+              `MEND_SESSION_STORE must be "colocated" or "captured", got "${rawStore}".`,
+            );
+          })();
   const listen = env.MEND_SESSION_ENDPOINT_LISTEN?.trim();
   const url = env.MEND_SESSION_ENDPOINT_URL?.trim();
   // NOTE: kubernetes mode does not require the endpoint HERE — the web tier runs in kubernetes
   // mode without listening. The session ENGINE (worker) refuses to start without it, because
   // that is the process whose sessions would otherwise be unreachable.
   if (listen === undefined || listen === "") {
-    return { mode, sessionEndpoint: undefined };
+    return { mode, sessionEndpoint: undefined, sessionStore };
   }
   const match = LISTEN.exec(listen);
   if (match === null || Number(match[2]) < 1 || Number(match[2]) > 65535) {
@@ -106,6 +129,7 @@ export const resolveDeploymentConfig = (
   }
   return {
     mode,
+    sessionStore,
     sessionEndpoint: {
       listen,
       url: url.replace(/\/+$/, ""),
@@ -124,5 +148,6 @@ export const DeploymentConfigLocal: Layer.Layer<DeploymentConfig> = Layer.succee
   {
     mode: "local",
     sessionEndpoint: undefined,
+    sessionStore: "colocated",
   },
 );

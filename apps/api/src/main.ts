@@ -1,11 +1,17 @@
 import { createServer } from "node:http";
 
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node";
+import type { PgClient } from "@effect/sql-pg";
 import { Auth, AuthLive } from "@mend/auth";
 import {
   AgentConversationRepoLive,
   BriefCommentsRepoLive,
   BriefsRepoLive,
+  type CaptureStoreRepo,
+  CaptureStoreRepoLive,
+  type StoreRefsRepo,
+  StoreRefsRepoLive,
+  type MendDB,
   ChangePassesRepo,
   ChangePassesRepoLive,
   ProjectsRepo,
@@ -100,6 +106,10 @@ import {
 import {
   type AgentBridge,
   AgentBridgeLive,
+  type BlobStore,
+  BlobStoreConfigLive,
+  BlobStoreLive,
+  DeploymentConfig,
   type DotfilesStore,
   DotfilesStoreLive,
   type MendKeys,
@@ -107,6 +117,8 @@ import {
   MendKeysLive,
   type SecretCipher,
   SecretCipherLive,
+  type GitOpsRunner,
+  GitOpsRunnerLive,
   Store,
   StoreConfig,
   DeploymentConfigLive,
@@ -220,6 +232,19 @@ const SessionEngineLayer = SessionEngineBaseLive.pipe(
   Layer.provide(SessionSocketHostLayer),
   Layer.provide(DotfilesStoreLayer),
   Layer.provide(DeploymentConfigLive),
+);
+// The capture store (docs/adr/0002-session-capture-store.md): the bucket and the git runner
+// over it, plus the pointer repositories. Built only under MEND_SESSION_STORE=captured — the
+// co-located default is untouched. Nothing consumes these yet; SessionRepositoryCapturedLive
+// (the next slice) will.
+const CaptureStoreLayer: Layer.Layer<
+  BlobStore | GitOpsRunner | CaptureStoreRepo | StoreRefsRepo,
+  never,
+  Store | StoreConfig | MendDB | PgClient.PgClient
+> = Layer.mergeAll(
+  GitOpsRunnerLive.pipe(Layer.provideMerge(BlobStoreLive.pipe(Layer.provide(BlobStoreConfigLive)))),
+  CaptureStoreRepoLive,
+  StoreRefsRepoLive,
 );
 const FollowUpLauncherLayer = FollowUpLauncherLive.pipe(Layer.provide(SessionEngineLayer));
 const FollowUpDeliveryLayer = FollowUpDeliveryLive.pipe(Layer.provide(FollowUpLauncherLayer));
@@ -474,7 +499,18 @@ const MainLive = Layer.unwrap(
     ).pipe(Config.orElse(() => Config.succeed("all" as const)));
     // `web` predates the api/web split; it always meant "serve HTTP, no workers".
     const mode = rawMode === "web" ? "api" : rawMode;
-    yield* Effect.logInfo("mend api starting").pipe(Effect.annotateLogs({ mode }));
+    const deployment = yield* DeploymentConfig;
+    yield* Effect.logInfo("mend api starting").pipe(
+      Effect.annotateLogs({ mode, sessionStore: deployment.sessionStore }),
+    );
+    const captureStore =
+      deployment.sessionStore === "captured"
+        ? CaptureStoreLayer.pipe(
+            Layer.provide(StoreLive),
+            Layer.provide(StoreConfig.layer),
+            Layer.provide(DatabaseLive),
+          )
+        : Layer.empty;
     const parts =
       mode === "api"
         ? ServerLive
@@ -484,6 +520,8 @@ const MainLive = Layer.unwrap(
     // The network session channel is a sibling service: it serves workspaces, nothing depends
     // on it, so it must be launched explicitly rather than provided.
     return Layer.merge(parts, SessionChannelNetworkLayer).pipe(
+      // Capture mode only: the blob store, the runner and the pointer repositories.
+      Layer.provide(captureStore),
       // Shared by the API (enqueue on comment) and the workers (one instance).
       Layer.provide(JobRunner.pgBossLayer),
       // Follow-up delivery owns persistence → process acceptance → correlation.
@@ -510,7 +548,7 @@ const MainLive = Layer.unwrap(
       Layer.provide(DatabaseLive),
     );
   }),
-);
+).pipe(Layer.provide(DeploymentConfigLive));
 
 // Graceful shutdown gets a deadline. runMain interrupts the main fiber on
 // SIGTERM/SIGINT and unwinds finalizers — but an uninterruptible pending
