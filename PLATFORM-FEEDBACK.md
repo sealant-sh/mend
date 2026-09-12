@@ -7,6 +7,28 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-12 · 0.28.0 · Capture workspace source: the SDK release Mend's capture mode waits on
+
+- **Needed:** Mend's capture mode (docs/adr/0002-session-capture-store.md) launches executors with
+  `workspaces.create({ source: { kind: "capture", endpoint, worktreeId }, captureToken })` and no
+  mounts: the daemon fetches the head plan from Mend's session channel, materialises onto its own
+  disk, claims the lease and ships captures back.
+- **Today:** the published `@sealant/sdk` 0.28.0 types `CreateOptions.source` as `mount | standby`;
+  Core PR sealant#231 (branch `feat/capture-workspace-source`) adds the `capture` source and the
+  top-level `captureToken` (sealed into the boot env file as `SEALANT_CAPTURE_TOKEN`, beside
+  `SEALANT_CAPTURE_ENDPOINT` / `SEALANT_CAPTURE_WORKTREE_ID`). Mend widens the create payload at ONE
+  seam (`packages/sealant/src/client.ts`, `CaptureCreateOptions`) so it compiles against 0.28.0
+  today; the control plane on that branch validates the shape. Release the SDK and the seam goes.
+- **Also noted, sealantd PR #71 (`crates/sealant-capture/src/registrar.rs`):** the HTTP registrar
+  sends the bearer token alone — no `x-mend-session-id` — so Mend's channel resolves the session
+  from the token's hash. Mend's `plan.get` answers the `epoch` the executor must use (Mend claims
+  the lease at launch) and `lease.heartbeat` answers 404 on a lost lease, as that client expects.
+  Two asks for the runtime client: a `capture.now { kind: "checkpoint" }` control command reachable
+  through the SDK (Mend currently waits one cadence window for the executor's own checkpoint
+  capture, then derives the checkpoint on a runner), and a way for a standby (hot-pool) executor to
+  be created before its worktree exists — a claim-later capture source — so the pool can
+  pre-materialise the project base and the platform-matched dependency cache.
+
 ## 2026-09-05 · 0.28.0 · Volume-backed local deployments across Docker's VM boundary
 
 **Shipped in Sealant 0.28.0**, following PRs #225 and #226. The published worker accepts

@@ -73,6 +73,13 @@ Hyperdrive to Postgres (D1 cannot hold the record schema: `jsonb`, `bytea` artif
 sequences), and a rebuilt inference path (the current engines spawn CLIs). None of this blocks
 Tier 1.
 
+**Capture store (ADR-0002, in progress).** `MEND_SESSION_STORE=captured` replaces the co-located
+invariant above for remote executors: object storage plus Postgres pointers hold the authority, the
+executor works on its own disk, and Mend reads the chain head through a runner. The dev stack
+(`compose.dev.yaml`) runs Garage for it; the shipped bundle (`compose.yaml` →
+`deploy/docker/compose.v2.yaml`) does not carry a bucket yet — adding Garage beside `mend-store`
+there, and the helm chart's Rook/Garage choice, are the follow-ups once the local proof holds.
+
 **Correctness pre-work (done, sealant #197):** at-least-once delivery with more than one consumer
 required the build-job claim to be race-free and run-exec to be at-most-once. Those hold now
 regardless of strategy.

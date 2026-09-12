@@ -53,6 +53,23 @@ reach the auth server.
 | `MEND_MODE`            | `all`                                      | API process mode: `all`, `api`, or `worker`                                               |
 | `PORT`                 | `3101` for API                             | Internal API listener; not the public web URL                                             |
 
+The capture store (`docs/adr/0002-session-capture-store.md`) is opt-in for development. With it, the
+executor works on its own disk and ships captures to a bucket; Mend reads the chain head. The
+co-located default ignores every variable below.
+
+| Variable                                      | Default                          | Purpose                                                                                                           |
+| --------------------------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------- |
+| `MEND_SESSION_STORE`                          | `colocated`                      | `captured` selects the capture store; needs the session endpoint below                                            |
+| `MEND_SESSION_ENDPOINT_LISTEN`                | unset                            | `host:port` the network session channel listens on, e.g. `0.0.0.0:3106`; sealantd calls the capture routes here   |
+| `MEND_SESSION_ENDPOINT_URL`                   | unset                            | The address executors resolve for that listener, e.g. `http://host.docker.internal:3106`                          |
+| `MEND_BLOB_STORE`                             | `dir://<MEND_STORE_ROOT>/_blobs` | `dir:///abs/path` or `s3://mend?endpoint=http://localhost:3900&region=garage` (the dev Garage)                    |
+| `MEND_BLOB_STORE_PUBLIC_URL`                  | unset                            | The S3 endpoint executors resolve; presigned URLs name it, e.g. `http://host.docker.internal:3900`                |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | unset                            | Bucket credentials; the dev Garage key is `GK00000000000000000000000d` / `000…000d` (`deploy/dev/garage-init.sh`) |
+
+`compose.dev.yaml` runs Garage in single-node mode on port 3900 with bucket `mend`; `garage-init`
+lays the node out and creates the key once. A `dir://` bucket needs no Docker and serves an executor
+on this machine only (its presigned URLs are `file://`).
+
 Origins must include the correct scheme, hostname, and port, without a path. Interface discovery,
 wildcards, and incoming forwarding headers do not grant trust. Do not configure a second allowlist
 through `BETTER_AUTH_TRUSTED_ORIGINS`.
