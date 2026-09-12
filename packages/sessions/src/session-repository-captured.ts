@@ -378,7 +378,32 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             };
           }
         }
-        // 3. Derive on the runner from the head capture's worktree tree — observed, never live.
+        // 3. Capture 0 alone on the chain: no executor has captured anything, so the worktree
+        //    is byte for byte the base and the checkpoint is the base commit, observed at
+        //    capture 0. Session create lands here (the worktree-start checkpoint is ordinal 0,
+        //    the session-start one ordinal 1, and no executor has booted) — the derive path
+        //    below would otherwise run a runner over an empty workspace class and fail.
+        if (chain.head.n === 0 && fromHead.checkpoint !== undefined) {
+          const ref = checkpointRef(worktreeId, input.index);
+          const sha = Sha.make(fromHead.checkpoint.sha);
+          const existing = yield* refs.get(input.projectId, ref);
+          yield* refs
+            .set(input.projectId, ref, sha, existing?.version ?? null)
+            .pipe(
+              Effect.mapError(() =>
+                gitFailure(
+                  project.storePath,
+                  "checkpoint",
+                  `${ref} moved underneath the checkpoint`,
+                ),
+              ),
+            );
+          yield* Effect.logInfo(
+            "capture mode: checkpoint observed at capture 0 · the base tree, no executor capture yet",
+          ).pipe(Effect.annotateLogs({ worktreeId, ordinal: input.index, sha }));
+          return { ref, sha, captureId: chain.head.id };
+        }
+        // 4. Derive on the runner from the head capture's worktree tree — observed, never live.
         const ready = yield* prepared(input.projectId, worktreeId as WorktreeId).pipe(
           Effect.catchTag("WorktreeNotCapturedError", (error) =>
             Effect.fail(gitFailure(project.storePath, "checkpoint", error.message)),

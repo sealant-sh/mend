@@ -137,6 +137,12 @@ export class SessionsRepo extends Context.Service<
      * settled session's workspace. Same row, same worktree, same change.
      */
     readonly reopen: (id: SessionId, status: "running" | "idle") => Effect.Effect<void>;
+    /**
+     * Rewrite the summary of a session without settling it — what was observed since the
+     * last settle (a replacement executor answering after "executor lost"). `reopen` touches
+     * status alone, so a picked-up session would otherwise keep reading the loss.
+     */
+    readonly setSummary: (id: SessionId, summary: string | null) => Effect.Effect<void>;
     readonly setLabel: (id: SessionId, label: string | null) => Effect.Effect<void>;
     /** The auto-namer's write: fills the label only while null; true when the write landed. */
     readonly setLabelIfUnset: (id: SessionId, label: string) => Effect.Effect<boolean>;
@@ -518,6 +524,18 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* notify(id);
       });
 
+      const setSummary = Effect.fn("SessionsRepo.setSummary")(function* (
+        id: SessionId,
+        summary: string | null,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({ summary, updatedAt: new Date() })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+        yield* notify(id);
+      });
+
       /** A session is a continuous piece of work; the harness is the tool currently driving it. */
       const setLabel = Effect.fn("SessionsRepo.setLabel")(function* (
         id: SessionId,
@@ -612,6 +630,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         notifyProgress,
         settle,
         reopen,
+        setSummary,
         setLabel,
         setLabelIfUnset,
         remove,

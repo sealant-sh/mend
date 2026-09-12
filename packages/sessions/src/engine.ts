@@ -328,6 +328,10 @@ const ptyOutputTail = (pty: {
 
 /** How long `mend service run` waits for the declared port before reporting unreachable. */
 const SERVICE_START_TIMEOUT_MS = 60_000;
+/** What the reaper writes when a lease lapsed and the platform no longer answers. */
+const EXECUTOR_LOST_SUMMARY = "executor lost · lease expired";
+/** What replaces it once the replacement executor's first heartbeat or register lands. */
+const EXECUTOR_REPLACED_SUMMARY = "picked up · executor replaced";
 
 const SUPERVISE_RETRY = Schedule.exponential("1 second").pipe(
   Schedule.modifyDelay((_, delay) =>
@@ -925,6 +929,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return bytes;
         });
 
+      /**
+       * A picked-up session still reads the loss after `reopen` ("executor lost · lease
+       * expired at …" — `reopen` touches status alone). The replacement's first heartbeat or
+       * register is the observation that ends it; the summary then says what was seen and
+       * nothing more.
+       */
+      const observeReplacement = (sessionId: SessionId) =>
+        Effect.gen(function* () {
+          const found = yield* sessions.byId(sessionId).pipe(Effect.option);
+          if (Option.isNone(found)) return;
+          const session = found.value;
+          if (
+            session.settledAt !== null ||
+            session.summary === null ||
+            !session.summary.startsWith(EXECUTOR_LOST_SUMMARY)
+          ) {
+            return;
+          }
+          yield* sessions.setSummary(sessionId, EXECUTOR_REPLACED_SUMMARY);
+          yield* Effect.logInfo(
+            "session engine: capture mode · picked up · executor replaced",
+          ).pipe(Effect.annotateLogs({ sessionId, worktreeId: session.worktreeId }));
+        });
+
       /** The capture routes for one session, scoped to its worktree on every call. */
       const captureApiFor = (sessionId: SessionId): SessionCaptureApi => {
         const scoped = <A>(
@@ -941,13 +969,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             });
             return yield* call(api);
           });
+        const observed = <A>(
+          call: (api: SessionCaptureApi) => Effect.Effect<A, CaptureRouteError>,
+        ): Effect.Effect<A, CaptureRouteError> =>
+          scoped(call).pipe(Effect.tap(() => observeReplacement(sessionId)));
         return {
           planGet: (input) => scoped((api) => api.planGet(input)),
           uploadUrls: (input) => scoped((api) => api.uploadUrls(input)),
           uploadComplete: (input) => scoped((api) => api.uploadComplete(input)),
           register: (input) => observed((api) => api.register(input)),
           changeSummary: (input) => scoped((api) => api.changeSummary(input)),
-          heartbeat: (input) => scoped((api) => api.heartbeat(input)),
+          heartbeat: (input) => observed((api) => api.heartbeat(input)),
         };
       };
 
@@ -1073,7 +1105,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* sessionRuns.settle(
             activeRun.sealantRunId,
             "failed",
-            `executor lost · lease expired${lease?.expiresAt === null || lease?.expiresAt === undefined ? "" : ` at ${lease.expiresAt.toISOString()}`}`,
+            `${EXECUTOR_LOST_SUMMARY}${lease?.expiresAt === null || lease?.expiresAt === undefined ? "" : ` at ${lease.expiresAt.toISOString()}`}`,
           );
         }
         yield* reconcileSession(session.id, { sweep: false }).pipe(Effect.ignore);

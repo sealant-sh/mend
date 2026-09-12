@@ -104,6 +104,7 @@ import {
   SessionRepositoryCapturedLive,
   SessionRepositoryLocalLive,
   SessionNotLiveError,
+  type SessionSocketApi,
   SessionSocketHost,
 } from "@mend/sessions";
 import {
@@ -463,9 +464,17 @@ const serviceHostStubLayer = Layer.succeed(ServiceHost, {
   probe: () => Effect.succeed(true),
 });
 
-/** Session sockets bind nothing in these worlds. */
+/**
+ * Session sockets bind nothing in these worlds; the api each session would serve is kept so a
+ * test can play the executor (its capture routes) without a listener.
+ */
+const servedSocketApis = new Map<SessionId, SessionSocketApi>();
 const sessionSocketStubLayer = Layer.succeed(SessionSocketHost, {
-  start: () => Effect.succeed("/tmp/mend-test-socket-dir"),
+  start: (sessionId, api) =>
+    Effect.sync(() => {
+      servedSocketApis.set(sessionId, api);
+      return "/tmp/mend-test-socket-dir";
+    }),
   stop: () => Effect.void,
 });
 
@@ -1229,6 +1238,7 @@ const sessionsLayer = (world: World) => {
     settle: (id, outcome, summary) =>
       Effect.sync(() => update(id, { status: outcome, summary, settledAt: now() })),
     reopen: (id, status) => Effect.sync(() => update(id, { status, settledAt: null })),
+    setSummary: (id, summary) => Effect.sync(() => update(id, { summary })),
     setHarness: (id, harness) => Effect.sync(() => update(id, { harness })),
     setLabel: (id, label) => Effect.sync(() => update(id, { label })),
     setLabelIfUnset: (id, label) =>
@@ -4609,16 +4619,16 @@ describe("SessionEngine capture mode", () => {
           expect(
             (memory.leases.get(session.worktreeId)?.expiresAt ?? 0) <= memory.clock.now(),
           ).toBe(true);
-          // Both start checkpoints exist; the session's own was derived on the runner and its
-          // pack recorded under the project prefix (nothing to wait for: no lease was live).
-          const ordinals = world.checkpoints
-            .filter((c) => c.worktreeId === session.worktreeId)
-            .map((c) => c.ordinal);
-          expect(ordinals).toEqual([0, 1]);
+          // Both start checkpoints exist and both are capture 0: no executor has captured
+          // anything yet, so the worktree is the base and the session's own checkpoint is the
+          // base commit observed at capture 0 — nothing derived on the runner, no pack written.
+          const starts = world.checkpoints.filter((c) => c.worktreeId === session.worktreeId);
+          expect(starts.map((c) => c.ordinal)).toEqual([0, 1]);
+          expect(starts.map((c) => c.sha)).toEqual([session.baseSha, session.baseSha]);
           const derived = [...memory.packs.values()].filter(
             (pack) => pack.worktreeId === session.worktreeId && pack.key.startsWith("projects/"),
           );
-          expect(derived).toHaveLength(1);
+          expect(derived).toHaveLength(0);
 
           yield* engine.launch(session.id, ["codex"]);
 
@@ -4816,6 +4826,15 @@ describe("SessionEngine capture mode", () => {
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
+          // The executor ships a turn capture carrying its rollout — what a pickup resumes.
+          const rolloutId = crypto.randomUUID();
+          yield* shipHarnessCapture(
+            tmp,
+            memory,
+            session.worktreeId,
+            memory.leases.get(session.worktreeId)?.epoch ?? 0,
+            rolloutId,
+          );
           // A live lease is left alone by the tick.
           yield* engine.reapCaptureLeases();
           expect(world.sessions.get(session.id)?.status).toBe("running");
@@ -4832,7 +4851,26 @@ describe("SessionEngine capture mode", () => {
           expect(settled?.settledAt).not.toBeNull();
           const run = [...world.sessionRuns.values()].find((row) => row.sessionId === session.id);
           expect(run?.summary).toContain("executor lost · lease expired");
+          expect(settled?.summary).toContain("executor lost · lease expired");
           expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+          // Pickup: the replacement launches and claims epoch + 1. Until it answers, the
+          // summary still reads the loss — that is what was last observed.
+          yield* engine.resumeSession(session.id, null);
+          const pickedUp = world.sessions.get(session.id);
+          expect(pickedUp?.status).toBe("running");
+          expect(pickedUp?.settledAt).toBeNull();
+          expect(pickedUp?.summary).toContain("executor lost · lease expired");
+          const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+          expect(epoch).toBe(3);
+          // Its first heartbeat is the observation that ends it.
+          const api = servedSocketApis.get(session.id)?.capture;
+          if (api === undefined) throw new Error("the picked-up session serves no capture api");
+          yield* api.heartbeat({ worktree_id: session.worktreeId, epoch });
+          expect(world.sessions.get(session.id)?.summary).toBe("picked up · executor replaced");
+          expect(world.sessions.get(session.id)?.settledAt).toBeNull();
+          // A later heartbeat rewrites nothing.
+          yield* api.heartbeat({ worktree_id: session.worktreeId, epoch });
+          expect(world.sessions.get(session.id)?.summary).toBe("picked up · executor replaced");
           memory.clock.now = realNow;
         }),
       {
