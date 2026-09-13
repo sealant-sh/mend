@@ -249,17 +249,20 @@ Engine changes, by function (`engine.ts` at `ade9996`):
   `platform` (`<os>-<arch>-<libc>`) and keeps the base ref out, as it does today; a claim applies
   the delta from the head capture. Join and sibling = a second process in the lease holder, through
   the SDK. Amended 2026-09-13 (how it is built, `packages/sessions/src/hot-pool.ts` "Capture-mode
-  standby"): Core's `capture` source requires a worktree id at create, so a standby is launched
-  against the placeholder `standby-<hot workspace id>` and the channel answers its `plan.get` with
-  the project's base plan — the default branch's base pack, an empty workspace class, the shared
-  dependency cache for the executor's platform when the request names one — under a synthetic epoch
-  (the standby row's creation time in ms, larger than any per-worktree counter). At claim Mend
-  claims the worktree's lease **at that epoch** (`claimAs`), and the session keeps serving the
-  placeholder as an alias of its worktree: the executor's requests, keys and manifests name the
-  alias; its first register's parent, the standby plan's id, is mapped to the chain head. A standby
-  therefore serves only a worktree whose chain is at capture 0 from the same base it materialised
-  (the delta is empty by construction); any other worktree goes cold until sealantd can re-plan
-  after claim and materialise a delta (sealantd follow-ups, `PLATFORM-FEEDBACK.md` 2026-09-13).
+  standby"), revised the same day for SDK 0.31.0 / sealantd 0.15: a standby is launched with the
+  `capture` source and no worktree id, and the channel answers its `plan.get` with the project's
+  base plan — the default branch's base pack, an empty workspace class, the shared dependency cache
+  for the executor's platform when the request names one — under the placeholder name
+  `standby-<hot workspace id>` and a synthetic epoch (the standby row's creation time in ms), which
+  the daemon takes from the answer. At claim Mend makes sure capture 0 exists, claims the worktree's
+  lease at a fresh epoch with the executor as holder, and the launch calls
+  `workspace.capture.replan()`: the daemon asks `plan.get` again with no worktree named, is answered
+  the claimed worktree, its epoch and its head, delta-materialises the head over the base on its
+  disk and captures under that identity from then on. A standby therefore serves any worktree —
+  fresh, joined, picked up — and nothing about the placeholder outlives the replan. (Before the
+  revision the same day: the lease was claimed at the standby's synthetic epoch, the placeholder
+  stayed an alias of the worktree for the executor's life, and only a worktree at capture 0 from the
+  standby's base could be served.)
 
 ### Replacement and pickup
 
@@ -438,10 +441,13 @@ Mend-side details the decision record left open, decided in this ADR:
     `MEND_SESSION_TOKEN`: one token row, delivered under both names.
 20. (2026-09-13) `MEND_SESSION_STORE` defaults to `captured`; `colocated` is deprecated, warned at
     start, and removed with its adapters and tests in a follow-up release.
-21. (2026-09-13) Epochs are strictly increasing per worktree, never necessarily consecutive: a claim
-    by a standby executor adopts the standby's synthetic epoch (`claimAs`).
-22. (2026-09-13) A standby executor's placeholder worktree id is `standby-<hot workspace id>`; a
-    session claimed from it serves that id as an alias of its worktree for the executor's life.
+21. (2026-09-13) Epochs are strictly increasing per worktree. Revised the same day for SDK 0.31.0: a
+    standby claim takes the next epoch like any other claim (`claim`); the synthetic epoch a standby
+    booted under is replaced at its replan, and `claimAs` is gone.
+22. (2026-09-13) A standby executor's placeholder name is `standby-<hot workspace id>` — the
+    identity its base plan is answered under. Revised the same day for SDK 0.31.0: the standby is
+    launched with no worktree id, the replan at claim moves it onto the worktree, and the session
+    serves no alias.
 23. (2026-09-13) The shared dependency cache lives at `projects/<project>/cache/<platform>/` (`root`
     names the bulk root dir object; packs beside it); `packs` rows carry `platform` and a null
     `worktree_id`. Only `dependency-install` writes it.

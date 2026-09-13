@@ -102,28 +102,26 @@ export const hotFingerprint = (inputs: HotFingerprintInputs): string => {
 
 // ─── Capture-mode standby ───────────────────────────────────────────────────
 //
-// ADR-0002 amended 2026-09-13. A standby executor exists before any worktree does: it is
-// launched with the `capture` source at a PLACEHOLDER worktree id (Core requires one at
-// create — PLATFORM-FEEDBACK.md 2026-09-13), and the channel answers its `plan.get` with the
-// project's base plan — the default branch's base pack, an empty workspace class, the shared
-// dependency cache for the executor's platform when the request names one — under a synthetic
-// epoch: the standby row's creation time in milliseconds, larger than any per-worktree counter,
-// so a claim can adopt it (`CaptureStoreRepo.claimAs`) without the executor learning a new one.
+// ADR-0002 amended 2026-09-13, revised for SDK 0.31.0 / sealantd 0.15. A standby executor
+// exists before any worktree does: it is launched with the `capture` source and NO worktree id,
+// and the channel answers its `plan.get` with the project's base plan — the default branch's
+// base pack, an empty workspace class, the shared dependency cache for the executor's platform
+// when the request names one — under a placeholder name and a synthetic epoch (the standby
+// row's creation time in ms). The daemon takes both from the answer; they exist so the plan has
+// a manifest identity and a key prefix, nothing more, and nothing writes under them (a standby
+// holds no lease, so every write is refused until a claim).
 //
-// At claim the session adopts the pooled id, Mend claims the worktree's lease at that epoch, and
-// the same session serves the placeholder as an ALIAS of its worktree for the executor's life:
-// every request, key and manifest the executor sends names the alias; its first register's
-// parent — the standby plan's id — is mapped to the chain head. So a standby serves only a
-// worktree whose chain stands at capture 0 from the same base it materialised (the delta is
-// empty by construction); any other worktree launches cold until sealantd can re-plan after
-// claim and materialise a delta (sealantd follow-ups, PLATFORM-FEEDBACK.md 2026-09-13).
-// Retention never lists `captures/standby-*/`: an abandoned standby's uploads are a leak to
-// sweep, never a wrongful delete.
+// At claim the session adopts the pooled id, Mend makes sure capture 0 exists, takes the
+// worktree's lease at a fresh epoch with the executor as holder, and the launch calls
+// `workspace.capture.replan()`: the daemon fetches `plan.get` again with no worktree named, the
+// channel answers the claimed worktree, its epoch and its head plan, and the daemon materialises
+// the head as a delta over what it has and captures under that identity from then on. So a
+// standby serves any worktree — fresh, joined, picked up — and nothing about the placeholder
+// outlives the replan. Retention never lists `captures/standby-*/`: an abandoned standby's
+// uploads are a leak to sweep, never a wrongful delete.
 
-/** The placeholder worktree id a standby executor is launched with, and its alias afterwards. */
+/** The placeholder name a standby's base plan is answered under, until its replan. */
 export const standbyWorktreeAlias = (hotWorkspaceId: string): string => `standby-${hotWorkspaceId}`;
 
-export const isStandbyWorktreeAlias = (value: string): boolean => value.startsWith("standby-");
-
-/** A standby's synthetic epoch: its creation time in ms, above any per-worktree counter. */
+/** A standby's synthetic epoch: its creation time in ms; replaced by the claim's at replan. */
 export const standbyEpochOf = (createdAt: Date): number => createdAt.getTime();
