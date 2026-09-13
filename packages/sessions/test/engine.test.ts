@@ -244,9 +244,10 @@ const sealantLaunchLayer = (
   /** Every `bindWorkspace` subpath, so a test can assert capture mode binds nothing. */
   binds?: string[],
   /**
-   * Capture mode (SDK 0.31.0): `flushed` collects the workspace ids Mend asked to flush before a
-   * planned stop or a checkpoint (the report is inert); `replan` stands in for sealantd's
-   * `capture.replan` when a claimed standby is launched.
+   * Capture mode (SDK 0.31.0): `flushed` collects `flush:<workspace id>` for every flush Mend asked
+   * for before a planned stop or a checkpoint (the report is inert) — the same array as `stopped`
+   * proves the order; `replan` stands in for sealantd's `capture.replan` when a claimed standby is
+   * launched.
    */
   captureOps?: {
     readonly flushed?: string[];
@@ -371,7 +372,7 @@ const sealantLaunchLayer = (
       }),
     captureFlush: (target) =>
       Effect.sync(() => {
-        captureOps?.flushed?.push(target.id);
+        captureOps?.flushed?.push(`flush:${target.id}`);
         return {
           epoch: 0,
           worktreeId: "",
@@ -4643,9 +4644,11 @@ const until = (condition: () => boolean, label: string) =>
   });
 
 describe("SessionEngine capture mode", () => {
-  it("provisions capture 0 and launches a capture-sourced workspace: no mounts, no bind, a launch-claimed lease", async () => {
+  it("provisions capture 0 and launches a capture-sourced workspace: no mounts, no bind, a launch-claimed lease; a user stop flushes the executor before its workspace goes", async () => {
     const created: Array<CreateOptions> = [];
     const binds: string[] = [];
+    /** Flushes and stops in the order the platform saw them. */
+    const events: string[] = [];
     const memory = makeMemoryCaptureStore();
     await withEngine(
       (world, tmp) =>
@@ -4701,13 +4704,19 @@ describe("SessionEngine capture mode", () => {
           expect(lease?.executorId).toBe(session.id);
           expect(lease?.epoch).toBe(2);
           expect((lease?.expiresAt ?? 0) > memory.clock.now()).toBe(true);
+
+          // A user stop is a planned stop: the executor flushes (the user-mark checkpoint asks
+          // once, the stop itself once more) and only then does its workspace go.
+          yield* engine.stop(session.id);
+          yield* until(() => events.includes("workspace-1"), "the workspace stop");
+          expect(events).toEqual(["flush:workspace-1", "flush:workspace-1", "workspace-1"]);
         }),
       {
         captured: memory,
         sealantLayer: sealantLaunchLayer(
           created,
           undefined,
-          undefined,
+          events,
           undefined,
           undefined,
           undefined,
@@ -4716,6 +4725,7 @@ describe("SessionEngine capture mode", () => {
           undefined,
           undefined,
           binds,
+          { flushed: events },
         ),
       },
     );
@@ -4851,9 +4861,10 @@ describe("SessionEngine capture mode", () => {
     },
   );
 
-  it("resume is lease-aware: a live lease attaches; an expired lease with a dead executor is a pickup that harvests from the head capture", async () => {
+  it("resume is lease-aware: a live lease attaches; an expired lease with a dead executor is a pickup that harvests from the head capture — and asks nothing of the dead executor", async () => {
     const created: Array<CreateOptions> = [];
     const spawned: ReadonlyArray<string>[] = [];
+    const flushed: string[] = [];
     const memory = makeMemoryCaptureStore();
     let executorDead = false;
     await withEngine(
@@ -4899,6 +4910,8 @@ describe("SessionEngine capture mode", () => {
           const lease = memory.leases.get(session.worktreeId);
           expect(lease?.epoch).toBe(3);
           expect(lease?.executorId).toBe(session.id);
+          // A pickup after a confirmed termination is not a planned stop: no flush was asked.
+          expect(flushed).toEqual([]);
           const harvested = [...world.processes.values()].find(
             (process) => process.exitedAt !== null && process.kind === "agent-pty",
           );
@@ -4918,6 +4931,13 @@ describe("SessionEngine capture mode", () => {
           undefined,
           spawned,
           () => executorDead,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { flushed },
         ),
       },
     );
@@ -5234,7 +5254,7 @@ describe("SessionEngine capture mode", () => {
 
           // A checkpoint asks the lease holder to flush before it observes the head.
           yield* engine.checkpointNow(session.id, "user-mark");
-          expect(flushed).toEqual(["workspace-1"]);
+          expect(flushed).toEqual(["flush:workspace-1"]);
 
           // …and its first register parents on capture 0 — the head the replan handed it.
           const tree = path.join(tmp, "standby-ship");

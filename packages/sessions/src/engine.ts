@@ -355,6 +355,11 @@ const CHECKPOINT_FLUSH_TIMEOUT = Duration.seconds(20);
  * materialise of the head over the project base (the base itself is already on disk).
  */
 const STANDBY_REPLAN_TIMEOUT = Duration.minutes(3);
+/**
+ * How long a planned stop waits for the executor's `capture.flush` before the workspace goes: the
+ * daemon's own grace window bounds the flush; this bounds Mend's wait for the answer.
+ */
+const STOP_FLUSH_TIMEOUT = Duration.seconds(30);
 
 const SUPERVISE_RETRY = Schedule.exponential("1 second").pipe(
   Schedule.modifyDelay((_, delay) =>
@@ -1240,6 +1245,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * The flush before a planned stop of `session`'s own executor: only while its lease is
+       * live and held by this session (a dead or replaced executor has nothing to flush, and
+       * the ask would only wait on the timeout). Never fails the stop.
+       */
+      const flushBeforeStop = Effect.fn("SessionEngine.flushBeforeStop")(function* (
+        session: Session,
+        workspace: Workspace,
+      ) {
+        if (capture === null) return;
+        const lease = yield* capture.repo.leaseOf(session.worktreeId);
+        if (lease === null || !lease.live || lease.executorId !== session.id) return;
+        yield* observeCaptureFlush(session, workspace, "planned stop", STOP_FLUSH_TIMEOUT);
+      });
+
+      /**
        * Does the executor still answer? The platform's stored status is not enough: a container
        * that was killed stays `ready` on the control plane until something touches it (observed
        * three minutes after `docker kill` in the local proof — the Docker reaper handles expiry,
@@ -1366,9 +1386,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* Effect.logInfo(
             "session engine: capture mode · replacing the executor before the cap",
           ).pipe(Effect.annotateLogs({ sessionId: session.id, worktreeId: session.worktreeId }));
+          // A planned stop: the executor flushes first (`capture.flush`, bounded, the report
+          // logged as observed), then its workspace goes.
           if (session.sealantWorkspaceId !== null) {
             yield* sealant.getWorkspace(session.sealantWorkspaceId).pipe(
-              Effect.flatMap((workspace) => sealant.stopWorkspace(workspace)),
+              Effect.flatMap((workspace) =>
+                observeCaptureFlush(
+                  session,
+                  workspace,
+                  "replacement before the cap",
+                  STOP_FLUSH_TIMEOUT,
+                ).pipe(Effect.andThen(sealant.stopWorkspace(workspace))),
+              ),
               Effect.ignore,
             );
           }
@@ -2534,6 +2563,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
           }
           const workspace = yield* sealant.getWorkspace(workspaceId);
+          // Capture mode: this is a planned stop when the executor still holds its worktree —
+          // a user stop, a settle's sweep, a deliberate relaunch — so it flushes first
+          // (`capture.flush`, bounded, the report logged as observed). A pickup after a
+          // confirmed termination comes through here too, with no live lease: nothing to ask.
+          yield* flushBeforeStop(session, workspace);
           yield* sealant.stopWorkspace(workspace);
           // The container is gone; no row for it can still be live, and the
           // in-workspace socket has nobody left to serve.
