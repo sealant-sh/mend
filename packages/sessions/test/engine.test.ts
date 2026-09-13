@@ -4666,6 +4666,64 @@ describe("SessionEngine capture mode", () => {
     );
   });
 
+  it("launch attaches a worktree that has no chain yet — made before captures — with capture 0 from its directory's current files", async () => {
+    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          // A legacy worktree: the deprecated co-located store made its directory and row;
+          // nothing registered a chain for it. It carries an edit nobody committed.
+          const worktreeId = WorktreeId.make(`wt-${crypto.randomUUID().slice(0, 8)}`);
+          const branch = `mend/wt/${worktreeId}`;
+          const dir = path.join(path.dirname(project.storePath), "worktrees", worktreeId);
+          execFileSync("git", ["worktree", "add", "-q", "-b", branch, dir, project.adoptedSha], {
+            cwd: project.storePath,
+          });
+          fs.writeFileSync(path.join(dir, "draft.txt"), "still editing\n");
+          const worktreesRepo = yield* WorktreesRepo;
+          const worktree = yield* worktreesRepo.create({
+            id: worktreeId,
+            projectId: project.id,
+            name: worktreeId,
+            directory: worktreeId,
+            branch,
+            baseSha: project.adoptedSha,
+            baseRef: "main",
+          });
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provisionSessionIn(worktree.id, {
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+          });
+          expect(memory.chains.get(worktreeId)?.headCapture ?? null).toBeNull();
+
+          yield* engine.launch(session.id, ["codex"]);
+
+          // Capture 0 was registered at launch from the directory, and the launch claimed it.
+          const chain = memory.chains.get(worktreeId);
+          expect(chain?.headN).toBe(0);
+          const cap0 = memory.captures.get(chain?.headCapture ?? "");
+          expect(cap0?.kind).toBe("checkpoint");
+          const manifest = JSON.parse(
+            fs.readFileSync(path.join(tmp, "blobs", cap0?.manifestKey ?? ""), "utf8"),
+          );
+          expect(manifest.checkpoint.sha).not.toBe(project.adoptedSha);
+          const tree = execFileSync(
+            "git",
+            ["ls-tree", "--name-only", `${manifest.checkpoint.sha}^{tree}`],
+            { cwd: project.storePath },
+          ).toString("utf8");
+          expect(tree).toContain("draft.txt");
+          expect(created).toHaveLength(1);
+          expect(memory.leases.get(worktreeId)?.executorId).toBe(session.id);
+        }),
+      { captured: memory, sealantLayer: sealantLaunchLayer(created) },
+    );
+  });
+
   it(
     "a second session in a leased worktree joins the holder's executor; an unreachable holder is refused with worktree_leased",
     { timeout: 20_000 },

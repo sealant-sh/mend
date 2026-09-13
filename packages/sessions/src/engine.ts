@@ -3685,6 +3685,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return yield* error;
           }
         }
+        // Capture mode: a worktree without a chain was made before captures (the deprecated
+        // co-located store, or an install upgraded across decision 8) — attach it now, so
+        // capture 0 carries its directory's current files (ADR-0002 "Consequences", amended).
+        if (capture !== null && adopted === null && sessionRepo.attachWorktree !== undefined) {
+          const chain = yield* capture.repo.headOf(session.worktreeId);
+          if (chain?.head === null || chain?.head === undefined) {
+            yield* sessionRepo.attachWorktree(project.id, session.worktreeId).pipe(
+              Effect.mapError(
+                (error) =>
+                  new SealantPlatformError({
+                    code: "capture_backfill_failed",
+                    status: null,
+                    message: `capture 0 could not be registered for worktree ${session.worktree}: ${error._tag === "GitError" ? error.stderr : error.message}`,
+                    cause: error,
+                  }),
+              ),
+              settleOnFailure,
+            );
+          }
+        }
         // Capture mode: Mend claims the lease at launch (epoch + 1, the chain fenced in the
         // same statement) with a boot-sized TTL; the executor learns the epoch from its first
         // plan and the first heartbeat brings the TTL back to the 30 s cadence.
