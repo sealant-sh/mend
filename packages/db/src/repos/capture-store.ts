@@ -106,6 +106,18 @@ export class CaptureStoreRepo extends Context.Service<
       executorId: string,
       ttlSeconds?: number,
     ) => Effect.Effect<{ readonly epoch: number }, WorktreeLeasedError>;
+    /**
+     * A claim at a GIVEN epoch — a standby executor's synthetic one (ADR-0002 amended
+     * 2026-09-13, decision 21): epochs are strictly increasing, never necessarily consecutive.
+     * Fails `WorktreeLeasedError` while another holder's lease is live or the epoch is not
+     * above the current one.
+     */
+    readonly claimAs: (
+      worktreeId: WorktreeId,
+      executorId: string,
+      epoch: number,
+      ttlSeconds?: number,
+    ) => Effect.Effect<{ readonly epoch: number }, WorktreeLeasedError>;
     /** Renew under the holder's epoch; false = the lease is gone (stop shipping, pause). */
     readonly heartbeat: (
       worktreeId: WorktreeId,
@@ -206,6 +218,33 @@ export const CaptureStoreRepoLive: Layer.Layer<
           FROM l
          WHERE ch.worktree_id = ${worktreeId}
          RETURNING l.epoch::int AS epoch`.pipe(Effect.orDie);
+      const row = rows[0];
+      if (row === undefined) return yield* new WorktreeLeasedError({ worktreeId });
+      return { epoch: Number(row.epoch) };
+    });
+
+    const claimAs = Effect.fn("CaptureStoreRepo.claimAs")(function* (
+      worktreeId: WorktreeId,
+      executorId: string,
+      epoch: number,
+      ttlSeconds: number = LEASE_TTL_SECONDS,
+    ) {
+      const rows = yield* sql<{ readonly epoch: number }>`
+        WITH l AS (
+          UPDATE worktree_leases
+             SET executor_id = ${executorId},
+                 epoch = ${epoch},
+                 expires_at = now() + make_interval(secs => ${ttlSeconds})
+           WHERE worktree_id = ${worktreeId}
+             AND (expires_at IS NULL OR expires_at < now())
+             AND epoch < ${epoch}
+           RETURNING epoch
+        )
+        UPDATE worktree_chain ch
+           SET head_epoch = l.epoch
+          FROM l
+         WHERE ch.worktree_id = ${worktreeId}
+         RETURNING l.epoch::bigint AS epoch`.pipe(Effect.orDie);
       const row = rows[0];
       if (row === undefined) return yield* new WorktreeLeasedError({ worktreeId });
       return { epoch: Number(row.epoch) };
@@ -469,6 +508,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
     return {
       init,
       claim,
+      claimAs,
       heartbeat,
       register,
       release,

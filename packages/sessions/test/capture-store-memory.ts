@@ -83,6 +83,19 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
         chain.headEpoch = lease.epoch;
         return Effect.succeed({ epoch: lease.epoch });
       }),
+    claimAs: (worktreeId, executorId, epoch, ttlSeconds = 30) =>
+      Effect.suspend(() => {
+        const lease = leases.get(worktreeId);
+        const chain = chains.get(worktreeId);
+        if (lease === undefined || chain === undefined || live(lease) || lease.epoch >= epoch) {
+          return Effect.fail(new WorktreeLeasedError({ worktreeId }));
+        }
+        lease.executorId = executorId;
+        lease.epoch = epoch;
+        lease.expiresAt = clock.now() + ttlSeconds * 1000;
+        chain.headEpoch = epoch;
+        return Effect.succeed({ epoch });
+      }),
     heartbeat: (worktreeId, epoch, ttlSeconds = 30) =>
       Effect.sync(() => {
         const lease = leases.get(worktreeId);

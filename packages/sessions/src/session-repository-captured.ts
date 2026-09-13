@@ -30,6 +30,7 @@ import {
 import { Duration, Effect, Layer } from "effect";
 
 import { CaptureChannel } from "./capture-channel.ts";
+import { readDependencyCache } from "./dependency-cache.ts";
 import { SessionRepository } from "./session-repository.ts";
 import { derivedPackPrefix, ensureCaptureCache } from "./worktree-reads.ts";
 
@@ -489,9 +490,71 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
     const worktreeMount: SessionRepository["Service"]["worktreeMount"] = (projectId) =>
       projects.byId(projectId).pipe(Effect.map(() => undefined));
 
+    const prepareStandby: NonNullable<SessionRepository["Service"]["prepareStandby"]> = (
+      projectId,
+      alias,
+      epoch,
+      baseSha,
+      platform,
+    ) =>
+      Effect.gen(function* () {
+        const project = yield* projects.byId(projectId);
+        const base = baseSha ?? (yield* store.resolveBase(project.storePath, null, null)).baseSha;
+        const basePack = yield* uploadBasePack(projectId, project.storePath, base);
+        const baseTree = yield* git(["rev-parse", "--verify", `${base}^{tree}`], project.storePath);
+        const keys = captureKeys(alias, epoch);
+        const emptyRoot = encodeDirObject([]);
+        const emptyRootKey = keys.tree(sha256Hex(emptyRoot));
+        yield* blobs
+          .put(emptyRootKey, emptyRoot, { ifAbsent: true })
+          .pipe(Effect.catch(blobFailure(project.storePath, "put")));
+        const cache =
+          platform === undefined
+            ? null
+            : yield* readDependencyCache(projectId, platform).pipe(
+                Effect.provideService(BlobStore, blobs),
+                Effect.catch(blobFailure(project.storePath, "cache")),
+              );
+        const manifest: CaptureManifest = {
+          worktree_id: alias,
+          n: 0,
+          parent: null,
+          epoch,
+          seq: 0,
+          kind: "checkpoint",
+          // Fixed per standby, so the same inputs address the same manifest.
+          created_at: new Date(epoch).toISOString(),
+          sections: {
+            git: {
+              packs: [basePack.key],
+              refs: {
+                [`refs/heads/${project.defaultBranch}`]: base,
+                [WORKTREE_TREE_REF]: baseTree,
+                [INDEX_TREE_REF]: baseTree,
+              },
+              head: `refs/heads/${project.defaultBranch}`,
+              fsck: "verified",
+            },
+            workspace: { root: emptyRootKey, packs: [] },
+            bulk:
+              cache === null
+                ? "pending"
+                : { root: cache.root, packs: cache.packs, platform: cache.platform },
+          },
+        };
+        const bytes = new Uint8Array(Buffer.from(JSON.stringify(manifest), "utf8"));
+        const captureId = captureIdOf(bytes);
+        const manifestKey = keys.manifest(captureId);
+        yield* blobs
+          .put(manifestKey, bytes, { ifAbsent: true })
+          .pipe(Effect.catch(blobFailure(project.storePath, "put")));
+        return { captureId, manifestKey, manifest, baseSha: base };
+      });
+
     return {
       createWorktree,
       attachWorktree,
+      prepareStandby,
       renameBranch,
       resetWorktree,
       removeWorktreeForce,

@@ -1,6 +1,12 @@
 import { ProjectNotFoundError, ProjectsRepo } from "@mend/db";
 import type { ProjectId, Sha, WorktreeId } from "@mend/domain";
-import { Store, worktreePathOf, type CheckpointSnapshot, type GitError } from "@mend/store";
+import {
+  Store,
+  worktreePathOf,
+  type CaptureManifest,
+  type CheckpointSnapshot,
+  type GitError,
+} from "@mend/store";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -59,6 +65,28 @@ export class SessionRepository extends Context.Service<
       projectId: ProjectId,
       worktreeId: WorktreeId,
     ) => Effect.Effect<void, SessionRepositoryError>;
+    /**
+     * Capture mode only: the plan a standby executor materialises before any worktree exists
+     * (`hot-pool.ts` "Capture-mode standby") — the project base at `baseSha` (the default
+     * branch's head when null), an empty workspace class, and the shared dependency cache for
+     * `platform` when one exists — uploaded under the placeholder's epoch prefix. Idempotent
+     * for the same inputs (content-addressed).
+     */
+    readonly prepareStandby?: (
+      projectId: ProjectId,
+      alias: string,
+      epoch: number,
+      baseSha: Sha | null,
+      platform: string | undefined,
+    ) => Effect.Effect<
+      {
+        readonly captureId: string;
+        readonly manifestKey: string;
+        readonly manifest: CaptureManifest;
+        readonly baseSha: Sha;
+      },
+      SessionRepositoryError
+    >;
     /** Rename the branch a worktree is on in place; the directory never moves. */
     readonly renameBranch: (
       projectId: ProjectId,
