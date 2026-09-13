@@ -93,6 +93,7 @@ import {
   NO_SIGNER_MESSAGE,
   SecretCipher,
   decodeManifest,
+  git,
   harnessHomePathOf,
   listCaptureFiles,
   processStatePathOf,
@@ -121,6 +122,7 @@ import {
   LEASE_REAPER_INTERVAL_SECONDS,
   REPLACEMENT_AGE_SECONDS,
 } from "./capture-runtime.ts";
+import { detectInstallCommand, PLATFORM_PROBE_SCRIPT, platformKeyOf } from "./dependency-cache.ts";
 import { DotfilesResolveError, resolveDotfilesArchives } from "./dotfiles.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
 import {
@@ -910,6 +912,80 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             captureToken: token,
           };
         });
+
+      /**
+       * Dependency trees (ADR-0002 amended 2026-09-13, decisions 2 and 9): the head the executor
+       * materialised carries a bulk section only for the platform it was captured on. Observe
+       * this executor's platform with one exec; when the head has no tree for it, run the
+       * project's install command (the setting, else the lockfile's) in the workspace before the
+       * harness starts. Lines, never verdicts: a failing install is the agent's to see next.
+       */
+      const installDependenciesIfNeeded = Effect.fn("SessionEngine.installDependenciesIfNeeded")(
+        function* (session: Session, project: Project, workspace: Workspace) {
+          if (capture === null) return;
+          const probe = yield* sealant.exec(workspace, ["sh", "-c", PLATFORM_PROBE_SCRIPT]);
+          const platform = platformKeyOf(probe.stdout);
+          if (platform === null) {
+            yield* Effect.logInfo(
+              "session engine: dependency install skipped · platform unknown",
+            ).pipe(
+              Effect.annotateLogs({ sessionId: session.id, probe: probe.stdout.slice(0, 80) }),
+            );
+            return;
+          }
+          const head = (yield* capture.repo.headOf(session.worktreeId))?.head ?? null;
+          const bulk =
+            head === null
+              ? "pending"
+              : yield* capture.blobs.get(head.manifestKey).pipe(
+                  Effect.flatMap((bytes) => decodeManifest(head.manifestKey, bytes)),
+                  Effect.map((manifest) => manifest.sections.bulk),
+                  Effect.catch(() => Effect.succeed("pending" as const)),
+                );
+          if (bulk !== "pending" && bulk.platform === platform) {
+            yield* Effect.logInfo(
+              "session engine: dependency tree observed for this platform",
+            ).pipe(
+              Effect.annotateLogs({ sessionId: session.id, platform, captureN: head?.n ?? null }),
+            );
+            return;
+          }
+          const command =
+            project.installCommand ??
+            detectInstallCommand(
+              (yield* git(["ls-tree", "--name-only", session.baseSha], project.storePath))
+                .split("\n")
+                .filter((name) => name !== ""),
+            );
+          if (command === null) {
+            yield* Effect.logInfo(
+              "session engine: dependency install skipped · no install command",
+            ).pipe(Effect.annotateLogs({ sessionId: session.id, platform }));
+            return;
+          }
+          yield* Effect.logInfo("session engine: dependency install · running").pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              platform,
+              capturedFor: bulk === "pending" ? null : bulk.platform,
+              command,
+            }),
+          );
+          const result = yield* sealant.exec(workspace, ["sh", "-lc", command], {
+            cwd: "/workspace/repo",
+          });
+          yield* Effect.logInfo(
+            `session engine: dependency install · ${result.exitCode === 0 ? "completed" : "exited"} · exit ${result.exitCode}`,
+          ).pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              platform,
+              command,
+              stderr: result.exitCode === 0 ? "" : result.stderr.slice(-400),
+            }),
+          );
+        },
+      );
 
       /** The project's compressed footprint (its base packs) prices the session's byte budget. */
       const footprintCache = new Map<SessionId, number>();
@@ -3956,6 +4032,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             worktree,
             provisioned.referenceMounts,
             provisioned.extraMounts,
+          );
+        }
+
+        // Capture mode: the dependency tree for THIS executor's platform, before the harness.
+        if (capture !== null) {
+          yield* installDependenciesIfNeeded(session, project, workspace).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: dependency install did not run").pipe(
+                Effect.annotateLogs({ sessionId, error: String(error) }),
+              ),
+            ),
           );
         }
 

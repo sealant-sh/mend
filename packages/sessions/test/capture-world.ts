@@ -180,6 +180,7 @@ export const projectFor = (storePath: string, baseSha: string) =>
     applyDotfiles: true,
     inheritUserSkills: true,
     hotSessions: 0,
+    installCommand: null,
     createdAt: new Date(),
     updatedAt: new Date(),
   });
@@ -192,6 +193,7 @@ export const projectsFor = (project: Project): Layer.Layer<ProjectsRepo> =>
     setApplyDotfiles: () => Effect.die("not in test"),
     setInheritUserSkills: () => Effect.die("not in test"),
     setHotSessions: () => Effect.die("not in test"),
+    setInstallCommand: () => Effect.die("not in test"),
     byId: (id) =>
       id === project.id
         ? Effect.succeed(project)

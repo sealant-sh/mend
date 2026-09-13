@@ -608,6 +608,25 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         return project;
       }),
     )
+    .handle("installCommand", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const jobs = yield* JobRunner;
+        const project = yield* projects
+          .setInstallCommand(params.id, payload.installCommand?.trim() ?? null)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        // The shared cache is fed only by the Mend-controlled install (ADR-0002 decision 9):
+        // a changed command re-runs it; the key dedups a run already queued.
+        yield* jobs
+          .enqueue({
+            name: "dependency-install",
+            payload: { projectId: project.id },
+            idempotencyKey: `dependency-install:${project.id}:${project.updatedAt.toISOString()}`,
+          })
+          .pipe(Effect.ignore);
+        return project;
+      }),
+    )
     .handle("branches", ({ params }) =>
       Effect.gen(function* () {
         const projects = yield* ProjectsRepo;

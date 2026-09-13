@@ -143,6 +143,14 @@ export class Project extends Schema.Class<Project>("Project")({
    * effectively instant. Explicit resource intent: N ready containers per project.
    */
   hotSessions: Schema.Number,
+  /**
+   * The command that builds this project's dependency tree, run by Mend in a workspace whose
+   * tree does not match the executor's platform and by the install job that feeds the shared
+   * cache (ADR-0002 decisions 2/9). Null = detected from the base tree's lockfile at launch.
+   */
+  installCommand: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 }) {}

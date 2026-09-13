@@ -39,6 +39,14 @@ export const PlanGetRequest = Schema.Struct({
   worktree_id: Schema.optional(Schema.NullOr(Schema.String)),
   /** 0 = "not claimed yet": the first plan of a booting executor claims the lease. */
   epoch: Schema.optional(Schema.Int),
+  /**
+   * The executor's `<os>-<arch>-<libc>` (sealantd follow-up, PLATFORM-FEEDBACK.md 2026-09-13).
+   * When named and different from the head's bulk platform, the answer's bulk section is
+   * `"pending"` and its packs are not presigned: the executor must not restore a dependency
+   * tree built for another platform (decision 2); the engine runs the install command instead.
+   * Absent = the whole head, unchanged (today's sealantd).
+   */
+  platform: Schema.optional(Schema.String),
 });
 export type PlanGetRequest = typeof PlanGetRequest.Type;
 
@@ -313,6 +321,17 @@ export class CaptureChannel extends Context.Service<
 const bad = (message: string) =>
   new CaptureRouteError({ status: 400, reason: "bad-request", message });
 
+/** The head as this executor may restore it: its bulk section only for its own platform. */
+export const planForPlatform = (
+  manifest: CaptureManifest,
+  platform: string | undefined,
+): CaptureManifest =>
+  platform === undefined ||
+  manifest.sections.bulk === "pending" ||
+  manifest.sections.bulk.platform === platform
+    ? manifest
+    : { ...manifest, sections: { ...manifest.sections, bulk: "pending" } };
+
 /** A bucket or pointer-store failure inside a route is a defect: 500, which the executor retries. */
 const storeError = (operation: string) => (cause: { readonly _tag: string }) =>
   Effect.die(`capture channel: ${operation} failed: ${cause._tag}`);
@@ -449,9 +468,10 @@ export const CaptureChannelLive: Layer.Layer<
         const manifestBytes = yield* blobs
           .get(head.manifestKey)
           .pipe(Effect.catch(storeError("reading the head manifest")));
-        const manifest = yield* decodeManifest(head.manifestKey, manifestBytes).pipe(
+        const stored = yield* decodeManifest(head.manifestKey, manifestBytes).pipe(
           Effect.catch(storeError("decoding the head manifest")),
         );
+        const manifest = planForPlatform(stored, input.platform);
         const keys = yield* keysNeededBy(manifest).pipe(
           Effect.provideService(BlobStore, blobs),
           Effect.catch(storeError("walking the head capture")),

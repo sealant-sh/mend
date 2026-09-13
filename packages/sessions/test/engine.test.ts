@@ -1110,6 +1110,7 @@ const projectsLayer = (world: World) =>
     setApplyDotfiles: () => Effect.die("not in test"),
     setInheritUserSkills: () => Effect.die("not in test"),
     setHotSessions: () => Effect.die("not in test"),
+    setInstallCommand: () => Effect.die("not in test"),
     byId: (id) => {
       const found = world.projects.get(id);
       return found === undefined
@@ -1543,6 +1544,7 @@ const setup = (tmp: string, world: World) => {
       applyDotfiles: true,
       inheritUserSkills: true,
       hotSessions: 0,
+      installCommand: null,
       createdAt: now(),
       updatedAt: now(),
     });
@@ -4678,7 +4680,9 @@ describe("SessionEngine capture mode", () => {
           const worktreeId = WorktreeId.make(`wt-${crypto.randomUUID().slice(0, 8)}`);
           const branch = `mend/wt/${worktreeId}`;
           const dir = path.join(path.dirname(project.storePath), "worktrees", worktreeId);
-          execFileSync("git", ["worktree", "add", "-q", "-b", branch, dir, project.adoptedSha], {
+          const base = project.adoptedSha;
+          if (base === null) throw new Error("the fixture project has an adopted sha");
+          execFileSync("git", ["worktree", "add", "-q", "-b", branch, dir, base], {
             cwd: project.storePath,
           });
           fs.writeFileSync(path.join(dir, "draft.txt"), "still editing\n");
@@ -4689,7 +4693,7 @@ describe("SessionEngine capture mode", () => {
             name: worktreeId,
             directory: worktreeId,
             branch,
-            baseSha: project.adoptedSha,
+            baseSha: base,
             baseRef: "main",
           });
           const engine = yield* SessionEngine;
@@ -4710,7 +4714,7 @@ describe("SessionEngine capture mode", () => {
           const manifest = JSON.parse(
             fs.readFileSync(path.join(tmp, "blobs", cap0?.manifestKey ?? ""), "utf8"),
           );
-          expect(manifest.checkpoint.sha).not.toBe(project.adoptedSha);
+          expect(manifest.checkpoint.sha).not.toBe(base);
           const tree = execFileSync(
             "git",
             ["ls-tree", "--name-only", `${manifest.checkpoint.sha}^{tree}`],

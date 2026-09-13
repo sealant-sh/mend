@@ -68,6 +68,11 @@ export class ProjectsRepo extends Context.Service<
       id: ProjectId,
       hotSessions: number,
     ) => Effect.Effect<Project, ProjectNotFoundError>;
+    /** The install command (null = detect from the base tree's lockfile). */
+    readonly setInstallCommand: (
+      id: ProjectId,
+      installCommand: string | null,
+    ) => Effect.Effect<Project, ProjectNotFoundError>;
     /** Hard delete — sessions and everything under them cascade. */
     readonly remove: (id: ProjectId) => Effect.Effect<void>;
   }
@@ -231,6 +236,22 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
+      const setInstallCommand = Effect.fn("ProjectsRepo.setInstallCommand")(function* (
+        id: ProjectId,
+        installCommand: string | null,
+      ) {
+        const [row] = yield* db
+          .update(projects)
+          .set({ installCommand, updatedAt: new Date() })
+          .where(eq(projects.id, id))
+          .returning()
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
+        const updated = toProject(row);
+        yield* notifyEvent(sql, { type: "project", projectId: id });
+        return updated;
+      });
+
       const remove = Effect.fn("ProjectsRepo.remove")(function* (id: ProjectId) {
         yield* db.delete(projects).where(eq(projects.id, id)).pipe(Effect.orDie);
         yield* notifyEvent(sql, { type: "project", projectId: id });
@@ -247,6 +268,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         setApplyDotfiles,
         setInheritUserSkills,
         setHotSessions,
+        setInstallCommand,
         remove,
       };
     }),

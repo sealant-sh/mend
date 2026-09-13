@@ -1553,6 +1553,16 @@ const captureStoreMigration = Effect.gen(function* () {
     ADD COLUMN IF NOT EXISTS capture_id text REFERENCES captures (id) ON DELETE SET NULL`;
 });
 
+/**
+ * ADR-0002 amended 2026-09-13 (decisions 2 and 9): the project's install command, run by Mend in
+ * a workspace whose dependency tree does not match the executor's platform, and by the install
+ * job that feeds the per-project shared cache. NULL = detected from the base tree's lockfile.
+ */
+const projectInstallCommandMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS install_command text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1608,4 +1618,5 @@ export const migrations = {
   "0051_user_git_access": userGitAccessMigration,
   "0052_project_inherit_user_skills": projectInheritUserSkillsMigration,
   "0053_capture_store": captureStoreMigration,
+  "0054_project_install_command": projectInstallCommandMigration,
 };

@@ -21,6 +21,7 @@ const project: ProjectDto = {
   applyDotfiles: false,
   inheritUserSkills: true,
   hotSessions: 0,
+  installCommand: null,
   createdAt: new Date("2026-08-01T00:00:00Z"),
   updatedAt: new Date("2026-08-01T00:00:00Z"),
 };

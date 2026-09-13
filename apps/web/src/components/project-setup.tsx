@@ -19,6 +19,7 @@ import {
   setProjectApplyDotfiles,
   setProjectGitAuth,
   setProjectHotSessions,
+  setProjectInstallCommand,
   type AutomationChoiceDto,
   type GitAuthModeDto,
   type ProjectDto,
@@ -1138,6 +1139,75 @@ export function ReferencesSection({ projectId }: { readonly projectId: string })
           </button>
         )}
       </div>
+    </section>
+  );
+}
+
+/**
+ * The install command (ADR-0002 decisions 2 and 9): what builds the dependency tree. Mend runs
+ * it in a workspace whose captured tree does not match the executor's platform, and in the
+ * install it launches itself to fill the project's shared cache — never an agent's tree. Empty
+ * means Mend detects it from the lockfile at the root of the base tree at launch.
+ */
+export function InstallCommandSection({ project }: { readonly project: ProjectDto }) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const [draft, setDraft] = useState(project.installCommand ?? "");
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const current = project.installCommand ?? "";
+  const dirty = draft.trim() !== current;
+
+  const save = () => {
+    if (busy || !dirty) return;
+    setBusy(true);
+    setError(null);
+    void setProjectInstallCommand(project.id, draft.trim() === "" ? null : draft.trim())
+      .then(() => queryClient.invalidateQueries(trpc.projects.pathFilter()))
+      .catch((cause: unknown) =>
+        setError(cause instanceof Error ? cause.message : "Could not save the install command."),
+      )
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <section id="install-command" className="project-setup-card">
+      <h2 className="font-sans text-sm font-semibold">Install command</h2>
+      <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
+        Builds the dependency tree. Mend runs it in a workspace whose captured tree was built for
+        another platform, and in the install Mend launches itself to fill this project&apos;s shared
+        cache; an agent&apos;s own tree is never shared. Empty: detected from the lockfile at the
+        root of the base tree.
+      </p>
+      <form
+        className="mt-3 flex flex-wrap items-center gap-2"
+        onSubmit={(event) => {
+          event.preventDefault();
+          save();
+        }}
+      >
+        <input
+          type="text"
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          placeholder="detected from the lockfile"
+          spellCheck={false}
+          className="min-w-0 flex-1 rounded-lg border border-border bg-card px-2.5 py-1.5 font-mono text-xs text-foreground placeholder:text-faint"
+        />
+        <button
+          type="submit"
+          disabled={busy || !dirty}
+          className="h-[26px] rounded-lg border border-border bg-card px-2.5 font-mono text-xs text-muted-foreground transition-colors hover:text-foreground disabled:opacity-40"
+        >
+          save
+        </button>
+      </form>
+      <p className="mt-2 font-mono text-xs text-ink-2">
+        {current === "" ? "detected from the lockfile at launch" : `runs · ${current}`}
+      </p>
+      {error !== null && (
+        <p className="mt-2 border-l-2 border-[var(--sw-red)] pl-2 text-xs text-danger">{error}</p>
+      )}
     </section>
   );
 }

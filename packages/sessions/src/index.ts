@@ -5,6 +5,7 @@ export * from "./session-repository-captured.ts";
 export * from "./capture-channel.ts";
 export * from "./capture-runtime.ts";
 export * from "./worktree-reads.ts";
+export * from "./dependency-cache.ts";
 export * from "./protocol-host.ts";
 export * from "./follow-up-delivery.ts";
 export * from "./git-transport.ts";

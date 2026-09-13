@@ -84,6 +84,9 @@ import {
 import {
   CaptureRetentionLive,
   CaptureRetentionScheduleLive,
+  DependencyInstallerLive,
+  DependencyInstallWorkerLive,
+  InstallRunnerEngineLive,
   Dispatcher,
   JobRunner,
   ReviewPrepLive,
@@ -486,6 +489,10 @@ const WorkerLive = Layer.mergeAll(
   // and the hourly retention sweep. Both are inert under the co-located store.
   SummaryObserveWorkerLive.pipe(Layer.provide(SummaryObserverLive)),
   CaptureRetentionScheduleLive.pipe(Layer.provide(CaptureRetentionLive)),
+  // The Mend-controlled install that feeds the per-project dependency cache (decision 9).
+  DependencyInstallWorkerLive.pipe(
+    Layer.provide(DependencyInstallerLive.pipe(Layer.provide(InstallRunnerEngineLive))),
+  ),
 ).pipe(
   Layer.provide(Dispatcher.layer),
   Layer.provide(BriefCompiler.layer),

@@ -185,6 +185,23 @@ export class ProjectHotSessionsRequest extends Schema.Class<ProjectHotSessionsRe
   ),
 }) {}
 
+/** The install command Mend runs for dependency trees; null returns to lockfile detection. */
+export class ProjectInstallCommandRequest extends Schema.Class<ProjectInstallCommandRequest>(
+  "ProjectInstallCommandRequest",
+)({
+  installCommand: Schema.NullOr(
+    Schema.String.pipe(
+      Schema.check(
+        Schema.makeFilter((value: string) =>
+          value.trim().length > 0 && value.length <= 1000 && !value.includes("\n")
+            ? undefined
+            : "one non-empty line of at most 1000 characters",
+        ),
+      ),
+    ),
+  ),
+}) {}
+
 /** Observed pool state for the setup page: counts, plus the latest failure when one exists. */
 export class ProjectHotSessionsStatus extends Schema.Class<ProjectHotSessionsStatus>(
   "ProjectHotSessionsStatus",
