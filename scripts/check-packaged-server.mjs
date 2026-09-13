@@ -58,7 +58,9 @@ import {
   isInside,
   ownsComposeContainer,
   captureRegisteredEvidence,
+  checkpointChainEvidence,
   flushReportEvidence,
+  reviewDiffEvidence,
   ownsWorkspaceContainer,
   readPrivateIdentity,
   readUpgradeInputs,
@@ -1136,6 +1138,10 @@ async function main() {
     diff.diff?.includes(marker) && diff.files?.some((file) => file.path === "packaged-proof.txt"),
     "Public change must contain the committed workspace file",
   );
+  check(
+    captureRegisteredEvidence(diff.observation) !== false,
+    "Public change must be read from a registered capture, not a live worktree",
+  );
   async function recordText() {
     let from = "0";
     let text = "";
@@ -1156,39 +1162,52 @@ async function main() {
   }
   const recorded = await recordText();
   check(recorded.includes(marker), "Durable process output must contain the command marker");
-  const gitState = async () => {
-    const { compose: currentCompose } = await collectOwned();
-    const currentMend = currentCompose.find(
-      (item) => item.Config.Labels["com.docker.compose.service"] === "mend",
-    );
+  // Under captures (decision 8) the branch and worktree live on the executor's own disk; the
+  // store volume never names them and the executor is reclaimed after the run. The recorded
+  // change is therefore proven from the capture store through the public API: the worktree's
+  // checkpoint chain (Postgres) and a Review slice whose base-to-checkpoint patch the git runner
+  // serves from the packs in the bucket. No docker exec against the store, no executor disk.
+  const worktreeId = detail.session.worktreeId;
+  const chainState = async () => {
+    const worktree = await api(`/worktrees/${worktreeId}`);
     check(
-      currentMend && containers.has(currentMend.Id),
-      "Git inspection requires the owned Mend container",
+      worktree.worktree?.id === worktreeId && worktree.change?.id === detail.change.id,
+      "Worktree detail must name the session's worktree and change",
     );
-    const gitRead = (args) =>
-      docker(["exec", currentMend.Id, "git", `--git-dir=${project.storePath}`, ...args]);
-    const head = (await gitRead(["rev-parse", detail.session.branch])).trim();
-    const content = await gitRead(["show", `${head}:packaged-proof.txt`]);
-    const ref = (await gitRead(["rev-parse", checkpoint.ref])).trim();
-    const checkpointContent = await gitRead(["show", `${ref}:packaged-proof.txt`]);
-    const worktrees = await gitRead(["worktree", "list", "--porcelain"]);
-    check(
-      head !== baseSha &&
-        content.trim() === marker &&
-        ref === checkpoint.sha &&
-        checkpointContent.trim() === marker,
-      "Actual Git branch/file/checkpoint must match API evidence",
-    );
-    check(
-      worktrees.includes(detail.session.worktree) &&
-        worktrees.includes(`branch refs/heads/${detail.session.branch}`),
-      "Durable Git worktree must remain registered",
-    );
-    return hash(JSON.stringify({ head, content, ref, checkpointContent, worktrees }));
+    return checkpointChainEvidence(worktree.checkpoints, { baseSha, checkpoint, worktreeId });
   };
-  const gitBefore = await gitState();
+  await chainState();
+  const review = await api(`/changes/${detail.change.id}/reviews/open`, {
+    method: "POST",
+    body: { idempotencyKey: `packaged-acceptance-${runId}` },
+  });
+  check(
+    review.slice?.changeId === detail.change.id &&
+      review.checkpointA?.ordinal === 0 &&
+      review.checkpointA.sha === baseSha &&
+      review.checkpointB?.worktreeId === worktreeId,
+    "Opening Review must anchor a slice from the worktree's base",
+  );
+  const reviewDiff = async () =>
+    reviewDiffEvidence(await api(`/changes/${detail.change.id}/reviews/${review.slice.id}/diff`), {
+      baseSha,
+      sliceId: review.slice.id,
+      marker,
+      file: "packaged-proof.txt",
+    });
+  const reviewed = await reviewDiff();
+  check(
+    reviewed.checkpointB.id === review.checkpointB.id &&
+      reviewed.checkpointB.sha === review.checkpointB.sha,
+    "Review diff must span the opened slice",
+  );
+  // Lifecycle fingerprint of the recorded change: the chain (now including the review-open
+  // checkpoint) and the pack-served patch, both read again after every lifecycle operation.
+  const changeState = async () =>
+    hash(JSON.stringify({ chain: await chainState(), patch: (await reviewDiff()).patch }));
+  const changeBefore = await changeState();
   console.log(
-    "PASS network adoption, real mend run, store-less executor, registered capture, completed flush, committed change and replayable record",
+    "PASS network adoption, real mend run, store-less executor, registered capture, completed flush, capture-backed checkpoint chain, pack-served Review patch and replayable record",
   );
   // Fixture is temporary infrastructure, not a third idle product container.
   await docker(["rm", "-f", fixtureId]);
@@ -1271,8 +1290,8 @@ async function main() {
     );
     check((await recordText()) === recorded, "Durable record replay must survive unchanged");
     check(
-      (await gitState()) === gitBefore,
-      "Git branch, registered worktree and checkpoint ref must survive unchanged",
+      (await changeState()) === changeBefore,
+      "Checkpoint chain and pack-served Review patch must survive unchanged",
     );
     await idle();
   }
@@ -1328,7 +1347,7 @@ async function main() {
   await cli(["server", "start", "--offline"], { timeout: 600_000 });
   await retained();
   console.log(
-    "PASS setup rerun, actual restart, stop/start retained account, identity, config pin, SSH key, project, worktree, Git, checkpoint, change and record",
+    "PASS setup rerun, actual restart, stop/start retained account, identity, config pin, SSH key, project, worktree, checkpoint chain, Review patch, change and record",
   );
   if (upgrade) {
     stage = "public two-image server upgrade";
