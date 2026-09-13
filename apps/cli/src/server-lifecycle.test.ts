@@ -1,4 +1,5 @@
 import { spawn, spawnSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
@@ -134,6 +135,8 @@ const fixture = async () => {
           .map((line) => JSON.parse(line))
       : [];
   const active = () => fs.realpathSync(path.join(configDir, "active"));
+  const volumes = (): ReadonlyMap<string, Readonly<Record<string, string>> | null> =>
+    new Map(JSON.parse(fs.readFileSync(path.join(root, "docker-protocol.json"), "utf8")).volumes);
   const files = () =>
     Object.fromEntries(
       fs
@@ -170,6 +173,7 @@ const fixture = async () => {
     update,
     calls,
     active,
+    volumes,
     files,
     setup,
     upgrade,
@@ -399,6 +403,73 @@ describe("server lifecycle", { timeout: 30_000 }, () => {
     expect(fs.readdirSync(backupRoot)).toHaveLength(1);
     expect((await f.upgrade("0.23.0"))._tag).toBe("error");
     expect(f.active()).toBe(target);
+  });
+
+  it("an upgrade from a generation without Garage claims mend-garage under the unchanged identity and lays the bucket out", async () => {
+    const f = await fixture();
+    const composeWithGarage = fs.readFileSync(path.join(f.assets, "compose.v2.yaml"), "utf8");
+    fs.copyFileSync(
+      new URL("../test-fixtures/docker/compose.v2.before-garage.yaml", import.meta.url),
+      path.join(f.assets, "compose.v2.yaml"),
+    );
+    expect(await f.setup()).toEqual({ _tag: "ok" });
+    const before = f.files();
+    expect(JSON.parse(before["server.json"] ?? "{}")).not.toHaveProperty("bucket");
+    expect([...f.volumes().keys()]).toEqual(["mend-store", "mend-control"]);
+    expect(f.calls().some((call) => call.command.includes("garage"))).toBe(false);
+    // Lifecycle commands verify the two volumes the generation owns; none asks for the bucket.
+    expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
+    fs.writeFileSync(path.join(f.assets, "compose.v2.yaml"), composeWithGarage);
+    expect(await f.upgrade()).toEqual({ _tag: "ok" });
+    const after = f.files();
+    expect(after["identity.env"]).toBe(before["identity.env"]);
+    expect(JSON.parse(after["server.json"] ?? "{}")).toMatchObject({
+      serverVersion: "0.24.0",
+      bucket: "garage",
+    });
+    const owner = createHash("sha256")
+      .update(before["identity.env"] ?? "")
+      .digest("hex");
+    expect([...f.volumes()]).toEqual([
+      ["mend-store", { [SERVER_VOLUME_OWNER_LABEL]: owner }],
+      ["mend-control", { [SERVER_VOLUME_OWNER_LABEL]: owner }],
+      ["mend-garage", { [SERVER_VOLUME_OWNER_LABEL]: owner }],
+    ]);
+    const calls = f.calls();
+    const claim = f.runCalls.findIndex(
+      (call) =>
+        call.args[2] === "volume" &&
+        call.args[3] === "create" &&
+        call.args.at(-1) === "mend-garage",
+    );
+    const stop = f.runCalls.findIndex((call) => call.args.includes("stop"));
+    expect(claim).toBeGreaterThanOrEqual(0);
+    expect(claim).toBeLessThan(stop);
+    const garageInit = calls
+      .filter((call) => call.command[0] === "exec" && call.command.includes("garage"))
+      .map((call) =>
+        call.command
+          .slice(
+            call.command.indexOf("/etc/garage.toml") + 1,
+            call.command.indexOf("/etc/garage.toml") + 3,
+          )
+          .join(" "),
+      );
+    expect(garageInit).toEqual([
+      "status",
+      "layout assign",
+      "layout apply",
+      "bucket create",
+      "key import",
+      "bucket allow",
+      "bucket info",
+    ]);
+    expect(f.lines).toContain("Capture store bucket mend is laid out in Garage");
+    // The upgraded generation verifies all three; a rerun claims nothing again.
+    const mutations = f.runCalls.filter((call) => call.args[3] === "create").length;
+    expect(await serverCommand(["status"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(await serverCommand(["restart"], f.runtime)).toEqual({ _tag: "ok" });
+    expect(f.runCalls.filter((call) => call.args[3] === "create")).toHaveLength(mutations);
   });
 
   it.each(["assets", "image-missing", "image-label", "compose-config", "backup-directory"])(

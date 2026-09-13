@@ -233,6 +233,7 @@ test("fresh-install gate rejects all existing Mend resources, even stopped/orpha
   for (const part of [
     "store",
     "control",
+    "garage",
     "config",
     "ssh",
     "rabbitmq",
@@ -773,7 +774,11 @@ function volumeOperations(volumes, identity = identityBytes) {
 }
 
 test("startup failure before containers: only matching-owner external volumes are learned and removed", async () => {
-  for (const names of [["mend-store"], ["mend-store", "mend-control"]]) {
+  for (const names of [
+    ["mend-store"],
+    ["mend-store", "mend-control"],
+    ["mend-store", "mend-control", "mend-garage"],
+  ]) {
     const ledger = createVolumeLedger([], "test-run");
     const external = names.map(ownedVolume);
     const unrelated = [
@@ -829,6 +834,33 @@ test("external ownership refuses missing/empty/mismatched identity and never fal
     ledger.collect([volume], new Set([volume.Name]), identityBytes);
     assert.equal(ledger.canRemove(volume, identityBytes), false);
   }
+});
+
+test("the Garage volume is external: owned by the installation label alone, never by Compose evidence", async () => {
+  // Setup claims mend-garage before Compose starts, so it carries only the ownership label; the
+  // bundle's Garage container then mounts it. v0.27.0's acceptance refused exactly this volume.
+  const ledger = createVolumeLedger([], "test-run");
+  const garage = ownedVolume("mend-garage");
+  ledger.collect([ownedVolume(), ownedVolume("mend-control"), garage], new Set(), identityBytes);
+  ledger.collect(
+    [ownedVolume(), ownedVolume("mend-control"), garage],
+    new Set(["mend-garage"]),
+    identityBytes,
+  );
+  assert.equal(ledger.canRemove(garage, identityBytes), true);
+  assert.deepEqual(ledger.names(), ["mend-store", "mend-control", "mend-garage"]);
+  const operations = volumeOperations([ownedVolume(), ownedVolume("mend-control"), garage]);
+  assert.equal(await cleanupOwnedVolumes(ledger, operations), true);
+  assert.deepEqual(
+    operations.calls.filter(([command]) => command === "rm").map(([, name]) => name),
+    ["mend-store", "mend-control", "mend-garage"],
+  );
+  // A mend-garage that Compose created (project label, no ownership label) is somebody's data.
+  const composeMade = { ...ownedVolume("mend-garage"), Labels: { [projectLabel]: "mend" } };
+  const refused = createVolumeLedger([], "test-run");
+  refused.collect([composeMade], new Set(["mend-garage"]), identityBytes);
+  assert.equal(refused.canRemove(composeMade, identityBytes), false);
+  assert.deepEqual(refused.names(), []);
 });
 
 test("pre-existing volumes remain unowned even with matching identity or fixture labels", async () => {

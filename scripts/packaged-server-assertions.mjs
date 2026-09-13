@@ -15,9 +15,18 @@ import { join, relative, resolve, sep } from "node:path";
 
 const projectLabel = "com.docker.compose.project";
 const canonicalVolumes = new Set(
-  ["store", "control", "config", "ssh", "rabbitmq", "registry", "postgres", "pg", "etc"].flatMap(
-    (part) => [`mend-${part}`, `mend_mend-${part}`, `mend_${part}`],
-  ),
+  [
+    "store",
+    "control",
+    "garage",
+    "config",
+    "ssh",
+    "rabbitmq",
+    "registry",
+    "postgres",
+    "pg",
+    "etc",
+  ].flatMap((part) => [`mend-${part}`, `mend_mend-${part}`, `mend_${part}`]),
 );
 
 /** Fail closed before setup, including stopped containers and orphaned persistent volumes. */
@@ -150,7 +159,9 @@ export function ownsWorkspaceContainer(container, initialIds, projectName) {
 }
 
 export const installationOwnerLabel = "dev.sealant.mend.installation";
-const externalVolumes = new Set(["mend-store", "mend-control"]);
+// The bundle's external data volumes (setup-contract.v2 volumeOwnership.externalVolumes): the CLI
+// creates each with the installation label before Compose starts, so none carries Compose labels.
+const externalVolumes = new Set(["mend-store", "mend-control", "mend-garage"]);
 const digest = (bytes) => createHash("sha256").update(bytes).digest("hex");
 
 /** Missing, nonprivate, or redirected identity is unknown, never a reason to guess an owner. */
@@ -202,7 +213,7 @@ export function createVolumeLedger(initialVolumes, runId) {
         if (seen.get(name) !== fingerprint) refused.add(name);
         if (volume.Driver !== "local" || !volume.CreatedAt) refused.add(name);
         if (externalVolumes.has(name)) {
-          // No fallback to Compose/fixture labels for the two external data volumes.
+          // No fallback to Compose/fixture labels for the external data volumes.
           if (!identity || volume.Labels?.[installationOwnerLabel] !== identity) refused.add(name);
           else if (!claims.has(name)) claims.set(name, fingerprint);
         } else if (

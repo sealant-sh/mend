@@ -270,6 +270,10 @@ describe("mend server setup", () => {
             expect(control.daemon.volumes.get("mend-control")).toEqual({
               [SERVER_VOLUME_OWNER_LABEL]: owner,
             });
+            // The bucket's volume is claimed like the other two, before Compose, never by it.
+            expect(control.daemon.volumes.get("mend-garage")).toEqual({
+              [SERVER_VOLUME_OWNER_LABEL]: owner,
+            });
           }
           events.push(compose ? "compose" : (args[3] ?? ""));
         }
@@ -396,6 +400,50 @@ describe("mend server setup", () => {
     ).toBe(false);
     expect(await serverCommand(["setup"], first.runtime)).toEqual({ _tag: "ok" });
   });
+
+  it.each(["mend-control", "mend-garage"])(
+    "refuses a foreign %s volume with the same message before and after the anchor exists",
+    async (volume) => {
+      // Before any anchor: an unowned volume with a bundle name is existing data, never adopted.
+      const orphaned = new DockerProtocol();
+      orphaned.volumes.set(volume, { [SERVER_VOLUME_OWNER_LABEL]: "another-installation" });
+      const first = makeRuntime({ daemon: orphaned });
+      const refused = await serverCommand(["setup"], first.runtime);
+      expect(refused).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining("Restore the original Mend identity/configuration"),
+      });
+      expect([...orphaned.volumes.keys()]).toEqual([volume]);
+      expect(first.commands.some(([, args]) => args.includes("up") || args[3] === "create")).toBe(
+        false,
+      );
+      // Beside an owned anchor: a volume somebody else labelled is a conflict for setup and start.
+      const daemon = new DockerProtocol();
+      const control = makeRuntime({ daemon });
+      expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+      expect([...daemon.volumes.keys()]).toEqual(["mend-store", "mend-control", "mend-garage"]);
+      daemon.volumes.set(volume, { [SERVER_VOLUME_OWNER_LABEL]: "another-installation" });
+      const ups = control.commands.filter(([, args]) => args.includes("up")).length;
+      const conflict = await serverCommand(["setup"], control.runtime);
+      expect(conflict).toMatchObject({
+        _tag: "error",
+        message: expect.stringContaining("Restore the original Mend identity/configuration"),
+      });
+      expect(await serverCommand(["start"], control.runtime)).toEqual(conflict);
+      expect(control.commands.filter(([, args]) => args.includes("up"))).toHaveLength(ups);
+      expect(daemon.volumes.get(volume)).toEqual({
+        [SERVER_VOLUME_OWNER_LABEL]: "another-installation",
+      });
+      if (volume === "mend-garage") {
+        // Word for word the refusal a foreign control volume gets: one ownership rule, three volumes.
+        const other = new DockerProtocol();
+        other.volumes.set("mend-control", { [SERVER_VOLUME_OWNER_LABEL]: "another-installation" });
+        expect(await serverCommand(["setup"], makeRuntime({ daemon: other }).runtime)).toEqual(
+          refused,
+        );
+      }
+    },
+  );
 
   it("matches the packaging ownership contract", () => {
     const contract: unknown = JSON.parse(

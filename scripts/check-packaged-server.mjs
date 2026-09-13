@@ -338,7 +338,7 @@ async function idle() {
       const volume = now.volumes.find((item) => item.Name === name);
       return volume && volumes.canRemove(volume, identity);
     }),
-    "External store/control volumes must belong to the unchanged private installation identity",
+    "External store/control/garage volumes must belong to the unchanged private installation identity",
   );
   const initialIds = new Set(initial.containers.map((item) => item.Id));
   check(
@@ -589,6 +589,9 @@ async function main() {
       contract.composeTemplate === "compose.v2.yaml" &&
       contract.canonicalVolumes?.store === "mend-store" &&
       contract.canonicalVolumes?.control === "mend-control" &&
+      contract.canonicalVolumes?.garage === "mend-garage" &&
+      contract.volumeOwnership?.externalVolumes?.join(",") ===
+        "mend-store,mend-control,mend-garage" &&
       contract.hostExposure?.ports?.registry === undefined &&
       contract.registry === undefined,
     "Assets must implement the bundle v2 setup contract, which publishes no registry",
@@ -795,7 +798,7 @@ async function main() {
     "Published bundle must serve the real web application",
   );
   console.log(
-    "PASS exact image/version, official PG, web app, idle two-container product and isolated loopback ports (no registry)",
+    "PASS exact image/version, official PG, web app, idle three-container product and isolated loopback ports (no registry)",
   );
 
   stage = "real authentication";

@@ -1,0 +1,90 @@
+# Mend bundle deployment contract v2. The only long-running containers are Mend and official
+# Postgres. The Mend image supervises its web/API processes plus the Sealant 0.29.0 API, worker
+# and SSH gateway. Sealant's job queue lives in Postgres and workspace images live in the host
+# Docker Engine, so nothing else runs. Generate and persist the required values in a private .env
+# file.
+name: mend
+
+services:
+  mend:
+    image:
+      ${MEND_IMAGE_REPOSITORY:-ghcr.io/sealant-sh/mend}:${MEND_VERSION:?set MEND_VERSION in .env}
+    hostname: mend
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    depends_on:
+      postgres:
+        condition: service_healthy
+    ports:
+      - "${MEND_BIND_HOST:-127.0.0.1}:${MEND_PORT:-3105}:3105"
+      - "${MEND_BIND_HOST:-127.0.0.1}:${MEND_SSH_PORT:-2222}:2222"
+    environment:
+      APP_URL: ${APP_URL:?set APP_URL in .env}
+      MEND_ALLOWED_ORIGINS: ${MEND_ALLOWED_ORIGINS:-[]}
+      MEND_SSH_PORT: ${MEND_SSH_PORT:-2222}
+      SEALANT_SSH_HOST: ${SEALANT_SSH_HOST:-localhost}
+      DATABASE_URL:
+        postgresql://mend:${MEND_DB_PASSWORD:?set MEND_DB_PASSWORD in .env}@postgres:5432/mend
+      SEALANT_DATABASE_URL:
+        postgresql://sealant:${SEALANT_DB_PASSWORD:?set SEALANT_DB_PASSWORD in
+        .env}@postgres:5432/sealant_control_plane
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
+      SEALANT_CREDENTIALS_KEY: ${SEALANT_CREDENTIALS_KEY:?set SEALANT_CREDENTIALS_KEY in .env}
+      SEALANT_SERVICE_KEY: ${SEALANT_SERVICE_KEY:?set SEALANT_SERVICE_KEY in .env}
+      WORKSPACE_SSH_GATEWAY_TOKEN:
+        ${WORKSPACE_SSH_GATEWAY_TOKEN:?set WORKSPACE_SSH_GATEWAY_TOKEN in .env}
+      SEALANT_MOUNT_ALLOWED_STORE_ROOTS: /var/lib/mend/store
+      SEALANT_DOCKER_VOLUME_MAPPINGS: >-
+        [{"logicalRoot":"/var/lib/mend/store","volumeName":"${MEND_STORE_VOLUME_NAME:-mend-store}"},{"logicalRoot":"/run/sealant/sockets","volumeName":"${MEND_CONTROL_VOLUME_NAME:-mend-control}"}]
+    volumes:
+      - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
+      - mend-store:/var/lib/mend/store
+      - mend-control:/run/sealant/sockets
+      - mend-config:/var/lib/mend/config
+      - mend-ssh:/var/lib/mend/ssh
+
+  postgres:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${MEND_POSTGRES_ADMIN_PASSWORD:?set MEND_POSTGRES_ADMIN_PASSWORD in .env}
+      POSTGRES_DB: postgres
+      MEND_DB_PASSWORD: ${MEND_DB_PASSWORD:?set MEND_DB_PASSWORD in .env}
+      SEALANT_DB_PASSWORD: ${SEALANT_DB_PASSWORD:?set SEALANT_DB_PASSWORD in .env}
+    configs:
+      - source: postgres-init
+        target: /docker-entrypoint-initdb.d/10-mend-databases.sh
+    volumes:
+      - mend-postgres:/var/lib/postgresql/data
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          pg_isready -U postgres -d postgres && test "$$(psql -U postgres -d postgres -tAc "SELECT
+          count(*) FROM pg_database WHERE datname IN ('mend','sealant_control_plane')")" = "2" &&
+          PGPASSWORD="$${MEND_DB_PASSWORD}" psql -h 127.0.0.1 -U mend -d mend -tAc "SELECT 1"
+          >/dev/null && PGPASSWORD="$${SEALANT_DB_PASSWORD}" psql -h 127.0.0.1 -U sealant -d
+          sealant_control_plane -tAc "SELECT 1" >/dev/null
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+
+configs:
+  postgres-init:
+    file: ./postgres-init.sh
+
+volumes:
+  # Setup claims these volumes before Compose starts, so a different installation cannot
+  # silently replace credentials while adopting existing data.
+  mend-store:
+    external: true
+    name: ${MEND_STORE_VOLUME_NAME:-mend-store}
+  mend-control:
+    external: true
+    name: ${MEND_CONTROL_VOLUME_NAME:-mend-control}
+  mend-config:
+  mend-ssh:
+  mend-postgres:
