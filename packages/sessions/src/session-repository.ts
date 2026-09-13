@@ -113,6 +113,12 @@ export class SessionRepository extends Context.Service<
       readonly worktreeName: string;
       readonly index: number;
       readonly parent: Sha | null;
+      /**
+       * Capture mode: the engine already asked the lease holder to flush (`capture.flush`) and
+       * saw it complete, so the registered head is the disk as of now — snapshot it at once
+       * rather than waiting a cadence window for a capture to land.
+       */
+      readonly flushed?: boolean;
     }) => Effect.Effect<CheckpointSnapshot, SessionRepositoryError>;
     /**
      * The authority's host path where this deployment co-locates Mend with the files;

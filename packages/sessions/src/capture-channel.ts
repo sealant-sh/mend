@@ -292,12 +292,6 @@ export interface CaptureScope {
   readonly executorId: string;
   /** The project's compressed footprint in bytes (its base git packs); 0 = unknown, floor applies. */
   readonly footprintBytes: number;
-  /**
-   * Other names this executor may call the worktree (`hot-pool.ts` "Capture-mode standby"): a
-   * session claimed from a standby keeps the placeholder its executor booted with. Requests,
-   * keys and manifests naming an alias are the worktree's.
-   */
-  readonly aliases?: ReadonlyArray<string>;
 }
 
 /** What a standby's `plan.get` is answered with: the base plan Mend prepared for it. */
@@ -309,9 +303,10 @@ export interface StandbyPlan {
 
 /**
  * The routes for a standby executor — no worktree, no lease, no chain (`hot-pool.ts`
- * "Capture-mode standby"). `plan.get` answers the base plan under the synthetic epoch;
+ * "Capture-mode standby"). `plan.get` answers the base plan under the placeholder name and the
+ * synthetic epoch (the daemon booted without a worktree id and takes both from the answer);
  * heartbeats are acknowledged so the daemon never pauses; anything that would write is refused
- * as `lease-lost` until a claim gives this executor a worktree.
+ * as `lease-lost` until a claim gives this executor a worktree and its replan asks again.
  */
 export interface StandbyScope {
   readonly alias: string;
@@ -469,13 +464,10 @@ export const CaptureChannelLive: Layer.Layer<
 
     const apiFor = (scope: CaptureScope): SessionCaptureApi => {
       const worktreeId = scope.worktreeId;
-      const names: ReadonlyArray<string> = [worktreeId, ...(scope.aliases ?? [])];
-      /** Every prefix this executor may write under: its worktree's, and its aliases'. */
-      const prefixesFor = (epoch: number) => names.map((name) => `captures/${name}/${epoch}/`);
+      /** The one prefix this executor may write under: its worktree's, at the caller's epoch. */
       const underOwnPrefix = (key: string, epoch: number) =>
-        prefixesFor(epoch).some((prefix) => key.startsWith(prefix));
-      const underOwnWorktree = (key: string) =>
-        names.some((name) => key.startsWith(`captures/${name}/`));
+        key.startsWith(`captures/${worktreeId}/${epoch}/`);
+      const underOwnWorktree = (key: string) => key.startsWith(`captures/${worktreeId}/`);
       const byteBudget = Math.max(
         BYTE_QUOTA_FLOOR,
         BYTE_QUOTA_MULTIPLIER * Math.max(0, scope.footprintBytes),
@@ -504,7 +496,7 @@ export const CaptureChannelLive: Layer.Layer<
         });
 
       const requireWorktree = (claimed: string | null | undefined) =>
-        claimed === undefined || claimed === null || names.includes(claimed)
+        claimed === undefined || claimed === null || claimed === worktreeId
           ? Effect.void
           : Effect.fail(
               new CaptureRouteError({
@@ -766,27 +758,13 @@ export const CaptureChannelLive: Layer.Layer<
           ),
         );
         if (
-          !names.includes(manifest.worktree_id) ||
+          manifest.worktree_id !== worktreeId ||
           manifest.epoch !== input.epoch ||
           manifest.n !== input.n ||
           manifest.parent !== input.parent
         ) {
           return yield* bad("the manifest's identity fields disagree with the request");
         }
-        // A session claimed from a standby: the executor materialised the standby plan, so its
-        // first register names that plan as its parent. The chain stands at capture 0 from the
-        // same base, and that capture is the parent the CAS wants (`hot-pool.ts`).
-        const chainNow = yield* repo.headOf(worktreeId);
-        const standbyParent =
-          input.n === 1 &&
-          input.parent !== null &&
-          chainNow?.head !== null &&
-          chainNow?.head !== undefined &&
-          chainNow.head.n === 0 &&
-          input.parent !== chainNow.head.id &&
-          input.worktree_id !== undefined &&
-          input.worktree_id !== worktreeId;
-        const parent = standbyParent ? (chainNow?.head?.id ?? input.parent) : input.parent;
         // The id is the digest of the bytes AS STORED — read them back rather than trust the
         // request's copy; a lost-ack retry re-registers the same id from identical bytes.
         const stored = yield* blobs.get(input.manifest_key).pipe(
@@ -870,7 +848,7 @@ export const CaptureChannelLive: Layer.Layer<
             worktreeId,
             id: input.capture_id,
             n: input.n,
-            parent,
+            parent: input.parent,
             epoch: input.epoch,
             seq: BigInt(manifest.seq),
             kind: manifest.kind,

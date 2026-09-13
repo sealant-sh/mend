@@ -106,9 +106,15 @@ import {
   BlobStore,
   DeploymentConfig,
 } from "@mend/store";
-import type { Harness, Run as SdkRun, Workspace, WorkspaceCredentialsOptions } from "@sealant/sdk";
+import type {
+  Harness,
+  Run as SdkRun,
+  Workspace,
+  WorkspaceCaptureSource,
+  WorkspaceCredentialsOptions,
+} from "@sealant/sdk";
 import { claudeCode, codex, opencode } from "@sealant/sdk";
-import { Duration, Effect, Layer, Option, Schedule, Schema, Stream } from "effect";
+import { Duration, Effect, Layer, Option, Result, Schedule, Schema, Stream } from "effect";
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
@@ -339,6 +345,21 @@ const SERVICE_START_TIMEOUT_MS = 60_000;
 const EXECUTOR_LOST_SUMMARY = "executor lost · lease expired";
 /** What replaces it once the replacement executor's first heartbeat or register lands. */
 const EXECUTOR_REPLACED_SUMMARY = "picked up · executor replaced";
+/**
+ * How long a checkpoint waits for the lease holder's `capture.flush` before it observes whatever
+ * head is registered: a full ship of a large small-class delta, not a cadence window.
+ */
+const CHECKPOINT_FLUSH_TIMEOUT = Duration.seconds(20);
+/**
+ * How long a claimed standby's `capture.replan` may take before the launch goes cold: a delta
+ * materialise of the head over the project base (the base itself is already on disk).
+ */
+const STANDBY_REPLAN_TIMEOUT = Duration.minutes(3);
+/**
+ * How long a planned stop waits for the executor's `capture.flush` before the workspace goes: the
+ * daemon's own grace window bounds the flush; this bounds Mend's wait for the answer.
+ */
+const STOP_FLUSH_TIMEOUT = Duration.seconds(30);
 
 const SUPERVISE_RETRY = Schedule.exponential("1 second").pipe(
   Schedule.modifyDelay((_, delay) =>
@@ -890,11 +911,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       // ── Capture mode (ADR-0002) ─────────────────────────────────────────────────
       /**
-       * The create-request half of a capture launch: the `capture` source and the sealed token
-       * (the session channel token under its second name, `SEALANT_CAPTURE_TOKEN`). Null under
-       * the co-located store.
+       * The create-request half of a capture launch: the `capture` source carrying the session
+       * channel token (sealed by Core into the boot env file as `SEALANT_CAPTURE_TOKEN`). Null
+       * under the co-located store.
        */
-      const captureSourceFor = (sessionId: SessionId, secretEnv: Record<string, string>) =>
+      const captureSourceFor = (
+        sessionId: SessionId,
+        secretEnv: Record<string, string>,
+      ): Effect.Effect<{ readonly source: WorkspaceCaptureSource } | null> =>
         Effect.gen(function* () {
           if (capture === null) return null;
           const endpoint = deployment.sessionEndpoint;
@@ -904,32 +928,42 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           const session = yield* sessions.byId(sessionId).pipe(Effect.option);
           if (Option.isNone(session)) {
-            // A standby executor: no worktree yet, so the placeholder Core requires — the
-            // channel answers its plan and a claim binds it (`hot-pool.ts`).
+            // A standby executor: no worktree yet, so none is named — the daemon takes the
+            // placeholder from the channel's plan answer, and its replan at claim takes the
+            // worktree (`hot-pool.ts` "Capture-mode standby").
             const entry = yield* hotWorkspaces.byId(sessionId);
             if (entry === null) {
               return yield* Effect.die(
                 "capture mode: a workspace needs its session row or its standby row",
               );
             }
-            return {
-              source: {
-                kind: "capture" as const,
-                endpoint: endpoint.url,
-                worktreeId: standbyWorktreeAlias(sessionId),
-              },
-              captureToken: token,
-            };
+            return { source: { kind: "capture", endpoint: endpoint.url, token } };
           }
           return {
             source: {
-              kind: "capture" as const,
+              kind: "capture",
               endpoint: endpoint.url,
               worktreeId: session.value.worktreeId,
+              token,
             },
-            captureToken: token,
           };
         });
+
+      /**
+       * Capture 0 for a worktree that has no chain yet: one made before captures (the deprecated
+       * co-located store, or an install upgraded across decision 8) is attached now, so capture 0
+       * carries its directory's current files (ADR-0002 "Consequences", amended). A no-op once
+       * the chain has a head, and under the co-located store.
+       */
+      const ensureCaptureZero = Effect.fn("SessionEngine.ensureCaptureZero")(function* (
+        projectId: ProjectId,
+        worktreeId: WorktreeId,
+      ) {
+        if (capture === null || sessionRepo.attachWorktree === undefined) return;
+        const chain = yield* capture.repo.headOf(worktreeId);
+        if (chain?.head !== null && chain?.head !== undefined) return;
+        yield* sessionRepo.attachWorktree(projectId, worktreeId);
+      });
 
       /**
        * Dependency trees (ADR-0002 amended 2026-09-13, decisions 2 and 9): the head the executor
@@ -1051,8 +1085,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * The capture routes for one session, scoped to its worktree on every call — so a
        * standby executor (a pooled id with no session row yet) is answered as a standby until a
-       * claim gives its id a session, after which the same routes serve the claimed worktree
-       * with the placeholder as an alias (`hot-pool.ts` "Capture-mode standby").
+       * claim gives its id a session, after which the same routes serve the claimed worktree:
+       * the executor's replan asks `plan.get` with no worktree named and is answered with it
+       * (`hot-pool.ts` "Capture-mode standby").
        */
       const captureApiFor = (sessionId: SessionId): SessionCaptureApi => {
         const scoped = <A>(
@@ -1086,7 +1121,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               projectId: session.projectId,
               executorId: sessionId,
               footprintBytes: yield* footprintFor(sessionId, session.projectId),
-              aliases: [standbyWorktreeAlias(sessionId)],
             });
             return yield* call(api);
           });
@@ -1122,6 +1156,108 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
           }
         }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
+
+      /**
+       * `workspace.capture.flush()` (SDK 0.31.0, sealantd ADR-0015) on one executor: a final
+       * small-class capture, then everything staged is shipped and registered, bounded by the
+       * daemon's grace window and by `timeout` here. The report is logged as observed — never
+       * acted on beyond the answer: true when the flush completed with nothing pending and the
+       * executor unfenced, false for a refusal, a timeout or a partial flush. Runs as the
+       * executor's owner, whatever the caller's principal.
+       */
+      const observeCaptureFlush = Effect.fn("SessionEngine.observeCaptureFlush")(function* (
+        session: Session,
+        workspace: Workspace,
+        why: string,
+        timeout: Duration.Duration,
+      ) {
+        const outcome = yield* sealant
+          .captureFlush(workspace)
+          .pipe(Effect.timeoutOption(timeout), Effect.result, asSealantUser(session.ownerUserId));
+        const annotations = {
+          sessionId: session.id,
+          worktreeId: session.worktreeId,
+          workspaceId: workspace.id,
+          why,
+        };
+        if (Result.isFailure(outcome)) {
+          yield* Effect.logWarning("session engine: capture flush · refused").pipe(
+            Effect.annotateLogs({ ...annotations, error: outcome.failure.message }),
+          );
+          return false;
+        }
+        if (Option.isNone(outcome.success)) {
+          yield* Effect.logWarning("session engine: capture flush · timed out").pipe(
+            Effect.annotateLogs({ ...annotations, timeoutMs: Duration.toMillis(timeout) }),
+          );
+          return false;
+        }
+        const report = outcome.success.value;
+        const complete = report.pending === 0 && !report.fenced;
+        yield* Effect.logInfo(
+          `session engine: capture flush · ${complete ? "completed" : "partial"} · observed`,
+        ).pipe(
+          Effect.annotateLogs({
+            ...annotations,
+            epoch: report.epoch,
+            headN: report.headN ?? null,
+            pending: report.pending,
+            stagedBytes: report.stagedBytes,
+            uploadedObjects: report.uploadedObjects,
+            uploadedBytes: report.uploadedBytes,
+            registered: report.registered,
+            fenced: report.fenced,
+            paused: report.paused,
+          }),
+        );
+        return complete;
+      });
+
+      /**
+       * Flush whoever holds a worktree's lease, when that is a session's live executor: the
+       * head a checkpoint is observed from is then the disk as of now, not the last cadence
+       * tick. False when nobody holds it, the holder has no workspace yet, or the flush did not
+       * complete — the caller then observes whatever head is registered.
+       */
+      const flushLeaseHolder = Effect.fn("SessionEngine.flushLeaseHolder")(function* (
+        worktreeId: WorktreeId,
+        why: string,
+      ) {
+        if (capture === null) return false;
+        const lease = yield* capture.repo.leaseOf(worktreeId);
+        if (
+          lease === null ||
+          !lease.live ||
+          lease.executorId === null ||
+          lease.executorId.startsWith("mend:")
+        ) {
+          return false;
+        }
+        const holder = yield* sessions
+          .byId(SessionId.make(lease.executorId))
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (holder === null || holder.sealantWorkspaceId === null) return false;
+        const workspace = yield* sealant
+          .getWorkspace(holder.sealantWorkspaceId)
+          .pipe(Effect.option, asSealantUser(holder.ownerUserId));
+        if (Option.isNone(workspace)) return false;
+        return yield* observeCaptureFlush(holder, workspace.value, why, CHECKPOINT_FLUSH_TIMEOUT);
+      });
+
+      /**
+       * The flush before a planned stop of `session`'s own executor: only while its lease is
+       * live and held by this session (a dead or replaced executor has nothing to flush, and
+       * the ask would only wait on the timeout). Never fails the stop.
+       */
+      const flushBeforeStop = Effect.fn("SessionEngine.flushBeforeStop")(function* (
+        session: Session,
+        workspace: Workspace,
+      ) {
+        if (capture === null) return;
+        const lease = yield* capture.repo.leaseOf(session.worktreeId);
+        if (lease === null || !lease.live || lease.executorId !== session.id) return;
+        yield* observeCaptureFlush(session, workspace, "planned stop", STOP_FLUSH_TIMEOUT);
+      });
 
       /**
        * Does the executor still answer? The platform's stored status is not enough: a container
@@ -1250,9 +1386,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* Effect.logInfo(
             "session engine: capture mode · replacing the executor before the cap",
           ).pipe(Effect.annotateLogs({ sessionId: session.id, worktreeId: session.worktreeId }));
+          // A planned stop: the executor flushes first (`capture.flush`, bounded, the report
+          // logged as observed), then its workspace goes.
           if (session.sealantWorkspaceId !== null) {
             yield* sealant.getWorkspace(session.sealantWorkspaceId).pipe(
-              Effect.flatMap((workspace) => sealant.stopWorkspace(workspace)),
+              Effect.flatMap((workspace) =>
+                observeCaptureFlush(
+                  session,
+                  workspace,
+                  "replacement before the cap",
+                  STOP_FLUSH_TIMEOUT,
+                ).pipe(Effect.andThen(sealant.stopWorkspace(workspace))),
+              ),
               Effect.ignore,
             );
           }
@@ -1439,12 +1584,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const body = Effect.gen(function* () {
           const previous = yield* checkpoints.latestForWorktree(worktree.id);
           const ordinal = yield* checkpoints.countForWorktree(worktree.id);
+          // Capture mode: the lease holder flushes first, so the head this checkpoint is
+          // observed from is the disk as of now. A flush that does not complete costs nothing
+          // but the wait for a capture to land.
+          const flushed = yield* flushLeaseHolder(worktree.id, `checkpoint · ${trigger}`);
           const snapshot = yield* sessionRepo.checkpoint({
             projectId: worktree.projectId,
             scope: worktree.id,
             worktreeName: worktree.directory,
             index: ordinal,
             parent: previous?.sha ?? null,
+            flushed,
           });
           return yield* checkpoints.create({
             worktreeId: worktree.id,
@@ -2413,6 +2563,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
           }
           const workspace = yield* sealant.getWorkspace(workspaceId);
+          // Capture mode: this is a planned stop when the executor still holds its worktree —
+          // a user stop, a settle's sweep, a deliberate relaunch — so it flushes first
+          // (`capture.flush`, bounded, the report logged as observed). A pickup after a
+          // confirmed termination comes through here too, with no live lease: nothing to ask.
+          yield* flushBeforeStop(session, workspace);
           yield* sealant.stopWorkspace(workspace);
           // The container is gone; no row for it can still be live, and the
           // in-workspace socket has nobody left to serve.
@@ -3246,7 +3401,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // store, the socket dir, the harness home, references, declared folders or linked
         // projects; it materialises the worktree's head capture and ships captures back. The
         // session token is the capture credential (one token, two names) and rides the create
-        // request as `captureToken`, sealed by Core into the boot env file.
+        // request on the source, sealed by Core into the boot env file.
         const captureSource = yield* captureSourceFor(sessionId, channel.secretEnv);
         // The first three mounts are the store, the socket dir and the harness home — never
         // user-facing; anything past them is a reference, a declared folder or a linked project.
@@ -3635,6 +3790,76 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
       });
 
+      /**
+       * `workspace.capture.replan()` on a claimed standby (SDK 0.31.0, sealantd 0.15): true when
+       * the daemon answered with this session's worktree under the lease epoch the claim took,
+       * the delta report logged as observed. Anything else is false and the caller goes cold.
+       */
+      const replanClaimedStandby = Effect.fn("SessionEngine.replanClaimedStandby")(function* (
+        session: Session,
+        workspace: Workspace,
+      ) {
+        if (capture === null) return false;
+        const lease = yield* capture.repo.leaseOf(session.worktreeId);
+        const outcome = yield* sealant
+          .captureReplan(workspace)
+          .pipe(Effect.timeoutOption(STANDBY_REPLAN_TIMEOUT), Effect.result);
+        const annotations = {
+          sessionId: session.id,
+          worktreeId: session.worktreeId,
+          workspaceId: workspace.id,
+        };
+        if (Result.isFailure(outcome)) {
+          yield* Effect.logWarning("session engine: standby replan · refused · cold launch").pipe(
+            Effect.annotateLogs({ ...annotations, error: outcome.failure.message }),
+          );
+          return false;
+        }
+        if (Option.isNone(outcome.success)) {
+          yield* Effect.logWarning("session engine: standby replan · timed out · cold launch").pipe(
+            Effect.annotateLogs({
+              ...annotations,
+              timeoutMs: Duration.toMillis(STANDBY_REPLAN_TIMEOUT),
+            }),
+          );
+          return false;
+        }
+        const report = outcome.success.value;
+        if (
+          report.worktreeId !== session.worktreeId ||
+          (lease !== null && lease.live && report.epoch !== lease.epoch)
+        ) {
+          yield* Effect.logWarning(
+            "session engine: standby replan · answered another identity · cold launch",
+          ).pipe(
+            Effect.annotateLogs({
+              ...annotations,
+              answeredWorktreeId: report.worktreeId,
+              answeredEpoch: report.epoch,
+              leaseEpoch: lease?.epoch ?? null,
+            }),
+          );
+          return false;
+        }
+        yield* Effect.logInfo(
+          "session engine: capture mode · standby re-planned onto the worktree · observed",
+        ).pipe(
+          Effect.annotateLogs({
+            ...annotations,
+            epoch: report.epoch,
+            headN: report.headN ?? null,
+            headCaptureId: report.headCaptureId ?? null,
+            filesWritten: report.filesWritten,
+            bytesWritten: report.bytesWritten,
+            filesSkipped: report.filesSkipped,
+            bytesSkipped: report.bytesSkipped,
+            removed: report.removed,
+            unchanged: report.unchanged,
+          }),
+        );
+        return true;
+      });
+
       /** Stage converted harness files through the mounted worktree into one workspace home. */
       const placeConvertedFiles = (
         session: Session,
@@ -3805,25 +4030,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return yield* error;
           }
         }
-        // Capture mode: a worktree without a chain was made before captures (the deprecated
-        // co-located store, or an install upgraded across decision 8) — attach it now, so
-        // capture 0 carries its directory's current files (ADR-0002 "Consequences", amended).
-        if (capture !== null && adopted === null && sessionRepo.attachWorktree !== undefined) {
-          const chain = yield* capture.repo.headOf(session.worktreeId);
-          if (chain?.head === null || chain?.head === undefined) {
-            yield* sessionRepo.attachWorktree(project.id, session.worktreeId).pipe(
-              Effect.mapError(
-                (error) =>
-                  new SealantPlatformError({
-                    code: "capture_backfill_failed",
-                    status: null,
-                    message: `capture 0 could not be registered for worktree ${session.worktree}: ${error._tag === "GitError" ? error.stderr : error.message}`,
-                    cause: error,
-                  }),
-              ),
-              settleOnFailure,
-            );
-          }
+        // Capture mode: a worktree without a chain was made before captures — attach it now,
+        // so capture 0 carries its directory's current files (a claimed standby did this at
+        // claim, before its lease was taken).
+        if (capture !== null && adopted === null) {
+          yield* ensureCaptureZero(project.id, session.worktreeId).pipe(
+            Effect.mapError(
+              (error) =>
+                new SealantPlatformError({
+                  code: "capture_backfill_failed",
+                  status: null,
+                  message: `capture 0 could not be registered for worktree ${session.worktree}: ${error._tag === "GitError" ? error.stderr : error.message}`,
+                  cause: error,
+                }),
+            ),
+            settleOnFailure,
+          );
         }
         // Capture mode: Mend claims the lease at launch (epoch + 1, the chain fenced in the
         // same statement) with a boot-sized TTL; the executor learns the epoch from its first
@@ -3842,9 +4064,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             settleOnFailure,
           );
         }
-        const provisioned =
-          adopted ??
-          (yield* provisionWorkspace({
+        const provisionCold = () =>
+          provisionWorkspace({
             project,
             sessionId,
             socketDir,
@@ -3852,7 +4073,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ownerUserId,
             onFailure: (message) =>
               sessions.settle(sessionId, "failed", `launch failed: ${message}`).pipe(Effect.ignore),
-          }));
+          });
+        let provisioned = adopted ?? (yield* provisionCold());
+        // Capture mode, a claimed standby (`hot-pool.ts` "Capture-mode standby"): its executor
+        // booted on the project base under a placeholder; `capture.replan` makes it fetch the
+        // plan again — the channel answers this session's worktree, the epoch the claim took
+        // and the head — and materialise the head as a delta. A replan that fails, times out or
+        // answers another identity costs the standby, never the session: its workspace drains
+        // and the launch goes cold, under the lease the claim already holds.
+        if (capture !== null && adopted !== null && claimedEntry !== null) {
+          const replanned = yield* replanClaimedStandby(session, provisioned.workspace);
+          if (!replanned) {
+            yield* drainHotWorkspace(claimedEntry, { keepWorktree: true });
+            provisioned = yield* provisionCold();
+          }
+        }
         const { workspace, workspaceImage, environmentManifest } = provisioned;
         // Standby (ADR-0001): the workspace mounted the project's worktrees root; point its
         // working directory at THIS session's worktree before anything looks for the repo. The
@@ -6163,42 +6398,42 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly ownerUserId: string | null;
         },
       ) {
-        // Capture mode: a standby serves only a worktree whose chain stands at capture 0 from the
-        // base the standby materialised — the delta is empty by construction. Anything else
-        // (a join into a worktree with captures, another base) launches cold; the standby
-        // stays in the pool for the next fresh worktree (`hot-pool.ts`).
+        // Capture mode: one executor per worktree (ADR-0002). A worktree another session's
+        // executor holds is a join — it runs inside the holder, which the cold path finds at
+        // launch — so no standby is spent on it. Mend's own short claims hold nothing.
         if (capture !== null) {
-          const chain = yield* capture.repo.headOf(worktree.id);
-          if (chain?.head === null || chain?.head === undefined || chain.head.n !== 0) return null;
+          const lease = yield* capture.repo.leaseOf(worktree.id);
+          if (
+            lease !== null &&
+            lease.live &&
+            lease.executorId !== null &&
+            !lease.executorId.startsWith("mend:")
+          ) {
+            return null;
+          }
         }
         const ownerUserId = input.ownerUserId ?? (yield* userDotfilesRepo.firstUserId());
         const inputs = yield* hotInputsFor(project, ownerUserId);
         const entry = yield* hotWorkspaces.claim(project.id, hotFingerprint(inputs), ownerUserId);
         if (entry === null) return null;
         if (capture !== null) {
-          // The standby's base must be the worktree's, and the worktree's lease is claimed AT
-          // the standby's epoch — what its executor already holds (decision 21). A refusal
-          // (another base, a live lease) drains the consumed entry and goes cold.
-          const claimed =
-            entry.baseSha === worktree.baseSha
-              ? yield* capture.repo
-                  .claimAs(
-                    worktree.id,
-                    entry.id,
-                    standbyEpochOf(entry.createdAt),
-                    LAUNCH_CLAIM_TTL_SECONDS,
-                  )
-                  .pipe(Effect.option)
-              : Option.none();
-          if (Option.isNone(claimed)) {
+          // Capture 0 first (a worktree made before captures has no chain yet), then the lease
+          // at a fresh epoch with this executor as holder: the launch's `capture.replan` is
+          // answered with exactly that worktree, epoch and head (`hot-pool.ts`). A refusal (a
+          // lease taken meanwhile, capture 0 not registrable) drains the consumed entry and
+          // goes cold.
+          const claimed = yield* ensureCaptureZero(project.id, worktree.id).pipe(
+            Effect.andThen(capture.repo.claim(worktree.id, entry.id, LAUNCH_CLAIM_TTL_SECONDS)),
+            Effect.result,
+          );
+          if (Result.isFailure(claimed)) {
             yield* Effect.logInfo(
               "session engine: standby not claimable for this worktree · cold provision",
             ).pipe(
               Effect.annotateLogs({
                 projectId: project.id,
                 worktreeId: worktree.id,
-                standbyBase: entry.baseSha,
-                worktreeBase: worktree.baseSha,
+                reason: String(claimed.failure),
               }),
             );
             yield* drainHotWorkspace(entry);

@@ -47,11 +47,11 @@ import { derivedPackPrefix, ensureCaptureCache } from "./worktree-reads.ts";
  *   that still has a DIRECTORY in the store (adopted before captures, ADR-0002 amended
  *   2026-09-13) is backfilled instead of rebased: capture 0's tree is a final co-located
  *   checkpoint of the directory's current files, so uncommitted work rides into the bucket.
- * - `checkpoint` asks nothing of the executor yet — the runtime client has no `capture.now`
- *   control command (seam) — so it takes the newest `checkpoint` capture when the executor
- *   already posted one for this ordinal, waits briefly for one to land, and otherwise derives
- *   the snapshot on the runner from the head capture's worktree tree: the same commit the
- *   co-located store would have made, packed under `projects/<project>/packs/`, its ref in
+ * - `checkpoint` takes the newest `checkpoint` capture when the executor already posted one for
+ *   this ordinal; otherwise — unless the engine flushed the lease holder first (`flushed`,
+ *   `workspace.capture.flush()` since SDK 0.31.0) — it waits briefly for one to land, and then
+ *   derives the snapshot on the runner from the head capture's worktree tree: the same commit
+ *   the co-located store would have made, packed under `projects/<project>/packs/`, its ref in
  *   `store_refs`. The checkpoint row then names the capture it was observed from.
  * - `worktreeMount` answers undefined: nothing is co-located.
  */
@@ -395,11 +395,11 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
           };
         }
         // 2. Wait briefly for one to land (the turn boundary the executor snaps at) — only
-        //    while an executor holds the worktree; a dead lease has nobody to wait for.
-        //    SEAM: `capture.now { kind: "checkpoint" }` is not in the runtime client yet.
+        //    while an executor holds the worktree and the engine could not flush it first; a
+        //    flushed head is already the disk as of now, and a dead lease has nobody to wait for.
         const lease = yield* repo.leaseOf(worktreeId as WorktreeId);
         const landed =
-          lease !== null && lease.live
+          lease !== null && lease.live && input.flushed !== true
             ? yield* channel.awaitRegister(
                 worktreeId as WorktreeId,
                 (row) => row.kind === "checkpoint" && row.n > (chain.head?.n ?? -1),

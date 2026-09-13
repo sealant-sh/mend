@@ -89,7 +89,7 @@ import {
   type SessionExtraMount,
   type SessionReferenceMount,
 } from "@mend/domain/workbench";
-import { type CaptureCreateOptions, SealantClient, SealantPlatformError } from "@mend/sealant";
+import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
   CaptureChannelLive,
   CaptureRuntimeLive,
@@ -130,6 +130,8 @@ import type {
   Run,
   SessionOptions,
   Workspace,
+  WorkspaceCaptureReplanned,
+  WorkspaceCaptureStatus,
 } from "@sealant/sdk";
 import { Duration, Effect, Fiber, Layer, Schedule, Stream, type Scope } from "effect";
 
@@ -151,6 +153,8 @@ const sealantDeadLayer = Layer.succeed(SealantClient, {
   openSession: () => Effect.die("not in test"),
   forward: () => Effect.die("not in test"),
   stopWorkspace: () => Effect.die("not in test"),
+  captureFlush: () => Effect.die("not in test"),
+  captureReplan: () => Effect.die("not in test"),
   expireWorkspace: () => Effect.die("not in test"),
   getSession: () => Effect.die("not in test"),
   sessionOutput: () => Effect.die("not in test"),
@@ -219,7 +223,7 @@ const fakeExecRun: Run = {
 };
 
 const sealantLaunchLayer = (
-  created: Array<CreateOptions | CaptureCreateOptions>,
+  created: Array<CreateOptions>,
   rejectCredentials: (credentials: CreateOptions["credentials"]) => boolean = () => false,
   stopped?: string[],
   spawned?: ReadonlyArray<string>[],
@@ -233,12 +237,24 @@ const sealantLaunchLayer = (
   ptyStates?: Map<string, InteractiveSessionStatus>,
   openedOptions?: SessionOptions[],
   createWorkspaceOverride?: (
-    options: CreateOptions | CaptureCreateOptions,
+    options: CreateOptions,
   ) => Effect.Effect<Workspace, SealantPlatformError>,
   /** When provided, workspace execs succeed (exit 0, empty output) and land here. */
   execCalls?: ReadonlyArray<string>[],
   /** Every `bindWorkspace` subpath, so a test can assert capture mode binds nothing. */
   binds?: string[],
+  /**
+   * Capture mode (SDK 0.31.0): `flushed` collects `flush:<workspace id>` for every flush Mend asked
+   * for before a planned stop or a checkpoint (the report is inert) — the same array as `stopped`
+   * proves the order; `replan` stands in for sealantd's `capture.replan` when a claimed standby is
+   * launched.
+   */
+  captureOps?: {
+    readonly flushed?: string[];
+    readonly replan?: (
+      workspace: Workspace,
+    ) => Effect.Effect<WorkspaceCaptureReplanned, SealantPlatformError>;
+  },
 ) => {
   let nextPty = 0;
   const ptys = new Map<string, InteractiveSession>();
@@ -275,6 +291,14 @@ const sealantLaunchLayer = (
     },
     exec: async () => new Promise(() => undefined),
     bind: async () => [],
+    capture: {
+      flush: async () => {
+        throw new Error("not in test");
+      },
+      replan: async () => {
+        throw new Error("not in test");
+      },
+    },
     sessions: {
       open: async (_argv, options) => {
         if (options !== undefined) openedOptions?.push(options);
@@ -346,6 +370,25 @@ const sealantLaunchLayer = (
       Effect.sync(() => {
         stopped?.push(target.id);
       }),
+    captureFlush: (target) =>
+      Effect.sync(() => {
+        captureOps?.flushed?.push(`flush:${target.id}`);
+        return {
+          epoch: 0,
+          worktreeId: "",
+          pending: 0,
+          stagedBytes: 0,
+          uploadedObjects: 0,
+          uploadedBytes: 0,
+          registered: 0,
+          fenced: false,
+          paused: false,
+        } satisfies WorkspaceCaptureStatus;
+      }),
+    captureReplan: (target) =>
+      captureOps?.replan === undefined
+        ? Effect.die("capture.replan not in this test world")
+        : captureOps.replan(target),
     expireWorkspace: renewWorkspace,
     getSession: (_workspace, id) => Effect.succeed(ptys.get(id) ?? initialPty),
     // Typed failure, not a defect: the settle-path harvest must degrade
@@ -4601,9 +4644,11 @@ const until = (condition: () => boolean, label: string) =>
   });
 
 describe("SessionEngine capture mode", () => {
-  it("provisions capture 0 and launches a capture-sourced workspace: no mounts, no bind, a launch-claimed lease", async () => {
-    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+  it("provisions capture 0 and launches a capture-sourced workspace: no mounts, no bind, a launch-claimed lease; a user stop flushes the executor before its workspace goes", async () => {
+    const created: Array<CreateOptions> = [];
     const binds: string[] = [];
+    /** Flushes and stops in the order the platform saw them. */
+    const events: string[] = [];
     const memory = makeMemoryCaptureStore();
     await withEngine(
       (world, tmp) =>
@@ -4645,25 +4690,33 @@ describe("SessionEngine capture mode", () => {
 
           expect(created).toHaveLength(1);
           const request = created[0];
+          // SDK 0.31.0: the capture source carries the session channel token itself.
           expect(request?.source).toEqual({
             kind: "capture",
             endpoint: "http://mend.test:3106",
             worktreeId: session.worktreeId,
+            token: expect.stringMatching(/.+/),
           });
-          expect(request !== undefined && "captureToken" in request).toBe(true);
+          expect(request !== undefined && "captureToken" in request).toBe(false);
           expect(request !== undefined && "mounts" in request).toBe(false);
           expect(binds).toEqual([]);
           const lease = memory.leases.get(session.worktreeId);
           expect(lease?.executorId).toBe(session.id);
           expect(lease?.epoch).toBe(2);
           expect((lease?.expiresAt ?? 0) > memory.clock.now()).toBe(true);
+
+          // A user stop is a planned stop: the executor flushes (the user-mark checkpoint asks
+          // once, the stop itself once more) and only then does its workspace go.
+          yield* engine.stop(session.id);
+          yield* until(() => events.includes("workspace-1"), "the workspace stop");
+          expect(events).toEqual(["flush:workspace-1", "flush:workspace-1", "workspace-1"]);
         }),
       {
         captured: memory,
         sealantLayer: sealantLaunchLayer(
           created,
           undefined,
-          undefined,
+          events,
           undefined,
           undefined,
           undefined,
@@ -4672,13 +4725,14 @@ describe("SessionEngine capture mode", () => {
           undefined,
           undefined,
           binds,
+          { flushed: events },
         ),
       },
     );
   });
 
   it("launch attaches a worktree that has no chain yet — made before captures — with capture 0 from its directory's current files", async () => {
-    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+    const created: Array<CreateOptions> = [];
     const memory = makeMemoryCaptureStore();
     await withEngine(
       (world, tmp) =>
@@ -4741,7 +4795,7 @@ describe("SessionEngine capture mode", () => {
     "a second session in a leased worktree joins the holder's executor; an unreachable holder is refused with worktree_leased",
     { timeout: 20_000 },
     async () => {
-      const created: Array<CreateOptions | CaptureCreateOptions> = [];
+      const created: Array<CreateOptions> = [];
       const spawned: ReadonlyArray<string>[] = [];
       const memory = makeMemoryCaptureStore();
       let holderDead = false;
@@ -4807,9 +4861,10 @@ describe("SessionEngine capture mode", () => {
     },
   );
 
-  it("resume is lease-aware: a live lease attaches; an expired lease with a dead executor is a pickup that harvests from the head capture", async () => {
-    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+  it("resume is lease-aware: a live lease attaches; an expired lease with a dead executor is a pickup that harvests from the head capture — and asks nothing of the dead executor", async () => {
+    const created: Array<CreateOptions> = [];
     const spawned: ReadonlyArray<string>[] = [];
+    const flushed: string[] = [];
     const memory = makeMemoryCaptureStore();
     let executorDead = false;
     await withEngine(
@@ -4855,6 +4910,8 @@ describe("SessionEngine capture mode", () => {
           const lease = memory.leases.get(session.worktreeId);
           expect(lease?.epoch).toBe(3);
           expect(lease?.executorId).toBe(session.id);
+          // A pickup after a confirmed termination is not a planned stop: no flush was asked.
+          expect(flushed).toEqual([]);
           const harvested = [...world.processes.values()].find(
             (process) => process.exitedAt !== null && process.kind === "agent-pty",
           );
@@ -4874,13 +4931,20 @@ describe("SessionEngine capture mode", () => {
           undefined,
           spawned,
           () => executorDead,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { flushed },
         ),
       },
     );
   });
 
   it("the reaper settles a session whose executor died: lease expired, platform silent — 'executor lost'", async () => {
-    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+    const created: Array<CreateOptions> = [];
     const memory = makeMemoryCaptureStore();
     let executorDead = false;
     await withEngine(
@@ -5028,8 +5092,8 @@ describe("SessionEngine capture mode", () => {
     return { entries, layer };
   };
 
-  it("warms a standby executor at the placeholder worktree id; its plan is the project base under the standby's epoch, and nothing is leased", async () => {
-    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+  it("warms a standby executor with no worktree id; its plan is the project base under a placeholder and the standby's epoch, and nothing is leased", async () => {
+    const created: Array<CreateOptions> = [];
     const memory = makeMemoryCaptureStore();
     const pool = memoryHotPool();
     await withEngine(
@@ -5044,17 +5108,21 @@ describe("SessionEngine capture mode", () => {
           if (entry === undefined) throw new Error("no standby");
           const alias = `standby-${entry.id}`;
           expect(created).toHaveLength(1);
+          // SDK 0.31.0: no worktree id on a standby's source — the daemon takes the placeholder
+          // from the plan answer, and the worktree from its replan at claim.
           expect(created[0]?.source).toEqual({
             kind: "capture",
             endpoint: "http://mend.test:3106",
-            worktreeId: alias,
+            token: expect.stringMatching(/.+/),
           });
           // The base the standby materialises is fixed on its row.
           expect(entry.baseSha).toBe(project.adoptedSha);
           const api = servedSocketApis.get(entry.id)?.capture;
           if (api === undefined) throw new Error("the standby serves no capture api");
-          const plan = yield* api.planGet({ worktree_id: alias, epoch: 0 });
+          // A daemon booted without a worktree id asks with none; the answer names the placeholder.
+          const plan = yield* api.planGet({ worktree_id: null, epoch: 0 });
           expect(plan.worktree_id).toBe(alias);
+          expect((yield* api.planGet({ worktree_id: alias, epoch: 0 })).worktree_id).toBe(alias);
           expect(plan.epoch).toBe(entry.createdAt.getTime());
           expect(plan.head?.n).toBe(0);
           expect(plan.head?.manifest.sections.git.packs[0]).toMatch(
@@ -5080,11 +5148,56 @@ describe("SessionEngine capture mode", () => {
     );
   });
 
-  it("a fresh worktree claims the standby: the session adopts its id, the lease is taken at the standby's epoch, the alias serves heartbeat and register, a fresh standby warms, and a worktree with captures goes cold", async () => {
-    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+  it("a worktree claims the standby: the session adopts its id, the lease is taken at a fresh epoch with the executor as holder, the launch re-plans it onto the worktree, its first register parents on capture 0, a fresh standby warms, a second worktree claims that one, and a join goes cold", async () => {
+    const created: Array<CreateOptions> = [];
     const spawned: ReadonlyArray<string>[] = [];
+    const flushed: string[] = [];
     const memory = makeMemoryCaptureStore();
     const pool = memoryHotPool();
+    /** What sealantd's `capture.replan` does: `plan.get` with no worktree named, as the executor. */
+    const replans: Array<{ readonly workspaceId: string; readonly executorId: SessionId }> = [];
+    const answered: Array<{
+      readonly worktreeId: string;
+      readonly epoch: number;
+      readonly headN: number | null;
+    }> = [];
+    let executor: SessionId | null = null;
+    const replan = (workspace: Workspace) =>
+      Effect.gen(function* () {
+        if (executor === null) throw new Error("no executor to replan");
+        replans.push({ workspaceId: workspace.id, executorId: executor });
+        const api = servedSocketApis.get(executor)?.capture;
+        if (api === undefined) throw new Error("the executor serves no capture api");
+        const plan = yield* api.planGet({ worktree_id: null, epoch: 0 }).pipe(
+          Effect.mapError(
+            (error) =>
+              new SealantPlatformError({
+                code: "replan_refused",
+                status: error.status,
+                message: `${error.reason}: ${error.message}`,
+                cause: error,
+              }),
+          ),
+        );
+        answered.push({
+          worktreeId: plan.worktree_id,
+          epoch: plan.epoch,
+          headN: plan.head?.n ?? null,
+        });
+        return {
+          worktreeId: plan.worktree_id,
+          epoch: plan.epoch,
+          ...(plan.head === null
+            ? {}
+            : { headN: plan.head.n, headCaptureId: plan.head.capture_id }),
+          filesWritten: 0,
+          bytesWritten: 0,
+          filesSkipped: 1,
+          bytesSkipped: 14,
+          removed: 0,
+          unchanged: false,
+        } satisfies WorkspaceCaptureReplanned;
+      });
     await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
@@ -5096,11 +5209,6 @@ describe("SessionEngine capture mode", () => {
           const standby = pool.entries[0];
           if (standby === undefined) throw new Error("no standby");
           const alias = `standby-${standby.id}`;
-          const standbyApi = servedSocketApis.get(standby.id)?.capture;
-          if (standbyApi === undefined) throw new Error("the standby serves no capture api");
-          const plan = yield* standbyApi.planGet({ worktree_id: alias, epoch: 0 });
-          const epoch = plan.epoch;
-          const planId = plan.head?.capture_id ?? "";
 
           const session = yield* engine.provision({
             projectId: project.id,
@@ -5110,47 +5218,59 @@ describe("SessionEngine capture mode", () => {
             ownerUserId: "user-fixture",
             base: null,
           });
-          // The session adopted the standby's id; the worktree's lease is the standby's epoch.
+          // The session adopted the standby's id; the worktree's lease is a FRESH epoch (capture
+          // 0 went in under Mend's epoch 1) held by the executor, at the launch claim's TTL.
           expect(session.id).toBe(standby.id);
           const lease = memory.leases.get(session.worktreeId);
           expect(lease?.executorId).toBe(session.id);
-          expect(lease?.epoch).toBe(epoch);
-          expect((lease?.expiresAt ?? 0) > memory.clock.now()).toBe(true);
+          expect(lease?.epoch).toBe(2);
+          expect((lease?.expiresAt ?? 0) - memory.clock.now()).toBeGreaterThan(60_000);
           expect(memory.chains.get(session.worktreeId)?.headN).toBe(0);
+          const cap0 = memory.chains.get(session.worktreeId)?.headCapture ?? null;
+          // No replan yet: the claim only takes the lease; the launch re-plans.
+          expect(replans).toEqual([]);
 
+          executor = session.id;
           yield* engine.launch(session.id, ["codex"]);
-          // The standby's workspace was adopted, not created again.
+          // The standby's workspace was adopted, not created again, and re-planned exactly once:
+          // the channel answered the claimed worktree, the claim's epoch and the head (capture 0).
           expect(spawned.length).toBeGreaterThan(0);
           expect(world.sessions.get(session.id)?.sealantWorkspaceId).toBe("workspace-1");
+          expect(replans).toEqual([{ workspaceId: "workspace-1", executorId: session.id }]);
+          expect(answered).toEqual([{ worktreeId: session.worktreeId, epoch: 2, headN: 0 }]);
+          const epoch = 2;
 
-          // The executor keeps naming the placeholder: the heartbeat renews the real lease
-          // under the standby's epoch — the launch claim's boot-sized TTL comes back to the
-          // 30 s cadence.
+          // The executor names its worktree from now on; the placeholder is refused.
           const api = servedSocketApis.get(session.id)?.capture;
           if (api === undefined) throw new Error("the session serves no capture api");
-          const beat = yield* api.heartbeat({ worktree_id: alias, epoch });
+          const beat = yield* api.heartbeat({ worktree_id: session.worktreeId, epoch });
           expect(beat).toEqual({ expires_in_secs: 30 });
-          const renewed = memory.leases.get(session.worktreeId);
-          expect(renewed?.epoch).toBe(epoch);
-          expect(renewed?.executorId).toBe(session.id);
-          const renewedIn = (renewed?.expiresAt ?? 0) - memory.clock.now();
+          const renewedIn =
+            (memory.leases.get(session.worktreeId)?.expiresAt ?? 0) - memory.clock.now();
           expect(renewedIn).toBeGreaterThan(25_000);
           expect(renewedIn).toBeLessThanOrEqual(30_000);
-          const cap0 = memory.chains.get(session.worktreeId)?.headCapture ?? null;
-          // …and its first register, parented on the standby plan, lands as capture 1.
+          const refused = yield* api.heartbeat({ worktree_id: alias, epoch }).pipe(Effect.flip);
+          expect(refused.reason).toBe("wrong-worktree");
+
+          // A checkpoint asks the lease holder to flush before it observes the head.
+          yield* engine.checkpointNow(session.id, "user-mark");
+          expect(flushed).toEqual(["flush:workspace-1"]);
+
+          // …and its first register parents on capture 0 — the head the replan handed it.
           const tree = path.join(tmp, "standby-ship");
           fs.mkdirSync(path.join(tree, "tree"), { recursive: true });
           fs.writeFileSync(path.join(tree, "tree", "edit.txt"), "from the standby\n");
-          const snapshot = snapshotDirectory(tree, captureKeys(alias, epoch), { chunkSize: 64 });
+          const keys = captureKeys(session.worktreeId, epoch);
+          const snapshot = snapshotDirectory(tree, keys, { chunkSize: 64 });
           const built = buildManifest({
-            worktreeId: alias,
+            worktreeId: session.worktreeId,
             n: 1,
-            parent: planId,
+            parent: cap0,
             epoch,
             seq: 5,
             kind: "turn",
             git: {
-              packs: plan.head?.manifest.sections.git.packs ?? [],
+              packs: [],
               refs: {},
               head: "refs/heads/main",
               fsck: "verified",
@@ -5161,43 +5281,68 @@ describe("SessionEngine capture mode", () => {
             Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
           );
           const registered = yield* api.register({
-            worktree_id: alias,
+            worktree_id: session.worktreeId,
             epoch,
             n: 1,
-            parent: planId,
+            parent: cap0,
             capture_id: built.id,
             manifest_key: built.key,
             manifest: built.manifest,
           });
           expect(registered.head_n).toBe(1);
-          const chain = memory.chains.get(session.worktreeId);
-          expect(chain?.headN).toBe(1);
-          expect(chain?.headCapture).toBe(built.id);
-          // The standby plan's id was mapped to the chain's capture 0 as the parent.
           expect(memory.captures.get(built.id)?.parent).toBe(cap0);
           expect(memory.captures.get(built.id)?.worktreeId).toBe(session.worktreeId);
 
-          // A fresh standby warms behind the claim.
+          // A fresh standby warms behind the claim…
           yield* until(
             () => pool.entries.some((entry) => entry.status === "ready" && entry.id !== standby.id),
             "the replacement standby",
           );
           const replacement = pool.entries.find((entry) => entry.status === "ready");
-          expect(replacement?.id).not.toBe(standby.id);
+          if (replacement === undefined) throw new Error("no replacement standby");
+          expect(replacement.id).not.toBe(standby.id);
           expect(created.filter((request) => request.source?.kind === "capture")).toHaveLength(2);
 
-          // A worktree that already holds captures is not what the standby materialised: cold.
+          // …and a second worktree claims it the same way: its own lease, at its own fresh epoch.
+          const second = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: "second",
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          expect(second.id).toBe(replacement.id);
+          expect(second.worktreeId).not.toBe(session.worktreeId);
+          expect(memory.leases.get(second.worktreeId)?.executorId).toBe(second.id);
+          expect(memory.leases.get(second.worktreeId)?.epoch).toBe(2);
+
+          // A join into a worktree whose executor holds the lease runs inside the holder: cold,
+          // and no standby is spent on it.
           const joined = yield* engine.provisionSessionIn(session.worktreeId, {
             harness: "claude",
             label: null,
             ownerUserId: "user-fixture",
           });
-          expect(joined.id).not.toBe(replacement?.id);
-          expect(pool.entries.find((entry) => entry.id === replacement?.id)?.status).toBe("ready");
+          expect(pool.entries.find((entry) => entry.id === joined.id)).toBeUndefined();
+          expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
         }),
       {
         captured: memory,
-        sealantLayer: sealantLaunchLayer(created, undefined, undefined, spawned),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          spawned,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { flushed, replan },
+        ),
         hotWorkspacesLayer: pool.layer,
       },
     );

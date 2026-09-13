@@ -14,6 +14,8 @@ import type {
   RunOptions,
   TimelineEntry,
   Workspace,
+  WorkspaceCaptureReplanned,
+  WorkspaceCaptureStatus,
   WorkspaceExecOptions,
   WorkspaceExecResult,
   WorkspaceForward,
@@ -37,7 +39,7 @@ import {
   SealantApiClient,
   sealantApiClientLayer,
 } from "@sealant/sdk/effect";
-import { Clock, type Config, Effect, Layer, Option, Redacted, Schema, Scope, Stream } from "effect";
+import { Clock, type Config, Effect, Layer, Option, Redacted, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
 
 import { ConnectedAccount, type ConnectAccountInput } from "./accounts.ts";
@@ -79,33 +81,9 @@ export interface WorkspacePackageResolution {
  *   it here would be exactly the workaround PLATFORM-FEEDBACK.md forbids
  *   (see the 0.5.0 entry, "composition layer not exported").
  */
-/**
- * A CAPTURE-sourced workspace (sealantd ADR-0015, Mend ADR-0002): nothing is mounted and nothing
- * is cloned — the daemon fetches the worktree's head plan from the session channel at `endpoint`,
- * materialises it onto its own disk and claims the lease. The channel credential rides the
- * request top level as `captureToken`, sealed into the boot env file as `SEALANT_CAPTURE_TOKEN`.
- *
- * SEAM: the published `@sealant/sdk` (catalog 0.28.0) does not know this source yet; Core PR
- * sealant#231 (branch feat/capture-workspace-source) adds it to `workspaceSourceSchema` and
- * `CreateOptions`. Until that release lands, this is the one place Mend widens the create payload
- * structurally — see PLATFORM-FEEDBACK.md.
- */
-export interface WorkspaceCaptureSource {
-  readonly kind: "capture";
-  readonly endpoint: string;
-  readonly worktreeId: string;
-  /** `<os>-<arch>-<libc>` placement hint, recorded by the platform, never seen by the daemon. */
-  readonly platform?: string | undefined;
-}
-
-export type CaptureCreateOptions = Omit<CreateOptions, "source" | "mounts"> & {
-  readonly source: WorkspaceCaptureSource;
-  readonly captureToken: string;
-};
-
 export interface SealantClientShape {
   readonly createWorkspace: (
-    options: CreateOptions | CaptureCreateOptions,
+    options: CreateOptions,
   ) => Effect.Effect<Workspace, SealantPlatformError>;
   readonly getWorkspace: (id: string) => Effect.Effect<Workspace, SealantPlatformError>;
   /** Runs outlive workspaces — records are replayable long after close-out. */
@@ -157,6 +135,23 @@ export interface SealantClientShape {
   /** Reattach to a PTY session by id — works from any workspace handle. */
   /** Stop the workspace: remove its container, settle it "stopped". */
   readonly stopWorkspace: (workspace: Workspace) => Effect.Effect<void, SealantPlatformError>;
+  /**
+   * Capture-sourced workspaces (0.31.0, sealantd ADR-0015): a final small-class capture, then
+   * ship and register everything staged — bounded by the daemon's grace window. The report is
+   * what was observed; `pending === 0 && !fenced` is what a planned stop looks for.
+   */
+  readonly captureFlush: (
+    workspace: Workspace,
+  ) => Effect.Effect<WorkspaceCaptureStatus, SealantPlatformError>;
+  /**
+   * Capture-sourced workspaces (0.31.0, sealantd 0.15 `capture.replan`): the daemon asks the
+   * session channel for its plan again with no worktree named, delta-materialises the answer
+   * over its disk and captures under the answered worktree and epoch from then on. The claim
+   * hook for a standby executor; idempotent (`unchanged: true`).
+   */
+  readonly captureReplan: (
+    workspace: Workspace,
+  ) => Effect.Effect<WorkspaceCaptureReplanned, SealantPlatformError>;
   /** Re-arm the workspace TTL and return the platform's exact resulting expiry. */
   readonly expireWorkspace: (
     workspaceId: string,
@@ -293,29 +288,9 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
     const apiContext = yield* Layer.build(sealantApiClientLayer(internalConfig));
     const ownerUserId = internalConfig.hostLocal.ownerUserId;
 
-    const createWorkspace = Effect.fn("SealantClient.createWorkspace")(function* (
-      options: CreateOptions | CaptureCreateOptions,
-    ) {
-      if (!isCaptureCreate(options)) {
-        return yield* wrap(() => sealant.workspaces.create(options));
-      }
-      // SEAM (PLATFORM-FEEDBACK.md, SDK 0.28.0): the published facade lowers an unknown source
-      // kind to `{kind: "mount", hostPath: undefined}` and drops `captureToken`, and the 0.28.0
-      // wire contract's request struct strips `captureToken` on encode — so a capture create can
-      // go through neither `workspaces.create` nor `createWorkspaceOp`. Lower the request here —
-      // the same spec the SDK emits (Core packages/sdk/src/internal/blueprint.ts on
-      // feat/capture-workspace-source), the capture source in the spec, the token at the request
-      // top level — POST it to the control plane directly, then re-fetch the facade handle. A
-      // re-fetched handle takes its harness from the workspace's own spec, which this payload
-      // names. Retire this the moment the published SDK carries the capture source.
-      const created = yield* postCaptureCreate(
-        env,
-        captureCreatePayload(options, ownerUserId, internalConfig.hostLocal.registryId),
-      );
-      const workspace = yield* wrap(() => sealant.workspaces.get(created.workspaceId));
-      if (options.wait === false) return workspace;
-      return yield* wrap(() => workspace.ready());
-    });
+    const createWorkspace = Effect.fn("SealantClient.createWorkspace")((options: CreateOptions) =>
+      wrap(() => sealant.workspaces.create(options)),
+    );
 
     const getWorkspace = Effect.fn("SealantClient.getWorkspace")((id: string) =>
       wrap(() => sealant.workspaces.get(id)),
@@ -359,6 +334,14 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
 
     const stopWorkspace = Effect.fn("SealantClient.stopWorkspace")((workspace: Workspace) =>
       wrap(() => workspace.stop()),
+    );
+
+    const captureFlush = Effect.fn("SealantClient.captureFlush")((workspace: Workspace) =>
+      wrap(() => workspace.capture.flush()),
+    );
+
+    const captureReplan = Effect.fn("SealantClient.captureReplan")((workspace: Workspace) =>
+      wrap(() => workspace.capture.replan()),
     );
 
     const expireWorkspace = Effect.fn("SealantClient.expireWorkspace")(
@@ -590,6 +573,8 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       openSession,
       forward,
       stopWorkspace,
+      captureFlush,
+      captureReplan,
       expireWorkspace,
       getSession,
       sessionOutput,
@@ -904,6 +889,8 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
       forward: (workspace, port, host, protocol) =>
         via((c) => c.forward(workspace, port, host, protocol)),
       stopWorkspace: (workspace) => via((c) => c.stopWorkspace(workspace)),
+      captureFlush: (workspace) => via((c) => c.captureFlush(workspace)),
+      captureReplan: (workspace) => via((c) => c.captureReplan(workspace)),
       expireWorkspace: (workspaceId, ttlSeconds) =>
         via((c) => c.expireWorkspace(workspaceId, ttlSeconds)),
       getSession: (workspace, sessionId) => via((c) => c.getSession(workspace, sessionId)),
@@ -1019,195 +1006,3 @@ const connectionStatusOf = (error: unknown) => {
 
 const wrap = <A>(run: () => Promise<A>): Effect.Effect<A, SealantPlatformError> =>
   Effect.tryPromise({ try: run, catch: toPlatformError });
-
-const isCaptureCreate = (
-  options: CreateOptions | CaptureCreateOptions,
-): options is CaptureCreateOptions => options.source?.kind === "capture";
-
-// ─── Capture create (the SDK 0.28.0 seam) ────────────────────────────────────
-
-const TTL_PATTERN = /^(\d+)\s*(ms|s|m|h|d)$/;
-
-/** `parseTtlSeconds` of the SDK, which is not exported: "45s", "90m", "2h", "1d". */
-const ttlSecondsOf = (ttl: string): number => {
-  const match = TTL_PATTERN.exec(ttl.trim());
-  const value = match === null ? Number.NaN : Number.parseInt(match[1] ?? "", 10);
-  if (match === null || !Number.isInteger(value) || value <= 0) {
-    throw new SealantError(`Invalid TTL duration "${ttl}".`, { code: "invalid_ttl" });
-  }
-  switch (match[2]) {
-    case "ms":
-      return Math.max(1, Math.ceil(value / 1000));
-    case "m":
-      return value * 60;
-    case "h":
-      return value * 3600;
-    case "d":
-      return value * 86400;
-    default:
-      return value;
-  }
-};
-
-const accountRefOf = (value: boolean | string | undefined) =>
-  value === undefined || value === false ? undefined : value === true ? "default" : value;
-
-/**
- * The create request for a capture-sourced workspace, lowered exactly as Core's SDK lowers it
- * (`packages/sdk/src/internal/blueprint.ts` on feat/capture-workspace-source): the daemon is on,
- * the runtime target is `auto`, the foreground is a keepalive, the token rides the top level.
- */
-const captureCreatePayload = (
-  options: CaptureCreateOptions,
-  ownerUserId: string,
-  registryId: string,
-) => {
-  const packages = (options.packages ?? []).map((id) => ({ id }));
-  const docker = options.services?.docker === true;
-  const tooling =
-    packages.length === 0 && !docker
-      ? undefined
-      : {
-          ...(packages.length === 0 ? {} : { packages }),
-          ...(docker ? { services: { docker: { enabled: true } } } : {}),
-        };
-  const archives = options.dotfiles?.archives ?? [];
-  const env = options.env ?? {};
-  const envFrom = options.envFrom ?? [];
-  const runtime = {
-    ...(archives.length === 0
-      ? {}
-      : {
-          dotfilesArchives: archives.map((archive) => ({
-            data: archive.data,
-            ...(archive.manager === undefined ? {} : { manager: archive.manager }),
-            ...(archive.target === undefined ? {} : { target: archive.target }),
-            ...(archive.bootstrap === undefined ? {} : { bootstrap: archive.bootstrap }),
-            ...(archive.bootstrapCommand === undefined
-              ? {}
-              : { bootstrapCommand: archive.bootstrapCommand }),
-          })),
-        }),
-    ...(Object.keys(env).length === 0 ? {} : { userEnv: env }),
-    ...(envFrom.length === 0 ? {} : { envFrom: envFrom.map(({ kind, name }) => ({ kind, name })) }),
-    ...(options.kubernetes?.serviceAccountName === undefined
-      ? {}
-      : { kubernetes: { serviceAccountName: options.kubernetes.serviceAccountName } }),
-  };
-  const claude = accountRefOf(options.credentials?.claude);
-  const codex = accountRefOf(options.credentials?.codex);
-  const github = accountRefOf(options.credentials?.github);
-  const credentials = {
-    ...(options.credentials?.profile === undefined
-      ? {}
-      : { profileId: options.credentials.profile }),
-    ...(claude === undefined ? {} : { claude }),
-    ...(codex === undefined ? {} : { codex }),
-    ...(github === undefined ? {} : { github }),
-  };
-  const secretEnv = options.secretEnv ?? {};
-  const spec = {
-    version: "1",
-    sources: {
-      workspace: {
-        kind: "capture",
-        endpoint: options.source.endpoint,
-        worktreeId: options.source.worktreeId,
-        ...(options.source.platform === undefined ? {} : { platform: options.source.platform }),
-      },
-    },
-    harness: { id: options.harness.id },
-    customization: {
-      enableSealantd: true,
-      ...(options.shell === undefined ? {} : { defaultShell: options.shell }),
-    },
-    ...(Object.keys(runtime).length === 0 ? {} : { runtime }),
-    target: {
-      os:
-        options.baseImage !== undefined
-          ? { family: "custom", mode: "require", baseImage: options.baseImage }
-          : { family: options.os ?? "fedora", mode: "prefer" },
-      runtime: { family: "auto", mode: "prefer" },
-    },
-    lifecycle: {
-      startup: { foreground: { kind: "command", run: "sleep infinity", shell: "bash" } },
-    },
-    ...(tooling === undefined ? {} : { tooling }),
-    ...(Object.keys(credentials).length === 0 ? {} : { credentials }),
-  };
-  return {
-    ownerUserId,
-    registryId,
-    repository: "capture",
-    tag: `sdk-${crypto.randomUUID().slice(0, 8)}`,
-    ...(options.name === undefined ? {} : { name: options.name }),
-    ...(options.ttl === undefined ? {} : { ttlSeconds: ttlSecondsOf(options.ttl) }),
-    spec,
-    ...(Object.keys(secretEnv).length === 0 ? {} : { secretEnv }),
-    captureToken: options.captureToken,
-  };
-};
-
-const CreatedWorkspace = Schema.Struct({
-  workspaceId: Schema.String,
-  name: Schema.String,
-  status: Schema.String,
-});
-
-/** `POST /v1/workspaces` as the SDK's own client sends it, with the service key when set. */
-const postCaptureCreate = (
-  env: SealantEnvShape,
-  payload: ReturnType<typeof captureCreatePayload>,
-): Effect.Effect<typeof CreatedWorkspace.Type, SealantPlatformError> =>
-  Effect.gen(function* () {
-    const response = yield* Effect.tryPromise({
-      try: () =>
-        fetch(`${env.baseUrl.replace(/\/+$/, "")}/v1/workspaces`, {
-          method: "POST",
-          headers: {
-            "content-type": "application/json",
-            ...Option.match(env.serviceKey, {
-              onNone: () => ({}),
-              onSome: (key) => ({ authorization: `Bearer ${Redacted.value(key)}` }),
-            }),
-          },
-          body: JSON.stringify(payload),
-        }),
-      catch: (cause) =>
-        new SealantPlatformError({
-          code: "transport",
-          status: null,
-          message: `Transport error (POST ${env.baseUrl}/v1/workspaces): ${String(cause)}`,
-          cause,
-        }),
-    });
-    const body: unknown = yield* Effect.tryPromise({
-      try: () => response.json(),
-      catch: (cause) =>
-        new SealantPlatformError({
-          code: "invalid_response",
-          status: response.status,
-          message: `Sealant answered ${response.status} without a JSON body`,
-          cause,
-        }),
-    });
-    if (!response.ok) {
-      const detail =
-        typeof body === "object" && body !== null && "message" in body
-          ? String(body.message)
-          : JSON.stringify(body);
-      const code =
-        typeof body === "object" && body !== null && "code" in body
-          ? String(body.code)
-          : "http_error";
-      return yield* new SealantPlatformError({
-        code,
-        status: response.status,
-        message: `Workspace create failed (${response.status}): ${detail}`,
-        cause: body,
-      });
-    }
-    return yield* Schema.decodeUnknownEffect(CreatedWorkspace)(body).pipe(
-      Effect.mapError(toPlatformError),
-    );
-  });
