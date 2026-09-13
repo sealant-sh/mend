@@ -197,6 +197,7 @@ const observationOf = (stamp: ReadStamp, state: "claimed" | "observed" = "observ
     captureId: stamp.captureId,
     seq: stamp.seq,
     partial: stamp.partial,
+    observedAt: stamp.observedAt,
     label: state === "claimed" ? `claimed at capture ${stamp.captureN ?? "?"}` : stampLabel(stamp),
   });
 
@@ -3031,6 +3032,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
                 seq: head.seq.toString(),
                 kind: head.kind,
                 partial: head.kind === "auto",
+                observedAt: head.createdAt.toISOString(),
               };
               return new ChangeDiff({
                 change,

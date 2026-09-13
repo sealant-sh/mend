@@ -47,6 +47,8 @@ export const ReadStamp = Schema.Struct({
   kind: Schema.NullOr(Schema.String),
   /** `auto` captures tear across files; the next capture corrects it. */
   partial: Schema.Boolean,
+  /** When the capture was registered (ISO 8601) — how far behind the executor the bytes are. */
+  observedAt: Schema.NullOr(Schema.String),
 });
 export type ReadStamp = typeof ReadStamp.Type;
 
@@ -57,6 +59,7 @@ export const WORKTREE_STAMP: ReadStamp = {
   seq: null,
   kind: null,
   partial: false,
+  observedAt: null,
 };
 
 export const stampOf = (row: CaptureRow): ReadStamp => ({
@@ -66,6 +69,7 @@ export const stampOf = (row: CaptureRow): ReadStamp => ({
   seq: row.seq.toString(),
   kind: row.kind,
   partial: row.kind === "auto",
+  observedAt: row.createdAt.toISOString(),
 });
 
 /** "observed at capture 12 · seq 4,180" — the terse mono fact DESIGN.md asks for. */

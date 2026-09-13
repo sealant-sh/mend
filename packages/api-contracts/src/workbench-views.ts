@@ -33,6 +33,8 @@ export class ObservationStamp extends Schema.Class<ObservationStamp>("Observatio
   captureId: Schema.NullOr(Schema.String),
   seq: Schema.NullOr(Schema.String),
   partial: Schema.Boolean,
+  /** When the capture was registered (ISO 8601); null for the deprecated worktree source. */
+  observedAt: Schema.NullOr(Schema.String),
   label: Schema.String,
 }) {}
 
