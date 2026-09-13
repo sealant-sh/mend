@@ -24,8 +24,10 @@ platform-side gaps decide how much of it runs today.
   setting `SEALANT_DOCKER_WORKSPACE_NETWORK=<name>` that adds `--network <name>` to every
   `docker run` when the docker service is off (and `docker network connect` beside the per-workspace
   network when it is on). The bundle already sets the variable ahead of the runtime that reads it.
-- **Core, `capture` workspace source without a worktree yet (standby executors).**
-  `workspaceCaptureSourceSchema.worktreeId` is `nonEmptyStringSchema`, and the SDK derives the
+- **Core, `capture` workspace source without a worktree yet (standby executors).** **Shipped in
+  0.31.0** (Core #233): `worktreeId` is optional on the capture source; a standby launches without
+  one and sealantd takes the worktree from the plan answer. Mend's standby alias remap is gone.
+  `workspaceCaptureSourceSchema.worktreeId` was `nonEmptyStringSchema`, and the SDK derived the
   workspace name from it. A hot-pool standby is an executor launched before any worktree exists: it
   materialises the project base and the shared dependency cache and is bound to a worktree at claim.
   Mend launches it with the placeholder `standby-<hot workspace id>` and serves that id as an alias
@@ -34,15 +36,17 @@ platform-side gaps decide how much of it runs today.
   sealantd taking the id from `plan.get`'s answer (its boot already accepts `plan.worktree_id` when
   the env is unset); then the placeholder goes.
 - **sealantd, `crates/sealant-capture/src/materialize.rs`: materialise a delta, and re-plan after
-  claim.** `write_dir` writes every file of every class root it is handed; nothing compares a chunk
-  list against what is already on disk, and `plan_get` is called once, at boot. A standby that has
-  the base materialised therefore cannot be pointed at a worktree whose head is past capture 0: Mend
-  restricts standby claims to fresh worktrees (chain at capture 0 from the same base) and sends
-  every other launch cold. **Suggested:** (1) skip a file whose size and chunk hashes already match
-  on disk (the chunk index the engine keeps for CDC is the same data); (2) a `capture.replan`
-  control command — or a heartbeat answer carrying `replan: true` — after which the daemon fetches
-  `plan.get` again and materialises the head over its disk. With both, a standby serves joins and
-  pickups hot.
+  claim.** **Shipped in sealantd 0.15 / SDK 0.31.0** as `workspace.capture.replan()` (and
+  `.flush()`): the hot pool claims through it — the claim takes the lease at a fresh epoch and the
+  launch re-plans the standby onto the worktree, delta-materialised. `write_dir` wrote every file of
+  every class root it is handed; nothing compared a chunk list against what is already on disk, and
+  `plan_get` is called once, at boot. A standby that has the base materialised therefore cannot be
+  pointed at a worktree whose head is past capture 0: Mend restricts standby claims to fresh
+  worktrees (chain at capture 0 from the same base) and sends every other launch cold.
+  **Suggested:** (1) skip a file whose size and chunk hashes already match on disk (the chunk index
+  the engine keeps for CDC is the same data); (2) a `capture.replan` control command — or a
+  heartbeat answer carrying `replan: true` — after which the daemon fetches `plan.get` again and
+  materialises the head over its disk. With both, a standby serves joins and pickups hot.
 - **sealantd, `plan.get` request: the executor's platform.** The bulk class carries
   `platform = <os>-<arch>-<libc>` (`engine.rs` `default_platform`), but the request that fetches the
   plan does not say which platform is asking, so Mend cannot leave a mismatched bulk section out of
@@ -89,12 +93,21 @@ uncommitted patches on a detached sealantd worktree for the proof — they are t
   Linux host firewall can drop bridge → host traffic — the endpoint and bucket URLs then need a
   relay. An `--add-host host.docker.internal:host-gateway` on the executor is the small ask; the
   firewall is the operator's.
-- **SDK 0.28.0 (in addition to the entry below):** the facade lowers an unknown source kind to
-  `{kind: "mount", hostPath: undefined}` and drops `captureToken`, and the 0.28.0 wire struct strips
-  `captureToken` on encode — so Mend posts the capture create directly to `POST /v1/workspaces`
-  (`client.ts` `postCaptureCreate`) until the SDK ships the source.
+- **SDK 0.28.0 (in addition to the entry below):** **Shipped in 0.31.0** — the seam is gone
+  (`client.ts` calls
+  `workspaces.create({ source: { kind: "capture", endpoint, worktreeId?, token } })`). The facade
+  lowered an unknown source kind to `{kind: "mount", hostPath: undefined}` and dropped
+  `captureToken`, and the 0.28.0 wire struct stripped `captureToken` on encode — so Mend posted the
+  capture create directly to `POST /v1/workspaces` (`postCaptureCreate`) until the SDK shipped the
+  source.
 
 ## 2026-09-12 · 0.28.0 · Capture workspace source: the SDK release Mend's capture mode waits on
+
+**Shipped in 0.31.0.** The capture source is on `CreateOptions.source` with the token inside it
+(`{ kind: "capture", endpoint, worktreeId?, token, platform? }`); `packages/sealant/src/client.ts`
+calls `workspaces.create` like any other source and the direct-POST seam is deleted. Of the runtime
+asks below, `workspace.capture.flush()` and `.replan()` shipped with sealantd 0.15; `capture.now`
+did not (Mend flushes before it derives a checkpoint instead).
 
 - **Needed:** Mend's capture mode (docs/adr/0002-session-capture-store.md) launches executors with
   `workspaces.create({ source: { kind: "capture", endpoint, worktreeId }, captureToken })` and no

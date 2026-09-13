@@ -106,7 +106,13 @@ import {
   BlobStore,
   DeploymentConfig,
 } from "@mend/store";
-import type { Harness, Run as SdkRun, Workspace, WorkspaceCredentialsOptions } from "@sealant/sdk";
+import type {
+  Harness,
+  Run as SdkRun,
+  Workspace,
+  WorkspaceCaptureSource,
+  WorkspaceCredentialsOptions,
+} from "@sealant/sdk";
 import { claudeCode, codex, opencode } from "@sealant/sdk";
 import { Duration, Effect, Layer, Option, Schedule, Schema, Stream } from "effect";
 import * as Context from "effect/Context";
@@ -890,11 +896,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       // ── Capture mode (ADR-0002) ─────────────────────────────────────────────────
       /**
-       * The create-request half of a capture launch: the `capture` source and the sealed token
-       * (the session channel token under its second name, `SEALANT_CAPTURE_TOKEN`). Null under
-       * the co-located store.
+       * The create-request half of a capture launch: the `capture` source carrying the session
+       * channel token (sealed by Core into the boot env file as `SEALANT_CAPTURE_TOKEN`). Null
+       * under the co-located store.
        */
-      const captureSourceFor = (sessionId: SessionId, secretEnv: Record<string, string>) =>
+      const captureSourceFor = (
+        sessionId: SessionId,
+        secretEnv: Record<string, string>,
+      ): Effect.Effect<{ readonly source: WorkspaceCaptureSource } | null> =>
         Effect.gen(function* () {
           if (capture === null) return null;
           const endpoint = deployment.sessionEndpoint;
@@ -904,8 +913,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           const session = yield* sessions.byId(sessionId).pipe(Effect.option);
           if (Option.isNone(session)) {
-            // A standby executor: no worktree yet, so the placeholder Core requires — the
-            // channel answers its plan and a claim binds it (`hot-pool.ts`).
+            // A standby executor: no worktree yet, so the placeholder the channel answers its
+            // plan under; a claim binds it (`hot-pool.ts`).
             const entry = yield* hotWorkspaces.byId(sessionId);
             if (entry === null) {
               return yield* Effect.die(
@@ -914,20 +923,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             return {
               source: {
-                kind: "capture" as const,
+                kind: "capture",
                 endpoint: endpoint.url,
                 worktreeId: standbyWorktreeAlias(sessionId),
+                token,
               },
-              captureToken: token,
             };
           }
           return {
             source: {
-              kind: "capture" as const,
+              kind: "capture",
               endpoint: endpoint.url,
               worktreeId: session.value.worktreeId,
+              token,
             },
-            captureToken: token,
           };
         });
 
@@ -3246,7 +3255,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // store, the socket dir, the harness home, references, declared folders or linked
         // projects; it materialises the worktree's head capture and ships captures back. The
         // session token is the capture credential (one token, two names) and rides the create
-        // request as `captureToken`, sealed by Core into the boot env file.
+        // request on the source, sealed by Core into the boot env file.
         const captureSource = yield* captureSourceFor(sessionId, channel.secretEnv);
         // The first three mounts are the store, the socket dir and the harness home — never
         // user-facing; anything past them is a reference, a declared folder or a linked project.

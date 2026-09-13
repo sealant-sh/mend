@@ -89,7 +89,7 @@ import {
   type SessionExtraMount,
   type SessionReferenceMount,
 } from "@mend/domain/workbench";
-import { type CaptureCreateOptions, SealantClient, SealantPlatformError } from "@mend/sealant";
+import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
   CaptureChannelLive,
   CaptureRuntimeLive,
@@ -130,6 +130,8 @@ import type {
   Run,
   SessionOptions,
   Workspace,
+  WorkspaceCaptureReplanned,
+  WorkspaceCaptureStatus,
 } from "@sealant/sdk";
 import { Duration, Effect, Fiber, Layer, Schedule, Stream, type Scope } from "effect";
 
@@ -151,6 +153,8 @@ const sealantDeadLayer = Layer.succeed(SealantClient, {
   openSession: () => Effect.die("not in test"),
   forward: () => Effect.die("not in test"),
   stopWorkspace: () => Effect.die("not in test"),
+  captureFlush: () => Effect.die("not in test"),
+  captureReplan: () => Effect.die("not in test"),
   expireWorkspace: () => Effect.die("not in test"),
   getSession: () => Effect.die("not in test"),
   sessionOutput: () => Effect.die("not in test"),
@@ -219,7 +223,7 @@ const fakeExecRun: Run = {
 };
 
 const sealantLaunchLayer = (
-  created: Array<CreateOptions | CaptureCreateOptions>,
+  created: Array<CreateOptions>,
   rejectCredentials: (credentials: CreateOptions["credentials"]) => boolean = () => false,
   stopped?: string[],
   spawned?: ReadonlyArray<string>[],
@@ -233,12 +237,23 @@ const sealantLaunchLayer = (
   ptyStates?: Map<string, InteractiveSessionStatus>,
   openedOptions?: SessionOptions[],
   createWorkspaceOverride?: (
-    options: CreateOptions | CaptureCreateOptions,
+    options: CreateOptions,
   ) => Effect.Effect<Workspace, SealantPlatformError>,
   /** When provided, workspace execs succeed (exit 0, empty output) and land here. */
   execCalls?: ReadonlyArray<string>[],
   /** Every `bindWorkspace` subpath, so a test can assert capture mode binds nothing. */
   binds?: string[],
+  /**
+   * Capture mode (SDK 0.31.0): `flushed` collects the workspace ids Mend asked to flush before a
+   * planned stop or a checkpoint (the report is inert); `replan` stands in for sealantd's
+   * `capture.replan` when a claimed standby is launched.
+   */
+  captureOps?: {
+    readonly flushed?: string[];
+    readonly replan?: (
+      workspace: Workspace,
+    ) => Effect.Effect<WorkspaceCaptureReplanned, SealantPlatformError>;
+  },
 ) => {
   let nextPty = 0;
   const ptys = new Map<string, InteractiveSession>();
@@ -275,6 +290,14 @@ const sealantLaunchLayer = (
     },
     exec: async () => new Promise(() => undefined),
     bind: async () => [],
+    capture: {
+      flush: async () => {
+        throw new Error("not in test");
+      },
+      replan: async () => {
+        throw new Error("not in test");
+      },
+    },
     sessions: {
       open: async (_argv, options) => {
         if (options !== undefined) openedOptions?.push(options);
@@ -346,6 +369,25 @@ const sealantLaunchLayer = (
       Effect.sync(() => {
         stopped?.push(target.id);
       }),
+    captureFlush: (target) =>
+      Effect.sync(() => {
+        captureOps?.flushed?.push(target.id);
+        return {
+          epoch: 0,
+          worktreeId: "",
+          pending: 0,
+          stagedBytes: 0,
+          uploadedObjects: 0,
+          uploadedBytes: 0,
+          registered: 0,
+          fenced: false,
+          paused: false,
+        } satisfies WorkspaceCaptureStatus;
+      }),
+    captureReplan: (target) =>
+      captureOps?.replan === undefined
+        ? Effect.die("capture.replan not in this test world")
+        : captureOps.replan(target),
     expireWorkspace: renewWorkspace,
     getSession: (_workspace, id) => Effect.succeed(ptys.get(id) ?? initialPty),
     // Typed failure, not a defect: the settle-path harvest must degrade
@@ -4602,7 +4644,7 @@ const until = (condition: () => boolean, label: string) =>
 
 describe("SessionEngine capture mode", () => {
   it("provisions capture 0 and launches a capture-sourced workspace: no mounts, no bind, a launch-claimed lease", async () => {
-    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+    const created: Array<CreateOptions> = [];
     const binds: string[] = [];
     const memory = makeMemoryCaptureStore();
     await withEngine(
@@ -4645,12 +4687,14 @@ describe("SessionEngine capture mode", () => {
 
           expect(created).toHaveLength(1);
           const request = created[0];
+          // SDK 0.31.0: the capture source carries the session channel token itself.
           expect(request?.source).toEqual({
             kind: "capture",
             endpoint: "http://mend.test:3106",
             worktreeId: session.worktreeId,
+            token: expect.stringMatching(/.+/),
           });
-          expect(request !== undefined && "captureToken" in request).toBe(true);
+          expect(request !== undefined && "captureToken" in request).toBe(false);
           expect(request !== undefined && "mounts" in request).toBe(false);
           expect(binds).toEqual([]);
           const lease = memory.leases.get(session.worktreeId);
@@ -4678,7 +4722,7 @@ describe("SessionEngine capture mode", () => {
   });
 
   it("launch attaches a worktree that has no chain yet — made before captures — with capture 0 from its directory's current files", async () => {
-    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+    const created: Array<CreateOptions> = [];
     const memory = makeMemoryCaptureStore();
     await withEngine(
       (world, tmp) =>
@@ -4741,7 +4785,7 @@ describe("SessionEngine capture mode", () => {
     "a second session in a leased worktree joins the holder's executor; an unreachable holder is refused with worktree_leased",
     { timeout: 20_000 },
     async () => {
-      const created: Array<CreateOptions | CaptureCreateOptions> = [];
+      const created: Array<CreateOptions> = [];
       const spawned: ReadonlyArray<string>[] = [];
       const memory = makeMemoryCaptureStore();
       let holderDead = false;
@@ -4808,7 +4852,7 @@ describe("SessionEngine capture mode", () => {
   );
 
   it("resume is lease-aware: a live lease attaches; an expired lease with a dead executor is a pickup that harvests from the head capture", async () => {
-    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+    const created: Array<CreateOptions> = [];
     const spawned: ReadonlyArray<string>[] = [];
     const memory = makeMemoryCaptureStore();
     let executorDead = false;
@@ -4880,7 +4924,7 @@ describe("SessionEngine capture mode", () => {
   });
 
   it("the reaper settles a session whose executor died: lease expired, platform silent — 'executor lost'", async () => {
-    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+    const created: Array<CreateOptions> = [];
     const memory = makeMemoryCaptureStore();
     let executorDead = false;
     await withEngine(
@@ -5029,7 +5073,7 @@ describe("SessionEngine capture mode", () => {
   };
 
   it("warms a standby executor at the placeholder worktree id; its plan is the project base under the standby's epoch, and nothing is leased", async () => {
-    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+    const created: Array<CreateOptions> = [];
     const memory = makeMemoryCaptureStore();
     const pool = memoryHotPool();
     await withEngine(
@@ -5048,6 +5092,7 @@ describe("SessionEngine capture mode", () => {
             kind: "capture",
             endpoint: "http://mend.test:3106",
             worktreeId: alias,
+            token: expect.stringMatching(/.+/),
           });
           // The base the standby materialises is fixed on its row.
           expect(entry.baseSha).toBe(project.adoptedSha);
@@ -5081,7 +5126,7 @@ describe("SessionEngine capture mode", () => {
   });
 
   it("a fresh worktree claims the standby: the session adopts its id, the lease is taken at the standby's epoch, the alias serves heartbeat and register, a fresh standby warms, and a worktree with captures goes cold", async () => {
-    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+    const created: Array<CreateOptions> = [];
     const spawned: ReadonlyArray<string>[] = [];
     const memory = makeMemoryCaptureStore();
     const pool = memoryHotPool();
