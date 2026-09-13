@@ -24,6 +24,34 @@ afterEach(() => {
 
 const fixtureAsset = (file: string): string =>
   fs.readFileSync(new URL(`../test-fixtures/docker/${file}`, import.meta.url), "utf8");
+/** What a daemon-less fake answers: the bundle's three images, and the Garage init after `up`. */
+const fakeDocker = (args: ReadonlyArray<string>): string => {
+  if (args[0] === "context") return "unix:///var/run/docker.sock";
+  if (args[2] === "info") return "Docker Engine - Community";
+  if (args.includes("image")) return "0.23.0";
+  if (!args.includes("compose")) return "1.45 1.47";
+  if (args.includes("config"))
+    return "ghcr.io/sealant-sh/mend:0.23.0\npostgres:17-alpine\ndxflrs/garage:v2.4.1\n";
+  if (args.includes("exec") && args.includes("garage")) {
+    const sub = args.slice(args.indexOf("/etc/garage.toml") + 1);
+    if (sub[0] === "status") return "==== HEALTHY NODES ====\n0123456789abcdef  garage\n";
+    if (sub[0] === "bucket" && sub[1] === "info") {
+      const envFile = args[args.indexOf("--env-file") + 1];
+      const keyId =
+        envFile === undefined
+          ? ""
+          : (fs
+              .readFileSync(envFile, "utf8")
+              .split("\n")
+              .find((line) => line.startsWith("MEND_GARAGE_KEY_ID="))
+              ?.slice("MEND_GARAGE_KEY_ID=".length) ?? "");
+      return `==== BUCKET INFORMATION ====\nRWO ${keyId} mend\n`;
+    }
+    return "";
+  }
+  return "2.35.0";
+};
+
 const setupRuntime = (configDir: string): ServerSetupRuntime => {
   const daemon = new DockerProtocol();
   return {
@@ -34,22 +62,7 @@ const setupRuntime = (configDir: string): ServerSetupRuntime => {
     writeLine: () => undefined,
     sleep: async () => undefined,
     run: async (command, args, options) =>
-      daemon.run(command, args, options) ?? {
-        status: 0,
-        stderr: "",
-        stdout:
-          args[0] === "context"
-            ? "unix:///var/run/docker.sock"
-            : args.includes("info")
-              ? "Docker Engine - Community"
-              : args.includes("image")
-                ? "0.23.0"
-                : args.includes("compose")
-                  ? args.includes("config")
-                    ? "ghcr.io/sealant-sh/mend:0.23.0\npostgres:17-alpine\n"
-                    : "2.35.0"
-                  : "1.45 1.47",
-      },
+      daemon.run(command, args, options) ?? { status: 0, stderr: "", stdout: fakeDocker(args) },
     fetchText: async (url) =>
       url.endsWith("/api/health")
         ? { status: 200, body: '{"status":"ok","version":"0.23.0"}' }

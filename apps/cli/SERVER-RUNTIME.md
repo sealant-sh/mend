@@ -207,7 +207,8 @@ Upgrade proceeds under the installation lock:
 1. Validate target assets and the complete proposed config/env pair. Inspect the canonical image and
    require its `org.opencontainers.image.version` label to equal the exact target. Online upgrades
    pull only missing images; offline upgrades never pull or contact GitHub. Verify both Compose
-   generations resolve to only the canonical Mend pin and official `postgres:17-alpine`.
+   generations resolve to only the canonical Mend pin, official `postgres:17-alpine` and, for a
+   bundle that carries the capture store's bucket, `dxflrs/garage:v2.4.1`.
 2. Fsync a prepared target generation, leaving `active` unchanged. Record the old and target paths
    in a private `backups/upgrade-UUID/recovery.json` before stopping anything.
 3. Warn about interruption, stop Mend's app writers, and ensure official Postgres is running. Run

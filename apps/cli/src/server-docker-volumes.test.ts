@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   claimServerDockerVolumes,
   MEND_DOCKER_NAMESPACE,
+  MEND_DOCKER_NAMESPACE_WITH_GARAGE,
   SERVER_VOLUME_OWNER_LABEL,
   verifyServerDockerVolumes,
 } from "./server-docker-volumes.ts";
@@ -107,6 +108,36 @@ describe("daemon data ownership", () => {
     expect((await verifyServerDockerVolumes(daemon, input))._tag).toBe("ok");
     expect(daemon.mutations()).toHaveLength(mutations);
     expect(JSON.stringify(daemon.commands)).not.toContain("first-secret");
+  });
+
+  it("claims the Garage volume beside the anchor for a bundle that carries it, and a generation without it verifies without it", async () => {
+    const daemon = new DockerDaemon();
+    const withGarage = { ...input, namespace: MEND_DOCKER_NAMESPACE_WITH_GARAGE };
+    // An install from before the capture store: store + control only.
+    expect((await claimServerDockerVolumes(daemon, input))._tag).toBe("ok");
+    expect([...daemon.volumes.keys()]).toEqual(["mend-store", "mend-control"]);
+    // Its lifecycle commands verify the two; the Garage volume is not asked for.
+    expect((await verifyServerDockerVolumes(daemon, input))._tag).toBe("ok");
+    expect(await verifyServerDockerVolumes(daemon, withGarage)).toMatchObject({
+      _tag: "error",
+      error: { reason: "missing", operation: "garage" },
+    });
+    // The upgrade that brings Garage claims its volume under the same identity, idempotently.
+    expect(await claimServerDockerVolumes(daemon, withGarage)).toEqual({
+      _tag: "ok",
+      value: { owner, namespace: MEND_DOCKER_NAMESPACE_WITH_GARAGE },
+    });
+    expect(daemon.volumes.get("mend-garage")).toEqual({ [SERVER_VOLUME_OWNER_LABEL]: owner });
+    const mutations = daemon.mutations().length;
+    expect((await claimServerDockerVolumes(daemon, withGarage))._tag).toBe("ok");
+    expect((await verifyServerDockerVolumes(daemon, withGarage))._tag).toBe("ok");
+    expect(daemon.mutations()).toHaveLength(mutations);
+    // A Garage volume somebody else labelled is a conflict, never adopted.
+    daemon.volumes.set("mend-garage", { [SERVER_VOLUME_OWNER_LABEL]: "different-owner" });
+    expect(await verifyServerDockerVolumes(daemon, withGarage)).toMatchObject({
+      _tag: "error",
+      error: { reason: "conflict" },
+    });
   });
 
   it("coexists with mend-dev without modifying its containers, networks or volumes", async () => {

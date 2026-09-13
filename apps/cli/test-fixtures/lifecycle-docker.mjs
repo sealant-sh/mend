@@ -18,6 +18,16 @@ const config =
   composeIndex < 0
     ? null
     : JSON.parse(fs.readFileSync(path.join(directory, "server.json"), "utf8"));
+// A generation whose bundle carries the capture store's bucket runs Garage beside Postgres.
+const withGarage = config !== null && config.bucket === "garage";
+const envOf = () => {
+  const values = new Map();
+  for (const line of fs.readFileSync(path.join(directory, "server.env"), "utf8").split("\n")) {
+    const separator = line.indexOf("=");
+    if (separator > 0) values.set(line.slice(0, separator), line.slice(separator + 1));
+  }
+  return values;
+};
 fs.appendFileSync(
   path.join(root, "calls.jsonl"),
   `${JSON.stringify({ args, command, locked: fs.existsSync(path.join(root, "config/server.lock/owner.json")), directory: config === null ? null : directory, active: fs.existsSync(path.join(root, "config/active")) ? fs.readlinkSync(path.join(root, "config/active")) : null, appRunning: state.appRunning, postgresRunning: state.postgresRunning, poisoned: Object.keys(process.env).some((key) => key.startsWith("COMPOSE_") || key === "MEND_VERSION" || key === "DOCKER_HOST") })}\n`,
@@ -73,11 +83,12 @@ if (protocol !== undefined) {
 
 if (args[0] === "context") out("unix:///var/run/docker.sock");
 else if (args.includes("{{.Client.APIVersion}} {{.Server.APIVersion}}")) out("1.47 1.47");
-else if (args.includes("info")) out("Docker Engine - Community");
+else if (args[2] === "info") out("Docker Engine - Community");
 else if (args.includes("compose") && args.includes("version")) out("2.35.0");
 else if (args.includes("image")) {
   const image = args[args.indexOf("inspect") + 1];
   if (image === "postgres:17-alpine") out("sha256:postgres");
+  else if (image === "dxflrs/garage:v2.4.1") out("sha256:garage");
   else {
     const version = image.split(":").at(-1);
     if (!state.images[version]) fail();
@@ -90,17 +101,23 @@ else if (args.includes("image")) {
   save();
 } else if (command[0] === "config") {
   if (state.fail === "compose-config") fail();
-  out(`ghcr.io/sealant-sh/mend:${config.serverVersion}\npostgres:17-alpine`);
+  out(
+    `ghcr.io/sealant-sh/mend:${config.serverVersion}\npostgres:17-alpine${withGarage ? "\ndxflrs/garage:v2.4.1" : ""}`,
+  );
 } else if (command[0] === "ps") {
   if (command.includes("--services"))
     out(
-      [state.appRunning ? "mend" : "", state.postgresRunning ? "postgres" : ""]
+      [
+        state.appRunning ? "mend" : "",
+        state.postgresRunning ? "postgres" : "",
+        withGarage && state.postgresRunning ? "garage" : "",
+      ]
         .filter(Boolean)
         .join("\n"),
     );
   else
     out(
-      `mend ${state.appRunning ? "running" : "exited"}\npostgres ${state.postgresRunning ? "running" : "exited"}`,
+      `mend ${state.appRunning ? "running" : "exited"}\npostgres ${state.postgresRunning ? "running" : "exited"}${withGarage ? `\ngarage ${state.postgresRunning ? "running" : "exited"}` : ""}`,
     );
 } else if (command[0] === "logs") out("bounded fixture log");
 else if (command[0] === "down") {
@@ -128,6 +145,14 @@ else if (command[0] === "down") {
     if (state.fail === "old-start" && state.version === "0.23.0") fail();
   }
   save();
+} else if (command[0] === "exec" && command.includes("garage")) {
+  // The bucket init runs after `up`; `status` names the node, `bucket info` shows Mend's key.
+  if (!withGarage || !state.postgresRunning) fail();
+  const sub = command.slice(command.indexOf("/etc/garage.toml") + 1);
+  if (sub[0] === "status") out("==== HEALTHY NODES ====\n0123456789abcdef  garage  127.0.0.1:3901");
+  else if (sub[0] === "bucket" && sub[1] === "info")
+    out(`==== BUCKET INFORMATION ====\nRWO ${envOf().get("MEND_GARAGE_KEY_ID")} mend`);
+  else out("");
 } else if (command[0] === "exec") {
   if (state.appRunning || !state.postgresRunning || !command.includes("pg_dumpall")) fail();
   out(

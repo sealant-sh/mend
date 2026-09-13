@@ -650,7 +650,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "server stop",
     section: "this machine",
-    summary: "stop Mend and Postgres without deleting data",
+    summary: "stop Mend, Postgres and Garage without deleting data",
     synopsis: [""],
     description: [
       "Stops only the installation's Compose services. Connections are interrupted. Workspace containers and volumes remain, but active work may lose connectivity and need reconnection. No volume deletion or Docker prune is performed.",
@@ -663,7 +663,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "restart Mend using the same generation and pin",
     synopsis: ["[--offline]"],
     description: [
-      "Checks preloaded images before stopping Mend, then starts the saved generation and verifies exact-version health. Postgres stays running. Connections are interrupted; workspace containers and data remain, but active work may need reconnection.",
+      "Checks preloaded images before stopping Mend, then starts the saved generation and verifies exact-version health. Postgres and Garage stay running. Connections are interrupted; workspace containers and data remain, but active work may need reconnection.",
     ],
     options: [{ flag: "--offline", text: "use local release images and assets" }],
     see: ["server status", "server logs"],

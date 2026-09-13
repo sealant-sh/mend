@@ -59,11 +59,24 @@ if (operation === "oversized-generation") {
         await pause("compose");
         if (operation === "compose-failure")
           return { status: 1, stdout: "", stderr: "container failed" };
-      } else if (args.includes("info")) stdout = "Docker Engine - Community";
+      } else if (args[2] === "info") stdout = "Docker Engine - Community";
       else if (args.includes("image")) stdout = "0.23.0";
       else if (args.includes("compose") && args.includes("config"))
-        stdout = "ghcr.io/sealant-sh/mend:0.23.0\npostgres:17-alpine\n";
-      else if (args.includes("compose")) stdout = "2.35.0";
+        stdout = "ghcr.io/sealant-sh/mend:0.23.0\npostgres:17-alpine\ndxflrs/garage:v2.4.1\n";
+      else if (args.includes("compose") && args.includes("exec") && args.includes("garage")) {
+        // The bucket init after `up`: the node for `status`, Mend's key for `bucket info`.
+        const sub = args.slice(args.indexOf("/etc/garage.toml") + 1);
+        if (sub[0] === "status") stdout = "==== HEALTHY NODES ====\n0123456789abcdef  garage\n";
+        else if (sub[0] === "bucket" && sub[1] === "info") {
+          const envFile = args[args.indexOf("--env-file") + 1];
+          const keyId = fs
+            .readFileSync(envFile, "utf8")
+            .split("\n")
+            .find((line) => line.startsWith("MEND_GARAGE_KEY_ID="))
+            ?.slice("MEND_GARAGE_KEY_ID=".length);
+          stdout = `==== BUCKET INFORMATION ====\nRWO ${keyId} mend\n`;
+        } else stdout = "";
+      } else if (args.includes("compose")) stdout = "2.35.0";
       else stdout = "1.45 1.47";
       return { status: 0, stdout, stderr: "" };
     },

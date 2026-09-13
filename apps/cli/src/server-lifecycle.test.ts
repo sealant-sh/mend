@@ -793,7 +793,7 @@ describe("server uninstall", { timeout: 60_000 }, () => {
       .slice(before)
       .map((call) => (call.command.length > 0 ? call.command : call.args.slice(2)).join(" "));
     expect(commands).toContain("down --volumes --remove-orphans --timeout 30");
-    expect(commands).toContain("volume rm mend-store mend-control");
+    expect(commands).toContain("volume rm mend-store mend-control mend-garage");
     expect(commands).toContain("image rm ghcr.io/sealant-sh/mend:0.23.0");
     expect(f.state()).toMatchObject({ appRunning: false, postgresRunning: false });
     expect(f.state().images["0.23.0"]).toBeUndefined();

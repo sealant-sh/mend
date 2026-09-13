@@ -1,10 +1,16 @@
-import { randomBytes } from "node:crypto";
+import { createHmac, randomBytes } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { claimServerDockerVolumes, verifyServerDockerVolumes } from "./server-docker-volumes.ts";
+import {
+  claimServerDockerVolumes,
+  MEND_DOCKER_NAMESPACE,
+  MEND_DOCKER_NAMESPACE_WITH_GARAGE,
+  type ServerDockerNamespace,
+  verifyServerDockerVolumes,
+} from "./server-docker-volumes.ts";
 import {
   runServerProcess,
   serverComposeArgs,
@@ -109,7 +115,19 @@ export interface ServerConfig {
   readonly sshPort: number;
   /** Only on generations written under the v1 contract, which published a loopback registry. */
   readonly registryPort?: number;
+  /**
+   * The capture store's bucket, present when the generation's compose asset carries the Garage
+   * service (every release since the capture store). Derived from the validated asset, never
+   * from the CLI's own version: a generation pinned to an older release has no bucket, renders
+   * no Garage values and owns no Garage volume.
+   */
+  readonly bucket?: "garage";
 }
+
+/** The Garage image the bundle pins; `checkLocalImages` preloads it like Postgres's. */
+const GARAGE_IMAGE = "dxflrs/garage:v2.4.1";
+/** The bucket every install uses; `MEND_BLOB_STORE` in the compose names it. */
+const GARAGE_BUCKET = "mend";
 
 interface ServerSecrets {
   readonly postgresAdminPassword: string;
@@ -149,6 +167,13 @@ const requiredString = (fields: ReadonlyMap<string, unknown>, key: string): stri
   if (typeof value !== "string" || value.length === 0) {
     throw setupError(`Server config is corrupt: ${key} must be a non-empty string.`);
   }
+  return value;
+};
+
+const requiredBucket = (fields: ReadonlyMap<string, unknown>): "garage" => {
+  const value = fields.get("bucket");
+  if (value !== "garage")
+    throw setupError("Server config is corrupt: bucket must be garage when present.");
   return value;
 };
 
@@ -380,6 +405,7 @@ const parseServerConfig = (raw: string): ServerConfig => {
     ...(fields.has("registryPort")
       ? { registryPort: requiredInteger(fields, "registryPort") }
       : {}),
+    ...(fields.has("bucket") ? { bucket: requiredBucket(fields) } : {}),
   };
   if (
     config.schemaVersion !== CONFIG_SCHEMA_VERSION ||
@@ -636,13 +662,23 @@ const resolveLatestVersion = async (runtime: ServerSetupRuntime): Promise<string
   return version;
 };
 
-const validateComposeAsset = (body: string): void => {
+/** The service names a compose asset declares, sorted; the shape check and the bucket flag read it. */
+const composeServiceNames = (body: string): ReadonlyArray<string> => {
   const [, afterServices = ""] = body.split(/^services:\s*$/m);
   const [servicesBlock = ""] = afterServices.split(/^\S/m);
-  const serviceNames = [...servicesBlock.matchAll(/^ {2}([0-9A-Za-z_-]+):\s*$/gm)]
+  return [...servicesBlock.matchAll(/^ {2}([0-9A-Za-z_-]+):\s*$/gm)]
     .map((match) => match[1])
     .filter((name) => name !== undefined)
     .toSorted((left, right) => left.localeCompare(right));
+};
+
+/** Whether a validated compose asset carries the capture store's bucket. */
+const composeBucket = (body: string): "garage" | undefined =>
+  composeServiceNames(body).includes("garage") ? "garage" : undefined;
+
+const validateComposeAsset = (body: string): void => {
+  const serviceNames = composeServiceNames(body);
+  const withGarage = serviceNames.includes("garage");
   // This is the release template contract, not a general YAML parser. Accept only the two
   // explicit external declarations; reject duplicate sections, aliases and extra volume options.
   const volumeSections = body.split(/^volumes:[ \t]*$/m);
@@ -653,6 +689,7 @@ const validateComposeAsset = (body: string): void => {
   for (const [name, variable] of [
     ["mend-store", "MEND_STORE_VOLUME_NAME"],
     ["mend-control", "MEND_CONTROL_VOLUME_NAME"],
+    ...(withGarage ? [["mend-garage", "MEND_GARAGE_VOLUME_NAME"]] : []),
   ]) {
     const declarations = volumeDeclarations.filter((match) => match[1] === name);
     const properties = (declarations[0]?.[2] ?? "")
@@ -690,10 +727,26 @@ const validateComposeAsset = (body: string): void => {
     "mend-postgres:",
     "/var/lib/mend/store",
     "/run/sealant/sockets",
+    // The capture store's bucket (a release since the capture store); an older release's asset
+    // has none and is still a valid v2 bundle.
+    ...(withGarage
+      ? [
+          `image: ${GARAGE_IMAGE}`,
+          "  garage:",
+          "mend-garage:",
+          "MEND_GARAGE_RPC_SECRET",
+          "MEND_GARAGE_ADMIN_TOKEN",
+          "MEND_GARAGE_KEY_ID",
+          "MEND_GARAGE_KEY_SECRET",
+          "MEND_BLOB_STORE",
+          "MEND_SESSION_ENDPOINT_URL",
+        ]
+      : []),
   ];
   if (
     requiredFragments.some((fragment) => !body.includes(fragment)) ||
-    serviceNames.join(",") !== "mend,postgres"
+    (serviceNames.join(",") !== "mend,postgres" &&
+      serviceNames.join(",") !== "garage,mend,postgres")
   ) {
     throw setupError(`Downloaded ${COMPOSE_ASSET} does not implement ${ASSET_CONTRACT}.`);
   }
@@ -743,6 +796,39 @@ const renderIdentity = (secrets: ServerSecrets): string =>
     "",
   ].join("\n");
 
+/**
+ * The Garage values a generation's compose reads, derived from the identity at render time
+ * (setup-contract "derivedSecrets"): the identity file anchors Docker volume ownership byte for
+ * byte, so the bucket's arrival must not change it, and an upgrade across the capture store must
+ * reproduce the same values from the same identity. HMAC-SHA256 under distinct labels.
+ */
+const garageSecrets = (secrets: ServerSecrets) => {
+  const derive = (label: string): string =>
+    createHmac("sha256", Buffer.from(secrets.betterAuthSecret, "hex")).update(label).digest("hex");
+  return {
+    rpcSecret: derive("mend-garage-rpc-secret"),
+    adminToken: derive("mend-garage-admin-token"),
+    keyId: `GK${derive("mend-garage-key-id").slice(0, 24)}`,
+    keySecret: derive("mend-garage-key-secret"),
+  };
+};
+
+const renderGarage = (secrets: ServerSecrets, config: ServerConfig): ReadonlyArray<string> => {
+  if (config.bucket !== "garage") return [];
+  const garage = garageSecrets(secrets);
+  return [
+    `MEND_GARAGE_RPC_SECRET=${garage.rpcSecret}`,
+    `MEND_GARAGE_ADMIN_TOKEN=${garage.adminToken}`,
+    `MEND_GARAGE_KEY_ID=${garage.keyId}`,
+    `MEND_GARAGE_KEY_SECRET=${garage.keySecret}`,
+    "MEND_GARAGE_VOLUME_NAME=mend-garage",
+  ];
+};
+
+/** The volumes a generation owns: the Garage volume only where its bundle carries Garage. */
+const namespaceOf = (config: ServerConfig): ServerDockerNamespace =>
+  config.bucket === "garage" ? MEND_DOCKER_NAMESPACE_WITH_GARAGE : MEND_DOCKER_NAMESPACE;
+
 const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => {
   const sshHost = parseUrl(config.appUrl, "Server config appUrl").hostname.replace(/^\[|\]$/g, "");
   const composeBind = net.isIP(config.bind) === 6 ? `[${config.bind}]` : config.bind;
@@ -759,6 +845,7 @@ const renderSecrets = (secrets: ServerSecrets, config: ServerConfig): string => 
     `SEALANT_SSH_HOST=${sshHost}`,
     "MEND_STORE_VOLUME_NAME=mend-store",
     "MEND_CONTROL_VOLUME_NAME=mend-control",
+    ...renderGarage(secrets, config),
     `DOCKER_SOCKET_PATH=${config.dockerSocket}`,
     "",
   ].join("\n");
@@ -1005,6 +1092,17 @@ const checkLocalImages = async (
   );
   if (postgres.status !== 0)
     throw commandFailure("Preload postgres:17-alpine before continuing", postgres);
+  if (config.bucket === "garage") {
+    const garage = await inspectImage(
+      runtime,
+      config.dockerContext,
+      GARAGE_IMAGE,
+      "{{.Id}}",
+      policy,
+    );
+    if (garage.status !== 0)
+      throw commandFailure(`Preload ${GARAGE_IMAGE} before continuing`, garage);
+  }
 };
 
 const checkComposeImages = async (
@@ -1023,12 +1121,62 @@ const checkComposeImages = async (
   const expected = [
     `ghcr.io/sealant-sh/mend:${installation.config.serverVersion}`,
     "postgres:17-alpine",
+    ...(installation.config.bucket === "garage" ? [GARAGE_IMAGE] : []),
   ].toSorted();
   if (images.join("\n") !== expected.join("\n")) {
     throw setupError(
-      "Compose must use only the canonical pinned Mend image and official postgres:17-alpine.",
+      `Compose must use only the canonical pinned Mend image, official postgres:17-alpine${installation.config.bucket === "garage" ? ` and ${GARAGE_IMAGE}` : ""}.`,
     );
   }
+};
+
+/**
+ * Lay the bucket out once the containers report healthy: the single node's layout, bucket
+ * `mend`, the key the compose hands Mend as AWS credentials, and the grant. Every step but the
+ * last tolerates "already exists" (Garage answers 409 on a rerun), so setup, start and upgrade
+ * all run it; `bucket info` is the observation that it holds. The garage image ships no shell,
+ * so each step is one `docker compose exec` of the garage binary.
+ */
+const initGarage = async (
+  runtime: ServerSetupRuntime,
+  installation: ServerInstallation,
+  secrets: ServerSecrets,
+): Promise<void> => {
+  if (installation.config.bucket !== "garage") return;
+  const garage = garageSecrets(secrets);
+  const exec = (args: ReadonlyArray<string>) =>
+    runtime.run(
+      "docker",
+      serverComposeArgs(
+        { directory: installation.directory, dockerContext: installation.config.dockerContext },
+        ["exec", "-T", "garage", "/garage", "-c", "/etc/garage.toml", ...args],
+      ),
+      { timeoutMs: serverProcessDeadlines.ordinary },
+    );
+  const status = await exec(["status"]);
+  if (status.status !== 0 || status.error !== undefined)
+    throw commandFailure("Garage did not answer its status", status);
+  const node = status.stdout.match(/^([0-9a-f]{16})\s/m)?.[1];
+  if (node === undefined) throw setupError("Garage reported no node in `garage status`.");
+  // Tolerated: a layout already applied, a bucket or key that already exists.
+  await exec(["layout", "assign", "-z", "mend", "-c", "1GB", node]);
+  await exec(["layout", "apply", "--version", "1"]);
+  await exec(["bucket", "create", GARAGE_BUCKET]);
+  await exec(["key", "import", "--yes", "-n", GARAGE_BUCKET, garage.keyId, garage.keySecret]);
+  await exec([
+    "bucket",
+    "allow",
+    "--read",
+    "--write",
+    "--owner",
+    GARAGE_BUCKET,
+    "--key",
+    GARAGE_BUCKET,
+  ]);
+  const info = await exec(["bucket", "info", GARAGE_BUCKET]);
+  if (info.status !== 0 || info.error !== undefined || !info.stdout.includes(garage.keyId))
+    throw commandFailure(`Garage bucket ${GARAGE_BUCKET} is not readable by Mend's key`, info);
+  runtime.writeLine(`Capture store bucket ${GARAGE_BUCKET} is laid out in Garage`);
 };
 
 const startingNotice = (runtime: ServerSetupRuntime, version: string): void =>
@@ -1093,7 +1241,7 @@ const setupServer = async (
   runtime.writeLine(`Using Docker context "${selectedContext.name}" (${selectedContext.endpoint})`);
 
   const serverVersion = await resolveServerVersion(runtime, options, existing?.config ?? null);
-  const config: ServerConfig = {
+  const configWithoutBucket: ServerConfig = {
     schemaVersion: CONFIG_SCHEMA_VERSION,
     assetContract: ASSET_CONTRACT,
     serverVersion,
@@ -1106,17 +1254,24 @@ const setupServer = async (
     ...validateExposure(existing?.config ?? null, options),
   };
   const assets = await resolveAssets(runtime, serverVersion, existing, store, options);
+  const bucket = composeBucket(assets.compose);
+  const config: ServerConfig = {
+    ...configWithoutBucket,
+    ...(bucket === undefined ? {} : { bucket }),
+  };
   const secrets = savedSecrets ?? createSecrets(runtime);
   const generation = persistSetup(store, config, secrets, assets);
   await checkComposeImages(runtime, { directory: generation.directory, config });
   const ownership = await claimServerDockerVolumes(runtime, {
     dockerContext: config.dockerContext,
     identityBytes: Buffer.from(generation.files.identity),
+    namespace: namespaceOf(config),
   });
   if (ownership._tag === "error") throw setupError(ownership.error.message);
   await checkLocalImages(runtime, config, options.offline ? "local" : "pull-missing");
   storeValue(store.activate(generation));
   await startCompose(runtime, config, generation);
+  await initGarage(runtime, { directory: generation.directory, config }, secrets);
   await probeHealth(runtime, config.appUrl, config.serverVersion);
   runtime.writeLine(`Mend ${config.serverVersion} is reachable at ${config.appUrl}`);
   runtime.writeLine(
@@ -1202,6 +1357,7 @@ const interruptionNotice = (runtime: ServerSetupRuntime): void =>
 const startInstallation = async (
   runtime: ServerSetupRuntime,
   installation: ServerInstallation,
+  secrets: ServerSecrets,
 ): Promise<void> => {
   startingNotice(runtime, installation.config.serverVersion);
   await composeCommand(runtime, installation, [
@@ -1212,6 +1368,7 @@ const startInstallation = async (
     "never",
     "--no-build",
   ]);
+  await initGarage(runtime, installation, secrets);
   await probeHealth(runtime, installation.config.appUrl, installation.config.serverVersion);
   runtime.writeLine(
     `Mend ${installation.config.serverVersion} is reachable at ${installation.config.appUrl}`,
@@ -1258,12 +1415,19 @@ const upgradeServer = async (
   const assets = await resolveAssets(runtime, version, existing, store, options);
   // The target generation is always on the current contract: a v1 install loses its registry
   // port here (v2 bundles publish none) while its identity, and so its volume ownership, is
-  // carried over byte for byte.
-  const { registryPort: _legacyRegistryPort, ...carried } = existing.config;
+  // carried over byte for byte. The bucket follows the target's compose asset: an upgrade
+  // across the capture store gains Garage here and claims its volume below.
+  const {
+    registryPort: _legacyRegistryPort,
+    bucket: _previousBucket,
+    ...carried
+  } = existing.config;
+  const bucket = composeBucket(assets.compose);
   const config: ServerConfig = {
     ...carried,
     assetContract: ASSET_CONTRACT,
     serverVersion: version,
+    ...(bucket === undefined ? {} : { bucket }),
   };
   const secrets = parseSecrets(previous.files.identity);
   const files = {
@@ -1281,6 +1445,16 @@ const upgradeServer = async (
   const target = storeValue(store.prepare(files));
   const installation = { directory: target.directory, config };
   await checkComposeImages(runtime, installation);
+  // The Garage volume arrives with the bundle that carries it: claim it under the unchanged
+  // identity before anything starts. Claiming is idempotent for the volumes that already exist.
+  if (config.bucket === "garage" && existing.config.bucket !== "garage") {
+    const ownership = await claimServerDockerVolumes(runtime, {
+      dockerContext: config.dockerContext,
+      identityBytes: Buffer.from(previous.files.identity),
+      namespace: namespaceOf(config),
+    });
+    if (ownership._tag === "error") throw setupError(ownership.error.message);
+  }
   const running = await composeCommand(runtime, existing, [
     "ps",
     "--status",
@@ -1331,7 +1505,7 @@ const upgradeServer = async (
         "Could not reselect the previous generation. Inspect active before retrying any command.";
     else if (appWasRunning) {
       try {
-        await startInstallation(runtime, existing);
+        await startInstallation(runtime, existing, secrets);
         recovery = "Previous pin and app recovered.";
       } catch {
         recovery =
@@ -1346,7 +1520,7 @@ const upgradeServer = async (
   // Activation is the write-ahead boundary: after this point assume migrations may have run.
   // Never select the old generation or restore its database in response to any startup failure.
   try {
-    await startInstallation(runtime, installation);
+    await startInstallation(runtime, installation, secrets);
   } catch {
     throw setupError(
       `Mend ${version} startup, exact-version health or registry verification failed; migrations may have begun. The target pin remains active. Do NOT downgrade or restore the database automatically. Run mend server logs --tail 100 and mend server status; fix the target, then mend server start --offline. Previous generation: ${previous.directory}. Target generation: ${target.directory}. Database backup and recovery record: ${backup.directory}.`,
@@ -1415,8 +1589,10 @@ const manageServer = async (
   const ownership = await verifyServerDockerVolumes(runtime, {
     dockerContext: installation.config.dockerContext,
     identityBytes: Buffer.from(identity),
+    namespace: namespaceOf(installation.config),
   });
   if (ownership._tag === "error") throw setupError(ownership.error.message);
+  const secrets = parseSecrets(identity);
   if (command === "upgrade") return upgradeServer(args, runtime, store, installation);
   if (command === "logs") {
     let tail = 100;
@@ -1458,7 +1634,7 @@ const manageServer = async (
     interruptionNotice(runtime);
     await composeCommand(runtime, installation, ["stop", "--timeout", "30"]);
     runtime.writeLine(
-      "Mend and Postgres stopped. Volumes, configuration and workspace containers are retained.",
+      `Mend, Postgres${installation.config.bucket === "garage" ? " and Garage" : ""} stopped. Volumes, configuration and workspace containers are retained.`,
     );
     return;
   }
@@ -1467,7 +1643,7 @@ const manageServer = async (
     interruptionNotice(runtime);
     await composeCommand(runtime, installation, ["stop", "--timeout", "30", "mend"]);
   }
-  await startInstallation(runtime, installation);
+  await startInstallation(runtime, installation, secrets);
 };
 
 /** Capture host configuration once; all child commands use the controlled server environment. */
