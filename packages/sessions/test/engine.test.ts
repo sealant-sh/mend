@@ -9,6 +9,7 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   AgentConversationRepo,
   CaptureStoreRepo,
+  CheckpointOrdinalTakenError,
   CheckpointsRepo,
   HotWorkspacesRepo,
   ProjectNotFoundError,
@@ -119,6 +120,7 @@ import {
   Store,
   StoreConfig,
   DeploymentConfigColocated,
+  decodeManifest,
   harnessHomePathOf,
   processStatePathOf,
 } from "@mend/store";
@@ -251,6 +253,10 @@ const sealantLaunchLayer = (
    */
   captureOps?: {
     readonly flushed?: string[];
+    /** Stands in for the executor's flush itself — what it ships and registers before answering. */
+    readonly flush?: (
+      workspace: Workspace,
+    ) => Effect.Effect<WorkspaceCaptureStatus, SealantPlatformError>;
     readonly replan?: (
       workspace: Workspace,
     ) => Effect.Effect<WorkspaceCaptureReplanned, SealantPlatformError>;
@@ -371,8 +377,9 @@ const sealantLaunchLayer = (
         stopped?.push(target.id);
       }),
     captureFlush: (target) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         captureOps?.flushed?.push(`flush:${target.id}`);
+        if (captureOps?.flush !== undefined) return yield* captureOps.flush(target);
         return {
           epoch: 0,
           worktreeId: "",
@@ -629,6 +636,10 @@ interface World {
   readonly serviceObservations: Map<string, ServiceObservation>;
   readonly changes: Map<string, Change>;
   readonly checkpoints: Array<Checkpoint>;
+  /** What `CheckpointsRepo.create` was given as the capture each row was observed from. */
+  readonly checkpointCaptureIds: Map<string, string | null>;
+  /** Inserts refused by the unique `(worktree_id, ordinal)` index — the fake counts them. */
+  readonly checkpointConflicts: { count: number };
   /** Keyed by worktree id. */
   readonly worktrees: Map<string, Worktree>;
 }
@@ -643,6 +654,8 @@ const makeWorld = (): World => ({
   serviceObservations: new Map(),
   changes: new Map(),
   checkpoints: [],
+  checkpointCaptureIds: new Map(),
+  checkpointConflicts: { count: 0 },
   worktrees: new Map(),
 });
 
@@ -1454,8 +1467,23 @@ const sessionRunsLayer = (world: World) => {
 
 const checkpointsLayer = (world: World) =>
   Layer.succeed(CheckpointsRepo, {
+    // The unique `(worktree_id, ordinal)` index, as Postgres enforces it: a taken ordinal is
+    // the typed conflict carrying the row that got there first, never a second row.
     create: (input: NewCheckpoint) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
+        const existing = world.checkpoints.find(
+          (c) => c.worktreeId === input.worktreeId && c.ordinal === input.ordinal,
+        );
+        if (existing !== undefined) {
+          world.checkpointConflicts.count += 1;
+          return Effect.fail(
+            new CheckpointOrdinalTakenError({
+              worktreeId: input.worktreeId,
+              ordinal: input.ordinal,
+              existing,
+            }),
+          );
+        }
         const checkpoint = new Checkpoint({
           id: CheckpointId.make(crypto.randomUUID()),
           worktreeId: input.worktreeId,
@@ -1469,10 +1497,15 @@ const checkpointsLayer = (world: World) =>
           createdAt: now(),
         });
         world.checkpoints.push(checkpoint);
-        return checkpoint;
+        world.checkpointCaptureIds.set(checkpoint.id, input.captureId ?? null);
+        return Effect.succeed(checkpoint);
       }),
     byId: (id) =>
       Effect.succeed(world.checkpoints.find((checkpoint) => checkpoint.id === id) ?? null),
+    byOrdinal: (worktreeId, ordinal) =>
+      Effect.succeed(
+        world.checkpoints.find((c) => c.worktreeId === worktreeId && c.ordinal === ordinal) ?? null,
+      ),
     listForWorktree: (worktreeId) =>
       Effect.succeed(world.checkpoints.filter((c) => c.worktreeId === worktreeId)),
     latestForWorktree: (worktreeId) =>
@@ -5347,4 +5380,156 @@ describe("SessionEngine capture mode", () => {
       },
     );
   });
+  it(
+    "user marks never collide on the worktree's checkpoint ordinal: the executor's checkpoint capture is taken when it carries the ordinal, a stale one is observed and not taken, and concurrent marks allocate distinct ordinals through one writer",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const flushed: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      /** What the executor ships inside its next flush: nothing, or a checkpoint capture. */
+      let onFlush: Effect.Effect<void> = Effect.void;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: null,
+              ownerUserId: null,
+              base: null,
+            });
+            yield* engine.launch(session.id, ["codex"]);
+            const worktreeId = session.worktreeId;
+            const epoch = memory.leases.get(worktreeId)?.epoch ?? 0;
+            expect(memory.leases.get(worktreeId)?.executorId).toBe(session.id);
+            const api = servedSocketApis.get(session.id)?.capture;
+            if (api === undefined) throw new Error("the session serves no capture api");
+            const chain = () => world.checkpoints.filter((c) => c.worktreeId === worktreeId);
+            const headOf = () => memory.chains.get(worktreeId)?.headCapture ?? null;
+            const cap0 = headOf();
+            if (cap0 === null) throw new Error("no capture 0");
+            // The executor's captures carry capture 0's git section: the base pack and the
+            // worktree tree the runner derives from.
+            const cap0Key = memory.captures.get(cap0)?.manifestKey ?? "";
+            const cap0Manifest = yield* decodeManifest(
+              cap0Key,
+              new Uint8Array(fs.readFileSync(path.join(tmp, "blobs", cap0Key))),
+            ).pipe(Effect.orDie);
+            const registerCheckpointCapture = (ordinal: number) =>
+              Effect.gen(function* () {
+                const parent = headOf();
+                const n = (memory.chains.get(worktreeId)?.headN ?? 0) + 1;
+                const built = buildManifest({
+                  worktreeId,
+                  n,
+                  parent,
+                  epoch,
+                  seq: n * 10,
+                  kind: "checkpoint",
+                  git: cap0Manifest.sections.git,
+                  checkpoint: {
+                    ordinal,
+                    sha: session.baseSha,
+                    ref: `refs/mend/checkpoints/${worktreeId}/${ordinal}`,
+                  },
+                });
+                yield* uploadObjects(new Map([[built.key, built.bytes]])).pipe(
+                  Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
+                );
+                yield* api.register({
+                  worktree_id: worktreeId,
+                  epoch,
+                  n,
+                  parent,
+                  capture_id: built.id,
+                  manifest_key: built.key,
+                  manifest: built.manifest,
+                });
+                return built.id;
+              });
+
+            // Ordering 1 — the executor's flush registers a `checkpoint` capture carrying the
+            // ordinal the mark is about to allocate: the mark takes it, one row, no derive.
+            let shipped: string | null = null;
+            onFlush = registerCheckpointCapture(chain().length).pipe(
+              Effect.map((id) => {
+                shipped = id;
+              }),
+              Effect.orDie,
+            );
+            const taken = yield* engine.checkpointNow(session.id, "user-mark");
+            expect(flushed).toEqual(["flush:workspace-1"]);
+            expect(taken.ordinal).toBe(2);
+            expect(taken.sha).toBe(session.baseSha);
+            expect(taken.ref).toBe(`refs/mend/checkpoints/${worktreeId}/2`);
+            expect(world.checkpointCaptureIds.get(taken.id)).toBe(shipped);
+            expect(chain().map((c) => c.ordinal)).toEqual([0, 1, 2]);
+
+            // Ordering 2 — the executor's checkpoint capture lands AFTER the mark that used the
+            // ordinal it names (a stale 2): the next mark is observed from it but allocates 3,
+            // derived on the runner, never a second row at 2.
+            onFlush = Effect.void;
+            const stale = yield* registerCheckpointCapture(2);
+            const next = yield* engine.checkpointNow(session.id, "user-mark");
+            expect(next.ordinal).toBe(3);
+            expect(next.ref).toBe(`refs/mend/checkpoints/${worktreeId}/3`);
+            expect(next.sha).not.toBe(session.baseSha);
+            expect(world.checkpointCaptureIds.get(next.id)).toBe(stale);
+            expect(chain().map((c) => c.ordinal)).toEqual([0, 1, 2, 3]);
+
+            // The race — a user mark while the run-end checkpoint is in flight (observed in the
+            // packaged acceptance as a 500): both succeed with distinct ordinals, and the
+            // per-worktree writer means the unique index never had to refuse an insert.
+            const [a, b] = yield* Effect.all(
+              [
+                engine.checkpointNow(session.id, "user-mark"),
+                engine.checkpointNow(session.id, "turn-boundary"),
+              ],
+              { concurrency: "unbounded" },
+            );
+            expect([a.ordinal, b.ordinal].toSorted()).toEqual([4, 5]);
+            expect(chain().map((c) => c.ordinal)).toEqual([0, 1, 2, 3, 4, 5]);
+            expect(world.checkpointConflicts.count).toBe(0);
+            expect(flushed).toHaveLength(4);
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              flushed,
+              flush: () =>
+                onFlush.pipe(
+                  Effect.map(() => ({
+                    epoch: 0,
+                    worktreeId: "",
+                    pending: 0,
+                    stagedBytes: 0,
+                    uploadedObjects: 0,
+                    uploadedBytes: 0,
+                    registered: 1,
+                    fenced: false,
+                    paused: false,
+                  })),
+                ),
+            },
+          ),
+        },
+      );
+    },
+  );
 });

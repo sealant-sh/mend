@@ -11,4 +11,9 @@ capture (n ≥ 1), and the engine's `capture flush · completed · observed` rep
 run ends. The CLI's setup, upgrade and start carry regression tests for the bucket's volume: a fresh
 install labels all three, an upgrade from a generation without Garage claims it under the unchanged
 identity, and a foreign `mend-garage` is refused with the same message as a foreign store or control
-volume.
+volume. Capture mode's checkpoints have one writer per worktree: the engine serialises a worktree's
+checkpoints behind a per-worktree permit (the advisory lock is bypassed under captures), and the
+`checkpoints` insert is `ON CONFLICT DO NOTHING` — a taken ordinal answers with the row that stands
+when it records the same snapshot, else re-reads the chain and takes the next ordinal. Before this a
+user mark during the run-end checkpoint answered 500 (`checkpoints_worktree_ordinal_idx`, observed
+in v0.27.0's acceptance run).
