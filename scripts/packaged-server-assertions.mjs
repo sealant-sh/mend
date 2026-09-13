@@ -74,88 +74,147 @@ export function ownsComposeContainer(container, initialIds, configRoot) {
   );
 }
 
-function projectSubpath(subpath, projectName) {
-  if (typeof subpath !== "string" || !subpath.startsWith(`${projectName}/`)) return false;
-  return subpath
-    .split("/")
-    .every((part) => part && part !== "." && part !== ".." && !part.includes("\\"));
-}
-
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
-function workspaceStoreMount(mount, store, projectName) {
-  if (mount.Type !== "volume") return false;
-  const subpath = mount.VolumeOptions?.Subpath;
-  if (mount.Target !== "/run/mend" && projectSubpath(subpath, projectName)) return true;
-  if (typeof subpath !== "string") return false;
-  const sessionId = subpath.slice("_run/sessions/".length);
-  return (
-    sessionId.length === 36 &&
-    uuidPattern.test(sessionId) &&
-    subpath === `_run/sessions/${sessionId}` &&
-    mount.Target === "/run/mend" &&
-    mount.ReadOnly === true &&
-    store.some(
-      (home) =>
-        home.Type === "volume" &&
-        home.Target === "/workspace/harness-home" &&
-        home.VolumeOptions?.Subpath === `${projectName}/sessions/${sessionId}/harness-home`,
-    )
+/**
+ * A Sealant executor container: named `sealant-<id>` and/or holding a scoped `mend-control` socket
+ * volume at /run/sealant with subpath `sealant-<id>`. `<id>` is the workspace's own id, which the
+ * hot pool decouples from the session's assigned `sealantWorkspaceId` (a session claims a warm
+ * standby, so its container keeps the pool id) — the container cannot be pinned to a session by id.
+ * Per-session proof comes from the API and the record (registered capture, flush report); this
+ * predicate only recognises that a container is a Sealant executor.
+ */
+export function isSealantExecutor(container) {
+  const name = typeof container.Name === "string" ? container.Name.replace(/^\//, "") : "";
+  if (/^sealant-[0-9a-f-]+$/i.test(name)) return true;
+  return (container.HostConfig?.Mounts ?? []).some(
+    (mount) =>
+      mount.Source === "mend-control" &&
+      mount.Type === "volume" &&
+      mount.Target === "/run/sealant" &&
+      typeof mount.VolumeOptions?.Subpath === "string" &&
+      /^sealant-[0-9a-f-]+$/i.test(mount.VolumeOptions.Subpath),
   );
 }
 
-function actualMountMatchesSpec(actual, mount) {
-  return (
-    actual.Type === "volume" &&
-    actual.Name === mount.Source &&
-    actual.Destination === mount.Target &&
-    (mount.Target !== "/run/mend" || actual.RW === false)
-  );
-}
+const underRunSealant = (target) =>
+  target === "/run/sealant" || (typeof target === "string" && target.startsWith("/run/sealant/"));
 
-/** Acceptance and cleanup use the same project and correlated helper mount boundary. */
-function workspaceMountsAreValid(container, projectName) {
+/**
+ * A capture executor is disposable (ADR-0002): its work product ships as captures, so it mounts
+ * NOTHING from `mend-store` and binds no host path — it reaches the host only through scoped
+ * `mend-control` volumes under /run/sealant (the control socket and the read-only secrets file).
+ * A store volume, a store bind, or any host bind is a failure, not a variant. v0.27.0's acceptance
+ * demanded the store mount that capture mode removes.
+ */
+export function captureExecutorMountsAreValid(container) {
   const specs = container.HostConfig?.Mounts ?? [];
   const mounts = container.Mounts ?? [];
-  const store = specs.filter((mount) => mount.Source === "mend-store");
-  const control = specs.filter((mount) => mount.Source === "mend-control");
-  const scoped = [...store, ...control];
+  const binds = container.HostConfig?.Binds ?? [];
+  if (!Array.isArray(specs) || !Array.isArray(mounts) || !Array.isArray(binds)) return false;
+  const storeSpec = specs.some(
+    (mount) =>
+      mount.Source === "mend-store" ||
+      (mount.Type === "bind" && String(mount.Source).startsWith("/var/lib/mend/store")),
+  );
+  const storeActual = mounts.some(
+    (mount) =>
+      mount.Name === "mend-store" ||
+      (mount.Type === "bind" && String(mount.Source).startsWith("/var/lib/mend/store")),
+  );
   return (
-    store.some((mount) => mount.VolumeOptions?.Subpath === `${projectName}/repo.git`) &&
-    store.some((mount) => mount.VolumeOptions?.Subpath === `${projectName}/worktrees`) &&
-    store.every((mount) => workspaceStoreMount(mount, store, projectName)) &&
-    specs.every(
-      (mount) =>
-        (mount.Target !== "/run/mend" || mount.Source === "mend-store") &&
-        (mount.Target !== "/run/sealant" || mount.Source === "mend-control"),
-    ) &&
-    control.every(
-      (mount) =>
-        mount.Type === "volume" &&
-        mount.Target === "/run/sealant" &&
-        typeof mount.VolumeOptions?.Subpath === "string" &&
-        mount.VolumeOptions.Subpath.length === "sealant-".length + 36 &&
-        mount.VolumeOptions.Subpath.startsWith("sealant-") &&
-        uuidPattern.test(mount.VolumeOptions.Subpath.slice("sealant-".length)),
-    ) &&
-    scoped.every((mount) => mounts.some((actual) => actualMountMatchesSpec(actual, mount))) &&
-    mounts
-      .filter(
-        (mount) =>
-          mount.Name === "mend-store" ||
-          mount.Name === "mend-control" ||
-          mount.Destination === "/run/mend" ||
-          mount.Destination === "/run/sealant",
-      )
-      .every((actual) => scoped.some((mount) => actualMountMatchesSpec(actual, mount))) &&
-    !(container.HostConfig?.Binds ?? []).length &&
-    ![...specs, ...mounts].some((mount) => mount.Type === "bind")
+    !storeSpec &&
+    !storeActual &&
+    binds.length === 0 &&
+    specs.every((mount) => mount.Type !== "bind") &&
+    mounts.every((mount) => mount.Type !== "bind") &&
+    specs.every((mount) => !underRunSealant(mount.Target) || mount.Source === "mend-control") &&
+    mounts.every((mount) => !underRunSealant(mount.Destination) || mount.Name === "mend-control")
   );
 }
 
-/** A store volume alone is shared infrastructure, not workspace ownership evidence. */
-export function ownsWorkspaceContainer(container, initialIds, projectName) {
-  return !initialIds.has(container.Id) && workspaceMountsAreValid(container, projectName);
+/**
+ * Cleanup ownership for executors: a new Sealant executor with capture-mode mounts. A store mount
+ * disqualifies it — that is somebody's data, retained. The pool decouples the container id from
+ * the session, so ownership is by executor shape, not by session id; on the acceptance's fresh
+ * daemon every such container is one Mend launched for our project.
+ */
+export function ownsWorkspaceContainer(container, initialIds) {
+  return (
+    !initialIds.has(container.Id) &&
+    isSealantExecutor(container) &&
+    captureExecutorMountsAreValid(container)
+  );
+}
+
+/** The observed executor ran store-less. Failing either half names the half. */
+export function assertCaptureExecutor(container) {
+  assert.ok(isSealantExecutor(container), "Observed container must be a Sealant executor");
+  assert.ok(
+    captureExecutorMountsAreValid(container),
+    "Capture executor must mount nothing from mend-store and no host path; it reaches the host only through scoped mend-control volumes under /run/sealant",
+  );
+}
+
+/** A registered capture for the worktree: the API answers from a capture n ≥ 1, never the base. */
+export function captureRegisteredEvidence(observation) {
+  if (observation === undefined || observation === null) return false;
+  assert.ok(
+    typeof observation === "object" &&
+      ["claimed", "observed"].includes(observation.state) &&
+      ["worktree", "capture"].includes(observation.source) &&
+      typeof observation.label === "string",
+    "Observation stamp must be well formed",
+  );
+  assert.notEqual(
+    observation.source,
+    "worktree",
+    "A capture-mode session must be observed from captures, not a live worktree",
+  );
+  return Number.isInteger(observation.captureN) &&
+    observation.captureN >= 1 &&
+    typeof observation.captureId === "string" &&
+    observation.captureId.length > 0
+    ? observation
+    : false;
+}
+
+/**
+ * The engine's flush report at a turn boundary or stop, as logged by the Mend container:
+ * "session engine: capture flush · completed · observed { sessionId: '…', …, registered: n, … }".
+ * Only a completed report for THIS session counts; partial, refused and timed-out flushes are
+ * distinct lines and never match.
+ */
+export function flushReportEvidence(logText, sessionId) {
+  if (typeof logText !== "string" || typeof sessionId !== "string" || !sessionId) return false;
+  const pattern = /session engine: capture flush · completed · observed \{([^}]*)\}/g;
+  for (const match of logText.matchAll(pattern)) {
+    const body = match[1];
+    if (!body.includes(`sessionId: '${sessionId}'`)) continue;
+    const number = (key) => {
+      const found = body.match(new RegExp(`\\b${key}: (-?\\d+|null)\\b`));
+      return found === null ? undefined : found[1] === "null" ? null : Number(found[1]);
+    };
+    const flag = (key) => {
+      const found = body.match(new RegExp(`\\b${key}: (true|false)\\b`));
+      return found === null ? undefined : found[1] === "true";
+    };
+    const report = {
+      headN: number("headN"),
+      pending: number("pending"),
+      registered: number("registered"),
+      uploadedObjects: number("uploadedObjects"),
+      fenced: flag("fenced"),
+    };
+    assert.ok(
+      Number.isInteger(report.pending) &&
+        Number.isInteger(report.registered) &&
+        typeof report.fenced === "boolean",
+      "Flush report must carry pending, registered and fenced",
+    );
+    if (report.pending === 0 && report.fenced === false && report.registered >= 1) return report;
+  }
+  return false;
 }
 
 export const installationOwnerLabel = "dev.sealant.mend.installation";
@@ -322,14 +381,6 @@ export function assertHealth(body, version) {
   assert.ok(
     body?.status === "ok" && body?.version === version,
     "Health must report ok and the exact Mend pin",
-  );
-}
-
-/** Assert Docker's actual volume mount and create-time subpath, never a host-store bind. */
-export function assertWorkspaceMounts(container, projectName) {
-  assert.ok(
-    workspaceMountsAreValid(container, projectName),
-    "Workspace mounts must be project-scoped store volumes, UUID-correlated readonly helpers, or scoped control volumes, with no host binds",
   );
 }
 
