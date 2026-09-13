@@ -1,6 +1,7 @@
 # Garage in single-node mode for the Mend dev stack (compose.dev.yaml): the S3-compatible
-# bucket the capture store writes under MEND_SESSION_STORE=captured (ADR-0002 "Placement per
-# tier", decision 15). One node, replication factor 1, no TLS — a dev stack, never a deployment.
+# bucket the capture store writes (ADR-0002 "Placement per tier", decision 15). One node,
+# replication factor 1, no TLS — a dev stack, never a deployment (the bundle's copy is
+# deploy/docker/garage.toml, with its secrets from the environment).
 metadata_dir = "/var/lib/garage/meta"
 data_dir = "/var/lib/garage/data"
 db_engine = "sqlite"

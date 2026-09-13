@@ -1,8 +1,9 @@
-# Mend bundle deployment contract v2. The only long-running containers are Mend and official
-# Postgres. The Mend image supervises its web/API processes plus the Sealant 0.29.0 API, worker
+# Mend bundle deployment contract v2. The long-running containers are Mend, official Postgres and
+# Garage. The Mend image supervises its web/API processes plus the Sealant 0.29.0 API, worker
 # and SSH gateway. Sealant's job queue lives in Postgres and workspace images live in the host
-# Docker Engine, so nothing else runs. Generate and persist the required values in a private .env
-# file.
+# Docker Engine. Garage is the capture store's bucket (docs/adr/0002-session-capture-store.md):
+# every session's work product ships there and the executor is disposable. Generate and persist
+# the required values in a private .env file.
 name: mend
 
 services:
@@ -15,6 +16,8 @@ services:
     stop_grace_period: 30s
     depends_on:
       postgres:
+        condition: service_healthy
+      garage:
         condition: service_healthy
     ports:
       - "${MEND_BIND_HOST:-127.0.0.1}:${MEND_PORT:-3105}:3105"
@@ -37,6 +40,18 @@ services:
       SEALANT_MOUNT_ALLOWED_STORE_ROOTS: /var/lib/mend/store
       SEALANT_DOCKER_VOLUME_MAPPINGS: >-
         [{"logicalRoot":"/var/lib/mend/store","volumeName":"${MEND_STORE_VOLUME_NAME:-mend-store}"},{"logicalRoot":"/run/sealant/sockets","volumeName":"${MEND_CONTROL_VOLUME_NAME:-mend-control}"}]
+      # Workspace containers must join this network to resolve `mend` and `garage` below; the
+      # Sealant Docker runtime does not attach them yet (PLATFORM-FEEDBACK.md 2026-09-13), so the
+      # value is set ahead of the runtime that reads it.
+      SEALANT_DOCKER_WORKSPACE_NETWORK: mend_default
+      # The capture store (ADR-0002): the session channel executors call, and the bucket their
+      # presigned URLs name. Both are Compose service names, resolved on the project network.
+      MEND_SESSION_ENDPOINT_LISTEN: 0.0.0.0:3106
+      MEND_SESSION_ENDPOINT_URL: http://mend:3106
+      MEND_BLOB_STORE: s3://mend?endpoint=http://garage:3900&region=garage
+      MEND_BLOB_STORE_PUBLIC_URL: http://garage:3900
+      AWS_ACCESS_KEY_ID: ${MEND_GARAGE_KEY_ID:?set MEND_GARAGE_KEY_ID in .env}
+      AWS_SECRET_ACCESS_KEY: ${MEND_GARAGE_KEY_SECRET:?set MEND_GARAGE_KEY_SECRET in .env}
     volumes:
       - ${DOCKER_SOCKET_PATH:-/var/run/docker.sock}:/var/run/docker.sock
       - mend-store:/var/lib/mend/store
@@ -72,19 +87,60 @@ services:
       retries: 20
       start_period: 10s
 
+  # The capture store's bucket: Garage in single-node mode, S3 on 3900 for the Compose network
+  # only (no host port). Its secrets come from the environment, so the config below carries none;
+  # `mend server setup` lays the node out and creates bucket `mend` and the key once. Idle
+  # footprint ≈ 7.5 MiB (measured 2026-09-13).
+  garage:
+    image: dxflrs/garage:v2.4.1
+    hostname: garage
+    restart: unless-stopped
+    environment:
+      GARAGE_RPC_SECRET: ${MEND_GARAGE_RPC_SECRET:?set MEND_GARAGE_RPC_SECRET in .env}
+      GARAGE_ADMIN_TOKEN: ${MEND_GARAGE_ADMIN_TOKEN:?set MEND_GARAGE_ADMIN_TOKEN in .env}
+    configs:
+      - source: garage-config
+        target: /etc/garage.toml
+    volumes:
+      - mend-garage:/var/lib/garage
+    healthcheck:
+      test: ["CMD", "/garage", "-c", "/etc/garage.toml", "status"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+
 configs:
   postgres-init:
     file: ./postgres-init.sh
+  garage-config:
+    content: |
+      metadata_dir = "/var/lib/garage/meta"
+      data_dir = "/var/lib/garage/data"
+      db_engine = "sqlite"
+      replication_factor = 1
+      rpc_bind_addr = "[::]:3901"
+      rpc_public_addr = "127.0.0.1:3901"
+      [s3_api]
+      s3_region = "garage"
+      api_bind_addr = "[::]:3900"
+      root_domain = ".s3.garage.localhost"
+      [admin]
+      api_bind_addr = "[::]:3903"
 
 volumes:
   # Setup claims these volumes before Compose starts, so a different installation cannot
-  # silently replace credentials while adopting existing data.
+  # silently replace credentials while adopting existing data. `mend-garage` holds every
+  # session's captures — it is data, owned like the store.
   mend-store:
     external: true
     name: ${MEND_STORE_VOLUME_NAME:-mend-store}
   mend-control:
     external: true
     name: ${MEND_CONTROL_VOLUME_NAME:-mend-control}
+  mend-garage:
+    external: true
+    name: ${MEND_GARAGE_VOLUME_NAME:-mend-garage}
   mend-config:
   mend-ssh:
   mend-postgres:

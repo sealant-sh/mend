@@ -118,7 +118,7 @@ import {
   SecretCipher,
   Store,
   StoreConfig,
-  DeploymentConfigLocal,
+  DeploymentConfigColocated,
   harnessHomePathOf,
   processStatePathOf,
 } from "@mend/store";
@@ -172,6 +172,7 @@ const hotWorkspacesEmptyLayer = Layer.succeed(HotWorkspacesRepo, {
   listForProject: () => Effect.succeed([]),
   listAll: () => Effect.succeed([]),
   setReady: () => Effect.void,
+  setBaseSha: () => Effect.void,
   setFailed: () => Effect.void,
   claim: () => Effect.succeed(null),
   remove: () => Effect.void,
@@ -1110,6 +1111,7 @@ const projectsLayer = (world: World) =>
     setApplyDotfiles: () => Effect.die("not in test"),
     setInheritUserSkills: () => Effect.die("not in test"),
     setHotSessions: () => Effect.die("not in test"),
+    setInstallCommand: () => Effect.die("not in test"),
     byId: (id) => {
       const found = world.projects.get(id);
       return found === undefined
@@ -1543,6 +1545,7 @@ const setup = (tmp: string, world: World) => {
       applyDotfiles: true,
       inheritUserSkills: true,
       hotSessions: 0,
+      installCommand: null,
       createdAt: now(),
       updatedAt: now(),
     });
@@ -1626,7 +1629,7 @@ const withEngine = <A, E>(
       : CaptureRuntimeLive.pipe(Layer.provide(captureLayers));
   const deploymentLayer =
     captureLayers === null
-      ? DeploymentConfigLocal
+      ? DeploymentConfigColocated
       : Layer.succeed(DeploymentConfig, {
           mode: "local",
           sessionEndpoint: { listen: "127.0.0.1:0", url: "http://mend.test:3106" },
@@ -4300,7 +4303,7 @@ describe("SessionEngine", () => {
       Layer.provide(serviceHostStubLayer),
       Layer.provide(sessionSocketStubLayer),
       Layer.provide(SessionChannelTokensRepoMemory),
-      Layer.provide(DeploymentConfigLocal),
+      Layer.provide(DeploymentConfigColocated),
       Layer.provide(CaptureRuntimeOff),
       Layer.provide(mendKeysStubLayer),
       Layer.provide(
@@ -4361,6 +4364,7 @@ describe("SessionEngine hot sessions", () => {
         Effect.sync(() => pool.entries.filter((entry) => entry.projectId === projectId)),
       listAll: () => Effect.sync(() => [...pool.entries]),
       setReady: () => Effect.void,
+      setBaseSha: () => Effect.void,
       setFailed: () => Effect.void,
       claim: (projectId) =>
         Effect.sync(() => {
@@ -4589,6 +4593,13 @@ const shipHarnessCapture = (
     return built;
   }).pipe(Effect.provide(memory.layer));
 
+/** Poll a forked side effect (a warm, a replacement) into view; the pool fakes are in memory. */
+const until = (condition: () => boolean, label: string) =>
+  Effect.gen(function* () {
+    for (let i = 0; i < 500 && !condition(); i++) yield* Effect.sleep(Duration.millis(10));
+    if (!condition()) throw new Error(`timed out waiting for ${label}`);
+  });
+
 describe("SessionEngine capture mode", () => {
   it("provisions capture 0 and launches a capture-sourced workspace: no mounts, no bind, a launch-claimed lease", async () => {
     const created: Array<CreateOptions | CaptureCreateOptions> = [];
@@ -4663,6 +4674,66 @@ describe("SessionEngine capture mode", () => {
           binds,
         ),
       },
+    );
+  });
+
+  it("launch attaches a worktree that has no chain yet — made before captures — with capture 0 from its directory's current files", async () => {
+    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          // A legacy worktree: the deprecated co-located store made its directory and row;
+          // nothing registered a chain for it. It carries an edit nobody committed.
+          const worktreeId = WorktreeId.make(`wt-${crypto.randomUUID().slice(0, 8)}`);
+          const branch = `mend/wt/${worktreeId}`;
+          const dir = path.join(path.dirname(project.storePath), "worktrees", worktreeId);
+          const base = project.adoptedSha;
+          if (base === null) throw new Error("the fixture project has an adopted sha");
+          execFileSync("git", ["worktree", "add", "-q", "-b", branch, dir, base], {
+            cwd: project.storePath,
+          });
+          fs.writeFileSync(path.join(dir, "draft.txt"), "still editing\n");
+          const worktreesRepo = yield* WorktreesRepo;
+          const worktree = yield* worktreesRepo.create({
+            id: worktreeId,
+            projectId: project.id,
+            name: worktreeId,
+            directory: worktreeId,
+            branch,
+            baseSha: base,
+            baseRef: "main",
+          });
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provisionSessionIn(worktree.id, {
+            harness: "codex",
+            label: null,
+            ownerUserId: null,
+          });
+          expect(memory.chains.get(worktreeId)?.headCapture ?? null).toBeNull();
+
+          yield* engine.launch(session.id, ["codex"]);
+
+          // Capture 0 was registered at launch from the directory, and the launch claimed it.
+          const chain = memory.chains.get(worktreeId);
+          expect(chain?.headN).toBe(0);
+          const cap0 = memory.captures.get(chain?.headCapture ?? "");
+          expect(cap0?.kind).toBe("checkpoint");
+          const manifest = JSON.parse(
+            fs.readFileSync(path.join(tmp, "blobs", cap0?.manifestKey ?? ""), "utf8"),
+          );
+          expect(manifest.checkpoint.sha).not.toBe(base);
+          const tree = execFileSync(
+            "git",
+            ["ls-tree", "--name-only", `${manifest.checkpoint.sha}^{tree}`],
+            { cwd: project.storePath },
+          ).toString("utf8");
+          expect(tree).toContain("draft.txt");
+          expect(created).toHaveLength(1);
+          expect(memory.leases.get(worktreeId)?.executorId).toBe(session.id);
+        }),
+      { captured: memory, sealantLayer: sealantLaunchLayer(created) },
     );
   });
 
@@ -4893,38 +4964,241 @@ describe("SessionEngine capture mode", () => {
     );
   });
 
-  it("never claims a hot skeleton in capture mode — a project's hot target is observed and skipped", async () => {
+  /**
+   * An in-memory pool with a working `create`: the reconcile warms real standbys here (their
+   * capture source lands in `created`), and a claim pops a ready entry whose fingerprint the
+   * engine computed from the same inputs.
+   */
+  const memoryHotPool = () => {
+    const entries: Array<HotWorkspace> = [];
+    const update = (id: string, patch: Partial<HotWorkspace>) =>
+      Effect.sync(() => {
+        const index = entries.findIndex((entry) => entry.id === id);
+        const current = entries[index];
+        if (current !== undefined) {
+          entries[index] = new HotWorkspace({ ...current, ...patch, updatedAt: now() });
+        }
+      });
+    const layer = Layer.succeed(HotWorkspacesRepo, {
+      create: (input) =>
+        Effect.sync(() => {
+          const entry = new HotWorkspace({
+            ...input,
+            status: "warming",
+            error: null,
+            sealantWorkspaceId: null,
+            workspaceImage: null,
+            dotfiles: null,
+            environment: null,
+            referenceMounts: [],
+            extraMounts: [],
+            createdAt: now(),
+            updatedAt: now(),
+          });
+          entries.push(entry);
+          return entry;
+        }),
+      byId: (id) => Effect.sync(() => entries.find((entry) => entry.id === id) ?? null),
+      listForProject: (projectId) =>
+        Effect.sync(() => entries.filter((entry) => entry.projectId === projectId)),
+      listAll: () => Effect.sync(() => [...entries]),
+      setReady: (id, stamps) => update(id, { ...stamps, status: "ready", error: null }),
+      setBaseSha: (id, baseSha) => update(id, { baseSha }),
+      setFailed: (id, error) => update(id, { status: "failed", error }),
+      claim: (projectId, fingerprint) =>
+        Effect.sync(() => {
+          const index = entries.findIndex(
+            (entry) =>
+              entry.projectId === projectId &&
+              entry.status === "ready" &&
+              entry.fingerprint === fingerprint,
+          );
+          const entry = entries[index];
+          if (entry === undefined) return null;
+          const claimed = new HotWorkspace({ ...entry, status: "claimed", updatedAt: now() });
+          entries[index] = claimed;
+          return claimed;
+        }),
+      remove: (id) =>
+        Effect.sync(() => {
+          const index = entries.findIndex((entry) => entry.id === id);
+          if (index >= 0) entries.splice(index, 1);
+        }),
+    });
+    return { entries, layer };
+  };
+
+  it("warms a standby executor at the placeholder worktree id; its plan is the project base under the standby's epoch, and nothing is leased", async () => {
     const created: Array<CreateOptions | CaptureCreateOptions> = [];
     const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
     await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
           const project = yield* setup(tmp, world);
-          world.projects.set(project.id, new Project({ ...project, hotSessions: 2 }));
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
           const engine = yield* SessionEngine;
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(() => pool.entries.some((entry) => entry.status === "ready"), "a standby");
+          const entry = pool.entries[0];
+          if (entry === undefined) throw new Error("no standby");
+          const alias = `standby-${entry.id}`;
+          expect(created).toHaveLength(1);
+          expect(created[0]?.source).toEqual({
+            kind: "capture",
+            endpoint: "http://mend.test:3106",
+            worktreeId: alias,
+          });
+          // The base the standby materialises is fixed on its row.
+          expect(entry.baseSha).toBe(project.adoptedSha);
+          const api = servedSocketApis.get(entry.id)?.capture;
+          if (api === undefined) throw new Error("the standby serves no capture api");
+          const plan = yield* api.planGet({ worktree_id: alias, epoch: 0 });
+          expect(plan.worktree_id).toBe(alias);
+          expect(plan.epoch).toBe(entry.createdAt.getTime());
+          expect(plan.head?.n).toBe(0);
+          expect(plan.head?.manifest.sections.git.packs[0]).toMatch(
+            /^projects\/proj-1\/packs\/[0-9a-f]{64}$/,
+          );
+          expect(plan.head?.manifest.sections.bulk).toBe("pending");
+          expect(Object.keys(plan.get_urls)).toContain(plan.head?.manifest_key);
+          // No worktree, no lease: heartbeats are acknowledged, writes refused until a claim.
+          expect(memory.leases.size).toBe(0);
+          expect(yield* api.heartbeat({ worktree_id: alias, epoch: plan.epoch })).toEqual({
+            expires_in_secs: 30,
+          });
+          const refused = yield* api
+            .uploadUrls({ worktree_id: alias, epoch: plan.epoch, keys: [] })
+            .pipe(Effect.flip);
+          expect(refused.reason).toBe("lease-lost");
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(created),
+        hotWorkspacesLayer: pool.layer,
+      },
+    );
+  });
+
+  it("a fresh worktree claims the standby: the session adopts its id, the lease is taken at the standby's epoch, the alias serves heartbeat and register, a fresh standby warms, and a worktree with captures goes cold", async () => {
+    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(() => pool.entries.some((entry) => entry.status === "ready"), "a standby");
+          const standby = pool.entries[0];
+          if (standby === undefined) throw new Error("no standby");
+          const alias = `standby-${standby.id}`;
+          const standbyApi = servedSocketApis.get(standby.id)?.capture;
+          if (standbyApi === undefined) throw new Error("the standby serves no capture api");
+          const plan = yield* standbyApi.planGet({ worktree_id: alias, epoch: 0 });
+          const epoch = plan.epoch;
+          const planId = plan.head?.capture_id ?? "";
+
           const session = yield* engine.provision({
             projectId: project.id,
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
-          expect(world.sessions.get(session.id)).toBeDefined();
+          // The session adopted the standby's id; the worktree's lease is the standby's epoch.
+          expect(session.id).toBe(standby.id);
+          const lease = memory.leases.get(session.worktreeId);
+          expect(lease?.executorId).toBe(session.id);
+          expect(lease?.epoch).toBe(epoch);
+          expect((lease?.expiresAt ?? 0) > memory.clock.now()).toBe(true);
+          expect(memory.chains.get(session.worktreeId)?.headN).toBe(0);
+
+          yield* engine.launch(session.id, ["codex"]);
+          // The standby's workspace was adopted, not created again.
+          expect(spawned.length).toBeGreaterThan(0);
+          expect(world.sessions.get(session.id)?.sealantWorkspaceId).toBe("workspace-1");
+
+          // The executor keeps naming the placeholder: the heartbeat renews the real lease
+          // under the standby's epoch — the launch claim's boot-sized TTL comes back to the
+          // 30 s cadence.
+          const api = servedSocketApis.get(session.id)?.capture;
+          if (api === undefined) throw new Error("the session serves no capture api");
+          const beat = yield* api.heartbeat({ worktree_id: alias, epoch });
+          expect(beat).toEqual({ expires_in_secs: 30 });
+          const renewed = memory.leases.get(session.worktreeId);
+          expect(renewed?.epoch).toBe(epoch);
+          expect(renewed?.executorId).toBe(session.id);
+          const renewedIn = (renewed?.expiresAt ?? 0) - memory.clock.now();
+          expect(renewedIn).toBeGreaterThan(25_000);
+          expect(renewedIn).toBeLessThanOrEqual(30_000);
+          const cap0 = memory.chains.get(session.worktreeId)?.headCapture ?? null;
+          // …and its first register, parented on the standby plan, lands as capture 1.
+          const tree = path.join(tmp, "standby-ship");
+          fs.mkdirSync(path.join(tree, "tree"), { recursive: true });
+          fs.writeFileSync(path.join(tree, "tree", "edit.txt"), "from the standby\n");
+          const snapshot = snapshotDirectory(tree, captureKeys(alias, epoch), { chunkSize: 64 });
+          const built = buildManifest({
+            worktreeId: alias,
+            n: 1,
+            parent: planId,
+            epoch,
+            seq: 5,
+            kind: "turn",
+            git: {
+              packs: plan.head?.manifest.sections.git.packs ?? [],
+              refs: {},
+              head: "refs/heads/main",
+              fsck: "verified",
+            },
+            workspace: { root: snapshot.root, packs: snapshot.packs },
+          });
+          yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]])).pipe(
+            Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
+          );
+          const registered = yield* api.register({
+            worktree_id: alias,
+            epoch,
+            n: 1,
+            parent: planId,
+            capture_id: built.id,
+            manifest_key: built.key,
+            manifest: built.manifest,
+          });
+          expect(registered.head_n).toBe(1);
+          const chain = memory.chains.get(session.worktreeId);
+          expect(chain?.headN).toBe(1);
+          expect(chain?.headCapture).toBe(built.id);
+          // The standby plan's id was mapped to the chain's capture 0 as the parent.
+          expect(memory.captures.get(built.id)?.parent).toBe(cap0);
+          expect(memory.captures.get(built.id)?.worktreeId).toBe(session.worktreeId);
+
+          // A fresh standby warms behind the claim.
+          yield* until(
+            () => pool.entries.some((entry) => entry.status === "ready" && entry.id !== standby.id),
+            "the replacement standby",
+          );
+          const replacement = pool.entries.find((entry) => entry.status === "ready");
+          expect(replacement?.id).not.toBe(standby.id);
+          expect(created.filter((request) => request.source?.kind === "capture")).toHaveLength(2);
+
+          // A worktree that already holds captures is not what the standby materialised: cold.
+          const joined = yield* engine.provisionSessionIn(session.worktreeId, {
+            harness: "claude",
+            label: null,
+            ownerUserId: "user-fixture",
+          });
+          expect(joined.id).not.toBe(replacement?.id);
+          expect(pool.entries.find((entry) => entry.id === replacement?.id)?.status).toBe("ready");
         }),
       {
         captured: memory,
-        sealantLayer: sealantLaunchLayer(created),
-        hotWorkspacesLayer: Layer.succeed(HotWorkspacesRepo, {
-          create: () => Effect.die("must not warm in capture mode"),
-          byId: () => Effect.succeed(null),
-          listForProject: () => Effect.succeed([]),
-          listAll: () => Effect.succeed([]),
-          setReady: () => Effect.void,
-          setFailed: () => Effect.void,
-          claim: () => Effect.die("must not claim in capture mode"),
-          remove: () => Effect.void,
-        }),
+        sealantLayer: sealantLaunchLayer(created, undefined, undefined, spawned),
+        hotWorkspacesLayer: pool.layer,
       },
     );
   });

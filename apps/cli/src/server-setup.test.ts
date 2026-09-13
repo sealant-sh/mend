@@ -39,6 +39,8 @@ interface RuntimeControl {
   readonly lines: ReadonlyArray<string>;
   readonly randomSizes: ReadonlyArray<number>;
   readonly daemon: DockerProtocol;
+  /** Every `garage …` subcommand the init ran through `docker compose exec`, in order. */
+  readonly garageCalls: ReadonlyArray<ReadonlyArray<string>>;
   readonly randomCalls: () => number;
 }
 
@@ -72,6 +74,7 @@ const makeRuntime = (
     options.contextList ??
     `${JSON.stringify({ Name: "default", DockerEndpoint: "unix:///var/run/docker.sock", Current: true })}\n`;
 
+  const garageCalls: ReadonlyArray<string>[] = [];
   const runtime: ServerSetupRuntime = {
     configDir: options.configDir ?? temporaryDirectory(),
     platform: options.platform ?? "linux",
@@ -116,11 +119,35 @@ const makeRuntime = (
         const envFile = args[args.indexOf("--env-file") + 1];
         if (envFile === undefined) throw new Error("missing Compose env file");
         const version = readEnv(envFile).get("MEND_VERSION");
+        const composeFile = args[args.indexOf("-f") + 1];
+        const withGarage =
+          composeFile !== undefined && fs.readFileSync(composeFile, "utf8").includes("\n  garage:");
         return {
           status: 0,
-          stdout: `ghcr.io/sealant-sh/mend:${version}\npostgres:17-alpine\n`,
+          stdout: `ghcr.io/sealant-sh/mend:${version}\npostgres:17-alpine\n${withGarage ? "dxflrs/garage:v2.4.1\n" : ""}`,
           stderr: "",
         };
+      }
+      if (args.includes("compose") && args.includes("exec") && args.includes("garage")) {
+        // The Garage init: `status` names the node; `bucket info` shows the imported key.
+        const envFile = args[args.indexOf("--env-file") + 1];
+        const keyId =
+          envFile === undefined ? "" : (readEnv(envFile).get("MEND_GARAGE_KEY_ID") ?? "");
+        const sub = args.slice(args.indexOf("/etc/garage.toml") + 1);
+        garageCalls.push(sub);
+        if (sub[0] === "status")
+          return {
+            status: 0,
+            stdout: "==== HEALTHY NODES ====\n0123456789abcdef  garage  127.0.0.1:3901\n",
+            stderr: "",
+          };
+        if (sub[0] === "bucket" && sub[1] === "info")
+          return {
+            status: 0,
+            stdout: `==== BUCKET INFORMATION ====\nRWO ${keyId} mend\n`,
+            stderr: "",
+          };
+        return { status: 0, stdout: "", stderr: "" };
       }
       if (args.includes("image")) {
         const image = args[args.indexOf("inspect") + 1];
@@ -183,6 +210,7 @@ const makeRuntime = (
     lines,
     randomSizes,
     daemon,
+    garageCalls,
     randomCalls: () => randomSizes.length,
   };
 };
@@ -256,7 +284,7 @@ describe("mend server setup", () => {
     const identity = fs.readFileSync(path.join(configDir, "identity.env"));
     const generation = activeDirectory(configDir);
     const env = fs.readFileSync(path.join(generation, "server.env"));
-    expect(events).toEqual(["create", "create", "compose", "health"]);
+    expect(events).toEqual(["create", "create", "create", "compose", "health"]);
     events.length = 0;
     expect(await serverCommand(["setup"], runtime)).toEqual({ _tag: "ok" });
     expect(events).toEqual(["compose", "health"]);
@@ -377,13 +405,14 @@ describe("mend server setup", () => {
       ),
     );
     expect(contract).toMatchObject({
-      canonicalVolumes: { store: "mend-store", control: "mend-control" },
+      canonicalVolumes: { store: "mend-store", control: "mend-control", garage: "mend-garage" },
       volumeOwnership: {
         anchor: "mend-store",
         label: SERVER_VOLUME_OWNER_LABEL,
         identity: "SHA-256 of the persisted identity.env bytes",
-        externalVolumes: ["mend-store", "mend-control"],
+        externalVolumes: ["mend-store", "mend-control", "mend-garage"],
       },
+      captureStore: { bucket: "garage", image: "dxflrs/garage:v2.4.1", bucketName: "mend" },
     });
   });
 
@@ -609,6 +638,11 @@ describe("mend server setup", () => {
         "MEND_BIND_HOST",
         "MEND_CONTROL_VOLUME_NAME",
         "MEND_DB_PASSWORD",
+        "MEND_GARAGE_ADMIN_TOKEN",
+        "MEND_GARAGE_KEY_ID",
+        "MEND_GARAGE_KEY_SECRET",
+        "MEND_GARAGE_RPC_SECRET",
+        "MEND_GARAGE_VOLUME_NAME",
         "MEND_IMAGE_REPOSITORY",
         "MEND_PORT",
         "MEND_POSTGRES_ADMIN_PASSWORD",
@@ -630,6 +664,7 @@ describe("mend server setup", () => {
       'Using Docker context "default" (unix:///var/run/docker.sock)',
       "Downloading release assets for Mend 0.23.0",
       "Starting Mend 0.23.0 containers; Docker waits up to 120s for them to report healthy",
+      "Capture store bucket mend is laid out in Garage",
       "Mend 0.23.0 is reachable at http://localhost:3105",
       "Open http://localhost:3105, create the first account, then run: mend login --url http://localhost:3105",
     ]);

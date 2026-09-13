@@ -7,6 +7,7 @@ import {
   DotfilesSection,
   GitAccessSection,
   HotSessionsSection,
+  InstallCommandSection,
   LinksSection,
   MountsSection,
   ReferencesSection,
@@ -135,6 +136,7 @@ function ProjectSetupPage() {
           <ServicesSection projectId={projectId} />
           <DotfilesSection project={project} />
           <HotSessionsSection project={project} />
+          <InstallCommandSection project={project} />
           <GitAccessSection project={project} />
           <SessionLifecycleSection project={project} />
           <ReviewAutomationSection project={project} />

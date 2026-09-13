@@ -3,6 +3,7 @@ import {
   type ProjectId,
   type SealantWorkspaceId,
   type SessionId,
+  type Sha,
   type WorktreeId,
 } from "@mend/domain";
 import {
@@ -51,6 +52,8 @@ export class HotWorkspacesRepo extends Context.Service<
     readonly listForProject: (projectId: ProjectId) => Effect.Effect<ReadonlyArray<HotWorkspace>>;
     readonly listAll: () => Effect.Effect<ReadonlyArray<HotWorkspace>>;
     readonly setReady: (id: SessionId, stamps: HotWorkspaceStamps) => Effect.Effect<void>;
+    /** Capture mode: the base the standby's plan was prepared from (`hot-pool.ts`). */
+    readonly setBaseSha: (id: SessionId, baseSha: Sha) => Effect.Effect<void>;
     readonly setFailed: (id: SessionId, error: string) => Effect.Effect<void>;
     /**
      * Atomically pop the oldest `ready` entry matching the project's CURRENT fingerprint —
@@ -131,6 +134,17 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
         .pipe(Effect.orDie);
     });
 
+    const setBaseSha = Effect.fn("HotWorkspacesRepo.setBaseSha")(function* (
+      id: SessionId,
+      baseSha: Sha,
+    ) {
+      yield* db
+        .update(hotWorkspaces)
+        .set({ baseSha, updatedAt: new Date() })
+        .where(eq(hotWorkspaces.id, id))
+        .pipe(Effect.orDie);
+    });
+
     const setFailed = Effect.fn("HotWorkspacesRepo.setFailed")(function* (
       id: SessionId,
       error: string,
@@ -178,6 +192,16 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
       yield* db.delete(hotWorkspaces).where(eq(hotWorkspaces.id, id)).pipe(Effect.orDie);
     });
 
-    return { create, byId, listForProject, listAll, setReady, setFailed, claim, remove };
+    return {
+      create,
+      byId,
+      listForProject,
+      listAll,
+      setReady,
+      setBaseSha,
+      setFailed,
+      claim,
+      remove,
+    };
   }),
 );

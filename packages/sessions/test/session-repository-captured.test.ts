@@ -17,6 +17,7 @@ import {
   makeCaptureWorld,
   newWorktreeId,
   packEditedTree,
+  sh,
   worktreeRowFor,
 } from "./capture-world.ts";
 
@@ -383,4 +384,52 @@ describe("SessionRepositoryCapturedLive", () => {
       expect(world.memory.chains.get(worktreeId)?.headN).toBe(3);
     },
   );
+
+  it("attachWorktree backfills a legacy directory: capture 0 carries its uncommitted files and its HEAD, not the base", async () => {
+    // A worktree the deprecated co-located store made: a real linked worktree in the store,
+    // one commit past the base, with an edit nobody committed.
+    const worktreeId = newWorktreeId();
+    const branch = `mend/wt/${worktreeId}`;
+    const dir = path.join(path.dirname(world.storePath), "worktrees", worktreeId);
+    sh(world.storePath, ["worktree", "add", "-q", "-b", branch, dir, world.baseSha]);
+    fs.writeFileSync(path.join(dir, "committed.txt"), "landed\n");
+    sh(dir, ["add", "-A"]);
+    sh(dir, ["commit", "-q", "-m", "agent commit"]);
+    const headSha = sh(dir, ["rev-parse", "HEAD"]);
+    fs.writeFileSync(path.join(dir, "draft.txt"), "still editing\n");
+    world.worktrees.set(worktreeId, worktreeRowFor(world, worktreeId, branch));
+    const seen = await run(
+      Effect.gen(function* () {
+        const repo = yield* SessionRepository;
+        const refs = yield* StoreRefsRepo;
+        const captures = yield* CaptureStoreRepo;
+        yield* repo.attachWorktree!(world.project.id, worktreeId);
+        const chain = yield* captures.headOf(worktreeId);
+        const branchRef = yield* refs.get(world.project.id, `refs/heads/${branch}`);
+        const checkpointRef = yield* refs.get(
+          world.project.id,
+          `refs/mend/checkpoints/${worktreeId}/0`,
+        );
+        return { chain, branchRef, checkpointRef };
+      }),
+    );
+    expect(seen.chain?.headN).toBe(0);
+    const manifestKey = seen.chain?.head?.manifestKey ?? "";
+    const manifest = JSON.parse(fs.readFileSync(path.join(world.blobRoot, manifestKey), "utf8"));
+    // The branch is where the directory's HEAD is; the checkpoint is a commit on top of it whose
+    // tree holds the draft — nothing was rebased onto the row's base.
+    expect(seen.branchRef?.sha).toBe(headSha);
+    expect(manifest.sections.git.refs[`refs/heads/${branch}`]).toBe(headSha);
+    const checkpointSha = manifest.checkpoint.sha;
+    expect(checkpointSha).not.toBe(world.baseSha);
+    expect(seen.checkpointRef?.sha).toBe(checkpointSha);
+    expect(sh(world.storePath, ["rev-parse", `${checkpointSha}^`])).toBe(headSha);
+    const tree = sh(world.storePath, ["ls-tree", "--name-only", `${checkpointSha}^{tree}`]);
+    expect(tree.split("\n")).toEqual(expect.arrayContaining(["committed.txt", "draft.txt"]));
+    expect(manifest.sections.git.refs[WORKTREE_TREE_REF]).toBe(
+      sh(world.storePath, ["rev-parse", `${checkpointSha}^{tree}`]),
+    );
+    // The base pack's closure reaches the backfill commit, so an executor can materialise it.
+    expect(fs.existsSync(path.join(world.blobRoot, manifest.sections.git.packs[0]))).toBe(true);
+  });
 });

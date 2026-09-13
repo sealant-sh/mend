@@ -7,6 +7,50 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-13 · 0.29.0 · Captures everywhere: what the bundle, the hot pool and the shared cache need
+
+Decisions 2, 6, 8 and 9 (`docs/adr/0002-session-capture-store.md`, amended 2026-09-13) make the
+capture store the only session store, the shipped Docker bundle included. Mend's side is built; four
+platform-side gaps decide how much of it runs today.
+
+- **Core, Docker runtime: workspace containers on a configurable network.** The bundle
+  (`deploy/docker/compose.v2.yaml`) runs Garage beside Postgres and tells executors to reach the
+  session channel as `http://mend:3106` and the bucket as `http://garage:3900` — Compose service
+  names on the project's `mend_default` network, which is the only way a presigned URL can name a
+  host the executor resolves without publishing Garage on the host. Today
+  `docker-runtime-adapter.ts` passes `--network` only for the docker-in-workspace service (a
+  per-workspace network); every other workspace lands on the default bridge, where those names do
+  not resolve, so a session in the bundle fails at `capture plan.get`. **Suggested:** a worker
+  setting `SEALANT_DOCKER_WORKSPACE_NETWORK=<name>` that adds `--network <name>` to every
+  `docker run` when the docker service is off (and `docker network connect` beside the per-workspace
+  network when it is on). The bundle already sets the variable ahead of the runtime that reads it.
+- **Core, `capture` workspace source without a worktree yet (standby executors).**
+  `workspaceCaptureSourceSchema.worktreeId` is `nonEmptyStringSchema`, and the SDK derives the
+  workspace name from it. A hot-pool standby is an executor launched before any worktree exists: it
+  materialises the project base and the shared dependency cache and is bound to a worktree at claim.
+  Mend launches it with the placeholder `standby-<hot workspace id>` and serves that id as an alias
+  of the claimed worktree on the channel (`plan.get` answers the base plan, the register's parent is
+  mapped to the chain head). **Suggested:** `worktreeId` optional on the capture source, with
+  sealantd taking the id from `plan.get`'s answer (its boot already accepts `plan.worktree_id` when
+  the env is unset); then the placeholder goes.
+- **sealantd, `crates/sealant-capture/src/materialize.rs`: materialise a delta, and re-plan after
+  claim.** `write_dir` writes every file of every class root it is handed; nothing compares a chunk
+  list against what is already on disk, and `plan_get` is called once, at boot. A standby that has
+  the base materialised therefore cannot be pointed at a worktree whose head is past capture 0: Mend
+  restricts standby claims to fresh worktrees (chain at capture 0 from the same base) and sends
+  every other launch cold. **Suggested:** (1) skip a file whose size and chunk hashes already match
+  on disk (the chunk index the engine keeps for CDC is the same data); (2) a `capture.replan`
+  control command — or a heartbeat answer carrying `replan: true` — after which the daemon fetches
+  `plan.get` again and materialises the head over its disk. With both, a standby serves joins and
+  pickups hot.
+- **sealantd, `plan.get` request: the executor's platform.** The bulk class carries
+  `platform = <os>-<arch>-<libc>` (`engine.rs` `default_platform`), but the request that fetches the
+  plan does not say which platform is asking, so Mend cannot leave a mismatched bulk section out of
+  the plan or pick the matching shared cache for a standby. Mend reads an optional `platform` on
+  `PlanGetRequest` today and answers the bulk section as `"pending"` on a mismatch — the engine then
+  runs the project's install command in the workspace before the harness starts — and serves the
+  whole head unchanged when the field is absent. **Suggested:** send it.
+
 ## 2026-09-12 · 0.28.0 · Capture mode end to end on one machine: what the local proof found
 
 `scripts/capture-e2e.sh` passed on this machine (Mend in capture mode, Core PR sealant#231 from

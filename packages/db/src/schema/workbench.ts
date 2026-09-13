@@ -283,6 +283,9 @@ export const projects = pgTable("projects", {
   workspaceServiceAccount: text(),
   // How many hot workspaces to keep ready for new sessions (0 = none).
   hotSessions: integer().notNull().default(0),
+  // The command that builds the dependency tree (ADR-0002 decisions 2/9); NULL = detect it
+  // from the base tree's lockfile at launch.
+  installCommand: text(),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });

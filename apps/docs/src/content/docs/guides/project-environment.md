@@ -106,13 +106,30 @@ other transports provide an endpoint to copy rather than a browser action.
 
 ## Hot sessions
 
-A project's hot-session count controls how many complete session skeletons Mend keeps ready. A
-skeleton includes the worktree, branch, session directories, and a workspace built from the current
-setup fingerprint.
+A project's hot-session count controls how many standby executors Mend keeps ready. A standby has
+the project's base and the shared dependency cache for its platform materialised, and a workspace
+built from the current setup fingerprint; a new session claims one and its worktree is bound at
+claim.
 
 Changing the image, accounts, dotfiles, mounts, or related launch inputs drains incompatible ready
 workspaces and warms replacements. Status such as `2 ready · 1 warming` reports observation, not a
-launch guarantee.
+launch guarantee. A standby serves a fresh worktree; a session joining a worktree that already holds
+captures starts cold until the executor can materialise a delta.
+
+## Install command
+
+The install command builds a project's dependency tree — `pnpm install --frozen-lockfile`,
+`cargo fetch --locked`, whatever the project needs. Leave it empty and Mend detects it from the
+lockfile at the root of the base tree at launch. Mend runs it in two places, both under its own
+control:
+
+- in a workspace whose captured dependency tree was built for another platform (or that has none
+  yet), before the harness starts — the log line names the platform observed and the command;
+- in an install session Mend launches itself when the command changes, whose result fills the
+  project's shared cache for that platform. Standby executors and cold launches read that cache.
+
+A session's own dependency tree is captured with its work, like any other bytes, and is never
+promoted into the shared cache: what one agent installed is that session's, not the project's.
 
 ## Git access
 

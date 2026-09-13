@@ -1,12 +1,15 @@
 # Session capture store: leases per worktree, executor replacement, capture-backed SessionRepository
 
-Status: proposed 2026-09-12. Cross-repo: sealantd ADR-0015 (capture engine, pack kinds, cadence —
-being amended in parallel; this ADR references it and does not restate the format), Sealant Core
-(`capture` workspace source, `microvm` adapter, bridge `stop()`), Mend (everything below).
-Supersedes the co-located store invariant of `docs/DEPLOYMENT-STRATEGIES.md` and
-`docs/KUBERNETES.md` for every remote deployment. Evidence and arithmetic: the 2026-09-12
-remote-session-storage decision record (§2.3 components and SQL, §2.4 latency, §2.6 cost, §2.7 lease
-settlement); figures below are marked as it marks them: measured, cited, or estimate.
+Status: accepted 2026-09-12; amended 2026-09-13 by decisions 2, 6, 8 and 9 (marked "amended
+2026-09-13" below): captures everywhere from day one, dependency trees captured with a per-project
+shared cache fed only by Mend-controlled installs, credential files captured. Cross-repo: sealantd
+ADR-0015 (capture engine, pack kinds, cadence — being amended in parallel; this ADR references it
+and does not restate the format), Sealant Core (`capture` workspace source, `microvm` adapter,
+bridge `stop()`), Mend (everything below). Supersedes the co-located store invariant of
+`docs/DEPLOYMENT-STRATEGIES.md` and `docs/KUBERNETES.md` for every remote deployment. Evidence and
+arithmetic: the 2026-09-12 remote-session-storage decision record (§2.3 components and SQL, §2.4
+latency, §2.6 cost, §2.7 lease settlement); figures below are marked as it marks them: measured,
+cited, or estimate.
 
 ## Context
 
@@ -50,9 +53,12 @@ Mend's store is a **capture store**: object storage (S3, R2, Garage, Ceph RGW, o
 immutable content-addressed captures; Postgres holds the only mutable pointers and advances them by
 single-statement compare-and-swap. The store's copy is never live. Every read Mend serves is stamped
 "observed at capture n · record seq s"; `auto` captures are labelled partial because they are not
-atomic across files (ADR-0015 accepts the tear; the next capture corrects it). `local` mode keeps
-the bind-mounted worktree as the degenerate case in which the executor's copy and the store are the
-same directory; nothing below changes it.
+atomic across files (ADR-0015 accepts the tear; the next capture corrects it). Amended 2026-09-13
+(decision 8): there is no co-located mode. The capture store is the only session store on every
+tier, `local` included — the bind-mounted worktree is not kept as a degenerate case. The co-located
+adapters (`SessionRepositoryLocalLive`, `WorktreeReadsColocatedLive`, `CaptureRuntimeOff`) survive
+one release behind `MEND_SESSION_STORE=colocated`, warned at start, for installs that have not
+moved; they are scheduled for removal with their tests.
 
 ### The key is the worktree, not the session
 
@@ -242,7 +248,18 @@ Engine changes, by function (`engine.ts` at `ade9996`):
   and the arch-matched dependency cache; the fingerprint (`hot-pool.ts` L16–63) gains the bulk
   `platform` (`<os>-<arch>-<libc>`) and keeps the base ref out, as it does today; a claim applies
   the delta from the head capture. Join and sibling = a second process in the lease holder, through
-  the SDK.
+  the SDK. Amended 2026-09-13 (how it is built, `packages/sessions/src/hot-pool.ts` "Capture-mode
+  standby"): Core's `capture` source requires a worktree id at create, so a standby is launched
+  against the placeholder `standby-<hot workspace id>` and the channel answers its `plan.get` with
+  the project's base plan — the default branch's base pack, an empty workspace class, the shared
+  dependency cache for the executor's platform when the request names one — under a synthetic epoch
+  (the standby row's creation time in ms, larger than any per-worktree counter). At claim Mend
+  claims the worktree's lease **at that epoch** (`claimAs`), and the session keeps serving the
+  placeholder as an alias of its worktree: the executor's requests, keys and manifests name the
+  alias; its first register's parent, the standby plan's id, is mapped to the chain head. A standby
+  therefore serves only a worktree whose chain is at capture 0 from the same base it materialised
+  (the delta is empty by construction); any other worktree goes cold until sealantd can re-plan
+  after claim and materialise a delta (sealantd follow-ups, `PLATFORM-FEEDBACK.md` 2026-09-13).
 
 ### Replacement and pickup
 
@@ -284,16 +301,26 @@ credentials (the Mend key or the bridge), never from an executor.
   threshold; the known-object and known-chunk indexes are regenerated per project.
 - Promotion into `projects/<project>/packs/` is a server-side copy of git-class and Mend-made bulk
   packs only; harness-home and `.git`-internals classes never promote.
+- Amended 2026-09-13 (decisions 2 and 9): dependency trees are **work product** — the bulk class is
+  captured per session like any other bytes — and the per-project **shared cache**
+  `projects/<project>/cache/<platform>/` is written by exactly one writer, the Mend-controlled
+  install job (`packages/jobs/src/dependency-install.ts`): a session Mend launches itself to run the
+  project's install command, whose final capture's bulk section is promoted by server-side copy
+  (`packages/sessions/src/dependency-cache.ts`). A session capture never promotes into it, so one
+  session's dependency tree can never become another's supply chain. Standby executors and cold
+  launches read from it; on a platform mismatch or an empty cache the engine runs the install
+  command in the workspace before the harness starts. The install command is a per-project setting
+  (`projects.install_command`), detected from the base tree's lockfile when unset.
 
 ### Placement per tier
 
-| Tier                                                                             | Bucket                                                                                                       | Executor disk                      | Runner                                                                      | Notes                                                                                                                                                                                             |
-| -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ | ---------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Single machine, Docker bundle (`compose.yaml` → `deploy/docker/compose.v2.yaml`) | Garage on a Docker volume beside `mend-store`; `FsLive` under `~/.config/mend` for `pnpm dev` without Docker | the container's own disk           | the API process; the cache is the store                                     | bind mount stays the default; captures are opt-in here                                                                                                                                            |
-| Dev stack (`compose.dev.yaml`, Postgres only today)                              | a `garage` service (single-node mode, bucket `mend`, S3 on 3900)                                             | Docker                             | API process                                                                 | proves everything with no cloud account                                                                                                                                                           |
-| Kubernetes / Talos                                                               | Rook `CephObjectStore` RGW if present, else Garage                                                           | `emptyDir` on node NVMe            | the API Pod with a local-path cache PVC                                     | the RWX `mend-store` claim and `SEALANT_K8S_VOLUME_MAPPINGS` for the store are retired                                                                                                            |
-| Cloudflare                                                                       | R2, presigned by the Worker                                                                                  | sandbox disk (`standard-3`, 16 GB) | the `cf` git cell in ops-only mode (`docs/CLOUDFLARE-HOSTED.md` "Git cell") | `SessionObject` hosts the channel and lease alarms; summaries re-key from `changes/<session>/<n>/` to `changes/<worktree>/<n>/`; `keepAlive` while live, SIGTERM flush, `destroy()` only to fence |
-| AWS                                                                              | S3 via the gateway endpoint                                                                                  | MicroVM root disk                  | EKS API Pod                                                                 | `microvm` adapter; `/suspend` and `/terminate` flush                                                                                                                                              |
+| Tier                                                                             | Bucket                                                                                                                                                            | Executor disk                      | Runner                                                                      | Notes                                                                                                                                                                                             |
+| -------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------- | --------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Single machine, Docker bundle (`compose.yaml` → `deploy/docker/compose.v2.yaml`) | Garage on a Docker volume beside `mend-store` (`mend-garage`, ≈ 7.5 MiB idle, measured 2026-09-13); `FsLive` under `~/.config/mend` for `pnpm dev` without Docker | the container's own disk           | the API process; the cache is the store                                     | the only store (decision 8); setup lays Garage out once; executors need the Compose network (Core follow-up)                                                                                      |
+| Dev stack (`compose.dev.yaml`, Postgres only today)                              | a `garage` service (single-node mode, bucket `mend`, S3 on 3900)                                                                                                  | Docker                             | API process                                                                 | proves everything with no cloud account                                                                                                                                                           |
+| Kubernetes / Talos                                                               | Rook `CephObjectStore` RGW if present, else Garage                                                                                                                | `emptyDir` on node NVMe            | the API Pod with a local-path cache PVC                                     | the RWX `mend-store` claim and `SEALANT_K8S_VOLUME_MAPPINGS` for the store are retired                                                                                                            |
+| Cloudflare                                                                       | R2, presigned by the Worker                                                                                                                                       | sandbox disk (`standard-3`, 16 GB) | the `cf` git cell in ops-only mode (`docs/CLOUDFLARE-HOSTED.md` "Git cell") | `SessionObject` hosts the channel and lease alarms; summaries re-key from `changes/<session>/<n>/` to `changes/<worktree>/<n>/`; `keepAlive` while live, SIGTERM flush, `destroy()` only to fence |
+| AWS                                                                              | S3 via the gateway endpoint                                                                                                                                       | MicroVM root disk                  | EKS API Pod                                                                 | `microvm` adapter; `/suspend` and `/terminate` flush                                                                                                                                              |
 
 MinIO is not an option: `minio/minio` entered maintenance 2025-12-03 and was archived 2026-04-25
 (cited). Garage lacks bucket policies, versioning and conditional writes; the design needs none of
@@ -306,9 +333,14 @@ the session; revoked at pickup and replacement) and presigned per-key URLs under
 `captures/<worktree>/<epoch>/…` with a 15 min TTL. No bucket credentials, no Postgres credentials,
 no other epoch's prefix. Its blast radius is its own epoch prefix: a fenced executor's still-valid
 URLs name keys the live epoch never reads, and an overwrite inside its own live epoch is self-harm
-caught by sha256 at read. Known credential files are excluded from the harness-home class and
-re-injected by Core at launch (open question below). The agent's own connected-account tokens are
-outside Mend's fence.
+caught by sha256 at read. Amended 2026-09-13 (decision 6): credential files the harness writes into
+its home (`.claude/.credentials.json`, `.codex/auth.json`) are **captured** with the rest of the
+harness-home class — nothing excludes them, on either side — so a pickup resumes a logged-in harness
+without Core re-injecting anything. In the bucket they sit under the provider's at-rest encryption
+only (S3 SSE, R2's default encryption, Garage's on-disk state); the bucket is one installation's and
+whoever can read it can read a session's provider login. Client-side encryption with a Mend-held key
+is the follow-up gated on multi-tenancy, not on this decision. The agent's own connected-account
+tokens are outside Mend's fence.
 
 ## Considered options
 
@@ -342,24 +374,31 @@ outside Mend's fence.
   Postgres, not `dmesg`.
 - The hot pool of ADR-0001 stays; nothing worktree-shaped enters its fingerprint, but the executor's
   architecture now does.
+- Amended 2026-09-13: an install adopted before captures has worktrees with a directory and no
+  chain. They are backfilled on first use: the first capture-mode launch or resume of a session in
+  such a worktree registers capture 0 from the directory's current files (a final co-located
+  checkpoint of it) rather than from the base, so uncommitted work is carried into the bucket; no
+  separate migrate step (`SessionRepositoryCapturedLive.attachWorktree`).
 
 ## Open questions
 
 Human decisions from the decision record that touch Mend, unchanged here:
 
-1. Dependency trees: work product (captured per session, bulk bytes, cross-session supply chain) or
-   reproducible (Mend-controlled installs only, reinstall on mismatch, 12–15 s)?
+1. ~~Dependency trees: work product or reproducible?~~ Decided 2026-09-13 (decisions 2 and 9):
+   captured per session as work product; the shared cache is fed only by Mend-controlled installs; a
+   mismatch reinstalls under Mend's control.
 2. Cloudflare idle policy: `keepAlive` while a human thinks, or capture-and-destroy on settle and a
    25–40 s cold return?
 3. Cadence and retention budget: 2 s / 10 s and 24 h of `auto` captures (≈ $37–50/month of request
    fees at 100 users) or 5 s / 30 s at twice the loss window?
-4. Credential files: exclude `.claude/.credentials.json` and `.codex/auth.json` and rely on Core's
-   re-injection, or capture them?
+4. ~~Credential files: exclude or capture?~~ Decided 2026-09-13 (decision 6): captured; see
+   "Security".
 5. Transcripts in a bucket: provider encryption or a Mend-held key; retention of `auto` captures
    holding transcripts; one bucket with prefix isolation or one per tenant.
-6. Local mode: shadow captures from day one, or the bind mount as the only local path?
-7. Per-project dependency caches shared across users within an organisation when only Mend-made
-   installs may produce them?
+6. ~~Local mode: shadow captures or the bind mount?~~ Decided 2026-09-13 (decision 8): captures
+   everywhere from day one; no co-located mode.
+7. ~~Per-project dependency caches shared across users?~~ Decided 2026-09-13 (decision 9): one cache
+   per project and platform, written only by the install job.
 8. Interim: is the `cf` branch's "a replaced sandbox is a stopped session with its last checkpoint
    intact" acceptable while this is built?
 
@@ -397,3 +436,13 @@ Mend-side details the decision record left open, decided in this ADR:
 18. Cloudflare summaries re-key from `changes/<session>/<n>/` to `changes/<worktree>/<n>/`.
 19. `SEALANT_CAPTURE_ENDPOINT` / `SEALANT_CAPTURE_TOKEN` are aliases of `MEND_SESSION_ENDPOINT` /
     `MEND_SESSION_TOKEN`: one token row, delivered under both names.
+20. (2026-09-13) `MEND_SESSION_STORE` defaults to `captured`; `colocated` is deprecated, warned at
+    start, and removed with its adapters and tests in a follow-up release.
+21. (2026-09-13) Epochs are strictly increasing per worktree, never necessarily consecutive: a claim
+    by a standby executor adopts the standby's synthetic epoch (`claimAs`).
+22. (2026-09-13) A standby executor's placeholder worktree id is `standby-<hot workspace id>`; a
+    session claimed from it serves that id as an alias of its worktree for the executor's life.
+23. (2026-09-13) The shared dependency cache lives at `projects/<project>/cache/<platform>/` (`root`
+    names the bulk root dir object; packs beside it); `packs` rows carry `platform` and a null
+    `worktree_id`. Only `dependency-install` writes it.
+24. (2026-09-13) Legacy worktrees are backfilled at first capture-mode use, not by a migrate step.

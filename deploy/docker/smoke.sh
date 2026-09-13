@@ -11,6 +11,7 @@ PROJECT=$(printf '%s' "$TOKEN" | tr -c 'a-z0-9_-' '-')
 ENV_FILE=$(mktemp "${TMPDIR:-/tmp}/$PROJECT.env.XXXXXX")
 STORE_VOLUME="$PROJECT-store"
 CONTROL_VOLUME="$PROJECT-control"
+GARAGE_VOLUME="$PROJECT-garage"
 IMAGE_REPOSITORY=${MEND_SMOKE_IMAGE_REPOSITORY:-mend-bundle-packaging}
 IMAGE_VERSION=${MEND_SMOKE_IMAGE_VERSION:-test}
 
@@ -41,8 +42,13 @@ BETTER_AUTH_SECRET=$(secret_hex)
 WORKSPACE_SSH_GATEWAY_TOKEN=$(secret_hex)
 SEALANT_SERVICE_KEY=slt_svc_$(secret_hex)
 SEALANT_CREDENTIALS_KEY=$(head -c 32 /dev/urandom | base64 | tr -d '\n')
+MEND_GARAGE_RPC_SECRET=$(secret_hex)
+MEND_GARAGE_ADMIN_TOKEN=$(secret_hex)
+MEND_GARAGE_KEY_ID=GK$(head -c 12 /dev/urandom | od -An -tx1 | tr -d ' \n')
+MEND_GARAGE_KEY_SECRET=$(secret_hex)
 MEND_STORE_VOLUME_NAME=$STORE_VOLUME
 MEND_CONTROL_VOLUME_NAME=$CONTROL_VOLUME
+MEND_GARAGE_VOLUME_NAME=$GARAGE_VOLUME
 EOF
 chmod 600 "$ENV_FILE"
 
@@ -59,7 +65,7 @@ cleanup() {
     compose logs --no-color --tail 300 >&2 || true
   fi
   compose down --volumes --remove-orphans >/dev/null 2>&1 || true
-  docker volume rm "$STORE_VOLUME" "$CONTROL_VOLUME" >/dev/null 2>&1 || true
+  docker volume rm "$STORE_VOLUME" "$CONTROL_VOLUME" "$GARAGE_VOLUME" >/dev/null 2>&1 || true
   rm -f "$ENV_FILE"
   exit "$status"
 }
@@ -67,16 +73,29 @@ trap cleanup EXIT INT TERM
 
 docker volume create --label "dev.sealant.mend.smoke=$TOKEN" "$STORE_VOLUME" >/dev/null
 docker volume create --label "dev.sealant.mend.smoke=$TOKEN" "$CONTROL_VOLUME" >/dev/null
+docker volume create --label "dev.sealant.mend.smoke=$TOKEN" "$GARAGE_VOLUME" >/dev/null
 compose up --detach --wait --wait-timeout 240
 
 running=$(compose ps --services --status running | sort)
-expected=$(printf 'mend\npostgres')
+expected=$(printf 'garage\nmend\npostgres')
 [ "$running" = "$expected" ] || {
   compose ps
-  printf 'expected only mend and postgres, got:\n%s\n' "$running" >&2
+  printf 'expected only garage, mend and postgres, got:\n%s\n' "$running" >&2
   exit 1
 }
-[ "$(docker ps --quiet --filter "label=com.docker.compose.project=$PROJECT" | wc -l | tr -d ' ')" = 2 ]
+[ "$(docker ps --quiet --filter "label=com.docker.compose.project=$PROJECT" | wc -l | tr -d ' ')" = 3 ]
+# The bucket is laid out the way `mend server setup` lays it out (idempotent steps).
+garage() { compose exec --no-TTY garage /garage -c /etc/garage.toml "$@"; }
+GARAGE_NODE=$(garage status | awk '/^[0-9a-f]{16}/ { print $1; exit }')
+garage layout assign -z mend -c 1GB "$GARAGE_NODE" >/dev/null 2>&1 || true
+garage layout apply --version 1 >/dev/null 2>&1 || true
+garage bucket create mend >/dev/null 2>&1 || true
+garage key import --yes -n mend "$(grep '^MEND_GARAGE_KEY_ID=' "$ENV_FILE" | cut -d= -f2)" \
+  "$(grep '^MEND_GARAGE_KEY_SECRET=' "$ENV_FILE" | cut -d= -f2)" >/dev/null 2>&1 || true
+garage bucket allow --read --write --owner mend --key mend >/dev/null 2>&1 || true
+garage bucket info mend | grep -q 'mend'
+# Garage publishes no host port either.
+[ "$(docker port "$(compose ps --quiet garage)" | wc -l | tr -d ' ')" = 0 ]
 
 MEND_SMOKE_EXPECTED_VERSION=$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.version"}}' "$IMAGE_REPOSITORY:$IMAGE_VERSION")
 MEND_SMOKE_HEALTH_URL="http://127.0.0.1:$WEB_PORT/api/health"

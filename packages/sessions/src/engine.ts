@@ -93,6 +93,7 @@ import {
   NO_SIGNER_MESSAGE,
   SecretCipher,
   decodeManifest,
+  git,
   harnessHomePathOf,
   listCaptureFiles,
   processStatePathOf,
@@ -121,6 +122,7 @@ import {
   LEASE_REAPER_INTERVAL_SECONDS,
   REPLACEMENT_AGE_SECONDS,
 } from "./capture-runtime.ts";
+import { detectInstallCommand, PLATFORM_PROBE_SCRIPT, platformKeyOf } from "./dependency-cache.ts";
 import { DotfilesResolveError, resolveDotfilesArchives } from "./dotfiles.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
 import {
@@ -140,7 +142,12 @@ import {
   type LocatedHarnessState,
   locateHarnessState,
 } from "./harness-state.ts";
-import { hotFingerprint, type HotFingerprintInputs } from "./hot-pool.ts";
+import {
+  hotFingerprint,
+  type HotFingerprintInputs,
+  standbyEpochOf,
+  standbyWorktreeAlias,
+} from "./hot-pool.ts";
 import { backfillFromNative, cursorAtEndOf } from "./native-backfill.ts";
 import {
   convertNativeSession,
@@ -864,18 +871,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           "MEND_DEPLOYMENT_MODE=kubernetes requires MEND_SESSION_ENDPOINT_LISTEN / _URL on the session worker — a workspace Pod on another node cannot reach a Unix socket, so without the network channel every session would be unreachable.",
         );
       }
-      // Capture mode (ADR-0002): the executor materialises the worktree from the bucket and
-      // ships captures back over the network channel, so the channel must exist.
+      // The capture store (ADR-0002, the default since decision 8): the executor materialises
+      // the worktree from the bucket and ships captures back over the network channel, so the
+      // channel must exist. `capture === null` is the deprecated co-located store.
       const captureRuntime = yield* CaptureRuntime;
       const captureStoreOn = deployment.sessionStore === "captured";
       if (captureStoreOn && deployment.sessionEndpoint === undefined) {
         return yield* Effect.die(
-          "MEND_SESSION_STORE=captured requires MEND_SESSION_ENDPOINT_LISTEN / _URL — the executor reaches the capture routes over the network session channel, never a socket.",
+          "The capture store (the default; MEND_SESSION_STORE unset or `captured`) requires MEND_SESSION_ENDPOINT_LISTEN / _URL — the executor reaches the capture routes over the network session channel, never a socket. DEVELOPMENT.md §Environment names the values for this machine.",
         );
       }
       if (captureStoreOn && !captureRuntime.enabled) {
         return yield* Effect.die(
-          "MEND_SESSION_STORE=captured but the capture runtime was not provided to the session engine.",
+          "The capture store is selected but the capture runtime was not provided to the session engine.",
         );
       }
       const capture = captureStoreOn && captureRuntime.enabled ? captureRuntime : null;
@@ -896,9 +904,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           const session = yield* sessions.byId(sessionId).pipe(Effect.option);
           if (Option.isNone(session)) {
-            return yield* Effect.die(
-              "capture mode: a workspace needs its session row — standby executors are not warmed here",
-            );
+            // A standby executor: no worktree yet, so the placeholder Core requires — the
+            // channel answers its plan and a claim binds it (`hot-pool.ts`).
+            const entry = yield* hotWorkspaces.byId(sessionId);
+            if (entry === null) {
+              return yield* Effect.die(
+                "capture mode: a workspace needs its session row or its standby row",
+              );
+            }
+            return {
+              source: {
+                kind: "capture" as const,
+                endpoint: endpoint.url,
+                worktreeId: standbyWorktreeAlias(sessionId),
+              },
+              captureToken: token,
+            };
           }
           return {
             source: {
@@ -909,6 +930,80 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             captureToken: token,
           };
         });
+
+      /**
+       * Dependency trees (ADR-0002 amended 2026-09-13, decisions 2 and 9): the head the executor
+       * materialised carries a bulk section only for the platform it was captured on. Observe
+       * this executor's platform with one exec; when the head has no tree for it, run the
+       * project's install command (the setting, else the lockfile's) in the workspace before the
+       * harness starts. Lines, never verdicts: a failing install is the agent's to see next.
+       */
+      const installDependenciesIfNeeded = Effect.fn("SessionEngine.installDependenciesIfNeeded")(
+        function* (session: Session, project: Project, workspace: Workspace) {
+          if (capture === null) return;
+          const probe = yield* sealant.exec(workspace, ["sh", "-c", PLATFORM_PROBE_SCRIPT]);
+          const platform = platformKeyOf(probe.stdout);
+          if (platform === null) {
+            yield* Effect.logInfo(
+              "session engine: dependency install skipped · platform unknown",
+            ).pipe(
+              Effect.annotateLogs({ sessionId: session.id, probe: probe.stdout.slice(0, 80) }),
+            );
+            return;
+          }
+          const head = (yield* capture.repo.headOf(session.worktreeId))?.head ?? null;
+          const bulk =
+            head === null
+              ? "pending"
+              : yield* capture.blobs.get(head.manifestKey).pipe(
+                  Effect.flatMap((bytes) => decodeManifest(head.manifestKey, bytes)),
+                  Effect.map((manifest) => manifest.sections.bulk),
+                  Effect.catch(() => Effect.succeed("pending" as const)),
+                );
+          if (bulk !== "pending" && bulk.platform === platform) {
+            yield* Effect.logInfo(
+              "session engine: dependency tree observed for this platform",
+            ).pipe(
+              Effect.annotateLogs({ sessionId: session.id, platform, captureN: head?.n ?? null }),
+            );
+            return;
+          }
+          const command =
+            project.installCommand ??
+            detectInstallCommand(
+              (yield* git(["ls-tree", "--name-only", session.baseSha], project.storePath))
+                .split("\n")
+                .filter((name) => name !== ""),
+            );
+          if (command === null) {
+            yield* Effect.logInfo(
+              "session engine: dependency install skipped · no install command",
+            ).pipe(Effect.annotateLogs({ sessionId: session.id, platform }));
+            return;
+          }
+          yield* Effect.logInfo("session engine: dependency install · running").pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              platform,
+              capturedFor: bulk === "pending" ? null : bulk.platform,
+              command,
+            }),
+          );
+          const result = yield* sealant.exec(workspace, ["sh", "-lc", command], {
+            cwd: "/workspace/repo",
+          });
+          yield* Effect.logInfo(
+            `session engine: dependency install · ${result.exitCode === 0 ? "completed" : "exited"} · exit ${result.exitCode}`,
+          ).pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              platform,
+              command,
+              stderr: result.exitCode === 0 ? "" : result.stderr.slice(-400),
+            }),
+          );
+        },
+      );
 
       /** The project's compressed footprint (its base packs) prices the session's byte budget. */
       const footprintCache = new Map<SessionId, number>();
@@ -953,19 +1048,45 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ).pipe(Effect.annotateLogs({ sessionId, worktreeId: session.worktreeId }));
         });
 
-      /** The capture routes for one session, scoped to its worktree on every call. */
+      /**
+       * The capture routes for one session, scoped to its worktree on every call — so a
+       * standby executor (a pooled id with no session row yet) is answered as a standby until a
+       * claim gives its id a session, after which the same routes serve the claimed worktree
+       * with the placeholder as an alias (`hot-pool.ts` "Capture-mode standby").
+       */
       const captureApiFor = (sessionId: SessionId): SessionCaptureApi => {
         const scoped = <A>(
           call: (api: SessionCaptureApi) => Effect.Effect<A, CaptureRouteError>,
         ): Effect.Effect<A, CaptureRouteError> =>
           Effect.gen(function* () {
             if (capture === null) return yield* Effect.die("capture routes outside capture mode");
-            const session = yield* sessions.byId(sessionId).pipe(Effect.orDie);
+            const found = yield* sessions.byId(sessionId).pipe(Effect.option);
+            if (Option.isNone(found)) {
+              const entry = yield* hotWorkspaces.byId(sessionId);
+              const prepare = sessionRepo.prepareStandby;
+              if (entry === null || prepare === undefined) {
+                return yield* Effect.die("capture routes: no session and no standby for this id");
+              }
+              const alias = standbyWorktreeAlias(sessionId);
+              const epoch = standbyEpochOf(entry.createdAt);
+              return yield* call(
+                capture.channel.standbyApiFor({
+                  alias,
+                  projectId: entry.projectId,
+                  executorId: sessionId,
+                  epoch,
+                  plan: (platform) =>
+                    prepare(entry.projectId, alias, epoch, entry.baseSha, platform),
+                }),
+              );
+            }
+            const session = found.value;
             const api = capture.channel.apiFor({
               worktreeId: session.worktreeId,
               projectId: session.projectId,
               executorId: sessionId,
               footprintBytes: yield* footprintFor(sessionId, session.projectId),
+              aliases: [standbyWorktreeAlias(sessionId)],
             });
             return yield* call(api);
           });
@@ -3684,6 +3805,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return yield* error;
           }
         }
+        // Capture mode: a worktree without a chain was made before captures (the deprecated
+        // co-located store, or an install upgraded across decision 8) — attach it now, so
+        // capture 0 carries its directory's current files (ADR-0002 "Consequences", amended).
+        if (capture !== null && adopted === null && sessionRepo.attachWorktree !== undefined) {
+          const chain = yield* capture.repo.headOf(session.worktreeId);
+          if (chain?.head === null || chain?.head === undefined) {
+            yield* sessionRepo.attachWorktree(project.id, session.worktreeId).pipe(
+              Effect.mapError(
+                (error) =>
+                  new SealantPlatformError({
+                    code: "capture_backfill_failed",
+                    status: null,
+                    message: `capture 0 could not be registered for worktree ${session.worktree}: ${error._tag === "GitError" ? error.stderr : error.message}`,
+                    cause: error,
+                  }),
+              ),
+              settleOnFailure,
+            );
+          }
+        }
         // Capture mode: Mend claims the lease at launch (epoch + 1, the chain fenced in the
         // same statement) with a boot-sized TTL; the executor learns the epoch from its first
         // plan and the first heartbeat brings the TTL back to the 30 s cadence.
@@ -3935,6 +4076,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             worktree,
             provisioned.referenceMounts,
             provisioned.extraMounts,
+          );
+        }
+
+        // Capture mode: the dependency tree for THIS executor's platform, before the harness.
+        if (capture !== null) {
+          yield* installDependenciesIfNeeded(session, project, workspace).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: dependency install did not run").pipe(
+                Effect.annotateLogs({ sessionId, error: String(error) }),
+              ),
+            ),
           );
         }
 
@@ -5786,6 +5938,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // and no worktree of its own. The claiming session brings whichever worktree it needs —
         // brand new or an existing one — and the launch binds it. Only the session id is
         // pre-generated: the harness home and socket dir are keyed by it and mounted here.
+        // Capture mode: the standby materialises the project base the channel plans for it;
+        // the base it was prepared from is fixed on the row, so a claim can tell a worktree it
+        // can serve (capture 0 from that base) from one it cannot (`hot-pool.ts`).
         const entry = yield* hotWorkspaces.create({
           id: sessionId,
           projectId: project.id,
@@ -5796,6 +5951,32 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           branch: null,
           baseSha: null,
         });
+        if (capture !== null && sessionRepo.prepareStandby !== undefined) {
+          const prepared = yield* sessionRepo
+            .prepareStandby(
+              project.id,
+              standbyWorktreeAlias(sessionId),
+              standbyEpochOf(entry.createdAt),
+              null,
+              undefined,
+            )
+            .pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("session engine: standby plan not prepared").pipe(
+                  Effect.annotateLogs({ projectId: project.id, error: String(error) }),
+                  Effect.as(null),
+                ),
+              ),
+            );
+          if (prepared === null) {
+            yield* hotWorkspaces.setFailed(
+              sessionId,
+              "the standby's base plan could not be prepared",
+            );
+            return false;
+          }
+          yield* hotWorkspaces.setBaseSha(sessionId, prepared.baseSha);
+        }
         const socketDir = yield* socketHost.start(sessionId, socketApiFor(sessionId));
         const provisionAttempt = Effect.gen(function* () {
           const provisioned = yield* provisionWorkspace({
@@ -5808,13 +5989,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ownerUserId,
             onFailure: (message) => hotWorkspaces.setFailed(sessionId, message),
           });
-          yield* appendWorkspaceNote(
-            provisioned.workspace,
-            project,
-            null,
-            provisioned.referenceMounts,
-            provisioned.extraMounts,
-          );
+          if (capture === null) {
+            yield* appendWorkspaceNote(
+              provisioned.workspace,
+              project,
+              null,
+              provisioned.referenceMounts,
+              provisioned.extraMounts,
+            );
+          }
           yield* hotWorkspaces.setReady(sessionId, {
             sealantWorkspaceId: SealantWorkspaceId.make(provisioned.workspace.id),
             workspaceImage: provisioned.workspaceImage,
@@ -5869,17 +6052,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           .snapshot(projectId)
           .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.die("project row vanished")));
         const warmSkipped =
-          capture !== null ||
-          (deployment.mode !== "kubernetes" &&
-            (clusterBindings.bindings.length > 0 || clusterBindings.serviceAccount !== null));
-        if (capture !== null && project.hotSessions > 0) {
-          // SEAM: a standby executor for a capture project would pre-materialise the project
-          // base and the platform-matched dependency cache before any worktree exists; the
-          // capture source needs a worktree id at create today (Core PR sealant#231).
-          yield* Effect.logInfo(
-            "session engine: warm skipped · capture mode · standby executors need a claim-later capture source",
-          ).pipe(Effect.annotateLogs({ projectId }));
-        } else if (warmSkipped) {
+          deployment.mode !== "kubernetes" &&
+          (clusterBindings.bindings.length > 0 || clusterBindings.serviceAccount !== null);
+        if (warmSkipped) {
           yield* Effect.logInfo(
             `session engine: warm skipped · ${clusterBindings.bindings.length} cluster binding${clusterBindings.bindings.length === 1 ? "" : "s"}${clusterBindings.serviceAccount === null ? "" : " · service account set"} · local runner`,
           ).pipe(Effect.annotateLogs({ projectId }));
@@ -5988,11 +6163,49 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly ownerUserId: string | null;
         },
       ) {
-        if (capture !== null) return null;
+        // Capture mode: a standby serves only a worktree whose chain stands at capture 0 from the
+        // base the standby materialised — the delta is empty by construction. Anything else
+        // (a join into a worktree with captures, another base) launches cold; the standby
+        // stays in the pool for the next fresh worktree (`hot-pool.ts`).
+        if (capture !== null) {
+          const chain = yield* capture.repo.headOf(worktree.id);
+          if (chain?.head === null || chain?.head === undefined || chain.head.n !== 0) return null;
+        }
         const ownerUserId = input.ownerUserId ?? (yield* userDotfilesRepo.firstUserId());
         const inputs = yield* hotInputsFor(project, ownerUserId);
         const entry = yield* hotWorkspaces.claim(project.id, hotFingerprint(inputs), ownerUserId);
         if (entry === null) return null;
+        if (capture !== null) {
+          // The standby's base must be the worktree's, and the worktree's lease is claimed AT
+          // the standby's epoch — what its executor already holds (decision 21). A refusal
+          // (another base, a live lease) drains the consumed entry and goes cold.
+          const claimed =
+            entry.baseSha === worktree.baseSha
+              ? yield* capture.repo
+                  .claimAs(
+                    worktree.id,
+                    entry.id,
+                    standbyEpochOf(entry.createdAt),
+                    LAUNCH_CLAIM_TTL_SECONDS,
+                  )
+                  .pipe(Effect.option)
+              : Option.none();
+          if (Option.isNone(claimed)) {
+            yield* Effect.logInfo(
+              "session engine: standby not claimable for this worktree · cold provision",
+            ).pipe(
+              Effect.annotateLogs({
+                projectId: project.id,
+                worktreeId: worktree.id,
+                standbyBase: entry.baseSha,
+                worktreeBase: worktree.baseSha,
+              }),
+            );
+            yield* drainHotWorkspace(entry);
+            yield* requestHotReconcile(project.id);
+            return null;
+          }
+        }
         // The replacement warms in the background while this session launches.
         yield* requestHotReconcile(project.id);
         const session = yield* sessions.create({

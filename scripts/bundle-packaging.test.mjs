@@ -40,6 +40,11 @@ const renderCompose = (file = path.join(composeDirectory, "compose.v2.yaml")) =>
         SEALANT_CREDENTIALS_KEY: "MDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDAwMDA=",
         MEND_STORE_VOLUME_NAME: "mend-test-store",
         MEND_CONTROL_VOLUME_NAME: "mend-test-control",
+        MEND_GARAGE_VOLUME_NAME: "mend-test-garage",
+        MEND_GARAGE_RPC_SECRET: "0".repeat(64),
+        MEND_GARAGE_ADMIN_TOKEN: "1".repeat(64),
+        MEND_GARAGE_KEY_ID: "GK000000000000000000000000",
+        MEND_GARAGE_KEY_SECRET: "2".repeat(64),
       },
     },
   );
@@ -47,11 +52,24 @@ const renderCompose = (file = path.join(composeDirectory, "compose.v2.yaml")) =>
   return JSON.parse(result.stdout);
 };
 
-test("the rendered deployment has only Mend and official Postgres", () => {
+test("the rendered deployment has Mend, official Postgres and the Garage bucket", () => {
   const compose = renderCompose();
-  assert.deepEqual(Object.keys(compose.services).toSorted(), ["mend", "postgres"]);
+  assert.deepEqual(Object.keys(compose.services).toSorted(), ["garage", "mend", "postgres"]);
   assert.equal(compose.services.mend.image, "example.invalid/mend:1.2.3");
   assert.equal(compose.services.postgres.image, "postgres:17-alpine");
+  assert.equal(compose.services.garage.image, "dxflrs/garage:v2.4.1");
+  // Garage publishes nothing; Mend reaches it and executors reach both on the Compose network.
+  assert.equal(compose.services.garage.ports, undefined);
+  const mend = compose.services.mend.environment;
+  assert.equal(mend.MEND_BLOB_STORE, "s3://mend?endpoint=http://garage:3900&region=garage");
+  assert.equal(mend.MEND_BLOB_STORE_PUBLIC_URL, "http://garage:3900");
+  assert.equal(mend.MEND_SESSION_ENDPOINT_URL, "http://mend:3106");
+  assert.equal(mend.MEND_SESSION_ENDPOINT_LISTEN, "0.0.0.0:3106");
+  assert.equal(mend.AWS_ACCESS_KEY_ID, "GK000000000000000000000000");
+  assert.equal(mend.SEALANT_DOCKER_WORKSPACE_NETWORK, "mend_default");
+  assert.equal(mend.MEND_SESSION_STORE, undefined);
+  assert.equal(compose.services.garage.environment.GARAGE_RPC_SECRET, "0".repeat(64));
+  assert.match(compose.configs["garage-config"].content, /replication_factor = 1/);
 
   const published = compose.services.mend.ports;
   assert.deepEqual(
@@ -66,7 +84,7 @@ test("the rendered deployment has only Mend and official Postgres", () => {
 test("the root Compose entry point uses the same deployment and project name", () => {
   const compose = renderCompose(path.join(root, "compose.yaml"));
   assert.equal(compose.name, "mend");
-  assert.deepEqual(Object.keys(compose.services).toSorted(), ["mend", "postgres"]);
+  assert.deepEqual(Object.keys(compose.services).toSorted(), ["garage", "mend", "postgres"]);
   assert.equal(compose.services.mend.image, "example.invalid/mend:1.2.3");
 });
 
@@ -80,8 +98,14 @@ test("named-volume lowering and persistence paths stay aligned", () => {
   assert.equal(mend.environment.SEALANT_MOUNT_ALLOWED_STORE_ROOTS, "/var/lib/mend/store");
   assert.equal(compose.volumes["mend-store"].name, "mend-test-store");
   assert.equal(compose.volumes["mend-control"].name, "mend-test-control");
+  assert.equal(compose.volumes["mend-garage"].name, "mend-test-garage");
   assert.equal(compose.volumes["mend-store"].external, true);
   assert.equal(compose.volumes["mend-control"].external, true);
+  assert.equal(compose.volumes["mend-garage"].external, true);
+  const garageMounts = new Map(
+    compose.services.garage.volumes.map((volume) => [volume.target, volume.source]),
+  );
+  assert.equal(garageMounts.get("/var/lib/garage"), "mend-garage");
 
   const mounts = new Map(mend.volumes.map((volume) => [volume.target, volume.source]));
   assert.equal(mounts.get("/var/lib/mend/store"), "mend-store");
@@ -102,7 +126,8 @@ test("the bundle pins published Sealant 0.29.0 artifacts and its official migrat
   ]);
   assert.equal(contract.sealantVersion, "0.29.0");
   assert.equal(contract.schemaVersion, 2);
-  assert.deepEqual(contract.runtimeContainers, ["mend", "postgres"]);
+  assert.deepEqual(contract.runtimeContainers, ["mend", "postgres", "garage"]);
+  assert.equal(contract.captureStore.image, "dxflrs/garage:v2.4.1");
   assert.equal(contract.registry, undefined);
   assert.match(dockerfile, /MEND_VERSION=\$\{MEND_VERSION\}/);
   assert.match(dockerfile, /sealant-api@sha256:0ca16620/);

@@ -320,21 +320,21 @@ async function collectOwned() {
 
 async function idle() {
   const { now, compose } = await collectOwned();
-  check(compose.length === 2, "Idle product must have exactly two Compose containers");
+  check(compose.length === 3, "Idle product must have exactly three Compose containers");
   check(
     compose
       .map((item) => item.Config.Labels["com.docker.compose.service"])
       .toSorted()
-      .join(",") === "mend,postgres",
-    "Idle services must be Mend and Postgres",
+      .join(",") === "garage,mend,postgres",
+    "Idle services must be Garage, Mend and Postgres",
   );
   check(
     compose.every((item) => item.State.Running && item.State.Health?.Status === "healthy"),
-    "Both idle product containers must be healthy",
+    "Every idle product container must be healthy",
   );
   const identity = await readPrivateIdentity(configRoot);
   check(
-    ["mend-store", "mend-control"].every((name) => {
+    ["mend-store", "mend-control", "mend-garage"].every((name) => {
       const volume = now.volumes.find((item) => item.Name === name);
       return volume && volumes.canRemove(volume, identity);
     }),
@@ -342,7 +342,7 @@ async function idle() {
   );
   const initialIds = new Set(initial.containers.map((item) => item.Id));
   check(
-    now.containers.filter((item) => item.State.Running && !initialIds.has(item.Id)).length === 2,
+    now.containers.filter((item) => item.State.Running && !initialIds.has(item.Id)).length === 3,
     "Idle product must not leave workspace or fixture containers running",
   );
   return compose;
@@ -747,6 +747,17 @@ async function main() {
   check(
     postgres.Config.Image === "postgres:17-alpine",
     "Postgres must be the contract's official image",
+  );
+  const garage = compose.find(
+    (item) => item.Config.Labels["com.docker.compose.service"] === "garage",
+  );
+  check(
+    garage.Config.Image === "dxflrs/garage:v2.4.1",
+    "Garage must be the contract's pinned image",
+  );
+  check(
+    Object.keys(garage.HostConfig.PortBindings ?? {}).length === 0,
+    "Product Garage must not publish a host port",
   );
   const bindings = mend.HostConfig.PortBindings;
   for (const [internal, external] of [

@@ -197,6 +197,7 @@ const observationOf = (stamp: ReadStamp, state: "claimed" | "observed" = "observ
     captureId: stamp.captureId,
     seq: stamp.seq,
     partial: stamp.partial,
+    observedAt: stamp.observedAt,
     label: state === "claimed" ? `claimed at capture ${stamp.captureN ?? "?"}` : stampLabel(stamp),
   });
 
@@ -605,6 +606,25 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           .setHotSessions(params.id, payload.hotSessions)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         yield* engine.reconcileHotSessions(params.id);
+        return project;
+      }),
+    )
+    .handle("installCommand", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const jobs = yield* JobRunner;
+        const project = yield* projects
+          .setInstallCommand(params.id, payload.installCommand?.trim() ?? null)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        // The shared cache is fed only by the Mend-controlled install (ADR-0002 decision 9):
+        // a changed command re-runs it; the key dedups a run already queued.
+        yield* jobs
+          .enqueue({
+            name: "dependency-install",
+            payload: { projectId: project.id },
+            idempotencyKey: `dependency-install:${project.id}:${project.updatedAt.toISOString()}`,
+          })
+          .pipe(Effect.ignore);
         return project;
       }),
     )
@@ -3012,6 +3032,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
                 seq: head.seq.toString(),
                 kind: head.kind,
                 partial: head.kind === "auto",
+                observedAt: head.createdAt.toISOString(),
               };
               return new ChangeDiff({
                 change,

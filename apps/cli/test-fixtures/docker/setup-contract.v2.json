@@ -4,21 +4,22 @@
   "environmentTemplate": "bundle.env.example",
   "mendImageRepository": "ghcr.io/sealant-sh/mend",
   "sealantVersion": "0.29.0",
-  "runtimeContainers": ["mend", "postgres"],
+  "runtimeContainers": ["mend", "postgres", "garage"],
   "canonicalPaths": {
     "store": "/var/lib/mend/store",
     "sealantSockets": "/run/sealant/sockets"
   },
   "canonicalVolumes": {
     "store": "mend-store",
-    "control": "mend-control"
+    "control": "mend-control",
+    "garage": "mend-garage"
   },
   "volumeOwnership": {
     "anchor": "mend-store",
     "label": "dev.sealant.mend.installation",
     "identity": "SHA-256 of the persisted identity.env bytes",
-    "externalVolumes": ["mend-store", "mend-control"],
-    "policy": "Setup claims the anchor before creating other volumes or starting Compose. Reject mismatched ownership and existing unclaimed Mend data; never replace credentials to adopt it."
+    "externalVolumes": ["mend-store", "mend-control", "mend-garage"],
+    "policy": "Setup claims the anchor before creating other volumes or starting Compose. Reject mismatched ownership and existing unclaimed Mend data; never replace credentials to adopt it. mend-garage is claimed the same way when the bundle carries Garage; a generation without it (an install from before the capture store) verifies without it."
   },
   "dockerVolumeMappings": [
     {
@@ -61,6 +62,23 @@
   },
   "workspaceImages": {
     "store": "host Docker Engine",
-    "note": "Sealant builds workspace images through the mounted Docker socket and launches them from the same Engine by image id. No registry runs and no port is published for one."
+    "note": "Sealant builds workspace images through the mounted Docker socket and launches them from the same Engine by image id. No registry runs and no port is published for one. Workspace containers must reach mend:3106 and garage:3900 on the Compose network."
+  },
+  "derivedSecrets": {
+    "MEND_GARAGE_RPC_SECRET": "HMAC-SHA256(BETTER_AUTH_SECRET, 'mend-garage-rpc-secret'), hex",
+    "MEND_GARAGE_ADMIN_TOKEN": "HMAC-SHA256(BETTER_AUTH_SECRET, 'mend-garage-admin-token'), hex",
+    "MEND_GARAGE_KEY_ID": "'GK' + first 24 hex of HMAC-SHA256(BETTER_AUTH_SECRET, 'mend-garage-key-id')",
+    "MEND_GARAGE_KEY_SECRET": "HMAC-SHA256(BETTER_AUTH_SECRET, 'mend-garage-key-secret'), hex",
+    "note": "Derived at render time from the identity, never stored in identity.env, so an installation's volume-ownership fingerprint is unchanged by the bucket's arrival."
+  },
+  "captureStore": {
+    "bucket": "garage",
+    "image": "dxflrs/garage:v2.4.1",
+    "bucketName": "mend",
+    "init": "mend server setup/start run `garage layout assign`, `layout apply`, `bucket create mend`, `key import`, `bucket allow` through `docker compose exec -T garage`, idempotently, after `up --wait`",
+    "sessionEndpoint": "http://mend:3106 on the Compose network (not published)",
+    "publicUrl": "http://garage:3900 on the Compose network (not published)",
+    "workspaceNetwork": "mend_default \u2014 set as SEALANT_DOCKER_WORKSPACE_NETWORK ahead of the Sealant runtime that attaches workspace containers to it (PLATFORM-FEEDBACK.md 2026-09-13)",
+    "idleMemoryMiB": 7.5
   }
 }

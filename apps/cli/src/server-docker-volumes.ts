@@ -7,6 +7,12 @@ export interface ServerDockerNamespace {
   readonly project: string;
   readonly store: string;
   readonly control: string;
+  /**
+   * The capture store's bucket volume — every session's captures. Present only for a generation
+   * whose bundle carries Garage; an install from before the capture store verifies without it,
+   * and the upgrade that brings Garage claims it beside the anchor.
+   */
+  readonly garage?: string;
 }
 
 /** Production names from the Docker deployment contract. */
@@ -15,6 +21,16 @@ export const MEND_DOCKER_NAMESPACE: ServerDockerNamespace = {
   store: "mend-store",
   control: "mend-control",
 };
+
+/** The production names for a generation whose bundle carries the Garage bucket. */
+export const MEND_DOCKER_NAMESPACE_WITH_GARAGE: ServerDockerNamespace = {
+  ...MEND_DOCKER_NAMESPACE,
+  garage: "mend-garage",
+};
+
+/** The volumes a namespace owns beside the anchor, in claim order. */
+export const secondaryVolumesOf = (namespace: ServerDockerNamespace): ReadonlyArray<string> =>
+  namespace.garage === undefined ? [namespace.control] : [namespace.control, namespace.garage];
 
 /** The label is immutable after Docker's atomic named-volume creation. */
 export const SERVER_VOLUME_OWNER_LABEL = "dev.sealant.mend.installation";
@@ -186,11 +202,14 @@ const reservedResourceName = (
   kind: "container" | "network",
   namespace: ServerDockerNamespace,
 ): boolean => {
-  if ([namespace.project, namespace.store, namespace.control].includes(name)) return true;
+  if (
+    [namespace.project, namespace.store, namespace.control, namespace.garage ?? ""].includes(name)
+  )
+    return true;
   // Reserve the bundle's service names, replicas, one-offs and default network, including legacy
   // Compose separators. The project label "mend-postgres" must not excuse "mend-postgres-1".
   return ["-", "_"].some((separator) =>
-    (kind === "container" ? ["mend", "postgres"] : ["default"]).some((service) => {
+    (kind === "container" ? ["mend", "postgres", "garage"] : ["default"]).some((service) => {
       const reserved = `${namespace.project}${separator}${service}`;
       return (
         name === reserved ||
@@ -256,7 +275,10 @@ const refuseOldData = async (
   volumes: ReadonlyArray<string>,
 ): Promise<Result<void>> => {
   if (
-    volumes.some((name) => name === namespace.control || name.startsWith(`${namespace.project}_`))
+    volumes.some(
+      (name) =>
+        secondaryVolumesOf(namespace).includes(name) || name.startsWith(`${namespace.project}_`),
+    )
   )
     return fail("unowned-data", "existing volumes without anchor");
   for (const kind of ["volume", "container", "network"] as const) {
@@ -291,10 +313,11 @@ const parseOwnershipInput = (input: ServerVolumeOwnershipInput): ServerVolumeOwn
     !input.dockerContext.trim() ||
     input.identityBytes.byteLength === 0 ||
     !/^[a-z0-9][a-z0-9_-]*$/.test(namespace.project) ||
-    ![namespace.store, namespace.control].every((name) =>
+    ![namespace.store, ...secondaryVolumesOf(namespace)].every((name) =>
       /^[a-zA-Z0-9][a-zA-Z0-9_.-]+$/.test(name),
     ) ||
-    namespace.store === namespace.control
+    new Set([namespace.store, ...secondaryVolumesOf(namespace)]).size !==
+      1 + secondaryVolumesOf(namespace).length
   )
     return fail("invalid-input", "ownership inputs");
   const owner = createHash("sha256").update(input.identityBytes).digest("hex");
@@ -324,13 +347,16 @@ const ownership = async (
   // No Docker mutation other than the anchor claim may precede ownership verification.
   const current = await listNames(runtime, input.dockerContext, "volume");
   if (current._tag === "error") return current;
-  if (current.value.includes(namespace.control)) {
-    const control = await inspectOwner(runtime, input.dockerContext, namespace.control, owner);
-    if (control._tag === "error") return control;
-  } else {
-    if (mode === "verify") return fail("missing", "control");
-    const control = await ensureVolume(runtime, input.dockerContext, namespace.control, owner);
-    if (control._tag === "error") return control;
+  for (const name of secondaryVolumesOf(namespace)) {
+    const role = name === namespace.control ? "control" : "garage";
+    if (current.value.includes(name)) {
+      const owned = await inspectOwner(runtime, input.dockerContext, name, owner);
+      if (owned._tag === "error") return owned;
+    } else {
+      if (mode === "verify") return fail("missing", role);
+      const created = await ensureVolume(runtime, input.dockerContext, name, owner);
+      if (created._tag === "error") return created;
+    }
   }
   return { _tag: "ok", value: { owner, namespace } };
 };

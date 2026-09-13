@@ -33,6 +33,8 @@ export class ObservationStamp extends Schema.Class<ObservationStamp>("Observatio
   captureId: Schema.NullOr(Schema.String),
   seq: Schema.NullOr(Schema.String),
   partial: Schema.Boolean,
+  /** When the capture was registered (ISO 8601); null for the deprecated worktree source. */
+  observedAt: Schema.NullOr(Schema.String),
   label: Schema.String,
 }) {}
 
@@ -180,6 +182,23 @@ export class ProjectHotSessionsRequest extends Schema.Class<ProjectHotSessionsRe
     Schema.check(
       Schema.makeFilter((value: number) =>
         value >= 0 && value <= 8 ? undefined : "a count between 0 and 8",
+      ),
+    ),
+  ),
+}) {}
+
+/** The install command Mend runs for dependency trees; null returns to lockfile detection. */
+export class ProjectInstallCommandRequest extends Schema.Class<ProjectInstallCommandRequest>(
+  "ProjectInstallCommandRequest",
+)({
+  installCommand: Schema.NullOr(
+    Schema.String.pipe(
+      Schema.check(
+        Schema.makeFilter((value: string) =>
+          value.trim().length > 0 && value.length <= 1000 && !value.includes("\n")
+            ? undefined
+            : "one non-empty line of at most 1000 characters",
+        ),
       ),
     ),
   ),

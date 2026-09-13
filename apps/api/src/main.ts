@@ -84,6 +84,9 @@ import {
 import {
   CaptureRetentionLive,
   CaptureRetentionScheduleLive,
+  DependencyInstallerLive,
+  DependencyInstallWorkerLive,
+  InstallRunnerEngineLive,
   Dispatcher,
   JobRunner,
   ReviewPrepLive,
@@ -132,6 +135,7 @@ import {
   GitOpsRunnerLive,
   Store,
   StoreConfig,
+  COLOCATED_STORE_DEPRECATION,
   DeploymentConfigLive,
 } from "@mend/store";
 import { Config, Effect, Layer, Option, Schema } from "effect";
@@ -231,8 +235,9 @@ const SessionChannelNetworkLayer = SessionChannelNetworkHostLive.pipe(
   Layer.provide(SessionChannelRegistryLayer),
 );
 // The session-workspace authority (identity-keyed port over Store + ProjectsRepo) and the
-// identity-keyed worktree reads are selected at the boundary by MEND_SESSION_STORE (below);
-// the engine takes them as requirements and never knows which adapter answers.
+// identity-keyed worktree reads are selected at the boundary by MEND_SESSION_STORE (below):
+// the capture store by default, the deprecated co-located adapters only on request. The engine
+// takes them as requirements and never knows which adapter answers.
 const SessionEngineLayer = SessionEngineBaseLive.pipe(
   Layer.provide(ProtocolHostLayer),
   Layer.provide(ServiceHostLayer),
@@ -241,8 +246,8 @@ const SessionEngineLayer = SessionEngineBaseLive.pipe(
   Layer.provide(DeploymentConfigLive),
 );
 // The capture store (docs/adr/0002-session-capture-store.md): the bucket and the git runner
-// over it, plus the pointer repositories. Built only under MEND_SESSION_STORE=captured — the
-// co-located default is untouched.
+// over it, plus the pointer repositories. Built for every install except one that opted back
+// into the deprecated co-located store.
 const CaptureStoreLayer: Layer.Layer<
   BlobStore | GitOpsRunner | CaptureStoreRepo | StoreRefsRepo,
   never,
@@ -484,6 +489,10 @@ const WorkerLive = Layer.mergeAll(
   // and the hourly retention sweep. Both are inert under the co-located store.
   SummaryObserveWorkerLive.pipe(Layer.provide(SummaryObserverLive)),
   CaptureRetentionScheduleLive.pipe(Layer.provide(CaptureRetentionLive)),
+  // The Mend-controlled install that feeds the per-project dependency cache (decision 9).
+  DependencyInstallWorkerLive.pipe(
+    Layer.provide(DependencyInstallerLive.pipe(Layer.provide(InstallRunnerEngineLive))),
+  ),
 ).pipe(
   Layer.provide(Dispatcher.layer),
   Layer.provide(BriefCompiler.layer),
@@ -514,6 +523,7 @@ const MainLive = Layer.unwrap(
       Effect.annotateLogs({ mode, sessionStore: deployment.sessionStore }),
     );
     const captured = deployment.sessionStore === "captured";
+    if (!captured) yield* Effect.logWarning(COLOCATED_STORE_DEPRECATION);
     const captureStore = CaptureStoreLayer.pipe(
       Layer.provide(StoreLive),
       Layer.provide(StoreConfig.layer),

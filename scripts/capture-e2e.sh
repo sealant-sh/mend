@@ -76,7 +76,7 @@ if in_capture_mode; then
   echo "reusing the running API (log: $LOG)"
   [ -f "$LOG" ] || echo "note: no API log at $LOG — set MEND_E2E_API_LOG to watch the capture routes"
 else
-  [ "${MEND_SESSION_STORE:-}" = captured ] || fail "no API on $API and MEND_SESSION_STORE is not 'captured'"
+  [ "${MEND_SESSION_STORE:-captured}" = captured ] || fail "no API on $API and MEND_SESSION_STORE opts into the deprecated co-located store"
   case "${MEND_BLOB_STORE:-}" in s3://*) ;; *) fail "MEND_BLOB_STORE must be an s3:// bucket for a Docker executor";; esac
   ( cd "$ROOT" && pnpm --filter @mend/api-server exec tsx watch src/main.ts > "$LOG" 2>&1 & echo $! > "$SCRATCH/api.pid" )
   wait_for 90 "the API on $API" in_capture_mode

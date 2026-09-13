@@ -249,6 +249,8 @@ function ChangeReview({
           <Link to="/sessions/$sessionId" params={{ sessionId }} className="text-info no-underline">
             session
           </Link>
+          {" · "}
+          <ObservedStamp observation={review.observation} />
         </p>
         {review.worktreeChangedSinceSnapshot && (
           <p className="mt-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 font-mono text-xs text-warning">
@@ -334,6 +336,32 @@ function ChangeReview({
       )}
     </AppShell>
   );
+}
+
+/** "3 s ago" / "2 min ago" / "1 h ago": how far behind the executor the observed bytes are. */
+const agoLabel = (iso: string, now: number): string => {
+  const seconds = Math.max(0, Math.round((now - new Date(iso).getTime()) / 1000));
+  if (seconds < 60) return `${seconds} s ago`;
+  if (seconds < 3600) return `${Math.floor(seconds / 60)} min ago`;
+  if (seconds < 86_400) return `${Math.floor(seconds / 3600)} h ago`;
+  return `${Math.floor(seconds / 86_400)} d ago`;
+};
+
+/**
+ * Where the bytes on this page were observed (ADR-0002 "Review"): the head capture Mend read,
+ * and how far behind the executor that is — a fact in the recorder's voice, never a verdict.
+ * "partial" names an `auto` capture, not atomic across files; the next capture corrects it.
+ */
+function ObservedStamp({ observation }: { readonly observation: ReviewDiffDto["observation"] }) {
+  if (observation === undefined) return null;
+  if (observation.source !== "capture") return <span>observed on the worktree</span>;
+  const parts = [
+    observation.state === "claimed" ? "claimed" : "observed",
+    `capture ${observation.captureN ?? "?"}`,
+    ...(observation.observedAt === null ? [] : [agoLabel(observation.observedAt, Date.now())]),
+    ...(observation.partial ? ["partial"] : []),
+  ];
+  return <span title={observation.label}>{parts.join(" · ")}</span>;
 }
 
 /**

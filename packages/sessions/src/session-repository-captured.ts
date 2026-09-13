@@ -25,10 +25,12 @@ import {
   sha256Hex,
   Store,
   WORKTREE_TREE_REF,
+  worktreePathOf,
 } from "@mend/store";
 import { Duration, Effect, Layer } from "effect";
 
 import { CaptureChannel } from "./capture-channel.ts";
+import { readDependencyCache } from "./dependency-cache.ts";
 import { SessionRepository } from "./session-repository.ts";
 import { derivedPackPrefix, ensureCaptureCache } from "./worktree-reads.ts";
 
@@ -41,7 +43,10 @@ import { derivedPackPrefix, ensureCaptureCache } from "./worktree-reads.ts";
  * - `createWorktree` resolves the base and writes the branch ref; `attachWorktree` (called once
  *   the worktree row exists) packs the base, uploads it under the project prefix and registers
  *   capture 0 — an empty workspace class over the base's git section — under a Mend-held epoch
- *   that is released at once, so the executor's first `plan.get` claims epoch + 1.
+ *   that is released at once, so the executor's first `plan.get` claims epoch + 1. A worktree
+ *   that still has a DIRECTORY in the store (adopted before captures, ADR-0002 amended
+ *   2026-09-13) is backfilled instead of rebased: capture 0's tree is a final co-located
+ *   checkpoint of the directory's current files, so uncommitted work rides into the bucket.
  * - `checkpoint` asks nothing of the executor yet — the runtime client has no `capture.now`
  *   control command (seam) — so it takes the newest `checkpoint` capture when the executor
  *   already posted one for this ordinal, waits briefly for one to land, and otherwise derives
@@ -195,11 +200,24 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         yield* repo.init(worktreeId);
         const existing = yield* repo.headOf(worktreeId);
         if (existing?.head !== null && existing?.head !== undefined) return;
-        const basePack = yield* uploadBasePack(projectId, project.storePath, worktree.baseSha);
+        // A legacy directory (the deprecated co-located store made it): its files, HEAD and
+        // branch are the truth capture 0 must carry — not the base the row remembers.
+        const legacyDir = worktreePathOf(project.storePath, worktree.directory);
+        const legacy = fs.existsSync(path.join(legacyDir, ".git"))
+          ? yield* backfillFromDirectory(project.storePath, legacyDir, worktreeId)
+          : null;
+        const headSha = legacy?.headSha ?? worktree.baseSha;
+        const checkpointSha = legacy?.checkpointSha ?? worktree.baseSha;
+        const basePack = yield* uploadBasePack(projectId, project.storePath, checkpointSha);
         const baseTree = yield* git(
-          ["rev-parse", "--verify", `${worktree.baseSha}^{tree}`],
+          ["rev-parse", "--verify", `${checkpointSha}^{tree}`],
           project.storePath,
         );
+        if (legacy !== null) {
+          yield* Effect.logInfo(
+            "capture mode: legacy worktree backfilled · capture 0 is the directory's current files",
+          ).pipe(Effect.annotateLogs({ worktreeId, headSha, checkpointSha, directory: legacyDir }));
+        }
         yield* refs
           .set(projectId, `refs/mend/base/${worktreeId}`, worktree.baseSha, null)
           .pipe(Effect.ignore);
@@ -234,7 +252,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
               git: {
                 packs: [basePack.key],
                 refs: {
-                  [`refs/heads/${worktree.branch}`]: worktree.baseSha,
+                  [`refs/heads/${worktree.branch}`]: headSha,
                   [WORKTREE_TREE_REF]: baseTree,
                   [INDEX_TREE_REF]: baseTree,
                 },
@@ -246,7 +264,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
             },
             checkpoint: {
               ordinal: 0,
-              sha: worktree.baseSha,
+              sha: checkpointSha,
               ref: checkpointRef(worktreeId, 0),
             },
           };
@@ -275,13 +293,33 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
               ),
             );
           yield* refs
-            .set(projectId, checkpointRef(worktreeId, 0), worktree.baseSha, null)
+            .set(projectId, checkpointRef(worktreeId, 0), checkpointSha, null)
             .pipe(Effect.ignore);
+          if (legacy !== null) {
+            yield* refs
+              .set(projectId, `refs/heads/${worktree.branch}`, headSha, null)
+              .pipe(Effect.ignore);
+          }
           const row = yield* repo.captureById(id);
           if (row !== null) channel.publish(row);
         });
         yield* finish.pipe(Effect.ensuring(repo.release(worktreeId, claimed.epoch)));
       });
+
+    /**
+     * The legacy backfill (ADR-0002 amended 2026-09-13, decision 24): one co-located checkpoint
+     * of the directory — `add -A` under a temporary index, `write-tree`, `commit-tree` on the
+     * directory's HEAD — under its own ref namespace so it collides with no ordinal the engine
+     * hands out. Its closure is what the base pack carries.
+     */
+    const backfillFromDirectory = Effect.fn("SessionRepositoryCaptured.backfillFromDirectory")(
+      function* (storePath: string, dir: string, worktreeId: WorktreeId) {
+        const headSha = Sha.make(yield* git(["rev-parse", "--verify", "HEAD"], dir));
+        const snapshot = yield* store.checkpoint(dir, `backfill-${worktreeId}`, 0, headSha);
+        void storePath;
+        return { headSha, checkpointSha: snapshot.sha };
+      },
+    );
 
     const renameBranch: SessionRepository["Service"]["renameBranch"] = (
       projectId,
@@ -452,9 +490,71 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
     const worktreeMount: SessionRepository["Service"]["worktreeMount"] = (projectId) =>
       projects.byId(projectId).pipe(Effect.map(() => undefined));
 
+    const prepareStandby: NonNullable<SessionRepository["Service"]["prepareStandby"]> = (
+      projectId,
+      alias,
+      epoch,
+      baseSha,
+      platform,
+    ) =>
+      Effect.gen(function* () {
+        const project = yield* projects.byId(projectId);
+        const base = baseSha ?? (yield* store.resolveBase(project.storePath, null, null)).baseSha;
+        const basePack = yield* uploadBasePack(projectId, project.storePath, base);
+        const baseTree = yield* git(["rev-parse", "--verify", `${base}^{tree}`], project.storePath);
+        const keys = captureKeys(alias, epoch);
+        const emptyRoot = encodeDirObject([]);
+        const emptyRootKey = keys.tree(sha256Hex(emptyRoot));
+        yield* blobs
+          .put(emptyRootKey, emptyRoot, { ifAbsent: true })
+          .pipe(Effect.catch(blobFailure(project.storePath, "put")));
+        const cache =
+          platform === undefined
+            ? null
+            : yield* readDependencyCache(projectId, platform).pipe(
+                Effect.provideService(BlobStore, blobs),
+                Effect.catch(blobFailure(project.storePath, "cache")),
+              );
+        const manifest: CaptureManifest = {
+          worktree_id: alias,
+          n: 0,
+          parent: null,
+          epoch,
+          seq: 0,
+          kind: "checkpoint",
+          // Fixed per standby, so the same inputs address the same manifest.
+          created_at: new Date(epoch).toISOString(),
+          sections: {
+            git: {
+              packs: [basePack.key],
+              refs: {
+                [`refs/heads/${project.defaultBranch}`]: base,
+                [WORKTREE_TREE_REF]: baseTree,
+                [INDEX_TREE_REF]: baseTree,
+              },
+              head: `refs/heads/${project.defaultBranch}`,
+              fsck: "verified",
+            },
+            workspace: { root: emptyRootKey, packs: [] },
+            bulk:
+              cache === null
+                ? "pending"
+                : { root: cache.root, packs: cache.packs, platform: cache.platform },
+          },
+        };
+        const bytes = new Uint8Array(Buffer.from(JSON.stringify(manifest), "utf8"));
+        const captureId = captureIdOf(bytes);
+        const manifestKey = keys.manifest(captureId);
+        yield* blobs
+          .put(manifestKey, bytes, { ifAbsent: true })
+          .pipe(Effect.catch(blobFailure(project.storePath, "put")));
+        return { captureId, manifestKey, manifest, baseSha: base };
+      });
+
     return {
       createWorktree,
       attachWorktree,
+      prepareStandby,
       renameBranch,
       resetWorktree,
       removeWorktreeForce,

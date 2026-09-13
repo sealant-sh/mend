@@ -30,6 +30,7 @@ import {
   ProjectDetail,
   ProjectGitAuthRequest,
   ProjectHotSessionsRequest,
+  ProjectInstallCommandRequest,
   ProjectInheritUserSkillsRequest,
   ProjectHotSessionsStatus,
   ProjectWorkspaceImageRequest,
@@ -124,6 +125,14 @@ export const projectsGroup = HttpApiGroup.make("projects")
     HttpApiEndpoint.put("hotSessions", "/projects/:id/hot-sessions", {
       params: { id: ProjectId },
       payload: ProjectHotSessionsRequest,
+      success: Project,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("installCommand", "/projects/:id/install-command", {
+      params: { id: ProjectId },
+      payload: ProjectInstallCommandRequest,
       success: Project,
       error: NotFound,
     }),

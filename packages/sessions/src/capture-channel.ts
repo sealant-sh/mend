@@ -39,6 +39,14 @@ export const PlanGetRequest = Schema.Struct({
   worktree_id: Schema.optional(Schema.NullOr(Schema.String)),
   /** 0 = "not claimed yet": the first plan of a booting executor claims the lease. */
   epoch: Schema.optional(Schema.Int),
+  /**
+   * The executor's `<os>-<arch>-<libc>` (sealantd follow-up, PLATFORM-FEEDBACK.md 2026-09-13).
+   * When named and different from the head's bulk platform, the answer's bulk section is
+   * `"pending"` and its packs are not presigned: the executor must not restore a dependency
+   * tree built for another platform (decision 2); the engine runs the install command instead.
+   * Absent = the whole head, unchanged (today's sealantd).
+   */
+  platform: Schema.optional(Schema.String),
 });
 export type PlanGetRequest = typeof PlanGetRequest.Type;
 
@@ -284,6 +292,34 @@ export interface CaptureScope {
   readonly executorId: string;
   /** The project's compressed footprint in bytes (its base git packs); 0 = unknown, floor applies. */
   readonly footprintBytes: number;
+  /**
+   * Other names this executor may call the worktree (`hot-pool.ts` "Capture-mode standby"): a
+   * session claimed from a standby keeps the placeholder its executor booted with. Requests,
+   * keys and manifests naming an alias are the worktree's.
+   */
+  readonly aliases?: ReadonlyArray<string>;
+}
+
+/** What a standby's `plan.get` is answered with: the base plan Mend prepared for it. */
+export interface StandbyPlan {
+  readonly captureId: string;
+  readonly manifestKey: string;
+  readonly manifest: CaptureManifest;
+}
+
+/**
+ * The routes for a standby executor — no worktree, no lease, no chain (`hot-pool.ts`
+ * "Capture-mode standby"). `plan.get` answers the base plan under the synthetic epoch;
+ * heartbeats are acknowledged so the daemon never pauses; anything that would write is refused
+ * as `lease-lost` until a claim gives this executor a worktree.
+ */
+export interface StandbyScope {
+  readonly alias: string;
+  readonly projectId: ProjectId;
+  readonly executorId: string;
+  readonly epoch: number;
+  /** The plan for the platform the executor names, when it names one. */
+  readonly plan: (platform: string | undefined) => Effect.Effect<StandbyPlan, unknown>;
 }
 
 // ─── Register events (the checkpoint wait) ──────────────────────────────────
@@ -300,6 +336,7 @@ export class CaptureChannel extends Context.Service<
   CaptureChannel,
   {
     readonly apiFor: (scope: CaptureScope) => SessionCaptureApi;
+    readonly standbyApiFor: (scope: StandbyScope) => SessionCaptureApi;
     readonly awaitRegister: (
       worktreeId: WorktreeId,
       accept: (row: CaptureRow) => boolean,
@@ -312,6 +349,17 @@ export class CaptureChannel extends Context.Service<
 
 const bad = (message: string) =>
   new CaptureRouteError({ status: 400, reason: "bad-request", message });
+
+/** The head as this executor may restore it: its bulk section only for its own platform. */
+export const planForPlatform = (
+  manifest: CaptureManifest,
+  platform: string | undefined,
+): CaptureManifest =>
+  platform === undefined ||
+  manifest.sections.bulk === "pending" ||
+  manifest.sections.bulk.platform === platform
+    ? manifest
+    : { ...manifest, sections: { ...manifest.sections, bulk: "pending" } };
 
 /** A bucket or pointer-store failure inside a route is a defect: 500, which the executor retries. */
 const storeError = (operation: string) => (cause: { readonly _tag: string }) =>
@@ -362,9 +410,72 @@ export const CaptureChannelLive: Layer.Layer<
     const urlLog = new Map<string, Array<number>>();
     const bytesUsed = new Map<string, number>();
 
+    const standbyApiFor = (scope: StandbyScope): SessionCaptureApi => {
+      const notClaimed = <A>(): Effect.Effect<A, CaptureRouteError> =>
+        Effect.fail(
+          new CaptureRouteError({
+            status: 409,
+            reason: "lease-lost",
+            message:
+              "a standby executor holds no worktree yet — nothing to ship until it is claimed",
+          }),
+        );
+      const planGet = Effect.fn("StandbyCaptureApi.planGet")(function* (input: PlanGetRequest) {
+        if (
+          input.worktree_id !== undefined &&
+          input.worktree_id !== null &&
+          input.worktree_id !== scope.alias
+        ) {
+          return yield* new CaptureRouteError({
+            status: 409,
+            reason: "wrong-worktree",
+            message: "this standby token is scoped to its placeholder worktree",
+          });
+        }
+        const plan = yield* scope
+          .plan(input.platform)
+          .pipe(Effect.catch(() => storeError("preparing the standby plan")({ _tag: "plan" })));
+        const keys = yield* keysNeededBy(plan.manifest).pipe(
+          Effect.provideService(BlobStore, blobs),
+          Effect.catch(storeError("walking the standby plan")),
+        );
+        const urls: Record<string, string> = {};
+        for (const key of [...keys, plan.manifestKey]) {
+          urls[key] = yield* blobs
+            .presign(key, "GET", PRESIGN_TTL_SECONDS)
+            .pipe(Effect.catch(storeError("presigning a GET")));
+        }
+        return {
+          worktree_id: scope.alias,
+          epoch: scope.epoch,
+          head: {
+            n: 0,
+            capture_id: plan.captureId,
+            manifest_key: plan.manifestKey,
+            manifest: plan.manifest,
+          },
+          get_urls: urls,
+        } satisfies PlanGetResponse;
+      });
+      return {
+        planGet,
+        uploadUrls: () => notClaimed(),
+        uploadComplete: () => notClaimed(),
+        register: () => notClaimed(),
+        changeSummary: () => notClaimed(),
+        heartbeat: () => Effect.succeed({ expires_in_secs: LEASE_EXPIRES_IN_SECS }),
+      };
+    };
+
     const apiFor = (scope: CaptureScope): SessionCaptureApi => {
       const worktreeId = scope.worktreeId;
-      const prefixFor = (epoch: number) => `captures/${worktreeId}/${epoch}/`;
+      const names: ReadonlyArray<string> = [worktreeId, ...(scope.aliases ?? [])];
+      /** Every prefix this executor may write under: its worktree's, and its aliases'. */
+      const prefixesFor = (epoch: number) => names.map((name) => `captures/${name}/${epoch}/`);
+      const underOwnPrefix = (key: string, epoch: number) =>
+        prefixesFor(epoch).some((prefix) => key.startsWith(prefix));
+      const underOwnWorktree = (key: string) =>
+        names.some((name) => key.startsWith(`captures/${name}/`));
       const byteBudget = Math.max(
         BYTE_QUOTA_FLOOR,
         BYTE_QUOTA_MULTIPLIER * Math.max(0, scope.footprintBytes),
@@ -393,7 +504,7 @@ export const CaptureChannelLive: Layer.Layer<
         });
 
       const requireWorktree = (claimed: string | null | undefined) =>
-        claimed === undefined || claimed === null || claimed === worktreeId
+        claimed === undefined || claimed === null || names.includes(claimed)
           ? Effect.void
           : Effect.fail(
               new CaptureRouteError({
@@ -449,9 +560,10 @@ export const CaptureChannelLive: Layer.Layer<
         const manifestBytes = yield* blobs
           .get(head.manifestKey)
           .pipe(Effect.catch(storeError("reading the head manifest")));
-        const manifest = yield* decodeManifest(head.manifestKey, manifestBytes).pipe(
+        const stored = yield* decodeManifest(head.manifestKey, manifestBytes).pipe(
           Effect.catch(storeError("decoding the head manifest")),
         );
+        const manifest = planForPlatform(stored, input.platform);
         const keys = yield* keysNeededBy(manifest).pipe(
           Effect.provideService(BlobStore, blobs),
           Effect.catch(storeError("walking the head capture")),
@@ -495,13 +607,12 @@ export const CaptureChannelLive: Layer.Layer<
       ) {
         yield* requireWorktree(input.worktree_id);
         yield* requireLease(input.epoch);
-        const prefix = prefixFor(input.epoch);
         // Only under the caller's own epoch prefix; anything else is dropped, never minted.
         // A size is only read for a key that is also listed; no size means a single PUT.
         const sizes = input.sizes ?? {};
         const wanted = new Map<string, number | null>();
         for (const key of input.keys) {
-          if (!key.startsWith(prefix) || !isValidBlobKey(key)) continue;
+          if (!underOwnPrefix(key, input.epoch) || !isValidBlobKey(key)) continue;
           const size = sizes[key];
           wanted.set(key, size === undefined || size < 0 ? null : size);
         }
@@ -567,8 +678,7 @@ export const CaptureChannelLive: Layer.Layer<
       ) {
         yield* requireWorktree(input.worktree_id);
         yield* requireLease(input.epoch);
-        const prefix = prefixFor(input.epoch);
-        if (!input.key.startsWith(prefix) || !isValidBlobKey(input.key)) {
+        if (!underOwnPrefix(input.key, input.epoch) || !isValidBlobKey(input.key)) {
           return yield* bad("key must sit under the caller's epoch prefix");
         }
         if (input.upload_id === "") return yield* bad("upload_id is empty");
@@ -638,8 +748,10 @@ export const CaptureChannelLive: Layer.Layer<
       const register = Effect.fn("SessionCaptureApi.register")(function* (input: RegisterRequest) {
         yield* requireWorktree(input.worktree_id);
         const lease = yield* requireLease(input.epoch);
-        const prefix = prefixFor(input.epoch);
-        if (!input.manifest_key.startsWith(prefix) || !isValidBlobKey(input.manifest_key)) {
+        if (
+          !underOwnPrefix(input.manifest_key, input.epoch) ||
+          !isValidBlobKey(input.manifest_key)
+        ) {
           return yield* bad("manifest_key must sit under the caller's epoch prefix");
         }
         const manifest = yield* Effect.try({
@@ -654,13 +766,27 @@ export const CaptureChannelLive: Layer.Layer<
           ),
         );
         if (
-          manifest.worktree_id !== worktreeId ||
+          !names.includes(manifest.worktree_id) ||
           manifest.epoch !== input.epoch ||
           manifest.n !== input.n ||
           manifest.parent !== input.parent
         ) {
           return yield* bad("the manifest's identity fields disagree with the request");
         }
+        // A session claimed from a standby: the executor materialised the standby plan, so its
+        // first register names that plan as its parent. The chain stands at capture 0 from the
+        // same base, and that capture is the parent the CAS wants (`hot-pool.ts`).
+        const chainNow = yield* repo.headOf(worktreeId);
+        const standbyParent =
+          input.n === 1 &&
+          input.parent !== null &&
+          chainNow?.head !== null &&
+          chainNow?.head !== undefined &&
+          chainNow.head.n === 0 &&
+          input.parent !== chainNow.head.id &&
+          input.worktree_id !== undefined &&
+          input.worktree_id !== worktreeId;
+        const parent = standbyParent ? (chainNow?.head?.id ?? input.parent) : input.parent;
         // The id is the digest of the bytes AS STORED — read them back rather than trust the
         // request's copy; a lost-ack retry re-registers the same id from identical bytes.
         const stored = yield* blobs.get(input.manifest_key).pipe(
@@ -709,13 +835,13 @@ export const CaptureChannelLive: Layer.Layer<
             continue;
           }
           if (key.endsWith(".idx")) continue;
-          if (key.startsWith(prefix)) newBytes += head.size;
+          if (underOwnPrefix(key, input.epoch)) newBytes += head.size;
           records.push({
             key,
             class: cls,
             bytes: head.size,
-            worktreeId: key.startsWith(`captures/${worktreeId}/`) ? worktreeId : null,
-            epoch: key.startsWith(prefix) ? input.epoch : null,
+            worktreeId: underOwnWorktree(key) ? worktreeId : null,
+            epoch: underOwnPrefix(key, input.epoch) ? input.epoch : null,
             platform:
               cls === "bulk" && manifest.sections.bulk !== "pending"
                 ? manifest.sections.bulk.platform
@@ -744,7 +870,7 @@ export const CaptureChannelLive: Layer.Layer<
             worktreeId,
             id: input.capture_id,
             n: input.n,
-            parent: input.parent,
+            parent,
             epoch: input.epoch,
             seq: BigInt(manifest.seq),
             kind: manifest.kind,
@@ -821,7 +947,7 @@ export const CaptureChannelLive: Layer.Layer<
       return { planGet, uploadUrls, uploadComplete, register, changeSummary, heartbeat };
     };
 
-    return { apiFor, awaitRegister, publish };
+    return { apiFor, standbyApiFor, awaitRegister, publish };
   }),
 );
 

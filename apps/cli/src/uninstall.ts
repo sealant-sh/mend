@@ -3,7 +3,12 @@ import * as path from "node:path";
 
 import { stripManagedWorkspaceSshBlocks } from "@mend/workspace-ssh";
 
-import { MEND_DOCKER_NAMESPACE, verifyServerDockerVolumes } from "./server-docker-volumes.ts";
+import {
+  MEND_DOCKER_NAMESPACE,
+  MEND_DOCKER_NAMESPACE_WITH_GARAGE,
+  secondaryVolumesOf,
+  verifyServerDockerVolumes,
+} from "./server-docker-volumes.ts";
 import { serverComposeArgs, serverProcessDeadlines } from "./server-runtime.ts";
 import { readServerInstallation, type ServerSetupRuntime } from "./server-setup.ts";
 import { withServerStore } from "./server-store.ts";
@@ -190,7 +195,7 @@ export const planLines = (plan: UninstallPlan, configDir: string): ReadonlyArray
     );
     if (dockerContext !== "") {
       lines.push(
-        `         containers mend, postgres · volumes ${[MEND_DOCKER_NAMESPACE.store, MEND_DOCKER_NAMESPACE.control, "mend-config", "mend-ssh", "mend-postgres"].join(", ")} · image ghcr.io/sealant-sh/mend:${version}`,
+        `         containers mend, postgres, garage · volumes ${[MEND_DOCKER_NAMESPACE_WITH_GARAGE.store, ...secondaryVolumesOf(MEND_DOCKER_NAMESPACE_WITH_GARAGE), "mend-config", "mend-ssh", "mend-postgres"].join(", ")} · image ghcr.io/sealant-sh/mend:${version}`,
       );
     }
     lines.push(
@@ -266,10 +271,16 @@ const removeServer = async (
             `docker compose down failed: ${(down.error ?? down.stderr.trim()) || "no output"}. Containers and files are retained; fix Docker and run mend uninstall again.`,
           );
         }
-        server.writeLine("removed containers mend, postgres and the Compose-owned volumes");
+        server.writeLine("removed containers mend, postgres, garage and the Compose-owned volumes");
 
         // The external volumes are the data. Only this installation's own label allows their
-        // removal; anything else is somebody's data and stays, named.
+        // removal; anything else is somebody's data and stays, named. A generation from before
+        // the capture store has no Garage volume to verify or remove.
+        const namespace =
+          installation.config.bucket === "garage"
+            ? MEND_DOCKER_NAMESPACE_WITH_GARAGE
+            : MEND_DOCKER_NAMESPACE;
+        const dataVolumes = [namespace.store, ...secondaryVolumesOf(namespace)];
         const identity = store.readIdentity();
         if (identity._tag === "error") throw identity.error;
         const owned =
@@ -278,34 +289,25 @@ const removeServer = async (
             : await verifyServerDockerVolumes(server, {
                 dockerContext: context,
                 identityBytes: Buffer.from(identity.value),
+                namespace,
               });
         if (owned !== null && owned._tag === "ok") {
           const removed = await server.run(
             "docker",
-            dockerArgs(
-              context,
-              "volume",
-              "rm",
-              MEND_DOCKER_NAMESPACE.store,
-              MEND_DOCKER_NAMESPACE.control,
-            ),
+            dockerArgs(context, "volume", "rm", ...dataVolumes),
           );
           if (removed.status === 0) {
-            server.writeLine(
-              `removed volumes ${MEND_DOCKER_NAMESPACE.store}, ${MEND_DOCKER_NAMESPACE.control}`,
-            );
+            server.writeLine(`removed volumes ${dataVolumes.join(", ")}`);
           } else {
             failures.push(
-              `could not remove volumes ${MEND_DOCKER_NAMESPACE.store}, ${MEND_DOCKER_NAMESPACE.control}: ${(removed.error ?? removed.stderr.trim()) || "no output"}`,
+              `could not remove volumes ${dataVolumes.join(", ")}: ${(removed.error ?? removed.stderr.trim()) || "no output"}`,
             );
           }
         } else if (owned !== null && owned.error.reason === "missing") {
-          server.writeLine(
-            `volumes ${MEND_DOCKER_NAMESPACE.store}, ${MEND_DOCKER_NAMESPACE.control} were already gone`,
-          );
+          server.writeLine(`volumes ${dataVolumes.join(", ")} were already gone`);
         } else {
           leftovers.push(
-            `volumes ${MEND_DOCKER_NAMESPACE.store}, ${MEND_DOCKER_NAMESPACE.control}: ownership could not be confirmed for this installation, so they stay (docker --context ${context} volume ls)`,
+            `volumes ${dataVolumes.join(", ")}: ownership could not be confirmed for this installation, so they stay (docker --context ${context} volume ls)`,
           );
         }
 

@@ -1,10 +1,12 @@
 # Self-hosting Mend
 
 Install the CLI on each client. Run server setup on the machine that will keep your projects. Mend
-manages one application container and one official Postgres container. The application contains its
-pinned Sealant runtime. Sealant's job queue runs in Postgres, and workspace images are built and
-launched in the host Docker Engine through the mounted daemon socket. You choose a Mend version, not
-a separate Sealant version. Session workspaces can create additional containers.
+manages one application container, one official Postgres container and one Garage container — the
+capture store's bucket, where every session's work product lives
+(`docs/adr/0002-session-capture-store.md`). The application contains its pinned Sealant runtime.
+Sealant's job queue runs in Postgres, and workspace images are built and launched in the host Docker
+Engine through the mounted daemon socket. You choose a Mend version, not a separate Sealant version.
+Session workspaces can create additional containers.
 
 ## Install and start
 
@@ -24,8 +26,18 @@ provision a remote Docker daemon through an SSH or TCP Docker context.
 
 Fresh setup pins the installed CLI version unless you supply `--version VERSION`. Use an exact
 published version in place of `VERSION`. The CLI downloads that release's deployment assets and
-starts its application image with `postgres:17-alpine`. Mend and Sealant have separate databases and
-roles. Postgres is never installed in the application image.
+starts its application image with `postgres:17-alpine` and `dxflrs/garage:v2.4.1`. Mend and Sealant
+have separate databases and roles. Postgres is never installed in the application image. Setup lays
+the Garage node out and creates the `mend` bucket and Mend's key once the containers report healthy;
+the same idempotent steps run on every start. Garage idles at about 7.5 MiB (measured 2026-09-13 on
+the identical single-node configuration).
+
+A session's executor container must reach `mend:3106` (the session channel) and `garage:3900` (the
+bucket) by name on the bundle's Compose network. The Sealant Docker runtime does not attach
+workspace containers to that network yet; the bundle already sets
+`SEALANT_DOCKER_WORKSPACE_NETWORK=mend_default` for the Sealant release that does
+(`PLATFORM-FEEDBACK.md` 2026-09-13). Until that release is pinned, a session in the shipped bundle
+cannot fetch its plan — the workspace log says `capture plan.get failed`.
 
 Open `http://localhost:3105`. A fresh instance opens on registration: create the first account,
 choose how Mend reaches your repositories (a Mend key held on the server, or your own machine's
@@ -79,7 +91,7 @@ path. SSH configuration requires consent and a usable client key. See
 
 Workspace images stay in the host Docker Engine; the bundle publishes no image registry. The only
 Docker requirement is the mounted daemon socket, which the application uses to build and launch
-workspaces. Postgres publishes no host port.
+workspaces. Postgres and Garage publish no host port.
 
 Ports default to web `3105` and SSH `2222`. They must differ. Change occupied ports explicitly, for
 example:
@@ -102,9 +114,9 @@ mend server restart
 ```
 
 Status reports observations, including a health/version check when the app is running. Logs are
-bounded, with no follow mode. Stop stops both product containers. Restart restarts the application
-and keeps Postgres running. Start and restart reuse the saved generation and require its images
-already present; they do not download a new release.
+bounded, with no follow mode. Stop stops all three product containers. Restart restarts the
+application and keeps Postgres and Garage running. Start and restart reuse the saved generation and
+require its images already present; they do not download a new release.
 
 These commands never delete volumes or prune Docker resources. Stop, restart, and upgrade interrupt
 web and SSH connections. Workspace containers remain, but active sessions can lose connectivity and
@@ -121,13 +133,14 @@ mend uninstall --all --yes
 
 The command prints exactly what will go before asking, and the server scope requires typing
 `delete`: it removes the Compose containers and every volume the installation owns, including
-`mend-store` (repositories, worktrees) and the database, plus the release image and the private
-configuration directory's identity, generations and backups. The external volumes are removed only
-when their ownership label matches this installation's identity; anything else stays and is named.
-Workspace containers carry no label Mend can filter on, so they are listed with the command that
-removes them. The home scope revokes this terminal's device token while the server can still answer,
-then removes `cli.json`, the workspace SSH key and the managed block. Files under the configuration
-directory that Mend did not create are left in place and listed.
+`mend-store` (repositories), `mend-garage` (every session's captures) and the database, plus the
+release image and the private configuration directory's identity, generations and backups. The
+external volumes are removed only when their ownership label matches this installation's identity;
+anything else stays and is named. Workspace containers carry no label Mend can filter on, so they
+are listed with the command that removes them. The home scope revokes this terminal's device token
+while the server can still answer, then removes `cli.json`, the workspace SSH key and the managed
+block. Files under the configuration directory that Mend did not create are left in place and
+listed.
 
 ## Offline setup
 
@@ -136,6 +149,7 @@ Obtain the exact release assets and images on a connected machine. Transfer the 
 
 - `ghcr.io/sealant-sh/mend:VERSION`
 - `postgres:17-alpine`
+- `dxflrs/garage:v2.4.1`
 
 Put `compose.v2.yaml` and `postgres-init.sh` from that same release in a local directory, then:
 
@@ -171,6 +185,15 @@ bundle's idle memory. Setup refuses to repair a v1 installation in place and poi
 Sealant job still queued in RabbitMQ when the upgrade runs is lost, so restart a session that was
 mid-launch. Once the upgraded server is healthy, `docker volume rm mend-rabbitmq mend-registry`
 reclaims the old volumes; nothing reads them again.
+
+An installation from before the capture store has no Garage. Upgrading to a release that carries it
+claims the `mend-garage` volume under the unchanged installation identity, renders the Garage values
+(derived from the identity, never stored in `identity.env`), starts Garage and lays the bucket out
+before the app comes up. Nothing is migrated ahead of time: a worktree a session made under the old
+store keeps its directory in `mend-store`, and the first launch or resume of a session in it
+registers capture 0 from that directory's current files, uncommitted edits included, so the bucket
+takes over from where the directory was. Sessions that were running across the upgrade are stopped
+by it as usual and resume the same way.
 
 Upgrade validates target assets and image versions before stopping the app. It prepares an immutable
 configuration generation, records recovery information, stops application writers, then streams a
@@ -221,10 +244,10 @@ Directories are mode `0700`; secret/configuration files and backups are `0600`. 
 mount. It contains environment references, not generated credentials. Each generation is complete
 and immutable. An atomic `active` symlink chooses one generation. Keep the installation identity,
 generations, and Docker volumes together in backups. A database upgrade dump alone does not back up
-repositories, worktrees, harness state, SSH host keys, or workspace images.
+repositories, captures, harness state, SSH host keys, or workspace images.
 
-The canonical store and control volumes are external to Compose. Setup claims them using a label
-whose value is the SHA-256 fingerprint of the persisted installation identity. A different
+The canonical store, control and Garage volumes are external to Compose. Setup claims them using a
+label whose value is the SHA-256 fingerprint of the persisted installation identity. A different
 configuration directory cannot silently adopt another installation's data or replace its passwords.
 Unknown, unlabelled, or mismatched data causes refusal, not initialization. Do not delete
 `identity.env`, remove ownership labels, or point a fresh installation at existing volumes to bypass

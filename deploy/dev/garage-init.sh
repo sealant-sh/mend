@@ -1,8 +1,9 @@
 #!/bin/sh
 # One-shot layout + key + bucket for the dev Garage in compose.dev.yaml. Run from the repo root
-# after `docker compose -f compose.dev.yaml up -d --wait garage`; `pnpm dev` runs it for you when
-# MEND_SESSION_STORE=captured. Idempotent: every step tolerates "already exists". The garage
-# image ships no shell, so this drives its CLI through `docker compose exec`.
+# after `docker compose -f compose.dev.yaml up -d --wait garage`; `pnpm dev` runs it for you
+# (the capture store is the default). Idempotent: every step tolerates "already exists". The
+# garage image ships no shell, so this drives its CLI through `docker compose exec`. The shipped
+# bundle runs the same five steps from `mend server setup` (apps/cli/src/server-setup.ts).
 set -eu
 cd "$(dirname "$0")/../.."
 GARAGE="docker compose -f compose.dev.yaml exec -T garage /garage -c /etc/garage.toml"
