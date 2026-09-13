@@ -27,7 +27,9 @@ import {
   assertUpgradeRetention,
   assertCaptureExecutor,
   captureRegisteredEvidence,
+  checkpointChainEvidence,
   isSealantExecutor,
+  reviewDiffEvidence,
   flushReportEvidence,
   cleanupOwnedVolumes,
   completedCommandEvidence,
@@ -510,6 +512,145 @@ test("capture evidence needs a registered capture n ≥ 1 from the capture sourc
     /live worktree/,
   );
   assert.throws(() => captureRegisteredEvidence({ label: "x" }), /well formed/);
+});
+
+const worktreeId = "524ee990-7ba6-46a3-9186-6af0d042e527";
+const baseSha = "a".repeat(40);
+const changeSha = "b".repeat(40);
+const chainRow = (ordinal, patch = {}) => ({
+  id: `checkpoint-${ordinal}`,
+  worktreeId,
+  sessionId: ordinal === 0 ? null : "session-1",
+  ordinal,
+  ref: `refs/mend/checkpoints/${worktreeId}/${ordinal}`,
+  sha: ordinal === 0 ? baseSha : changeSha,
+  sealantRunId: ordinal === 0 ? null : "run-1",
+  seq: ordinal === 0 ? "0" : String(ordinal * 10),
+  trigger: ordinal === 0 ? "session-start" : ordinal === 2 ? "user-mark" : "turn-boundary",
+  createdAt: "2026-09-13T18:02:27Z",
+  ...patch,
+});
+
+test("chain evidence needs a dense worktree chain from the base with the user mark unchanged", () => {
+  const chain = [chainRow(0), chainRow(1), chainRow(2)];
+  const checkpoint = chainRow(2);
+  const rendered = checkpointChainEvidence(chain, { baseSha, checkpoint, worktreeId });
+  assert.equal(
+    rendered,
+    [
+      `0 ${baseSha} refs/mend/checkpoints/${worktreeId}/0 session-start`,
+      `1 ${changeSha} refs/mend/checkpoints/${worktreeId}/1 turn-boundary`,
+      `2 ${changeSha} refs/mend/checkpoints/${worktreeId}/2 user-mark`,
+    ].join("\n"),
+  );
+  // Later chain growth (a review-open checkpoint) renders differently, so lifecycle
+  // fingerprints detect a chain that changed underneath a restart or upgrade.
+  assert.notEqual(
+    checkpointChainEvidence([...chain, chainRow(3, { trigger: "review-open" })], {
+      baseSha,
+      checkpoint,
+      worktreeId,
+    }),
+    rendered,
+  );
+  const evidence = (rows, mark = checkpoint) =>
+    checkpointChainEvidence(rows, { baseSha, checkpoint: mark, worktreeId });
+  assert.throws(() => evidence([chainRow(0)]), /at least one change checkpoint/);
+  assert.throws(() => evidence([chainRow(0), chainRow(2)]), /dense from ordinal 0/);
+  assert.throws(() => evidence([chainRow(1), chainRow(2)]), /dense from ordinal 0/);
+  assert.throws(
+    () => evidence([chainRow(0), chainRow(1), chainRow(2, { worktreeId: "other" })]),
+    /dense from ordinal 0/,
+  );
+  assert.throws(
+    () => evidence([chainRow(0), chainRow(1), chainRow(2, { ref: "refs/heads/mend/x" })]),
+    /dense from ordinal 0/,
+  );
+  assert.throws(
+    () => evidence([chainRow(0, { sha: changeSha }), chainRow(1), chainRow(2)]),
+    /snapshot the worktree's base/,
+  );
+  for (const patch of [
+    { id: "elsewhere" },
+    { sha: "c".repeat(40) },
+    { ref: `refs/mend/checkpoints/${worktreeId}/9` },
+    { seq: "21" },
+    { sealantRunId: "run-2" },
+  ])
+    assert.throws(() => evidence(chain, chainRow(2, patch)), /stand in the worktree chain/);
+  assert.throws(
+    () => evidence([chainRow(0), chainRow(1), chainRow(2, { trigger: "turn-boundary" })]),
+    /stand in the worktree chain/,
+  );
+  assert.throws(
+    () =>
+      evidence(
+        [chainRow(0), chainRow(1), chainRow(2, { sha: baseSha })],
+        chainRow(2, { sha: baseSha }),
+      ),
+    /stand in the worktree chain/,
+  );
+  assert.throws(() => evidence(chain, null), /stand in the worktree chain/);
+  assert.throws(
+    () => checkpointChainEvidence(chain, { baseSha: "short", checkpoint, worktreeId }),
+    /needs the worktree and its base/,
+  );
+});
+
+test("review diff evidence needs a base-anchored slice whose pack-served patch carries the file", () => {
+  const observation = {
+    state: "observed",
+    source: "capture",
+    captureN: 4,
+    captureId: "c02c00f10b683de051b0a4f461ea25c5fbb07c0d84e3ea7eb4bda470a4c6250c",
+    seq: "12",
+    partial: false,
+    observedAt: "2026-09-13T18:02:27Z",
+    label: "observed at capture 4 · seq 12",
+  };
+  const marker = "packaged-proof-1234";
+  const view = (patch = {}) => ({
+    change: { id: "change-1" },
+    slice: {
+      id: "slice-1",
+      changeId: "change-1",
+      checkpointAId: "checkpoint-0",
+      checkpointBId: "checkpoint-3",
+    },
+    checkpointA: chainRow(0),
+    checkpointB: chainRow(3, { trigger: "review-open" }),
+    patch: `diff --git a/packaged-proof.txt b/packaged-proof.txt\n+${marker}\n`,
+    files: [{ oldPath: null, newPath: "packaged-proof.txt", status: "added" }],
+    anchorFiles: [],
+    worktreeChangedSinceSnapshot: false,
+    observation,
+    ...patch,
+  });
+  const options = { baseSha, sliceId: "slice-1", marker, file: "packaged-proof.txt" };
+  const valid = view();
+  assert.equal(reviewDiffEvidence(valid, options), valid);
+  const rejects = (patch, message) =>
+    assert.throws(() => reviewDiffEvidence(view(patch), options), message);
+  rejects({ slice: { ...valid.slice, id: "slice-2" } }, /name its slice/);
+  rejects({ checkpointB: chainRow(2) }, /name its slice/);
+  rejects({ checkpointA: chainRow(0, { sha: changeSha }) }, /anchor at the worktree's base/);
+  rejects(
+    { slice: { ...valid.slice, checkpointAId: "checkpoint-1" }, checkpointA: chainRow(1) },
+    /anchor at the worktree's base/,
+  );
+  rejects({ checkpointB: chainRow(3, { sha: baseSha }) }, /later checkpoint than its base/);
+  rejects({ patch: "diff --git a/other b/other\n+other\n" }, /committed workspace file/);
+  rejects(
+    {
+      files: [{ oldPath: "packaged-proof.txt", newPath: "packaged-proof.txt", status: "modified" }],
+    },
+    /committed workspace file/,
+  );
+  rejects({ files: [] }, /committed workspace file/);
+  rejects({ observation: undefined }, /registered capture/);
+  rejects({ observation: { ...observation, captureN: 0 } }, /registered capture/);
+  rejects({ observation: { ...observation, source: "worktree", captureN: null } }, /live worktree/);
+  assert.throws(() => reviewDiffEvidence(undefined, options), /name its slice/);
 });
 
 test("flush evidence matches only this session's completed report", () => {

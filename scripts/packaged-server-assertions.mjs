@@ -217,6 +217,85 @@ export function flushReportEvidence(logText, sessionId) {
   return false;
 }
 
+const shaPattern = /^[0-9a-f]{40}$/;
+
+/**
+ * Under captures (decision 8, ADR-0002) the session's branch and worktree live on the executor's
+ * own disk and its commits reach Mend as captures in the bucket and Postgres; nothing on the
+ * store volume names the branch, so the recorded change is proven only through the public API.
+ * The worktree's checkpoint chain is the first half: dense from ordinal 0 (the worktree's base),
+ * every row on the worktree's hidden ref, and the user-mark checkpoint standing unchanged. Returns
+ * a canonical rendering for lifecycle fingerprints.
+ */
+export function checkpointChainEvidence(chain, { baseSha, checkpoint, worktreeId }) {
+  assert.ok(
+    typeof worktreeId === "string" && worktreeId.length > 0 && shaPattern.test(baseSha),
+    "Chain evidence needs the worktree and its base",
+  );
+  assert.ok(
+    Array.isArray(chain) && chain.length >= 2,
+    "Worktree chain must hold the base and at least one change checkpoint",
+  );
+  chain.forEach((row, index) => {
+    assert.ok(
+      row?.ordinal === index &&
+        row.worktreeId === worktreeId &&
+        shaPattern.test(row.sha) &&
+        row.ref === `refs/mend/checkpoints/${worktreeId}/${index}`,
+      "Checkpoint chain must be dense from ordinal 0 on worktree-scoped hidden refs",
+    );
+  });
+  assert.equal(chain[0].sha, baseSha, "Ordinal 0 must snapshot the worktree's base");
+  const marked = chain.find((row) => row.id === checkpoint?.id);
+  assert.ok(
+    marked !== undefined &&
+      marked.trigger === "user-mark" &&
+      marked.sha === checkpoint.sha &&
+      marked.ref === checkpoint.ref &&
+      marked.seq === checkpoint.seq &&
+      marked.sealantRunId === checkpoint.sealantRunId &&
+      marked.sha !== baseSha,
+    "User-mark checkpoint must stand in the worktree chain unchanged, past the base",
+  );
+  return chain.map((row) => `${row.ordinal} ${row.sha} ${row.ref} ${row.trigger}`).join("\n");
+}
+
+/**
+ * The second half: a Review slice anchored at the base whose patch the git runner served from
+ * the capture packs, carrying the committed file, observed from a registered capture.
+ */
+export function reviewDiffEvidence(view, { baseSha, sliceId, marker, file }) {
+  assert.ok(
+    view?.slice?.id === sliceId &&
+      view.checkpointA?.id === view.slice.checkpointAId &&
+      view.checkpointB?.id === view.slice.checkpointBId,
+    "Review diff must name its slice and both checkpoints",
+  );
+  assert.ok(
+    view.checkpointA.ordinal === 0 && view.checkpointA.sha === baseSha,
+    "Review must anchor at the worktree's base checkpoint",
+  );
+  assert.ok(
+    Number.isInteger(view.checkpointB.ordinal) &&
+      view.checkpointB.ordinal > 0 &&
+      shaPattern.test(view.checkpointB.sha) &&
+      view.checkpointB.sha !== baseSha,
+    "Review must end at a later checkpoint than its base",
+  );
+  assert.ok(
+    typeof view.patch === "string" &&
+      view.patch.includes(marker) &&
+      Array.isArray(view.files) &&
+      view.files.some((entry) => entry.newPath === file && entry.status === "added"),
+    "Review patch must carry the committed workspace file",
+  );
+  assert.ok(
+    captureRegisteredEvidence(view.observation) !== false,
+    "Review diff must be observed from a registered capture",
+  );
+  return view;
+}
+
 export const installationOwnerLabel = "dev.sealant.mend.installation";
 // The bundle's external data volumes (setup-contract.v2 volumeOwnership.externalVolumes): the CLI
 // creates each with the installation label before Compose starts, so none carries Compose labels.
