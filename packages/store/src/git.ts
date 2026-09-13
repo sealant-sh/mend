@@ -29,6 +29,8 @@ export const git = (
   cwd: string,
   env?: Record<string, string>,
   okExitCodes?: ReadonlyArray<number>,
+  /** Bytes written to git's stdin, then closed (`pack-objects` reads its object list there). */
+  stdin?: string,
 ): Effect.Effect<string, GitError> =>
   Effect.callback<string, GitError>((resume) => {
     const child = execFile(
@@ -71,5 +73,6 @@ export const git = (
         );
       },
     );
+    if (stdin !== undefined) child.stdin?.end(stdin);
     return Effect.sync(() => child.kill());
   });

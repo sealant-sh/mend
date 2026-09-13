@@ -464,6 +464,7 @@ const testLayer = (world: TestWorld) => {
     notifyProgress: () => Effect.die("not in test"),
     settle: () => Effect.die("not in test"),
     reopen: () => Effect.die("not in test"),
+    setSummary: () => Effect.die("not in test"),
     setLabel: () => Effect.die("not in test"),
     setLabelIfUnset: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),

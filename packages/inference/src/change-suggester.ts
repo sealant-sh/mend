@@ -2,7 +2,7 @@ import { ProjectsRepo, ReviewCommentsRepo, WorktreeChangesRepo, SessionsRepo } f
 import { ChangeId } from "@mend/domain";
 import { RecordLink } from "@mend/domain/workbench";
 import type { SealantClient } from "@mend/sealant";
-import { worktreePathOf, type Store } from "@mend/store";
+import type { WorktreeReads } from "@mend/sessions";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -111,7 +111,7 @@ export const ChangeSuggesterLive: Layer.Layer<
   | SessionsRepo
   | ProjectsRepo
   | ReviewCommentsRepo
-  | Store
+  | WorktreeReads
   | SealantClient
 > = Layer.effect(
   ChangeSuggester,
@@ -123,7 +123,7 @@ export const ChangeSuggesterLive: Layer.Layer<
     const comments = yield* ReviewCommentsRepo;
     // The pass tools need Store + SealantClient; captured here, provided
     // per job (the comment-router pattern — tool sets are built fresh).
-    const toolContext = yield* Effect.context<Store | SealantClient>();
+    const toolContext = yield* Effect.context<WorktreeReads | SealantClient>();
 
     const suggest = Effect.fn("ChangeSuggester.suggest")(function* (job: SuggestChangeJob) {
       const change = yield* changes
@@ -150,7 +150,8 @@ export const ChangeSuggesterLive: Layer.Layer<
       const sealantRunId = session.sealantRunId;
 
       const pass = yield* makeSessionChangePass({
-        worktree: worktreePathOf(project.storePath, session.worktree),
+        projectId: project.id,
+        worktreeId: change.worktreeId,
         change,
         sealantRunId,
       }).pipe(Effect.provide(toolContext));

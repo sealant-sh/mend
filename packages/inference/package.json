@@ -17,6 +17,7 @@
     "@mend/db": "workspace:*",
     "@mend/domain": "workspace:*",
     "@mend/sealant": "workspace:*",
+    "@mend/sessions": "workspace:*",
     "@mend/store": "workspace:*",
     "@sealant/sdk": "catalog:",
     "effect": "catalog:"

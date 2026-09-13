@@ -169,7 +169,7 @@ const runScript = (script: string, args: string[], env: Record<string, string>, 
   });
 
 describe("parseChannelCredentials", () => {
-  it("accepts a bearer token with a session id and rejects anything else", () => {
+  it("accepts a bearer token with a session id, a bare bearer (resolved by hash), and rejects the rest", () => {
     const token = "a".repeat(43);
     expect(
       parseChannelCredentials({ authorization: `Bearer ${token}`, "x-mend-session-id": "sess-1" }),
@@ -177,7 +177,12 @@ describe("parseChannelCredentials", () => {
       sessionId: "sess-1",
       token,
     });
-    expect(parseChannelCredentials({ authorization: `Bearer ${token}` })).toBeUndefined();
+    // sealantd's capture registrar sends the token alone (ADR-0002): the session is resolved
+    // from the token's hash, never guessed.
+    expect(parseChannelCredentials({ authorization: `Bearer ${token}` })).toEqual({
+      sessionId: null,
+      token,
+    });
     expect(parseChannelCredentials({ "x-mend-session-id": "sess-1" })).toBeUndefined();
     expect(
       parseChannelCredentials({ authorization: "Basic xyz", "x-mend-session-id": "s" }),

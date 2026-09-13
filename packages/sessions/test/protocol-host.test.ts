@@ -167,6 +167,7 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
   notifyProgress: () => Effect.void,
   settle: () => Effect.die("not in test"),
   reopen: () => Effect.succeed(false),
+  setSummary: () => Effect.void,
   setLabel: () => Effect.void,
   setLabelIfUnset: () => Effect.succeed(false),
   remove: () => Effect.die("not in test"),

@@ -4,14 +4,19 @@ import * as path from "node:path";
 import { Readable } from "node:stream";
 
 import {
+  AbortMultipartUploadCommand,
+  CompleteMultipartUploadCommand,
   CopyObjectCommand,
+  CreateMultipartUploadCommand,
   DeleteObjectCommand,
   GetObjectCommand,
   HeadObjectCommand,
+  ListMultipartUploadsCommand,
   ListObjectsV2Command,
   PutObjectCommand,
   S3Client,
   S3ServiceException,
+  UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { Effect, Layer, Schema } from "effect";
@@ -57,6 +62,27 @@ export interface BlobEntry {
 
 export type PresignMethod = "PUT" | "GET";
 
+/** One uploaded part of a multipart upload, as the executor reports it back. */
+export interface MultipartPart {
+  /** 1-based. */
+  readonly partNumber: number;
+  /** The ETag the store answered the part's PUT with, quotes included as answered. */
+  readonly etag: string;
+}
+
+/** A multipart upload the store still holds open. */
+export interface MultipartUploadEntry {
+  readonly key: string;
+  readonly uploadId: string;
+  /** When the upload was created; null when the store does not say. */
+  readonly initiatedAt: Date | null;
+}
+
+/** `createMultipart`'s answer: an upload to fill, or the key already holds bytes. */
+export type MultipartCreated =
+  | { readonly kind: "created"; readonly uploadId: string }
+  | { readonly kind: "exists" };
+
 export class BlobStore extends Context.Service<
   BlobStore,
   {
@@ -96,6 +122,37 @@ export class BlobStore extends Context.Service<
     ) => Effect.Effect<void, BlobNotFoundError | BlobStoreError>;
     /** Retention's primitive; deleting a missing key is not an error. */
     readonly remove: (key: string) => Effect.Effect<void, BlobStoreError>;
+    /**
+     * Open a multipart upload for `key`: parts go up in parallel through `presignPart` URLs
+     * and `completeMultipart` assembles them write-once (measured: one PUT stream to
+     * Cloudflare peaks at 37–47 MB/s, four parts reach 64 MB/s). A key that already
+     * holds bytes answers `exists` and opens nothing — S3's CreateMultipartUpload takes no
+     * `If-None-Match`, so this is a HEAD; the complete is where the store enforces it.
+     */
+    readonly createMultipart: (key: string) => Effect.Effect<MultipartCreated, BlobStoreError>;
+    /** A URL an executor can PUT part `partNumber` (1-based) of `uploadId` to for `ttlSeconds`. */
+    readonly presignPart: (
+      key: string,
+      uploadId: string,
+      partNumber: number,
+      ttlSeconds: number,
+    ) => Effect.Effect<string, BlobStoreError>;
+    /**
+     * Assemble the parts into `key` with `If-None-Match: *`: `written` is false when the key
+     * already existed (the upload is then discarded). Garage accepts the header silently and
+     * overwrites — harmless for a content-addressed key; R2 and S3 refuse with a 412.
+     */
+    readonly completeMultipart: (
+      key: string,
+      uploadId: string,
+      parts: ReadonlyArray<MultipartPart>,
+    ) => Effect.Effect<{ readonly written: boolean }, BlobStoreError>;
+    /** Discard an open upload and its parts; an upload the store no longer knows is not an error. */
+    readonly abortMultipart: (key: string, uploadId: string) => Effect.Effect<void, BlobStoreError>;
+    /** Every open upload whose key starts with `prefix`, sorted by key — retention's orphan sweep. */
+    readonly listMultipart: (
+      prefix: string,
+    ) => Effect.Effect<ReadonlyArray<MultipartUploadEntry>, BlobStoreError>;
   }
 >()("@mend/store/BlobStore") {}
 
@@ -213,6 +270,60 @@ const checkKey = (operation: string, key: string): Effect.Effect<void, BlobStore
         new BlobStoreError({ operation, key, cause: new Error(`invalid blob key "${key}"`) }),
       );
 
+/** Upload ids travel back from the executor: one path segment, never a climb. */
+const UPLOAD_ID = /^[A-Za-z0-9][A-Za-z0-9._~+=-]*$/;
+
+const checkUploadId = (
+  operation: string,
+  key: string,
+  uploadId: string,
+): Effect.Effect<void, BlobStoreError> =>
+  UPLOAD_ID.test(uploadId) && uploadId.length <= 1024
+    ? Effect.void
+    : Effect.fail(
+        new BlobStoreError({
+          operation,
+          key,
+          cause: new Error(`invalid multipart upload id "${uploadId}"`),
+        }),
+      );
+
+const checkPartNumber = (
+  operation: string,
+  key: string,
+  partNumber: number,
+): Effect.Effect<void, BlobStoreError> =>
+  Number.isInteger(partNumber) && partNumber >= 1 && partNumber <= 10_000
+    ? Effect.void
+    : Effect.fail(
+        new BlobStoreError({
+          operation,
+          key,
+          cause: new Error(`part number ${partNumber} is outside 1..10000`),
+        }),
+      );
+
+/** Parts in ascending order, each number once — the store assembles in this order. */
+const orderedParts = (
+  operation: string,
+  key: string,
+  parts: ReadonlyArray<MultipartPart>,
+): Effect.Effect<ReadonlyArray<MultipartPart>, BlobStoreError> => {
+  const sorted = parts.toSorted((a, b) => a.partNumber - b.partNumber);
+  const distinct = new Set(sorted.map((part) => part.partNumber)).size === sorted.length;
+  return sorted.length > 0 && distinct && sorted.every((part) => part.etag !== "")
+    ? Effect.forEach(sorted, (part) => checkPartNumber(operation, key, part.partNumber), {
+        discard: true,
+      }).pipe(Effect.as(sorted))
+    : Effect.fail(
+        new BlobStoreError({
+          operation,
+          key,
+          cause: new Error("parts must be non-empty, distinct by number, each with an etag"),
+        }),
+      );
+};
+
 const collect = (stream: Readable): Promise<Uint8Array> =>
   new Promise((resolve, reject) => {
     const chunks: Array<Buffer> = [];
@@ -228,7 +339,12 @@ const collect = (stream: Readable): Promise<Uint8Array> =>
 /** Build the directory-backed service value; `root` is created on first use. */
 export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
   const tmpDir = path.join(root, ".tmp");
+  /** Open multipart uploads: `.multipart/<uploadId>/{meta.json, part-<n>}`. */
+  const multipartDir = path.join(root, ".multipart");
   const objectPath = (key: string) => path.join(root, key);
+  const uploadDir = (uploadId: string) => path.join(multipartDir, uploadId);
+  const partPath = (uploadId: string, partNumber: number) =>
+    path.join(uploadDir(uploadId), `part-${partNumber}`);
   const attempt = <A>(operation: string, key: string, thunk: () => A) =>
     Effect.try({
       try: thunk,
@@ -327,7 +443,7 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
       const out: Array<BlobEntry> = [];
       const walk = (dir: string, rel: string) => {
         for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-          if (rel === "" && entry.name === ".tmp") continue;
+          if (rel === "" && (entry.name === ".tmp" || entry.name === ".multipart")) continue;
           const key = rel === "" ? entry.name : `${rel}/${entry.name}`;
           if (entry.isDirectory()) {
             walk(path.join(dir, entry.name), key);
@@ -373,7 +489,156 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
     yield* attempt("remove", key, () => fs.rmSync(objectPath(key), { force: true }));
   });
 
-  return { put, get, getStream, head, list, presign, copy, remove };
+  interface UploadMeta {
+    readonly key: string;
+    readonly initiatedAt: string;
+  }
+  const readMeta = (uploadId: string): UploadMeta | null => {
+    try {
+      const raw: unknown = JSON.parse(
+        fs.readFileSync(path.join(uploadDir(uploadId), "meta.json"), "utf8"),
+      );
+      if (typeof raw !== "object" || raw === null) return null;
+      const record = raw as Record<string, unknown>;
+      const key = record["key"];
+      const initiatedAt = record["initiatedAt"];
+      return typeof key === "string" && typeof initiatedAt === "string"
+        ? { key, initiatedAt }
+        : null;
+    } catch (error) {
+      if (isErrno(error, "ENOENT")) return null;
+      throw error;
+    }
+  };
+  /** The upload must exist and belong to `key`: a part URL for another key's upload is refused. */
+  const requireUpload = (operation: string, key: string, uploadId: string) =>
+    Effect.gen(function* () {
+      yield* checkKey(operation, key);
+      yield* checkUploadId(operation, key, uploadId);
+      const meta = yield* attempt(operation, key, () => readMeta(uploadId));
+      if (meta === null || meta.key !== key) {
+        return yield* new BlobStoreError({
+          operation,
+          key,
+          cause: new Error(`no multipart upload "${uploadId}" for this key`),
+        });
+      }
+      return meta;
+    });
+
+  const createMultipart = Effect.fn("BlobStore.createMultipart")(function* (key: string) {
+    yield* checkKey("createMultipart", key);
+    return yield* attempt("createMultipart", key, (): MultipartCreated => {
+      if (fs.existsSync(objectPath(key))) return { kind: "exists" };
+      const uploadId = crypto.randomUUID();
+      fs.mkdirSync(uploadDir(uploadId), { recursive: true });
+      const meta: UploadMeta = { key, initiatedAt: new Date().toISOString() };
+      fs.writeFileSync(path.join(uploadDir(uploadId), "meta.json"), JSON.stringify(meta));
+      return { kind: "created", uploadId };
+    });
+  });
+
+  const presignPart = Effect.fn("BlobStore.presignPart")(function* (
+    key: string,
+    uploadId: string,
+    partNumber: number,
+  ) {
+    yield* requireUpload("presignPart", key, uploadId);
+    yield* checkPartNumber("presignPart", key, partNumber);
+    return `file://${partPath(uploadId, partNumber)}`;
+  });
+
+  const completeMultipart = Effect.fn("BlobStore.completeMultipart")(function* (
+    key: string,
+    uploadId: string,
+    parts: ReadonlyArray<MultipartPart>,
+  ) {
+    yield* requireUpload("completeMultipart", key, uploadId);
+    const ordered = yield* orderedParts("completeMultipart", key, parts);
+    const target = objectPath(key);
+    const tmp = path.join(tmpDir, `${crypto.randomUUID()}.part`);
+    // Concatenate in part order into a temp file, then publish exactly as `put` does: `link`
+    // refuses an existing target, which is the `If-None-Match: *` of a directory.
+    return yield* attempt("completeMultipart", key, () => {
+      try {
+        fs.mkdirSync(tmpDir, { recursive: true });
+        fs.mkdirSync(path.dirname(target), { recursive: true });
+        const out = fs.openSync(tmp, "w");
+        try {
+          for (const part of ordered) {
+            const source = partPath(uploadId, part.partNumber);
+            if (!fs.existsSync(source)) {
+              throw new Error(`part ${part.partNumber} was never uploaded`);
+            }
+            fs.writeSync(out, fs.readFileSync(source));
+          }
+        } finally {
+          fs.closeSync(out);
+        }
+        try {
+          fs.linkSync(tmp, target);
+        } catch (error) {
+          if (isErrno(error, "EEXIST")) return { written: false };
+          throw error;
+        }
+        return { written: true };
+      } finally {
+        fs.rmSync(tmp, { force: true });
+        // Completed or refused, the upload is consumed either way.
+        fs.rmSync(uploadDir(uploadId), { recursive: true, force: true });
+      }
+    });
+  });
+
+  const abortMultipart = Effect.fn("BlobStore.abortMultipart")(function* (
+    key: string,
+    uploadId: string,
+  ) {
+    yield* checkKey("abortMultipart", key);
+    yield* checkUploadId("abortMultipart", key, uploadId);
+    yield* attempt("abortMultipart", key, () => {
+      const meta = readMeta(uploadId);
+      if (meta === null || meta.key !== key) return;
+      fs.rmSync(uploadDir(uploadId), { recursive: true, force: true });
+    });
+  });
+
+  const listMultipart = Effect.fn("BlobStore.listMultipart")(function* (prefix: string) {
+    return yield* attempt("listMultipart", prefix, (): ReadonlyArray<MultipartUploadEntry> => {
+      if (!fs.existsSync(multipartDir)) return [];
+      const out: Array<MultipartUploadEntry> = [];
+      for (const entry of fs.readdirSync(multipartDir, { withFileTypes: true })) {
+        if (!entry.isDirectory()) continue;
+        const meta = readMeta(entry.name);
+        if (meta === null || !meta.key.startsWith(prefix)) continue;
+        const initiated = new Date(meta.initiatedAt);
+        out.push({
+          key: meta.key,
+          uploadId: entry.name,
+          initiatedAt: Number.isNaN(initiated.getTime()) ? null : initiated,
+        });
+      }
+      return out.toSorted(
+        (a, b) => a.key.localeCompare(b.key) || a.uploadId.localeCompare(b.uploadId),
+      );
+    });
+  });
+
+  return {
+    put,
+    get,
+    getStream,
+    head,
+    list,
+    presign,
+    copy,
+    remove,
+    createMultipart,
+    presignPart,
+    completeMultipart,
+    abortMultipart,
+    listMultipart,
+  };
 };
 
 const isErrno = (error: unknown, code: string): boolean =>
@@ -586,7 +851,152 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
     );
   });
 
-  return { put, get, getStream, head, list, presign, copy, remove };
+  const createMultipart = Effect.fn("BlobStore.createMultipart")(function* (key: string) {
+    yield* checkKey("createMultipart", key);
+    // No conditional create exists in the S3 API; the HEAD keeps a second executor from filling
+    // parts for bytes that are already there, and the complete stays the write-once gate.
+    const existing = yield* head(key);
+    if (existing !== null) return { kind: "exists" } satisfies MultipartCreated;
+    const response = yield* call("createMultipart", key, () =>
+      client.send(new CreateMultipartUploadCommand({ Bucket: bucket, Key: key })),
+    );
+    const uploadId = response.UploadId;
+    if (uploadId === undefined || uploadId === "") {
+      return yield* new BlobStoreError({
+        operation: "createMultipart",
+        key,
+        cause: new Error("CreateMultipartUpload answered without an upload id"),
+      });
+    }
+    return { kind: "created", uploadId } satisfies MultipartCreated;
+  });
+
+  const presignPart = Effect.fn("BlobStore.presignPart")(function* (
+    key: string,
+    uploadId: string,
+    partNumber: number,
+    ttlSeconds: number,
+  ) {
+    yield* checkKey("presignPart", key);
+    yield* checkUploadId("presignPart", key, uploadId);
+    yield* checkPartNumber("presignPart", key, partNumber);
+    return yield* call("presignPart", key, () =>
+      getSignedUrl(
+        publicClient,
+        new UploadPartCommand({
+          Bucket: bucket,
+          Key: key,
+          UploadId: uploadId,
+          PartNumber: partNumber,
+        }),
+        { expiresIn: ttlSeconds },
+      ),
+    );
+  });
+
+  const abortMultipart = Effect.fn("BlobStore.abortMultipart")(function* (
+    key: string,
+    uploadId: string,
+  ) {
+    yield* checkKey("abortMultipart", key);
+    yield* checkUploadId("abortMultipart", key, uploadId);
+    yield* Effect.tryPromise({
+      try: () =>
+        client.send(
+          new AbortMultipartUploadCommand({ Bucket: bucket, Key: key, UploadId: uploadId }),
+        ),
+      catch: (cause) => cause,
+    }).pipe(
+      Effect.asVoid,
+      Effect.catch((cause) =>
+        isS3NotFound(cause) || s3Name(cause) === "NoSuchUpload"
+          ? Effect.void
+          : Effect.fail(new BlobStoreError({ operation: "abortMultipart", key, cause })),
+      ),
+    );
+  });
+
+  const completeMultipart = Effect.fn("BlobStore.completeMultipart")(function* (
+    key: string,
+    uploadId: string,
+    parts: ReadonlyArray<MultipartPart>,
+  ) {
+    yield* checkKey("completeMultipart", key);
+    yield* checkUploadId("completeMultipart", key, uploadId);
+    const ordered = yield* orderedParts("completeMultipart", key, parts);
+    const outcome = yield* Effect.tryPromise({
+      try: () =>
+        client.send(
+          new CompleteMultipartUploadCommand({
+            Bucket: bucket,
+            Key: key,
+            UploadId: uploadId,
+            IfNoneMatch: "*",
+            MultipartUpload: {
+              Parts: ordered.map((part) => ({ PartNumber: part.partNumber, ETag: part.etag })),
+            },
+          }),
+        ),
+      catch: (cause) => cause,
+    }).pipe(
+      Effect.map(() => ({ written: true })),
+      Effect.catch((cause) =>
+        s3Status(cause) === 412
+          ? Effect.succeed({ written: false })
+          : Effect.fail(new BlobStoreError({ operation: "completeMultipart", key, cause })),
+      ),
+    );
+    // A refused complete leaves the upload open on S3; its parts are billed until aborted.
+    if (!outcome.written) yield* abortMultipart(key, uploadId).pipe(Effect.ignore);
+    return outcome;
+  });
+
+  const listMultipart = Effect.fn("BlobStore.listMultipart")(function* (prefix: string) {
+    const out: Array<MultipartUploadEntry> = [];
+    let keyMarker: string | undefined;
+    let uploadIdMarker: string | undefined;
+    do {
+      const page = yield* call("listMultipart", prefix, () =>
+        client.send(
+          new ListMultipartUploadsCommand({
+            Bucket: bucket,
+            Prefix: prefix,
+            KeyMarker: keyMarker,
+            UploadIdMarker: uploadIdMarker,
+          }),
+        ),
+      );
+      for (const upload of page.Uploads ?? []) {
+        if (upload.Key === undefined || upload.UploadId === undefined) continue;
+        out.push({
+          key: upload.Key,
+          uploadId: upload.UploadId,
+          initiatedAt: upload.Initiated ?? null,
+        });
+      }
+      keyMarker = page.IsTruncated === true ? page.NextKeyMarker : undefined;
+      uploadIdMarker = page.IsTruncated === true ? page.NextUploadIdMarker : undefined;
+    } while (keyMarker !== undefined || uploadIdMarker !== undefined);
+    return out.toSorted(
+      (a, b) => a.key.localeCompare(b.key) || a.uploadId.localeCompare(b.uploadId),
+    );
+  });
+
+  return {
+    put,
+    get,
+    getStream,
+    head,
+    list,
+    presign,
+    copy,
+    remove,
+    createMultipart,
+    presignPart,
+    completeMultipart,
+    abortMultipart,
+    listMultipart,
+  };
 };
 
 export const BlobStoreS3Live = (options: S3BlobStoreOptions): Layer.Layer<BlobStore> =>

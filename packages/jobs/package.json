@@ -18,6 +18,7 @@
     "@mend/domain": "workspace:*",
     "@mend/inference": "workspace:*",
     "@mend/sealant": "workspace:*",
+    "@mend/sessions": "workspace:*",
     "@mend/store": "workspace:*",
     "@sealant/sdk": "catalog:",
     "effect": "catalog:",

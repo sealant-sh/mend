@@ -19,6 +19,23 @@ import { Effect, Schema } from "effect";
 
 // ─── Workbench (MEND-AGENT-WORKBENCH-PLAN.md §5–§7) ─────────────────────────
 
+/**
+ * Where the bytes of a change read came from (docs/adr/0002-session-capture-store.md "Review"):
+ * the live worktree beside Mend, or a registered capture — stamped, never judged. `claimed` is
+ * a summary the executor posted and no runner has recomputed yet; `observed` was computed or
+ * recomputed by Mend. `partial` marks an `auto` capture, which is not atomic across files.
+ * `label` is the terse line the UI renders: "observed at capture 12 · seq 4180".
+ */
+export class ObservationStamp extends Schema.Class<ObservationStamp>("ObservationStamp")({
+  state: Schema.Literals(["claimed", "observed"]),
+  source: Schema.Literals(["worktree", "capture"]),
+  captureN: Schema.NullOr(Schema.Int),
+  captureId: Schema.NullOr(Schema.String),
+  seq: Schema.NullOr(Schema.String),
+  partial: Schema.Boolean,
+  label: Schema.String,
+}) {}
+
 /** A store or git operation that could not complete — the observed reason, verbatim. */
 export class StoreFailure extends Schema.TaggedErrorClass<StoreFailure>()(
   "StoreFailure",

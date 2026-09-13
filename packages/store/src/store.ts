@@ -85,6 +85,8 @@ export interface StoreBranch {
 export interface CheckpointSnapshot {
   readonly ref: string;
   readonly sha: Sha;
+  /** Capture mode: the registered capture the snapshot came from (or was derived from). */
+  readonly captureId?: string | undefined;
 }
 
 export interface ChangedFile {
@@ -312,6 +314,16 @@ export class Store extends Context.Service<
       base: string | null,
       remoteEnv: Record<string, string> | null,
     ) => Effect.Effect<SessionWorktree, GitError>;
+    /**
+     * The base a new worktree starts from, resolved the way `createWorktree` resolves it (the
+     * default branch when null; origin freshened first when credentials are given) — for
+     * adapters that create no directory here (the capture store).
+     */
+    readonly resolveBase: (
+      storePath: string,
+      base: string | null,
+      remoteEnv: Record<string, string> | null,
+    ) => Effect.Effect<{ readonly baseRef: string; readonly baseSha: Sha }, GitError>;
     /**
      * Rename the branch a worktree is on in place (`git branch -m`) — the display-identity
      * half of a rename; the directory never moves (workspace bind mounts point there).
@@ -614,6 +626,17 @@ export class Store extends Context.Service<
         // checkpoint index and HEAD for this worktree live there, so share it explicitly.
         yield* Effect.sync(() => shareTree(path.join(storePath, "worktrees", directory)));
         return { path: worktreePath, name: directory, branch, baseSha: sha(baseSha), baseRef };
+      });
+
+      const resolveBase = Effect.fn("Store.resolveBase")(function* (
+        storePath: string,
+        base: string | null,
+        remoteEnv: Record<string, string> | null,
+      ) {
+        const baseRef = base ?? (yield* git(["symbolic-ref", "--short", "HEAD"], storePath));
+        yield* freshenBase(storePath, baseRef, remoteEnv);
+        const baseSha = yield* resolveBaseSha(storePath, baseRef, remoteEnv);
+        return { baseRef, baseSha: sha(baseSha) };
       });
 
       const renameBranch = Effect.fn("Store.renameBranch")(function* (
@@ -958,6 +981,7 @@ export class Store extends Context.Service<
         removeReference,
         adopt,
         createWorktree,
+        resolveBase,
         renameBranch,
         resetWorktree,
         refreshFromOrigin,

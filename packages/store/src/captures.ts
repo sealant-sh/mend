@@ -1,6 +1,7 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as path from "node:path";
+import { Readable } from "node:stream";
 import * as zlib from "node:zlib";
 
 import { Effect, Schema } from "effect";
@@ -75,6 +76,38 @@ export type CaptureManifest = typeof CaptureManifest.Type;
 /** The two CDC-packed classes a manifest can materialize; git is served by the runner. */
 export type CaptureClass = "workspace" | "bulk";
 
+/**
+ * Pseudo-refs sealantd adds beside the repository's refs (sealantd `manifest.rs`): a tree of
+ * the working tree at snap time — tracked files with their uncommitted edits plus untracked,
+ * non-ignored files — and the tree written from the index. Both are pack closure tips; Mend's
+ * runner diffs against the first exactly where the co-located store ran `add -A; write-tree`.
+ */
+export const WORKTREE_TREE_REF = "refs/sealant/capture/worktree";
+export const INDEX_TREE_REF = "refs/sealant/capture/index";
+export const PSEUDO_REF_PREFIX = "refs/sealant/capture/";
+
+/**
+ * The change summary an executor posts after a `checkpoint` register (ADR-0002 "Review"):
+ * the same shape the review page computes on a runner, so a claimed and an observed summary
+ * are comparable field by field. Shape owned by Mend; sealantd sends it as opaque JSON.
+ */
+export const ChangeSummaryFile = Schema.Struct({
+  path: Schema.String,
+  additions: Schema.Int,
+  deletions: Schema.Int,
+});
+export const ChangeSummary = Schema.Struct({
+  base_sha: Schema.String,
+  files: Schema.Array(ChangeSummaryFile),
+  diff: Schema.String,
+});
+export type ChangeSummary = typeof ChangeSummary.Type;
+export const decodeChangeSummary = Schema.decodeUnknownEffect(ChangeSummary);
+
+/** Where a posted summary lands: `changes/<worktree>/<n>/summary.json`, written by Mend. */
+export const changeSummaryKey = (worktreeId: string, n: number) =>
+  `changes/${worktreeId}/${n}/summary.json`;
+
 // ─── Dir objects ────────────────────────────────────────────────────────────
 
 export const DirEntryKind = Schema.Literals(["file", "symlink", "dir", "hardlink-group"]);
@@ -99,9 +132,28 @@ export const DirEntry = Schema.Struct({
 });
 export type DirEntry = typeof DirEntry.Type;
 
-/** A dir object is the JSON array of its entries, sorted by name. */
+/** A dir object is its entries, sorted by name. */
 export const DirObject = Schema.Array(DirEntry);
 export type DirObject = typeof DirObject.Type;
+
+/**
+ * On the wire a dir object is `{"entries": [...]}` — sealantd's `tree::DirObject` (serde of a
+ * struct with one field), the form every executor-written tree has (observed: the daemon's
+ * materialiser rejects a bare array with "expected struct DirObject with 1 element"). The bare
+ * array is still read, so nothing Mend wrote before this reading is unreadable.
+ *
+ * sealantd ADR-0015 §Capture format describes the dir object as the bare sorted array; the
+ * daemon writes the wrapped form and Mend writes what the daemon reads. That section is the
+ * text to amend — the format on the wire does not change.
+ */
+const DirObjectWire = Schema.Union([
+  Schema.Struct({ entries: Schema.Array(DirEntry) }),
+  Schema.Array(DirEntry),
+]);
+
+/** The bytes of a dir object as the daemon writes and reads them. */
+export const encodeDirObject = (entries: DirObject): Uint8Array =>
+  new Uint8Array(Buffer.from(JSON.stringify({ entries }), "utf8"));
 
 // ─── Errors ─────────────────────────────────────────────────────────────────
 
@@ -193,7 +245,17 @@ const decodeJson =
     });
 
 export const decodeManifest = decodeJson(CaptureManifest, "manifest");
-export const decodeDirObject = decodeJson(DirObject, "dir object");
+const decodeDirObjectWire = decodeJson(DirObjectWire, "dir object");
+const isWrappedDirObject = (
+  wire: typeof DirObjectWire.Type,
+): wire is { readonly entries: DirObject } => !Array.isArray(wire);
+export const decodeDirObject = (
+  key: string,
+  bytes: Uint8Array,
+): Effect.Effect<DirObject, CaptureFormatError> =>
+  decodeDirObjectWire(key, bytes).pipe(
+    Effect.map((wire): DirObject => (isWrappedDirObject(wire) ? wire.entries : wire)),
+  );
 
 // ─── CDC packs ──────────────────────────────────────────────────────────────
 
@@ -535,6 +597,204 @@ export const materialize = (
     // Post-order: every directory after everything beneath it.
     for (const { at, mtime } of dirTimes) yield* io(at, () => fs.utimesSync(at, mtime, mtime));
     return stats;
+  });
+
+// ─── Reading a class without materializing it ───────────────────────────────
+
+const readTree = (key: string) =>
+  Effect.gen(function* () {
+    const store = yield* BlobStore;
+    const bytes = yield* store.get(key);
+    yield* verifyDigest(key, bytes);
+    return yield* decodeDirObject(key, bytes);
+  });
+
+/** Every object key a class's dir objects name, root first — what a plan must presign. */
+export const collectTreeKeys = (
+  manifest: CaptureManifest,
+  cls: CaptureClass,
+  options?: { readonly limit?: number },
+): Effect.Effect<ReadonlyArray<string>, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    const section = manifest.sections[cls];
+    if (section === "pending" || section.root === "") return [];
+    const limit = options?.limit ?? 50_000;
+    const out: Array<string> = [];
+    const queue = [section.root];
+    while (queue.length > 0 && out.length < limit) {
+      const key = queue.shift();
+      if (key === undefined) break;
+      out.push(key);
+      const entries = yield* readTree(key);
+      for (const entry of entries) {
+        if (entry.kind === "dir" && entry.child !== undefined) queue.push(entry.child);
+      }
+    }
+    return out;
+  });
+
+/** Every blob key a manifest needs across its three sections: packs, indexes, dir objects. */
+export const keysNeededBy = (
+  manifest: CaptureManifest,
+): Effect.Effect<ReadonlyArray<string>, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    const keys = new Set<string>();
+    for (const pack of manifest.sections.git.packs) {
+      keys.add(pack);
+      keys.add(packIdxKeyOf(pack));
+    }
+    for (const pack of manifest.sections.workspace.packs) keys.add(pack);
+    const bulk = manifest.sections.bulk;
+    if (bulk !== "pending") for (const pack of bulk.packs) keys.add(pack);
+    for (const key of yield* collectTreeKeys(manifest, "workspace")) keys.add(key);
+    for (const key of yield* collectTreeKeys(manifest, "bulk")) keys.add(key);
+    return [...keys];
+  });
+
+/**
+ * The dir object at `relPath` inside a class (`""` = the root), or null when the path names
+ * nothing or a non-directory. Symlinks are never followed.
+ */
+export const listCaptureDir = (
+  manifest: CaptureManifest,
+  cls: CaptureClass,
+  relPath: string,
+): Effect.Effect<DirObject | null, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    const section = manifest.sections[cls];
+    if (section === "pending" || section.root === "") return null;
+    let key = section.root;
+    for (const segment of relPath.split("/").filter((part) => part !== "")) {
+      const entries = yield* readTree(key);
+      const next = entries.find((entry) => entry.name === segment);
+      if (next === undefined || next.kind !== "dir" || next.child === undefined) return null;
+      key = next.child;
+    }
+    return yield* readTree(key);
+  });
+
+/** The entry at `relPath` inside a class, or null. */
+export const statCaptureEntry = (
+  manifest: CaptureManifest,
+  cls: CaptureClass,
+  relPath: string,
+): Effect.Effect<DirEntry | null, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    const parts = relPath.split("/").filter((part) => part !== "");
+    const name = parts.pop();
+    if (name === undefined) return null;
+    const parent = yield* listCaptureDir(manifest, cls, parts.join("/"));
+    return parent?.find((entry) => entry.name === name) ?? null;
+  });
+
+/**
+ * Stream one file of a class chunk by chunk, each chunk sha256-verified as it is decoded — a
+ * 76 MB transcript never sits in memory whole. Fails before the first read when the path names
+ * nothing or a non-file.
+ */
+export const readCaptureFile = (
+  manifest: CaptureManifest,
+  cls: CaptureClass,
+  relPath: string,
+): Effect.Effect<Readable, CaptureReadError | CaptureSectionPendingError, BlobStore> =>
+  Effect.gen(function* () {
+    const section = manifest.sections[cls];
+    if (section === "pending") return yield* new CaptureSectionPendingError({ section: cls });
+    const entry = yield* statCaptureEntry(manifest, cls, relPath);
+    if (entry === null || (entry.kind !== "file" && entry.kind !== "hardlink-group")) {
+      return yield* new CaptureFormatError({
+        key: section.root,
+        reason: `${relPath}: not a file in the ${cls} class`,
+      });
+    }
+    const source = yield* makeChunkSource(section.packs);
+    const chunks = [...(entry.chunks ?? [])];
+    let at = 0;
+    return new Readable({
+      read() {
+        const hash = chunks[at];
+        if (hash === undefined) {
+          this.push(null);
+          return;
+        }
+        at += 1;
+        Effect.runPromise(source.chunk(hash)).then(
+          (bytes) => this.push(Buffer.from(bytes)),
+          (error: unknown) =>
+            this.destroy(error instanceof Error ? error : new Error(String(error))),
+        );
+      },
+    });
+  });
+
+/** Read a whole capture file into memory — for small files only (manifests, summaries). */
+export const readCaptureFileBytes = (
+  manifest: CaptureManifest,
+  cls: CaptureClass,
+  relPath: string,
+): Effect.Effect<Uint8Array, CaptureReadError | CaptureSectionPendingError, BlobStore> =>
+  readCaptureFile(manifest, cls, relPath).pipe(
+    Effect.flatMap((stream) =>
+      Effect.tryPromise({
+        try: () => collectStream(stream),
+        catch: (cause) =>
+          new CaptureFormatError({
+            key: relPath,
+            reason: cause instanceof Error ? cause.message : String(cause),
+          }),
+      }),
+    ),
+  );
+
+const collectStream = (stream: Readable): Promise<Uint8Array> =>
+  new Promise((resolve, reject) => {
+    const parts: Array<Buffer> = [];
+    stream.on("data", (chunk: Buffer | string) =>
+      parts.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk),
+    );
+    stream.on("error", reject);
+    stream.on("end", () => resolve(new Uint8Array(Buffer.concat(parts))));
+  });
+
+/**
+ * Walk a class and return every file path (class-root-relative) with its entry, newest mtime
+ * first — how the harvest finds the newest transcript without a shell.
+ */
+export const listCaptureFiles = (
+  manifest: CaptureManifest,
+  cls: CaptureClass,
+  under: string,
+  options?: { readonly limit?: number },
+): Effect.Effect<
+  ReadonlyArray<{ readonly path: string; readonly entry: DirEntry }>,
+  CaptureReadError,
+  BlobStore
+> =>
+  Effect.gen(function* () {
+    const limit = options?.limit ?? 20_000;
+    const out: Array<{ readonly path: string; readonly entry: DirEntry }> = [];
+    const root = yield* listCaptureDir(manifest, cls, under);
+    if (root === null) return [];
+    const prefix = under
+      .split("/")
+      .filter((part) => part !== "")
+      .join("/");
+    const queue: Array<{ readonly at: string; readonly entries: DirObject }> = [
+      { at: prefix, entries: root },
+    ];
+    while (queue.length > 0 && out.length < limit) {
+      const next = queue.shift();
+      if (next === undefined) break;
+      for (const entry of next.entries) {
+        const at = next.at === "" ? entry.name : `${next.at}/${entry.name}`;
+        if (entry.kind === "dir" && entry.child !== undefined) {
+          queue.push({ at, entries: yield* readTree(entry.child) });
+        } else if (entry.kind === "file" || entry.kind === "hardlink-group") {
+          out.push({ path: at, entry });
+        }
+      }
+    }
+    return out.toSorted((a, b) => mtimeSeconds(b.entry.mtime) - mtimeSeconds(a.entry.mtime));
   });
 
 // ─── Git packs ──────────────────────────────────────────────────────────────

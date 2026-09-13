@@ -8,6 +8,7 @@ import * as path from "node:path";
 import { describe, expect, it } from "@effect/vitest";
 import {
   AgentConversationRepo,
+  CaptureStoreRepo,
   CheckpointsRepo,
   HotWorkspacesRepo,
   ProjectNotFoundError,
@@ -88,21 +89,31 @@ import {
   type SessionExtraMount,
   type SessionReferenceMount,
 } from "@mend/domain/workbench";
-import { SealantClient, SealantPlatformError } from "@mend/sealant";
+import { type CaptureCreateOptions, SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
+  CaptureChannelLive,
+  CaptureRuntimeLive,
+  CaptureRuntimeOff,
+  CaptureUploadPolicyDefault,
   HarnessStateNotFoundError,
   LegacyBenchReadOnlyError,
   ProtocolHost,
   ServiceHost,
   SessionEngine,
   SessionEngineLive,
+  SessionRepositoryCapturedLive,
   SessionRepositoryLocalLive,
   SessionNotLiveError,
+  type SessionSocketApi,
   SessionSocketHost,
 } from "@mend/sessions";
 import {
   AgentBridge,
+  BlobStoreFsLive,
+  captureKeys,
+  DeploymentConfig,
   DotfilesStore,
+  GitOpsRunnerLive,
   MendKeys,
   SecretCipher,
   Store,
@@ -111,6 +122,7 @@ import {
   harnessHomePathOf,
   processStatePathOf,
 } from "@mend/store";
+import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import type {
   CreateOptions,
   InteractiveSession,
@@ -120,6 +132,9 @@ import type {
   Workspace,
 } from "@sealant/sdk";
 import { Duration, Effect, Fiber, Layer, Schedule, Stream, type Scope } from "effect";
+
+import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
+import { memoryStoreRefs } from "./capture-world.ts";
 
 /** Every platform method dies — these tests exercise the platform-free paths. */
 const sealantDeadLayer = Layer.succeed(SealantClient, {
@@ -203,7 +218,7 @@ const fakeExecRun: Run = {
 };
 
 const sealantLaunchLayer = (
-  created: CreateOptions[],
+  created: Array<CreateOptions | CaptureCreateOptions>,
   rejectCredentials: (credentials: CreateOptions["credentials"]) => boolean = () => false,
   stopped?: string[],
   spawned?: ReadonlyArray<string>[],
@@ -217,10 +232,12 @@ const sealantLaunchLayer = (
   ptyStates?: Map<string, InteractiveSessionStatus>,
   openedOptions?: SessionOptions[],
   createWorkspaceOverride?: (
-    options: CreateOptions,
+    options: CreateOptions | CaptureCreateOptions,
   ) => Effect.Effect<Workspace, SealantPlatformError>,
   /** When provided, workspace execs succeed (exit 0, empty output) and land here. */
   execCalls?: ReadonlyArray<string>[],
+  /** Every `bindWorkspace` subpath, so a test can assert capture mode binds nothing. */
+  binds?: string[],
 ) => {
   let nextPty = 0;
   const ptys = new Map<string, InteractiveSession>();
@@ -293,7 +310,11 @@ const sealantLaunchLayer = (
             )
           : Effect.succeed(workspace);
       }),
-    bindWorkspace: () => Effect.succeed([]),
+    bindWorkspace: (_workspace, options) =>
+      Effect.sync(() => {
+        binds?.push(options.subpath);
+        return [];
+      }),
     getWorkspace: () =>
       rejectWorkspaceLookup()
         ? Effect.fail(
@@ -443,9 +464,17 @@ const serviceHostStubLayer = Layer.succeed(ServiceHost, {
   probe: () => Effect.succeed(true),
 });
 
-/** Session sockets bind nothing in these worlds. */
+/**
+ * Session sockets bind nothing in these worlds; the api each session would serve is kept so a
+ * test can play the executor (its capture routes) without a listener.
+ */
+const servedSocketApis = new Map<SessionId, SessionSocketApi>();
 const sessionSocketStubLayer = Layer.succeed(SessionSocketHost, {
-  start: () => Effect.succeed("/tmp/mend-test-socket-dir"),
+  start: (sessionId, api) =>
+    Effect.sync(() => {
+      servedSocketApis.set(sessionId, api);
+      return "/tmp/mend-test-socket-dir";
+    }),
   stop: () => Effect.void,
 });
 
@@ -1209,6 +1238,7 @@ const sessionsLayer = (world: World) => {
     settle: (id, outcome, summary) =>
       Effect.sync(() => update(id, { status: outcome, summary, settledAt: now() })),
     reopen: (id, status) => Effect.sync(() => update(id, { status, settledAt: null })),
+    setSummary: (id, summary) => Effect.sync(() => update(id, { summary })),
     setHarness: (id, harness) => Effect.sync(() => update(id, { harness })),
     setLabel: (id, label) => Effect.sync(() => update(id, { label })),
     setLabelIfUnset: (id, label) =>
@@ -1550,19 +1580,60 @@ const withEngine = <A, E>(
     };
     /** Seed crash-recovery facts before the SessionEngine layer runs its boot pass. */
     readonly prepareWorld?: (world: World) => void;
+    /** Capture mode (ADR-0002): the pointer store the test inspects; the bucket is `<tmp>/blobs`. */
+    readonly captured?: MemoryCaptureStore;
   } = {},
 ): Promise<A> => {
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
   const world = makeWorld();
   options.prepareWorld?.(world);
-  const storeLayer = Store.layer.pipe(Layer.provide(StoreConfig.layerFor(path.join(tmp, "store"))));
+  const storeConfigLayer = StoreConfig.layerFor(path.join(tmp, "store"));
+  const storeLayer = Store.layer.pipe(Layer.provide(storeConfigLayer));
+  const blobsLayer = BlobStoreFsLive(path.join(tmp, "blobs"));
+  const captureLayers =
+    options.captured === undefined
+      ? null
+      : Layer.mergeAll(
+          options.captured.layer,
+          memoryStoreRefs(),
+          blobsLayer,
+          GitOpsRunnerLive.pipe(
+            Layer.provide(storeLayer),
+            Layer.provide(storeConfigLayer),
+            Layer.provide(blobsLayer),
+          ),
+          CaptureChannelLive.pipe(
+            Layer.provide(options.captured.layer),
+            Layer.provide(blobsLayer),
+            Layer.provide(CaptureUploadPolicyDefault),
+          ),
+        );
+  const sessionRepositoryLayer =
+    captureLayers === null
+      ? SessionRepositoryLocalLive.pipe(
+          Layer.provide(storeLayer),
+          Layer.provide(projectsLayer(world)),
+        )
+      : SessionRepositoryCapturedLive.pipe(
+          Layer.provide(storeLayer),
+          Layer.provide(projectsLayer(world)),
+          Layer.provide(worktreesLayer(world)),
+          Layer.provide(captureLayers),
+        );
+  const captureRuntimeLayer =
+    captureLayers === null
+      ? CaptureRuntimeOff
+      : CaptureRuntimeLive.pipe(Layer.provide(captureLayers));
+  const deploymentLayer =
+    captureLayers === null
+      ? DeploymentConfigLocal
+      : Layer.succeed(DeploymentConfig, {
+          mode: "local",
+          sessionEndpoint: { listen: "127.0.0.1:0", url: "http://mend.test:3106" },
+          sessionStore: "captured",
+        });
   const engineLayer = SessionEngineLive.pipe(
-    Layer.provide(
-      SessionRepositoryLocalLive.pipe(
-        Layer.provide(storeLayer),
-        Layer.provide(projectsLayer(world)),
-      ),
-    ),
+    Layer.provide(sessionRepositoryLayer),
     Layer.provide(storeLayer),
     Layer.provide(options.sealantLayer ?? sealantDeadLayer),
     Layer.provide(settingsLayer(options.workspaceImage)),
@@ -1580,7 +1651,8 @@ const withEngine = <A, E>(
     Layer.provide(serviceHostStubLayer),
     Layer.provide(sessionSocketStubLayer),
     Layer.provide(SessionChannelTokensRepoMemory),
-    Layer.provide(DeploymentConfigLocal),
+    Layer.provide(deploymentLayer),
+    Layer.provide(captureRuntimeLayer),
     Layer.provide(
       // One merged provide: `pipe` is typed to 20 operators and this list outgrew it.
       Layer.mergeAll(
@@ -4229,6 +4301,7 @@ describe("SessionEngine", () => {
       Layer.provide(sessionSocketStubLayer),
       Layer.provide(SessionChannelTokensRepoMemory),
       Layer.provide(DeploymentConfigLocal),
+      Layer.provide(CaptureRuntimeOff),
       Layer.provide(mendKeysStubLayer),
       Layer.provide(
         // One merged provide: `pipe` is typed to 20 operators and this list outgrew it.
@@ -4450,6 +4523,408 @@ describe("SessionEngine hot sessions", () => {
       {
         sealantLayer: sealantLaunchLayer(created, () => false, undefined, spawned),
         hotWorkspacesLayer: hotPoolLayer(pool),
+      },
+    );
+  });
+});
+
+/**
+ * What an executor ships in these worlds: a capture whose workspace class carries the codex
+ * rollout under `harness/`, registered under the epoch Mend claimed at launch. Packs and
+ * manifests follow ADR-0015's rules through the same writer the store tests prove.
+ */
+const shipHarnessCapture = (
+  tmp: string,
+  memory: MemoryCaptureStore,
+  worktreeId: WorktreeId,
+  epoch: number,
+  rolloutId: string,
+) =>
+  Effect.gen(function* () {
+    const chain = memory.chains.get(worktreeId);
+    const head = chain?.headCapture === null || chain === undefined ? null : chain.headCapture;
+    const parent = head === null ? null : (memory.captures.get(head) ?? null);
+    const tree = path.join(tmp, `ship-${epoch}`);
+    const rolloutDir = path.join(tree, "harness", ".codex", "sessions", "2026", "09", "12");
+    fs.mkdirSync(rolloutDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(rolloutDir, `rollout-2026-09-12T10-00-00-${rolloutId}.jsonl`),
+      `${JSON.stringify({
+        type: "response_item",
+        payload: { type: "message", role: "user", content: [{ type: "text", text: "go on" }] },
+      })}\n`,
+    );
+    const snapshot = snapshotDirectory(tree, captureKeys(worktreeId, epoch), { chunkSize: 64 });
+    const built = buildManifest({
+      worktreeId,
+      n: (parent?.n ?? -1) + 1,
+      parent: parent?.id ?? null,
+      epoch,
+      seq: 100,
+      kind: "turn",
+      git: {
+        packs: parent === null ? [] : (parent.sections as { git: { packs: string[] } }).git.packs,
+        refs: {},
+        head: "refs/heads/main",
+        fsck: "verified",
+      },
+      workspace: { root: snapshot.root, packs: snapshot.packs },
+    });
+    yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]])).pipe(
+      Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
+    );
+    const repo = yield* CaptureStoreRepo;
+    yield* repo.register({
+      worktreeId,
+      id: built.id,
+      n: built.manifest.n,
+      parent: built.manifest.parent,
+      epoch,
+      seq: 100n,
+      kind: "turn",
+      manifestKey: built.key,
+      sections: built.manifest.sections,
+      gitFsck: "verified",
+    });
+    return built;
+  }).pipe(Effect.provide(memory.layer));
+
+describe("SessionEngine capture mode", () => {
+  it("provisions capture 0 and launches a capture-sourced workspace: no mounts, no bind, a launch-claimed lease", async () => {
+    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+    const binds: string[] = [];
+    const memory = makeMemoryCaptureStore();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: null,
+            base: null,
+          });
+          // No directory was made: the authority is the chain, head at capture 0 from the base.
+          expect(
+            fs.existsSync(path.join(tmp, "store", "fixture", "worktrees", session.worktree)),
+          ).toBe(false);
+          const chain = memory.chains.get(session.worktreeId);
+          expect(chain?.headN).toBe(0);
+          const cap0 = memory.captures.get(chain?.headCapture ?? "");
+          expect(cap0?.kind).toBe("checkpoint");
+          expect(memory.leases.get(session.worktreeId)?.epoch).toBe(1);
+          expect(
+            (memory.leases.get(session.worktreeId)?.expiresAt ?? 0) <= memory.clock.now(),
+          ).toBe(true);
+          // Both start checkpoints exist and both are capture 0: no executor has captured
+          // anything yet, so the worktree is the base and the session's own checkpoint is the
+          // base commit observed at capture 0 — nothing derived on the runner, no pack written.
+          const starts = world.checkpoints.filter((c) => c.worktreeId === session.worktreeId);
+          expect(starts.map((c) => c.ordinal)).toEqual([0, 1]);
+          expect(starts.map((c) => c.sha)).toEqual([session.baseSha, session.baseSha]);
+          const derived = [...memory.packs.values()].filter(
+            (pack) => pack.worktreeId === session.worktreeId && pack.key.startsWith("projects/"),
+          );
+          expect(derived).toHaveLength(0);
+
+          yield* engine.launch(session.id, ["codex"]);
+
+          expect(created).toHaveLength(1);
+          const request = created[0];
+          expect(request?.source).toEqual({
+            kind: "capture",
+            endpoint: "http://mend.test:3106",
+            worktreeId: session.worktreeId,
+          });
+          expect(request !== undefined && "captureToken" in request).toBe(true);
+          expect(request !== undefined && "mounts" in request).toBe(false);
+          expect(binds).toEqual([]);
+          const lease = memory.leases.get(session.worktreeId);
+          expect(lease?.executorId).toBe(session.id);
+          expect(lease?.epoch).toBe(2);
+          expect((lease?.expiresAt ?? 0) > memory.clock.now()).toBe(true);
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          binds,
+        ),
+      },
+    );
+  });
+
+  it(
+    "a second session in a leased worktree joins the holder's executor; an unreachable holder is refused with worktree_leased",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions | CaptureCreateOptions> = [];
+      const spawned: ReadonlyArray<string>[] = [];
+      const memory = makeMemoryCaptureStore();
+      let holderDead = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const first = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: "shared",
+              ownerUserId: null,
+              base: null,
+            });
+            yield* engine.launch(first.id, ["codex"]);
+            expect(created).toHaveLength(1);
+
+            const second = yield* engine.provisionSessionIn(first.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: null,
+            });
+            yield* engine.launch(second.id, ["claude"]);
+            // One executor per worktree: the join is one more process in the holder's workspace.
+            expect(created).toHaveLength(1);
+            expect(spawned.at(-1)?.slice(0, 5)).toEqual([
+              "sh",
+              "-c",
+              expect.stringContaining("exec"),
+              "sh",
+              "claude",
+            ]);
+            expect(world.sessions.get(second.id)?.sealantWorkspaceId).toBe("workspace-1");
+            expect(memory.leases.get(first.worktreeId)?.executorId).toBe(first.id);
+
+            // The holder's executor stops answering while its lease is still live: refused.
+            holderDead = true;
+            const third = yield* engine.provisionSessionIn(first.worktreeId, {
+              harness: "codex",
+              label: null,
+              ownerUserId: null,
+            });
+            const refused = yield* engine.launch(third.id, ["codex"]).pipe(Effect.flip);
+            expect(refused._tag).toBe("SealantPlatformError");
+            expect(refused._tag === "SealantPlatformError" && refused.code).toBe("worktree_leased");
+            expect(refused._tag === "SealantPlatformError" && refused.status).toBe(409);
+            expect(world.sessions.get(third.id)?.status).toBe("failed");
+            expect(created).toHaveLength(1);
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            spawned,
+            () => holderDead,
+          ),
+        },
+      );
+    },
+  );
+
+  it("resume is lease-aware: a live lease attaches; an expired lease with a dead executor is a pickup that harvests from the head capture", async () => {
+    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const memory = makeMemoryCaptureStore();
+    let executorDead = false;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+          expect(epoch).toBe(2);
+          // The executor works and ships a turn capture carrying its rollout.
+          const rolloutId = crypto.randomUUID();
+          yield* shipHarnessCapture(tmp, memory, session.worktreeId, epoch, rolloutId);
+
+          // Lease live → attach, never a relaunch.
+          const active = yield* engine.resumeSession(session.id, null).pipe(Effect.flip);
+          expect(active._tag === "SealantPlatformError" && active.code).toBe("session_active");
+          expect(created).toHaveLength(1);
+
+          // The executor dies: heartbeats stop, the lease lapses, the platform stops answering.
+          const realNow = memory.clock.now;
+          memory.clock.now = () => realNow() + 10 * 60 * 1000;
+          executorDead = true;
+          const resumed = yield* engine.resumeSession(session.id, null);
+          expect(resumed.status).toBe("running");
+          // Pickup: a fresh capture-sourced workspace, launched as a NATIVE resume of the
+          // rollout harvested from the head capture — streamed, never through exec.
+          expect(created).toHaveLength(2);
+          expect(created[1]?.source?.kind).toBe("capture");
+          const liveAgent = [...world.processes.values()].find(
+            (process) => process.exitedAt === null && process.kind === "agent-pty",
+          );
+          expect(liveAgent?.argv.slice(0, 3)).toEqual(["codex", "resume", rolloutId]);
+          expect(liveAgent?.providerSessionId).toBe(rolloutId);
+          const lease = memory.leases.get(session.worktreeId);
+          expect(lease?.epoch).toBe(3);
+          expect(lease?.executorId).toBe(session.id);
+          const harvested = [...world.processes.values()].find(
+            (process) => process.exitedAt !== null && process.kind === "agent-pty",
+          );
+          expect(harvested).toBeDefined();
+          const stateDir = processStatePathOf(project.storePath, session.id, harvested?.id ?? "");
+          expect(fs.readFileSync(path.join(stateDir, "transcript.native"), "utf8")).toContain(
+            "go on",
+          );
+          memory.clock.now = realNow;
+          void spawned;
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          spawned,
+          () => executorDead,
+        ),
+      },
+    );
+  });
+
+  it("the reaper settles a session whose executor died: lease expired, platform silent — 'executor lost'", async () => {
+    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    let executorDead = false;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          // The executor ships a turn capture carrying its rollout — what a pickup resumes.
+          const rolloutId = crypto.randomUUID();
+          yield* shipHarnessCapture(
+            tmp,
+            memory,
+            session.worktreeId,
+            memory.leases.get(session.worktreeId)?.epoch ?? 0,
+            rolloutId,
+          );
+          // A live lease is left alone by the tick.
+          yield* engine.reapCaptureLeases();
+          expect(world.sessions.get(session.id)?.status).toBe("running");
+          // Expired lease, executor still answering: paused, not killed.
+          const realNow = memory.clock.now;
+          memory.clock.now = () => realNow() + 10 * 60 * 1000;
+          yield* engine.reapCaptureLeases();
+          expect(world.sessions.get(session.id)?.status).toBe("running");
+          // Expired lease, platform silent: the session settles honestly.
+          executorDead = true;
+          yield* engine.reapCaptureLeases();
+          const settled = world.sessions.get(session.id);
+          expect(settled?.status).toBe("failed");
+          expect(settled?.settledAt).not.toBeNull();
+          const run = [...world.sessionRuns.values()].find((row) => row.sessionId === session.id);
+          expect(run?.summary).toContain("executor lost · lease expired");
+          expect(settled?.summary).toContain("executor lost · lease expired");
+          expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+          // Pickup: the replacement launches and claims epoch + 1. Until it answers, the
+          // summary still reads the loss — that is what was last observed.
+          yield* engine.resumeSession(session.id, null);
+          const pickedUp = world.sessions.get(session.id);
+          expect(pickedUp?.status).toBe("running");
+          expect(pickedUp?.settledAt).toBeNull();
+          expect(pickedUp?.summary).toContain("executor lost · lease expired");
+          const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+          expect(epoch).toBe(3);
+          // Its first heartbeat is the observation that ends it.
+          const api = servedSocketApis.get(session.id)?.capture;
+          if (api === undefined) throw new Error("the picked-up session serves no capture api");
+          yield* api.heartbeat({ worktree_id: session.worktreeId, epoch });
+          expect(world.sessions.get(session.id)?.summary).toBe("picked up · executor replaced");
+          expect(world.sessions.get(session.id)?.settledAt).toBeNull();
+          // A later heartbeat rewrites nothing.
+          yield* api.heartbeat({ worktree_id: session.worktreeId, epoch });
+          expect(world.sessions.get(session.id)?.summary).toBe("picked up · executor replaced");
+          memory.clock.now = realNow;
+        }),
+      {
+        captured: memory,
+        // Liveness is an exec probe, not the stored status: while the platform answers, the
+        // probe succeeds (`execCalls`); once it is silent, the lookup fails and the probe with it.
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          () => executorDead,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          [],
+        ),
+      },
+    );
+  });
+
+  it("never claims a hot skeleton in capture mode — a project's hot target is observed and skipped", async () => {
+    const created: Array<CreateOptions | CaptureCreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 2 }));
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: null,
+            base: null,
+          });
+          expect(world.sessions.get(session.id)).toBeDefined();
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(created),
+        hotWorkspacesLayer: Layer.succeed(HotWorkspacesRepo, {
+          create: () => Effect.die("must not warm in capture mode"),
+          byId: () => Effect.succeed(null),
+          listForProject: () => Effect.succeed([]),
+          listAll: () => Effect.succeed([]),
+          setReady: () => Effect.void,
+          setFailed: () => Effect.void,
+          claim: () => Effect.die("must not claim in capture mode"),
+          remove: () => Effect.void,
+        }),
       },
     );
   });

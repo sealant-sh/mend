@@ -59,6 +59,21 @@ export interface EnsureInput {
   readonly manifest: CaptureManifest;
   /** Project refs from `store_refs` (`refs/heads/*`, `refs/remotes/origin/*`, `refs/mend/base/*`). */
   readonly storeRefs: Readonly<Record<string, string>>;
+  /**
+   * Git packs Mend itself wrote under `projects/<project>/packs/` (checkpoint commits derived
+   * on a runner, ADR-0002 "Review"): installed beside the manifest's packs, never promoted by
+   * the executor.
+   */
+  readonly extraPacks?: ReadonlyArray<string>;
+}
+
+/** A commit the runner made and packed; the caller stores the pack and records the ref. */
+export interface DerivedCommit {
+  readonly sha: Sha;
+  /** `pack-<sha256>` bytes plus the index, content-addressed by the pack's sha256. */
+  readonly packSha256: string;
+  readonly pack: Uint8Array;
+  readonly idx: Uint8Array;
 }
 
 export interface BlameLine {
@@ -125,6 +140,17 @@ export class GitOpsRunner extends Context.Service<
       ref: string,
       options?: { readonly limit?: number; readonly path?: string },
     ) => Effect.Effect<ReadonlyArray<LogEntry>, GitError>;
+    /** The tree a commit-ish or tree-ish names (`<ref>^{tree}`). */
+    readonly treeOf: (cache: RunnerCache, ref: string) => Effect.Effect<Sha, GitError>;
+    /**
+     * `commit-tree` over `tree` with `parent`, then a self-contained pack of that one commit —
+     * the runner's replacement for the co-located `add -A; write-tree; commit-tree` checkpoint
+     * (`store.ts` L720–744) when the executor did not post a `checkpoint` capture itself.
+     */
+    readonly commitTree: (
+      cache: RunnerCache,
+      input: { readonly tree: string; readonly parent: Sha | null; readonly message: string },
+    ) => Effect.Effect<DerivedCommit, GitError | RunnerCacheError>;
   }
 >()("@mend/store/GitOpsRunner") {}
 
@@ -314,7 +340,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
               yield* cacheIo(projectId, () => fs.mkdirSync(cache, { recursive: true }));
               yield* git(["init", "-q", "--bare"], cache);
             }
-            for (const key of manifest.sections.git.packs) {
+            for (const key of [...manifest.sections.git.packs, ...(input.extraPacks ?? [])]) {
               yield* installPack(projectId, cache, key);
             }
             // The manifest's refs are the worktree's own view (its branch tips, checkpoint
@@ -428,6 +454,50 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         return parseLog(yield* git(args, cache.path));
       });
 
+      const treeOf = Effect.fn("GitOpsRunner.treeOf")(function* (cache: RunnerCache, ref: string) {
+        const direct = HEX40.test(ref) ? ref : cache.refs[ref];
+        const target = direct ?? ref;
+        return Sha.make(yield* git(["rev-parse", "--verify", `${target}^{tree}`], cache.path));
+      });
+
+      const commitTree = Effect.fn("GitOpsRunner.commitTree")(function* (
+        cache: RunnerCache,
+        input: { readonly tree: string; readonly parent: Sha | null; readonly message: string },
+      ) {
+        const tree = yield* treeOf(cache, input.tree);
+        const args =
+          input.parent === null
+            ? ["commit-tree", tree, "-m", input.message]
+            : ["commit-tree", tree, "-p", input.parent, "-m", input.message];
+        const commit = yield* git(args, cache.path);
+        const staging = path.join(cache.path, "objects", `derived-${crypto.randomUUID()}`);
+        yield* cacheIo(cache.projectId, () => fs.mkdirSync(staging, { recursive: true }));
+        const attempt = Effect.gen(function* () {
+          // Only the commit object: its tree and parent are already in the cache's packs, and a
+          // reader installs every pack the manifest lists before this one.
+          const name = yield* git(
+            ["pack-objects", "-q", path.join(staging, "p")],
+            cache.path,
+            undefined,
+            undefined,
+            `${commit}\n`,
+          );
+          const pack = yield* cacheIo(
+            cache.projectId,
+            () => new Uint8Array(fs.readFileSync(path.join(staging, `p-${name}.pack`))),
+          );
+          const idx = yield* cacheIo(
+            cache.projectId,
+            () => new Uint8Array(fs.readFileSync(path.join(staging, `p-${name}.idx`))),
+          );
+          const packSha256 = crypto.createHash("sha256").update(pack).digest("hex");
+          return { sha: Sha.make(commit), packSha256, pack, idx } satisfies DerivedCommit;
+        });
+        return yield* attempt.pipe(
+          Effect.ensuring(Effect.sync(() => fs.rmSync(staging, { recursive: true, force: true }))),
+        );
+      });
+
       return {
         ensure,
         resolve,
@@ -439,6 +509,8 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         listBranches,
         blame,
         log,
+        treeOf,
+        commitTree,
       };
     }),
   );

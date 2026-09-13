@@ -1,5 +1,5 @@
 import { ProjectNotFoundError, ProjectsRepo } from "@mend/db";
-import type { ProjectId, Sha } from "@mend/domain";
+import type { ProjectId, Sha, WorktreeId } from "@mend/domain";
 import { Store, worktreePathOf, type CheckpointSnapshot, type GitError } from "@mend/store";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
@@ -50,6 +50,15 @@ export class SessionRepository extends Context.Service<
       base: string | null,
       remoteEnv: Record<string, string> | null,
     ) => Effect.Effect<SessionWorktreeSummary, SessionRepositoryError>;
+    /**
+     * Capture mode only (ADR-0002): once the worktree ROW exists, bind the authority's own
+     * bookkeeping to it — capture 0 from the base, the lease and chain rows. Absent on the
+     * co-located adapter, whose `createWorktree` already made the directory the authority.
+     */
+    readonly attachWorktree?: (
+      projectId: ProjectId,
+      worktreeId: WorktreeId,
+    ) => Effect.Effect<void, SessionRepositoryError>;
     /** Rename the branch a worktree is on in place; the directory never moves. */
     readonly renameBranch: (
       projectId: ProjectId,

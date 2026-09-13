@@ -44,7 +44,13 @@ import {
   SessionDetail,
   SubmitAgentTurnRequest,
 } from "./project-environment.ts";
-import { RemovalReport, SessionActive, SessionNotLive, StoreFailure } from "./workbench-views.ts";
+import {
+  ObservationStamp,
+  RemovalReport,
+  SessionActive,
+  SessionNotLive,
+  StoreFailure,
+} from "./workbench-views.ts";
 
 export const RespondAgentRequest = Schema.Union([
   Schema.Struct({ decision: AgentApprovalDecision }),
@@ -377,6 +383,8 @@ export class ChangeDiff extends Schema.Class<ChangeDiff>("ChangeDiff")({
   change: SessionChange,
   diff: Schema.String,
   files: Schema.Array(ChangedFileView),
+  /** Absent for clients that predate captures; always present from a capture-mode API. */
+  observation: Schema.optionalKey(ObservationStamp),
 }) {}
 
 /**
@@ -394,6 +402,7 @@ export class ChangeStats extends Schema.Class<ChangeStats>("ChangeStats")({
   files: Schema.Int,
   additions: Schema.Int,
   deletions: Schema.Int,
+  observation: Schema.optionalKey(ObservationStamp),
 }) {}
 
 export class OpenReviewRequest extends Schema.Class<OpenReviewRequest>("OpenReviewRequest")({
@@ -450,6 +459,8 @@ export class ReviewDiffView extends Schema.Class<ReviewDiffView>("ReviewDiffView
   anchorFiles: Schema.Array(ReviewDiffFileView),
   /** A live observation only; it never changes this response's patch. */
   worktreeChangedSinceSnapshot: Schema.Boolean,
+  /** Which capture (or live worktree) `worktreeChangedSinceSnapshot` was observed on. */
+  observation: Schema.optionalKey(ObservationStamp),
 }) {}
 
 /** Null paths = change target; paths plus null side/lines = file target. */

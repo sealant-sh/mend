@@ -41,6 +41,15 @@ if (databaseUrl.includes("localhost:5434")) {
     console.warn(
       "[dev] could not start the dev Postgres — continuing, but the server will fail if the database is unreachable",
     );
+  } else if (process.env.MEND_SESSION_STORE === "captured") {
+    // The capture store's dev bucket (ADR-0002): lay the single Garage node out and create the
+    // `mend` bucket + key once; idempotent, so every dev loop may run it.
+    const init = spawnSync("sh", [path.join(repoRoot, "deploy", "dev", "garage-init.sh")], {
+      stdio: "inherit",
+    });
+    if (init.status !== 0) {
+      console.warn("[dev] garage-init failed — the capture store has no bucket to write to");
+    }
   }
 }
 

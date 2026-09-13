@@ -8,6 +8,7 @@ import { DeploymentConfig, StoreConfig } from "@mend/store";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
+import type { SessionCaptureApi } from "./capture-channel.ts";
 import {
   GIT_SSH_SHIM_SCRIPT,
   type GitTransportPlan,
@@ -85,6 +86,11 @@ export interface SessionSocketApi {
     exitCode: number | null,
     refUpdates: ReadonlyArray<string> | null,
   ) => Effect.Effect<void>;
+  /**
+   * The capture routes (ADR-0002): sealantd's registrar port, scoped to this session's
+   * worktree. Absent when the deployment keeps the co-located store — the routes then 404.
+   */
+  readonly capture?: SessionCaptureApi | undefined;
 }
 
 export class SessionSocketHost extends Context.Service<

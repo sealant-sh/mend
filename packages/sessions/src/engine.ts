@@ -1,6 +1,8 @@
 import { constants as fsConstants } from "node:fs";
+import { createWriteStream } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import { pipeline } from "node:stream/promises";
 
 import {
   AgentConversationRepo,
@@ -90,13 +92,17 @@ import {
   MendKeys,
   NO_SIGNER_MESSAGE,
   SecretCipher,
+  decodeManifest,
   harnessHomePathOf,
+  listCaptureFiles,
   processStatePathOf,
+  readCaptureFile,
   sessionStatePathOf,
   resolveRemoteEnv,
   sshTransportArgs,
   worktreePathOf,
   worktreesRootOf,
+  BlobStore,
   DeploymentConfig,
 } from "@mend/store";
 import type { Harness, Run as SdkRun, Workspace, WorkspaceCredentialsOptions } from "@sealant/sdk";
@@ -105,6 +111,16 @@ import { Duration, Effect, Layer, Option, Schedule, Schema, Stream } from "effec
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
+import {
+  type CaptureRouteError,
+  LAUNCH_CLAIM_TTL_SECONDS,
+  type SessionCaptureApi,
+} from "./capture-channel.ts";
+import {
+  CaptureRuntime,
+  LEASE_REAPER_INTERVAL_SECONDS,
+  REPLACEMENT_AGE_SECONDS,
+} from "./capture-runtime.ts";
 import { DotfilesResolveError, resolveDotfilesArchives } from "./dotfiles.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
 import {
@@ -312,6 +328,10 @@ const ptyOutputTail = (pty: {
 
 /** How long `mend service run` waits for the declared port before reporting unreachable. */
 const SERVICE_START_TIMEOUT_MS = 60_000;
+/** What the reaper writes when a lease lapsed and the platform no longer answers. */
+const EXECUTOR_LOST_SUMMARY = "executor lost · lease expired";
+/** What replaces it once the replacement executor's first heartbeat or register lands. */
+const EXECUTOR_REPLACED_SUMMARY = "picked up · executor replaced";
 
 const SUPERVISE_RETRY = Schedule.exponential("1 second").pipe(
   Schedule.modifyDelay((_, delay) =>
@@ -721,6 +741,13 @@ export class SessionEngine extends Context.Service<
      */
     readonly observeExternalAgents: () => Effect.Effect<void>;
     /**
+     * Capture mode's lease reaper tick (ADR-0002 "Replacement and pickup"): an expired lease
+     * whose executor the platform no longer answers for settles its session honestly; a live
+     * lease past the replacement age is replaced. A no-op under the co-located store; runs on
+     * its own 10 s heartbeat, exposed for deterministic ticks.
+     */
+    readonly reapCaptureLeases: () => Effect.Effect<void>;
+    /**
      * The session's conversation as the canonical record — read LIVE from the
      * running workspace's harness state (or from the store once settled).
      * The chat surfaces render this; the terminal stays the raw view.
@@ -737,6 +764,7 @@ export class SessionEngine extends Context.Service<
 
 type SessionEngineRequirements =
   | SealantClient
+  | CaptureRuntime
   | SessionChannelTokensRepo
   | DeploymentConfig
   | AgentConversationRepo
@@ -826,6 +854,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         gitTransport: (input) => owned(sessionId)(api.gitTransport(input)),
         gitTransportDone: (opId, exitCode, refUpdates) =>
           owned(sessionId)(api.gitTransportDone(opId, exitCode, refUpdates)),
+        ...(api.capture === undefined ? {} : { capture: api.capture }),
       });
       const conversations = yield* AgentConversationRepo;
       const channelTokens = yield* SessionChannelTokensRepo;
@@ -835,6 +864,345 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           "MEND_DEPLOYMENT_MODE=kubernetes requires MEND_SESSION_ENDPOINT_LISTEN / _URL on the session worker — a workspace Pod on another node cannot reach a Unix socket, so without the network channel every session would be unreachable.",
         );
       }
+      // Capture mode (ADR-0002): the executor materialises the worktree from the bucket and
+      // ships captures back over the network channel, so the channel must exist.
+      const captureRuntime = yield* CaptureRuntime;
+      const captureStoreOn = deployment.sessionStore === "captured";
+      if (captureStoreOn && deployment.sessionEndpoint === undefined) {
+        return yield* Effect.die(
+          "MEND_SESSION_STORE=captured requires MEND_SESSION_ENDPOINT_LISTEN / _URL — the executor reaches the capture routes over the network session channel, never a socket.",
+        );
+      }
+      if (captureStoreOn && !captureRuntime.enabled) {
+        return yield* Effect.die(
+          "MEND_SESSION_STORE=captured but the capture runtime was not provided to the session engine.",
+        );
+      }
+      const capture = captureStoreOn && captureRuntime.enabled ? captureRuntime : null;
+
+      // ── Capture mode (ADR-0002) ─────────────────────────────────────────────────
+      /**
+       * The create-request half of a capture launch: the `capture` source and the sealed token
+       * (the session channel token under its second name, `SEALANT_CAPTURE_TOKEN`). Null under
+       * the co-located store.
+       */
+      const captureSourceFor = (sessionId: SessionId, secretEnv: Record<string, string>) =>
+        Effect.gen(function* () {
+          if (capture === null) return null;
+          const endpoint = deployment.sessionEndpoint;
+          const token = secretEnv["MEND_SESSION_TOKEN"];
+          if (endpoint === undefined || token === undefined) {
+            return yield* Effect.die("capture mode: a launch needs the session channel token");
+          }
+          const session = yield* sessions.byId(sessionId).pipe(Effect.option);
+          if (Option.isNone(session)) {
+            return yield* Effect.die(
+              "capture mode: a workspace needs its session row — standby executors are not warmed here",
+            );
+          }
+          return {
+            source: {
+              kind: "capture" as const,
+              endpoint: endpoint.url,
+              worktreeId: session.value.worktreeId,
+            },
+            captureToken: token,
+          };
+        });
+
+      /** The project's compressed footprint (its base packs) prices the session's byte budget. */
+      const footprintCache = new Map<SessionId, number>();
+      const footprintFor = (sessionId: SessionId, projectId: ProjectId) =>
+        Effect.gen(function* () {
+          if (capture === null) return 0;
+          const cached = footprintCache.get(sessionId);
+          if (cached !== undefined) return cached;
+          const bytes = (yield* capture.repo.listPacks())
+            .filter(
+              (pack) =>
+                pack.class === "git" &&
+                pack.worktreeId === null &&
+                pack.key.startsWith(`projects/${projectId}/packs/`),
+            )
+            .reduce((sum, pack) => sum + pack.bytes, 0);
+          footprintCache.set(sessionId, bytes);
+          return bytes;
+        });
+
+      /**
+       * A picked-up session still reads the loss after `reopen` ("executor lost · lease
+       * expired at …" — `reopen` touches status alone). The replacement's first heartbeat or
+       * register is the observation that ends it; the summary then says what was seen and
+       * nothing more.
+       */
+      const observeReplacement = (sessionId: SessionId) =>
+        Effect.gen(function* () {
+          const found = yield* sessions.byId(sessionId).pipe(Effect.option);
+          if (Option.isNone(found)) return;
+          const session = found.value;
+          if (
+            session.settledAt !== null ||
+            session.summary === null ||
+            !session.summary.startsWith(EXECUTOR_LOST_SUMMARY)
+          ) {
+            return;
+          }
+          yield* sessions.setSummary(sessionId, EXECUTOR_REPLACED_SUMMARY);
+          yield* Effect.logInfo(
+            "session engine: capture mode · picked up · executor replaced",
+          ).pipe(Effect.annotateLogs({ sessionId, worktreeId: session.worktreeId }));
+        });
+
+      /** The capture routes for one session, scoped to its worktree on every call. */
+      const captureApiFor = (sessionId: SessionId): SessionCaptureApi => {
+        const scoped = <A>(
+          call: (api: SessionCaptureApi) => Effect.Effect<A, CaptureRouteError>,
+        ): Effect.Effect<A, CaptureRouteError> =>
+          Effect.gen(function* () {
+            if (capture === null) return yield* Effect.die("capture routes outside capture mode");
+            const session = yield* sessions.byId(sessionId).pipe(Effect.orDie);
+            const api = capture.channel.apiFor({
+              worktreeId: session.worktreeId,
+              projectId: session.projectId,
+              executorId: sessionId,
+              footprintBytes: yield* footprintFor(sessionId, session.projectId),
+            });
+            return yield* call(api);
+          });
+        const observed = <A>(
+          call: (api: SessionCaptureApi) => Effect.Effect<A, CaptureRouteError>,
+        ): Effect.Effect<A, CaptureRouteError> =>
+          scoped(call).pipe(Effect.tap(() => observeReplacement(sessionId)));
+        return {
+          planGet: (input) => scoped((api) => api.planGet(input)),
+          uploadUrls: (input) => scoped((api) => api.uploadUrls(input)),
+          uploadComplete: (input) => scoped((api) => api.uploadComplete(input)),
+          register: (input) => observed((api) => api.register(input)),
+          changeSummary: (input) => scoped((api) => api.changeSummary(input)),
+          heartbeat: (input) => observed((api) => api.heartbeat(input)),
+        };
+      };
+
+      /** Release the worktree lease if this session's executor holds it (idempotent). */
+      const releaseLeaseHeldBy = (sessionId: SessionId) =>
+        Effect.gen(function* () {
+          if (capture === null) return;
+          const session = yield* sessions.byId(sessionId);
+          const lease = yield* capture.repo.leaseOf(session.worktreeId);
+          if (lease === null || lease.executorId !== sessionId) return;
+          const released = yield* capture.repo.release(session.worktreeId, lease.epoch);
+          if (released) {
+            yield* Effect.logInfo("session engine: worktree lease released").pipe(
+              Effect.annotateLogs({
+                sessionId,
+                worktreeId: session.worktreeId,
+                epoch: lease.epoch,
+              }),
+            );
+          }
+        }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
+
+      /**
+       * Does the executor still answer? The platform's stored status is not enough: a container
+       * that was killed stays `ready` on the control plane until something touches it (observed
+       * three minutes after `docker kill` in the local proof — the Docker reaper handles expiry,
+       * stop intents and superseded runtimes, not death). So a live status is confirmed with a
+       * one-shot exec into the workspace, which fails within seconds when the container is gone
+       * (ADR-0002 "Replacement and pickup": confirm termination through the platform first).
+       */
+      const workspaceAlive = (workspaceId: SealantWorkspaceId) =>
+        sealant.getWorkspace(workspaceId).pipe(
+          Effect.flatMap((workspace) =>
+            Effect.promise(() => workspace.status()).pipe(
+              Effect.flatMap((status) =>
+                workspaceIsLive(status)
+                  ? sealant.exec(workspace, ["true"]).pipe(
+                      Effect.map((result) => result.exitCode === 0),
+                      Effect.timeoutOption(Duration.seconds(30)),
+                      Effect.map(Option.getOrElse(() => false)),
+                    )
+                  : Effect.succeed(false),
+              ),
+            ),
+          ),
+          Effect.catch(() => Effect.succeed(false)),
+          Effect.catchDefect(() => Effect.succeed(false)),
+        );
+
+      /**
+       * Who holds a worktree in capture mode: `free` (no live lease, or Mend's own short claim),
+       * `held` (another session's executor, reachable — a join runs inside it), or
+       * `unreachable` (a live lease whose executor the platform no longer answers for — refused
+       * until the heartbeat lapses and the reaper clears it).
+       */
+      const leaseHolderWorkspace = Effect.fn("SessionEngine.leaseHolderWorkspace")(function* (
+        session: Session,
+      ) {
+        if (capture === null) return { kind: "free" as const };
+        const lease = yield* capture.repo.leaseOf(session.worktreeId);
+        if (
+          lease === null ||
+          !lease.live ||
+          lease.executorId === null ||
+          lease.executorId === session.id ||
+          lease.executorId.startsWith("mend:")
+        ) {
+          return { kind: "free" as const };
+        }
+        const holder = yield* sessions
+          .byId(SessionId.make(lease.executorId))
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        const workspaceId = holder?.sealantWorkspaceId ?? null;
+        const workspace =
+          workspaceId === null
+            ? null
+            : yield* sealant.getWorkspace(workspaceId).pipe(
+                Effect.flatMap((candidate) =>
+                  Effect.promise(() => candidate.status()).pipe(
+                    Effect.map((status) => (workspaceIsLive(status) ? candidate : null)),
+                  ),
+                ),
+                Effect.catch(() => Effect.succeed(null)),
+                Effect.catchDefect(() => Effect.succeed(null)),
+              );
+        if (workspace !== null) {
+          return { kind: "held" as const, sessionId: lease.executorId, workspace };
+        }
+        return {
+          kind: "unreachable" as const,
+          sessionId: lease.executorId,
+          epoch: lease.epoch,
+          expiresAt: lease.expiresAt?.toISOString() ?? "never",
+        };
+      });
+
+      /**
+       * Pickup, first half: the session reads live but its worktree lease is not. Confirm the
+       * termination on the platform (stop what still answers — a paused executor is fenced
+       * either way), reap its rows, revoke its token and release the lease; the caller then
+       * relaunches and the new executor's first plan claims epoch + 1. False = the lease is
+       * live: attach instead.
+       */
+      const confirmDeadExecutor = Effect.fn("SessionEngine.confirmDeadExecutor")(function* (
+        session: Session,
+      ) {
+        if (capture === null) return false;
+        const lease = yield* capture.repo.leaseOf(session.worktreeId);
+        if (lease !== null && lease.live) return false;
+        yield* Effect.logWarning(
+          "session engine: capture mode · lease expired · confirming termination before pickup",
+        ).pipe(
+          Effect.annotateLogs({
+            sessionId: session.id,
+            worktreeId: session.worktreeId,
+            epoch: lease?.epoch ?? null,
+            expiresAt: lease?.expiresAt?.toISOString() ?? null,
+          }),
+        );
+        const activeRun = yield* sessionRuns.activeForSession(session.id);
+        yield* stopWorkspaceQuietly(session.id, { force: true });
+        if (activeRun !== null) {
+          yield* sessionRuns.settle(
+            activeRun.sealantRunId,
+            "failed",
+            `${EXECUTOR_LOST_SUMMARY}${lease?.expiresAt === null || lease?.expiresAt === undefined ? "" : ` at ${lease.expiresAt.toISOString()}`}`,
+          );
+        }
+        yield* reconcileSession(session.id, { sweep: false }).pipe(Effect.ignore);
+        return true;
+      });
+
+      /** Sessions the reaper is already replacing; one replacement at a time per session. */
+      const replacing = new Set<SessionId>();
+
+      /**
+       * Replacement before the platform cap (≈ 7 h 30 on MicroVMs, ADR-0002): a planned stop
+       * (SIGTERM → sealantd's final flush), then a pickup that launches anywhere with the head
+       * plan. Death, the cap, sandbox replacement and platform moves are one path.
+       */
+      const replaceExecutor = Effect.fn("SessionEngine.replaceExecutor")(function* (
+        session: Session,
+      ) {
+        if (capture === null || replacing.has(session.id)) return;
+        replacing.add(session.id);
+        const attempt = Effect.gen(function* () {
+          yield* Effect.logInfo(
+            "session engine: capture mode · replacing the executor before the cap",
+          ).pipe(Effect.annotateLogs({ sessionId: session.id, worktreeId: session.worktreeId }));
+          if (session.sealantWorkspaceId !== null) {
+            yield* sealant.getWorkspace(session.sealantWorkspaceId).pipe(
+              Effect.flatMap((workspace) => sealant.stopWorkspace(workspace)),
+              Effect.ignore,
+            );
+          }
+          // The final capture lands and the lease lapses: wait for either, bounded.
+          const deadline = Date.now() + 60_000;
+          while (Date.now() < deadline) {
+            const lease = yield* capture.repo.leaseOf(session.worktreeId);
+            if (lease === null || !lease.live) break;
+            yield* Effect.sleep(Duration.seconds(2));
+          }
+          yield* resumeSession(session.id, null).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: replacement pickup failed").pipe(
+                Effect.annotateLogs({ sessionId: session.id, error: String(error) }),
+              ),
+            ),
+          );
+        });
+        yield* attempt.pipe(Effect.ensuring(Effect.sync(() => replacing.delete(session.id))));
+      });
+
+      /**
+       * The lease reaper (every 10 s): a session that reads live whose lease expired is a dead
+       * or paused executor. A dead one (the platform no longer answers) settles honestly —
+       * "executor lost · lease expired" — and the next resume is a pickup; an answering one
+       * paused itself on the lost heartbeat and resumes on its own once heartbeats land again,
+       * so nothing is killed. Live leases past the replacement age are replaced.
+       */
+      const captureReaper = Effect.fn("SessionEngine.captureReaper")(function* () {
+        if (capture === null) return;
+        const active = (yield* sessions.listUnsettled()).filter((session) =>
+          ACTIVE_STATUSES.has(session.status),
+        );
+        for (const session of active) {
+          if (session.sealantWorkspaceId === null) continue;
+          const lease = yield* capture.repo.leaseOf(session.worktreeId);
+          if (lease === null || lease.executorId !== session.id) continue;
+          if (lease.live) {
+            const latestRun = yield* sessionRuns.latestForSession(session.id);
+            const startedAt = latestRun?.startedAt ?? null;
+            if (
+              startedAt !== null &&
+              Date.now() - startedAt.getTime() > REPLACEMENT_AGE_SECONDS * 1000
+            ) {
+              yield* Effect.forkIn(
+                replaceExecutor(session).pipe(asSealantUser(session.ownerUserId)),
+                scope,
+              );
+            }
+            continue;
+          }
+          if (lease.expiresAt === null) continue;
+          const alive = yield* workspaceAlive(session.sealantWorkspaceId).pipe(
+            asSealantUser(session.ownerUserId),
+          );
+          if (alive) {
+            yield* Effect.logInfo(
+              "session engine: capture mode · lease expired but the executor answers · paused until its heartbeat lands",
+            ).pipe(Effect.annotateLogs({ sessionId: session.id, epoch: lease.epoch }));
+            continue;
+          }
+          yield* confirmDeadExecutor(session).pipe(
+            asSealantUser(session.ownerUserId),
+            Effect.catch((error) =>
+              Effect.logWarning(
+                "session engine: capture reaper could not settle a lost executor",
+              ).pipe(Effect.annotateLogs({ sessionId: session.id, error: String(error) })),
+            ),
+          );
+        }
+      });
       /**
        * The network session channel (docs/KUBERNETES.md): when configured, every workspace is
        * told where the channel is and handed a per-session bearer token through the SECRET env
@@ -947,30 +1315,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId | null,
         cursor: { readonly sealantRunId: SealantRunId | null; readonly sequence: bigint },
       ) {
-        return yield* checkpoints.withWorktreeLock(
-          worktree.id,
-          Effect.gen(function* () {
-            const previous = yield* checkpoints.latestForWorktree(worktree.id);
-            const ordinal = yield* checkpoints.countForWorktree(worktree.id);
-            const snapshot = yield* sessionRepo.checkpoint({
-              projectId: worktree.projectId,
-              scope: worktree.id,
-              worktreeName: worktree.directory,
-              index: ordinal,
-              parent: previous?.sha ?? null,
-            });
-            return yield* checkpoints.create({
-              worktreeId: worktree.id,
-              sessionId,
-              ordinal,
-              ref: snapshot.ref,
-              sha: snapshot.sha,
-              sealantRunId: cursor.sealantRunId,
-              seq: cursor.sequence,
-              trigger,
-            });
-          }),
-        );
+        const body = Effect.gen(function* () {
+          const previous = yield* checkpoints.latestForWorktree(worktree.id);
+          const ordinal = yield* checkpoints.countForWorktree(worktree.id);
+          const snapshot = yield* sessionRepo.checkpoint({
+            projectId: worktree.projectId,
+            scope: worktree.id,
+            worktreeName: worktree.directory,
+            index: ordinal,
+            parent: previous?.sha ?? null,
+          });
+          return yield* checkpoints.create({
+            worktreeId: worktree.id,
+            sessionId,
+            ordinal,
+            ref: snapshot.ref,
+            sha: snapshot.sha,
+            sealantRunId: cursor.sealantRunId,
+            seq: cursor.sequence,
+            trigger,
+            captureId: snapshot.captureId ?? null,
+          });
+        });
+        // Capture mode: no advisory lock (transaction-mode pooling drops it) — the register CAS
+        // serialises the chain and the unique (worktree_id, ordinal) index stays the backstop.
+        return yield* capture === null ? checkpoints.withWorktreeLock(worktree.id, body) : body;
       });
 
       const takeCheckpoint = Effect.fn("SessionEngine.takeCheckpoint")(function* (
@@ -1221,6 +1590,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           baseSha: created.baseSha,
           baseRef: created.baseRef,
         });
+        // Capture mode: capture 0, the lease and the chain rows follow the worktree row at once
+        // (ADR-0002 "Decisions made here" 6); the co-located adapter has nothing to attach.
+        if (sessionRepo.attachWorktree !== undefined) {
+          yield* sessionRepo.attachWorktree(project.id, row.id);
+        }
         yield* takeWorktreeCheckpoint(row, "session-start", null, {
           sealantRunId: null,
           sequence: 0n,
@@ -1407,6 +1781,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const session = yield* sessions.byId(sessionId);
         const project = yield* projects.byId(session.projectId);
         const stateDir = processStatePathOf(project.storePath, session.id, agentProcess.id);
+        if (capture !== null) {
+          // The `exec tar | base64` archive path is retired in capture mode: the harness home is
+          // the workspace class of the head capture, and it is read there, streamed.
+          const located = yield* harvestFromCapture(session, agentProcess);
+          if (located === null) {
+            return yield* new HarnessStateCommandError({
+              sessionId,
+              harness,
+              operation: "capture-archive",
+              exitCode: 3,
+              stderr: "",
+              message: `No ${harness} transcript in the head capture for session ${sessionId}.`,
+            });
+          }
+          return;
+        }
         const workspace = yield* sealant.getWorkspace(agentProcess.sealantWorkspaceId);
 
         yield* Effect.tryPromise({
@@ -1581,6 +1971,125 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * home holds live state never restores from an archive. Null when nothing is
        * recoverable — an absent home, no transcript yet, a transcript-less harness.
        */
+      /**
+       * Capture mode's harvest (ADR-0002 "harvestFromHarnessHome"): the harness home rides the
+       * workspace class of every capture under `harness/`; the newest transcript there is
+       * streamed into the process's state dir — a 76 MB codex rollout is never buffered — and
+       * the manifest commits it exactly as the co-located harvest does.
+       */
+      const harvestFromCapture = Effect.fn("SessionEngine.harvestFromCapture")(function* (
+        session: Session,
+        agent: SessionProcess,
+      ) {
+        if (capture === null) return null;
+        const harness = agent.harness ?? session.harness;
+        const shape = HARNESS_STATE[harness];
+        if (shape === undefined || shape.liveTranscript === null) return null;
+        const project = yield* projects.byId(session.projectId);
+        const chain = yield* capture.repo.headOf(session.worktreeId);
+        const head = chain?.head ?? null;
+        if (head === null) return null;
+        const io = <A>(
+          operation: HarnessStateIOError["operation"],
+          at: string,
+          thunk: () => Promise<A>,
+        ) =>
+          Effect.tryPromise({
+            try: thunk,
+            catch: (cause) =>
+              new HarnessStateIOError({
+                sessionId: session.id,
+                operation,
+                path: at,
+                message: `Could not read the captured ${harness} state for session ${session.id}.`,
+                cause,
+              }),
+          });
+        const blobs = capture.blobs;
+        const manifest = yield* blobs.get(head.manifestKey).pipe(
+          Effect.flatMap((bytes) => decodeManifest(head.manifestKey, bytes)),
+          Effect.mapError(
+            (cause) =>
+              new HarnessStateIOError({
+                sessionId: session.id,
+                operation: "read-transcript",
+                path: head.manifestKey,
+                message: `Could not read the head capture for session ${session.id}.`,
+                cause,
+              }),
+          ),
+        );
+        const files = yield* listCaptureFiles(manifest, "workspace", "harness").pipe(
+          Effect.provideService(BlobStore, blobs),
+          Effect.mapError(
+            (cause) =>
+              new HarnessStateIOError({
+                sessionId: session.id,
+                operation: "read-transcript",
+                path: head.manifestKey,
+                message: `Could not list the captured harness home for session ${session.id}.`,
+                cause,
+              }),
+          ),
+        );
+        const pattern = shape.liveTranscript;
+        const transcript = files.find((file) => pattern.test(file.path.replace(/^harness\//, "")));
+        if (transcript === undefined) return null;
+        const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
+        const manifestPath = path.join(stateDir, "manifest.json");
+        const transcriptPath = path.join(stateDir, "transcript.native");
+        yield* io("write-transcript", stateDir, async () => {
+          await fs.mkdir(stateDir, { recursive: true });
+          await fs.rm(manifestPath, { force: true });
+        });
+        const stream = yield* readCaptureFile(manifest, "workspace", transcript.path).pipe(
+          Effect.provideService(BlobStore, blobs),
+          Effect.mapError(
+            (cause) =>
+              new HarnessStateIOError({
+                sessionId: session.id,
+                operation: "read-transcript",
+                path: transcript.path,
+                message: `Could not open the captured ${harness} transcript for session ${session.id}.`,
+                cause,
+              }),
+          ),
+        );
+        yield* io("write-transcript", transcriptPath, () =>
+          pipeline(stream, createWriteStream(transcriptPath)),
+        );
+        const providerSessionId = shape.providerSessionId(transcript.path);
+        const native = yield* io("read-transcript", transcriptPath, () =>
+          fs.readFile(transcriptPath, "utf8"),
+        );
+        const canonical =
+          native === "" ? null : ingestNativeSession(harness, native, "/workspace/repo");
+        if (canonical !== null) {
+          yield* io("write-canonical", stateDir, () =>
+            fs.writeFile(
+              path.join(stateDir, "session.canonical.json"),
+              JSON.stringify(canonical, null, 2),
+            ),
+          );
+        }
+        const stateManifest: HarnessStateManifest = {
+          harness,
+          providerSessionId,
+          capturedAt: new Date().toISOString(),
+        };
+        yield* io("write-manifest", manifestPath, () =>
+          fs.writeFile(manifestPath, JSON.stringify(stateManifest, null, 2)),
+        );
+        if (providerSessionId !== null) {
+          yield* processes.setProviderSessionId(agent.id, providerSessionId);
+          yield* sessions.setProviderSessionId(session.id, providerSessionId);
+        }
+        yield* Effect.logInfo("session engine: harness state observed at capture").pipe(
+          Effect.annotateLogs({ sessionId: session.id, captureN: head.n, seq: String(head.seq) }),
+        );
+        return { stateDir, manifest: stateManifest } satisfies LocatedHarnessState;
+      });
+
       const harvestFromHarnessHome = Effect.fn("SessionEngine.harvestFromHarnessHome")(function* (
         session: Session,
       ) {
@@ -1590,6 +2099,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const agents = agentProcessesOf(yield* processes.listForSession(session.id));
         const agent = agents.findLast((candidate) => candidate.harness === harness) ?? null;
         if (agent === null) return null;
+        if (capture !== null) return yield* harvestFromCapture(session, agent);
         const harnessHome = harnessHomePathOf(project.storePath, session.id);
         const live = yield* locateLiveTranscript(harnessHome, harness);
         if (live === null) return null;
@@ -1788,6 +2298,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* processes.reapLiveForWorkspace(workspaceId);
           yield* socketHost.stop(sessionId);
           yield* channelTokens.revoke(sessionId).pipe(Effect.ignore);
+          // Capture mode: the executor is confirmed gone, so its lease is released under its
+          // epoch and the next claimer (a pickup, a sibling) may take the worktree at once.
+          yield* releaseLeaseHeldBy(sessionId);
         }).pipe(
           Effect.catch((error) =>
             Effect.logWarning("session engine: workspace stop failed").pipe(
@@ -2608,6 +3121,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ...channel.env,
         };
         Object.assign(secretEnv, channel.secretEnv);
+        // Capture mode (ADR-0002 "provisionWorkspace"): the executor mounts nothing — not the
+        // store, the socket dir, the harness home, references, declared folders or linked
+        // projects; it materialises the worktree's head capture and ships captures back. The
+        // session token is the capture credential (one token, two names) and rides the create
+        // request as `captureToken`, sealed by Core into the boot env file.
+        const captureSource = yield* captureSourceFor(sessionId, channel.secretEnv);
+        // The first three mounts are the store, the socket dir and the harness home — never
+        // user-facing; anything past them is a reference, a declared folder or a linked project.
+        if (captureSource !== null && workspaceMounts.length > 3) {
+          yield* Effect.logInfo(
+            "session engine: capture mode · host mounts not applied · references, folders and linked projects stay on this machine",
+          ).pipe(Effect.annotateLogs({ sessionId, mounts: workspaceMounts.length }));
+        }
         const environmentManifest = {
           environmentRevision: environment.revision,
           environmentVariableNames: environment.variables.map((variable) => variable.name),
@@ -2622,9 +3148,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // Standby (ADR-0001, sealantd ADR-0014): the ROOT is mounted, hidden; /workspace/repo
             // does not exist until the launch binds it to one worktree. Neither Docker nor
             // Kubernetes can add a mount later, and this is what lets a pooled workspace serve
-            // any worktree of the project.
-            source: { kind: "standby", rootPath: worktreesRootOf(project.storePath) },
-            ...(workspaceMounts.length === 0 ? {} : { mounts: workspaceMounts }),
+            // any worktree of the project. Capture (ADR-0002): no mounts at all.
+            ...(captureSource === null
+              ? {
+                  source: { kind: "standby", rootPath: worktreesRootOf(project.storePath) },
+                  ...(workspaceMounts.length === 0 ? {} : { mounts: workspaceMounts }),
+                }
+              : captureSource),
             harness: shape.harness,
             name: `mend-${sessionId.slice(0, 8)}`,
             ...(workspaceImage.mode === "custom"
@@ -3109,6 +3639,68 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           claimedEntry !== null && claimedEntry.status === "claimed"
             ? yield* adoptClaimedWorkspace(claimedEntry)
             : null;
+        // Capture mode: one executor per worktree (ADR-0002 "The key is the worktree"). A join,
+        // a sibling shell or a phone pickup runs as another process inside the lease holder's
+        // executor; a launch that would need a second executor for a leased worktree is refused
+        // with `worktree_leased`.
+        if (capture !== null && adopted === null) {
+          const holder = yield* leaseHolderWorkspace(session);
+          if (holder.kind === "held") {
+            yield* Effect.logInfo("session engine: capture mode · joining the lease holder").pipe(
+              Effect.annotateLogs({ sessionId, holderSessionId: holder.sessionId }),
+            );
+            return yield* launchInRetainedWorkspace(
+              sessionId,
+              argv,
+              null,
+              launchCorrelationId,
+              manifest !== null && manifest.harness === session.harness
+                ? manifest.providerSessionId
+                : protocolResumeId,
+              protocolStart,
+              protocolAuthor,
+              holder.workspace,
+            ).pipe(
+              Effect.catchTag("SessionNotLiveError", (error) =>
+                Effect.fail(
+                  new SealantPlatformError({
+                    code: "worktree_leased",
+                    status: 409,
+                    message: `the lease holder's executor went away while joining: ${error.sessionId}`,
+                    cause: error,
+                  }),
+                ),
+              ),
+            );
+          }
+          if (holder.kind === "unreachable") {
+            const error = new SealantPlatformError({
+              code: "worktree_leased",
+              status: 409,
+              message: `worktree leased · held by session ${holder.sessionId} under epoch ${holder.epoch} · the lease expires at ${holder.expiresAt} unless its heartbeat continues`,
+              cause: null,
+            });
+            yield* sessions.settle(sessionId, "failed", error.message).pipe(Effect.ignore);
+            return yield* error;
+          }
+        }
+        // Capture mode: Mend claims the lease at launch (epoch + 1, the chain fenced in the
+        // same statement) with a boot-sized TTL; the executor learns the epoch from its first
+        // plan and the first heartbeat brings the TTL back to the 30 s cadence.
+        if (capture !== null && adopted === null) {
+          yield* capture.repo.claim(session.worktreeId, sessionId, LAUNCH_CLAIM_TTL_SECONDS).pipe(
+            Effect.mapError(
+              () =>
+                new SealantPlatformError({
+                  code: "worktree_leased",
+                  status: 409,
+                  message: "worktree leased · another executor claimed it first",
+                  cause: null,
+                }),
+            ),
+            settleOnFailure,
+          );
+        }
         const provisioned =
           adopted ??
           (yield* provisionWorkspace({
@@ -3123,21 +3715,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const { workspace, workspaceImage, environmentManifest } = provisioned;
         // Standby (ADR-0001): the workspace mounted the project's worktrees root; point its
         // working directory at THIS session's worktree before anything looks for the repo. The
-        // daemon records the bind and the platform re-applies it on every relaunch.
-        yield* sealant
-          .bindWorkspace(workspace, { subpath: session.worktree })
-          .pipe(
-            Effect.tapError((error) =>
-              sessions
-                .settle(
-                  sessionId,
-                  "failed",
-                  `launch failed: could not bind the worktree — ${error.message}`,
-                )
-                .pipe(Effect.ignore),
-            ),
-          );
-        yield* bindLinkedProjects(workspace, project);
+        // daemon records the bind and the platform re-applies it on every relaunch. Capture
+        // mode binds nothing: sealantd materialised the head capture, claimed the lease, and
+        // the harness starts on the executor's own disk.
+        if (capture === null) {
+          yield* sealant
+            .bindWorkspace(workspace, { subpath: session.worktree })
+            .pipe(
+              Effect.tapError((error) =>
+                sessions
+                  .settle(
+                    sessionId,
+                    "failed",
+                    `launch failed: could not bind the worktree — ${error.message}`,
+                  )
+                  .pipe(Effect.ignore),
+              ),
+            );
+          yield* bindLinkedProjects(workspace, project);
+        }
         yield* sessions.setWorkspaceImage(sessionId, workspaceImage);
         // Stamped alongside the image: what this session ACTUALLY launched with — the repo
         // url+ref that was cloned and the exact snapshot sha the store packed (for a hot
@@ -3162,11 +3758,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // newer: the harness wrote it up to the moment the last workspace ended. Boot
           // symlinks it back into `$HOME`; untarring an older settle-time capture over it
           // would only roll files back. Restore from the archive only when no live state
-          // exists (legacy sessions, a cleared home).
-          const liveState = yield* hasLiveHarnessState(
-            harnessHomePathOf(project.storePath, session.id),
-            manifest.harness,
-          );
+          // exists (legacy sessions, a cleared home). Capture mode: the harness home is the
+          // workspace class of the head capture, materialised by sealantd — nothing to restore.
+          const liveState =
+            capture !== null ||
+            (yield* hasLiveHarnessState(
+              harnessHomePathOf(project.storePath, session.id),
+              manifest.harness,
+            ));
           if (!liveState) {
             const tarName = `.mend-harness-state-${session.id.slice(0, 8)}.tgz`;
             const archivePath = path.join(stateDir, "harness-state.tar.gz");
@@ -3236,7 +3835,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
         }
 
-        if (nativeImport !== null) {
+        if (nativeImport !== null && capture !== null) {
+          // Staging rides the mounted worktree, which capture mode does not have. SEAM: a
+          // converted session is delivered through the executor's own disk once the channel
+          // grows a file-drop route; until then the target harness starts fresh.
+          yield* Effect.logWarning(
+            "session engine: capture mode · converted native session not placed (no mounted worktree)",
+          ).pipe(Effect.annotateLogs({ sessionId }));
+        } else if (nativeImport !== null) {
           // Cross-harness open: place the CONVERTED native session into the
           // fresh workspace's $HOME so the target harness resumes it as its
           // own — full history, its own session id, no distillation.
@@ -3261,7 +3867,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // converted into their own native format. A mend shell (or the agent
         // itself, switched mid-session) then opens it in place. Best-effort:
         // a missing transcript or failed conversion never fails a launch.
-        if (manifest !== null) {
+        if (manifest !== null && capture === null) {
           const covered = new Set<string>([manifest.harness]);
           if (nativeImport !== null) covered.add(session.harness);
           const uncovered = ["claude", "codex"].filter((h) => !covered.has(h));
@@ -3306,27 +3912,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // symlinks into it (harness-state.ts). After the restore/import steps so their
         // output migrates too; before the harness starts so nothing is written ephemerally.
         // Best-effort: a failure costs durability, never the launch.
-        yield* sealant.exec(workspace, ["sh", "-c", relocateHarnessHomeScript()]).pipe(
-          Effect.flatMap((result) =>
-            result.exitCode === 0
-              ? Effect.void
-              : Effect.fail(new Error(`exit ${result.exitCode}: ${result.stderr}`)),
-          ),
-          Effect.catch((error) =>
-            Effect.logWarning("session engine: harness-home relocation failed").pipe(
-              Effect.annotateLogs({ sessionId, error: String(error) }),
+        // Capture mode: sealantd's capture roots cover the harness home (the workspace class's
+        // `harness/`), so no mount and no relocation; the note lives in the captured tree.
+        if (capture === null) {
+          yield* sealant.exec(workspace, ["sh", "-c", relocateHarnessHomeScript()]).pipe(
+            Effect.flatMap((result) =>
+              result.exitCode === 0
+                ? Effect.void
+                : Effect.fail(new Error(`exit ${result.exitCode}: ${result.stderr}`)),
             ),
-          ),
-        );
-        // State restore can rewrite $HOME, while a hot claim can freshen mend.toml after prewarm.
-        // Rewrite the managed note after both paths so it reflects the claimed worktree now.
-        yield* appendWorkspaceNote(
-          workspace,
-          project,
-          worktree,
-          provisioned.referenceMounts,
-          provisioned.extraMounts,
-        );
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: harness-home relocation failed").pipe(
+                Effect.annotateLogs({ sessionId, error: String(error) }),
+              ),
+            ),
+          );
+          // State restore can rewrite $HOME, while a hot claim can freshen mend.toml after prewarm.
+          // Rewrite the managed note after both paths so it reflects the claimed worktree now.
+          yield* appendWorkspaceNote(
+            workspace,
+            project,
+            worktree,
+            provisioned.referenceMounts,
+            provisioned.extraMounts,
+          );
+        }
 
         const launchedArgv =
           protocolStart === null
@@ -3650,15 +4260,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           providerSessionId: string | null = null,
           protocolStart: LaunchStart | null = null,
           protocolAuthor: string | null = null,
+          /** Capture mode: the lease holder's workspace, where a join runs as one more process. */
+          workspaceOverride: Workspace | null = null,
         ) {
           const session = yield* sessions.byId(sessionId);
           const project = yield* projects.byId(session.projectId);
           const worktree = worktreePathOf(project.storePath, session.worktree);
-          const workspace = yield* workspaceForSupportingProcess(session).pipe(
-            Effect.catchTag("SealantPlatformError", () =>
-              Effect.fail(new SessionNotLiveError({ sessionId })),
-            ),
-          );
+          const workspace =
+            workspaceOverride ??
+            (yield* workspaceForSupportingProcess(session).pipe(
+              Effect.catchTag("SealantPlatformError", () =>
+                Effect.fail(new SessionNotLiveError({ sessionId })),
+              ),
+            ));
           if (nativeImport !== null) {
             yield* placeConvertedFiles(
               session,
@@ -3925,12 +4539,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return yield* new LegacyBenchReadOnlyError({ sessionId });
         }
         if (yield* agentIsLive(session)) {
-          return yield* new SealantPlatformError({
-            code: "session_active",
-            status: null,
-            message: "The session is already live — attach to it instead of resuming.",
-            cause: null,
-          });
+          // Capture mode: "already live" holds only while the worktree lease does. An expired
+          // lease with a dead executor is a PICKUP, never `session_active` — confirm the
+          // termination on the platform, fence the old token, and fall through to a relaunch
+          // whose first plan claims epoch + 1 (ADR-0002 "Replacement and pickup").
+          const pickup = capture === null ? false : yield* confirmDeadExecutor(session);
+          if (!pickup) {
+            return yield* new SealantPlatformError({
+              code: "session_active",
+              status: null,
+              message: "The session is already live — attach to it instead of resuming.",
+              cause: null,
+            });
+          }
         }
         const target = harness ?? session.harness;
         const priorAgent = currentAgentProcess(yield* processes.listForSession(sessionId));
@@ -4857,10 +5478,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const socketApiFor = (sessionId: SessionId): SessionSocketApi =>
         ownedSocketApi(sessionId, {
+          ...(capture === null ? {} : { capture: captureApiFor(sessionId) }),
           recipes: () =>
             Effect.gen(function* () {
               const session = yield* sessions.byId(sessionId);
-              const fromFile = yield* readServiceRecipes(yield* worktreeOf(session));
+              const fromFile =
+                capture !== null ? [] : yield* readServiceRecipes(yield* worktreeOf(session));
               return mergeRecipes(
                 fromFile,
                 yield* projectRecipes.listForProject(session.projectId),
@@ -5246,9 +5869,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           .snapshot(projectId)
           .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.die("project row vanished")));
         const warmSkipped =
-          deployment.mode !== "kubernetes" &&
-          (clusterBindings.bindings.length > 0 || clusterBindings.serviceAccount !== null);
-        if (warmSkipped) {
+          capture !== null ||
+          (deployment.mode !== "kubernetes" &&
+            (clusterBindings.bindings.length > 0 || clusterBindings.serviceAccount !== null));
+        if (capture !== null && project.hotSessions > 0) {
+          // SEAM: a standby executor for a capture project would pre-materialise the project
+          // base and the platform-matched dependency cache before any worktree exists; the
+          // capture source needs a worktree id at create today (Core PR sealant#231).
+          yield* Effect.logInfo(
+            "session engine: warm skipped · capture mode · standby executors need a claim-later capture source",
+          ).pipe(Effect.annotateLogs({ projectId }));
+        } else if (warmSkipped) {
           yield* Effect.logInfo(
             `session engine: warm skipped · ${clusterBindings.bindings.length} cluster binding${clusterBindings.bindings.length === 1 ? "" : "s"}${clusterBindings.serviceAccount === null ? "" : " · service account set"} · local runner`,
           ).pipe(Effect.annotateLogs({ projectId }));
@@ -5357,6 +5988,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly ownerUserId: string | null;
         },
       ) {
+        if (capture !== null) return null;
         const ownerUserId = input.ownerUserId ?? (yield* userDotfilesRepo.firstUserId());
         const inputs = yield* hotInputsFor(project, ownerUserId);
         const entry = yield* hotWorkspaces.claim(project.id, hotFingerprint(inputs), ownerUserId);
@@ -5877,6 +6509,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ),
         scope,
       );
+      // Capture mode: the lease reaper (expiry → confirmed platform termination → the session
+      // settles honestly; the next resume is a pickup) and replacement before the 8 h cap.
+      if (capture !== null) {
+        yield* Effect.forkIn(
+          captureReaper().pipe(
+            Effect.catchDefect((defect) =>
+              Effect.logWarning("session engine: capture reaper died").pipe(
+                Effect.annotateLogs({ defect: String(defect) }),
+              ),
+            ),
+            Effect.repeat(Schedule.spaced(Duration.seconds(LEASE_REAPER_INTERVAL_SECONDS))),
+          ),
+          scope,
+        );
+      }
       // The external-agent sensor: cheap fs stats over mounted harness homes, so a tight
       // cadence — an observed agent should appear well before its first turn completes.
       yield* Effect.forkIn(
@@ -5936,6 +6583,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         handoff: (sessionId, to, start, author) =>
           owned(sessionId)(handoff(sessionId, to, start, author)),
         observeExternalAgents,
+        reapCaptureLeases: captureReaper,
         transcript,
       };
     }),

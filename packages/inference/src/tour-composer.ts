@@ -4,7 +4,7 @@ import { ChangeToursRepo, ProjectsRepo, WorktreeChangesRepo, SessionsRepo } from
 import { ChangeId } from "@mend/domain";
 import { RecordLink, TourStop } from "@mend/domain/workbench";
 import type { SealantClient } from "@mend/sealant";
-import { Store, worktreePathOf } from "@mend/store";
+import { WorktreeReads } from "@mend/sessions";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -81,8 +81,8 @@ export class TourComposer extends Context.Service<
       const sessions = yield* SessionsRepo;
       const projects = yield* ProjectsRepo;
       const tours = yield* ChangeToursRepo;
-      const store = yield* Store;
-      const toolContext = yield* Effect.context<Store | SealantClient>();
+      const reads = yield* WorktreeReads;
+      const toolContext = yield* Effect.context<WorktreeReads | SealantClient>();
 
       const outputDocument = Schema.toJsonSchemaDocument(TourAnswer);
       const outputSchema: Record<string, unknown> = {
@@ -116,11 +116,13 @@ export class TourComposer extends Context.Service<
           );
         }
         const sealantRunId = session.sealantRunId;
-        const worktree = worktreePathOf(project.storePath, session.worktree);
 
-        const pass = yield* makeSessionChangePass({ worktree, change, sealantRunId }).pipe(
-          Effect.provide(toolContext),
-        );
+        const pass = yield* makeSessionChangePass({
+          projectId: project.id,
+          worktreeId: change.worktreeId,
+          change,
+          sealantRunId,
+        }).pipe(Effect.provide(toolContext));
 
         const answer = yield* provider.respond({
           context: "change-tour",
@@ -175,9 +177,10 @@ export class TourComposer extends Context.Service<
           return yield* failed("the tour came back with no stops — nothing to guide");
         }
 
-        const diff = yield* store
-          .diffWorktree(worktree, change.baseSha)
-          .pipe(Effect.mapError((error) => failed(`hashing the diff failed: ${String(error)}`)));
+        const diff = yield* reads.diffWorktree(project.id, change.worktreeId, change.baseSha).pipe(
+          Effect.map((read) => read.value),
+          Effect.mapError((error) => failed(`hashing the diff failed: ${String(error)}`)),
+        );
 
         yield* tours.upsert({
           changeId: job.changeId,

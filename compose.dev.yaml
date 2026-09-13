@@ -4,6 +4,14 @@
 # distinct project name keeps the two stacks from recreating each other.
 #
 #   docker compose -f compose.dev.yaml up -d
+#
+# `garage` is the dev bucket for the capture store (ADR-0002): S3 on 3900,
+# single node, bucket `mend`, key `mend-dev` — laid out once by
+# `deploy/dev/garage-init.sh` (the image ships no shell, so the init runs
+# from the host through `docker compose exec`). Opt in with
+# MEND_SESSION_STORE=captured (DEVELOPMENT.md §Environment); the co-located
+# default never touches it. Not part of the shipped bundle yet
+# (docs/DEPLOYMENT-STRATEGIES.md).
 name: mend-dev
 
 services:
@@ -24,5 +32,21 @@ services:
       timeout: 3s
       retries: 15
 
+  garage:
+    image: dxflrs/garage:v2.4.1
+    ports:
+      - "3900:3900"
+    volumes:
+      - ./deploy/dev/garage.toml:/etc/garage.toml:ro
+      - mend-dev-garage-meta:/var/lib/garage/meta
+      - mend-dev-garage-data:/var/lib/garage/data
+    healthcheck:
+      test: ["CMD", "/garage", "-c", "/etc/garage.toml", "status"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+
 volumes:
   mend-dev-pgdata:
+  mend-dev-garage-meta:
+  mend-dev-garage-data:

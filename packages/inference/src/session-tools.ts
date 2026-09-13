@@ -1,6 +1,7 @@
+import type { ProjectId, WorktreeId } from "@mend/domain";
 import type { Change } from "@mend/domain/workbench";
 import { SealantClient } from "@mend/sealant";
-import { Store } from "@mend/store";
+import { WorktreeReads } from "@mend/sessions";
 import { Effect, Schema, Stream } from "effect";
 
 import { InferenceToolError, type InferenceTool } from "./provider.ts";
@@ -84,12 +85,13 @@ export interface SessionChangePass {
  * comment-router pattern.
  */
 export const makeSessionChangePass = (deps: {
-  readonly worktree: string;
+  readonly projectId: ProjectId;
+  readonly worktreeId: WorktreeId;
   readonly change: Change;
   readonly sealantRunId: string;
-}): Effect.Effect<SessionChangePass, never, Store | SealantClient> =>
+}): Effect.Effect<SessionChangePass, never, WorktreeReads | SealantClient> =>
   Effect.gen(function* () {
-    const store = yield* Store;
+    const reads = yield* WorktreeReads;
     const sealant = yield* SealantClient;
     const seenSequences = new Set<string>();
     const changedPaths = new Set<string>();
@@ -102,8 +104,18 @@ export const makeSessionChangePass = (deps: {
       input: ReadChangeInput,
       run: () =>
         Effect.gen(function* () {
-          const diff = yield* store.diffWorktree(deps.worktree, deps.change.baseSha);
-          const files = yield* store.changedFiles(deps.worktree, deps.change.baseSha, null);
+          // Through the identity-keyed reads: the live worktree beside Mend, or the chain
+          // head's worktree tree on a runner in capture mode (ADR-0002) — never a stale copy.
+          const diff = (yield* reads.diffWorktree(
+            deps.projectId,
+            deps.worktreeId,
+            deps.change.baseSha,
+          )).value;
+          const files = (yield* reads.changedFiles(
+            deps.projectId,
+            deps.worktreeId,
+            deps.change.baseSha,
+          )).value;
           for (const file of files) changedPaths.add(file.path);
           const truncated = diff.length > MAX_DIFF_CHARS;
           return {

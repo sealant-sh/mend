@@ -82,16 +82,24 @@ import {
   TourComposer,
 } from "@mend/inference";
 import {
+  CaptureRetentionLive,
+  CaptureRetentionScheduleLive,
   Dispatcher,
   JobRunner,
   ReviewPrepLive,
   runStarterLayer,
   SessionNotifierLive,
   startRunToolLayer,
+  SummaryObserverLive,
+  SummaryObserveWorkerLive,
 } from "@mend/jobs";
 import { NetworkConfig, NetworkConfigLive } from "@mend/network";
 import { asSealantUser, SealantLiveFromEnv } from "@mend/sealant";
 import {
+  CaptureChannelLive,
+  CaptureRuntimeLive,
+  CaptureUploadPolicyLive,
+  CaptureRuntimeOff,
   FollowUpDeliveryLive,
   FollowUpLauncherLive,
   ProtocolHostLive,
@@ -101,7 +109,10 @@ import {
   SessionChannelNetworkHostLive,
   SessionChannelRegistryLive,
   SessionSocketHostLive,
+  SessionRepositoryCapturedLive,
   SessionRepositoryLocalLive,
+  WorktreeReadsCapturedLive,
+  WorktreeReadsColocatedLive,
 } from "@mend/sessions";
 import {
   type AgentBridge,
@@ -219,14 +230,10 @@ const SessionChannelNetworkLayer = SessionChannelNetworkHostLive.pipe(
   Layer.provide(DeploymentConfigLive),
   Layer.provide(SessionChannelRegistryLayer),
 );
-// The co-located session-workspace authority (identity-keyed port over Store + ProjectsRepo);
-// a hosted deployment strategy swaps this adapter, nothing above it.
-const SessionRepositoryLayer = SessionRepositoryLocalLive.pipe(
-  Layer.provide(StoreLive),
-  Layer.provide(DatabaseLive),
-);
+// The session-workspace authority (identity-keyed port over Store + ProjectsRepo) and the
+// identity-keyed worktree reads are selected at the boundary by MEND_SESSION_STORE (below);
+// the engine takes them as requirements and never knows which adapter answers.
 const SessionEngineLayer = SessionEngineBaseLive.pipe(
-  Layer.provide(SessionRepositoryLayer),
   Layer.provide(ProtocolHostLayer),
   Layer.provide(ServiceHostLayer),
   Layer.provide(SessionSocketHostLayer),
@@ -235,8 +242,7 @@ const SessionEngineLayer = SessionEngineBaseLive.pipe(
 );
 // The capture store (docs/adr/0002-session-capture-store.md): the bucket and the git runner
 // over it, plus the pointer repositories. Built only under MEND_SESSION_STORE=captured — the
-// co-located default is untouched. Nothing consumes these yet; SessionRepositoryCapturedLive
-// (the next slice) will.
+// co-located default is untouched.
 const CaptureStoreLayer: Layer.Layer<
   BlobStore | GitOpsRunner | CaptureStoreRepo | StoreRefsRepo,
   never,
@@ -474,6 +480,10 @@ const WorkerLive = Layer.mergeAll(
   SessionNotifierLive,
   // Queues tour + suggestion passes at settle, per the automation cascade.
   ReviewPrepLive,
+  // Capture mode (ADR-0002 "Review", "Retention"): the observed pass over posted summaries,
+  // and the hourly retention sweep. Both are inert under the co-located store.
+  SummaryObserveWorkerLive.pipe(Layer.provide(SummaryObserverLive)),
+  CaptureRetentionScheduleLive.pipe(Layer.provide(CaptureRetentionLive)),
 ).pipe(
   Layer.provide(Dispatcher.layer),
   Layer.provide(BriefCompiler.layer),
@@ -503,14 +513,32 @@ const MainLive = Layer.unwrap(
     yield* Effect.logInfo("mend api starting").pipe(
       Effect.annotateLogs({ mode, sessionStore: deployment.sessionStore }),
     );
-    const captureStore =
-      deployment.sessionStore === "captured"
-        ? CaptureStoreLayer.pipe(
-            Layer.provide(StoreLive),
-            Layer.provide(StoreConfig.layer),
-            Layer.provide(DatabaseLive),
-          )
-        : Layer.empty;
+    const captured = deployment.sessionStore === "captured";
+    const captureStore = CaptureStoreLayer.pipe(
+      Layer.provide(StoreLive),
+      Layer.provide(StoreConfig.layer),
+      Layer.provide(DatabaseLive),
+    );
+    // The capture channel (routes + register hub) and the engine's view of the capture store.
+    const captureChannel = CaptureChannelLive.pipe(
+      Layer.provide(captureStore),
+      Layer.provide(CaptureUploadPolicyLive),
+    );
+    const captureRuntime = captured
+      ? CaptureRuntimeLive.pipe(Layer.provide(captureChannel), Layer.provide(captureStore))
+      : CaptureRuntimeOff;
+    // The authority and the reads, by store kind: a directory beside Mend, or the chain head.
+    const sessionRepository = captured
+      ? SessionRepositoryCapturedLive.pipe(
+          Layer.provide(captureChannel),
+          Layer.provide(captureStore),
+          Layer.provide(StoreLive),
+          Layer.provide(DatabaseLive),
+        )
+      : SessionRepositoryLocalLive.pipe(Layer.provide(StoreLive), Layer.provide(DatabaseLive));
+    const worktreeReads = captured
+      ? WorktreeReadsCapturedLive.pipe(Layer.provide(captureStore))
+      : WorktreeReadsColocatedLive.pipe(Layer.provide(StoreLive), Layer.provide(DatabaseLive));
     const parts =
       mode === "api"
         ? ServerLive
@@ -520,14 +548,14 @@ const MainLive = Layer.unwrap(
     // The network session channel is a sibling service: it serves workspaces, nothing depends
     // on it, so it must be launched explicitly rather than provided.
     return Layer.merge(parts, SessionChannelNetworkLayer).pipe(
-      // Capture mode only: the blob store, the runner and the pointer repositories.
-      Layer.provide(captureStore),
       // Shared by the API (enqueue on comment) and the workers (one instance).
       Layer.provide(JobRunner.pgBossLayer),
       // Follow-up delivery owns persistence → process acceptance → correlation.
       Layer.provide(FollowUpDeliveryLayer),
       // The session engine and store serve both the API handlers and the worker.
       Layer.provide(SessionEngineLayer),
+      // The store kind's adapters (MEND_SESSION_STORE): authority, reads, capture runtime.
+      Layer.provide(Layer.mergeAll(sessionRepository, worktreeReads, captureRuntime)),
       Layer.provide(StoreLive),
       Layer.provide(StoreConfig.layer),
       Layer.provide(DeploymentConfigLive),

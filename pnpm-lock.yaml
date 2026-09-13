@@ -976,6 +976,9 @@ importers:
       '@mend/sealant':
         specifier: workspace:*
         version: link:../sealant
+      '@mend/sessions':
+        specifier: workspace:*
+        version: link:../sessions
       '@mend/store':
         specifier: workspace:*
         version: link:../store
@@ -1019,6 +1022,9 @@ importers:
       '@mend/sealant':
         specifier: workspace:*
         version: link:../sealant
+      '@mend/sessions':
+        specifier: workspace:*
+        version: link:../sessions
       '@mend/store':
         specifier: workspace:*
         version: link:../store
