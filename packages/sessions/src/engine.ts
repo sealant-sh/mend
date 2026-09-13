@@ -864,18 +864,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           "MEND_DEPLOYMENT_MODE=kubernetes requires MEND_SESSION_ENDPOINT_LISTEN / _URL on the session worker — a workspace Pod on another node cannot reach a Unix socket, so without the network channel every session would be unreachable.",
         );
       }
-      // Capture mode (ADR-0002): the executor materialises the worktree from the bucket and
-      // ships captures back over the network channel, so the channel must exist.
+      // The capture store (ADR-0002, the default since decision 8): the executor materialises
+      // the worktree from the bucket and ships captures back over the network channel, so the
+      // channel must exist. `capture === null` is the deprecated co-located store.
       const captureRuntime = yield* CaptureRuntime;
       const captureStoreOn = deployment.sessionStore === "captured";
       if (captureStoreOn && deployment.sessionEndpoint === undefined) {
         return yield* Effect.die(
-          "MEND_SESSION_STORE=captured requires MEND_SESSION_ENDPOINT_LISTEN / _URL — the executor reaches the capture routes over the network session channel, never a socket.",
+          "The capture store (the default; MEND_SESSION_STORE unset or `captured`) requires MEND_SESSION_ENDPOINT_LISTEN / _URL — the executor reaches the capture routes over the network session channel, never a socket. DEVELOPMENT.md §Environment names the values for this machine.",
         );
       }
       if (captureStoreOn && !captureRuntime.enabled) {
         return yield* Effect.die(
-          "MEND_SESSION_STORE=captured but the capture runtime was not provided to the session engine.",
+          "The capture store is selected but the capture runtime was not provided to the session engine.",
         );
       }
       const capture = captureStoreOn && captureRuntime.enabled ? captureRuntime : null;

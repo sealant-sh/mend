@@ -3,13 +3,28 @@
 Cross-repo design: `sealant/docs/kubernetes-support-design.md`. This page records what Mend itself
 does differently when `MEND_DEPLOYMENT_MODE=kubernetes`, and what stays the same.
 
-## The invariant
+## The store
 
-Mend is code-co-located. The central store — bare repositories, linked worktrees, references,
-checkpoint refs, harvested harness state — lives on **one RWX, POSIX-semantics
-PersistentVolumeClaim** mounted into the Mend Pod at `/var/lib/mend/store`
-(`MEND_STORE_ROOT=/var/lib/mend/store`). Workspace Pods, scheduled on any node, mount
-_subdirectories_ of that same claim:
+Since decision 8 (2026-09-13) the session store on Kubernetes is the capture store
+(`docs/adr/0002-session-capture-store.md`): a bucket — a Rook `CephObjectStore` RGW where the
+cluster has one, else Garage — holds immutable content-addressed captures, and Postgres holds the
+only mutable pointers (`worktree_leases`, `worktree_chain`, `captures`, `packs`, `store_refs`). A
+workspace Pod materialises its worktree's head capture onto an `emptyDir` on the node's own disk,
+claims the worktree's lease over the session channel, and ships captures back; the API Pod reads the
+chain head through the git runner's local-path cache. Nothing is mounted into a workspace Pod from a
+shared filesystem.
+
+The **RWX `mend-store` claim is retired** as the session store. The API Pod still needs a
+`ReadWriteOnce` volume at `/var/lib/mend/store` for the bare repositories it adopts and fetches, the
+runner cache (`_cache/runner/<project>/repo.git`), references and the machine git key; the chart's
+`store.existingClaim` / `store.create` values still render it and still say RWX — narrowing them to
+RWO and dropping `SEALANT_K8S_VOLUME_MAPPINGS` for the store are chart follow-ups. The incident
+class the shared filesystem produced (uid split, root `gc` poisoning, stale sockets,
+`PLATFORM-FEEDBACK.md` 2026-08-29/30) disappears by construction; failure modes are rows in
+Postgres.
+
+`MEND_SESSION_STORE=colocated` still selects the deprecated co-located store — the table below is
+what it mounted, kept for an install that has not moved — and logs a warning at start:
 
 | In the workspace Pod                     | On the claim (`subPath`)              | Mode  |
 | ---------------------------------------- | ------------------------------------- | ----- |
@@ -18,15 +33,6 @@ _subdirectories_ of that same claim:
 | `/workspace/ref/<name>`                  | `_references/<name>`                  | ro    |
 | `/workspace/home/<name>`                 | project folders as configured         | ro/rw |
 | `/run/mend`                              | `_run/sessions/<id>` (helper scripts) | ro    |
-
-The git common directory is mounted at the **same absolute path** the worktree's `.git` pointer
-names, so `git` inside the Pod resolves the linked worktree exactly as Mend does. Nothing is cloned
-into the Pod, nothing is copied to an `emptyDir`, nothing is synced back: an agent's edit is a write
-to the same inode Mend reads.
-
-The claim is a generic contract. Longhorn, CephFS, NFS, EFS and other RWX CSI drivers are operator
-choices; Mend names none of them. Semantics that matter: POSIX rename/unlink, `fsync`, and `O_EXCL`
-create (git's lock files).
 
 ## What changes in `kubernetes` mode
 
@@ -49,24 +55,34 @@ create (git's lock files).
 - **Health.** `GET /api/health` reports `deploymentMode`, `storeRoot` and
   `sessionChannel: { mode: "unix-socket" | "network", endpoint }`.
 
-Everything else — launch flow, checkpoints, review, hot pool — is unchanged. In `local` mode (the
-default) none of the above activates and the Docker deployment from `mend server setup` and the
-per-session socket behave exactly as before.
+- **Capture routes.** The same listener serves sealantd's registrar routes (`plan.get`,
+  `upload.urls`, `upload.complete`, `capture.register`, `change.summary`, `lease.heartbeat`); the
+  workspace receives the endpoint and token a second time as `SEALANT_CAPTURE_ENDPOINT` /
+  `SEALANT_CAPTURE_TOKEN`. Presigned bucket URLs carry `MEND_BLOB_STORE_PUBLIC_URL`, the host a
+  workspace Pod resolves (the RGW or Garage Service), never `localhost`.
+
+Everything else — launch flow, checkpoints, review, hot pool — is the same as on a single machine:
+the capture store is the store there too, and `mend server setup` runs Garage beside Postgres.
 
 ## Configuration
 
-| Variable                             | Default                 | Meaning                                                                         |
-| ------------------------------------ | ----------------------- | ------------------------------------------------------------------------------- |
-| `MEND_DEPLOYMENT_MODE`               | `local`                 | `kubernetes` disables socket creation and requires the endpoint settings below. |
-| `MEND_STORE_ROOT`                    | `~/.config/mend/store`  | The claim mount path on Kubernetes (`/var/lib/mend/store`).                     |
-| `MEND_SESSION_ENDPOINT_LISTEN`       | unset                   | `host:port` for the network session channel (e.g. `0.0.0.0:3106`).              |
-| `MEND_SESSION_ENDPOINT_URL`          | unset                   | What workspaces connect to (e.g. `http://mend-session.mend.svc:3106`).          |
-| `MEND_SESSION_ENDPOINT_TLS_CERT/KEY` | unset                   | Optional TLS for the listener; the URL must then be `https://`.                 |
-| `MEND_RUN_DIR`                       | `<store>/_run/sessions` | Override for the run dirs (tests).                                              |
+| Variable                             | Default                 | Meaning                                                                           |
+| ------------------------------------ | ----------------------- | --------------------------------------------------------------------------------- |
+| `MEND_DEPLOYMENT_MODE`               | `local`                 | `kubernetes` disables socket creation and requires the endpoint settings below.   |
+| `MEND_STORE_ROOT`                    | `~/.config/mend/store`  | The claim mount path on Kubernetes (`/var/lib/mend/store`).                       |
+| `MEND_SESSION_ENDPOINT_LISTEN`       | unset                   | `host:port` for the network session channel (e.g. `0.0.0.0:3106`).                |
+| `MEND_SESSION_ENDPOINT_URL`          | unset                   | What workspaces connect to (e.g. `http://mend-session.mend.svc:3106`).            |
+| `MEND_SESSION_ENDPOINT_TLS_CERT/KEY` | unset                   | Optional TLS for the listener; the URL must then be `https://`.                   |
+| `MEND_RUN_DIR`                       | `<store>/_run/sessions` | Override for the run dirs (tests).                                                |
+| `MEND_BLOB_STORE`                    | `dir://<store>/_blobs`  | `s3://<bucket>?endpoint=<RGW or Garage>&region=<region>`; credentials in `AWS_*`. |
+| `MEND_BLOB_STORE_PUBLIC_URL`         | unset                   | The bucket endpoint workspace Pods resolve; presigned URLs name it.               |
+| `MEND_SESSION_STORE`                 | `captured`              | `colocated` opts back into the deprecated shared-claim store (warned at start).   |
 
-Sealant's worker must map the same path: `SEALANT_K8S_VOLUME_MAPPINGS` includes
-`{ "logicalRoot": "/var/lib/mend/store", "claimName": "mend-store" }`, and
-`SEALANT_MOUNT_ALLOWED_STORE_ROOTS=/var/lib/mend/store` on the API.
+Only the deprecated co-located store needs Sealant's worker to map the claim
+(`SEALANT_K8S_VOLUME_MAPPINGS` with
+`{ "logicalRoot": "/var/lib/mend/store", "claimName": "mend-store" }` and
+`SEALANT_MOUNT_ALLOWED_STORE_ROOTS=/var/lib/mend/store` on the API); a capture workspace mounts
+nothing from Mend.
 
 ## Replicas and recovery — stated plainly
 
@@ -77,10 +93,12 @@ Sealant's worker must map the same path: `SEALANT_K8S_VOLUME_MAPPINGS` includes
   transparent `/api` proxy — no database, no store, no engine. Held connections (terminal
   WebSockets, SSE) pin to whichever web replica accepted them, which is fine: every replica proxies
   to the same API.
-- A workspace Pod that is deleted and recreated on another node mounts the same worktree and
-  continues from the durable state: the worktree files, checkpoint refs and harvested harness state.
-  **The process that was in RAM at the moment the node died is gone.** Pod recovery is "resume from
-  durable state", not "migrate a live process".
+- A workspace Pod that is deleted and recreated on another node is a pickup (ADR-0002 "Replacement
+  and pickup"): its lease lapses within 30 s, Mend confirms the Pod is gone, claims the next epoch
+  and launches a replacement that materialises the head capture and resumes the harness by provider
+  session id. Work since the last capture — at most the small-class cadence, 2 s quiet / 10 s while
+  dirty — is gone with the process. Pod recovery is "resume from the last capture", not "migrate a
+  live process".
 - The network channel is cluster-internal HTTP by default; the bearer token authenticates, a
   NetworkPolicy limits who can reach the listener, and TLS is optional. That is the whole statement;
   nothing stronger is claimed.
@@ -93,9 +111,14 @@ kubectl -n mend create secret generic mend-secrets \
   --from-literal=BETTER_AUTH_SECRET="$(openssl rand -hex 32)" \
   --from-literal=MEND_DB_PASSWORD="$(openssl rand -hex 32)" \
   --from-literal=SEALANT_SERVICE_KEY="<service key from the Sealant deployment>"
-# One RWX claim for the store. Either create it (any RWX class) or let the chart create it:
+# A bucket for the capture store (Rook RGW or Garage) and its credentials in the same secret:
+#   MEND_BLOB_STORE=s3://mend?endpoint=http://rook-ceph-rgw-store.rook-ceph.svc&region=us-east-1
+#   MEND_BLOB_STORE_PUBLIC_URL=http://rook-ceph-rgw-store.rook-ceph.svc
+#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
+# One claim for the API Pod's store directory (bare repositories, runner cache; RWO is enough
+# since decision 8 — the chart still says RWX, a follow-up). Create it or let the chart create it:
 helm install mend deploy/helm/mend -n mend \
-  --set store.create.enabled=true --set store.create.storageClassName=<your RWX class>
+  --set store.create.enabled=true --set store.create.storageClassName=<a storage class>
 # …or, with an existing claim:
 helm install mend deploy/helm/mend -n mend --set store.existingClaim=mend-store
 ```
@@ -110,11 +133,9 @@ clients keep one origin on 3105. Plus Postgres (or `DATABASE_URL` from the secre
 per tier (clients→web:3105, workspaces→session port, Postgres←API only), and a PodDisruptionBudget
 for the API tier. No Ingress; port-forward or bring your own.
 
-Pair it with the Sealant chart by mapping the same claim:
-`workspaces.volumeMappings[0]={logicalRoot: /var/lib/mend/store, claimName: <the claim>}` and the
-Sealant API's `SEALANT_MOUNT_ALLOWED_STORE_ROOTS=/var/lib/mend/store`. The Sealant chart's workspace
-egress policy allows the Mend session port by namespace/pod selector
-(`networkPolicies.workspaceEgressAllow`).
+Pair it with the Sealant chart: workspace Pods need egress to the Mend session port and to the
+bucket endpoint (`networkPolicies.workspaceEgressAllow`); no claim mapping is needed for the capture
+store (only the deprecated co-located store maps `workspaces.volumeMappings`).
 
 The images come from `ghcr.io/sealant-sh/mend` (`.github/workflows/image.yml`).
 
@@ -181,5 +202,6 @@ exists (0039+).
 | `mend service list` in a workspace prints `no session channel in this workspace`         | The workspace was launched without `MEND_SESSION_ENDPOINT`/`MEND_SESSION_ID`/`MEND_SESSION_TOKEN` — the worker that provisioned it had no endpoint configured. |
 | `the session token was not accepted`                                                     | The token was revoked (workspace stopped/replaced) or the session row was re-provisioned; relaunch the session.                                                |
 | `this session is not live on this Mend instance`                                         | The API tier restarted and has not re-registered the session yet (boot sweep), or a second API replica is running — keep `api.replicaCount: 1`.                |
-| Launch fails in Sealant with `mount source … is not under any configured logical root`   | The Sealant worker's `SEALANT_K8S_VOLUME_MAPPINGS` must include `MEND_STORE_ROOT`.                                                                             |
-| Git in the workspace says `fatal: not a git repository`                                  | The common dir was not mounted path-identically; confirm the Sealant SDK version discovers `gitdir:` and the claim is mapped at the same absolute path.        |
+| The workspace log says `capture plan.get failed` or `capture materialize failed`         | The Pod could not reach `MEND_SESSION_ENDPOINT_URL` or the host in a presigned URL (`MEND_BLOB_STORE_PUBLIC_URL`); both must resolve from the workspace Pod.   |
+| Launch fails in Sealant with `mount source … is not under any configured logical root`   | Deprecated co-located store only: the Sealant worker's `SEALANT_K8S_VOLUME_MAPPINGS` must include `MEND_STORE_ROOT`.                                           |
+| Git in the workspace says `fatal: not a git repository`                                  | Deprecated co-located store only: the common dir was not mounted path-identically at the same absolute path.                                                   |

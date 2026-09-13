@@ -7,7 +7,7 @@ describe("resolveDeploymentConfig", () => {
     expect(resolveDeploymentConfig({})).toEqual({
       mode: "local",
       sessionEndpoint: undefined,
-      sessionStore: "colocated",
+      sessionStore: "captured",
     });
     expect(resolveDeploymentConfig({ MEND_DEPLOYMENT_MODE: "local" }).mode).toBe("local");
   });
@@ -20,7 +20,7 @@ describe("resolveDeploymentConfig", () => {
       }),
     ).toEqual({
       mode: "local",
-      sessionStore: "colocated",
+      sessionStore: "captured",
       sessionEndpoint: { listen: "0.0.0.0:3106", url: "http://mend-session.mend.svc:3106" },
     });
   });
@@ -29,7 +29,7 @@ describe("resolveDeploymentConfig", () => {
     expect(resolveDeploymentConfig({ MEND_DEPLOYMENT_MODE: "kubernetes" })).toEqual({
       mode: "kubernetes",
       sessionEndpoint: undefined,
-      sessionStore: "colocated",
+      sessionStore: "captured",
     });
     expect(() =>
       resolveDeploymentConfig({
@@ -78,8 +78,8 @@ describe("resolveDeploymentConfig", () => {
     ).toEqual({ certPath: "/c", keyPath: "/k" });
   });
 
-  it("reads the session store kind, defaulting to colocated, orthogonal to the mode", () => {
-    expect(resolveDeploymentConfig({ MEND_SESSION_STORE: "" }).sessionStore).toBe("colocated");
+  it("reads the session store kind, defaulting to captured; the deprecated colocated store is still selectable", () => {
+    expect(resolveDeploymentConfig({ MEND_SESSION_STORE: "" }).sessionStore).toBe("captured");
     expect(resolveDeploymentConfig({ MEND_SESSION_STORE: "colocated" }).sessionStore).toBe(
       "colocated",
     );

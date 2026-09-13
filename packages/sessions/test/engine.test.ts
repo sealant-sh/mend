@@ -118,7 +118,7 @@ import {
   SecretCipher,
   Store,
   StoreConfig,
-  DeploymentConfigLocal,
+  DeploymentConfigColocated,
   harnessHomePathOf,
   processStatePathOf,
 } from "@mend/store";
@@ -1626,7 +1626,7 @@ const withEngine = <A, E>(
       : CaptureRuntimeLive.pipe(Layer.provide(captureLayers));
   const deploymentLayer =
     captureLayers === null
-      ? DeploymentConfigLocal
+      ? DeploymentConfigColocated
       : Layer.succeed(DeploymentConfig, {
           mode: "local",
           sessionEndpoint: { listen: "127.0.0.1:0", url: "http://mend.test:3106" },
@@ -4300,7 +4300,7 @@ describe("SessionEngine", () => {
       Layer.provide(serviceHostStubLayer),
       Layer.provide(sessionSocketStubLayer),
       Layer.provide(SessionChannelTokensRepoMemory),
-      Layer.provide(DeploymentConfigLocal),
+      Layer.provide(DeploymentConfigColocated),
       Layer.provide(CaptureRuntimeOff),
       Layer.provide(mendKeysStubLayer),
       Layer.provide(

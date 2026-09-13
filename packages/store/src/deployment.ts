@@ -16,12 +16,22 @@ export type DeploymentMode = "local" | "kubernetes";
 
 /**
  * Where a session's work product is authoritative (docs/adr/0002-session-capture-store.md):
- * `colocated` (default) keeps the bind-mounted worktree as truth; `captured` makes the capture
- * store (object storage + Postgres pointers) truth and the executor a disposable cache.
- * Orthogonal to `mode`. `captured` needs the network session endpoint for its channel routes;
- * as with `kubernetes`, the engine enforces that, not this parser (the web tier has no listener).
+ * `captured` (the default, and the only store new installs run) makes the capture store (object
+ * storage + Postgres pointers) truth and the executor a disposable cache. `colocated` keeps the
+ * bind-mounted worktree as truth; it is DEPRECATED since decision 8 (2026-09-13, "captures
+ * everywhere from day one") and survives only for installs that have not moved yet — the API
+ * logs a warning at start and the adapters behind it are scheduled for removal. Orthogonal to
+ * `mode`. `captured` needs the network session endpoint for its channel routes; as with
+ * `kubernetes`, the engine enforces that, not this parser (the web tier has no listener).
  */
 export type SessionStoreKind = "colocated" | "captured";
+
+/** The store kind every install runs unless it opts back into the deprecated one. */
+export const DEFAULT_SESSION_STORE: SessionStoreKind = "captured";
+
+/** The one-line fact the API logs when the deprecated store is selected. */
+export const COLOCATED_STORE_DEPRECATION =
+  "MEND_SESSION_STORE=colocated is deprecated: the co-located worktree store is retired by decision 8 (docs/adr/0002-session-capture-store.md); unset the variable to run the capture store, which every new install uses.";
 
 export interface SessionEndpointConfig {
   /** `host:port` the network session channel listens on. */
@@ -78,10 +88,10 @@ export const resolveDeploymentConfig = (
           })();
   const rawStore = env.MEND_SESSION_STORE?.trim();
   const sessionStore: SessionStoreKind =
-    rawStore === undefined || rawStore === "" || rawStore === "colocated"
-      ? "colocated"
-      : rawStore === "captured"
-        ? "captured"
+    rawStore === undefined || rawStore === "" || rawStore === "captured"
+      ? DEFAULT_SESSION_STORE
+      : rawStore === "colocated"
+        ? "colocated"
         : (() => {
             throw new DeploymentConfigError(
               `MEND_SESSION_STORE must be "colocated" or "captured", got "${rawStore}".`,
@@ -144,6 +154,16 @@ export const DeploymentConfigLive: Layer.Layer<DeploymentConfig> = Layer.effect(
 );
 
 export const DeploymentConfigLocal: Layer.Layer<DeploymentConfig> = Layer.succeed(
+  DeploymentConfig,
+  {
+    mode: "local",
+    sessionEndpoint: undefined,
+    sessionStore: DEFAULT_SESSION_STORE,
+  },
+);
+
+/** The deprecated co-located store on this machine — for the tests of that adapter only. */
+export const DeploymentConfigColocated: Layer.Layer<DeploymentConfig> = Layer.succeed(
   DeploymentConfig,
   {
     mode: "local",

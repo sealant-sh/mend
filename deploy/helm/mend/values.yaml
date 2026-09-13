@@ -11,7 +11,10 @@ image:
 secrets:
   existingSecret: mend-secrets
 
-# The central store: ONE RWX, POSIX-semantics claim. Bring your own (Longhorn, CephFS, NFS, EFS...).
+# The API Pod's store directory: bare repositories, the runner cache, references, the machine key.
+# Since decision 8 (docs/KUBERNETES.md "The store") the session store is the capture store (a
+# bucket + Postgres) and workspace Pods mount nothing from here, so RWO is enough; the RWX wording
+# below is the deprecated co-located store's and narrowing it is a follow-up.
 store:
   existingClaim: mend-store
   # Set to create the claim here instead (storageClassName must be an RWX class on your cluster).
