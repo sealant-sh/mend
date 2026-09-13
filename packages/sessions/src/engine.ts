@@ -167,7 +167,7 @@ import {
 } from "./protocol-host.ts";
 import { mergeRecipes, readServiceRecipes } from "./recipes.ts";
 import { ServiceBindError, ServiceHost, validateServiceBindAddresses } from "./service-host.ts";
-import { SessionRepository } from "./session-repository.ts";
+import { SessionRepository, type SessionRepositoryError } from "./session-repository.ts";
 import {
   SESSION_SOCKET_MOUNT_PATH,
   SessionSocketHost,
@@ -1569,11 +1569,35 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * Capture mode's one writer of a worktree's checkpoint rows: a per-worktree permit in this
+       * process (the engine is the only process that allocates ordinals). The advisory lock the
+       * co-located store takes is bypassed here — transaction-mode pooling drops it (ADR-0002) —
+       * and without a permit a run-end `turn-boundary` checkpoint and a user mark both read
+       * `count = N`, both derive on the runner, and the second insert hits the unique
+       * `(worktree_id, ordinal)` index (observed: the packaged acceptance's user mark answered
+       * 500). Permits are never dropped; one per worktree that took a checkpoint is the cost.
+       */
+      const checkpointWriters = new Map<WorktreeId, Semaphore.Semaphore>();
+      const withCheckpointWriter = <A, E, R>(
+        worktreeId: WorktreeId,
+        effect: Effect.Effect<A, E, R>,
+      ): Effect.Effect<A, E, R> => {
+        const existing = checkpointWriters.get(worktreeId);
+        const writer = existing ?? Semaphore.makeUnsafe(1);
+        if (existing === undefined) checkpointWriters.set(worktreeId, writer);
+        return writer.withPermit(effect);
+      };
+
+      /**
        * Snapshot the WORKTREE's chain: the per-worktree advisory lock serializes
        * concurrent writers (two live sessions settling at once) around the
        * read-count/snapshot/insert critical section — it also keeps the two
-       * `git add -A` passes over the shared directory from interleaving. The
-       * unique `(worktree_id, ordinal)` index backstops the lock.
+       * `git add -A` passes over the shared directory from interleaving. In
+       * capture mode the writer permit above takes the lock's place. Either way
+       * the unique `(worktree_id, ordinal)` index is the backstop, and a taken
+       * ordinal is answered, never a defect: the same snapshot already recorded
+       * is returned as it stands; a different one re-reads the chain and takes
+       * the next ordinal, once.
        */
       const takeWorktreeCheckpoint = Effect.fn("SessionEngine.takeWorktreeCheckpoint")(function* (
         worktree: Worktree,
@@ -1581,36 +1605,67 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId | null,
         cursor: { readonly sealantRunId: SealantRunId | null; readonly sequence: bigint },
       ) {
-        const body = Effect.gen(function* () {
-          const previous = yield* checkpoints.latestForWorktree(worktree.id);
-          const ordinal = yield* checkpoints.countForWorktree(worktree.id);
-          // Capture mode: the lease holder flushes first, so the head this checkpoint is
-          // observed from is the disk as of now. A flush that does not complete costs nothing
-          // but the wait for a capture to land.
-          const flushed = yield* flushLeaseHolder(worktree.id, `checkpoint · ${trigger}`);
-          const snapshot = yield* sessionRepo.checkpoint({
-            projectId: worktree.projectId,
-            scope: worktree.id,
-            worktreeName: worktree.directory,
-            index: ordinal,
-            parent: previous?.sha ?? null,
-            flushed,
+        const attempt = (retry: boolean): Effect.Effect<Checkpoint, SessionRepositoryError> =>
+          Effect.gen(function* () {
+            const previous = yield* checkpoints.latestForWorktree(worktree.id);
+            const ordinal = yield* checkpoints.countForWorktree(worktree.id);
+            // Capture mode: the lease holder flushes first, so the head this checkpoint is
+            // observed from is the disk as of now. A flush that does not complete costs nothing
+            // but the wait for a capture to land.
+            const flushed = yield* flushLeaseHolder(worktree.id, `checkpoint · ${trigger}`);
+            const snapshot = yield* sessionRepo.checkpoint({
+              projectId: worktree.projectId,
+              scope: worktree.id,
+              worktreeName: worktree.directory,
+              index: ordinal,
+              parent: previous?.sha ?? null,
+              flushed,
+            });
+            return yield* checkpoints
+              .create({
+                worktreeId: worktree.id,
+                sessionId,
+                ordinal,
+                ref: snapshot.ref,
+                sha: snapshot.sha,
+                sealantRunId: cursor.sealantRunId,
+                seq: cursor.sequence,
+                trigger,
+                captureId: snapshot.captureId ?? null,
+              })
+              .pipe(
+                Effect.catchTag("CheckpointOrdinalTakenError", (taken) =>
+                  Effect.gen(function* () {
+                    const annotations = {
+                      worktreeId: worktree.id,
+                      ordinal,
+                      trigger,
+                      existingTrigger: taken.existing.trigger,
+                      existingSha: taken.existing.sha,
+                      sha: snapshot.sha,
+                    };
+                    if (taken.existing.sha === snapshot.sha) {
+                      yield* Effect.logInfo(
+                        "session engine: checkpoint ordinal taken · same snapshot · observed",
+                      ).pipe(Effect.annotateLogs(annotations));
+                      return taken.existing;
+                    }
+                    if (!retry) {
+                      return yield* Effect.die(
+                        `checkpoint ordinal ${ordinal} of worktree ${worktree.id} was taken twice underneath the writer`,
+                      );
+                    }
+                    yield* Effect.logWarning(
+                      "session engine: checkpoint ordinal taken · re-reading the chain",
+                    ).pipe(Effect.annotateLogs(annotations));
+                    return yield* attempt(false);
+                  }),
+                ),
+              );
           });
-          return yield* checkpoints.create({
-            worktreeId: worktree.id,
-            sessionId,
-            ordinal,
-            ref: snapshot.ref,
-            sha: snapshot.sha,
-            sealantRunId: cursor.sealantRunId,
-            seq: cursor.sequence,
-            trigger,
-            captureId: snapshot.captureId ?? null,
-          });
-        });
-        // Capture mode: no advisory lock (transaction-mode pooling drops it) — the register CAS
-        // serialises the chain and the unique (worktree_id, ordinal) index stays the backstop.
-        return yield* capture === null ? checkpoints.withWorktreeLock(worktree.id, body) : body;
+        return yield* capture === null
+          ? checkpoints.withWorktreeLock(worktree.id, attempt(true))
+          : withCheckpointWriter(worktree.id, attempt(true));
       });
 
       const takeCheckpoint = Effect.fn("SessionEngine.takeCheckpoint")(function* (

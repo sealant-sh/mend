@@ -47,7 +47,7 @@ import {
   assertImagePin,
   assertInstallDockerEvents,
   assertUpgradeRetention,
-  assertWorkspaceMounts,
+  assertCaptureExecutor,
   cleanupOwnedVolumes,
   completedCommandEvidence,
   createVolumeLedger,
@@ -57,6 +57,8 @@ import {
   isolatedClientEnvironment,
   isInside,
   ownsComposeContainer,
+  captureRegisteredEvidence,
+  flushReportEvidence,
   ownsWorkspaceContainer,
   readPrivateIdentity,
   readUpgradeInputs,
@@ -296,7 +298,7 @@ async function collectOwned() {
   for (const item of now.containers) {
     if (initialIds.has(item.Id)) continue;
     const fixture = item.Config?.Labels?.["sh.sealant.mend.acceptance"] === runId;
-    const workspace = ownsWorkspaceContainer(item, initialIds, projectName);
+    const workspace = ownsWorkspaceContainer(item, initialIds);
     if (fixture || workspace) containers.add(item.Id);
   }
   const usedVolumes = new Set(
@@ -338,7 +340,7 @@ async function idle() {
       const volume = now.volumes.find((item) => item.Name === name);
       return volume && volumes.canRemove(volume, identity);
     }),
-    "External store/control volumes must belong to the unchanged private installation identity",
+    "External store/control/garage volumes must belong to the unchanged private installation identity",
   );
   const initialIds = new Set(initial.containers.map((item) => item.Id));
   check(
@@ -589,6 +591,9 @@ async function main() {
       contract.composeTemplate === "compose.v2.yaml" &&
       contract.canonicalVolumes?.store === "mend-store" &&
       contract.canonicalVolumes?.control === "mend-control" &&
+      contract.canonicalVolumes?.garage === "mend-garage" &&
+      contract.volumeOwnership?.externalVolumes?.join(",") ===
+        "mend-store,mend-control,mend-garage" &&
       contract.hostExposure?.ports?.registry === undefined &&
       contract.registry === undefined,
     "Assets must implement the bundle v2 setup contract, which publishes no registry",
@@ -795,7 +800,7 @@ async function main() {
     "Published bundle must serve the real web application",
   );
   console.log(
-    "PASS exact image/version, official PG, web app, idle two-container product and isolated loopback ports (no registry)",
+    "PASS exact image/version, official PG, web app, idle three-container product and isolated loopback ports (no registry)",
   );
 
   stage = "real authentication";
@@ -1013,10 +1018,12 @@ async function main() {
   });
   check(imageSaved.saved === true, "Public API must accept the minimal custom workspace base");
 
-  stage = "real CLI session and Docker mount evidence";
-  // Keep the real process alive briefly so inspect can observe its actual mounts before
-  // normal workspace reclamation. No mock launch or host-store write creates the change.
+  stage = "real CLI session and capture evidence";
+  // Keep the real process alive briefly so inspect can observe the executor before normal
+  // reclamation. No mock launch or host-store write creates the change: the commit happens in
+  // the executor and reaches Mend as a capture (ADR-0002), never through a store mount.
   const command = `set -eu; git config user.name Acceptance; git config user.email acceptance@example.invalid; printf '%s\\n' '${marker}' > packaged-proof.txt; git add packaged-proof.txt; git commit -m 'packaged acceptance'; sleep 30; printf '%s\\n' '${marker}'`;
+  const launchStarted = new Date().toISOString();
   const launched = start(
     process.execPath,
     [bin, "run", "--project", projectName, "--name", "packaged-proof", "--", "sh", "-c", command],
@@ -1026,33 +1033,48 @@ async function main() {
     const detail = await api(`/projects/${project.id}?deadEnds=include`);
     return detail.sessions?.find((item) => item.branch === "mend/packaged-proof");
   });
-  const workspace = await until(
-    "live workspace volume-subpath mounts",
+  const sessionDetail = async () => {
+    const current = await api(`/sessions/${session.id}`);
+    check(
+      current.session.status !== "failed",
+      "Session provisioning failed; inspect private owned-container diagnostics",
+    );
+    return current;
+  };
+  const initialIds = new Set(initial.containers.map((item) => item.Id));
+  // The commit above ships as a capture within seconds of the edit; the same 480s bound the old
+  // mount poll used covers image pulls on a cold daemon. Two facts must hold together: the change
+  // is observed from a registered capture (n ≥ 1) — per-session proof through the public API —
+  // and a store-less Sealant executor is running the session. The hot pool decouples the
+  // executor's container id from the session's `sealantWorkspaceId` (a session claims a warm
+  // standby), so the container is proven store-less, never pinned to the session by id.
+  const evidence = await until(
+    "a registered capture for the session and its store-less executor",
     async () => {
-      const current = await api(`/sessions/${session.id}`);
-      check(
-        current.session.status !== "failed",
-        "Session provisioning failed; inspect private owned-container diagnostics",
-      );
+      const current = await sessionDetail();
+      if (!current.change?.id) return false;
+      const stats = await api(`/changes/${current.change.id}/stats`);
+      const observation = captureRegisteredEvidence(stats.observation);
+      if (!observation) return false;
       const { now } = await collectOwned();
-      return now.containers.find(
+      const executor = now.containers.find(
         (item) =>
           item.State.Running &&
-          (item.HostConfig?.Mounts?.some(
-            (mount) =>
-              mount.Source === "mend-store" &&
-              mount.VolumeOptions?.Subpath === `${projectName}/repo.git`,
-          ) ||
-            item.Mounts?.some(
-              (mount) =>
-                mount.Type === "bind" &&
-                mount.Source === `/var/lib/mend/store/${projectName}/repo.git`,
-            )),
+          !initialIds.has(item.Id) &&
+          ownsWorkspaceContainer(item, initialIds),
       );
+      return executor ? { observation, executor } : false;
     },
     480_000,
   );
-  assertWorkspaceMounts(workspace, projectName);
+  // A store mount at this point would fail ownsWorkspaceContainer above; assert store-absence
+  // explicitly so the message names the regression if the executor's shape ever changes.
+  assertCaptureExecutor(evidence.executor);
+  check(containers.has(evidence.executor.Id), "The store-less executor must be owned for cleanup");
+  const captured = evidence.observation;
+  console.log(
+    `OBSERVED store-less capture executor and ${captured.label} (${captured.state}, capture ${captured.captureN})`,
+  );
   stage = "authenticated workspace SSH";
   const workspaceId = await until("public workspace identity", async () => {
     const current = await api(`/sessions/${session.id}`);
@@ -1068,14 +1090,26 @@ async function main() {
     (await launched.result).ok,
     "mend run must finish successfully through the real record stream",
   );
-  const detail = await until("completed session and checkpoint", async () => {
-    const value = await api(`/sessions/${session.id}`);
-    check(
-      value.session.status !== "failed",
-      "Session failed; server logs are deliberately not printed",
+  const detail = await until("completed session and checkpoint", async () =>
+    completedCommandEvidence(await sessionDetail()),
+  );
+  // The flush report the engine logs when the executor's turn ends: every staged object
+  // uploaded and registered, nothing pending, the chain not fenced.
+  const flush = await until("a completed capture flush report for the session", async () => {
+    const { compose: currentCompose } = await collectOwned();
+    const currentMend = currentCompose.find(
+      (item) => item.Config.Labels["com.docker.compose.service"] === "mend",
     );
-    return completedCommandEvidence(value);
+    check(
+      currentMend && containers.has(currentMend.Id),
+      "Flush evidence requires the owned Mend container",
+    );
+    const text = await docker(["logs", "--since", launchStarted, currentMend.Id]);
+    return flushReportEvidence(text, session.id);
   });
+  console.log(
+    `OBSERVED capture flush · completed · observed for the session: head ${flush.headN}, registered ${flush.registered}, pending ${flush.pending}`,
+  );
   if (detail.currentAgent.exitCode === null)
     console.log(
       "OBSERVED completed session and exited PTY; process exit code unavailable, not inferred as zero",
@@ -1154,21 +1188,15 @@ async function main() {
   };
   const gitBefore = await gitState();
   console.log(
-    "PASS network adoption, real mend run, committed change, replayable record and volume-subpath mounts",
+    "PASS network adoption, real mend run, store-less executor, registered capture, completed flush, committed change and replayable record",
   );
   // Fixture is temporary infrastructure, not a third idle product container.
   await docker(["rm", "-f", fixtureId]);
   fixtureId = undefined;
-  await until("workspace reclamation", async () => {
+  await until("executor reclamation", async () => {
     const { now } = await collectOwned();
     return !now.containers.some(
-      (item) =>
-        item.State.Running &&
-        item.HostConfig?.Mounts?.some(
-          (mount) =>
-            mount.Source === "mend-store" &&
-            mount.VolumeOptions?.Subpath?.startsWith(`${projectName}/`),
-        ),
+      (item) => item.State.Running && ownsWorkspaceContainer(item, initialIds),
     );
   });
   await idle();

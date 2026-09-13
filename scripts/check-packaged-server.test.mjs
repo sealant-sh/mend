@@ -25,7 +25,10 @@ import {
   assertImagePin,
   assertInstallDockerEvents,
   assertUpgradeRetention,
-  assertWorkspaceMounts,
+  assertCaptureExecutor,
+  captureRegisteredEvidence,
+  isSealantExecutor,
+  flushReportEvidence,
   cleanupOwnedVolumes,
   completedCommandEvidence,
   createVolumeLedger,
@@ -233,6 +236,7 @@ test("fresh-install gate rejects all existing Mend resources, even stopped/orpha
   for (const part of [
     "store",
     "control",
+    "garage",
     "config",
     "ssh",
     "rabbitmq",
@@ -356,284 +360,99 @@ test("health checks require the exact configured version", () => {
     assert.throws(() => assertHealth(value, "1.2.3"));
 });
 
-const sessionId = "9a3b4c5d-1234-4567-89ab-123456789abc";
-const otherSessionId = "9a3b4c5d-1234-4567-89ab-123456789abd";
 const workspaceId = "1a2b3c4d-5678-4901-abcd-123456789abc";
 
-function workspace() {
+/**
+ * What Sealant's Docker runtime launches for a session in capture mode (observed live, 2026-09-13):
+ * named `sealant-<id>`, no store mount, no host bind, two scoped mend-control volumes — the control
+ * socket at /run/sealant and a read-only secrets file at /run/sealant/secrets. The hot pool
+ * decouples `<id>` from the session's `sealantWorkspaceId`, so the executor is proven store-less,
+ * not pinned to a session by id.
+ */
+function executor(overrides = {}) {
   const mounts = [
-    ["project/repo.git", "/var/lib/mend/store/project/repo.git"],
-    ["project/worktrees", "/workspace/.roots/workspace"],
-    [`project/sessions/${sessionId}/harness-home`, "/workspace/harness-home"],
-    [`_run/sessions/${sessionId}`, "/run/mend"],
-  ].map(([subpath, target]) => ({
-    Type: "volume",
-    Source: "mend-store",
-    Target: target,
-    ReadOnly: target === "/run/mend",
-    VolumeOptions: { Subpath: subpath },
-  }));
-  mounts.push({
-    Type: "volume",
-    Source: "mend-control",
-    Target: "/run/sealant",
-    ReadOnly: false,
-    VolumeOptions: { Subpath: `sealant-${workspaceId}` },
-  });
+    {
+      Type: "volume",
+      Source: "mend-control",
+      Target: "/run/sealant",
+      VolumeOptions: { Subpath: `sealant-${workspaceId}` },
+    },
+    {
+      Type: "volume",
+      Source: "mend-control",
+      Target: "/run/sealant/secrets",
+      ReadOnly: true,
+      VolumeOptions: { Subpath: `_dotfiles/sealant-secret-env-${workspaceId}` },
+    },
+  ];
   return {
-    Id: "new-workspace",
-    HostConfig: { Mounts: mounts },
+    Id: "new-executor",
+    Name: `/sealant-${workspaceId}`,
+    State: { Running: true },
+    HostConfig: { Mounts: mounts, Binds: null },
     Mounts: mounts.map((mount) => ({
       Type: "volume",
       Name: mount.Source,
       Destination: mount.Target,
-      RW: !mount.ReadOnly,
+      RW: mount.ReadOnly !== true,
     })),
+    ...overrides,
   };
 }
 
-test("actual workspace helper and control mounts pass acceptance and cleanup ownership", () => {
-  const candidate = workspace();
-  assert.doesNotThrow(() => assertWorkspaceMounts(candidate, "project"));
-  assert.equal(ownsWorkspaceContainer(candidate, new Set(), "project"), true);
-  assert.equal(ownsWorkspaceContainer(candidate, new Set([candidate.Id]), "project"), false);
-  assert.equal(ownsWorkspaceContainer(candidate, new Set(), "other"), false);
+test("a store-less Sealant executor passes acceptance and is owned for cleanup by shape", () => {
+  const candidate = executor();
+  assert.equal(isSealantExecutor(candidate), true);
+  assert.doesNotThrow(() => assertCaptureExecutor(candidate));
+  assert.equal(ownsWorkspaceContainer(candidate, new Set()), true);
+  assert.equal(ownsWorkspaceContainer(candidate, new Set([candidate.Id])), false);
+  // Recognised by the control subpath even when the container was renamed by an operator.
+  const renamed = executor({ Name: "/renamed" });
+  assert.equal(isSealantExecutor(renamed), true);
+  assert.equal(ownsWorkspaceContainer(renamed, new Set()), true);
+  // Neither a Sealant name nor a scoped control mount: not an executor, never owned.
+  const foreign = executor({
+    Name: "/unrelated",
+    HostConfig: { Mounts: [], Binds: null },
+    Mounts: [],
+  });
+  assert.equal(isSealantExecutor(foreign), false);
+  assert.equal(ownsWorkspaceContainer(foreign, new Set()), false);
+  assert.throws(() => assertCaptureExecutor(foreign), /must be a Sealant executor/);
 });
 
-for (const subpath of [
-  "_run",
-  "_run/sessions",
-  "_run/other",
-  `_run/sessions/${otherSessionId}`,
-  `_run/sessions/${sessionId}/socket`,
-  `_run/sessions/${sessionId}/..`,
-  `_run//sessions/${sessionId}`,
-  `_run/sessions/${sessionId}/`,
-  `_run/sessions/./${sessionId}`,
-  `_run/sessions\\${sessionId}`,
-  `/_run/sessions/${sessionId}`,
-]) {
-  test(`helper mount rejects nonmatching or noncanonical subpath ${subpath}`, () => {
-    const candidate = workspace();
-    candidate.HostConfig.Mounts[3].VolumeOptions.Subpath = subpath;
-    assert.throws(() => assertWorkspaceMounts(candidate, "project"));
-    assert.equal(ownsWorkspaceContainer(candidate, new Set(), "project"), false);
-  });
-}
-
-const rejectedWorkspaceMounts = [
+const rejectedExecutors = [
   [
-    "writable helper",
-    (candidate) => {
-      candidate.HostConfig.Mounts[3].ReadOnly = false;
-    },
-  ],
-  [
-    "unspecified helper access",
-    (candidate) => {
-      delete candidate.HostConfig.Mounts[3].ReadOnly;
-    },
-  ],
-  [
-    "actually writable helper",
-    (candidate) => {
-      candidate.Mounts[3].RW = true;
-    },
-  ],
-  [
-    "unknown actual helper access",
-    (candidate) => {
-      delete candidate.Mounts[3].RW;
-    },
-  ],
-  [
-    "wrong helper target",
-    (candidate) => {
-      candidate.HostConfig.Mounts[3].Target = "/run/other";
-      candidate.Mounts[3].Destination = "/run/other";
-    },
-  ],
-  [
-    "helper on another volume",
-    (candidate) => {
-      candidate.HostConfig.Mounts[3].Source = "other-store";
-      candidate.Mounts[3].Name = "other-store";
-    },
-  ],
-  [
-    "project directory as helper",
-    (candidate) => {
-      candidate.HostConfig.Mounts[3].VolumeOptions.Subpath = "project/worktrees";
-    },
-  ],
-  [
-    "missing harness home",
-    (candidate) => {
-      candidate.HostConfig.Mounts.splice(2, 1);
-      candidate.Mounts.splice(2, 1);
-    },
-  ],
-  [
-    "other session's harness home",
-    (candidate) => {
-      candidate.HostConfig.Mounts[2].VolumeOptions.Subpath = `project/sessions/${otherSessionId}/harness-home`;
-    },
-  ],
-  [
-    "other project's harness home",
-    (candidate) => {
-      candidate.HostConfig.Mounts[2].VolumeOptions.Subpath = `other/sessions/${sessionId}/harness-home`;
-    },
-  ],
-  [
-    "wrong harness home target",
-    (candidate) => {
-      candidate.HostConfig.Mounts[2].Target = "/workspace/other-home";
-      candidate.Mounts[2].Destination = "/workspace/other-home";
-    },
-  ],
-  [
-    "non-UUID correlated session",
-    (candidate) => {
-      candidate.HostConfig.Mounts[2].VolumeOptions.Subpath =
-        "project/sessions/not-a-uuid/harness-home";
-      candidate.HostConfig.Mounts[3].VolumeOptions.Subpath = "_run/sessions/not-a-uuid";
-    },
-  ],
-  [
-    "bind helper spec",
-    (candidate) => {
-      candidate.HostConfig.Mounts[3].Type = "bind";
-    },
-  ],
-  [
-    "bind harness home spec",
-    (candidate) => {
-      candidate.HostConfig.Mounts[2].Type = "bind";
-    },
-  ],
-  [
-    "actual bind helper",
-    (candidate) => {
-      candidate.Mounts[3].Type = "bind";
-    },
-  ],
-  [
-    "missing actual helper",
-    (candidate) => {
-      candidate.Mounts.splice(3, 1);
-    },
-  ],
-  [
-    "wrong actual helper volume",
-    (candidate) => {
-      candidate.Mounts[3].Name = "other-store";
-    },
-  ],
-  [
-    "missing repository",
-    (candidate) => {
-      candidate.HostConfig.Mounts.splice(0, 1);
-      candidate.Mounts.splice(0, 1);
-    },
-  ],
-  [
-    "missing worktrees",
-    (candidate) => {
-      candidate.HostConfig.Mounts.splice(1, 1);
-      candidate.Mounts.splice(1, 1);
-    },
-  ],
-  [
-    "additional root store",
+    "store volume mount",
     (candidate) => {
       candidate.HostConfig.Mounts.push({
         Type: "volume",
         Source: "mend-store",
-        Target: "/extra-store",
+        Target: "/workspace/.roots/workspace",
+        VolumeOptions: { Subpath: "project/worktrees" },
       });
       candidate.Mounts.push({
         Type: "volume",
         Name: "mend-store",
-        Destination: "/extra-store",
+        Destination: "/workspace/.roots/workspace",
         RW: true,
       });
     },
   ],
   [
-    "unspecified actual root store",
+    "store bind mount",
     (candidate) => {
-      candidate.Mounts.push({
-        Type: "volume",
-        Name: "mend-store",
-        Destination: "/extra-store",
-        RW: true,
-      });
-    },
-  ],
-  [
-    "root control",
-    (candidate) => {
-      delete candidate.HostConfig.Mounts[4].VolumeOptions;
-    },
-  ],
-  [
-    "empty control subpath",
-    (candidate) => {
-      candidate.HostConfig.Mounts[4].VolumeOptions.Subpath = "";
-    },
-  ],
-  [
-    "control traversal",
-    (candidate) => {
-      candidate.HostConfig.Mounts[4].VolumeOptions.Subpath = `sealant-${workspaceId}/..`;
-    },
-  ],
-  [
-    "arbitrary control child",
-    (candidate) => {
-      candidate.HostConfig.Mounts[4].VolumeOptions.Subpath = "sealant-not-a-uuid";
-    },
-  ],
-  [
-    "wrong control target",
-    (candidate) => {
-      candidate.HostConfig.Mounts[4].Target = "/run/other";
-      candidate.Mounts[4].Destination = "/run/other";
-    },
-  ],
-  [
-    "missing actual control",
-    (candidate) => {
-      candidate.Mounts.splice(4, 1);
-    },
-  ],
-  [
-    "unspecified actual root control",
-    (candidate) => {
-      candidate.Mounts.push({
-        Type: "volume",
-        Name: "mend-control",
-        Destination: "/extra-control",
-        RW: true,
-      });
-    },
-  ],
-  [
-    "additional actual host bind",
-    (candidate) => {
-      candidate.Mounts.push({
+      candidate.HostConfig.Mounts.push({
         Type: "bind",
-        Source: "/tmp/foreign",
-        Destination: "/extra",
-        RW: true,
+        Source: "/var/lib/mend/store/project/repo.git",
+        Target: "/mounted/repo.git",
       });
     },
   ],
   [
-    "additional bind spec",
+    "actual store mount only",
     (candidate) => {
-      candidate.HostConfig.Mounts.push({ Type: "bind", Source: "/tmp/foreign", Target: "/extra" });
+      candidate.Mounts.push({ Type: "volume", Name: "mend-store", Destination: "/x", RW: false });
     },
   ],
   [
@@ -642,107 +461,93 @@ const rejectedWorkspaceMounts = [
       candidate.HostConfig.Binds = ["/tmp/foreign:/extra:ro"];
     },
   ],
+  [
+    "a foreign volume at the control-socket path",
+    (candidate) => {
+      candidate.HostConfig.Mounts.push({
+        Type: "volume",
+        Source: "mend-store",
+        Target: "/run/sealant/extra",
+        VolumeOptions: { Subpath: "x" },
+      });
+    },
+  ],
 ];
 
-for (const [name, invalidate] of rejectedWorkspaceMounts) {
-  test(`acceptance and ownership both reject ${name}`, () => {
-    const candidate = workspace();
+for (const [name, invalidate] of rejectedExecutors) {
+  test(`acceptance rejects and never owns an executor with ${name}`, () => {
+    const candidate = executor();
     invalidate(candidate);
-    assert.throws(() => assertWorkspaceMounts(candidate, "project"));
-    assert.equal(ownsWorkspaceContainer(candidate, new Set(), "project"), false);
+    // Still a Sealant executor by name, but a store mount / host bind is a failure, never owned.
+    assert.equal(isSealantExecutor(candidate), true);
+    assert.throws(() => assertCaptureExecutor(candidate));
+    assert.equal(ownsWorkspaceContainer(candidate, new Set()), false);
   });
 }
 
-test("helper correlation follows the mounted session UUID rather than the workspace UUID", () => {
-  const candidate = workspace();
-  candidate.HostConfig.Mounts[2].VolumeOptions.Subpath = `project/sessions/${otherSessionId}/harness-home`;
-  candidate.HostConfig.Mounts[3].VolumeOptions.Subpath = `_run/sessions/${otherSessionId}`;
-  assert.doesNotThrow(() => assertWorkspaceMounts(candidate, "project"));
-  assert.equal(ownsWorkspaceContainer(candidate, new Set(), "project"), true);
+test("capture evidence needs a registered capture n ≥ 1 from the capture source", () => {
+  const stamp = (patch) => ({
+    state: "observed",
+    source: "capture",
+    captureN: 2,
+    captureId: "d492613406d23848341e473ed043bfffb2309b85375528a2ce401a6609ed3731",
+    seq: "4180",
+    partial: false,
+    observedAt: "2026-09-13T13:41:09Z",
+    label: "observed at capture 2 · seq 4180",
+    ...patch,
+  });
+  const observed = stamp();
+  assert.equal(captureRegisteredEvidence(observed), observed);
+  const claimed = stamp({ state: "claimed" });
+  assert.equal(captureRegisteredEvidence(claimed), claimed);
+  for (const patch of [{ captureN: 0 }, { captureN: null }, { captureId: null }, { captureId: "" }])
+    assert.equal(captureRegisteredEvidence(stamp(patch)), false);
+  assert.equal(captureRegisteredEvidence(undefined), false);
+  assert.equal(captureRegisteredEvidence(null), false);
+  assert.throws(
+    () => captureRegisteredEvidence(stamp({ source: "worktree", captureN: null })),
+    /live worktree/,
+  );
+  assert.throws(() => captureRegisteredEvidence({ label: "x" }), /well formed/);
 });
 
-test("UUID matches cannot accept a trailing newline", () => {
-  for (const target of ["helper", "control"]) {
-    const candidate = workspace();
-    if (target === "helper") {
-      candidate.HostConfig.Mounts[2].VolumeOptions.Subpath = `project/sessions/${sessionId}\n/harness-home`;
-      candidate.HostConfig.Mounts[3].VolumeOptions.Subpath = `_run/sessions/${sessionId}\n`;
-    } else {
-      candidate.HostConfig.Mounts[4].VolumeOptions.Subpath = `sealant-${workspaceId}\n`;
-    }
-    assert.throws(() => assertWorkspaceMounts(candidate, "project"));
-    assert.equal(ownsWorkspaceContainer(candidate, new Set(), "project"), false);
-  }
-});
-
-test("project-only workspaces remain eligible without a helper mount", () => {
-  const candidate = workspace();
-  candidate.HostConfig.Mounts.splice(3, 1);
-  candidate.Mounts.splice(3, 1);
-  assert.doesNotThrow(() => assertWorkspaceMounts(candidate, "project"));
-  assert.equal(ownsWorkspaceContainer(candidate, new Set(), "project"), true);
-});
-
-test("mount evidence requires actual volumes AND nonempty project subpaths", () => {
-  assert.doesNotThrow(() => assertWorkspaceMounts(workspace(), "project"));
-  for (const subpath of [
-    undefined,
-    "",
-    "other/repo.git",
-    "project/../repo.git",
-    "/project/repo.git",
-  ]) {
-    const candidate = workspace();
-    candidate.HostConfig.Mounts[0].VolumeOptions.Subpath = subpath;
-    assert.throws(() => assertWorkspaceMounts(candidate, "project"));
-  }
-  const bind = workspace();
-  bind.Mounts[0] = {
-    Type: "bind",
-    Source: "/var/lib/mend/store/project/repo.git",
-    Destination: "/mounted/repo.git",
-  };
-  assert.throws(() => assertWorkspaceMounts(bind, "project"));
-  const wholeStore = workspace();
-  wholeStore.HostConfig.Mounts[0].VolumeOptions = {};
-  assert.throws(() => assertWorkspaceMounts(wholeStore, "project"));
-});
-
-test("workspace cleanup uses the exact project subpath, not a shared store or raw prefix", () => {
-  const candidate = { ...workspace(), Id: "new-workspace" };
-  assert.equal(ownsWorkspaceContainer(candidate, new Set(), "project"), true);
-  assert.equal(ownsWorkspaceContainer(candidate, new Set([candidate.Id]), "project"), false);
-  assert.equal(ownsWorkspaceContainer(candidate, new Set(), "project-other"), false);
-  for (const subpath of [
-    "project/../foreign",
-    "project/./worktrees",
-    "project//worktrees",
-    "project/",
-    "project/dir\\file",
-    "project-other/worktrees",
-    "other/worktrees",
-    undefined,
-  ]) {
-    const foreign = { ...workspace(), Id: "foreign" };
-    foreign.HostConfig.Mounts[1].VolumeOptions.Subpath = subpath;
-    assert.equal(ownsWorkspaceContainer(foreign, new Set(), "project"), false);
-    assert.throws(() => assertWorkspaceMounts(foreign, "project"));
-  }
+test("flush evidence matches only this session's completed report", () => {
+  const sessionId = "e8f4474e-b96c-4d41-b286-e1a864d966ff";
+  const report = (id, outcome, fields) =>
+    `[13:41:39.999] INFO (#514) http.span=38039ms: session engine: capture flush · ${outcome} · observed {\n  sessionId: '${id}',\n  worktreeId: '1e252e03-69ca-49c1-88d8-fb7bea04520e',\n  workspaceId: 'aadc6b45-e1c7-4843-b002-2335b58d372c',\n  why: 'checkpoint · turn-boundary',\n  epoch: 2,\n${fields}\n}\n`;
+  const complete =
+    "  headN: 2,\n  pending: 0,\n  stagedBytes: 0,\n  uploadedObjects: 14,\n  uploadedBytes: 8211,\n  registered: 3,\n  fenced: false,\n  paused: false";
+  const log = `noise\n${report("other", "completed", complete)}${report(sessionId, "partial", complete.replace("pending: 0", "pending: 2"))}${report(sessionId, "completed", complete)}`;
+  assert.deepEqual(flushReportEvidence(log, sessionId), {
+    headN: 2,
+    pending: 0,
+    registered: 3,
+    uploadedObjects: 14,
+    fenced: false,
+  });
+  assert.equal(flushReportEvidence(report("other", "completed", complete), sessionId), false);
+  assert.equal(flushReportEvidence(report(sessionId, "partial", complete), sessionId), false);
   assert.equal(
-    ownsWorkspaceContainer(
-      { Id: "bind", Mounts: [{ Type: "bind", Source: "/var/lib/mend/store/project/../foreign" }] },
-      new Set(),
-      "project",
+    flushReportEvidence(
+      report(sessionId, "completed", complete.replace("fenced: false", "fenced: true")),
+      sessionId,
     ),
     false,
   );
   assert.equal(
-    ownsWorkspaceContainer(
-      { Id: "whole-store", HostConfig: { Mounts: [{ Type: "volume", Source: "mend-store" }] } },
-      new Set(),
-      "project",
+    flushReportEvidence(
+      report(sessionId, "completed", complete.replace("registered: 3", "registered: 0")),
+      sessionId,
     ),
     false,
+  );
+  assert.equal(flushReportEvidence("session engine: capture flush · refused", sessionId), false);
+  assert.equal(flushReportEvidence(undefined, sessionId), false);
+  assert.equal(flushReportEvidence(log, ""), false);
+  assert.throws(
+    () => flushReportEvidence(report(sessionId, "completed", "  headN: 2"), sessionId),
+    /pending, registered and fenced/,
   );
 });
 
@@ -773,7 +578,11 @@ function volumeOperations(volumes, identity = identityBytes) {
 }
 
 test("startup failure before containers: only matching-owner external volumes are learned and removed", async () => {
-  for (const names of [["mend-store"], ["mend-store", "mend-control"]]) {
+  for (const names of [
+    ["mend-store"],
+    ["mend-store", "mend-control"],
+    ["mend-store", "mend-control", "mend-garage"],
+  ]) {
     const ledger = createVolumeLedger([], "test-run");
     const external = names.map(ownedVolume);
     const unrelated = [
@@ -829,6 +638,33 @@ test("external ownership refuses missing/empty/mismatched identity and never fal
     ledger.collect([volume], new Set([volume.Name]), identityBytes);
     assert.equal(ledger.canRemove(volume, identityBytes), false);
   }
+});
+
+test("the Garage volume is external: owned by the installation label alone, never by Compose evidence", async () => {
+  // Setup claims mend-garage before Compose starts, so it carries only the ownership label; the
+  // bundle's Garage container then mounts it. v0.27.0's acceptance refused exactly this volume.
+  const ledger = createVolumeLedger([], "test-run");
+  const garage = ownedVolume("mend-garage");
+  ledger.collect([ownedVolume(), ownedVolume("mend-control"), garage], new Set(), identityBytes);
+  ledger.collect(
+    [ownedVolume(), ownedVolume("mend-control"), garage],
+    new Set(["mend-garage"]),
+    identityBytes,
+  );
+  assert.equal(ledger.canRemove(garage, identityBytes), true);
+  assert.deepEqual(ledger.names(), ["mend-store", "mend-control", "mend-garage"]);
+  const operations = volumeOperations([ownedVolume(), ownedVolume("mend-control"), garage]);
+  assert.equal(await cleanupOwnedVolumes(ledger, operations), true);
+  assert.deepEqual(
+    operations.calls.filter(([command]) => command === "rm").map(([, name]) => name),
+    ["mend-store", "mend-control", "mend-garage"],
+  );
+  // A mend-garage that Compose created (project label, no ownership label) is somebody's data.
+  const composeMade = { ...ownedVolume("mend-garage"), Labels: { [projectLabel]: "mend" } };
+  const refused = createVolumeLedger([], "test-run");
+  refused.collect([composeMade], new Set(["mend-garage"]), identityBytes);
+  assert.equal(refused.canRemove(composeMade, identityBytes), false);
+  assert.deepEqual(refused.names(), []);
 });
 
 test("pre-existing volumes remain unowned even with matching identity or fixture labels", async () => {

@@ -6,8 +6,8 @@ import {
   type WorktreeId,
 } from "@mend/domain";
 import { Checkpoint, type CheckpointTrigger } from "@mend/domain/workbench";
-import { asc, count, desc, eq, sql } from "drizzle-orm";
-import { Effect, Layer } from "effect";
+import { and, asc, count, desc, eq, sql } from "drizzle-orm";
+import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
@@ -27,6 +27,17 @@ export interface NewCheckpoint {
   readonly captureId?: string | null;
 }
 
+/**
+ * `(worktree_id, ordinal)` was taken between the caller's read and its insert — another writer
+ * snapshotted the same worktree at the same ordinal. `existing` is that writer's row, so the
+ * caller can answer with it when it records the same snapshot, or re-read and take the next
+ * ordinal. Capture mode (ADR-0002) runs without the advisory lock, so this is the backstop.
+ */
+export class CheckpointOrdinalTakenError extends Schema.TaggedErrorClass<CheckpointOrdinalTakenError>()(
+  "CheckpointOrdinalTakenError",
+  { worktreeId: Schema.String, ordinal: Schema.Int, existing: Checkpoint },
+) {}
+
 /** Internal wrapper so `withWorktreeLock` can rethrow the body's error unwidened. */
 class CheckpointLockBodyError<E> {
   readonly error: E;
@@ -45,8 +56,19 @@ class CheckpointLockBodyError<E> {
 export class CheckpointsRepo extends Context.Service<
   CheckpointsRepo,
   {
-    readonly create: (checkpoint: NewCheckpoint) => Effect.Effect<Checkpoint>;
+    /**
+     * One row per `(worktree_id, ordinal)`: the insert is `ON CONFLICT DO NOTHING`, and a
+     * conflict fails `CheckpointOrdinalTakenError` with the row that got there first — never a
+     * unique-violation defect.
+     */
+    readonly create: (
+      checkpoint: NewCheckpoint,
+    ) => Effect.Effect<Checkpoint, CheckpointOrdinalTakenError>;
     readonly byId: (id: CheckpointId) => Effect.Effect<Checkpoint | null>;
+    readonly byOrdinal: (
+      worktreeId: WorktreeId,
+      ordinal: number,
+    ) => Effect.Effect<Checkpoint | null>;
     readonly listForWorktree: (worktreeId: WorktreeId) => Effect.Effect<ReadonlyArray<Checkpoint>>;
     readonly latestForWorktree: (worktreeId: WorktreeId) => Effect.Effect<Checkpoint | null>;
     /** Next ordinal = count; the unique `(worktree_id, ordinal)` index backstops the lock. */
@@ -73,20 +95,6 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
   Effect.gen(function* () {
     const db = yield* MendDB;
 
-    const create = Effect.fn("CheckpointsRepo.create")(function* (checkpoint: NewCheckpoint) {
-      const [created] = yield* db
-        .insert(checkpoints)
-        .values({
-          id: CheckpointId.make(crypto.randomUUID()),
-          ...checkpoint,
-          captureId: checkpoint.captureId ?? null,
-        })
-        .returning()
-        .pipe(Effect.orDie);
-      if (created === undefined) return yield* Effect.die("checkpoint insert returned no row");
-      return toCheckpoint(created);
-    });
-
     const byId = Effect.fn("CheckpointsRepo.byId")(function* (id: CheckpointId) {
       const [row] = yield* db
         .select()
@@ -95,6 +103,40 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
         .limit(1)
         .pipe(Effect.orDie);
       return row === undefined ? null : toCheckpoint(row);
+    });
+
+    const byOrdinal = Effect.fn("CheckpointsRepo.byOrdinal")(function* (
+      worktreeId: WorktreeId,
+      ordinal: number,
+    ) {
+      const [row] = yield* db
+        .select()
+        .from(checkpoints)
+        .where(and(eq(checkpoints.worktreeId, worktreeId), eq(checkpoints.ordinal, ordinal)))
+        .limit(1)
+        .pipe(Effect.orDie);
+      return row === undefined ? null : toCheckpoint(row);
+    });
+
+    const create = Effect.fn("CheckpointsRepo.create")(function* (checkpoint: NewCheckpoint) {
+      const [created] = yield* db
+        .insert(checkpoints)
+        .values({
+          id: CheckpointId.make(crypto.randomUUID()),
+          ...checkpoint,
+          captureId: checkpoint.captureId ?? null,
+        })
+        .onConflictDoNothing({ target: [checkpoints.worktreeId, checkpoints.ordinal] })
+        .returning()
+        .pipe(Effect.orDie);
+      if (created !== undefined) return toCheckpoint(created);
+      const existing = yield* byOrdinal(checkpoint.worktreeId, checkpoint.ordinal);
+      if (existing === null) return yield* Effect.die("checkpoint conflict returned no row");
+      return yield* new CheckpointOrdinalTakenError({
+        worktreeId: checkpoint.worktreeId,
+        ordinal: checkpoint.ordinal,
+        existing,
+      });
     });
 
     const listForWorktree = Effect.fn("CheckpointsRepo.listForWorktree")(function* (
@@ -169,6 +211,7 @@ export const CheckpointsRepoLive: Layer.Layer<CheckpointsRepo, never, MendDB> = 
     return {
       create,
       byId,
+      byOrdinal,
       listForWorktree,
       latestForWorktree,
       countForWorktree,
