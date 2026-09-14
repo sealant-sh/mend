@@ -114,7 +114,7 @@ const startBundle = async (supervisor) => {
     SEALANT_CREDENTIALS_KEY: configuration.credentialsKey,
   };
 
-  console.log("[bundle] applying Sealant 0.31.0 migrations from its published API image");
+  console.log("[bundle] applying Sealant 0.31.1 migrations from its published API image");
   await supervisor.run(
     baseSpecification("sealant-migrate", ["node", "/opt/sealant/api/dist/migrate.js"], {
       DATABASE_URL: configuration.sealantDatabaseUrl,
