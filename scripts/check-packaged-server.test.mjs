@@ -30,6 +30,7 @@ import {
   checkpointChainEvidence,
   isSealantExecutor,
   reviewDiffEvidence,
+  flushAttemptEvidence,
   flushReportEvidence,
   cleanupOwnedVolumes,
   completedCommandEvidence,
@@ -690,6 +691,42 @@ test("flush evidence matches only this session's completed report", () => {
     () => flushReportEvidence(report(sessionId, "completed", "  headN: 2"), sessionId),
     /pending, registered and fenced/,
   );
+});
+
+test("flush attempt evidence names this session's refusals, timeouts and partial reports", () => {
+  const sessionId = "e8f4474e-b96c-4d41-b286-e1a864d966ff";
+  const refused = (id, why, error) =>
+    `[13:41:39.999] WARN: session engine: capture flush · refused {\n  sessionId: '${id}',\n  why: '${why}',\n  error: '${error}'\n}\n`;
+  const timedOut = (id) =>
+    `[13:41:40.999] WARN: session engine: capture flush · timed out {\n  sessionId: '${id}',\n  why: 'planned stop',\n  timeoutMs: 20000\n}\n`;
+  const partial = (id) =>
+    `[13:41:41.999] INFO: session engine: capture flush · partial · observed {\n  sessionId: '${id}',\n  why: 'planned stop',\n  pending: 2,\n  fenced: true\n}\n`;
+  const echild = "The workspace runtime refused the flush: No child process (os error 10)";
+  const log = `noise\n${refused("other", "checkpoint · turn-boundary", echild)}${refused(sessionId, "checkpoint · turn-boundary", echild)}${timedOut(sessionId)}${partial(sessionId)}`;
+  assert.deepEqual(flushAttemptEvidence(log, sessionId), [
+    `refused · checkpoint · turn-boundary · ${echild}`,
+    "timed out · planned stop · after 20000ms",
+    "partial · observed · planned stop · pending 2, fenced true",
+  ]);
+  // A completed report is the answer, never an attempt to report as a failure.
+  assert.deepEqual(
+    flushAttemptEvidence(
+      `session engine: capture flush · completed · observed {\n  sessionId: '${sessionId}',\n  pending: 0\n}`,
+      sessionId,
+    ),
+    [],
+  );
+  assert.deepEqual(flushAttemptEvidence(log, "other-id"), []);
+  assert.deepEqual(flushAttemptEvidence(log, ""), []);
+  assert.deepEqual(flushAttemptEvidence(undefined, sessionId), []);
+  // Bounded: at most `limit` lines, each truncated, so a timeout cannot dump the container log.
+  const many = Array.from({ length: 9 }, (_, i) =>
+    refused(sessionId, `why-${i}`, "x".repeat(400)),
+  ).join("");
+  const bounded = flushAttemptEvidence(many, sessionId, 4);
+  assert.equal(bounded.length, 4);
+  assert.ok(bounded.every((line) => line.length <= 200));
+  assert.ok(bounded[3].startsWith("refused · why-8 · "));
 });
 
 const identityBytes = Buffer.from("SECRET=fixture-only\r\nSECOND=value\n");

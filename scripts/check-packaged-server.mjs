@@ -59,6 +59,7 @@ import {
   ownsComposeContainer,
   captureRegisteredEvidence,
   checkpointChainEvidence,
+  flushAttemptEvidence,
   flushReportEvidence,
   reviewDiffEvidence,
   ownsWorkspaceContainer,
@@ -218,6 +219,8 @@ async function snapshot() {
   };
 }
 
+// `description` may be a function, evaluated only on timeout, so the failure can name what the
+// probe did observe instead of the thing it waited for.
 async function until(description, probe, timeout = 180_000) {
   const deadline = Date.now() + timeout;
   while (Date.now() < deadline) {
@@ -226,7 +229,10 @@ async function until(description, probe, timeout = 180_000) {
     if (value) return value;
     await pause(500);
   }
-  check(false, `Timed out waiting for ${description}`);
+  check(
+    false,
+    `Timed out waiting for ${typeof description === "function" ? description() : description}`,
+  );
 }
 
 async function freePorts() {
@@ -1097,18 +1103,29 @@ async function main() {
   );
   // The flush report the engine logs when the executor's turn ends: every staged object
   // uploaded and registered, nothing pending, the chain not fenced.
-  const flush = await until("a completed capture flush report for the session", async () => {
-    const { compose: currentCompose } = await collectOwned();
-    const currentMend = currentCompose.find(
-      (item) => item.Config.Labels["com.docker.compose.service"] === "mend",
-    );
-    check(
-      currentMend && containers.has(currentMend.Id),
-      "Flush evidence requires the owned Mend container",
-    );
-    const text = await docker(["logs", "--since", launchStarted, currentMend.Id]);
-    return flushReportEvidence(text, session.id);
-  });
+  // A session flushes at least twice (turn boundary, planned stop) and one completed report is
+  // enough, so a refused or partial report is passed over, never treated as the answer. When none
+  // completes, the reports that were logged instead are the cause and ride the failure message.
+  let flushAttempts = [];
+  const flush = await until(
+    () =>
+      flushAttempts.length === 0
+        ? "a completed capture flush report for the session; the engine logged no flush at all"
+        : `a completed capture flush report for the session; the engine logged only: ${flushAttempts.join(" | ")}`,
+    async () => {
+      const { compose: currentCompose } = await collectOwned();
+      const currentMend = currentCompose.find(
+        (item) => item.Config.Labels["com.docker.compose.service"] === "mend",
+      );
+      check(
+        currentMend && containers.has(currentMend.Id),
+        "Flush evidence requires the owned Mend container",
+      );
+      const text = await docker(["logs", "--since", launchStarted, currentMend.Id]);
+      flushAttempts = flushAttemptEvidence(text, session.id);
+      return flushReportEvidence(text, session.id);
+    },
+  );
   console.log(
     `OBSERVED capture flush · completed · observed for the session: head ${flush.headN}, registered ${flush.registered}, pending ${flush.pending}`,
   );
