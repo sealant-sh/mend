@@ -1,5 +1,32 @@
 # @sealant/mend
 
+## 0.27.4
+
+### Patch Changes
+
+- 5ece5a6: The capture store's byte quota is checked before bytes land, and is sized for captured
+  dependency trees. `upload.urls` refuses a batch whose declared sizes would take the session past
+  its quota with 413 `{reason: "byte-quota", limit, used, requested}` before any URL is minted; a
+  key is priced once (reserved at its declared size, settled at the size the bucket reports when a
+  register names it), so re-listed packs and retried batches cost nothing again. `capture.register`
+  keeps the check as the backstop for keys uploaded without a size and answers 409 with the same
+  body — a refusal of that capture, not a transport failure to retry. The floor rises from 512 MiB
+  to 8 GiB per session (`MEND_CAPTURE_BYTE_QUOTA_FLOOR`; chart `captureStore.byteQuotaFloorBytes`),
+  above which the 4× footprint rule still applies: on the cluster the first bulk capture of a
+  Mend-size `node_modules` (775 MB, 134,103 files) was uploaded in full and then refused at
+  register, and the executor retried it every 5 s.
+- 1467699: The bundle pins Sealant platform 0.31.2 by digest and the SDK moves to 0.31.2; the
+  workspace image carries sealantd 0.15.2. A capture-mode session's flush survives load: the
+  daemon's orphan reaper was reaping the capture engine's own `git` children, so `capture.flush` was
+  refused with `No child process` for 4% of flushes on a quiet machine and a third of them under an
+  orphan storm — the failure that took down Mend's own v0.27.3 packaged acceptance on amd64. A
+  capture the control plane refuses on the byte quota is now terminal: the shipper acks the 413 and
+  stages over it, where it used to re-attempt the same register every five seconds for the life of
+  the session. On Kubernetes a workspace pod's exit is observed from the runtime, so a dead executor
+  is seen in seconds instead of reading `ready`, and `stop` on a pod that is already gone returns at
+  once — the cluster proof spent most of its 122 s to declare an executor lost inside that wait.
+  MicroVM launch material is published whole.
+
 ## 0.27.3
 
 ### Patch Changes
