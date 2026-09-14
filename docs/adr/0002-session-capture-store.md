@@ -197,9 +197,12 @@ call, never part of the token. Per route:
 - `plan.get`: the head manifest plus GET URLs for materialise.
 - `upload.urls`: PUT URLs for a key list, minted only under the caller's epoch prefix, only after
   the lease predicate (`epoch = $epoch and expires_at > now()`) passes, **15 min** TTL, within the
-  session's quotas (bytes: 4× the project's compressed footprint, priced at register; requests: 600
-  `upload.urls` calls per hour of at most 1,000 keys each — amended 2026-09-14, decision 25; before
-  it, 2,000 presigned URLs per hour).
+  session's quotas (bytes: `max(8 GiB, 4× the project's compressed footprint)`, priced once per
+  object key — a sized batch past it is refused here with 413
+  `{reason: "byte-quota", limit, used, requested}` before any URL is minted, and `capture.register`
+  backstops what landed unsized with 409 of the same body — amended 2026-09-14, decision 27;
+  requests: 600 `upload.urls` calls per hour of at most 1,000 keys each — amended 2026-09-14,
+  decision 25; before it, 2,000 presigned URLs per hour).
 - `capture.register`: the CAS; 409 on a stale epoch or a wrong parent; a register that finds the
   chain already at `n` with the same capture id is a lost ack, answered as success.
 - `change.summary`: after a `checkpoint` register returns; accepted only against the chain head.
@@ -467,3 +470,19 @@ Mend-side details the decision record left open, decided in this ADR:
     section is `index-pack --verify` plus a connectivity walk of the refs it names, recorded in
     `captures.git_fsck` for `checkpoint|turn|suspend|final` at register and for `auto` at the first
     plan that would restore it; the executor's `fsck` claim is never recorded as verified.
+27. (2026-09-14) The byte quota is enforced at `upload.urls`, before a URL is minted, from the sizes
+    the call declares: a batch that would take the session past
+    `max(MEND_CAPTURE_BYTE_QUOTA_FLOOR = 8 GiB, 4× the project's compressed footprint)` is refused
+    whole with 413 `{reason: "byte-quota", limit, used, requested}`, so refused bytes never land. A
+    key is priced once — reserved at its declared size, replaced by the size the bucket reports when
+    a register names it — so a manifest re-listing an epoch's packs and a retry of a batch cost
+    nothing again, and the count grows only with new objects. `capture.register` keeps the check as
+    the backstop for keys the daemon sends no size for (its single PUTs) and answers 409 with the
+    same body, a refusal of that capture rather than a transport failure. The 512 MiB floor before
+    this contradicted decision 2: the first bulk capture of Mend's own `node_modules` is 775 MB
+    across 134,103 files (cluster, 2026-09-14), which the executor uploaded in full before a
+    register-time 413 it then retried every 5 s. sealantd today classifies the 409 as a conflict and
+    the 413 as a protocol error — both stop the shipping pass, neither drops the entry, so the
+    worker re-attempts it on every tick (`PLATFORM-FEEDBACK.md` 2026-09-14). Bytes that landed
+    before a register refusal are off-chain under a live epoch; the retention pass sweeps them once
+    that epoch is fenced by a later claim, not before.

@@ -30,9 +30,10 @@ import { CaptureGitVerifier } from "./capture-verify.ts";
  * beyond what the request says about itself.
  *
  * The wire shape mirrors sealantd's `crates/sealant-capture/src/registrar.rs` (snake_case
- * fields; a 409 body carries `reason` and, where it helps the executor decide, `live_epoch` or
- * the head it collided with). The manifest and the summary travel over this channel; bulk bytes
- * never do — they go straight to the bucket through presigned URLs minted here.
+ * fields; a 409 body carries `reason` and, where it helps the executor decide, `live_epoch`,
+ * the head it collided with, or the byte quota's `limit`/`used`/`requested`). The manifest and
+ * the summary travel over this channel; bulk bytes never do — they go straight to the bucket
+ * through presigned URLs minted here.
  */
 
 // ─── Wire types ─────────────────────────────────────────────────────────────
@@ -131,7 +132,12 @@ export const HeartbeatRequest = Schema.Struct({
 });
 export type HeartbeatRequest = typeof HeartbeatRequest.Type;
 
-/** Refusal reasons; the executor pauses on every 409 and never kills. */
+/**
+ * Refusal reasons; the executor pauses on every 409 and never kills. `quota-exceeded` is the
+ * request quota (429: calls per hour, a retry later can pass); `byte-quota` is the byte quota
+ * (413 on `upload.urls` before any URL is minted, 409 on `capture.register` as the backstop),
+ * which no retry of the same bytes can pass — the body carries `limit`, `used` and `requested`.
+ */
 export const CaptureRefusalReason = Schema.Literals([
   "stale-epoch",
   "wrong-parent",
@@ -143,6 +149,7 @@ export const CaptureRefusalReason = Schema.Literals([
   "capture-id-mismatch",
   "bad-request",
   "quota-exceeded",
+  "byte-quota",
   "exists",
 ]);
 export type CaptureRefusalReason = typeof CaptureRefusalReason.Type;
@@ -159,6 +166,10 @@ export class CaptureRouteError extends Schema.TaggedErrorClass<CaptureRouteError
     missing: Schema.optional(Schema.Array(Schema.String)),
     /** `exists`: the key whose bytes are already there. */
     key: Schema.optional(Schema.String),
+    /** `byte-quota`: the session's budget, what it has priced so far, and what this call asked for — bytes. */
+    limit: Schema.optional(Schema.Int),
+    used: Schema.optional(Schema.Int),
+    requested: Schema.optional(Schema.Int),
   },
 ) {}
 
@@ -199,13 +210,24 @@ export const PRESIGN_TTL_SECONDS = 15 * 60;
  * content-addressed dir objects and packs, tiny and many — the first bulk capture of a
  * Mend-size repository is 20,495 dir objects for 134,741 files (observed 2026-09-14), which
  * the daemon ships in batches of 500 keys per call. Counting keys, as the 2,000-URL quota did,
- * only ever punished a big tree; what a session can write is bounded by bytes at register.
+ * only ever punished a big tree; what a session can write is bounded by bytes, below.
  */
 export const UPLOAD_CALLS_PER_HOUR = 600;
 export const UPLOAD_KEYS_PER_CALL = 1_000;
-/** Byte quota multiplier over the project's compressed footprint, with a floor. */
+/**
+ * Byte quota: `max(floor, 4× the project's compressed footprint)` per session, priced once per
+ * object key. `upload.urls` is the enforcement point — a batch whose declared sizes would take
+ * the session over is refused with 413 `byte-quota` before any URL is minted, so refused bytes
+ * never land; `capture.register` is the backstop for what did land (keys the daemon sends no
+ * size for), refusing with 409 `byte-quota`. A key is priced when first reserved or first
+ * registered and never again: a later manifest lists every pack of the epoch, and unchanged
+ * dir objects are not re-uploaded, so the count is naturally incremental. The floor is sized
+ * for decision 2 (dependency trees are captured): a Mend-size `node_modules` is 775 MB across
+ * 134,103 files (observed 2026-09-14, on the 512 MiB floor it replaced), and a session installs
+ * more than once. `MEND_CAPTURE_BYTE_QUOTA_FLOOR` overrides the floor.
+ */
 export const BYTE_QUOTA_MULTIPLIER = 4;
-export const BYTE_QUOTA_FLOOR = 512 * 1024 * 1024;
+export const BYTE_QUOTA_FLOOR = 8 * 1024 * 1024 * 1024;
 /** Heartbeat expiry the executor is told (ADR-0002: heartbeat every 10 s against 30 s). */
 export const LEASE_EXPIRES_IN_SECS = 30;
 /**
@@ -226,9 +248,10 @@ const S3_MIN_PART_BYTES = 5 * 1024 * 1024;
 
 /**
  * How `upload.urls` plans an upload — single PUT below the threshold, parts of `partSizeBytes`
- * above it — and how many calls a session may make per rolling hour, of how many keys each. A
- * test provides small numbers against the directory store; production reads the environment
- * for the sizes and the constants for the request quota.
+ * above it — how many calls a session may make per rolling hour, of how many keys each, and
+ * the floor of the session's byte quota. A test provides small numbers against the directory
+ * store; production reads the environment for the sizes and the floor and the constants for
+ * the request quota.
  */
 export class CaptureUploadPolicy extends Context.Service<
   CaptureUploadPolicy,
@@ -237,6 +260,8 @@ export class CaptureUploadPolicy extends Context.Service<
     readonly partSizeBytes: number;
     readonly callsPerHour: number;
     readonly keysPerCall: number;
+    /** The byte quota is `max(byteQuotaFloorBytes, BYTE_QUOTA_MULTIPLIER × footprint)`. */
+    readonly byteQuotaFloorBytes: number;
   }
 >()("@mend/sessions/CaptureUploadPolicy") {}
 
@@ -247,6 +272,7 @@ export const CaptureUploadPolicyDefault: Layer.Layer<CaptureUploadPolicy> = Laye
     partSizeBytes: MULTIPART_PART_SIZE_BYTES,
     callsPerHour: UPLOAD_CALLS_PER_HOUR,
     keysPerCall: UPLOAD_KEYS_PER_CALL,
+    byteQuotaFloorBytes: BYTE_QUOTA_FLOOR,
   },
 );
 
@@ -257,6 +283,7 @@ export class CaptureUploadPolicyError extends Error {
 export interface CaptureUploadPolicyEnvLike {
   readonly MEND_CAPTURE_MULTIPART_THRESHOLD?: string | undefined;
   readonly MEND_CAPTURE_MULTIPART_PART_SIZE?: string | undefined;
+  readonly MEND_CAPTURE_BYTE_QUOTA_FLOOR?: string | undefined;
 }
 
 const positiveBytes = (name: string, raw: string | undefined, fallback: number): number => {
@@ -272,8 +299,9 @@ const positiveBytes = (name: string, raw: string | undefined, fallback: number):
 };
 
 /**
- * `MEND_CAPTURE_MULTIPART_THRESHOLD` (bytes, default 16 MiB) and
- * `MEND_CAPTURE_MULTIPART_PART_SIZE` (bytes, default 16 MiB, at least 5 MiB for S3 and R2).
+ * `MEND_CAPTURE_MULTIPART_THRESHOLD` (bytes, default 16 MiB),
+ * `MEND_CAPTURE_MULTIPART_PART_SIZE` (bytes, default 16 MiB, at least 5 MiB for S3 and R2) and
+ * `MEND_CAPTURE_BYTE_QUOTA_FLOOR` (bytes, default 8 GiB).
  */
 export const resolveCaptureUploadPolicy = (
   env: CaptureUploadPolicyEnvLike,
@@ -297,6 +325,11 @@ export const resolveCaptureUploadPolicy = (
     partSizeBytes,
     callsPerHour: UPLOAD_CALLS_PER_HOUR,
     keysPerCall: UPLOAD_KEYS_PER_CALL,
+    byteQuotaFloorBytes: positiveBytes(
+      "MEND_CAPTURE_BYTE_QUOTA_FLOOR",
+      env.MEND_CAPTURE_BYTE_QUOTA_FLOOR,
+      BYTE_QUOTA_FLOOR,
+    ),
   };
 };
 
@@ -364,6 +397,13 @@ export class CaptureChannel extends Context.Service<
 
 const bad = (message: string) =>
   new CaptureRouteError({ status: 400, reason: "bad-request", message });
+
+/** Bytes priced in a ledger (key → bytes). */
+const sumOf = (ledger: ReadonlyMap<string, number>): number => {
+  let total = 0;
+  for (const bytes of ledger.values()) total += bytes;
+  return total;
+};
 
 /** The head as this executor may restore it: its bulk section only for its own platform. */
 export const planForPlatform = (
@@ -439,7 +479,20 @@ export const CaptureChannelLive: Layer.Layer<
 
     /** Per-session rolling counters; a Mend restart forgets them, which only ever relaxes. */
     const urlLog = new Map<string, Array<number>>();
-    const bytesUsed = new Map<string, number>();
+    /**
+     * The byte ledger, per session: object key → bytes priced for it, once. `upload.urls`
+     * reserves a sized key at its declared size; `capture.register` prices every pack under the
+     * caller's epoch at the size the bucket reports, replacing a reservation. A key never
+     * counts twice, whatever the manifests that list it.
+     */
+    const ledgers = new Map<string, Map<string, number>>();
+    const ledgerOf = (executorId: string): Map<string, number> => {
+      const found = ledgers.get(executorId);
+      if (found !== undefined) return found;
+      const fresh = new Map<string, number>();
+      ledgers.set(executorId, fresh);
+      return fresh;
+    };
 
     const standbyApiFor = (scope: StandbyScope): SessionCaptureApi => {
       const notClaimed = <A>(): Effect.Effect<A, CaptureRouteError> =>
@@ -505,9 +558,19 @@ export const CaptureChannelLive: Layer.Layer<
         key.startsWith(`captures/${worktreeId}/${epoch}/`);
       const underOwnWorktree = (key: string) => key.startsWith(`captures/${worktreeId}/`);
       const byteBudget = Math.max(
-        BYTE_QUOTA_FLOOR,
+        policy.byteQuotaFloorBytes,
         BYTE_QUOTA_MULTIPLIER * Math.max(0, scope.footprintBytes),
       );
+      const ledger = ledgerOf(scope.executorId);
+      const overByteQuota = (status: 409 | 413, used: number, requested: number) =>
+        new CaptureRouteError({
+          status,
+          reason: "byte-quota",
+          message: `byte quota: ${byteBudget} bytes per session (${used} priced, ${requested} more asked)`,
+          limit: byteBudget,
+          used,
+          requested,
+        });
       /** The lease predicate: live and under the caller's epoch, else the 409 the caller needs. */
       const requireLease = (epoch: number) =>
         Effect.gen(function* () {
@@ -709,7 +772,7 @@ export const CaptureChannelLive: Layer.Layer<
         yield* requireLease(input.epoch);
         // The request quota bounds calls, not keys: a call may carry up to `keysPerCall` keys
         // (the daemon batches 500), and a session gets `callsPerHour` calls. Bytes are bounded
-        // at register, where the packs a capture adds are priced against the footprint.
+        // below, before any URL is minted, by the sizes the call declares.
         if (input.keys.length > policy.keysPerCall) {
           return yield* bad(
             `${input.keys.length} keys in one call; the cap is ${policy.keysPerCall} per upload.urls call`,
@@ -746,6 +809,22 @@ export const CaptureChannelLive: Layer.Layer<
           }
           plans.push({ key, parts });
         }
+        // The byte quota, enforced here: every sized key not yet priced is charged at its
+        // declared size, and a batch that would take the session over is refused whole — no
+        // URL minted, no upload opened, so the refused bytes never reach the bucket. A key
+        // priced before (an earlier batch, a retry, a register) costs nothing again; a key
+        // without a size is priced at register, when the bucket reports what landed.
+        const unpriced = new Map<string, number>();
+        for (const [key, size] of wanted) {
+          if (size === null || ledger.has(key)) continue;
+          unpriced.set(key, size);
+        }
+        const requested = sumOf(unpriced);
+        const used = sumOf(ledger);
+        if (requested > 0 && used + requested > byteBudget) {
+          return yield* overByteQuota(413, used, requested);
+        }
+        for (const [key, size] of unpriced) ledger.set(key, size);
         const urls: Record<string, string> = {};
         const multipart: Record<string, MultipartPlan> = {};
         for (const plan of plans) {
@@ -934,7 +1013,9 @@ export const CaptureChannelLive: Layer.Layer<
           );
         }
         // HEAD every pack the manifest names (across epochs) before the CAS, and price the
-        // ones new to this epoch against the session's byte budget.
+        // ones under this epoch against the session's byte budget — once per key, at the size
+        // the bucket reports (a reservation `upload.urls` took at the declared size is replaced;
+        // a pack priced by an earlier register of this epoch costs nothing again).
         const packKeys: Array<{ readonly key: string; readonly cls: PackRecord["class"] }> = [
           ...manifest.sections.git.packs.flatMap((key) => [
             { key, cls: "git" as const },
@@ -945,6 +1026,7 @@ export const CaptureChannelLive: Layer.Layer<
         ];
         const missing: Array<string> = [];
         const records: Array<PackRecord> = [];
+        const priced = new Map(ledger);
         let newBytes = 0;
         for (const { key, cls } of packKeys) {
           const head = yield* blobs.head(key).pipe(Effect.catch(storeError("HEAD on a pack", key)));
@@ -953,7 +1035,10 @@ export const CaptureChannelLive: Layer.Layer<
             continue;
           }
           if (key.endsWith(".idx")) continue;
-          if (underOwnPrefix(key, input.epoch)) newBytes += head.size;
+          if (underOwnPrefix(key, input.epoch)) {
+            if (!ledger.has(key)) newBytes += head.size;
+            priced.set(key, head.size);
+          }
           records.push({
             key,
             class: cls,
@@ -975,13 +1060,13 @@ export const CaptureChannelLive: Layer.Layer<
           });
         }
         const already = yield* repo.captureById(input.capture_id);
-        const used = bytesUsed.get(scope.executorId) ?? 0;
-        if (already === null && used + newBytes > byteBudget) {
-          return yield* new CaptureRouteError({
-            status: 413,
-            reason: "quota-exceeded",
-            message: `byte quota: ${byteBudget} bytes per session (${used} used)`,
-          });
+        // The backstop for bytes that landed unpriced (keys the daemon sent no size for): a
+        // 409 the executor's registrar reads as a refusal of THIS capture, not a transport
+        // failure to retry — the bytes are in the bucket and the same register can never pass.
+        // What landed is off-chain and retires with its epoch prefix (`capture-retention.ts`).
+        const used = sumOf(ledger);
+        if (already === null && sumOf(priced) > byteBudget) {
+          return yield* overByteQuota(409, used, newBytes);
         }
         // `git_fsck` records Mend's observation, never the executor's claim: the kinds a
         // pickup or a review would restore are verified before the CAS (index-pack --verify
@@ -1023,7 +1108,7 @@ export const CaptureChannelLive: Layer.Layer<
           })
           .pipe(Effect.catch((error) => conflictToRoute(error).pipe(Effect.flatMap(Effect.fail))));
         if (!outcome.lostAck) {
-          bytesUsed.set(scope.executorId, used + newBytes);
+          for (const [key, bytes] of priced) ledger.set(key, bytes);
           yield* repo.recordPacks(records);
           const row = yield* repo.captureById(input.capture_id);
           if (row !== null) publish(row);
@@ -1167,6 +1252,9 @@ export const dispatchCaptureRoute = (
                     : { head_capture_id: error.head_capture_id }),
                   ...(error.missing === undefined ? {} : { missing: error.missing }),
                   ...(error.key === undefined ? {} : { key: error.key }),
+                  ...(error.limit === undefined ? {} : { limit: error.limit }),
+                  ...(error.used === undefined ? {} : { used: error.used }),
+                  ...(error.requested === undefined ? {} : { requested: error.requested }),
                 }),
               ),
             ),

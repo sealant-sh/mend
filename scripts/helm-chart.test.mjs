@@ -78,6 +78,7 @@ test("an ObjectBucketClaim's outputs become the bucket URL and credentials", { s
   );
   assert.equal(env.get("MEND_BLOB_STORE_PUBLIC_URL"), "http://$(BUCKET_HOST):$(BUCKET_PORT)");
   assert.equal(env.get("MEND_CAPTURE_MULTIPART_THRESHOLD"), undefined);
+  assert.equal(env.get("MEND_CAPTURE_BYTE_QUOTA_FLOOR"), undefined);
   // The OBC's outputs are read in order: `$(VAR)` expands only from earlier entries.
   const order = [...env.keys()];
   assert.ok(order.indexOf("BUCKET_NAME") < order.indexOf("MEND_BLOB_STORE"));
@@ -120,7 +121,7 @@ test("the chart refuses to render without an explicit store choice", { skip }, (
 });
 
 test(
-  "a plain bucket URL renders with its credentials secret and the multipart sizes",
+  "a plain bucket URL renders with its credentials secret, the multipart sizes and the byte quota floor",
   { skip },
   () => {
     const result = render("-f", path.join(chart, "ci/plain-url-values.yaml"));
@@ -136,6 +137,7 @@ test(
     );
     assert.equal(env.get("MEND_CAPTURE_MULTIPART_THRESHOLD"), "33554432");
     assert.equal(env.get("MEND_CAPTURE_MULTIPART_PART_SIZE"), "16777216");
+    assert.equal(env.get("MEND_CAPTURE_BYTE_QUOTA_FLOOR"), "17179869184");
     assert.equal(env.get("BUCKET_HOST"), undefined);
     // An existing claim is mounted and no PVC is rendered for it.
     assert.match(result.stdout, /persistentVolumeClaim: \{ claimName: mend-store \}/);
