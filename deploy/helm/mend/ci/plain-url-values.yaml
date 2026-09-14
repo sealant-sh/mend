@@ -6,6 +6,7 @@ captureStore:
     endpoint:
       namespace: ""
       port: 3900
+      podPort: 3900
       podSelector: { app.kubernetes.io/name: garage }
   multipart:
     thresholdBytes: "33554432"

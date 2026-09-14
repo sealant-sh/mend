@@ -61,8 +61,9 @@ spec:
   egress:
     # The capture store's bucket endpoint (RGW in rook-ceph, or Garage beside Mend), named
     # explicitly so the API keeps writing captures when the catch-all below is narrowed by an
-    # operator policy. Workspace Pods reach the same endpoint under the SEALANT chart's
-    # workspace policy (NOTES.txt).
+    # operator policy. A NetworkPolicy matches the POD port (after the Service's DNAT): Rook's
+    # RGW container listens on 8080 behind a Service on 80. Workspace Pods reach the same
+    # endpoint under the SEALANT chart's workspace policy (NOTES.txt).
     {{- $endpoint := .Values.captureStore.blobStore.endpoint }}
     - to:
         - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $endpoint.namespace | default .Release.Namespace }} } }
@@ -70,7 +71,7 @@ spec:
           podSelector:
             matchLabels: {{ toYaml . | nindent 14 }}
           {{- end }}
-      ports: [{ protocol: TCP, port: {{ $endpoint.port }} }]
+      ports: [{ protocol: TCP, port: {{ $endpoint.podPort }} }]
     - {}
 ---
 # Postgres accepts only the API tier.

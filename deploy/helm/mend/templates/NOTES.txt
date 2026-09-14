@@ -13,7 +13,9 @@ Nothing is exposed publicly. Port-forward the web tier:
 Pair the Sealant chart. Workspace Pods ({{ .Values.networkPolicies.workspaceNamespace }}) reach the
 session channel and PUT/GET captures against the bucket directly; both are governed by the Sealant
 chart's workspace NetworkPolicy, so its values must allow them (no claim mapping — nothing from the
-store is mounted into a workspace):
+store is mounted into a workspace). The bucket entry names the POD port (Rook's RGW container
+listens on {{ .Values.captureStore.blobStore.endpoint.podPort }} behind its Service on {{ .Values.captureStore.blobStore.endpoint.port }}); with an empty
+selector below, narrow it to the RGW Pods: { app: rook-ceph-rgw, rook_object_store: <store> }.
   networkPolicies.workspaceEgressAllow:
     - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Release.Namespace }} } }
       podSelector: { matchLabels: { app.kubernetes.io/name: mend } }
@@ -23,5 +25,5 @@ store is mounted into a workspace):
       podSelector:
         matchLabels: {{ toYaml . | nindent 10 }}
       {{- end }}
-      port: {{ .Values.captureStore.blobStore.endpoint.port }}
+      port: {{ .Values.captureStore.blobStore.endpoint.podPort }}
   workspaces.volumeMappings: []   # the RWX store mapping of chart 0.1.x is retired

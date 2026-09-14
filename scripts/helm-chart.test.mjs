@@ -82,11 +82,41 @@ test("an ObjectBucketClaim's outputs become the bucket URL and credentials", { s
   const order = [...env.keys()];
   assert.ok(order.indexOf("BUCKET_NAME") < order.indexOf("MEND_BLOB_STORE"));
   assert.ok(order.indexOf("BUCKET_PORT") < order.indexOf("MEND_BLOB_STORE_PUBLIC_URL"));
-  // The API egress rule names the RGW namespace on the gateway port.
+  // The API egress rule names the RGW namespace on the POD port (8080 behind the Service's 80):
+  // a NetworkPolicy matches after the Service's DNAT.
   assert.match(
     result.stdout,
-    /namespaceSelector: \{ matchLabels: \{ kubernetes\.io\/metadata\.name: rook-ceph \} \}\n\s+ports: \[\{ protocol: TCP, port: 80 \}\]/,
+    /namespaceSelector: \{ matchLabels: \{ kubernetes\.io\/metadata\.name: rook-ceph \} \}\n\s+ports: \[\{ protocol: TCP, port: 8080 \}\]/,
   );
+  assert.ok(
+    !/ports: \[\{ protocol: TCP, port: 80 \}\]/.test(result.stdout),
+    "no rule on the Service port",
+  );
+});
+
+test("the chart refuses to render without an explicit store choice", { skip }, () => {
+  // An upgrade from chart 0.1.x must keep the old claim mounted: legacy worktrees on it are
+  // backfilled at first launch. Defaulting to a new empty claim would silently lose them.
+  const result = render(
+    "-f",
+    path.join(chart, "ci/obc-values.yaml"),
+    "--set",
+    "store.create.enabled=false",
+  );
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /store: choose explicitly/);
+  assert.match(result.stderr, /store\.existingClaim=<claim>/);
+  const upgrade = render(
+    "-f",
+    path.join(chart, "ci/obc-values.yaml"),
+    "--set",
+    "store.create.enabled=false",
+    "--set",
+    "store.existingClaim=mend-store",
+  );
+  assert.equal(upgrade.status, 0, upgrade.stderr);
+  assert.match(upgrade.stdout, /persistentVolumeClaim: \{ claimName: mend-store \}/);
+  assert.ok(!upgrade.stdout.includes("kind: PersistentVolumeClaim\nmetadata:\n  name: mend-store"));
 });
 
 test(
@@ -110,7 +140,7 @@ test(
     // An existing claim is mounted and no PVC is rendered for it.
     assert.match(result.stdout, /persistentVolumeClaim: \{ claimName: mend-store \}/);
     assert.ok(!result.stdout.includes("name: mend-store\n  labels"), "no chart-owned store PVC");
-    // Garage beside Mend: the egress rule targets the release namespace on 3900.
+    // Garage beside Mend: the egress rule targets the release namespace on the pod port 3900.
     assert.match(
       result.stdout,
       /namespaceSelector: \{ matchLabels: \{ kubernetes\.io\/metadata\.name: mend \} \}\n\s+podSelector:\n\s+matchLabels:\s*\n\s+app\.kubernetes\.io\/name: garage\n\s+ports: \[\{ protocol: TCP, port: 3900 \}\]/,
@@ -120,7 +150,10 @@ test(
 
 test("a plain URL without endpoint= needs an explicit public URL", { skip }, () => {
   const values = ["--set", "captureStore.blobStore.url=s3://mend?region=eu-west-1"];
-  const values2 = ["--set", "captureStore.blobStore.credentialsSecret=aws"];
+  const values2 = [
+    "--set",
+    "captureStore.blobStore.credentialsSecret=aws,store.create.enabled=true",
+  ];
   const refused = render(...values, ...values2);
   assert.notEqual(refused.status, 0);
   assert.match(refused.stderr, /publicUrl is required/);

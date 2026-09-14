@@ -17,11 +17,14 @@ secrets:
 # below and workspace Pods mount nothing from Mend — so a ReadWriteOnce claim on the cluster's
 # default class is enough. Nothing here is mirrored into the workspace namespace.
 store:
-  # A claim you created (ReadWriteOnce or wider; an old RWX `mend-store` claim still works while
-  # you migrate — docs/KUBERNETES.md "Upgrade"). Non-empty wins over `create`.
+  # Choose ONE explicitly; the chart refuses to render with neither. A fresh install sets
+  # `create.enabled: true`. An UPGRADE from chart 0.1.x sets `existingClaim: mend-store`: the old
+  # claim holds the bare repositories, the machine key and every legacy worktree, which is
+  # backfilled into the capture store at its first launch by reading the mounted claim — a new
+  # empty claim would silently lose that (docs/KUBERNETES.md "Upgrade"). RWX claims mount fine.
   existingClaim: ""
   create:
-    enabled: true
+    enabled: false
     storageClassName: "" # empty = the cluster default (e.g. ceph-block)
     size: 50Gi
   mountPath: /var/lib/mend/store
@@ -58,12 +61,17 @@ captureStore:
     publicUrl: ""
     # Where the endpoint's Pods live, for the API tier's egress rule (networkpolicies.yaml).
     # Empty namespace = the release namespace (Garage deployed beside Mend). An empty selector
-    # allows the whole namespace on that port; narrow it to the RGW Pods of a CephObjectStore
+    # allows the whole namespace on the pod port; narrow it to the RGW Pods of a CephObjectStore
     # named `mend` with { app: rook-ceph-rgw, rook_object_store: mend } (Helm merges maps, so
     # the default is empty rather than a Rook-shaped one you would have to null out).
+    # Two ports: `port` is the Service port the URL names (BUCKET_PORT, or `endpoint=` in
+    # `url`; informational here, nothing renders it); `podPort` is what the RGW CONTAINER
+    # listens on — a NetworkPolicy matches the pod port after the Service's DNAT, and Rook's
+    # gateway Service maps 80 → 8080 (rgwPortInternalPort). Garage listens on 3900 for both.
     endpoint:
       namespace: rook-ceph
       port: 80
+      podPort: 8080
       podSelector: {}
   # Packs at or above the threshold go up as multipart uploads; S3 and R2 refuse parts under
   # 5 MiB. Empty = the defaults (16 MiB / 16 MiB). Plain integers, bytes.

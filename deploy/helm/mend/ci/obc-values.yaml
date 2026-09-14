@@ -4,3 +4,6 @@ captureStore:
     fromObjectBucketClaim:
       configMap: mend-bucket
       secret: mend-bucket
+store:
+  create:
+    enabled: true

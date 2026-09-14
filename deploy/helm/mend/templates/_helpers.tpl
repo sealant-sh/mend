@@ -22,7 +22,7 @@ app.kubernetes.io/component: {{ .name }}
 {{- define "mend.storeClaim" -}}
 {{- if .Values.store.existingClaim -}}{{ .Values.store.existingClaim }}
 {{- else if .Values.store.create.enabled -}}{{ .Release.Name }}-store
-{{- else -}}{{ fail "set store.existingClaim or store.create.enabled=true" }}
+{{- else -}}{{ fail "store: choose explicitly — store.existingClaim=<claim> (an upgrade from chart 0.1.x: mend-store, so legacy worktrees on it are backfilled at first launch) or store.create.enabled=true (a fresh install)" }}
 {{- end -}}
 {{- end -}}
 {{- /*
