@@ -23,9 +23,10 @@ spec:
   egress:
     - {}
 ---
-# API tier: the web tier reaches 3101; Sealant workspace Pods reach the session channel; client
-# networks may also reach 3101 directly (CLI pointed at the API instead of the web proxy).
-# Egress: DNS, Postgres, the Sealant API, and the internet (git remotes, inference).
+# API tier: the web tier reaches 3101; Sealant workspace Pods reach the session channel (and its
+# capture routes); client networks may also reach 3101 directly (CLI pointed at the API instead
+# of the web proxy). Egress: the bucket endpoint by name, plus the catch-all — DNS, Postgres, the
+# Sealant API, and the internet (git remotes, inference).
 apiVersion: networking.k8s.io/v1
 kind: NetworkPolicy
 metadata:
@@ -58,6 +59,19 @@ spec:
         - { protocol: TCP, port: {{ .Values.serviceHost.portMin }}, endPort: {{ .Values.serviceHost.portMax }} }
     {{- end }}
   egress:
+    # The capture store's bucket endpoint (RGW in rook-ceph, or Garage beside Mend), named
+    # explicitly so the API keeps writing captures when the catch-all below is narrowed by an
+    # operator policy. A NetworkPolicy matches the POD port (after the Service's DNAT): Rook's
+    # RGW container listens on 8080 behind a Service on 80. Workspace Pods reach the same
+    # endpoint under the SEALANT chart's workspace policy (NOTES.txt).
+    {{- $endpoint := .Values.captureStore.blobStore.endpoint }}
+    - to:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ $endpoint.namespace | default .Release.Namespace }} } }
+          {{- with $endpoint.podSelector }}
+          podSelector:
+            matchLabels: {{ toYaml . | nindent 14 }}
+          {{- end }}
+      ports: [{ protocol: TCP, port: {{ $endpoint.podPort }} }]
     - {}
 ---
 # Postgres accepts only the API tier.

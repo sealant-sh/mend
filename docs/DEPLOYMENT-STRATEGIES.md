@@ -87,16 +87,17 @@ Tier 1.
 **Capture store (ADR-0002, the store).** Object storage plus Postgres pointers hold the authority,
 the executor works on its own disk, and Mend reads the chain head through a runner. The dev stack
 (`compose.dev.yaml`) and the shipped bundle (`compose.yaml` → `deploy/docker/compose.v2.yaml`) run
-Garage for it; on Kubernetes the bucket is a Rook `CephObjectStore` RGW or Garage, on Cloudflare R2.
-The helm chart still renders the RWX `mend-store` claim for the deprecated co-located store —
-dropping it is a follow-up. Packs at or above 16 MiB go up as multipart uploads (`upload.urls` with
-`sizes`, then `upload.complete`; `MEND_CAPTURE_MULTIPART_THRESHOLD` / `_PART_SIZE`). An executor
-that dies between its part PUTs and the complete leaves an open upload whose parts are billed until
-aborted: Mend's hourly retention pass aborts every open upload under a fenced epoch and every one
-older than the URL TTL plus the grace (`MULTIPART_ORPHAN_MS`), and a real bucket should carry the
-matching lifecycle rule as a backstop for the hours Mend is down — `AbortIncompleteMultipartUpload`
-after 1 day on S3 (bucket lifecycle configuration), R2 (object lifecycle rules, "abort multipart
-uploads"), and Garage (bucket lifecycle, the same S3 rule shape).
+Garage for it; on Kubernetes the bucket is a Rook `CephObjectStore` RGW or Garage (the chart's
+`captureStore` values, `docs/KUBERNETES.md`), on Cloudflare R2. Chart 0.2.0 renders only the capture
+store: the API Pod's claim is `ReadWriteOnce` and nothing is mirrored into workspace Pods; the RWX
+`mend-store` claim of chart 0.1.x is retired. Packs at or above 16 MiB go up as multipart uploads
+(`upload.urls` with `sizes`, then `upload.complete`; `MEND_CAPTURE_MULTIPART_THRESHOLD` /
+`_PART_SIZE`). An executor that dies between its part PUTs and the complete leaves an open upload
+whose parts are billed until aborted: Mend's hourly retention pass aborts every open upload under a
+fenced epoch and every one older than the URL TTL plus the grace (`MULTIPART_ORPHAN_MS`), and a real
+bucket should carry the matching lifecycle rule as a backstop for the hours Mend is down —
+`AbortIncompleteMultipartUpload` after 1 day on S3 (bucket lifecycle configuration), R2 (object
+lifecycle rules, "abort multipart uploads"), and Garage (bucket lifecycle, the same S3 rule shape).
 
 **Correctness pre-work (done, sealant #197):** at-least-once delivery with more than one consumer
 required the build-job claim to be race-free and run-exec to be at-most-once. Those hold now

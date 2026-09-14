@@ -1,11 +1,13 @@
-{{- if .Values.store.create.enabled }}
+{{- if and .Values.store.create.enabled (not .Values.store.existingClaim) }}
+# The API Pod's store directory (bare repositories, runner cache, references, the machine key).
+# ReadWriteOnce: only the one API replica mounts it; sessions live in the capture store.
 apiVersion: v1
 kind: PersistentVolumeClaim
 metadata:
   name: {{ .Release.Name }}-store
   labels: {{ include "mend.labels" . | nindent 4 }}
 spec:
-  accessModes: [ReadWriteMany]
+  accessModes: [ReadWriteOnce]
   {{- with .Values.store.create.storageClassName }}
   storageClassName: {{ . }}
   {{- end }}
