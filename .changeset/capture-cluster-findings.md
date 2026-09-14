@@ -14,6 +14,10 @@ Capture mode, after the first cluster session on a Garage bucket:
   at the first plan that would restore it. A capture whose pack omits a tree it names is accepted
   and marked `failed`; `plan.get` answers the same head with the git section of the newest capture
   that verifies (ADR-0002 16), and reads come from that capture, stamped.
+- The `upload.urls` request quota counts calls, not presigned URLs: 600 calls per session per
+  rolling hour, at most 1,000 keys per call (the daemon batches 500). The old 2,000-URL quota
+  refused the first bulk capture of any repository with more than a couple of thousand dir objects;
+  bytes stay bounded at register (4× the project's footprint).
 - `review prep` logs a change git cannot read with git's command and stderr, the worktree and the
   chain head's verification state, instead of `Cause([Fail(GitError)])`; the passes are simply not
   queued.

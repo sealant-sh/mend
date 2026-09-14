@@ -131,7 +131,13 @@ describe("capture channel routes", () => {
       Layer.provide(blobs),
       // Small numbers so a multipart plan is exercised with bytes a test can afford.
       Layer.provide(
-        Layer.succeed(CaptureUploadPolicy, { multipartThresholdBytes: 64, partSizeBytes: 32 }),
+        Layer.succeed(CaptureUploadPolicy, {
+          multipartThresholdBytes: 64,
+          partSizeBytes: 32,
+          // Small too: the request quota is exercised below without an hour of calls.
+          callsPerHour: 16,
+          keysPerCall: 4,
+        }),
       ),
     ),
     registry,
@@ -441,15 +447,18 @@ describe("capture channel routes", () => {
       parts: two,
     });
     expect(unknown.status).toBe(500);
-    // Part URLs count against the hourly URL quota exactly like PUT URLs.
-    const tooMany = await post(address, "/upload.urls", token, {
+    // The request quota counts calls, not URLs: a 2,000-part plan is one call, answered whole
+    // (the old per-URL quota refused it at exactly this size).
+    const wide = keys2.pack("9".repeat(64));
+    const manyParts = await post(address, "/upload.urls", token, {
       worktree_id: WORKTREE,
       epoch: 2,
-      keys: [keys2.pack("9".repeat(64))],
-      sizes: { [keys2.pack("9".repeat(64))]: 32 * 2_000 },
+      keys: [wide],
+      sizes: { [wide]: 32 * 2_000 },
     });
-    expect(tooMany.status).toBe(429);
-    expect(tooMany.json["reason"]).toBe("quota-exceeded");
+    expect(manyParts.status).toBe(200);
+    const widePlan = (manyParts.json["multipart"] as Record<string, typeof plan>)[wide];
+    expect(widePlan?.part_urls).toHaveLength(2_000);
     expect(PRESIGN_TTL_SECONDS).toBe(15 * 60);
   });
 
@@ -728,5 +737,48 @@ describe("capture channel routes", () => {
     });
     expect(prefixComplete.status).toBe(400);
     expect(prefixComplete.json["message"]).toContain("one capture object");
+  });
+
+  it("the request quota bounds upload.urls calls, not keys: a call over the key cap is a bad request, and the hour's calls run out whatever each carried", async () => {
+    // The lease under epoch 3 from the previous test is still live.
+    const keys3 = captureKeys(WORKTREE, 3);
+    const key = (index: number) => keys3.tree(index.toString(16).padStart(64, "0"));
+    // Five keys against a cap of four: refused as a request shape, not counted.
+    const tooMany = await post(address, "/upload.urls", token, {
+      worktree_id: WORKTREE,
+      epoch: 3,
+      keys: [key(1), key(2), key(3), key(4), key(5)],
+    });
+    expect(tooMany.status).toBe(400);
+    expect(tooMany.json["message"]).toContain("the cap is 4 per upload.urls call");
+    // Every earlier test's successful call counted against the same session's 16; a
+    // four-key call costs exactly what a one-key call does. Run the hour out.
+    let minted = 0;
+    let refused: { status: number; json: Record<string, unknown> } | null = null;
+    for (let index = 0; index < 16 && refused === null; index += 1) {
+      const answer = await post(address, "/upload.urls", token, {
+        worktree_id: WORKTREE,
+        epoch: 3,
+        keys:
+          index % 2 === 0
+            ? [key(10 + index)]
+            : [key(20 + index), key(30 + index), key(40 + index), key(50 + index)],
+      });
+      if (answer.status === 200) minted += 1;
+      else refused = answer;
+    }
+    expect(minted).toBeGreaterThan(0);
+    expect(refused?.status).toBe(429);
+    expect(refused?.json["reason"]).toBe("quota-exceeded");
+    expect(refused?.json["message"]).toBe(
+      "request quota: 16 upload.urls calls per hour per session",
+    );
+    // A refused call is not counted, and stays refused: the window is calls, not attempts.
+    const again = await post(address, "/upload.urls", token, {
+      worktree_id: WORKTREE,
+      epoch: 3,
+      keys: [key(99)],
+    });
+    expect(again.status).toBe(429);
   });
 });

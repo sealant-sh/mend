@@ -193,8 +193,16 @@ export interface SessionCaptureApi {
 
 /** Presigned URL lifetime; compaction's 30 min grace derives from it (ADR-0015). */
 export const PRESIGN_TTL_SECONDS = 15 * 60;
-/** URL quota per session per rolling hour. */
-export const URL_QUOTA_PER_HOUR = 2_000;
+/**
+ * Request quota: `upload.urls` CALLS per session per rolling hour, and keys per call. Calls are
+ * what cost the registrar (a presign is a local signature; the bucket is never asked); keys are
+ * content-addressed dir objects and packs, tiny and many — the first bulk capture of a
+ * Mend-size repository is 20,495 dir objects for 134,741 files (observed 2026-09-14), which
+ * the daemon ships in batches of 500 keys per call. Counting keys, as the 2,000-URL quota did,
+ * only ever punished a big tree; what a session can write is bounded by bytes at register.
+ */
+export const UPLOAD_CALLS_PER_HOUR = 600;
+export const UPLOAD_KEYS_PER_CALL = 1_000;
 /** Byte quota multiplier over the project's compressed footprint, with a floor. */
 export const BYTE_QUOTA_MULTIPLIER = 4;
 export const BYTE_QUOTA_FLOOR = 512 * 1024 * 1024;
@@ -217,21 +225,29 @@ export const MULTIPART_MAX_PARTS = 10_000;
 const S3_MIN_PART_BYTES = 5 * 1024 * 1024;
 
 /**
- * How `upload.urls` plans an upload: single PUT below the threshold, parts of `partSizeBytes`
- * above it. A test provides small numbers against the directory store; production reads the
- * environment.
+ * How `upload.urls` plans an upload — single PUT below the threshold, parts of `partSizeBytes`
+ * above it — and how many calls a session may make per rolling hour, of how many keys each. A
+ * test provides small numbers against the directory store; production reads the environment
+ * for the sizes and the constants for the request quota.
  */
 export class CaptureUploadPolicy extends Context.Service<
   CaptureUploadPolicy,
   {
     readonly multipartThresholdBytes: number;
     readonly partSizeBytes: number;
+    readonly callsPerHour: number;
+    readonly keysPerCall: number;
   }
 >()("@mend/sessions/CaptureUploadPolicy") {}
 
 export const CaptureUploadPolicyDefault: Layer.Layer<CaptureUploadPolicy> = Layer.succeed(
   CaptureUploadPolicy,
-  { multipartThresholdBytes: MULTIPART_THRESHOLD_BYTES, partSizeBytes: MULTIPART_PART_SIZE_BYTES },
+  {
+    multipartThresholdBytes: MULTIPART_THRESHOLD_BYTES,
+    partSizeBytes: MULTIPART_PART_SIZE_BYTES,
+    callsPerHour: UPLOAD_CALLS_PER_HOUR,
+    keysPerCall: UPLOAD_KEYS_PER_CALL,
+  },
 );
 
 export class CaptureUploadPolicyError extends Error {
@@ -279,6 +295,8 @@ export const resolveCaptureUploadPolicy = (
       MULTIPART_THRESHOLD_BYTES,
     ),
     partSizeBytes,
+    callsPerHour: UPLOAD_CALLS_PER_HOUR,
+    keysPerCall: UPLOAD_KEYS_PER_CALL,
   };
 };
 
@@ -669,17 +687,17 @@ export const CaptureChannelLive: Layer.Layer<
         } satisfies PlanGetResponse;
       });
 
-      /** Count minted URLs against the rolling hour; false = over quota (nothing minted). */
-      const reserveUrls = (count: number): boolean => {
+      /** Count this call against the rolling hour; false = over quota (nothing minted, not counted). */
+      const reserveCall = (): boolean => {
         const now = Date.now();
         const window = (urlLog.get(scope.executorId) ?? []).filter(
           (at) => now - at < 60 * 60 * 1000,
         );
-        if (window.length + count > URL_QUOTA_PER_HOUR) {
+        if (window.length >= policy.callsPerHour) {
           urlLog.set(scope.executorId, window);
           return false;
         }
-        for (let index = 0; index < count; index += 1) window.push(now);
+        window.push(now);
         urlLog.set(scope.executorId, window);
         return true;
       };
@@ -689,6 +707,21 @@ export const CaptureChannelLive: Layer.Layer<
       ) {
         yield* requireWorktree(input.worktree_id);
         yield* requireLease(input.epoch);
+        // The request quota bounds calls, not keys: a call may carry up to `keysPerCall` keys
+        // (the daemon batches 500), and a session gets `callsPerHour` calls. Bytes are bounded
+        // at register, where the packs a capture adds are priced against the footprint.
+        if (input.keys.length > policy.keysPerCall) {
+          return yield* bad(
+            `${input.keys.length} keys in one call; the cap is ${policy.keysPerCall} per upload.urls call`,
+          );
+        }
+        if (!reserveCall()) {
+          return yield* new CaptureRouteError({
+            status: 429,
+            reason: "quota-exceeded",
+            message: `request quota: ${policy.callsPerHour} upload.urls calls per hour per session`,
+          });
+        }
         // Only under the caller's own epoch prefix, and only a key that names one capture
         // object; anything else is dropped, never minted — a prefix is not a key. A size is
         // only read for a key that is also listed; no size means a single PUT.
@@ -712,15 +745,6 @@ export const CaptureChannelLive: Layer.Layer<
             );
           }
           plans.push({ key, parts });
-        }
-        // Every URL counts, a part URL as much as a PUT URL.
-        const count = plans.reduce((sum, plan) => sum + Math.max(1, plan.parts), 0);
-        if (!reserveUrls(count)) {
-          return yield* new CaptureRouteError({
-            status: 429,
-            reason: "quota-exceeded",
-            message: `URL quota: ${URL_QUOTA_PER_HOUR} per hour per session`,
-          });
         }
         const urls: Record<string, string> = {};
         const multipart: Record<string, MultipartPlan> = {};
