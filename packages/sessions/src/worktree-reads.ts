@@ -219,12 +219,34 @@ export const ensureCaptureCache = Effect.fn("ensureCaptureCache")(function* (
   const runner = yield* GitOpsRunner;
   const refs = yield* StoreRefsRepo;
   const chain = yield* repo.headOf(worktreeId);
-  const head = chain?.head ?? null;
-  if (head === null) {
+  const chainHead = chain?.head ?? null;
+  if (chainHead === null) {
     return yield* new WorktreeNotCapturedError({
       worktreeId,
       message: "the worktree has no registered capture yet",
     });
+  }
+  // A head whose git section failed verification (a pack that omits a tree it names) is not
+  // read: the newest capture below it that verified is, and the stamp says so. An unverified
+  // head is read as is — the failure, if any, surfaces with git's own words.
+  const head =
+    chainHead.gitFsck === "failed"
+      ? ((yield* repo.listChain(worktreeId))
+          .filter((row) => row.n < chainHead.n && row.gitFsck === "verified")
+          .at(-1) ?? chainHead)
+      : chainHead;
+  if (head.id !== chainHead.id) {
+    yield* Effect.logInfo(
+      "capture reads: the head's git section failed verification · reading the newest verified capture",
+    ).pipe(
+      Effect.annotateLogs({
+        worktreeId,
+        headN: chainHead.n,
+        headCaptureId: chainHead.id,
+        readN: head.n,
+        readCaptureId: head.id,
+      }),
+    );
   }
   const bytes = yield* blobs
     .get(head.manifestKey)

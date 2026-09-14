@@ -93,6 +93,7 @@ import {
 import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
   CaptureChannelLive,
+  CaptureGitVerifierOff,
   CaptureRuntimeLive,
   CaptureRuntimeOff,
   CaptureUploadPolicyDefault,
@@ -1682,6 +1683,7 @@ const withEngine = <A, E>(
             Layer.provide(blobsLayer),
           ),
           CaptureChannelLive.pipe(
+            Layer.provide(CaptureGitVerifierOff),
             Layer.provide(options.captured.layer),
             Layer.provide(blobsLayer),
             Layer.provide(CaptureUploadPolicyDefault),
@@ -5021,6 +5023,16 @@ describe("SessionEngine capture mode", () => {
           expect(run?.summary).toContain("executor lost · lease expired");
           expect(settled?.summary).toContain("executor lost · lease expired");
           expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+          // What distinguishes this from a planned stop is what was observed: no exit from
+          // the platform, and no `final` capture on the chain (sealantd flushes one on
+          // SIGTERM — `kubectl delete pod`, `docker stop` — and the harness then exits, so
+          // that path settles through the run's exit, never through the reaper). A forced
+          // kill (`--grace-period=0 --force`, `docker kill`) leaves the chain at its last
+          // ordinary capture and the platform silent: this path.
+          const lastCapture = memory.captures.get(
+            memory.chains.get(session.worktreeId)?.headCapture ?? "",
+          );
+          expect(lastCapture?.kind).toBe("turn");
           // Pickup: the replacement launches and claims epoch + 1. Until it answers, the
           // summary still reads the loss — that is what was last observed.
           yield* engine.resumeSession(session.id, null);

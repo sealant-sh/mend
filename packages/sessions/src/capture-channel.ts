@@ -12,12 +12,14 @@ import {
   decodeChangeSummary,
   decodeManifest,
   captureIdOf,
-  isValidBlobKey,
+  isCaptureObjectKey,
   keysNeededBy,
   packIdxKeyOf,
 } from "@mend/store";
 import { Duration, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
+
+import { CaptureGitVerifier } from "./capture-verify.ts";
 
 /**
  * The capture half of the session channel (ADR-0002 "Session channel routes"): sealantd's
@@ -356,20 +358,36 @@ export const planForPlatform = (
     ? manifest
     : { ...manifest, sections: { ...manifest.sections, bulk: "pending" } };
 
-/** A bucket or pointer-store failure inside a route is a defect: 500, which the executor retries. */
-const storeError = (operation: string) => (cause: { readonly _tag: string }) =>
-  Effect.die(`capture channel: ${operation} failed: ${cause._tag}`);
+/**
+ * A bucket or pointer-store failure inside a route is a defect: 500, which the executor
+ * retries. The key rides in the message, so the API log names what was asked of the bucket.
+ */
+const storeError =
+  (operation: string, key?: string) =>
+  (cause: { readonly _tag: string }): Effect.Effect<never> =>
+    Effect.die(
+      `capture channel: ${operation} failed${key === undefined ? "" : ` for ${key}`}: ${cause._tag}`,
+    );
+
+/** The kinds Mend verifies at register; `auto` captures are verified lazily, at the plan that would restore them. */
+const VERIFIED_AT_REGISTER = new Set<CaptureManifest["kind"]>([
+  "checkpoint",
+  "turn",
+  "suspend",
+  "final",
+]);
 
 export const CaptureChannelLive: Layer.Layer<
   CaptureChannel,
   never,
-  CaptureStoreRepo | BlobStore | CaptureUploadPolicy
+  CaptureStoreRepo | BlobStore | CaptureUploadPolicy | CaptureGitVerifier
 > = Layer.effect(
   CaptureChannel,
   Effect.gen(function* () {
     const repo = yield* CaptureStoreRepo;
     const blobs = yield* BlobStore;
     const policy = yield* CaptureUploadPolicy;
+    const verifier = yield* CaptureGitVerifier;
     const listeners = new Map<string, Set<RegisterListener>>();
     const publish = (row: CaptureRow): void => {
       const set = listeners.get(row.worktreeId);
@@ -432,13 +450,13 @@ export const CaptureChannelLive: Layer.Layer<
           .pipe(Effect.catch(() => storeError("preparing the standby plan")({ _tag: "plan" })));
         const keys = yield* keysNeededBy(plan.manifest).pipe(
           Effect.provideService(BlobStore, blobs),
-          Effect.catch(storeError("walking the standby plan")),
+          Effect.catch(storeError("walking the standby plan", plan.manifestKey)),
         );
         const urls: Record<string, string> = {};
         for (const key of [...keys, plan.manifestKey]) {
           urls[key] = yield* blobs
             .presign(key, "GET", PRESIGN_TTL_SECONDS)
-            .pipe(Effect.catch(storeError("presigning a GET")));
+            .pipe(Effect.catch(storeError("presigning a GET", key)));
         }
         return {
           worktree_id: scope.alias,
@@ -506,6 +524,83 @@ export const CaptureChannelLive: Layer.Layer<
               }),
             );
 
+      const readManifest = (row: CaptureRow) =>
+        blobs.get(row.manifestKey).pipe(
+          Effect.catch(storeError("reading a manifest", row.manifestKey)),
+          Effect.flatMap((bytes) =>
+            decodeManifest(row.manifestKey, bytes).pipe(
+              Effect.catch(storeError("decoding a manifest", row.manifestKey)),
+            ),
+          ),
+        );
+
+      /** Verify a row's git section now and record the outcome; `unverified` records nothing. */
+      const verifyRow = (row: CaptureRow, manifest: CaptureManifest) =>
+        Effect.gen(function* () {
+          const verification = yield* verifier.verify(scope.projectId, manifest);
+          if (verification.outcome === "unverified") return row.gitFsck;
+          yield* repo.setGitFsck(row.id, verification.outcome);
+          if (verification.outcome === "failed") {
+            yield* Effect.logWarning(
+              "capture channel: git section failed verification · observed",
+            ).pipe(
+              Effect.annotateLogs({
+                worktreeId,
+                n: row.n,
+                captureId: row.id,
+                kind: row.kind,
+                epoch: row.epoch,
+                detail: verification.detail,
+              }),
+            );
+          }
+          return verification.outcome;
+        });
+
+      /**
+       * The manifest a plan restores: the head's, unless its git section fails verification —
+       * then the head with the git section of the newest capture below it that verifies
+       * (ADR-0002 16: pickup prefers the newest verified capture; the chain head is unchanged,
+       * so the executor's next register still parents on the real head). A head still
+       * `unverified` (an `auto` capture, or one registered before this check existed) is
+       * verified here, once, at the moment it matters.
+       */
+      const planManifest = (head: CaptureRow, stored: CaptureManifest) =>
+        Effect.gen(function* () {
+          const headFsck =
+            head.gitFsck === "unverified" ? yield* verifyRow(head, stored) : head.gitFsck;
+          if (headFsck !== "failed") return stored;
+          const older = (yield* repo.listChain(worktreeId))
+            .filter((row) => row.n < head.n)
+            .toSorted((a, b) => b.n - a.n);
+          for (const row of older) {
+            if (row.gitFsck === "failed") continue;
+            const manifest = yield* readManifest(row);
+            const fsck =
+              row.gitFsck === "unverified" ? yield* verifyRow(row, manifest) : row.gitFsck;
+            if (fsck !== "verified") continue;
+            yield* Effect.logWarning(
+              "capture channel: plan restores an older git section · the head's failed verification",
+            ).pipe(
+              Effect.annotateLogs({
+                worktreeId,
+                headN: head.n,
+                headCaptureId: head.id,
+                gitFromN: row.n,
+                gitFromCaptureId: row.id,
+              }),
+            );
+            return {
+              ...stored,
+              sections: { ...stored.sections, git: manifest.sections.git },
+            } satisfies CaptureManifest;
+          }
+          yield* Effect.logWarning(
+            "capture channel: no capture below the head verifies · the plan restores the head as registered",
+          ).pipe(Effect.annotateLogs({ worktreeId, headN: head.n, headCaptureId: head.id }));
+          return stored;
+        });
+
       const planGet = Effect.fn("SessionCaptureApi.planGet")(function* (input: PlanGetRequest) {
         yield* requireWorktree(input.worktree_id);
         const asked = input.epoch ?? 0;
@@ -549,22 +644,17 @@ export const CaptureChannelLive: Layer.Layer<
         if (head === null) {
           return { worktree_id: worktreeId, epoch, head: null, get_urls: {} };
         }
-        const manifestBytes = yield* blobs
-          .get(head.manifestKey)
-          .pipe(Effect.catch(storeError("reading the head manifest")));
-        const stored = yield* decodeManifest(head.manifestKey, manifestBytes).pipe(
-          Effect.catch(storeError("decoding the head manifest")),
-        );
-        const manifest = planForPlatform(stored, input.platform);
+        const stored = yield* readManifest(head);
+        const manifest = planForPlatform(yield* planManifest(head, stored), input.platform);
         const keys = yield* keysNeededBy(manifest).pipe(
           Effect.provideService(BlobStore, blobs),
-          Effect.catch(storeError("walking the head capture")),
+          Effect.catch(storeError("walking the head capture", head.manifestKey)),
         );
         const urls: Record<string, string> = {};
         for (const key of [...keys, head.manifestKey]) {
           urls[key] = yield* blobs
             .presign(key, "GET", PRESIGN_TTL_SECONDS)
-            .pipe(Effect.catch(storeError("presigning a GET")));
+            .pipe(Effect.catch(storeError("presigning a GET", key)));
         }
         return {
           worktree_id: worktreeId,
@@ -599,12 +689,13 @@ export const CaptureChannelLive: Layer.Layer<
       ) {
         yield* requireWorktree(input.worktree_id);
         yield* requireLease(input.epoch);
-        // Only under the caller's own epoch prefix; anything else is dropped, never minted.
-        // A size is only read for a key that is also listed; no size means a single PUT.
+        // Only under the caller's own epoch prefix, and only a key that names one capture
+        // object; anything else is dropped, never minted — a prefix is not a key. A size is
+        // only read for a key that is also listed; no size means a single PUT.
         const sizes = input.sizes ?? {};
         const wanted = new Map<string, number | null>();
         for (const key of input.keys) {
-          if (!underOwnPrefix(key, input.epoch) || !isValidBlobKey(key)) continue;
+          if (!underOwnPrefix(key, input.epoch) || !isCaptureObjectKey(key)) continue;
           const size = sizes[key];
           wanted.set(key, size === undefined || size < 0 ? null : size);
         }
@@ -639,13 +730,13 @@ export const CaptureChannelLive: Layer.Layer<
               ? null
               : yield* blobs
                   .createMultipart(plan.key)
-                  .pipe(Effect.catch(storeError("creating a multipart upload")));
+                  .pipe(Effect.catch(storeError("creating a multipart upload", plan.key)));
           if (created === null || created.kind === "exists") {
             // Below the threshold, or the bucket already holds the key: one PUT URL. For an
             // existing key the PUT carries the same bytes by construction; no plan is opened.
             urls[plan.key] = yield* blobs
               .presign(plan.key, "PUT", PRESIGN_TTL_SECONDS)
-              .pipe(Effect.catch(storeError("presigning a PUT")));
+              .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
             continue;
           }
           const partUrls: Array<string> = [];
@@ -653,7 +744,7 @@ export const CaptureChannelLive: Layer.Layer<
             partUrls.push(
               yield* blobs
                 .presignPart(plan.key, created.uploadId, partNumber, PRESIGN_TTL_SECONDS)
-                .pipe(Effect.catch(storeError("presigning a part"))),
+                .pipe(Effect.catch(storeError("presigning a part", plan.key))),
             );
           }
           multipart[plan.key] = {
@@ -670,8 +761,10 @@ export const CaptureChannelLive: Layer.Layer<
       ) {
         yield* requireWorktree(input.worktree_id);
         yield* requireLease(input.epoch);
-        if (!underOwnPrefix(input.key, input.epoch) || !isValidBlobKey(input.key)) {
-          return yield* bad("key must sit under the caller's epoch prefix");
+        if (!underOwnPrefix(input.key, input.epoch) || !isCaptureObjectKey(input.key)) {
+          return yield* bad(
+            "key must name one capture object (…/packs/<sha256> or …/trees/<sha256>) under the caller's epoch prefix",
+          );
         }
         if (input.upload_id === "") return yield* bad("upload_id is empty");
         const numbers = new Set(input.parts.map((part) => part.part_number));
@@ -696,7 +789,7 @@ export const CaptureChannelLive: Layer.Layer<
                 .abortMultipart(input.key, input.upload_id)
                 .pipe(
                   Effect.ignore,
-                  Effect.andThen(storeError("completing a multipart upload")(error)),
+                  Effect.andThen(storeError("completing a multipart upload", input.key)(error)),
                 ),
             ),
           );
@@ -742,9 +835,11 @@ export const CaptureChannelLive: Layer.Layer<
         const lease = yield* requireLease(input.epoch);
         if (
           !underOwnPrefix(input.manifest_key, input.epoch) ||
-          !isValidBlobKey(input.manifest_key)
+          !isCaptureObjectKey(input.manifest_key)
         ) {
-          return yield* bad("manifest_key must sit under the caller's epoch prefix");
+          return yield* bad(
+            "manifest_key must be …/manifests/<sha256> under the caller's epoch prefix",
+          );
         }
         const manifest = yield* Effect.try({
           try: () => Schema.decodeUnknownSync(Schema.Unknown)(input.manifest),
@@ -781,7 +876,7 @@ export const CaptureChannelLive: Layer.Layer<
           Effect.catch((error) =>
             error._tag === "CaptureRouteError"
               ? Effect.fail(error)
-              : storeError("reading the manifest")(error),
+              : storeError("reading the manifest", input.manifest_key)(error),
           ),
         );
         if (captureIdOf(stored) !== input.capture_id) {
@@ -791,6 +886,29 @@ export const CaptureChannelLive: Layer.Layer<
             message: "capture_id is not the sha256 of the manifest bytes at manifest_key",
           });
         }
+        // Every key the manifest names must be one capture object — a pack, its index, a dir
+        // object root — before anything below asks the bucket about it: a prefix, an empty
+        // entry or a stray word in a packs list is refused here, never HEAD-ed. A pending bulk
+        // section names nothing and needs nothing.
+        const bulkPacks = manifest.sections.bulk === "pending" ? [] : manifest.sections.bulk.packs;
+        const roots = [
+          manifest.sections.workspace.root,
+          ...(manifest.sections.bulk === "pending" ? [] : [manifest.sections.bulk.root]),
+        ].filter((root) => root !== "");
+        const malformed = [
+          ...manifest.sections.git.packs,
+          ...manifest.sections.workspace.packs,
+          ...bulkPacks,
+          ...roots,
+        ].filter((key) => !isCaptureObjectKey(key));
+        if (malformed.length > 0) {
+          return yield* bad(
+            `the manifest names ${malformed.length} key(s) that are not capture objects (…/packs/<sha256>, …/trees/<sha256>): ${malformed
+              .slice(0, 3)
+              .map((key) => JSON.stringify(key))
+              .join(", ")}`,
+          );
+        }
         // HEAD every pack the manifest names (across epochs) before the CAS, and price the
         // ones new to this epoch against the session's byte budget.
         const packKeys: Array<{ readonly key: string; readonly cls: PackRecord["class"] }> = [
@@ -799,15 +917,13 @@ export const CaptureChannelLive: Layer.Layer<
             { key: packIdxKeyOf(key), cls: "git" as const },
           ]),
           ...manifest.sections.workspace.packs.map((key) => ({ key, cls: "workspace" as const })),
-          ...(manifest.sections.bulk === "pending"
-            ? []
-            : manifest.sections.bulk.packs.map((key) => ({ key, cls: "bulk" as const }))),
+          ...bulkPacks.map((key) => ({ key, cls: "bulk" as const })),
         ];
         const missing: Array<string> = [];
         const records: Array<PackRecord> = [];
         let newBytes = 0;
         for (const { key, cls } of packKeys) {
-          const head = yield* blobs.head(key).pipe(Effect.catch(storeError("HEAD on a pack")));
+          const head = yield* blobs.head(key).pipe(Effect.catch(storeError("HEAD on a pack", key)));
           if (head === null) {
             missing.push(key);
             continue;
@@ -843,6 +959,31 @@ export const CaptureChannelLive: Layer.Layer<
             message: `byte quota: ${byteBudget} bytes per session (${used} used)`,
           });
         }
+        // `git_fsck` records Mend's observation, never the executor's claim: the kinds a
+        // pickup or a review would restore are verified before the CAS (index-pack --verify
+        // and a connectivity walk on the runner); `auto` captures land `unverified` and are
+        // verified by the first plan that would restore them. A failed section is accepted
+        // and marked — the chain advances, the plan and the reads route around it.
+        const verification =
+          already !== null || !VERIFIED_AT_REGISTER.has(manifest.kind)
+            ? null
+            : yield* verifier.verify(scope.projectId, manifest);
+        const gitFsck = already?.gitFsck ?? verification?.outcome ?? "unverified";
+        if (verification !== null && verification.outcome !== "verified") {
+          yield* Effect.logWarning(
+            `capture channel: git section ${verification.outcome === "failed" ? "failed verification" : "not verified"} at register · observed`,
+          ).pipe(
+            Effect.annotateLogs({
+              worktreeId,
+              n: input.n,
+              captureId: input.capture_id,
+              kind: manifest.kind,
+              epoch: input.epoch,
+              claimed: manifest.sections.git.fsck,
+              detail: verification.detail,
+            }),
+          );
+        }
         const outcome = yield* repo
           .register({
             worktreeId,
@@ -854,7 +995,7 @@ export const CaptureChannelLive: Layer.Layer<
             kind: manifest.kind,
             manifestKey: input.manifest_key,
             sections: manifest.sections,
-            gitFsck: manifest.sections.git.fsck,
+            gitFsck,
           })
           .pipe(Effect.catch((error) => conflictToRoute(error).pipe(Effect.flatMap(Effect.fail))));
         if (!outcome.lostAck) {
@@ -885,7 +1026,7 @@ export const CaptureChannelLive: Layer.Layer<
         const key = changeSummaryKey(worktreeId, capture.n);
         yield* blobs
           .put(key, new Uint8Array(Buffer.from(JSON.stringify(summary), "utf8")))
-          .pipe(Effect.catch(storeError("writing the summary")));
+          .pipe(Effect.catch(storeError("writing the summary", key)));
         yield* repo.acceptSummary(worktreeId, input.capture_id, key).pipe(
           Effect.mapError(
             () =>

@@ -165,6 +165,13 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
         summaries.set(captureId, { ...row, state, updatedAt: new Date(clock.now()) });
         return true;
       }),
+    setGitFsck: (captureId, outcome) =>
+      Effect.sync(() => {
+        const row = captures.get(captureId);
+        if (row === undefined) return false;
+        captures.set(captureId, { ...row, gitFsck: outcome });
+        return true;
+      }),
     leaseOf: (worktreeId) => Effect.sync(() => leaseView(worktreeId)),
     headOf: (worktreeId) =>
       Effect.sync(() => {

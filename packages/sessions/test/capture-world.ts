@@ -33,6 +33,7 @@ import {
   CaptureChannelLive,
   CaptureUploadPolicyDefault,
 } from "../src/capture-channel.ts";
+import { CaptureGitVerifierLive } from "../src/capture-verify.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 
 /**
@@ -285,6 +286,7 @@ export const makeCaptureWorld = (): CaptureWorld => {
     Layer.provide(blobs),
   );
   const channel = CaptureChannelLive.pipe(
+    Layer.provide(CaptureGitVerifierLive.pipe(Layer.provide(runner), Layer.provide(refs))),
     Layer.provide(memory.layer),
     Layer.provide(blobs),
     Layer.provide(CaptureUploadPolicyDefault),
