@@ -91,6 +91,9 @@ outputs or a plain URL. Returns "obc" or "url".
 {{- with $c.multipart.partSizeBytes }}
 - { name: MEND_CAPTURE_MULTIPART_PART_SIZE, value: {{ . | quote }} }
 {{- end }}
+{{- with $c.byteQuotaFloorBytes }}
+- { name: MEND_CAPTURE_BYTE_QUOTA_FLOOR, value: {{ . | quote }} }
+{{- end }}
 {{- end -}}
 {{- define "mend.sessionEndpointUrl" -}}
 {{- if .Values.sessionChannel.tls.enabled -}}https{{- else -}}http{{- end -}}://{{ .Release.Name }}-session.{{ .Release.Namespace }}.svc:{{ .Values.sessionChannel.port }}

@@ -78,6 +78,11 @@ captureStore:
   multipart:
     thresholdBytes: ""
     partSizeBytes: ""
+  # Floor of a session's byte quota: max(floor, 4× the project's compressed footprint), priced
+  # once per object key; `upload.urls` refuses a batch past it before minting a URL. Empty = the
+  # default (8 GiB — dependency trees are captured, and a Mend-size node_modules is 775 MB).
+  # Plain integer, bytes.
+  byteQuotaFloorBytes: ""
 
 postgres:
   enabled: true

@@ -7,6 +7,35 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-14 · sealantd 0.15.1 · A refused capture is retried forever; sizes travel only for multipart keys
+
+Cluster proof on Mend 0.27.3: the executor uploaded a 775 MB / 134,103-file bulk capture in full
+(41+ `upload.urls` batches, 22,212 objects), `capture.register` answered 413 (the byte quota, then
+checked only after the bytes were in the bucket), and the executor retried the same register every 5
+s indefinitely. Mend's side is fixed (ADR-0002 decision 27): the quota is enforced at `upload.urls`
+from the declared sizes, before any URL is minted, with 413
+`{"reason":"byte-quota","limit":…,"used":…,"requested":…}`; `capture.register` backstops what landed
+unsized with 409 of the same body; the floor is 8 GiB. Two daemon-side gaps remain.
+
+- **sealantd, `crates/sealant-capture/src/ship.rs`: a terminal refusal never drops the entry.**
+  `HttpRegistrar::call` maps every 409 that is not `stale-epoch` / `exists` to `WrongParent` and
+  every other status (413 included) to `Protocol`; `is_retryable` is false for both, so
+  `register_one` / `upload_one` return at once — but `ship_pending` stops at the entry and keeps it,
+  and `ShipWorker` re-runs the pass on every `SHIP_TICK` (5 s). Only a capture staged under a
+  replaced identity (`is_foreign`) is ever acked without registering. **Suggested:** read `reason`
+  on a 409 (`byte-quota` today; the field is already parsed into `ConflictBody`) and on a 413, and
+  for those ack the entry as refused — log it with the body's `limit`/`used`/ `requested`, count it
+  in `ShipStatus`, and let the next capture stage over it — instead of re-attempting it on every
+  tick. A `WrongParent` with `head_n`/`head_capture_id` stays what it is; a register refused for its
+  bytes has no parent to fix.
+- **sealantd, `RegistrarMinter`: `sizes` only for multipart keys.** `prefetch_put` batches keys with
+  no sizes; only `multipart_urls` sends one, for one key at or above the daemon's threshold. The
+  registrar therefore prices a batch before minting only for large packs; the dir objects and
+  sub-threshold packs that make up most of a bulk capture (20,495 dir objects, ~1,700 packs for the
+  tree above) are priced at register, after they landed. **Suggested:** send `sizes` for every key
+  in `prefetch_put` (the shipper knows `u.bytes`); the wire already allows it and Mend prices every
+  sized key before minting.
+
 ## 2026-09-13 · 0.29.0 · Captures everywhere: what the bundle, the hot pool and the shared cache need
 
 Decisions 2, 6, 8 and 9 (`docs/adr/0002-session-capture-store.md`, amended 2026-09-13) make the

@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
@@ -24,10 +25,14 @@ import type * as Context from "effect/Context";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
+  BYTE_QUOTA_FLOOR,
   CaptureChannel,
   CaptureChannelLive,
   CaptureUploadPolicy,
+  CaptureUploadPolicyError,
+  dispatchCaptureRoute,
   PRESIGN_TTL_SECONDS,
+  resolveCaptureUploadPolicy,
 } from "../src/capture-channel.ts";
 import { CaptureGitVerifierOff } from "../src/capture-verify.ts";
 import {
@@ -137,6 +142,9 @@ describe("capture channel routes", () => {
           // Small too: the request quota is exercised below without an hour of calls.
           callsPerHour: 16,
           keysPerCall: 4,
+          // The byte quota's floor, for a scope with no footprint; the shared session below
+          // names a footprint that puts its budget well above every byte this file ships.
+          byteQuotaFloorBytes: 4_096,
         }),
       ),
     ),
@@ -224,7 +232,7 @@ describe("capture channel routes", () => {
             worktreeId: WORKTREE,
             projectId: PROJECT,
             executorId: SESSION,
-            footprintBytes: 0,
+            footprintBytes: 1_000_000,
           }),
         });
         const bogus = yield* Effect.promise(() =>
@@ -780,5 +788,161 @@ describe("capture channel routes", () => {
       keys: [key(99)],
     });
     expect(again.status).toBe(429);
+  });
+
+  it("the byte quota refuses an upload.urls batch before any URL is minted, prices a key once, and backstops a register with 409", async () => {
+    // A fresh executor on the same worktree (the lease under epoch 3 is still live; the ledger
+    // and the request window are per executor): no footprint, so the budget is the test floor.
+    const api = channel.apiFor({
+      worktreeId: WORKTREE,
+      projectId: PROJECT,
+      executorId: "sess-quota",
+      footprintBytes: 0,
+    });
+    const call = (route: string, body: unknown) =>
+      new Promise<{ status: number; json: Record<string, unknown> }>((resolve) => {
+        void dispatchCaptureRoute(api, route, body, (status, payload) =>
+          resolve({ status, json: payload as Record<string, unknown> }),
+        );
+      });
+    const keys3 = captureKeys(WORKTREE, 3);
+    const first = keys3.pack("a1".repeat(32));
+    const second = keys3.pack("b2".repeat(32));
+    const unsized = keys3.pack("c3".repeat(32));
+    const fits = keys3.pack("d4".repeat(32));
+    const one = keys3.pack("e5".repeat(32));
+    // 3,000 of a 4,096-byte budget: a multipart plan (3,000 ≥ the 64-byte threshold).
+    const within = await call("/upload.urls", {
+      worktree_id: WORKTREE,
+      epoch: 3,
+      keys: [first],
+      sizes: { [first]: 3_000 },
+    });
+    expect(within.status).toBe(200);
+    expect(Object.keys(within.json["multipart"] as Record<string, unknown>)).toEqual([first]);
+    // 2,000 more would pass the budget: the batch is refused whole, before any URL is minted
+    // or any upload opened — the unsized key beside it gets no PUT URL either.
+    const opened = fs.readdirSync(path.join(blobRoot, ".multipart")).length;
+    presigned.length = 0;
+    const over = await call("/upload.urls", {
+      worktree_id: WORKTREE,
+      epoch: 3,
+      keys: [second, unsized],
+      sizes: { [second]: 2_000 },
+    });
+    expect(over.status).toBe(413);
+    expect(over.json).toEqual({
+      reason: "byte-quota",
+      message: "byte quota: 4096 bytes per session (3000 priced, 2000 more asked)",
+      limit: 4_096,
+      used: 3_000,
+      requested: 2_000,
+    });
+    expect(presigned).toEqual([]);
+    expect(fs.readdirSync(path.join(blobRoot, ".multipart"))).toHaveLength(opened);
+    // A refused batch is not charged. A key already priced costs nothing again, and a key
+    // without a size is not priced here (it is, at register, at the size that landed).
+    const again = await call("/upload.urls", {
+      worktree_id: WORKTREE,
+      epoch: 3,
+      keys: [first, unsized],
+      sizes: { [first]: 3_000 },
+    });
+    expect(again.status).toBe(200);
+    expect(Object.keys(again.json["urls"] as Record<string, string>)).toEqual([unsized]);
+    // Exactly the rest of the budget fits; one byte more does not.
+    const exact = await call("/upload.urls", {
+      worktree_id: WORKTREE,
+      epoch: 3,
+      keys: [fits],
+      sizes: { [fits]: 1_096 },
+    });
+    expect(exact.status).toBe(200);
+    const spill = await call("/upload.urls", {
+      worktree_id: WORKTREE,
+      epoch: 3,
+      keys: [one],
+      sizes: { [one]: 1 },
+    });
+    expect(spill.status).toBe(413);
+    expect(spill.json).toMatchObject({ reason: "byte-quota", used: 4_096, requested: 1 });
+
+    // The backstop: bytes that reached the bucket without a size (put straight in, as the
+    // daemon's single PUTs are) are priced at register from what the bucket reports, and a
+    // capture past the budget is refused with 409 `byte-quota` — the CAS never runs, no pack
+    // row is recorded, and the chain head stands.
+    const landed = channel.apiFor({
+      worktreeId: WORKTREE,
+      projectId: PROJECT,
+      executorId: "sess-quota-register",
+      footprintBytes: 0,
+    });
+    const chain = memory.chains.get(WORKTREE);
+    const head = memory.captures.get(chain?.headCapture ?? "");
+    if (chain === undefined || head === undefined) throw new Error("the chain has no head");
+    const tree = path.join(scratch, "tree-quota");
+    fs.mkdirSync(path.join(tree, "tree"), { recursive: true });
+    fs.writeFileSync(path.join(tree, "tree", "blob.bin"), crypto.randomBytes(5_000));
+    const snapshot = snapshotDirectory(tree, keys3, { chunkSize: 64 });
+    const packBytes = snapshot.packs.reduce(
+      (sum, key) => sum + (snapshot.objects.get(key)?.byteLength ?? 0),
+      0,
+    );
+    expect(packBytes).toBeGreaterThan(4_096);
+    const heavy = buildManifest({
+      worktreeId: WORKTREE,
+      n: head.n + 1,
+      parent: head.id,
+      epoch: 3,
+      seq: 11,
+      kind: "turn",
+      workspace: { root: snapshot.root, packs: snapshot.packs },
+      bulk: "pending",
+    });
+    await run(uploadObjects(new Map([...snapshot.objects, [heavy.key, heavy.bytes]])));
+    const packRows = memory.packs.size;
+    const refused = await new Promise<{ status: number; json: Record<string, unknown> }>(
+      (resolve) => {
+        void dispatchCaptureRoute(
+          landed,
+          "/capture.register",
+          {
+            worktree_id: WORKTREE,
+            epoch: 3,
+            n: heavy.manifest.n,
+            parent: head.id,
+            capture_id: heavy.id,
+            manifest_key: heavy.key,
+            manifest: heavy.manifest,
+          },
+          (status, payload) => resolve({ status, json: payload as Record<string, unknown> }),
+        );
+      },
+    );
+    expect(refused.status).toBe(409);
+    expect(refused.json).toEqual({
+      reason: "byte-quota",
+      message: `byte quota: 4096 bytes per session (0 priced, ${packBytes} more asked)`,
+      limit: 4_096,
+      used: 0,
+      requested: packBytes,
+    });
+    expect(memory.chains.get(WORKTREE)?.headCapture).toBe(head.id);
+    expect(memory.packs.size).toBe(packRows);
+  });
+
+  it("the byte quota floor is 8 GiB unless MEND_CAPTURE_BYTE_QUOTA_FLOOR names another size", () => {
+    expect(BYTE_QUOTA_FLOOR).toBe(8 * 1024 * 1024 * 1024);
+    expect(resolveCaptureUploadPolicy({}).byteQuotaFloorBytes).toBe(BYTE_QUOTA_FLOOR);
+    expect(
+      resolveCaptureUploadPolicy({ MEND_CAPTURE_BYTE_QUOTA_FLOOR: "1073741824" })
+        .byteQuotaFloorBytes,
+    ).toBe(1024 * 1024 * 1024);
+    expect(() => resolveCaptureUploadPolicy({ MEND_CAPTURE_BYTE_QUOTA_FLOOR: "lots" })).toThrow(
+      CaptureUploadPolicyError,
+    );
+    expect(() => resolveCaptureUploadPolicy({ MEND_CAPTURE_BYTE_QUOTA_FLOOR: "0" })).toThrow(
+      CaptureUploadPolicyError,
+    );
   });
 });

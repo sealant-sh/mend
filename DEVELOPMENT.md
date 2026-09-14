@@ -58,16 +58,17 @@ everywhere else since decision 8 (2026-09-13): the executor works on its own dis
 to a bucket; Mend reads the chain head and stamps every read "observed · capture n". The values
 below are required; `.env.example` carries a working set for a Linux Docker host.
 
-| Variable                                      | Default                          | Purpose                                                                                                                             |
-| --------------------------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
-| `MEND_SESSION_STORE`                          | `captured`                       | `colocated` opts back into the deprecated bind-mounted worktree store (a startup warning names it); it ignores every other row here |
-| `MEND_SESSION_ENDPOINT_LISTEN`                | unset (required)                 | `host:port` the network session channel listens on, e.g. `0.0.0.0:3106`; sealantd calls the capture routes here                     |
-| `MEND_SESSION_ENDPOINT_URL`                   | unset (required)                 | The address executors resolve for that listener, e.g. `http://172.17.0.1:3106`                                                      |
-| `MEND_BLOB_STORE`                             | `dir://<MEND_STORE_ROOT>/_blobs` | `dir:///abs/path` or `s3://mend?endpoint=http://localhost:3900&region=garage` (the dev Garage)                                      |
-| `MEND_BLOB_STORE_PUBLIC_URL`                  | unset                            | The S3 endpoint executors resolve; presigned URLs name it, e.g. `http://172.17.0.1:3900`                                            |
-| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | unset                            | Bucket credentials; the dev Garage key is `GK00000000000000000000000d` / `000…000d` (`deploy/dev/garage-init.sh`)                   |
-| `MEND_CAPTURE_MULTIPART_THRESHOLD`            | `16777216` (16 MiB)              | Keys at or above this many bytes are planned as multipart uploads (`upload.urls` with sizes)                                        |
-| `MEND_CAPTURE_MULTIPART_PART_SIZE`            | `16777216` (16 MiB)              | Part size for those uploads; S3 and R2 refuse parts under 5 MiB                                                                     |
+| Variable                                      | Default                          | Purpose                                                                                                                                                                 |
+| --------------------------------------------- | -------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND_SESSION_STORE`                          | `captured`                       | `colocated` opts back into the deprecated bind-mounted worktree store (a startup warning names it); it ignores every other row here                                     |
+| `MEND_SESSION_ENDPOINT_LISTEN`                | unset (required)                 | `host:port` the network session channel listens on, e.g. `0.0.0.0:3106`; sealantd calls the capture routes here                                                         |
+| `MEND_SESSION_ENDPOINT_URL`                   | unset (required)                 | The address executors resolve for that listener, e.g. `http://172.17.0.1:3106`                                                                                          |
+| `MEND_BLOB_STORE`                             | `dir://<MEND_STORE_ROOT>/_blobs` | `dir:///abs/path` or `s3://mend?endpoint=http://localhost:3900&region=garage` (the dev Garage)                                                                          |
+| `MEND_BLOB_STORE_PUBLIC_URL`                  | unset                            | The S3 endpoint executors resolve; presigned URLs name it, e.g. `http://172.17.0.1:3900`                                                                                |
+| `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` | unset                            | Bucket credentials; the dev Garage key is `GK00000000000000000000000d` / `000…000d` (`deploy/dev/garage-init.sh`)                                                       |
+| `MEND_CAPTURE_MULTIPART_THRESHOLD`            | `16777216` (16 MiB)              | Keys at or above this many bytes are planned as multipart uploads (`upload.urls` with sizes)                                                                            |
+| `MEND_CAPTURE_MULTIPART_PART_SIZE`            | `16777216` (16 MiB)              | Part size for those uploads; S3 and R2 refuse parts under 5 MiB                                                                                                         |
+| `MEND_CAPTURE_BYTE_QUOTA_FLOOR`               | `8589934592` (8 GiB)             | Floor of a session's byte quota (`max(floor, 4× the project's compressed footprint)`); `upload.urls` refuses a batch past it with 413 `byte-quota` before minting a URL |
 
 `compose.dev.yaml` runs Garage in single-node mode on port 3900 with bucket `mend`; `pnpm dev` runs
 `deploy/dev/garage-init.sh`, which lays the node out and creates the key once. A `dir://` bucket

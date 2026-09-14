@@ -11,5 +11,6 @@ captureStore:
   multipart:
     thresholdBytes: "33554432"
     partSizeBytes: "16777216"
+  byteQuotaFloorBytes: "17179869184"
 store:
   existingClaim: mend-store

@@ -69,19 +69,20 @@ the capture store is the store there too, and `mend server setup` runs Garage be
 
 ## Configuration
 
-| Variable                             | Default                 | Meaning                                                                           |
-| ------------------------------------ | ----------------------- | --------------------------------------------------------------------------------- |
-| `MEND_DEPLOYMENT_MODE`               | `local`                 | `kubernetes` disables socket creation and requires the endpoint settings below.   |
-| `MEND_STORE_ROOT`                    | `~/.config/mend/store`  | The claim mount path on Kubernetes (`/var/lib/mend/store`).                       |
-| `MEND_SESSION_ENDPOINT_LISTEN`       | unset                   | `host:port` for the network session channel (e.g. `0.0.0.0:3106`).                |
-| `MEND_SESSION_ENDPOINT_URL`          | unset                   | What workspaces connect to (e.g. `http://mend-session.mend.svc:3106`).            |
-| `MEND_SESSION_ENDPOINT_TLS_CERT/KEY` | unset                   | Optional TLS for the listener; the URL must then be `https://`.                   |
-| `MEND_RUN_DIR`                       | `<store>/_run/sessions` | Override for the run dirs (tests).                                                |
-| `MEND_BLOB_STORE`                    | `dir://<store>/_blobs`  | `s3://<bucket>?endpoint=<RGW or Garage>&region=<region>`; credentials in `AWS_*`. |
-| `MEND_BLOB_STORE_PUBLIC_URL`         | unset                   | The bucket endpoint workspace Pods resolve; presigned URLs name it.               |
-| `MEND_SESSION_STORE`                 | `captured`              | `colocated` opts back into the deprecated shared-claim store (warned at start).   |
-| `MEND_CAPTURE_MULTIPART_THRESHOLD`   | 16 MiB                  | Packs at or above this go up as multipart uploads (`captureStore.multipart`).     |
-| `MEND_CAPTURE_MULTIPART_PART_SIZE`   | 16 MiB                  | Part size for those uploads; S3 and R2 refuse parts under 5 MiB.                  |
+| Variable                             | Default                 | Meaning                                                                                           |
+| ------------------------------------ | ----------------------- | ------------------------------------------------------------------------------------------------- |
+| `MEND_DEPLOYMENT_MODE`               | `local`                 | `kubernetes` disables socket creation and requires the endpoint settings below.                   |
+| `MEND_STORE_ROOT`                    | `~/.config/mend/store`  | The claim mount path on Kubernetes (`/var/lib/mend/store`).                                       |
+| `MEND_SESSION_ENDPOINT_LISTEN`       | unset                   | `host:port` for the network session channel (e.g. `0.0.0.0:3106`).                                |
+| `MEND_SESSION_ENDPOINT_URL`          | unset                   | What workspaces connect to (e.g. `http://mend-session.mend.svc:3106`).                            |
+| `MEND_SESSION_ENDPOINT_TLS_CERT/KEY` | unset                   | Optional TLS for the listener; the URL must then be `https://`.                                   |
+| `MEND_RUN_DIR`                       | `<store>/_run/sessions` | Override for the run dirs (tests).                                                                |
+| `MEND_BLOB_STORE`                    | `dir://<store>/_blobs`  | `s3://<bucket>?endpoint=<RGW or Garage>&region=<region>`; credentials in `AWS_*`.                 |
+| `MEND_BLOB_STORE_PUBLIC_URL`         | unset                   | The bucket endpoint workspace Pods resolve; presigned URLs name it.                               |
+| `MEND_SESSION_STORE`                 | `captured`              | `colocated` opts back into the deprecated shared-claim store (warned at start).                   |
+| `MEND_CAPTURE_MULTIPART_THRESHOLD`   | 16 MiB                  | Packs at or above this go up as multipart uploads (`captureStore.multipart`).                     |
+| `MEND_CAPTURE_MULTIPART_PART_SIZE`   | 16 MiB                  | Part size for those uploads; S3 and R2 refuse parts under 5 MiB.                                  |
+| `MEND_CAPTURE_BYTE_QUOTA_FLOOR`      | 8 GiB                   | Floor of a session's byte quota, `max(floor, 4× footprint)` (`captureStore.byteQuotaFloorBytes`). |
 
 The chart sets every capture variable on the API tier from `captureStore` (`values.yaml`):
 
@@ -93,6 +94,7 @@ The chart sets every capture variable on the API tier from `captureStore` (`valu
 | `captureStore.blobStore.publicUrl`                 | `MEND_BLOB_STORE_PUBLIC_URL`; empty = the same in-cluster endpoint (`<scheme>://$(BUCKET_HOST):$(BUCKET_PORT)`, or `endpoint=` of the URL).                                                                                                                   |
 | `captureStore.blobStore.endpoint`                  | The API NetworkPolicy's egress rule to the bucket: namespace, `podPort` and optional Pod selector; nothing in the env (`port` is the Service port, informational).                                                                                            |
 | `captureStore.multipart.*`                         | The two `MEND_CAPTURE_MULTIPART_*` variables, only when set.                                                                                                                                                                                                  |
+| `captureStore.byteQuotaFloorBytes`                 | `MEND_CAPTURE_BYTE_QUOTA_FLOOR`, only when set.                                                                                                                                                                                                               |
 
 Only the deprecated co-located store needs Sealant's worker to map the claim
 (`SEALANT_K8S_VOLUME_MAPPINGS` with
