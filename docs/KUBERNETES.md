@@ -16,15 +16,18 @@ shared filesystem.
 
 The **RWX `mend-store` claim is retired** as the session store. The API Pod still needs a
 `ReadWriteOnce` volume at `/var/lib/mend/store` for the bare repositories it adopts and fetches, the
-runner cache (`_cache/runner/<project>/repo.git`), references and the machine git key; the chart's
-`store.existingClaim` / `store.create` values still render it and still say RWX — narrowing them to
-RWO and dropping `SEALANT_K8S_VOLUME_MAPPINGS` for the store are chart follow-ups. The incident
+runner cache (`_cache/runner/<project>/repo.git`), references and the machine git key; chart 0.2.0
+renders exactly that (`store.create` on the cluster's default class, 50Gi, or
+`store.existingClaim`), mounts it into the API Pod alone, and mirrors nothing into the workspace
+namespace — the `workspaces.volumeMappings` pairing with the Sealant chart is gone. The incident
 class the shared filesystem produced (uid split, root `gc` poisoning, stale sockets,
 `PLATFORM-FEEDBACK.md` 2026-08-29/30) disappears by construction; failure modes are rows in
 Postgres.
 
-`MEND_SESSION_STORE=colocated` still selects the deprecated co-located store — the table below is
-what it mounted, kept for an install that has not moved — and logs a warning at start:
+`MEND_SESSION_STORE=colocated` still selects the deprecated co-located store in the server — the
+table below is what it mounted, kept for an install that has not moved — and logs a warning at
+start. The chart does not render it: `captureStore.sessionStore` accepts only `captured`, and an
+install that has not moved stays on chart 0.1.x until it follows "Upgrade" below.
 
 | In the workspace Pod                     | On the claim (`subPath`)              | Mode  |
 | ---------------------------------------- | ------------------------------------- | ----- |
@@ -77,6 +80,19 @@ the capture store is the store there too, and `mend server setup` runs Garage be
 | `MEND_BLOB_STORE`                    | `dir://<store>/_blobs`  | `s3://<bucket>?endpoint=<RGW or Garage>&region=<region>`; credentials in `AWS_*`. |
 | `MEND_BLOB_STORE_PUBLIC_URL`         | unset                   | The bucket endpoint workspace Pods resolve; presigned URLs name it.               |
 | `MEND_SESSION_STORE`                 | `captured`              | `colocated` opts back into the deprecated shared-claim store (warned at start).   |
+| `MEND_CAPTURE_MULTIPART_THRESHOLD`   | 16 MiB                  | Packs at or above this go up as multipart uploads (`captureStore.multipart`).     |
+| `MEND_CAPTURE_MULTIPART_PART_SIZE`   | 16 MiB                  | Part size for those uploads; S3 and R2 refuse parts under 5 MiB.                  |
+
+The chart sets every capture variable on the API tier from `captureStore` (`values.yaml`):
+
+| Value                                              | Renders                                                                                                                                                                                                                                                       |
+| -------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `captureStore.sessionStore: captured`              | `MEND_SESSION_STORE=captured`; any other value fails the render.                                                                                                                                                                                              |
+| `captureStore.blobStore.fromObjectBucketClaim`     | `BUCKET_HOST/PORT/NAME` from the OBC's ConfigMap and `AWS_ACCESS_KEY_ID/SECRET_ACCESS_KEY` from its Secret via `valueFrom`, then `MEND_BLOB_STORE=s3://$(BUCKET_NAME)?endpoint=<scheme>://$(BUCKET_HOST):$(BUCKET_PORT)&region=<region>&forcePathStyle=true`. |
+| `captureStore.blobStore.url` + `credentialsSecret` | `MEND_BLOB_STORE=<url>` and the two `AWS_*` keys from the named Secret.                                                                                                                                                                                       |
+| `captureStore.blobStore.publicUrl`                 | `MEND_BLOB_STORE_PUBLIC_URL`; empty = the same in-cluster endpoint (`<scheme>://$(BUCKET_HOST):$(BUCKET_PORT)`, or `endpoint=` of the URL).                                                                                                                   |
+| `captureStore.blobStore.endpoint`                  | The API NetworkPolicy's egress rule to the bucket (namespace, port, optional Pod selector); nothing in the env.                                                                                                                                               |
+| `captureStore.multipart.*`                         | The two `MEND_CAPTURE_MULTIPART_*` variables, only when set.                                                                                                                                                                                                  |
 
 Only the deprecated co-located store needs Sealant's worker to map the claim
 (`SEALANT_K8S_VOLUME_MAPPINGS` with
@@ -105,37 +121,198 @@ nothing from Mend.
 
 ## Install with the chart
 
+Two things exist before `helm install`: the secret, and a bucket for the capture store.
+
 ```sh
 kubectl create namespace mend
 kubectl -n mend create secret generic mend-secrets \
   --from-literal=BETTER_AUTH_SECRET="$(openssl rand -hex 32)" \
   --from-literal=MEND_DB_PASSWORD="$(openssl rand -hex 32)" \
   --from-literal=SEALANT_SERVICE_KEY="<service key from the Sealant deployment>"
-# A bucket for the capture store (Rook RGW or Garage) and its credentials in the same secret:
-#   MEND_BLOB_STORE=s3://mend?endpoint=http://rook-ceph-rgw-store.rook-ceph.svc&region=us-east-1
-#   MEND_BLOB_STORE_PUBLIC_URL=http://rook-ceph-rgw-store.rook-ceph.svc
-#   AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY
-# One claim for the API Pod's store directory (bare repositories, runner cache; RWO is enough
-# since decision 8 — the chart still says RWX, a follow-up). Create it or let the chart create it:
-helm install mend deploy/helm/mend -n mend \
-  --set store.create.enabled=true --set store.create.storageClassName=<a storage class>
-# …or, with an existing claim:
-helm install mend deploy/helm/mend -n mend --set store.existingClaim=mend-store
 ```
+
+**The bucket, on Rook Ceph (RGW).** A `CephObjectStore` is the gateway, a bucket `StorageClass`
+names it, and an `ObjectBucketClaim` in the **release namespace** makes the bucket and its
+credentials. Rook answers the claim with a ConfigMap and a Secret, both named after the claim, in
+the claim's namespace: `BUCKET_HOST` (the RGW Service, `rook-ceph-rgw-<store>.rook-ceph.svc`),
+`BUCKET_PORT`, `BUCKET_NAME` and `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY`. The chart reads all
+five and never sees the bucket name or the keys at render time.
+
+```yaml
+apiVersion: ceph.rook.io/v1
+kind: CephObjectStore
+metadata: { name: mend, namespace: rook-ceph }
+spec:
+  metadataPool: { failureDomain: host, replicated: { size: 3 } }
+  dataPool: { failureDomain: host, replicated: { size: 3 } } # or erasureCoded
+  preservePoolsOnDelete: true
+  gateway: { port: 80, instances: 1 }
+---
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata: { name: mend-bucket }
+provisioner: rook-ceph.ceph.rook.io/bucket
+reclaimPolicy: Retain # the captures are the sessions' history; keep them past the claim
+parameters: { objectStoreName: mend, objectStoreNamespace: rook-ceph }
+---
+apiVersion: objectbucket.io/v1alpha1
+kind: ObjectBucketClaim
+metadata: { name: mend-bucket, namespace: mend }
+spec:
+  generateBucketName: mend
+  storageClassName: mend-bucket
+  additionalConfig:
+    # A backstop for the multipart uploads an executor abandons while Mend is down
+    # (docs/DEPLOYMENT-STRATEGIES.md); Mend's hourly pass aborts them itself when up.
+    bucketLifecycle: |
+      { "Rules": [ { "ID": "abort-multipart", "Status": "Enabled", "Filter": { "Prefix": "" },
+                     "AbortIncompleteMultipartUpload": { "DaysAfterInitiation": 1 } } ] }
+```
+
+Then point the chart at the claim's outputs. `endpoint` is the egress rule the API tier gets; the
+RGW Pods carry `app: rook-ceph-rgw` and `rook_object_store: <store>` if you want it narrower than
+the namespace.
+
+```yaml
+# values.yaml
+captureStore:
+  blobStore:
+    fromObjectBucketClaim: { configMap: mend-bucket, secret: mend-bucket }
+    endpoint: { namespace: rook-ceph, port: 80 }
+store:
+  create: { enabled: true, storageClassName: "" } # ReadWriteOnce on the cluster default (ceph-block)
+```
+
+```sh
+helm install mend deploy/helm/mend -n mend -f values.yaml
+```
+
+**The bucket, on Garage (no Rook).** Run Garage beside Mend in the release namespace on an RWO claim
+— the same single-node layout the shipped bundle uses (`deploy/docker/compose.v2.yaml`) — and give
+the chart its URL. Garage's secrets come from the environment; the `garage.toml` below carries none.
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata: { name: garage-config, namespace: mend }
+data:
+  garage.toml: |
+    metadata_dir = "/var/lib/garage/meta"
+    data_dir = "/var/lib/garage/data"
+    db_engine = "sqlite"
+    replication_factor = 1
+    rpc_bind_addr = "[::]:3901"
+    rpc_public_addr = "127.0.0.1:3901"
+    [s3_api]
+    s3_region = "garage"
+    api_bind_addr = "[::]:3900"
+    root_domain = ".s3.garage.localhost"
+    [admin]
+    api_bind_addr = "[::]:3903"
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata: { name: garage-data, namespace: mend }
+spec: { accessModes: [ReadWriteOnce], resources: { requests: { storage: 200Gi } } }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: garage, namespace: mend }
+spec:
+  replicas: 1
+  strategy: { type: Recreate }
+  selector: { matchLabels: { app.kubernetes.io/name: garage } }
+  template:
+    metadata: { labels: { app.kubernetes.io/name: garage } }
+    spec:
+      containers:
+        - name: garage
+          image: dxflrs/garage:v2.4.1
+          args: [-c, /etc/garage/garage.toml, server]
+          env:
+            - name: GARAGE_RPC_SECRET
+              valueFrom: { secretKeyRef: { name: mend-garage-node, key: GARAGE_RPC_SECRET } }
+            - name: GARAGE_ADMIN_TOKEN
+              valueFrom: { secretKeyRef: { name: mend-garage-node, key: GARAGE_ADMIN_TOKEN } }
+          ports: [{ containerPort: 3900, name: s3 }]
+          volumeMounts:
+            - { name: config, mountPath: /etc/garage }
+            - { name: data, mountPath: /var/lib/garage }
+      volumes:
+        - { name: config, configMap: { name: garage-config } }
+        - { name: data, persistentVolumeClaim: { claimName: garage-data } }
+---
+apiVersion: v1
+kind: Service
+metadata: { name: garage, namespace: mend }
+spec:
+  selector: { app.kubernetes.io/name: garage }
+  ports: [{ name: s3, port: 3900, targetPort: s3 }]
+```
+
+```sh
+kubectl -n mend create secret generic mend-garage-node \
+  --from-literal=GARAGE_RPC_SECRET="$(openssl rand -hex 32)" \
+  --from-literal=GARAGE_ADMIN_TOKEN="$(openssl rand -hex 32)"
+kubectl -n mend apply -f garage.yaml && kubectl -n mend rollout status deploy/garage
+# Lay the node out and make the bucket and key once (the five steps of deploy/dev/garage-init.sh):
+G="kubectl -n mend exec deploy/garage -- /garage -c /etc/garage/garage.toml"
+NODE="$($G status | awk '/^[0-9a-f]{16}/ { print $1; exit }')"
+$G layout assign -z k8s -c 200GB "$NODE" && $G layout apply --version 1
+$G bucket create mend
+$G key create mend-api            # prints the key id and secret once — put them in the secret:
+kubectl -n mend create secret generic mend-garage \
+  --from-literal=AWS_ACCESS_KEY_ID="<Key ID>" --from-literal=AWS_SECRET_ACCESS_KEY="<Secret key>"
+$G bucket allow --read --write --owner mend --key mend-api
+```
+
+```yaml
+# values.yaml
+captureStore:
+  blobStore:
+    url: s3://mend?endpoint=http://garage.mend.svc:3900&region=garage
+    credentialsSecret: mend-garage
+    endpoint: { namespace: "", port: 3900, podSelector: { app.kubernetes.io/name: garage } }
+```
+
+Any other S3-compatible endpoint takes the same `url` + `credentialsSecret` shape; a bucket without
+an `endpoint=` (an AWS-region bucket) also needs `publicUrl`, since the chart cannot derive it.
 
 The chart renders two tiers. The **API Deployment** (`apps/api`, `MEND_MODE=all`, `Recreate`, **one
 replica**) is the real Mend server: the typed contract, auth, the WebSocket data planes, the session
-engine, and the workers; it mounts the store claim and the machine git key, and listens on
-`<release>-api:3101` plus the internal `<release>-session` Service for the workspace session
-channel. The **web Deployment** (`apps/web`, stateless, `web.replicaCount` free) serves the TanStack
-app and transparently proxies `/api/*` — HTTP, SSE, and WebSocket upgrades — to the API tier, so
-clients keep one origin on 3105. Plus Postgres (or `DATABASE_URL` from the secret), NetworkPolicies
-per tier (clients→web:3105, workspaces→session port, Postgres←API only), and a PodDisruptionBudget
-for the API tier. No Ingress; port-forward or bring your own.
+engine, and the workers; it mounts the store claim and the machine git key, carries the capture
+store's env, and listens on `<release>-api:3101` plus the internal `<release>-session` Service for
+the workspace session channel (capture routes included). The **web Deployment** (`apps/web`,
+stateless, `web.replicaCount` free) serves the TanStack app and transparently proxies `/api/*` —
+HTTP, SSE, and WebSocket upgrades — to the API tier, so clients keep one origin on 3105. Plus
+Postgres (or `DATABASE_URL` from the secret), NetworkPolicies per tier (clients→web:3105,
+workspaces→session port, API→bucket endpoint, Postgres←API only), and a PodDisruptionBudget for the
+API tier. No Ingress; port-forward or bring your own.
 
-Pair it with the Sealant chart: workspace Pods need egress to the Mend session port and to the
-bucket endpoint (`networkPolicies.workspaceEgressAllow`); no claim mapping is needed for the capture
-store (only the deprecated co-located store maps `workspaces.volumeMappings`).
+**Pair it with the Sealant chart.** Workspace Pods reach two things in Mend's world and mount
+nothing: the session channel (`<release>-session:3106`) and the bucket, whose presigned URLs name
+`MEND_BLOB_STORE_PUBLIC_URL`. The Sealant chart's workspace NetworkPolicy denies private ranges by
+default (`networkPolicies.workspaceEgressCidrs` excludes `10.0.0.0/8` and friends), so both must be
+listed in `networkPolicies.workspaceEgressAllow` of the **Sealant** values — the chart's NOTES print
+the two entries for your release:
+
+```yaml
+# sealant values.yaml
+networkPolicies:
+  workspaceEgressAllow:
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: mend } }
+      podSelector: { matchLabels: { app.kubernetes.io/name: mend } }
+      port: 3106
+    - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: rook-ceph } }
+      podSelector: { matchLabels: { app: rook-ceph-rgw, rook_object_store: mend } }
+      port: 80
+workspaces:
+  volumeMappings: [] # the RWX store mapping of chart 0.1.x is retired
+```
+
+With Garage beside Mend the second entry is the release namespace, port 3900 and the Garage Pod's
+label. A workspace that cannot reach the bucket logs `capture materialize failed` at launch
+("Troubleshooting").
 
 The images come from `ghcr.io/sealant-sh/mend` (`.github/workflows/image.yml`).
 
@@ -185,6 +362,30 @@ tailnet, a VPN) or leave `expose` off.
 rest wait on the lock. The worker is `Recreate`: sessions are re-attached by the boot reconciliation
 (hot-pool sweep, socket re-staging, token verification from the hash) — the workspaces themselves
 keep running in Sealant.
+
+**From chart 0.1.x (the RWX co-located store).** Chart 0.2.0 requires a bucket and renders no
+co-located store, so the upgrade is: stop sessions, add the bucket, upgrade with the old claim still
+mounted, and let the worktrees backfill.
+
+1. Stop every running session (`mend stop`, or the dashboard); a co-located worktree has no capture
+   yet, and the backfill below reads its directory at rest.
+2. Make the bucket (RGW or Garage above) and add the `captureStore` values.
+3. Keep `store.existingClaim: mend-store` for the upgrade: the old RWX claim still holds the bare
+   repositories, the runner cache, the machine key and every worktree directory, and an RWX claim
+   mounts fine as the API Pod's only volume. Run `helm upgrade`. A worktree that still has a
+   directory on the claim is **backfilled at its first launch** (#235, ADR-0002 decision 24):
+   capture 0 is a final co-located checkpoint of the directory's current files, uncommitted edits
+   included, so the work rides into the bucket and the directory is not read again. No separate
+   migrate step.
+4. Drop the Sealant-side mapping: `workspaces.volumeMappings: []` and the two `workspaceEgressAllow`
+   entries in the Sealant values, then `helm upgrade` Sealant. The mirrored `mend-store` claim in
+   the workspace namespace (`sealant-workspaces`) is no longer needed — delete it once no workspace
+   Pod mounts it (`kubectl -n sealant-workspaces get pods -o jsonpath='{..claimName}'`).
+5. Optional, once every worktree you care about has launched once: move the API Pod off the RWX
+   claim. Scale the API to 0, copy `/var/lib/mend/store` (everything but `*/worktrees/` and `_run/`)
+   and `.mend-keys` from the old claim onto a new RWO claim (a Job that mounts both), point
+   `store.existingClaim` at it or switch to `store.create`, scale back up, and keep the old claim
+   read-only for a while before deleting it. Nothing in the capture store depends on it.
 
 ## Roll back
 

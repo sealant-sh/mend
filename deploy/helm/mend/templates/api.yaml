@@ -2,6 +2,7 @@
 # session engine, and the workers — MEND_MODE=all in ONE replica (Recreate). The engine holds
 # live in-memory state (process supervision, service listeners, leases), so this tier stays a
 # singleton until it grows leases/leader election; the stateless web tier scales separately.
+# It is the only Pod that mounts the store claim; sessions live in the capture store (a bucket).
 apiVersion: v1
 kind: Service
 metadata:
@@ -93,7 +94,12 @@ spec:
             - { name: MEND_SESSION_ENDPOINT_TLS_CERT, value: /etc/mend/session-tls/tls.crt }
             - { name: MEND_SESSION_ENDPOINT_TLS_KEY, value: /etc/mend/session-tls/tls.key }
             {{- end }}
+            # The capture store: the bucket every session ships to and the pointers in Postgres
+            # (docs/adr/0002-session-capture-store.md). Presigned URLs name the public URL, which
+            # workspace Pods must reach.
+            {{- include "mend.captureEnv" . | nindent 12 }}
           volumeMounts:
+            # RWO: bare repositories, the runner cache, references — the API Pod's alone.
             - { name: store, mountPath: {{ .Values.store.mountPath }} }
             - { name: store, mountPath: /var/lib/mend/keys, subPath: .mend-keys }
             {{- if .Values.sessionChannel.tls.enabled }}

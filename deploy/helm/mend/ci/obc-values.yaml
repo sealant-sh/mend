@@ -1,0 +1,6 @@
+# `helm template -f`: the Rook ObjectBucketClaim path (docs/KUBERNETES.md "Install with the chart").
+captureStore:
+  blobStore:
+    fromObjectBucketClaim:
+      configMap: mend-bucket
+      secret: mend-bucket

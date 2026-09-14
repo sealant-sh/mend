@@ -11,18 +11,65 @@ image:
 secrets:
   existingSecret: mend-secrets
 
-# The API Pod's store directory: bare repositories, the runner cache, references, the machine key.
-# Since decision 8 (docs/KUBERNETES.md "The store") the session store is the capture store (a
-# bucket + Postgres) and workspace Pods mount nothing from here, so RWO is enough; the RWX wording
-# below is the deprecated co-located store's and narrowing it is a follow-up.
+# The API Pod's store directory: bare repositories, the runner cache
+# (`_cache/runner/<project>/repo.git`), references and the machine git key. Only the API Pod
+# mounts it — since decision 8 (docs/KUBERNETES.md "The store") sessions live in the capture store
+# below and workspace Pods mount nothing from Mend — so a ReadWriteOnce claim on the cluster's
+# default class is enough. Nothing here is mirrored into the workspace namespace.
 store:
-  existingClaim: mend-store
-  # Set to create the claim here instead (storageClassName must be an RWX class on your cluster).
+  # A claim you created (ReadWriteOnce or wider; an old RWX `mend-store` claim still works while
+  # you migrate — docs/KUBERNETES.md "Upgrade"). Non-empty wins over `create`.
+  existingClaim: ""
   create:
-    enabled: false
-    storageClassName: ""
-    size: 100Gi
+    enabled: true
+    storageClassName: "" # empty = the cluster default (e.g. ceph-block)
+    size: 50Gi
   mountPath: /var/lib/mend/store
+
+# The capture store (docs/adr/0002-session-capture-store.md): a bucket holds immutable captures,
+# Postgres the pointers. Every session's work ships to the bucket; presigned URLs name it, so
+# workspace Pods must resolve and reach the endpoint (the Sealant chart's workspace
+# NetworkPolicy — see NOTES.txt). Point the chart at the bucket ONE of two ways.
+captureStore:
+  # `captured` is the only value this chart renders. The deprecated co-located store
+  # (`MEND_SESSION_STORE=colocated`, the shared RWX claim mirrored into workspace Pods) is not
+  # supported by this chart version; an install that has not moved stays on chart 0.1.x.
+  sessionStore: captured
+  blobStore:
+    # (a) A Rook ObjectBucketClaim in the RELEASE namespace: the OBC yields a ConfigMap
+    # (BUCKET_HOST, BUCKET_PORT, BUCKET_NAME) and a Secret (AWS_ACCESS_KEY_ID,
+    # AWS_SECRET_ACCESS_KEY), both named after the claim. The chart reads all five through
+    # `valueFrom` and builds MEND_BLOB_STORE as
+    # `s3://$(BUCKET_NAME)?endpoint=<scheme>://$(BUCKET_HOST):$(BUCKET_PORT)&region=<region>&forcePathStyle=true`.
+    fromObjectBucketClaim:
+      configMap: "" # e.g. mend-bucket (the OBC's name)
+      secret: "" # e.g. mend-bucket (the OBC's name)
+      scheme: http # the RGW gateway's scheme (CephObjectStore .spec.gateway.port vs securePort)
+      region: us-east-1 # any name; RGW accepts every region, Garage wants its `s3_region`
+    # (b) The bucket URL itself — Garage, an RGW bucket you made by hand, any S3-compatible
+    # endpoint: `s3://<bucket>?endpoint=<url>&region=<name>&forcePathStyle=<bool>`
+    # (packages/store/src/blob-store.ts). Leave `endpoint=` unencoded as below.
+    url: "" # e.g. s3://mend?endpoint=http://rook-ceph-rgw-mend.rook-ceph.svc:80&region=us-east-1&forcePathStyle=true
+    # Keys AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY; required with `url`, ignored with the OBC.
+    credentialsSecret: ""
+    # The endpoint workspace Pods resolve; presigned URLs carry it (MEND_BLOB_STORE_PUBLIC_URL).
+    # Empty = the same in-cluster endpoint the API uses (the OBC's host:port, or `endpoint=`
+    # from `url`), which is right whenever workspace Pods share the cluster DNS.
+    publicUrl: ""
+    # Where the endpoint's Pods live, for the API tier's egress rule (networkpolicies.yaml).
+    # Empty namespace = the release namespace (Garage deployed beside Mend). An empty selector
+    # allows the whole namespace on that port; narrow it to the RGW Pods of a CephObjectStore
+    # named `mend` with { app: rook-ceph-rgw, rook_object_store: mend } (Helm merges maps, so
+    # the default is empty rather than a Rook-shaped one you would have to null out).
+    endpoint:
+      namespace: rook-ceph
+      port: 80
+      podSelector: {}
+  # Packs at or above the threshold go up as multipart uploads; S3 and R2 refuse parts under
+  # 5 MiB. Empty = the defaults (16 MiB / 16 MiB). Plain integers, bytes.
+  multipart:
+    thresholdBytes: ""
+    partSizeBytes: ""
 
 postgres:
   enabled: true
@@ -100,7 +147,8 @@ networkPolicies:
   # With `externalTrafficPolicy: Cluster` a cross-node hop SNATs the source to the cluster's POD
   # CIDR — include it, or use externalTrafficPolicy: Local for real client addresses.
   clientCidrs: []
-  # Where Sealant workspace Pods live (they are the only clients of the session channel).
+  # Where Sealant workspace Pods live (they are the only clients of the session channel; they
+  # also reach the bucket directly, which the SEALANT chart's workspace policy governs).
   workspaceNamespace: sealant
   # Where the Sealant API lives (the worker and web call it).
   sealantNamespace: sealant

@@ -1,0 +1,14 @@
+# `helm template -f`: a plain bucket URL — Garage deployed beside Mend in the release namespace.
+captureStore:
+  blobStore:
+    url: s3://mend?endpoint=http://garage:3900&region=garage
+    credentialsSecret: mend-garage
+    endpoint:
+      namespace: ""
+      port: 3900
+      podSelector: { app.kubernetes.io/name: garage }
+  multipart:
+    thresholdBytes: "33554432"
+    partSizeBytes: "16777216"
+store:
+  existingClaim: mend-store
