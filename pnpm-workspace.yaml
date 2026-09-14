@@ -21,8 +21,8 @@ catalog:
   "@fontsource/jetbrains-mono": ^5.2.8
   "@fontsource/space-grotesk": ^5.2.8
   "@pierre/diffs": ^1.2.12
-  "@sealant/api-contracts": 0.31.1
-  "@sealant/sdk": 0.31.1
+  "@sealant/api-contracts": 0.31.2
+  "@sealant/sdk": 0.31.2
   "@tailwindcss/vite": ^4.1.18
   "@tanstack/devtools-vite": 0.8.0
   "@tanstack/react-query": ^5.101.4
