@@ -1,5 +1,42 @@
 # @sealant/mend
 
+## 0.27.3
+
+### Patch Changes
+
+- 82bad9d: Capture mode, after the first cluster session on a Garage bucket:
+  - The capture routes ask the bucket only about capture objects. `capture.register` refuses a
+    manifest naming a key that is not `…/packs/<sha256>`, `…/trees/<sha256>` or
+    `…/manifests/<sha256>` before any HEAD; `upload.urls` and `upload.complete` drop or refuse such
+    keys; a plan presigns object keys alone. Every bucket failure inside a route now names the key.
+  - Mend verifies a capture's git section itself (`index-pack --verify` plus
+    `git rev-list --objects --missing=error` over the refs it names, on the runner) and records the
+    outcome in `captures.git_fsck` — `checkpoint`, `turn`, `suspend` and `final` at register, `auto`
+    at the first plan that would restore it. A capture whose pack omits a tree it names is accepted
+    and marked `failed`; `plan.get` answers the same head with the git section of the newest capture
+    that verifies (ADR-0002 16), and reads come from that capture, stamped.
+  - The `upload.urls` request quota counts calls, not presigned URLs: 600 calls per session per
+    rolling hour, at most 1,000 keys per call (the daemon batches 500). The old 2,000-URL quota
+    refused the first bulk capture of any repository with more than a couple of thousand dir
+    objects; bytes stay bounded at register (4× the project's footprint).
+  - `review prep` logs a change git cannot read with git's command and stderr, the worktree and the
+    chain head's verification state, instead of `Cause([Fail(GitError)])`; the passes are simply not
+    queued.
+  - `scripts/capture-e2e.sh` kills the executor with SIGKILL explicitly and `docs/KUBERNETES.md`
+    states the distinction: a graceful `kubectl delete pod` is a planned stop (`final` capture,
+    session `completed`); only a forced delete takes the `executor lost · lease expired` pickup
+    path.
+
+- 2c9df83: The bundle pins Sealant platform 0.31.1 by digest and the SDK moves to 0.31.1; the
+  workspace image carries sealantd 0.15.1, the daemon with the fixes from the first capture-mode
+  session on a cluster. Tracked files win over `.gitignore`: the materialiser keeps `.git/index`
+  across its sweep, so a tracked file matching an ignore pattern (`tooling/typescript/core.json`
+  under `core.*`) no longer vanishes from the next worktree tree. Stored tips are seeded from refs
+  alone, so a pack after boot or replan carries every subtree the replacement executor needs instead
+  of a negative it never received. Packs and staging survive a long ship: an unchanged snap discards
+  only objects no queued capture still lists, a coalesced capture keeps the other class's dir
+  objects, and the shipper mints upload URLs 500 keys per call, matching Mend's per-call quota.
+
 ## 0.27.2
 
 ### Patch Changes
