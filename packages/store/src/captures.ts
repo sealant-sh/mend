@@ -6,7 +6,12 @@ import * as zlib from "node:zlib";
 
 import { Effect, Schema } from "effect";
 
-import { type BlobNotFoundError, BlobStore, type BlobStoreError } from "./blob-store.ts";
+import {
+  type BlobNotFoundError,
+  BlobStore,
+  type BlobStoreError,
+  isValidBlobKey,
+} from "./blob-store.ts";
 import { git, type GitError } from "./git.ts";
 
 /**
@@ -220,6 +225,19 @@ export const digestOfKey = (key: string): string | null => {
 
 /** Git pack keys travel as `packs/<sha>` with the index at `packs/<sha>.idx`. */
 export const packIdxKeyOf = (packKey: string): string => `${packKey}.idx`;
+
+const OBJECT_KEY_TAIL =
+  /\/(packs\/[0-9a-f]{64}(\.idx)?|trees\/[0-9a-f]{64}|manifests\/[0-9a-f]{64})$/;
+
+/**
+ * Whether a key names one capture object — `…/packs/<sha256>`, `…/packs/<sha256>.idx`,
+ * `…/trees/<sha256>` or `…/manifests/<sha256>` under some prefix — as opposed to a prefix, an
+ * empty string, or anything else a manifest field could carry by mistake. Every HEAD, GET
+ * presign and PUT presign the capture routes issue is gated on it: a bare `captures/<worktree>`
+ * is never a request to the bucket.
+ */
+export const isCaptureObjectKey = (key: string): boolean =>
+  isValidBlobKey(key) && OBJECT_KEY_TAIL.test(key);
 
 const verifyDigest = (key: string, bytes: Uint8Array) => {
   const expected = digestOfKey(key);
@@ -633,7 +651,12 @@ export const collectTreeKeys = (
     return out;
   });
 
-/** Every blob key a manifest needs across its three sections: packs, indexes, dir objects. */
+/**
+ * Every blob key a manifest needs across its three sections: packs, indexes, dir objects. Only
+ * capture object keys (`isCaptureObjectKey`) are answered — a pending bulk section, an empty
+ * root and a malformed entry contribute nothing, so nothing downstream presigns or HEADs a key
+ * that names no object.
+ */
 export const keysNeededBy = (
   manifest: CaptureManifest,
 ): Effect.Effect<ReadonlyArray<string>, CaptureReadError, BlobStore> =>
@@ -648,7 +671,7 @@ export const keysNeededBy = (
     if (bulk !== "pending") for (const pack of bulk.packs) keys.add(pack);
     for (const key of yield* collectTreeKeys(manifest, "workspace")) keys.add(key);
     for (const key of yield* collectTreeKeys(manifest, "bulk")) keys.add(key);
-    return [...keys];
+    return [...keys].filter(isCaptureObjectKey);
   });
 
 /**

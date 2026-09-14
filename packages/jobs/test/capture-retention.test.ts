@@ -4,7 +4,12 @@ import * as path from "node:path";
 
 import { CaptureStoreRepo, type CaptureRow } from "@mend/db";
 import { WorktreeId } from "@mend/domain";
-import { CaptureChannelLive, CaptureRuntimeLive, CaptureUploadPolicyDefault } from "@mend/sessions";
+import {
+  CaptureChannelLive,
+  CaptureGitVerifierOff,
+  CaptureRuntimeLive,
+  CaptureUploadPolicyDefault,
+} from "@mend/sessions";
 import { makeMemoryCaptureStore } from "@mend/sessions/testing";
 import { BlobStore, BlobStoreFsLive, captureKeys, packIdxKeyOf } from "@mend/store";
 import { Effect, Layer } from "effect";
@@ -101,6 +106,7 @@ describe("CaptureRetention over dir://", () => {
   const memory = makeMemoryCaptureStore();
   const blobs = BlobStoreFsLive(blobRoot);
   const channel = CaptureChannelLive.pipe(
+    Layer.provide(CaptureGitVerifierOff),
     Layer.provide(memory.layer),
     Layer.provide(blobs),
     Layer.provide(CaptureUploadPolicyDefault),

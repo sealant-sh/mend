@@ -100,6 +100,7 @@ import { NetworkConfig, NetworkConfigLive } from "@mend/network";
 import { asSealantUser, SealantLiveFromEnv } from "@mend/sealant";
 import {
   CaptureChannelLive,
+  CaptureGitVerifierLive,
   CaptureRuntimeLive,
   CaptureUploadPolicyLive,
   CaptureRuntimeOff,
@@ -530,7 +531,9 @@ const MainLive = Layer.unwrap(
       Layer.provide(DatabaseLive),
     );
     // The capture channel (routes + register hub) and the engine's view of the capture store.
+    // Register and plan verify git sections on the runner (`CaptureGitVerifierLive`).
     const captureChannel = CaptureChannelLive.pipe(
+      Layer.provide(CaptureGitVerifierLive.pipe(Layer.provide(captureStore))),
       Layer.provide(captureStore),
       Layer.provide(CaptureUploadPolicyLive),
     );

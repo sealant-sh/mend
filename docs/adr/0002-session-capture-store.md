@@ -197,7 +197,9 @@ call, never part of the token. Per route:
 - `plan.get`: the head manifest plus GET URLs for materialise.
 - `upload.urls`: PUT URLs for a key list, minted only under the caller's epoch prefix, only after
   the lease predicate (`epoch = $epoch and expires_at > now()`) passes, **15 min** TTL, within the
-  session's quotas (bytes: 4× the project's compressed footprint; requests: 2,000 URLs per hour).
+  session's quotas (bytes: 4× the project's compressed footprint, priced at register; requests: 600
+  `upload.urls` calls per hour of at most 1,000 keys each — amended 2026-09-14, decision 25; before
+  it, 2,000 presigned URLs per hour).
 - `capture.register`: the CAS; 409 on a stale epoch or a wrong parent; a register that finds the
   chain already at `n` with the same capture id is a lost ack, answered as success.
 - `change.summary`: after a `checkpoint` register returns; accepted only against the chain head.
@@ -217,7 +219,10 @@ Same port, `packages/sessions/src/session-repository-captured.ts`, selected at t
 `packages/store/src/deployment.ts` L15–33). Per operation:
 
 - `createWorktree` = capture 0: the project base's git packs plus an empty workspace class,
-  registered with `n = 0` in the transaction that creates the worktree, lease and chain rows.
+  registered with `n = 0` in the transaction that creates the worktree, lease and chain rows. The
+  workspace class stays empty of `.git` bookkeeping on purpose (amended 2026-09-14, decision 26):
+  the daemon materialises the repository from the git section and, since sealantd
+  `fix/capture-tracked-ignored`, protects `.git/index` itself — Mend ships no index for it to keep.
 - `resetWorktree` = a new capture 0 from the requested base, refused while a lease is live.
 - `renameBranch` = a `store_refs` write plus a `plan.get` refresh for the executor.
 - `checkpoint` = ask the lease holder over the channel for a `checkpoint` capture and await its
@@ -452,3 +457,13 @@ Mend-side details the decision record left open, decided in this ADR:
     names the bulk root dir object; packs beside it); `packs` rows carry `platform` and a null
     `worktree_id`. Only `dependency-install` writes it.
 24. (2026-09-13) Legacy worktrees are backfilled at first capture-mode use, not by a migrate step.
+25. (2026-09-14) The request quota counts `upload.urls` calls (600 per session per rolling hour),
+    each of at most 1,000 keys; bytes are bounded at register (decision above, 4× the footprint).
+    Keys are content-addressed dir objects and packs — the first bulk capture of a Mend-size
+    repository is 20,495 dir objects for 134,741 files, shipped 500 keys per call — so a per-key URL
+    quota only ever refused a large tree, which is what happened on the cluster.
+26. (2026-09-14) Capture 0's workspace class carries no `.git` bookkeeping; the daemon protects
+    `.git/index` on its own (sealantd `fix/capture-tracked-ignored`). Mend's own check of a git
+    section is `index-pack --verify` plus a connectivity walk of the refs it names, recorded in
+    `captures.git_fsck` for `checkpoint|turn|suspend|final` at register and for `auto` at the first
+    plan that would restore it; the executor's `fsck` claim is never recorded as verified.

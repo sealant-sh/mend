@@ -6,6 +6,13 @@
 #   docker kill mid-work → the reaper settles "executor lost" → resume = pickup on a fresh
 #   executor → the edit survived.
 #
+# The kill is forced on purpose (`docker kill` = SIGKILL; on Kubernetes the equivalent is
+# `kubectl delete pod --grace-period=0 --force`). A graceful stop — `docker stop`, a plain
+# `kubectl delete pod` — sends SIGTERM: sealantd flushes a `final` capture, the harness exits,
+# and the session settles `completed` through the run's exit, which is the planned-stop path
+# and proves nothing about pickup. Only an executor that vanishes without an exit takes the
+# lease-expiry path ("executor lost · lease expired") this step asserts.
+#
 # Every step checks an observable fact and stops at the first one that does not hold, so a
 # partial run reports exactly how far the stack got. Nothing here fakes a pass.
 #
@@ -167,10 +174,12 @@ jq -e '.observation.source == "capture"' <<<"$DIFF" >/dev/null || fail "the diff
 jq -e --arg m "$MARK" '.diff | contains($m)' <<<"$DIFF" >/dev/null || fail "the edit is not in the observed diff"
 echo "diff · $(jq -r '.observation.label' <<<"$DIFF")"
 
-step "7 · docker kill mid-work: the lease lapses, the reaper settles 'executor lost'"
+step "7 · forced kill mid-work (SIGKILL, no final capture): the lease lapses, the reaper settles 'executor lost'"
 docker exec "$CONTAINER" sh -lc "cd /workspace/repo && printf '%s\n' '$MARK-second' >> README.md" >/dev/null 2>&1 || true
 T4="$(now)"
-docker kill "$CONTAINER" >/dev/null
+# SIGKILL, never `docker stop`: a SIGTERM lets sealantd flush a `final` capture and the
+# harness exit, and the session settles `completed` before the lease can lapse.
+docker kill --signal=KILL "$CONTAINER" >/dev/null
 lost() { api "$API/api/sessions/$SESSION_ID" | jq -e '.session.status == "failed" and (.session.summary // "" | test("executor lost"))' >/dev/null 2>&1; }
 wait_for 180 "the reaper to settle the session as 'executor lost'" lost
 echo "settled 'executor lost' $(since "$T4") after docker kill"

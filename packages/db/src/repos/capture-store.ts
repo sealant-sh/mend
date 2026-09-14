@@ -132,6 +132,12 @@ export class CaptureStoreRepo extends Context.Service<
       captureId: string,
       state: CaptureSummaryState,
     ) => Effect.Effect<boolean>;
+    /**
+     * Mend's own verification of a capture's git section (`index-pack --verify` plus a
+     * connectivity walk of the refs it names): `verified`, `failed`, or `unverified` when the
+     * check could not run. Pickup and reads prefer the newest `verified` capture (ADR-0002 16).
+     */
+    readonly setGitFsck: (captureId: string, outcome: CaptureGitFsck) => Effect.Effect<boolean>;
     readonly leaseOf: (worktreeId: WorktreeId) => Effect.Effect<WorktreeLease | null>;
     readonly headOf: (worktreeId: WorktreeId) => Effect.Effect<ChainHead | null>;
     /** Every registered capture of the worktree, oldest first. */
@@ -319,6 +325,17 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return rows.length > 0;
     });
 
+    const setGitFsck = Effect.fn("CaptureStoreRepo.setGitFsck")(function* (
+      captureId: string,
+      outcome: CaptureGitFsck,
+    ) {
+      const rows = yield* sql<{ readonly id: string }>`
+        UPDATE captures SET git_fsck = ${outcome}
+         WHERE id = ${captureId}
+         RETURNING id`.pipe(Effect.orDie);
+      return rows.length > 0;
+    });
+
     // Raw `sql` reads name their result keys in camelCase: the client transforms every result name
     // with snakeToCamel (`client.ts`), so `executor_id` arrives as `executorId` — a snake_case key
     // here reads `undefined` and silently turns a held lease into a free one (observed in the e2e).
@@ -474,6 +491,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       release,
       acceptSummary,
       setSummaryState,
+      setGitFsck,
       leaseOf,
       headOf,
       listChain,

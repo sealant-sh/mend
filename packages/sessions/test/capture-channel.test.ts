@@ -15,6 +15,7 @@ import {
   captureKeys,
   changeSummaryKey,
   DeploymentConfig,
+  isCaptureObjectKey,
   type CaptureManifest,
 } from "@mend/store";
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
@@ -28,6 +29,7 @@ import {
   CaptureUploadPolicy,
   PRESIGN_TTL_SECONDS,
 } from "../src/capture-channel.ts";
+import { CaptureGitVerifierOff } from "../src/capture-verify.ts";
 import {
   SessionChannelNetworkHost,
   SessionChannelNetworkHostLive,
@@ -96,7 +98,20 @@ describe("capture channel routes", () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-capture-channel-"));
   const blobRoot = path.join(scratch, "blobs");
   const memory = makeMemoryCaptureStore();
-  const blobs = BlobStoreFsLive(blobRoot);
+  // Every key the routes ask the bucket about, in order: what an S3 access log would show.
+  const headed: Array<string> = [];
+  const presigned: Array<string> = [];
+  const blobs = Layer.effect(
+    BlobStore,
+    Effect.map(BlobStore, (inner): typeof BlobStore.Service => ({
+      ...inner,
+      head: (key) => Effect.sync(() => headed.push(key)).pipe(Effect.andThen(inner.head(key))),
+      presign: (key, method, ttlSeconds) =>
+        Effect.sync(() => presigned.push(key)).pipe(
+          Effect.andThen(inner.presign(key, method, ttlSeconds)),
+        ),
+    })),
+  ).pipe(Layer.provide(BlobStoreFsLive(blobRoot)));
   const registry = SessionChannelRegistryLive;
   const tokens = SessionChannelTokensRepoMemory;
   const deployment = Layer.succeed(DeploymentConfig, {
@@ -111,11 +126,18 @@ describe("capture channel routes", () => {
       Layer.provide(tokens),
     ),
     CaptureChannelLive.pipe(
+      Layer.provide(CaptureGitVerifierOff),
       Layer.provide(memory.layer),
       Layer.provide(blobs),
       // Small numbers so a multipart plan is exercised with bytes a test can afford.
       Layer.provide(
-        Layer.succeed(CaptureUploadPolicy, { multipartThresholdBytes: 64, partSizeBytes: 32 }),
+        Layer.succeed(CaptureUploadPolicy, {
+          multipartThresholdBytes: 64,
+          partSizeBytes: 32,
+          // Small too: the request quota is exercised below without an hour of calls.
+          callsPerHour: 16,
+          keysPerCall: 4,
+        }),
       ),
     ),
     registry,
@@ -425,15 +447,18 @@ describe("capture channel routes", () => {
       parts: two,
     });
     expect(unknown.status).toBe(500);
-    // Part URLs count against the hourly URL quota exactly like PUT URLs.
-    const tooMany = await post(address, "/upload.urls", token, {
+    // The request quota counts calls, not URLs: a 2,000-part plan is one call, answered whole
+    // (the old per-URL quota refused it at exactly this size).
+    const wide = keys2.pack("9".repeat(64));
+    const manyParts = await post(address, "/upload.urls", token, {
       worktree_id: WORKTREE,
       epoch: 2,
-      keys: [keys2.pack("9".repeat(64))],
-      sizes: { [keys2.pack("9".repeat(64))]: 32 * 2_000 },
+      keys: [wide],
+      sizes: { [wide]: 32 * 2_000 },
     });
-    expect(tooMany.status).toBe(429);
-    expect(tooMany.json["reason"]).toBe("quota-exceeded");
+    expect(manyParts.status).toBe(200);
+    const widePlan = (manyParts.json["multipart"] as Record<string, typeof plan>)[wide];
+    expect(widePlan?.part_urls).toHaveLength(2_000);
     expect(PRESIGN_TTL_SECONDS).toBe(15 * 60);
   });
 
@@ -612,5 +637,148 @@ describe("capture channel routes", () => {
     const second = await post(address, "/plan.get", token, { epoch: 0 });
     expect(second.status).toBe(409);
     expect(second.json["reason"]).toBe("worktree-leased");
+  });
+
+  it("asks the bucket only about capture objects: a pending bulk section names nothing, a prefix or an empty entry is refused before any HEAD, and a plan presigns object keys alone", async () => {
+    // The previous test removed the lease row; hand the worktree a live one under epoch 3.
+    memory.leases.set(WORKTREE, {
+      executorId: "replacement",
+      epoch: 3,
+      expiresAt: memory.clock.now() + 60_000,
+    });
+    const parent = memory.captures.get(memory.chains.get(WORKTREE)?.headCapture ?? "");
+    if (parent === undefined) throw new Error("the chain has no head");
+    const keys3 = captureKeys(WORKTREE, 3);
+    const tree = path.join(scratch, "tree3");
+    fs.mkdirSync(path.join(tree, "harness"), { recursive: true });
+    fs.writeFileSync(path.join(tree, "harness", "state.json"), "{}\n");
+    const snapshot = snapshotDirectory(tree, keys3, { chunkSize: 64 });
+    const bare = `captures/${WORKTREE}`;
+    // A manifest naming the bare worktree prefix and an empty entry as git packs: refused as
+    // a bad request, and the bucket was never asked about either (an S3 store would answer a
+    // HEAD on the prefix with 404, every few seconds, for as long as the executor retried).
+    const malformed = buildManifest({
+      worktreeId: WORKTREE,
+      n: parent.n + 1,
+      parent: parent.id,
+      epoch: 3,
+      seq: 9,
+      kind: "turn",
+      git: { packs: [bare, ""], refs: {}, head: "refs/heads/main", fsck: "verified" },
+      workspace: { root: snapshot.root, packs: snapshot.packs },
+      bulk: "pending",
+    });
+    await run(uploadObjects(new Map([...snapshot.objects, [malformed.key, malformed.bytes]])));
+    headed.length = 0;
+    const refused = await post(address, "/capture.register", token, {
+      worktree_id: WORKTREE,
+      epoch: 3,
+      n: malformed.manifest.n,
+      parent: parent.id,
+      capture_id: malformed.id,
+      manifest_key: malformed.key,
+      manifest: malformed.manifest,
+    });
+    expect(refused.status).toBe(400);
+    expect(refused.json["reason"]).toBe("bad-request");
+    expect(refused.json["message"]).toContain("not capture objects");
+    expect(refused.json["message"]).toContain(bare);
+    expect(headed).toEqual([]);
+    // A well-formed manifest with the bulk section pending: the HEADs are exactly the
+    // workspace packs, and nothing names the prefix.
+    const pending = buildManifest({
+      worktreeId: WORKTREE,
+      n: parent.n + 1,
+      parent: parent.id,
+      epoch: 3,
+      seq: 10,
+      kind: "turn",
+      workspace: { root: snapshot.root, packs: snapshot.packs },
+      bulk: "pending",
+    });
+    await run(uploadObjects(new Map([[pending.key, pending.bytes]])));
+    headed.length = 0;
+    const landed = await post(address, "/capture.register", token, {
+      worktree_id: WORKTREE,
+      epoch: 3,
+      n: pending.manifest.n,
+      parent: parent.id,
+      capture_id: pending.id,
+      manifest_key: pending.key,
+      manifest: pending.manifest,
+    });
+    expect(landed.status).toBe(200);
+    expect(headed).toEqual(snapshot.packs);
+    // The plan for that head presigns every object it needs and nothing else.
+    presigned.length = 0;
+    const plan = await post(address, "/plan.get", token, { epoch: 3 });
+    expect(plan.status).toBe(200);
+    const urls = Object.keys(plan.json["get_urls"] as Record<string, string>);
+    expect(urls).toEqual(expect.arrayContaining([...snapshot.packs, snapshot.root, pending.key]));
+    expect(urls.every(isCaptureObjectKey)).toBe(true);
+    expect(presigned.every(isCaptureObjectKey)).toBe(true);
+    expect([...headed, ...presigned]).not.toContain(bare);
+    // upload.urls drops a prefix, a slash-terminated prefix and an empty key; upload.complete
+    // refuses a prefix outright.
+    const wanted = keys3.pack("c".repeat(64));
+    const minted = await post(address, "/upload.urls", token, {
+      worktree_id: WORKTREE,
+      epoch: 3,
+      keys: [bare, `${bare}/3/packs/`, "", wanted],
+    });
+    expect(minted.status).toBe(200);
+    expect(Object.keys(minted.json["urls"] as Record<string, string>)).toEqual([wanted]);
+    const prefixComplete = await post(address, "/upload.complete", token, {
+      worktree_id: WORKTREE,
+      epoch: 3,
+      key: `${bare}/3/packs`,
+      upload_id: "upload-1",
+      parts: [{ part_number: 1, etag: "etag-1" }],
+    });
+    expect(prefixComplete.status).toBe(400);
+    expect(prefixComplete.json["message"]).toContain("one capture object");
+  });
+
+  it("the request quota bounds upload.urls calls, not keys: a call over the key cap is a bad request, and the hour's calls run out whatever each carried", async () => {
+    // The lease under epoch 3 from the previous test is still live.
+    const keys3 = captureKeys(WORKTREE, 3);
+    const key = (index: number) => keys3.tree(index.toString(16).padStart(64, "0"));
+    // Five keys against a cap of four: refused as a request shape, not counted.
+    const tooMany = await post(address, "/upload.urls", token, {
+      worktree_id: WORKTREE,
+      epoch: 3,
+      keys: [key(1), key(2), key(3), key(4), key(5)],
+    });
+    expect(tooMany.status).toBe(400);
+    expect(tooMany.json["message"]).toContain("the cap is 4 per upload.urls call");
+    // Every earlier test's successful call counted against the same session's 16; a
+    // four-key call costs exactly what a one-key call does. Run the hour out.
+    let minted = 0;
+    let refused: { status: number; json: Record<string, unknown> } | null = null;
+    for (let index = 0; index < 16 && refused === null; index += 1) {
+      const answer = await post(address, "/upload.urls", token, {
+        worktree_id: WORKTREE,
+        epoch: 3,
+        keys:
+          index % 2 === 0
+            ? [key(10 + index)]
+            : [key(20 + index), key(30 + index), key(40 + index), key(50 + index)],
+      });
+      if (answer.status === 200) minted += 1;
+      else refused = answer;
+    }
+    expect(minted).toBeGreaterThan(0);
+    expect(refused?.status).toBe(429);
+    expect(refused?.json["reason"]).toBe("quota-exceeded");
+    expect(refused?.json["message"]).toBe(
+      "request quota: 16 upload.urls calls per hour per session",
+    );
+    // A refused call is not counted, and stays refused: the window is calls, not attempts.
+    const again = await post(address, "/upload.urls", token, {
+      worktree_id: WORKTREE,
+      epoch: 3,
+      keys: [key(99)],
+    });
+    expect(again.status).toBe(429);
   });
 });

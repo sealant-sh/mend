@@ -10,7 +10,8 @@ import {
 import { SessionId } from "@mend/domain";
 import { resolveAutomation } from "@mend/domain/workbench";
 import { CaptureRuntime, WorktreeReads } from "@mend/sessions";
-import { Effect, Layer, Schema, Stream } from "effect";
+import type { GitError } from "@mend/store";
+import { Cause, Effect, Layer, Schema, Stream } from "effect";
 
 import { JobRunner } from "./job-runner.ts";
 
@@ -34,6 +35,39 @@ import { JobRunner } from "./job-runner.ts";
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(MendEvent));
 
 const SETTLED = new Set(["completed", "failed", "stopped"]);
+
+/** The chain head as the log names it: which capture the read would have come from. */
+export interface ReviewPrepHead {
+  readonly n: number;
+  readonly id: string;
+  readonly gitFsck: string;
+}
+
+/**
+ * What the warning carries when the change cannot be read: git's own words (the command and
+ * its stderr — `fatal: unable to read tree …`, never `Cause([Fail(GitError)])`) and where the
+ * bytes were to come from (the worktree, the chain head and its verification state), so the
+ * log line alone says which capture is unreadable and why.
+ */
+export const readFailureAnnotations = (
+  error: GitError,
+  context: {
+    readonly sessionId: string;
+    readonly worktreeId: string;
+    readonly changeId: string;
+    readonly head: ReviewPrepHead | null;
+  },
+): Record<string, string | number | null> => ({
+  sessionId: context.sessionId,
+  worktreeId: context.worktreeId,
+  changeId: context.changeId,
+  captureN: context.head?.n ?? null,
+  captureId: context.head?.id ?? null,
+  gitFsck: context.head?.gitFsck ?? null,
+  git: `git ${error.args.join(" ")}`,
+  exitCode: error.exitCode,
+  stderr: error.stderr.trim(),
+});
 
 export const ReviewPrepLive: Layer.Layer<
   never,
@@ -67,8 +101,10 @@ export const ReviewPrepLive: Layer.Layer<
       // Capture mode (ADR-0002 "Review"): a summary the executor posted for the chain head is
       // `claimed` until a runner recomputes it; queue that pass at settle so the review page
       // reads `observed` by the time a human opens it.
+      let chainHead: ReviewPrepHead | null = null;
       if (capture.enabled) {
         const head = (yield* capture.repo.headOf(session.worktreeId))?.head ?? null;
+        chainHead = head === null ? null : { n: head.n, id: head.id, gitFsck: head.gitFsck };
         const summary = head === null ? null : yield* capture.repo.summaryOf(head.id);
         if (head !== null && summary !== null && summary.state === "claimed") {
           yield* jobs.enqueue({
@@ -84,9 +120,26 @@ export const ReviewPrepLive: Layer.Layer<
       if (!autoTour && !autoSuggest) return;
 
       // The passes read worktree-versus-base themselves; this is only the
-      // cheap "is there anything at all" gate before spending inference.
-      const files = (yield* reads.changedFiles(project.id, session.worktreeId, change.baseSha))
-        .value;
+      // cheap "is there anything at all" gate before spending inference. A
+      // change git cannot read is logged with git's words and queues nothing:
+      // the review page still offers both passes on demand.
+      const read = yield* reads.changedFiles(project.id, session.worktreeId, change.baseSha).pipe(
+        Effect.catchTag("GitError", (error) =>
+          Effect.logWarning("review prep: the change could not be read · no passes queued").pipe(
+            Effect.annotateLogs(
+              readFailureAnnotations(error, {
+                sessionId,
+                worktreeId: session.worktreeId,
+                changeId: change.id,
+                head: chainHead,
+              }),
+            ),
+            Effect.as(null),
+          ),
+        ),
+      );
+      if (read === null) return;
+      const files = read.value;
       if (files.length === 0) return;
 
       // Key by content, not identity: many sessions settle onto ONE worktree
@@ -135,16 +188,18 @@ export const ReviewPrepLive: Layer.Layer<
           Effect.flatMap((event) =>
             event.type === "session" ? observe(event.sessionId) : Effect.void,
           ),
+          // `Cause.pretty` renders the failure itself (its tag and fields), where
+          // `String(cause)` reads `Cause([Fail(GitError)])` and names nothing.
           Effect.catchCause((cause) =>
             Effect.logWarning("review prep: event handling failed").pipe(
-              Effect.annotateLogs({ cause: String(cause) }),
+              Effect.annotateLogs({ cause: Cause.pretty(cause) }),
             ),
           ),
         ),
       ),
       Effect.catchCause((cause) =>
         Effect.logWarning("review prep: listen stream ended").pipe(
-          Effect.annotateLogs({ cause: String(cause) }),
+          Effect.annotateLogs({ cause: Cause.pretty(cause) }),
         ),
       ),
       Effect.forkScoped,
