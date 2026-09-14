@@ -217,6 +217,33 @@ export function flushReportEvidence(logText, sessionId) {
   return false;
 }
 
+/**
+ * Every flush the engine logged for THIS session that did not complete: refusals, timeouts and
+ * partial reports, newest last, each as "<kind> · <why> · <error or detail>". The flush stage
+ * waits for one completed report, so when it times out these lines are the whole cause and the
+ * only thing the CI log would otherwise be missing. Engine-authored annotations only — no HTTP
+ * body, output or credential reaches this text — and both the count and each line are bounded.
+ */
+export function flushAttemptEvidence(logText, sessionId, limit = 6) {
+  if (typeof logText !== "string" || typeof sessionId !== "string" || !sessionId) return [];
+  const pattern =
+    /session engine: capture flush · (refused|timed out|partial · observed) \{([^}]*)\}/g;
+  const seen = [];
+  for (const match of logText.matchAll(pattern)) {
+    const body = match[2];
+    if (!body.includes(`sessionId: '${sessionId}'`)) continue;
+    const quoted = (key) => body.match(new RegExp(`\\b${key}: '([^']*)'`))?.[1];
+    const numeric = (key) => body.match(new RegExp(`\\b${key}: (-?\\d+|true|false)\\b`))?.[1];
+    const detail =
+      quoted("error") ??
+      (numeric("timeoutMs") === undefined
+        ? `pending ${numeric("pending") ?? "?"}, fenced ${numeric("fenced") ?? "?"}`
+        : `after ${numeric("timeoutMs")}ms`);
+    seen.push(`${match[1]} · ${quoted("why") ?? "unknown"} · ${detail}`.slice(0, 200));
+  }
+  return seen.slice(-limit);
+}
+
 const shaPattern = /^[0-9a-f]{40}$/;
 
 /**

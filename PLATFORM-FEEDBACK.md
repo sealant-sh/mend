@@ -7,6 +7,75 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-14 · 0.31.1 · sealantd's orphan reaper steals the capture engine's `git` children; `capture.flush` refused with ECHILD
+
+v0.27.3's release run failed the packaged acceptance on amd64 at "recorded command and change: Timed
+out waiting for a completed capture flush report for the session" (run 34867014250, job
+104054526341); arm64 passed the same stage. Reproduced against the same image pair
+(`0.0.0-acceptance.34867014250.1` → `0.27.3`, Sealant 0.31.1, sealantd 0.15.1) in an isolated
+docker-in-docker daemon capped at 2 CPUs by repeating the session cycle of
+`scripts/check-packaged-server.mjs` (`mend run … git commit; sleep 30`): in 1 of 8 runs the engine's
+turn-boundary flush was refused by the daemon —
+
+```
+session engine: capture flush · refused { …, why: 'checkpoint · turn-boundary',
+  error: 'The workspace runtime refused the flush: No child process (os error 10)' }
+```
+
+— the executor's log shows no `capture staged … kind=Suspend` for that flush (the snap died before
+staging); the session's second chance, the `why: 'planned stop'` flush, staged n=2 and completed
+2,301 ms after the refusal, so that run still passed the stage. The CI run lost both chances: no
+report read `completed` inside the stage's 180 s bound.
+
+Driving the flush directly measures the rate. Against one live executor on the same 2-CPU dind
+daemon, 150 sequential `POST /sessions/<id>/checkpoints` (one `capture.flush` each) while the
+harness command slept:
+
+| round                                                                          | flushes        | completed | refused, all ECHILD |
+| ------------------------------------------------------------------------------ | -------------- | --------- | ------------------- |
+| quiet                                                                          | 150 in 25.0 s  | 144       | 6 (4%)              |
+| orphan storm (`while true; do sh -c 'sleep 0.01 &'; done` inside the executor) | 150 in 120.1 s | 100       | 50 (33%)            |
+
+Every refusal carried the same message, and only that message:
+`The workspace runtime refused the flush: No child process (os error 10)`. The orphan storm changes
+nothing but the SIGCHLD rate at PID 1, and it multiplies the refusal rate eightfold — which is the
+reaper, not the capture engine. The same storm also slows the completed flushes (25 s → 120 s for
+the same 150 calls), because each sweep contends with the snap.
+
+- **Cause (sealantd, not Mend).** sealantd runs as the container's PID 1 / child subreaper and
+  `sealant-process/src/platform.rs::reap_orphans` sweeps on every SIGCHLD and every 2 s: it peeks
+  each waitable child with `waitid(P_ALL, WNOHANG|WNOWAIT)` and reaps any pid that is not in the
+  registry's owned-pid set. The capture engine spawns `git` through plain `std::process::Command`
+  (`sealant-capture/src/gitpack.rs` `git_command`, `.output()` at every snap: `rev-list`,
+  `pack-objects`, `index-pack`; `watch.rs:521`), never through the registry, so a git child that
+  exits while a sweep runs is reaped by the reaper and the engine's own `wait` fails with ECHILD.
+  The window opens exactly when Mend flushes: the harness command's exit is a SIGCHLD, so the sweep
+  and the turn-boundary snap run together. sealantd #30 fixed this class for registry-owned children
+  ("the owner's wait() returned ECHILD … intermittent e2e failure in CI"); the capture crate's
+  spawns were never brought under that gate. 0.15.1 (#76) added `head_tree` and `stored_tips` — two
+  more `git` children per snap — which widened the exposure the 0.27.3 run hit.
+- **Mend's side is unchanged, and the acceptance already tolerates a single refusal.**
+  `SessionEngine.observeCaptureFlush` logs the refusal as observed and the checkpoint is derived
+  from the registered head; `flushReportEvidence` scans every report the session logged and accepts
+  the first that reads `completed` with `pending: 0` and `fenced: false`, so refused reports are
+  already passed over — the 1-in-8 run above refused at the turn boundary and still passed on the
+  planned-stop report. The CI run failed because no report completed at all, which is not something
+  the acceptance can honestly paper over. Neither the `CaptureGitVerifier` (mend#245), the
+  object-key gate nor the call quota is involved: every `capture.register` in the reproduction
+  answered 200 with no verification warning.
+- **How this was measured.** Both numbers come from a throwaway fork of
+  `scripts/check-packaged-server.mjs` that repeated its session cycle N times and, per session,
+  posted N user-mark checkpoints against the live executor while the harness command slept, then
+  counted `session engine: capture flush ·` outcomes from the Mend container log. The fork is not
+  kept — a second copy of a release-gating script rots — but it is a few lines to rebuild, and
+  `flushAttemptEvidence` now puts the same outcomes into the acceptance's own timeout message, so
+  the next occurrence names itself in CI rather than needing this reproduction again.
+- **Suggested (sealantd):** spawn the capture engine's `git` (and any other daemon-internal child)
+  through the registry's spawn gate so the reaper never sees it as an adopted orphan — or have the
+  reaper reap only pids it adopted (a child whose parent was not this process), never a pid this
+  process spawned. Until then any `capture.flush`, snap or ship that runs `git` can fail with
+  `No child process (os error 10)` at a rate that rises with load.
+
 ## 2026-09-14 · sealantd 0.15.1 · A refused capture is retried forever; sizes travel only for multipart keys
 
 Cluster proof on Mend 0.27.3: the executor uploaded a 775 MB / 134,103-file bulk capture in full
