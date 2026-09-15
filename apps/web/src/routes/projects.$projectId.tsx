@@ -12,7 +12,7 @@ import {
   type DetailHandlers,
 } from "#/components/project-detail/parts";
 import { setWorktreeView, useWorktreeView } from "#/components/project-detail/view-choice";
-import { WorktreeTree } from "#/components/project-detail/worktree-tree";
+import { ProjectWorktreeContent, WorktreeTree } from "#/components/project-detail/worktree-tree";
 import { ProjectShell } from "#/components/project-shell";
 import { removeWorktree } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
@@ -37,9 +37,8 @@ function ProjectPage() {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const launchContext = { queryClient, trpc };
-  const { project, sessions, annotations, worktrees, worktreeAnnotations } = useSuspenseQuery(
-    trpc.projects.detail.queryOptions({ id: projectId }),
-  ).data;
+  const { project, sessions, hiddenEndedSessions, annotations, worktrees, worktreeAnnotations } =
+    useSuspenseQuery(trpc.projects.detail.queryOptions({ id: projectId })).data;
   const navigate = useNavigate();
   const view = useWorktreeView();
   const [newWorktreeOpen, setNewWorktreeOpen] = useState(false);
@@ -135,24 +134,13 @@ function ProjectPage() {
           </div>
         </div>
 
-        {groups.length === 0 ? (
-          <div className="rounded-2xl bg-panel px-6 py-12 text-center shadow-sm">
-            <h3 className="text-sm font-medium">No worktrees yet</h3>
-            <p className="mt-2 text-sm text-muted-foreground">
-              Create a worktree, then add sessions inside it.
-            </p>
-            <button
-              type="button"
-              aria-haspopup="dialog"
-              onClick={() => setNewWorktreeOpen(true)}
-              className="mt-4 text-sm font-medium text-info hover:underline"
-            >
-              Create your first worktree
-            </button>
-          </div>
-        ) : (
+        <ProjectWorktreeContent
+          hiddenEndedSessions={hiddenEndedSessions}
+          worktreeCount={groups.length}
+          onCreate={() => setNewWorktreeOpen(true)}
+        >
           <WorktreeTree groups={groups} view={view} handlers={handlers} />
-        )}
+        </ProjectWorktreeContent>
         <ClearSettledButton clear={clear} />
       </section>
       <NewWorktreeDialog

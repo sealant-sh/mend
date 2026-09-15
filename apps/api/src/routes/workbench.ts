@@ -111,6 +111,7 @@ import {
   validateProjectSecretValue,
   ServiceView,
   type GitAuthMode,
+  type SessionStatus,
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import { asSealantUser, SealantClient } from "@mend/sealant";
@@ -134,7 +135,7 @@ import {
   SecretCipher,
   Store,
   DotfilesStore,
-  decodeChangeSummary,
+  ChangeSummary,
   describeGitRemoteFailure,
   harnessHomePathOf,
   resolveRemoteEnv,
@@ -142,7 +143,7 @@ import {
   type DiffFileFact,
   type GitError,
 } from "@mend/store";
-import { Effect, Option, Result } from "effect";
+import { Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { HostEnvironment } from "../services/host-environment.ts";
@@ -169,6 +170,8 @@ const STORE_NAME = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 
 /** A file listing answers at most this many paths; `truncated` says when it bit. */
 const FILE_LISTING_LIMIT = 20_000;
+
+const decodeChangeSummaryJson = Schema.decodeUnknownEffect(Schema.fromJsonString(ChangeSummary));
 
 const fileListingFailure = (error: { readonly stderr: string }) =>
   new StoreFailure({ message: error.stderr === "" ? "git could not list files" : error.stderr });
@@ -222,7 +225,43 @@ const reviewDiffViews = (patch: string, facts: ReadonlyArray<DiffFileFact>) =>
   );
 
 /** Live session states — removal refuses these; project removal stops them. */
-export const LIVE_STATES = new Set(["starting", "running", "waiting", "idle"]);
+export const LIVE_STATES: ReadonlySet<SessionStatus> = new Set([
+  "starting",
+  "running",
+  "waiting",
+  "idle",
+]);
+
+/** The session rows returned by project detail and the number omitted from that response. */
+interface ProjectSessionVisibility<SessionRow> {
+  /** Sessions visible to this project detail request. */
+  readonly sessions: ReadonlyArray<SessionRow>;
+  /** Ended sessions omitted because Mend captured no transcript. */
+  readonly hiddenEndedSessions: number;
+}
+
+/**
+ * Apply project detail's transcript filter and report how many ended sessions it omitted.
+ * Live sessions and sessions whose transcript state is still unknown always remain visible.
+ */
+const projectSessionVisibility = <
+  SessionRow extends { readonly status: SessionStatus; readonly hasTranscript: boolean | null },
+>(
+  sessions: ReadonlyArray<SessionRow>,
+  includeDeadEnds: boolean,
+): ProjectSessionVisibility<SessionRow> => {
+  if (includeDeadEnds) return { sessions, hiddenEndedSessions: 0 };
+
+  const hiddenEndedSessions = sessions.filter(
+    (session) => !LIVE_STATES.has(session.status) && session.hasTranscript === false,
+  );
+  return {
+    sessions: sessions.filter(
+      (session) => LIVE_STATES.has(session.status) || session.hasTranscript !== false,
+    ),
+    hiddenEndedSessions: hiddenEndedSessions.length,
+  };
+};
 
 /**
  * Fingerprint-mutating handlers rewarm the project's hot pool: workspaces are created from these
@@ -401,12 +440,11 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         // A settled session with no transcript cannot be resumed or handed off: hidden by
         // default, listed only on request (`mend sessions --all`). Its worktree still lists.
-        const projectSessions = (yield* sessions.listForProject(params.id)).filter(
-          (session) =>
-            query.deadEnds === "include" ||
-            LIVE_STATES.has(session.status) ||
-            session.hasTranscript !== false,
+        const sessionVisibility = projectSessionVisibility(
+          yield* sessions.listForProject(params.id),
+          query.deadEnds === "include",
         );
+        const projectSessions = sessionVisibility.sessions;
         const worktreeRows = yield* worktrees.listForProject(params.id);
         const annotations = yield* changes.annotationsForProject(params.id);
         // One read for every session's processes; `currentAgent` is derived per session.
@@ -421,6 +459,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         return new ProjectDetail({
           project,
           sessions: projectSessions,
+          hiddenEndedSessions: sessionVisibility.hiddenEndedSessions,
           annotations: annotations.map(
             (row) =>
               new SessionAnnotation({
@@ -3010,7 +3049,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
           if (head !== null && summaryRow !== null) {
             const posted = yield* capture.blobs.get(summaryRow.key).pipe(
               Effect.flatMap((bytes) =>
-                decodeChangeSummary(JSON.parse(Buffer.from(bytes).toString("utf8"))),
+                decodeChangeSummaryJson(Buffer.from(bytes).toString("utf8")),
               ),
               Effect.option,
             );

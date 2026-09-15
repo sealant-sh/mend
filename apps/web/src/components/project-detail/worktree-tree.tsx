@@ -1,13 +1,51 @@
 import { Link } from "@tanstack/react-router";
 import { ChevronRight, FolderGit2, Terminal } from "lucide-react";
-import { useId, useState } from "react";
+import { useId, useState, type ReactElement, type ReactNode } from "react";
 
+import { HiddenEndedSessionsNotice } from "#/components/project-detail/hidden-ended-sessions-notice";
 import { baseLabel, type WorktreeGroup } from "#/components/project-detail/model";
 import { NewWorktreeSession } from "#/components/project-detail/new-worktree-session";
 import { ReviewLink, type DetailHandlers } from "#/components/project-detail/parts";
 import { SessionStatusDot } from "#/components/status";
 import type { SessionDto } from "#/lib/api";
 import { worktreeDisplayName } from "#/lib/workbench-menus";
+
+/** Render the project worktree empty state or its tree without hiding transcript capture gaps. */
+export function ProjectWorktreeContent({
+  hiddenEndedSessions,
+  worktreeCount,
+  onCreate,
+  children,
+}: {
+  readonly hiddenEndedSessions: number;
+  readonly worktreeCount: number;
+  readonly onCreate: () => void;
+  readonly children: ReactNode;
+}): ReactElement {
+  return (
+    <>
+      <HiddenEndedSessionsNotice count={hiddenEndedSessions} />
+      {worktreeCount === 0 ? (
+        <div className="rounded-2xl bg-panel px-6 py-12 text-center shadow-sm">
+          <h3 className="text-sm font-medium">No worktrees yet</h3>
+          <p className="mt-2 text-sm text-muted-foreground">
+            Create a worktree, then add sessions inside it.
+          </p>
+          <button
+            type="button"
+            aria-haspopup="dialog"
+            onClick={onCreate}
+            className="mt-4 text-sm font-medium text-info hover:underline"
+          >
+            Create your first worktree
+          </button>
+        </div>
+      ) : (
+        children
+      )}
+    </>
+  );
+}
 
 /** How the same tree is laid out: rows in one panel, or one panel per worktree. */
 export type WorktreeTreeView = "list" | "cards";
@@ -159,7 +197,7 @@ function WorktreeNode({
         {group.members.length === 0 ? (
           <li className="relative pl-5">
             <Connector last />
-            <p className="py-2 font-mono text-xs text-faint">No sessions yet</p>
+            <p className="py-2 font-mono text-xs text-faint">No visible sessions</p>
           </li>
         ) : (
           group.members.map((session, index) => (

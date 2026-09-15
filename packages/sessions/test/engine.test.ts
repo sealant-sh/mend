@@ -1,4 +1,4 @@
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs";
 import * as net from "node:net";
@@ -97,6 +97,7 @@ import {
   CaptureRuntimeLive,
   CaptureRuntimeOff,
   CaptureUploadPolicyDefault,
+  HARNESS_HOME_MOUNT_PATH,
   HarnessStateNotFoundError,
   LegacyBenchReadOnlyError,
   ProtocolHost,
@@ -115,6 +116,7 @@ import {
   captureKeys,
   DeploymentConfig,
   DotfilesStore,
+  type GitSection,
   GitOpsRunnerLive,
   MendKeys,
   SecretCipher,
@@ -123,6 +125,8 @@ import {
   DeploymentConfigColocated,
   decodeManifest,
   harnessHomePathOf,
+  listCaptureFiles,
+  materialize,
   processStatePathOf,
 } from "@mend/store";
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
@@ -136,7 +140,7 @@ import type {
   WorkspaceCaptureReplanned,
   WorkspaceCaptureStatus,
 } from "@sealant/sdk";
-import { Duration, Effect, Fiber, Layer, Schedule, Stream, type Scope } from "effect";
+import { Deferred, Duration, Effect, Fiber, Layer, Schedule, Stream, type Scope } from "effect";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
 import { memoryStoreRefs } from "./capture-world.ts";
@@ -254,6 +258,16 @@ const sealantLaunchLayer = (
    */
   captureOps?: {
     readonly flushed?: string[];
+    /** Map the capture root into a temporary directory and execute the engine's real shell script. */
+    readonly relocation?: {
+      homePath: string;
+      executorRoot: string;
+      readonly observed?: string[];
+    };
+    /** A faithful workspace hook: Core has created the executor but no process has started yet. */
+    readonly beforeCreate?: (options: CreateOptions) => Effect.Effect<void>;
+    /** A faithful process hook: the harness writes through HOME after relocation. */
+    readonly beforeOpen?: (argv: ReadonlyArray<string>) => void;
     /** Stands in for the executor's flush itself — what it ships and registers before answering. */
     readonly flush?: (
       workspace: Workspace,
@@ -328,19 +342,23 @@ const sealantLaunchLayer = (
     createWorkspace: (options) =>
       Effect.suspend(() => {
         created.push(options);
-        if (createWorkspaceOverride !== undefined) {
-          return createWorkspaceOverride(options);
-        }
-        return rejectCredentials(options.credentials)
-          ? Effect.fail(
-              new SealantPlatformError({
-                code: "connected-account-not-found",
-                status: 400,
-                message: "connected account was not found",
-                cause: null,
-              }),
-            )
-          : Effect.succeed(workspace);
+        const beforeCreate = captureOps?.beforeCreate?.(options) ?? Effect.void;
+        return beforeCreate.pipe(
+          Effect.andThen(
+            createWorkspaceOverride === undefined
+              ? rejectCredentials(options.credentials)
+                ? Effect.fail(
+                    new SealantPlatformError({
+                      code: "connected-account-not-found",
+                      status: 400,
+                      message: "connected account was not found",
+                      cause: null,
+                    }),
+                  )
+                : Effect.succeed(workspace)
+              : createWorkspaceOverride(options),
+          ),
+        );
       }),
     bindWorkspace: (_workspace, options) =>
       Effect.sync(() => {
@@ -368,6 +386,7 @@ const sealantLaunchLayer = (
     waitRun: () => Effect.die("not in test"),
     openSession: (_workspace, argv, options) =>
       Effect.sync(() => {
+        captureOps?.beforeOpen?.(argv);
         spawned?.push(argv);
         if (options !== undefined) openedOptions?.push(options);
         return openPty(options?.mode ?? "pty");
@@ -401,22 +420,56 @@ const sealantLaunchLayer = (
     getSession: (_workspace, id) => Effect.succeed(ptys.get(id) ?? initialPty),
     // Typed failure, not a defect: the settle-path harvest must degrade
     // quietly and still reach the workspace reap.
-    exec:
-      execCalls === undefined
-        ? () =>
-            Effect.fail(
+    exec: (_workspace, argv) =>
+      Effect.suspend(() => {
+        execCalls?.push(argv);
+        const script = argv[0] === "sh" && argv[1] === "-c" ? argv[2] : undefined;
+        const relocation = captureOps?.relocation;
+        if (script !== undefined && script.includes(HARNESS_HOME_MOUNT_PATH)) {
+          if (relocation === undefined) {
+            return Effect.succeed({ exitCode: 0, stdout: "", stderr: "", run: fakeExecRun });
+          }
+          const request = created.at(-1);
+          const source = request?.source;
+          if (source?.kind !== "capture" || source.harnessHome === undefined) {
+            return Effect.fail(
               new SealantPlatformError({
-                code: "exec-not-in-test",
+                code: "capture_harness_home_missing",
                 status: null,
-                message: "exec not available in this test world",
+                message: "capture source did not configure a harness root",
                 cause: null,
               }),
-            )
-        : (_workspace, argv) =>
-            Effect.sync(() => {
-              execCalls.push(argv);
-              return { exitCode: 0, stdout: "", stderr: "", run: fakeExecRun };
-            }),
+            );
+          }
+          const harnessHomePath = path.join(relocation.executorRoot, source.harnessHome.slice(1));
+          const mapped = script.replaceAll(source.harnessHome, harnessHomePath);
+          return Effect.sync(() => {
+            fs.mkdirSync(relocation.homePath, { recursive: true });
+            const result = spawnSync("sh", ["-c", mapped], {
+              env: { ...process.env, HOME: relocation.homePath },
+              encoding: "utf8",
+            });
+            if (result.status === 0) relocation.observed?.push("relocate");
+            return {
+              exitCode: result.status ?? 1,
+              stdout: result.stdout,
+              stderr: result.stderr,
+              run: fakeExecRun,
+            };
+          });
+        }
+        if (execCalls !== undefined) {
+          return Effect.succeed({ exitCode: 0, stdout: "", stderr: "", run: fakeExecRun });
+        }
+        return Effect.fail(
+          new SealantPlatformError({
+            code: "exec-not-in-test",
+            status: null,
+            message: "exec not available in this test world",
+            cause: null,
+          }),
+        );
+      }),
     diffCommits: () => Effect.die("not in test"),
     inferenceRespond: () => Effect.die("not in test"),
     recordStream: () => Stream.fromEffect(Effect.never),
@@ -1281,7 +1334,12 @@ const sessionsLayer = (world: World) => {
     setWorkspaceImage: (id, image) => Effect.sync(() => update(id, { workspaceImage: image })),
     setDotfiles: (id, dotfiles) => Effect.sync(() => update(id, { dotfiles })),
     setHasTranscript: (id, hasTranscript) => Effect.sync(() => update(id, { hasTranscript })),
-    listSettledUnclassified: () => Effect.succeed([]),
+    listSettledUnclassified: (limit) =>
+      Effect.succeed(
+        [...world.sessions.values()]
+          .filter((session) => session.settledAt !== null && session.hasTranscript === null)
+          .slice(0, limit),
+      ),
     setReferenceMounts: (id: string, mounts: ReadonlyArray<SessionReferenceMount>) =>
       Effect.sync(() => update(id, { referenceMounts: mounts })),
     setExtraMounts: (id: string, mounts: ReadonlyArray<SessionExtraMount>) =>
@@ -1659,14 +1717,16 @@ const withEngine = <A, E>(
       readonly serviceAccount: string | null;
     };
     /** Seed crash-recovery facts before the SessionEngine layer runs its boot pass. */
-    readonly prepareWorld?: (world: World) => void;
+    readonly prepareWorld?: (world: World, tmp: string) => void;
+    /** Reuse one persisted test world across engine scopes to exercise process restart. */
+    readonly fixture?: { readonly world: World; readonly tmp: string };
     /** Capture mode (ADR-0002): the pointer store the test inspects; the bucket is `<tmp>/blobs`. */
     readonly captured?: MemoryCaptureStore;
   } = {},
 ): Promise<A> => {
-  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
-  const world = makeWorld();
-  options.prepareWorld?.(world);
+  const tmp = options.fixture?.tmp ?? fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
+  const world = options.fixture?.world ?? makeWorld();
+  options.prepareWorld?.(world, tmp);
   const storeConfigLayer = StoreConfig.layerFor(path.join(tmp, "store"));
   const storeLayer = Store.layer.pipe(Layer.provide(storeConfigLayer));
   const blobsLayer = BlobStoreFsLive(path.join(tmp, "blobs"));
@@ -1766,7 +1826,11 @@ const withEngine = <A, E>(
     work(world, tmp).pipe(
       Effect.provide(Layer.mergeAll(engineLayer, storeLayer, worktreesLayer(world))),
       Effect.scoped,
-      Effect.ensuring(Effect.sync(() => fs.rmSync(tmp, { recursive: true, force: true }))),
+      Effect.ensuring(
+        options.fixture === undefined
+          ? Effect.sync(() => fs.rmSync(tmp, { recursive: true, force: true }))
+          : Effect.void,
+      ),
       Effect.orDie,
     ),
   );
@@ -4671,6 +4735,150 @@ const shipHarnessCapture = (
     return built;
   }).pipe(Effect.provide(memory.layer));
 
+/** Map the public executor path selected on the capture source into this test executor's root. */
+const configuredHarnessHomePath = (options: CreateOptions, executorRoot: string): string => {
+  const source = options.source;
+  if (source?.kind !== "capture" || source.harnessHome === undefined) {
+    throw new Error("capture source did not select a harness root");
+  }
+  if (!path.isAbsolute(source.harnessHome)) {
+    throw new Error("capture source selected a relative harness root");
+  }
+  return path.join(executorRoot, source.harnessHome.slice(1));
+};
+
+/** Apply the head manifest's virtual `workspace/harness` entry to the selected daemon root. */
+const restoreConfiguredHarnessHome = (
+  tmp: string,
+  memory: MemoryCaptureStore,
+  worktreeId: WorktreeId,
+  options: CreateOptions,
+  executorRoot: string,
+) =>
+  Effect.gen(function* () {
+    const headId = memory.chains.get(worktreeId)?.headCapture ?? null;
+    const head = headId === null ? null : (memory.captures.get(headId) ?? null);
+    if (head === null) throw new Error("capture source has no head to materialize");
+    const manifest = yield* decodeManifest(
+      head.manifestKey,
+      new Uint8Array(fs.readFileSync(path.join(tmp, "blobs", head.manifestKey))),
+    ).pipe(Effect.orDie);
+    const workspace = path.join(executorRoot, "materialized-workspace");
+    fs.rmSync(workspace, { recursive: true, force: true });
+    yield* materialize(manifest, "workspace", workspace).pipe(
+      Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
+      Effect.orDie,
+    );
+    const virtualHarness = path.join(workspace, "harness");
+    if (!fs.existsSync(virtualHarness)) return;
+    const harnessHome = configuredHarnessHomePath(options, executorRoot);
+    fs.mkdirSync(path.dirname(harnessHome), { recursive: true });
+    fs.renameSync(virtualHarness, harnessHome);
+  });
+
+/** Replace the immutable head with the pre-harness-root shape shipped by older Mend versions. */
+const replaceHeadWithRootlessWorkspace = (
+  tmp: string,
+  memory: MemoryCaptureStore,
+  worktreeId: WorktreeId,
+) =>
+  Effect.gen(function* () {
+    const chain = memory.chains.get(worktreeId);
+    const oldId = chain?.headCapture ?? null;
+    const oldHead = oldId === null ? null : (memory.captures.get(oldId) ?? null);
+    if (chain === undefined || oldHead === null) throw new Error("worktree has no head to replace");
+    const oldManifest = yield* decodeManifest(
+      oldHead.manifestKey,
+      new Uint8Array(fs.readFileSync(path.join(tmp, "blobs", oldHead.manifestKey))),
+    ).pipe(Effect.orDie);
+    const emptyWorkspace = path.join(tmp, `rootless-${worktreeId}`);
+    fs.mkdirSync(emptyWorkspace, { recursive: true });
+    const snapshot = snapshotDirectory(emptyWorkspace, captureKeys(worktreeId, oldHead.epoch), {
+      chunkSize: 64,
+    });
+    const built = buildManifest({
+      worktreeId,
+      n: oldHead.n,
+      parent: oldHead.parent,
+      epoch: oldHead.epoch,
+      seq: Number(oldHead.seq),
+      kind: oldHead.kind,
+      git: oldManifest.sections.git,
+      workspace: { root: snapshot.root, packs: snapshot.packs },
+      bulk: oldManifest.sections.bulk,
+      ...(oldManifest.checkpoint === undefined ? {} : { checkpoint: oldManifest.checkpoint }),
+    });
+    yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]])).pipe(
+      Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
+    );
+    memory.captures.delete(oldHead.id);
+    memory.captures.set(built.id, {
+      ...oldHead,
+      id: built.id,
+      manifestKey: built.key,
+      sections: built.manifest.sections,
+    });
+    chain.headCapture = built.id;
+  });
+
+/** Snapshot only the actual daemon-selected root, including daemon credential exclusions. */
+const shipCapturedHarnessHome = (
+  tmp: string,
+  memory: MemoryCaptureStore,
+  worktreeId: WorktreeId,
+  epoch: number,
+  options: CreateOptions,
+  executorRoot: string,
+) =>
+  Effect.gen(function* () {
+    const chain = memory.chains.get(worktreeId);
+    const head = chain?.headCapture === null || chain === undefined ? null : chain.headCapture;
+    const parent = head === null ? null : (memory.captures.get(head) ?? null);
+    const tree = path.join(tmp, `ship-harness-home-${epoch}`);
+    fs.rmSync(tree, { recursive: true, force: true });
+    fs.mkdirSync(tree, { recursive: true });
+    fs.cpSync(configuredHarnessHomePath(options, executorRoot), path.join(tree, "harness"), {
+      recursive: true,
+    });
+    fs.rmSync(path.join(tree, "harness", ".codex", "auth.json"), { force: true });
+    fs.rmSync(path.join(tree, "harness", ".claude", ".credentials.json"), { force: true });
+    const snapshot = snapshotDirectory(tree, captureKeys(worktreeId, epoch), { chunkSize: 64 });
+    const previousGit: GitSection =
+      parent === null
+        ? { packs: [], refs: {}, head: "refs/heads/main", fsck: "verified" }
+        : (yield* decodeManifest(
+            parent.manifestKey,
+            new Uint8Array(fs.readFileSync(path.join(tmp, "blobs", parent.manifestKey))),
+          ).pipe(Effect.orDie)).sections.git;
+    const built = buildManifest({
+      worktreeId,
+      n: (parent?.n ?? -1) + 1,
+      parent: parent?.id ?? null,
+      epoch,
+      seq: 100,
+      kind: "final",
+      git: previousGit,
+      workspace: { root: snapshot.root, packs: snapshot.packs },
+    });
+    yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]])).pipe(
+      Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
+    );
+    const repo = yield* CaptureStoreRepo;
+    yield* repo.register({
+      worktreeId,
+      id: built.id,
+      n: built.manifest.n,
+      parent: built.manifest.parent,
+      epoch,
+      seq: 100n,
+      kind: "final",
+      manifestKey: built.key,
+      sections: built.manifest.sections,
+      gitFsck: "verified",
+    });
+    return built;
+  }).pipe(Effect.provide(memory.layer));
+
 /** Poll a forked side effect (a warm, a replacement) into view; the pool fakes are in memory. */
 const until = (condition: () => boolean, label: string) =>
   Effect.gen(function* () {
@@ -4678,7 +4886,424 @@ const until = (condition: () => boolean, label: string) =>
     if (!condition()) throw new Error(`timed out waiting for ${label}`);
   });
 
+const verifyDeferredFinalHarvest = async (pathKind: "stop" | "handoff" | "sweep") => {
+  const created: Array<CreateOptions> = [];
+  const spawned: ReadonlyArray<string>[] = [];
+  const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+  const memory = makeMemoryCaptureStore();
+  const flushStarted = await Effect.runPromise(Deferred.make<void>());
+  const releaseFlush = await Effect.runPromise(Deferred.make<void>());
+  const rolloutId = crypto.randomUUID();
+  const transcriptName = `rollout-2026-09-15T10-00-00-${rolloutId}.jsonl`;
+  const transcriptContents = `${JSON.stringify({
+    type: "response_item",
+    payload: {
+      type: "message",
+      role: "assistant",
+      content: [{ type: "text", text: `${pathKind} final answer` }],
+    },
+  })}\n`;
+  const relocation = { homePath: "", executorRoot: "" };
+  let testRoot = "";
+  let finalCapture: Effect.Effect<void> = Effect.die("final capture not prepared");
+  let flushes = 0;
+  let shipped = false;
+
+  await withEngine(
+    (world, tmp) =>
+      Effect.gen(function* () {
+        const project = yield* setup(tmp, world);
+        testRoot = tmp;
+        const engine = yield* SessionEngine;
+        const session = yield* engine.provision({
+          projectId: project.id,
+          harness: "codex",
+          label: null,
+          name: null,
+          ownerUserId: null,
+          base: null,
+        });
+        yield* engine.launch(session.id, ["codex"]);
+        const request = created[0];
+        if (request === undefined) throw new Error("cold launch made no create request");
+        finalCapture = shipCapturedHarnessHome(
+          tmp,
+          memory,
+          session.worktreeId,
+          memory.leases.get(session.worktreeId)?.epoch ?? 0,
+          request,
+          relocation.executorRoot,
+        ).pipe(Effect.asVoid, Effect.orDie);
+        const agent = [...world.processes.values()].find(
+          (process) => process.kind === "agent-pty" && process.exitedAt === null,
+        );
+        if (agent === undefined) throw new Error("launch recorded no agent");
+        const flushThatShips = pathKind === "handoff" ? 1 : 2;
+
+        if (pathKind === "handoff") {
+          const handoff = yield* engine
+            .handoff(
+              session.id,
+              "protocol",
+              { mode: "protocol", permissionMode: "bypass" },
+              "user-1",
+            )
+            .pipe(Effect.forkChild);
+          yield* Deferred.await(flushStarted);
+          expect(flushes).toBe(flushThatShips);
+          expect(world.sessions.get(session.id)?.hasTranscript).not.toBe(true);
+          yield* Deferred.succeed(releaseFlush, undefined);
+          yield* Fiber.join(handoff);
+          expect(attached).toHaveLength(1);
+        } else {
+          if (pathKind === "sweep") {
+            world.processes.set(
+              agent.id,
+              new SessionProcess({
+                ...agent,
+                status: "exited",
+                exitCode: 0,
+                exitedAt: now(),
+                updatedAt: now(),
+              }),
+            );
+          }
+          yield* engine.stop(session.id);
+          yield* Deferred.await(flushStarted);
+          expect(flushes).toBe(flushThatShips);
+          expect(world.sessions.get(session.id)?.hasTranscript).not.toBe(true);
+          yield* Deferred.succeed(releaseFlush, undefined);
+        }
+        yield* until(
+          () => world.sessions.get(session.id)?.hasTranscript === true,
+          `${pathKind} final capture harvest`,
+        );
+        const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
+        expect(fs.readFileSync(path.join(stateDir, "transcript.native"), "utf8")).toContain(
+          `${pathKind} final answer`,
+        );
+      }),
+    {
+      captured: memory,
+      protocolHostLayer: recordingProtocolHostLayer(attached, []),
+      sealantLayer: sealantLaunchLayer(
+        created,
+        undefined,
+        undefined,
+        spawned,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {
+          relocation,
+          beforeCreate: (options) =>
+            Effect.gen(function* () {
+              relocation.executorRoot = path.join(
+                testRoot,
+                `${pathKind}-executor-${created.length}`,
+              );
+              relocation.homePath = path.join(relocation.executorRoot, "home", "agent");
+              fs.mkdirSync(relocation.executorRoot, { recursive: true });
+              const source = options.source;
+              if (source?.kind !== "capture" || source.worktreeId === undefined) {
+                throw new Error("test executor requires a capture source");
+              }
+              yield* restoreConfiguredHarnessHome(
+                testRoot,
+                memory,
+                WorktreeId.make(source.worktreeId),
+                options,
+                relocation.executorRoot,
+              );
+            }),
+          beforeOpen: () => {
+            if (spawned.length > 0) return;
+            const transcript = path.join(
+              relocation.homePath,
+              ".codex",
+              "sessions",
+              "2026",
+              "09",
+              "15",
+              transcriptName,
+            );
+            fs.mkdirSync(path.dirname(transcript), { recursive: true });
+            fs.writeFileSync(transcript, transcriptContents);
+          },
+          flush: () => {
+            flushes += 1;
+            const flushThatShips = pathKind === "handoff" ? 1 : 2;
+            return Effect.gen(function* () {
+              if (flushes === flushThatShips && !shipped) {
+                yield* Deferred.succeed(flushStarted, undefined);
+                yield* Deferred.await(releaseFlush);
+                yield* finalCapture;
+                shipped = true;
+              }
+              return {
+                epoch: 2,
+                worktreeId: "",
+                pending: 0,
+                stagedBytes: 0,
+                uploadedObjects: shipped ? 1 : 0,
+                uploadedBytes: shipped ? 1 : 0,
+                registered: shipped ? 1 : 0,
+                fenced: false,
+                paused: false,
+              } satisfies WorkspaceCaptureStatus;
+            });
+          },
+        },
+      ),
+    },
+  );
+};
+
 describe("SessionEngine capture mode", () => {
+  it(
+    "relocates HOME into the configured capture root before launch, harvests the final flush, and restores it before pickup",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const spawned: ReadonlyArray<string>[] = [];
+      const ptyStates = new Map<string, InteractiveSessionStatus>();
+      const events: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      const flushStarted = await Effect.runPromise(Deferred.make<void>());
+      const releaseFlush = await Effect.runPromise(Deferred.make<void>());
+      const rolloutId = crypto.randomUUID();
+      const transcriptName = `rollout-2026-09-15T10-00-00-${rolloutId}.jsonl`;
+      const transcriptContents = `${JSON.stringify({
+        type: "response_item",
+        payload: {
+          type: "message",
+          role: "assistant",
+          content: [{ type: "text", text: "final answer" }],
+        },
+      })}\n`;
+      const relocation = { homePath: "", executorRoot: "", observed: events };
+      let testRoot = "";
+      let firstRequest: CreateOptions | undefined;
+      let firstExecutorRoot = "";
+      let finalCapture: Effect.Effect<void> = Effect.die("final capture not prepared");
+      let flushes = 0;
+      let shipped = false;
+      let opens = 0;
+
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            testRoot = tmp;
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: null,
+              ownerUserId: null,
+              base: null,
+            });
+            yield* engine.launch(session.id, ["codex"]);
+            firstRequest = created[0];
+            if (firstRequest === undefined) throw new Error("cold launch made no create request");
+            firstExecutorRoot = relocation.executorRoot;
+            expect(firstRequest.source).toEqual({
+              kind: "capture",
+              endpoint: "http://mend.test:3106",
+              worktreeId: session.worktreeId,
+              token: expect.stringMatching(/.+/),
+              harnessHome: HARNESS_HOME_MOUNT_PATH,
+            });
+            const selectedRoot = configuredHarnessHomePath(firstRequest, firstExecutorRoot);
+            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            finalCapture = shipCapturedHarnessHome(
+              tmp,
+              memory,
+              session.worktreeId,
+              epoch,
+              firstRequest,
+              firstExecutorRoot,
+            ).pipe(Effect.asVoid, Effect.orDie);
+            expect(events.slice(0, 3)).toEqual(["restore", "relocate", "open"]);
+            expect(fs.realpathSync(path.join(relocation.homePath, ".codex"))).toBe(
+              path.join(selectedRoot, ".codex"),
+            );
+            expect(fs.readFileSync(path.join(selectedRoot, ".codex", "auth.json"), "utf8")).toBe(
+              "fresh credential 1",
+            );
+
+            const agent = [...world.processes.values()].find(
+              (process) => process.kind === "agent-pty" && process.exitedAt === null,
+            );
+            if (agent?.sealantSessionId === null || agent?.sealantSessionId === undefined) {
+              throw new Error("the launch recorded no agent PTY");
+            }
+            ptyStates.set(agent.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+
+            // The checkpoint flush observes no new capture. The process-end barrier must request a
+            // second flush, then wait for that final registration before harvest reads the head.
+            yield* Deferred.await(flushStarted);
+            expect(world.sessions.get(session.id)?.hasTranscript).not.toBe(true);
+            yield* Deferred.succeed(releaseFlush, undefined);
+            yield* until(
+              () => world.sessions.get(session.id)?.hasTranscript === true,
+              "the final capture harvest",
+            );
+
+            const head = memory.captures.get(
+              memory.chains.get(session.worktreeId)?.headCapture ?? "",
+            );
+            if (head === undefined) throw new Error("the final flush registered no capture");
+            const manifest = yield* decodeManifest(
+              head.manifestKey,
+              new Uint8Array(fs.readFileSync(path.join(tmp, "blobs", head.manifestKey))),
+            ).pipe(Effect.orDie);
+            const files = yield* listCaptureFiles(manifest, "workspace", "harness").pipe(
+              Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
+              Effect.orDie,
+            );
+            expect(files.map((file) => file.path)).toContain(
+              `harness/.codex/sessions/2026/09/15/rollout-2026-09-15T10-00-00-${rolloutId}.jsonl`,
+            );
+            const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
+            expect(fs.readFileSync(path.join(stateDir, "transcript.native"), "utf8")).toContain(
+              "final answer",
+            );
+
+            // A replacement executor starts empty. Its create materializes the captured harness
+            // root, then Mend recreates HOME links before opening the resumed process.
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt !== null,
+              "the first process settle",
+            );
+            const resumed = yield* engine.resumeSession(session.id, null);
+            expect(resumed.status).toBe("running");
+            expect(created).toHaveLength(2);
+            expect(events.slice(-2)).toEqual(["relocate", "open"]);
+            const resumedAgent = [...world.processes.values()].findLast(
+              (process) => process.kind === "agent-pty" && process.exitedAt === null,
+            );
+            expect(resumedAgent?.argv.slice(0, 3)).toEqual(["codex", "resume", rolloutId]);
+            expect(resumedAgent?.providerSessionId).toBe(rolloutId);
+            expect(spawned).toHaveLength(2);
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            spawned,
+            undefined,
+            undefined,
+            ptyStates,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              relocation,
+              beforeCreate: (options) =>
+                Effect.gen(function* () {
+                  relocation.executorRoot = path.join(testRoot, `executor-${created.length}`);
+                  relocation.homePath = path.join(relocation.executorRoot, "home", "agent");
+                  fs.rmSync(relocation.executorRoot, { recursive: true, force: true });
+                  fs.mkdirSync(relocation.executorRoot, { recursive: true });
+                  const source = options.source;
+                  if (source?.kind !== "capture" || source.worktreeId === undefined) {
+                    throw new Error("test executor requires a cold capture source");
+                  }
+                  yield* restoreConfiguredHarnessHome(
+                    testRoot,
+                    memory,
+                    WorktreeId.make(source.worktreeId),
+                    options,
+                    relocation.executorRoot,
+                  );
+                  events.push("restore");
+                  fs.mkdirSync(path.join(relocation.homePath, ".codex"), { recursive: true });
+                  fs.writeFileSync(
+                    path.join(relocation.homePath, ".codex", "auth.json"),
+                    `fresh credential ${created.length}`,
+                  );
+                }),
+              beforeOpen: () => {
+                opens += 1;
+                events.push("open");
+                const transcript = path.join(
+                  relocation.homePath,
+                  ".codex",
+                  "sessions",
+                  "2026",
+                  "09",
+                  "15",
+                  transcriptName,
+                );
+                if (opens === 1) {
+                  fs.mkdirSync(path.dirname(transcript), { recursive: true });
+                  fs.writeFileSync(transcript, transcriptContents);
+                  return;
+                }
+                expect(fs.readFileSync(transcript, "utf8")).toBe(transcriptContents);
+                expect(
+                  fs.readFileSync(path.join(relocation.homePath, ".codex", "auth.json"), "utf8"),
+                ).toBe("fresh credential 2");
+              },
+              flush: () =>
+                Effect.gen(function* () {
+                  flushes += 1;
+                  if (flushes > 1 && !shipped) {
+                    yield* Deferred.succeed(flushStarted, undefined);
+                    yield* Deferred.await(releaseFlush);
+                    yield* finalCapture;
+                    shipped = true;
+                  }
+                  return {
+                    epoch: 2,
+                    worktreeId: "",
+                    pending: 0,
+                    stagedBytes: 0,
+                    uploadedObjects: shipped ? 1 : 0,
+                    uploadedBytes: shipped ? 1 : 0,
+                    registered: shipped ? 1 : 0,
+                    fenced: false,
+                    paused: false,
+                  } satisfies WorkspaceCaptureStatus;
+                }),
+            },
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "waits for a deferred final registration before stop trigger=null harvest reads the head",
+    { timeout: 20_000 },
+    () => verifyDeferredFinalHarvest("stop"),
+  );
+
+  it(
+    "waits for a deferred final registration before handoff harvest reads the head",
+    { timeout: 20_000 },
+    () => verifyDeferredFinalHarvest("handoff"),
+  );
+
+  it(
+    "waits for a deferred final registration before leftover sweep harvest reads the head",
+    { timeout: 20_000 },
+    () => verifyDeferredFinalHarvest("sweep"),
+  );
+
   it("provisions capture 0 and launches a capture-sourced workspace: no mounts, no bind, a launch-claimed lease; a user stop flushes the executor before its workspace goes", async () => {
     const created: Array<CreateOptions> = [];
     const binds: string[] = [];
@@ -4725,12 +5350,13 @@ describe("SessionEngine capture mode", () => {
 
           expect(created).toHaveLength(1);
           const request = created[0];
-          // SDK 0.31.0: the capture source carries the session channel token itself.
+          // The capture source carries the channel token and the daemon-owned harness root.
           expect(request?.source).toEqual({
             kind: "capture",
             endpoint: "http://mend.test:3106",
             worktreeId: session.worktreeId,
             token: expect.stringMatching(/.+/),
+            harnessHome: HARNESS_HOME_MOUNT_PATH,
           });
           expect(request !== undefined && "captureToken" in request).toBe(false);
           expect(request !== undefined && "mounts" in request).toBe(false);
@@ -4740,11 +5366,17 @@ describe("SessionEngine capture mode", () => {
           expect(lease?.epoch).toBe(2);
           expect((lease?.expiresAt ?? 0) > memory.clock.now()).toBe(true);
 
-          // A user stop is a planned stop: the executor flushes (the user-mark checkpoint asks
-          // once, the stop itself once more) and only then does its workspace go.
+          // A user stop is a planned stop: the user mark, the post-process harvest barrier, and
+          // the stop itself each flush before the workspace goes.
           yield* engine.stop(session.id);
           yield* until(() => events.includes("workspace-1"), "the workspace stop");
-          expect(events).toEqual(["flush:workspace-1", "flush:workspace-1", "workspace-1"]);
+          expect(events).toEqual([
+            "flush:workspace-1",
+            "flush:workspace-1",
+            "flush:workspace-1",
+            "workspace-1",
+          ]);
+          expect(world.sessions.get(session.id)?.hasTranscript).toBe(false);
         }),
       {
         captured: memory,
@@ -4761,6 +5393,644 @@ describe("SessionEngine capture mode", () => {
           undefined,
           binds,
           { flushed: events },
+        ),
+      },
+    );
+  });
+
+  it("keeps transcript classification unknown when the capture head cannot be read", async () => {
+    const created: Array<CreateOptions> = [];
+    const stopped: string[] = [];
+    const memory = makeMemoryCaptureStore();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+
+          // Model a damaged/unavailable chain read after launch. It must not become the factual
+          // claim that no transcript existed.
+          memory.chains.delete(session.worktreeId);
+          yield* engine.stop(session.id);
+          yield* until(() => stopped.includes("workspace-1"), "the post-harvest workspace stop");
+          expect(world.sessions.get(session.id)?.hasTranscript).toBeNull();
+        }),
+      { captured: memory, sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
+    );
+  });
+
+  it.each([
+    { storage: "missing head", expected: null },
+    { storage: "missing manifest", expected: null },
+    { storage: "pending workspace", expected: null },
+    { storage: "stale final from a prior epoch", expected: null },
+    { storage: "final capture without transcript", expected: null },
+    { storage: "final capture with transcript", expected: true },
+  ])(
+    "classifies a transcript at restart when capture storage is $storage",
+    async ({ storage, expected }) => {
+      const memory = makeMemoryCaptureStore();
+      const sessionId = SessionId.make("settled-capture-storage-unavailable");
+      const worktreeId = WorktreeId.make("wt-capture-storage-unavailable");
+      await withEngine(
+        (world) =>
+          Effect.gen(function* () {
+            yield* SessionEngine;
+            expect(world.sessions.get(sessionId)?.hasTranscript).toBe(expected);
+          }),
+        {
+          captured: memory,
+          prepareWorld: (world, tmp) => {
+            const timestamp = now();
+            const project = new Project({
+              id: ProjectId.make("project-capture-storage-unavailable"),
+              name: "capture-storage-unavailable",
+              originUrl: RepositoryCloneUrl.make("git://capture-storage-unavailable/repo"),
+              storePath: path.join(tmp, "store", "capture-storage-unavailable", "repo.git"),
+              defaultBranch: "main",
+              adoptedSha: Sha.make("base-sha"),
+              autoTour: "inherit",
+              autoName: "inherit",
+              autoSuggest: "inherit",
+              backgroundSessions: "inherit",
+              gitAuthMode: "ambient",
+              workspaceImage: null,
+              applyDotfiles: true,
+              inheritUserSkills: true,
+              hotSessions: 0,
+              installCommand: null,
+              createdAt: timestamp,
+              updatedAt: timestamp,
+            });
+            world.projects.set(project.id, project);
+            world.sessions.set(
+              sessionId,
+              new Session({
+                id: sessionId,
+                projectId: project.id,
+                worktreeId,
+                harness: "codex",
+                providerSessionId: null,
+                label: null,
+                worktree: worktreeId,
+                branch: `mend/wt/${worktreeId}`,
+                baseSha: Sha.make("base-sha"),
+                baseRef: "main",
+                contextSnapshotId: null,
+                referenceMounts: [],
+                extraMounts: [],
+                sealantRunId: SealantRunId.make("run-capture-storage-unavailable"),
+                sealantWorkspaceId: null,
+                sealantSessionId: null,
+                workspaceExpiresAt: null,
+                workspaceTtlRenewedAt: null,
+                workspaceTtlRenewalFailedAt: null,
+                workspaceTtlRenewalError: null,
+                workspaceImage: null,
+                dotfiles: null,
+                ownerUserId: null,
+                hasTranscript: null,
+                status: "completed",
+                summary: null,
+                lastSeenSequence: 0n,
+                recordHistoryComplete: true,
+                startedAt: timestamp,
+                settledAt: timestamp,
+                createdAt: timestamp,
+                updatedAt: timestamp,
+              }),
+            );
+            const processId = SessionProcessId.make("process-capture-storage-unavailable");
+            world.processes.set(
+              processId,
+              new SessionProcess({
+                id: processId,
+                sessionId,
+                sealantWorkspaceId: SealantWorkspaceId.make("workspace-storage-unavailable"),
+                sealantSessionId: "pty-storage-unavailable",
+                sealantRunId: SealantRunId.make("run-capture-storage-unavailable"),
+                launchCorrelationId: null,
+                serviceId: null,
+                attemptOrdinal: null,
+                kind: "agent-pty",
+                harness: "codex",
+                providerSessionId: null,
+                protocolOptions: null,
+                label: "codex",
+                argv: ["codex"],
+                status: "exited",
+                exitCode: 0,
+                workspacePort: null,
+                protocol: "tcp",
+                hostPort: null,
+                createdAt: timestamp,
+                exitedAt: timestamp,
+                updatedAt: timestamp,
+              }),
+            );
+            if (storage === "missing head") {
+              memory.chains.set(worktreeId, {
+                headCapture: "missing-capture-row",
+                headN: 0,
+                headEpoch: 1,
+              });
+              return;
+            }
+
+            if (storage === "missing manifest") {
+              const captureId = "missing-capture-object";
+              memory.chains.set(worktreeId, { headCapture: captureId, headN: 0, headEpoch: 1 });
+              memory.captures.set(captureId, {
+                id: captureId,
+                worktreeId,
+                n: 0,
+                parent: null,
+                epoch: 1,
+                seq: 0n,
+                kind: "final",
+                manifestKey: "missing/manifest.json",
+                sections: {
+                  git: {
+                    packs: [],
+                    refs: {},
+                    head: "refs/heads/main",
+                    fsck: "verified",
+                  },
+                  workspace: { root: "", packs: [] },
+                  bulk: "pending",
+                },
+                gitFsck: "verified",
+                createdAt: timestamp,
+              });
+              return;
+            }
+
+            if (storage === "pending workspace") {
+              const built = buildManifest({
+                worktreeId,
+                n: 0,
+                parent: null,
+                epoch: 1,
+                seq: 0,
+                kind: "final",
+              });
+              const target = path.join(tmp, "blobs", built.key);
+              fs.mkdirSync(path.dirname(target), { recursive: true });
+              fs.writeFileSync(target, built.bytes);
+              memory.chains.set(worktreeId, { headCapture: built.id, headN: 0, headEpoch: 1 });
+              memory.captures.set(built.id, {
+                id: built.id,
+                worktreeId,
+                n: 0,
+                parent: null,
+                epoch: 1,
+                seq: 0n,
+                kind: "final",
+                manifestKey: built.key,
+                // Capture rows preserve the section state independently. Keep the blob readable so
+                // removing the pending guard reaches listCaptureFiles and falsely confirms absence.
+                sections: { ...built.manifest.sections, workspace: "pending" },
+                gitFsck: "verified",
+                createdAt: timestamp,
+              });
+              return;
+            }
+
+            const tree = path.join(tmp, "restart-capture-without-transcript");
+            fs.mkdirSync(path.join(tree, "harness"), { recursive: true });
+            if (storage === "final capture with transcript") {
+              const transcript = path.join(
+                tree,
+                "harness",
+                ".codex",
+                "sessions",
+                "2026",
+                "09",
+                "15",
+                "rollout-2026-09-15T10-00-00-11111111-2222-3333-4444-555555555555.jsonl",
+              );
+              fs.mkdirSync(path.dirname(transcript), { recursive: true });
+              fs.writeFileSync(transcript, "{}\n");
+            }
+            const snapshot = snapshotDirectory(tree, captureKeys(worktreeId, 1), { chunkSize: 64 });
+            const built = buildManifest({
+              worktreeId,
+              n: 0,
+              parent: null,
+              epoch: 1,
+              seq: 0,
+              kind: "final",
+              git: {
+                packs: [],
+                refs: {},
+                head: "refs/heads/main",
+                fsck: "verified",
+              },
+              workspace: { root: snapshot.root, packs: snapshot.packs },
+            });
+            for (const [key, bytes] of new Map([...snapshot.objects, [built.key, built.bytes]])) {
+              const target = path.join(tmp, "blobs", key);
+              fs.mkdirSync(path.dirname(target), { recursive: true });
+              fs.writeFileSync(target, bytes);
+            }
+            memory.chains.set(worktreeId, {
+              headCapture: built.id,
+              headN: 0,
+              headEpoch: storage === "stale final from a prior epoch" ? 2 : 1,
+            });
+            memory.captures.set(built.id, {
+              id: built.id,
+              worktreeId,
+              n: 0,
+              parent: null,
+              epoch: 1,
+              seq: 0n,
+              kind: "final",
+              manifestKey: built.key,
+              sections: built.manifest.sections,
+              gitFsck: "verified",
+              createdAt: timestamp,
+            });
+          },
+        },
+      );
+    },
+  );
+
+  it(
+    "keeps a failed final flush unknown after restart with an earlier same-epoch final capture",
+    { timeout: 20_000 },
+    async () => {
+      const fixture = {
+        world: makeWorld(),
+        tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-restart-test-")),
+      };
+      const memory = makeMemoryCaptureStore();
+      const created: Array<CreateOptions> = [];
+      const stopped: string[] = [];
+      const relocation = { homePath: "", executorRoot: "" };
+      let testRoot = "";
+      let earlierFinal: Effect.Effect<void> = Effect.die("earlier final capture not prepared");
+      let flushes = 0;
+      try {
+        await withEngine(
+          (world, tmp) =>
+            Effect.gen(function* () {
+              testRoot = tmp;
+              const project = yield* setup(tmp, world);
+              const engine = yield* SessionEngine;
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "codex",
+                label: null,
+                name: null,
+                ownerUserId: null,
+                base: null,
+              });
+              yield* engine.launch(session.id, ["codex"]);
+              const agent = [...world.processes.values()].find(
+                (process) => process.sessionId === session.id && process.kind === "agent-pty",
+              );
+              if (agent === undefined) throw new Error("launch recorded no agent process");
+              const request = created[0];
+              if (request === undefined) throw new Error("cold launch made no create request");
+              const epoch = memory.leases.get(session.worktreeId)?.epoch;
+              if (epoch === undefined) throw new Error("cold launch claimed no capture lease");
+              earlierFinal = shipCapturedHarnessHome(
+                tmp,
+                memory,
+                session.worktreeId,
+                epoch,
+                request,
+                relocation.executorRoot,
+              ).pipe(Effect.asVoid, Effect.orDie);
+
+              // A manual checkpoint can leave a final capture while the agent is still running.
+              // The later process-end flush fails, so this same-epoch head proves no settle barrier.
+              yield* engine.checkpointNow(session.id, "user-mark");
+              const earlierHeadId = memory.chains.get(session.worktreeId)?.headCapture;
+              const earlierHead = memory.captures.get(earlierHeadId ?? "");
+              expect(earlierHead?.kind).toBe("final");
+              expect(earlierHead?.epoch).toBe(memory.chains.get(session.worktreeId)?.headEpoch);
+
+              // Capture mode must not fall back to the co-located harness home on restart.
+              const hostTranscript = path.join(
+                harnessHomePathOf(project.storePath, session.id),
+                ".codex",
+                "sessions",
+                "2026",
+                "09",
+                "15",
+                "rollout-2026-09-15T10-00-00-11111111-2222-3333-4444-555555555555.jsonl",
+              );
+              fs.mkdirSync(path.dirname(hostTranscript), { recursive: true });
+              fs.writeFileSync(hostTranscript, "{}\n");
+
+              yield* engine.stop(session.id);
+              yield* until(() => stopped.includes("workspace-1"), "failed-flush workspace stop");
+
+              expect(memory.chains.get(session.worktreeId)?.headCapture).toBe(earlierHeadId);
+              expect(world.sessions.get(session.id)?.hasTranscript).toBeNull();
+              expect(fs.existsSync(hostTranscript)).toBe(true);
+              expect(
+                fs.existsSync(
+                  path.join(
+                    processStatePathOf(project.storePath, session.id, agent.id),
+                    "manifest.json",
+                  ),
+                ),
+              ).toBe(false);
+            }),
+          {
+            fixture,
+            captured: memory,
+            sealantLayer: sealantLaunchLayer(
+              created,
+              undefined,
+              stopped,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              {
+                relocation,
+                beforeCreate: (options) =>
+                  Effect.gen(function* () {
+                    relocation.executorRoot = path.join(testRoot, "same-epoch-final-executor");
+                    relocation.homePath = path.join(relocation.executorRoot, "home", "agent");
+                    fs.mkdirSync(relocation.executorRoot, { recursive: true });
+                    const source = options.source;
+                    if (source?.kind !== "capture" || source.worktreeId === undefined) {
+                      throw new Error("test executor requires a cold capture source");
+                    }
+                    yield* restoreConfiguredHarnessHome(
+                      testRoot,
+                      memory,
+                      WorktreeId.make(source.worktreeId),
+                      options,
+                      relocation.executorRoot,
+                    );
+                  }),
+                flush: () => {
+                  flushes += 1;
+                  if (flushes === 1) {
+                    return earlierFinal.pipe(
+                      Effect.as({
+                        epoch: 2,
+                        worktreeId: "",
+                        pending: 0,
+                        stagedBytes: 0,
+                        uploadedObjects: 0,
+                        uploadedBytes: 0,
+                        registered: 1,
+                        fenced: false,
+                        paused: false,
+                      }),
+                    );
+                  }
+                  return Effect.fail(
+                    new SealantPlatformError({
+                      code: "capture_flush_failed",
+                      status: null,
+                      message: "capture flush failed in restart regression",
+                      cause: null,
+                    }),
+                  );
+                },
+              },
+            ),
+          },
+        );
+
+        await withEngine(
+          (world) =>
+            Effect.gen(function* () {
+              yield* SessionEngine;
+              const session = [...world.sessions.values()].find(
+                (candidate) => candidate.harness === "codex",
+              );
+              const agent = [...world.processes.values()].find(
+                (candidate) =>
+                  candidate.sessionId === session?.id && candidate.kind === "agent-pty",
+              );
+              expect(session?.hasTranscript).toBeNull();
+              expect(
+                session !== undefined && agent !== undefined
+                  ? fs.existsSync(
+                      path.join(
+                        processStatePathOf(
+                          world.projects.get(session.projectId)?.storePath ?? "",
+                          session.id,
+                          agent.id,
+                        ),
+                        "manifest.json",
+                      ),
+                    )
+                  : true,
+              ).toBe(false);
+            }),
+          { fixture, captured: memory },
+        );
+      } finally {
+        fs.rmSync(fixture.tmp, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it("refuses a legacy rootless capture head before opening an agent and preserves HOME state", async () => {
+    const created: Array<CreateOptions> = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const memory = makeMemoryCaptureStore();
+    const relocation = { homePath: "", executorRoot: "" };
+    let testRoot = "";
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          testRoot = tmp;
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* replaceHeadWithRootlessWorkspace(tmp, memory, session.worktreeId);
+          const immutableHead = memory.chains.get(session.worktreeId)?.headCapture;
+
+          const error = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+
+          expect(error._tag).toBe("SealantPlatformError");
+          expect(error._tag === "SealantPlatformError" && error.code).toBe(
+            "harness_home_relocation_failed",
+          );
+          expect(created).toHaveLength(1);
+          expect(spawned).toEqual([]);
+          expect(memory.chains.get(session.worktreeId)?.headCapture).toBe(immutableHead);
+          expect(
+            fs.readFileSync(path.join(relocation.homePath, ".codex", "session.jsonl"), "utf8"),
+          ).toBe("legacy source survives\n");
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          spawned,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            relocation,
+            beforeCreate: (options) =>
+              Effect.gen(function* () {
+                relocation.executorRoot = path.join(testRoot, "legacy-rootless-executor");
+                relocation.homePath = path.join(relocation.executorRoot, "home", "agent");
+                fs.mkdirSync(relocation.executorRoot, { recursive: true });
+                const source = options.source;
+                if (source?.kind !== "capture" || source.worktreeId === undefined) {
+                  throw new Error("test executor requires a capture source");
+                }
+                yield* restoreConfiguredHarnessHome(
+                  testRoot,
+                  memory,
+                  WorktreeId.make(source.worktreeId),
+                  options,
+                  relocation.executorRoot,
+                );
+                fs.mkdirSync(path.join(relocation.homePath, ".codex"), { recursive: true });
+                fs.writeFileSync(
+                  path.join(relocation.homePath, ".codex", "session.jsonl"),
+                  "legacy source survives\n",
+                );
+              }),
+          },
+        ),
+      },
+    );
+  });
+
+  it("refuses a retained rootless executor before opening a resumed agent and preserves HOME state", async () => {
+    const created: Array<CreateOptions> = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const flushed: string[] = [];
+    const memory = makeMemoryCaptureStore();
+    const relocation = { homePath: "", executorRoot: "" };
+    let testRoot = "";
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          testRoot = tmp;
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: null,
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          yield* engine.openShell(session.id);
+          const agent = [...world.processes.values()].find(
+            (process) => process.kind === "agent-pty" && process.exitedAt === null,
+          );
+          if (agent === undefined) throw new Error("launch recorded no agent");
+          yield* engine.stop(session.id);
+          yield* until(
+            () => world.sessions.get(session.id)?.status === "idle",
+            "the retained shell to hold the workspace",
+          );
+          const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
+          fs.mkdirSync(stateDir, { recursive: true });
+          fs.writeFileSync(
+            path.join(stateDir, "manifest.json"),
+            JSON.stringify({
+              harness: "codex",
+              providerSessionId: "11111111-2222-3333-4444-555555555555",
+              capturedAt: now().toISOString(),
+            }),
+          );
+          const createRequest = created[0];
+          if (createRequest === undefined) throw new Error("cold launch made no create request");
+          const selectedRoot = configuredHarnessHomePath(createRequest, relocation.executorRoot);
+          fs.rmSync(path.join(relocation.homePath, ".codex"), { force: true });
+          fs.rmSync(selectedRoot, { recursive: true, force: true });
+          fs.mkdirSync(path.join(relocation.homePath, ".codex"), { recursive: true });
+          fs.writeFileSync(
+            path.join(relocation.homePath, ".codex", "session.jsonl"),
+            "retained source survives\n",
+          );
+
+          const error = yield* engine.resumeSession(session.id, null).pipe(Effect.flip);
+
+          expect(error._tag).toBe("SealantPlatformError");
+          expect(error._tag === "SealantPlatformError" && error.code).toBe(
+            "harness_home_relocation_failed",
+          );
+          expect(created).toHaveLength(1);
+          expect(spawned).toHaveLength(2);
+          expect(
+            fs.readFileSync(path.join(relocation.homePath, ".codex", "session.jsonl"), "utf8"),
+          ).toBe("retained source survives\n");
+          expect(flushed.length).toBeGreaterThan(0);
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          spawned,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            flushed,
+            relocation,
+            beforeCreate: (options) =>
+              Effect.gen(function* () {
+                relocation.executorRoot = path.join(testRoot, "retained-rootless-executor");
+                relocation.homePath = path.join(relocation.executorRoot, "home", "agent");
+                fs.mkdirSync(relocation.executorRoot, { recursive: true });
+                const source = options.source;
+                if (source?.kind !== "capture" || source.worktreeId === undefined) {
+                  throw new Error("test executor requires a capture source");
+                }
+                yield* restoreConfiguredHarnessHome(
+                  testRoot,
+                  memory,
+                  WorktreeId.make(source.worktreeId),
+                  options,
+                  relocation.executorRoot,
+                );
+              }),
+          },
         ),
       },
     );
@@ -5153,12 +6423,13 @@ describe("SessionEngine capture mode", () => {
           if (entry === undefined) throw new Error("no standby");
           const alias = `standby-${entry.id}`;
           expect(created).toHaveLength(1);
-          // SDK 0.31.0: no worktree id on a standby's source — the daemon takes the placeholder
-          // from the plan answer, and the worktree from its replan at claim.
+          // No worktree id on a standby's source: the daemon takes the placeholder from the plan
+          // answer, while the harness root stays fixed across the later replan.
           expect(created[0]?.source).toEqual({
             kind: "capture",
             endpoint: "http://mend.test:3106",
             token: expect.stringMatching(/.+/),
+            harnessHome: HARNESS_HOME_MOUNT_PATH,
           });
           // The base the standby materialises is fixed on its row.
           expect(entry.baseSha).toBe(project.adoptedSha);

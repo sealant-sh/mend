@@ -7,6 +7,29 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-15 · 0.31.2 · Capture sources could not name the harness root; credential policy still excludes auth files
+
+**Harness-root surface shipped in SDK 0.32.0.** Public `WorkspaceCaptureSource.harnessHome` is
+validated and encoded into the blueprint. Mend now selects `/workspace/harness-home` for cold and
+standby capture sources, seeds capture 0 with a real `workspace/harness` directory, and relocates
+`.claude`, `.codex`, and `.local/share/opencode` before opening an agent process. Mend uses only the
+public SDK field; it does not inject the reserved daemon environment variable.
+
+- **Needed:** a capture-sourced workspace whose daemon captures and restores the selected root.
+  Fresh executors must materialize that root before Mend recreates the HOME symlinks.
+- **Shipped surface:** SDK 0.32.0 adds `harnessHome` to `WorkspaceCaptureSource`, serializes it, and
+  delivers it to sealantd's existing capture and restore configuration. Mend covers cold create,
+  standby create plus replan, restore-before-process-start, and final flush-before-harvest. Legacy
+  immutable capture heads cannot acquire the missing virtual root in place. A retained executor
+  whose configured root is absent is refused rather than running with an ephemeral HOME.
+- **Credential policy remains open:** sealantd excludes `.claude/.credentials.json` and
+  `.codex/auth.json` from capture. Transcript state survives pickup, but auth files do not; the
+  platform must inject fresh credentials before the resumed process starts. Tests distinguish that
+  fresh injection from restored transcript data.
+- **Cadence remains a limitation:** `workspace.capture.flush()` is a per-executor barrier, not an
+  independent `capture.now` command. Mend calls it on the exact process workspace and waits before
+  harvest, but cannot force a final capture after that executor is already unreachable.
+
 ## 2026-09-14 · 0.31.1 · sealantd's orphan reaper steals the capture engine's `git` children; `capture.flush` refused with ECHILD
 
 v0.27.3's release run failed the packaged acceptance on amd64 at "recorded command and change: Timed

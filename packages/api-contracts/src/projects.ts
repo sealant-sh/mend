@@ -60,8 +60,8 @@ export const projectsGroup = HttpApiGroup.make("projects")
     }),
   )
   .add(
-    // Dead ends — settled sessions that never had a conversation — are left out unless asked
-    // for: every client (web, phone, dashboard) then agrees on what a project's sessions are.
+    // Settled sessions without a captured transcript are left out unless asked for.
+    // ProjectDetail reports how many this response omitted, so the capture gap stays visible.
     HttpApiEndpoint.get("detail", "/projects/:id", {
       params: { id: ProjectId },
       query: { deadEnds: Schema.optional(Schema.Literals(["include"])) },

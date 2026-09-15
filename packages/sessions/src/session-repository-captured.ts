@@ -68,6 +68,31 @@ const checkpointRef = (worktreeId: string, index: number) =>
 const gitFailure = (cwd: string, what: string, detail: string) =>
   new GitError({ args: ["capture", what], cwd, exitCode: null, stderr: detail });
 
+/** Seed the virtual harness root so sealantd materializes and watches it before startup. */
+const initialWorkspaceTree = (worktreeId: string, epoch: number) => {
+  const keys = captureKeys(worktreeId, epoch);
+  const harnessRoot = encodeDirObject([]);
+  const harnessRootKey = keys.tree(sha256Hex(harnessRoot));
+  const workspaceRoot = encodeDirObject([
+    {
+      name: "harness",
+      kind: "dir",
+      mode: 0o755,
+      size: 0,
+      mtime: 0,
+      child: harnessRootKey,
+    },
+  ]);
+  const workspaceRootKey = keys.tree(sha256Hex(workspaceRoot));
+  return {
+    root: workspaceRootKey,
+    objects: new Map([
+      [harnessRootKey, harnessRoot],
+      [workspaceRootKey, workspaceRoot],
+    ]),
+  };
+};
+
 export const SessionRepositoryCapturedLive: Layer.Layer<
   SessionRepository,
   never,
@@ -232,14 +257,17 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
           );
         const finish = Effect.gen(function* () {
           const keys = captureKeys(worktreeId, claimed.epoch);
-          // The empty workspace class is a real (empty) dir object, not a `""` root: sealantd's
-          // materialiser fetches every class root by key and has no empty-root case (observed:
-          // "no GET url in plan for" with an empty key).
-          const emptyRoot = encodeDirObject([]);
-          const emptyRootKey = keys.tree(sha256Hex(emptyRoot));
-          yield* blobs
-            .put(emptyRootKey, emptyRoot, { ifAbsent: true })
-            .pipe(Effect.catch(blobFailure(project.storePath, "put")));
+          // The workspace class starts with a real empty `harness/` directory. sealantd restores
+          // that virtual entry into the configured harness root before it installs capture watches.
+          const workspace = initialWorkspaceTree(worktreeId, claimed.epoch);
+          yield* Effect.forEach(
+            workspace.objects,
+            ([key, bytes]) =>
+              blobs
+                .put(key, bytes, { ifAbsent: true })
+                .pipe(Effect.catch(blobFailure(project.storePath, "put"))),
+            { discard: true },
+          );
           const manifest: CaptureManifest = {
             worktree_id: worktreeId,
             n: 0,
@@ -259,7 +287,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
                 head: `refs/heads/${worktree.branch}`,
                 fsck: "verified",
               },
-              workspace: { root: emptyRootKey, packs: [] },
+              workspace: { root: workspace.root, packs: [] },
               bulk: "pending",
             },
             checkpoint: {
@@ -503,11 +531,15 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         const basePack = yield* uploadBasePack(projectId, project.storePath, base);
         const baseTree = yield* git(["rev-parse", "--verify", `${base}^{tree}`], project.storePath);
         const keys = captureKeys(alias, epoch);
-        const emptyRoot = encodeDirObject([]);
-        const emptyRootKey = keys.tree(sha256Hex(emptyRoot));
-        yield* blobs
-          .put(emptyRootKey, emptyRoot, { ifAbsent: true })
-          .pipe(Effect.catch(blobFailure(project.storePath, "put")));
+        const workspace = initialWorkspaceTree(alias, epoch);
+        yield* Effect.forEach(
+          workspace.objects,
+          ([key, bytes]) =>
+            blobs
+              .put(key, bytes, { ifAbsent: true })
+              .pipe(Effect.catch(blobFailure(project.storePath, "put"))),
+          { discard: true },
+        );
         const cache =
           platform === undefined
             ? null
@@ -535,7 +567,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
               head: `refs/heads/${project.defaultBranch}`,
               fsck: "verified",
             },
-            workspace: { root: emptyRootKey, packs: [] },
+            workspace: { root: workspace.root, packs: [] },
             bulk:
               cache === null
                 ? "pending"

@@ -62,6 +62,9 @@ const byName = <T extends { readonly name: string }>(items: ReadonlyArray<T>): R
 /** Stable content hash of the create-time-fixed inputs; key order is fixed by construction. */
 export const hotFingerprint = (inputs: HotFingerprintInputs): string => {
   const canonical = {
+    // Bump when launch preparation changes in a way an already-running standby cannot inherit.
+    // v1 relocates every harness directory into sealantd's configured capture root before launch.
+    harnessHomeLayout: "capture-root-v1",
     workspaceImage: encodeWorkspaceImage(inputs.workspaceImage),
     applyDotfiles: inputs.applyDotfiles,
     inheritUserSkills: inputs.inheritUserSkills,

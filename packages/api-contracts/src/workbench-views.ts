@@ -100,9 +100,12 @@ export class WorktreeAnnotation extends Schema.Class<WorktreeAnnotation>("Worktr
   currentAgent: Schema.NullOr(SessionProcess),
 }) {}
 
+/** A project and its visible workbench history. */
 export class ProjectDetail extends Schema.Class<ProjectDetail>("ProjectDetail")({
   project: Project,
   sessions: Schema.Array(Session),
+  /** Ended sessions omitted from `sessions` because Mend captured no transcript. */
+  hiddenEndedSessions: Schema.Int,
   /** Kept per session while pre-worktree clients read it; same facts as the worktree's. */
   annotations: Schema.Array(SessionAnnotation),
   /**

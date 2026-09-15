@@ -237,22 +237,79 @@ export const HARNESS_HOME_MOUNT_PATH = "/workspace/harness-home";
 /**
  * The boot step that makes harness state durable: for every supported harness (a workspace
  * carries them all, and a session can switch mid-life), move whatever `$HOME` already holds —
- * image-baked defaults, a restored capture — into the mounted harness home, then symlink the
- * `$HOME` directory to the mount. `cp -an` keeps mount-side files on collision: when both a
- * restore and live state exist, the live state is newer by construction. Idempotent; a rerun
- * over existing symlinks does nothing.
+ * image-baked defaults, injected credentials, a restored capture — into the harness root, then
+ * symlink the `$HOME` directory to that root. `cp -an` keeps root-side files on collision: when
+ * both a restore and live state exist, the live state is newer by construction. Idempotent; a
+ * rerun over existing symlinks does nothing.
+ *
+ * Co-located workspaces need the permission keeper because a different host uid reads the mounted
+ * directory. Capture workspaces pass `keepStoreReadable: false`: sealantd reads its own local root,
+ * and the detached keeper must not become part of captured state.
  */
-export const relocateHarnessHomeScript = (mountPath: string = HARNESS_HOME_MOUNT_PATH): string => {
+const checkedDirectoryScript = (target: string) =>
+  `[ ! -L "${target}" ] || fail "symlinked directory: ${target}"; ` +
+  `if [ ! -e "${target}" ]; then mkdir "${target}" || fail "mkdir: ${target}"; fi; ` +
+  `[ -d "${target}" ] || fail "not a directory: ${target}"; ` +
+  `[ "$(cd "${target}" && pwd -P)" = "${target}" ] || fail "indirect directory: ${target}"`;
+
+export const relocateHarnessHomeScript = (
+  mountPath: string = HARNESS_HOME_MOUNT_PATH,
+  options: { readonly keepStoreReadable?: boolean } = {},
+): string => {
   const dirs = [...new Set(Object.values(HARNESS_STATE).flatMap((shape) => shape.homeDirs))];
-  const perDir = dirs.map(
-    (dir) =>
-      `mkdir -p "${mountPath}/${dir}" "$(dirname "$HOME/${dir}")"; ` +
-      `if [ -e "$HOME/${dir}" ] && [ ! -L "$HOME/${dir}" ]; then ` +
-      `cp -an "$HOME/${dir}/." "${mountPath}/${dir}/" 2>/dev/null; rm -rf "$HOME/${dir}"; fi; ` +
-      `[ -L "$HOME/${dir}" ] || ln -s "${mountPath}/${dir}" "$HOME/${dir}"`,
-  );
+  const destinationDirectories = [
+    ...new Set(
+      dirs.flatMap((dir) => {
+        const parts = dir.split("/");
+        return parts.map((_, index) => `${mountPath}/${parts.slice(0, index + 1).join("/")}`);
+      }),
+    ),
+  ];
+  const sourceParents = [
+    ...new Set(
+      dirs.flatMap((dir) => {
+        const parts = dir.split("/").slice(0, -1);
+        return parts.map((_, index) => `$HOME/${parts.slice(0, index + 1).join("/")}`);
+      }),
+    ),
+  ];
+  const preflight = [
+    `fail() { printf '%s\\n' "harness-home relocation failed: $1" >&2; exit 1; }`,
+    `[ "${mountPath.slice(0, 1)}" = "/" ] || fail "root is not absolute"`,
+    `[ "${mountPath}" != "/" ] || fail "root is filesystem root"`,
+    `[ -d "${mountPath}" ] && [ ! -L "${mountPath}" ] || fail "root is missing or linked"`,
+    `[ "$(cd "${mountPath}" && pwd -P)" = "${mountPath}" ] || fail "root has a linked parent"`,
+    `case "$HOME" in /*) ;; *) fail "HOME is not absolute" ;; esac`,
+    `[ "$HOME" != "/" ] || fail "HOME is filesystem root"`,
+    `[ -d "$HOME" ] && [ ! -L "$HOME" ] || fail "HOME is missing or linked"`,
+    `[ "$(cd "$HOME" && pwd -P)" = "$HOME" ] || fail "HOME has a linked parent"`,
+    `case "$HOME/" in "${mountPath}/"*) fail "root contains HOME" ;; esac`,
+    `case "${mountPath}/" in "$HOME/"*) fail "HOME contains root" ;; esac`,
+    ...destinationDirectories.map(checkedDirectoryScript),
+    ...sourceParents.map(checkedDirectoryScript),
+  ];
+  const perDir = dirs.map((dir) => {
+    const source = `$HOME/${dir}`;
+    const destination = `${mountPath}/${dir}`;
+    return (
+      `if [ -L "${source}" ]; then ` +
+      `[ -d "${source}" ] || fail "dangling source link: ${source}"; ` +
+      `[ "$(cd "${source}" && pwd -P)" = "${destination}" ] || fail "unexpected source link: ${source}"; ` +
+      `elif [ -e "${source}" ]; then ` +
+      `[ -d "${source}" ] || fail "source is not a directory: ${source}"; ` +
+      `cp -an "${source}/." "${destination}/" || fail "copy: ${source}"; ` +
+      `rm -rf "${source}" || fail "remove: ${source}"; ` +
+      `fi; ` +
+      `if [ ! -L "${source}" ]; then ` +
+      `[ ! -e "${source}" ] || fail "source still exists: ${source}"; ` +
+      `ln -s "${destination}" "${source}" || fail "link: ${source}"; ` +
+      `fi; ` +
+      `[ -L "${source}" ] && [ -d "${source}" ] || fail "source link is invalid: ${source}"; ` +
+      `[ "$(cd "${source}" && pwd -P)" = "${destination}" ] || fail "source link resolves outside root: ${source}"`
+    );
+  });
   // The mode keeper: workspace processes run as root and some harnesses tighten their state to
-  // 0700/0600 (codex does), which blinds the store-side reader (the observer, crash harvest —
+  // 0700/0600 (codex does), which blinds the store-side reader (the observer, crash harvest,
   // uid 1000; NFS checks modes server-side, so only opening the modes helps). A detached root
   // loop inside the workspace re-opens read bits every 15s. The pidfile keeps relaunches from
   // stacking keepers. Interim by design: the structural fix is a single uid story for
@@ -263,7 +320,9 @@ export const relocateHarnessHomeScript = (mountPath: string = HARNESS_HOME_MOUNT
     `while sleep 15; do chmod -R go+rX "${mountPath}" 2>/dev/null || exit 0; done' ` +
     `>/dev/null 2>&1 & fi; ` +
     `chmod -R go+rX "${mountPath}" 2>/dev/null || true`;
-  return [...perDir, keeper].join("; ");
+  return [...preflight, ...perDir, ...(options.keepStoreReadable === false ? [] : [keeper])].join(
+    "; ",
+  );
 };
 
 /**

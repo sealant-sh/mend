@@ -118,21 +118,21 @@ test("named-volume lowering and persistence paths stay aligned", () => {
   assert.equal(compose.volumes["mend-registry"], undefined);
 });
 
-test("the bundle pins published Sealant 0.31.2 artifacts and its official migrator", async () => {
+test("the bundle pins published Sealant 0.32.0 artifacts and its official migrator", async () => {
   const [dockerfile, supervisor, contract] = await Promise.all([
     readFile(path.join(root, "Dockerfile"), "utf8"),
     readFile(path.join(root, "scripts/bundle-supervisor.mjs"), "utf8"),
     readFile(path.join(composeDirectory, "setup-contract.v2.json"), "utf8").then(JSON.parse),
   ]);
-  assert.equal(contract.sealantVersion, "0.31.2");
+  assert.equal(contract.sealantVersion, "0.32.0");
   assert.equal(contract.schemaVersion, 2);
   assert.deepEqual(contract.runtimeContainers, ["mend", "postgres", "garage"]);
   assert.equal(contract.captureStore.image, "dxflrs/garage:v2.4.1");
   assert.equal(contract.registry, undefined);
   assert.match(dockerfile, /MEND_VERSION=\$\{MEND_VERSION\}/);
-  assert.match(dockerfile, /sealant-api@sha256:441fbd75/);
-  assert.match(dockerfile, /sealant-worker@sha256:f5cd7ca9/);
-  assert.match(dockerfile, /sealant-ssh-gateway@sha256:a4915a54/);
+  assert.match(dockerfile, /sealant-api@sha256:755f540f/);
+  assert.match(dockerfile, /sealant-worker@sha256:93b19f79/);
+  assert.match(dockerfile, /sealant-ssh-gateway@sha256:f73efea6/);
   assert.doesNotMatch(dockerfile, /FROM rabbitmq|zot-minimal|\/opt\/zot|rabbitmq-server/i);
   assert.doesNotMatch(supervisor, /RABBITMQ_URL|REGISTRY_/);
   // Both Mend processes run from bundles; the runtime image carries no workspace or node_modules.
