@@ -1,10 +1,11 @@
-import { HARNESS_COMMANDS, LIVE_STATUSES } from "./shared.ts";
+import { HARNESS_COMMANDS, isPendingId, LIVE_STATUSES } from "./shared.ts";
 
 /**
  * The dashboard's pure data layer: DTOs as the server sends them, the
  * worktree grouping (real containers on a worktree-aware server, one pseudo
- * group per session on an older one), and the flat walkable row list the
- * keyboard moves over. No rendering, no opentui — testable on any Node.
+ * group per session on an older one), the column plan the keyboard moves
+ * through, and what each verb may do with the current selection. No
+ * rendering, no opentui — testable on any Node.
  */
 
 export interface ProjectDto {
@@ -117,9 +118,11 @@ export interface Workbench {
 export const WORKBENCH_KEY = ["workbench"];
 
 /** The one server call surface the model needs — the dashboard's ctx.api. */
-export interface WorkbenchApi {
-  <T>(method: "GET" | "POST" | "DELETE", route: string, body?: unknown): Promise<T>;
-}
+export type WorkbenchApi = <T>(
+  method: "GET" | "POST" | "DELETE",
+  route: string,
+  body?: unknown,
+) => Promise<T>;
 
 export const fetchWorkbench = async (ctx: { readonly api: WorkbenchApi }): Promise<Workbench> => {
   const projects = await ctx.api<ReadonlyArray<ProjectDto>>("GET", "/projects");
@@ -302,7 +305,9 @@ export const deriveWorktrees = (
     .filter((session) => !isDeadEnd(session))
     .toSorted(bySessionRecency);
   const groups: Array<WorktreeGroup> = [];
-  if (detail.worktrees !== undefined) {
+  if (detail.worktrees === undefined) {
+    for (const session of sorted) groups.push(pseudoGroup(session, item));
+  } else {
     const claimed = new Set<string>();
     for (const worktree of detail.worktrees) {
       const members = sorted.filter((session) => session.worktreeId === worktree.id);
@@ -327,8 +332,6 @@ export const deriveWorktrees = (
       if (claimed.has(session.id)) continue;
       groups.push(pseudoGroup(session, item));
     }
-  } else {
-    for (const session of sorted) groups.push(pseudoGroup(session, item));
   }
   return groups.toSorted((a, b) => {
     if (a.live > 0 !== b.live > 0) return a.live > 0 ? -1 : 1;
@@ -352,27 +355,6 @@ export const pseudoGroup = (
   live: LIVE_STATUSES.has(session.status) ? 1 : 0,
   annotation: item(session).annotation,
 });
-
-/**
- * The flat walkable row list: every worktree is a header row with its session
- * children indented underneath, one session or many — a row always says what
- * it is, so ⇧D on it removes what it names. Process/service lines stay facts,
- * never targets.
- */
-export type SelectableRow =
-  | { readonly kind: "worktree"; readonly group: WorktreeGroup }
-  | { readonly kind: "session"; readonly group: WorktreeGroup; readonly item: SessionItem };
-
-export const deriveRows = (groups: ReadonlyArray<WorktreeGroup>): ReadonlyArray<SelectableRow> =>
-  groups.flatMap(
-    (group): ReadonlyArray<SelectableRow> => [
-      { kind: "worktree", group },
-      ...group.sessions.map((item): SelectableRow => ({ kind: "session", group, item })),
-    ],
-  );
-
-export const rowKeyOf = (row: SelectableRow): string =>
-  row.kind === "worktree" ? `wt:${row.group.key}` : `s:${row.item.session.id}`;
 
 /** The picker's rows: resume offers the same harness first, then the crossings. */
 export const deriveHarnesses = (resuming: SessionDto | null): ReadonlyArray<HarnessItem> => {
@@ -407,6 +389,30 @@ export const deriveHarnesses = (resuming: SessionDto | null): ReadonlyArray<Harn
     }),
   );
 };
+
+/**
+ * A conversation's own name: the label it was given, else the harness and the
+ * short session id. The machine id is the fallback, never the headline.
+ */
+export const sessionDisplayName = (session: SessionDto): string => {
+  if (session.label !== null && session.label !== "") return session.label;
+  if (isPendingId(session.id)) return `${session.harness} · starting`;
+  return `${session.harness} ${session.id.slice(0, 8)}`;
+};
+
+/** What the worktree forked from, as a word: its base ref, else the base sha. */
+export const groupBaseLabel = (group: WorktreeGroup): string => {
+  if (group.baseRef !== null && group.baseRef !== "") return group.baseRef;
+  const sha = group.sessions[0]?.session.baseSha ?? "";
+  return sha === "" ? "base unknown" : sha.slice(0, 7);
+};
+
+/** When this worktree last saw a conversation start — its activity fact. */
+export const groupActivityAt = (group: WorktreeGroup): string =>
+  group.sessions.reduce(
+    (newest, item) => (item.session.createdAt > newest ? item.session.createdAt : newest),
+    group.createdAt,
+  );
 
 /** The worktree's folded status word: waiting wins, then running, then idle. */
 export const foldGroupStatus = (group: WorktreeGroup): string => {
@@ -443,24 +449,77 @@ export const liveProtocolOf = (
   null;
 
 /**
- * What Enter means for a set of conversations (a session row, or every
- * member of a worktree header): `attach` the newest live one, `wait` because
- * the only live one is still starting, or `none` — nothing live, open the
- * picker. A `starting` row is a launch in flight: the workspace is still
- * booting and has no PTY yet, so attaching would suspend the dashboard, be
- * refused, and bounce straight back — once per Enter when the key is held.
+ * What `a` — attach — may do with the selected conversation. Attach takes the
+ * terminal's write authority, so it is only ever offered for a session that is
+ * already live: a settled one is reported settled and left alone. Attach NEVER
+ * resumes; `r` is the verb that brings a settled session back, and keeping the
+ * two apart is why a held `a` can no longer wake a finished session by accident.
+ * A `starting` row has no PTY yet — attaching would suspend the dashboard, be
+ * refused, and bounce straight back.
  */
-export type EnterTarget =
+export type AttachPlan =
   | { readonly kind: "attach"; readonly session: SessionDto }
-  | { readonly kind: "wait"; readonly session: SessionDto }
+  | { readonly kind: "starting"; readonly session: SessionDto }
+  | { readonly kind: "settled"; readonly session: SessionDto }
+  | { readonly kind: "pending"; readonly session: SessionDto }
   | { readonly kind: "none" };
 
-export const enterTargetOf = (sessions: ReadonlyArray<SessionDto>): EnterTarget => {
-  const live = sessions.filter((session) => LIVE_STATUSES.has(session.status));
-  const attachable = live.find((session) => session.status !== "starting");
-  if (attachable !== undefined) return { kind: "attach", session: attachable };
-  const starting = live[0];
-  return starting === undefined ? { kind: "none" } : { kind: "wait", session: starting };
+export const planAttach = (session: SessionDto | null): AttachPlan => {
+  if (session === null) return { kind: "none" };
+  if (isPendingId(session.id)) return { kind: "pending", session };
+  if (!LIVE_STATUSES.has(session.status)) return { kind: "settled", session };
+  if (session.status === "starting") return { kind: "starting", session };
+  return { kind: "attach", session };
+};
+
+/**
+ * What `r` — resume — may do with the selected conversation: only a settled
+ * session can be resumed, and a live one is reported live rather than being
+ * restarted underneath the agent still working in it.
+ */
+export type ResumePlan =
+  | { readonly kind: "resume"; readonly session: SessionDto }
+  | { readonly kind: "live"; readonly session: SessionDto }
+  | { readonly kind: "pending"; readonly session: SessionDto }
+  | { readonly kind: "none" };
+
+export const planResume = (session: SessionDto | null): ResumePlan => {
+  if (session === null) return { kind: "none" };
+  if (isPendingId(session.id)) return { kind: "pending", session };
+  if (LIVE_STATUSES.has(session.status)) return { kind: "live", session };
+  return { kind: "resume", session };
+};
+
+/**
+ * The one-at-a-time guard for the verbs that start work. A key repeat, or a
+ * second press while the server is still answering, must not provision a
+ * second workspace: the gate is taken SYNCHRONOUSLY in the key handler, before
+ * any await or state update, and released when the request settles. React
+ * state would be too late — it lands a paint after the second keystroke.
+ */
+export interface LaunchGate {
+  /** True when the caller now holds `key`; false when somebody already does. */
+  readonly take: (key: string) => boolean;
+  readonly release: (key: string) => void;
+  readonly held: (key: string) => boolean;
+  /** How many starts are in flight — the chrome says so. */
+  readonly count: () => number;
+}
+
+export const createLaunchGate = (): LaunchGate => {
+  const taken = new Set<string>();
+  return {
+    take: (key) => {
+      if (taken.has(key)) return false;
+      taken.add(key);
+      return true;
+    },
+    release: (key) => {
+      taken.delete(key);
+    },
+    held: (key) => taken.has(key),
+    count: () => taken.size,
+  };
 };
 
 /**
@@ -563,6 +622,12 @@ export interface CreatingState {
   readonly name: string;
   /** Null while the fetch is in flight — it starts when the modal opens. */
   readonly branches: ReadonlyArray<BranchDto> | null;
+  /**
+   * The branch lookup's own failure, in the user's words. A request error is
+   * NEVER folded into an empty list: "this repository has no other branches"
+   * and "Mend could not read them" are different facts and the modal says which.
+   */
+  readonly branchError: string | null;
   readonly query: string;
   readonly baseIndex: number;
   /** Chosen base (null = the default branch). */
@@ -571,6 +636,22 @@ export interface CreatingState {
   readonly joins: boolean;
   readonly harnessIndex: number;
 }
+
+/**
+ * What the base step has to say about its list right now — loading, the error
+ * that stopped it, or genuine emptiness. Null = the list speaks for itself.
+ */
+export const baseStepNotice = (state: CreatingState): string | null => {
+  if (state.branchError !== null) {
+    return `branches unreadable — ${state.branchError} · enter uses the default`;
+  }
+  if (state.branches === null) return "reading branches…";
+  if (state.branches.length === 0) return "no branches read — enter uses the default branch";
+  if (filterBranches(state.branches, state.query).length === 0) {
+    return "no branch matches — enter uses the default branch";
+  }
+  return null;
+};
 
 /** Commit the base step: the highlighted branch (default branch = null base). */
 export const advanceFromBase = (current: CreatingState): CreatingState => {
@@ -581,3 +662,320 @@ export const advanceFromBase = (current: CreatingState): CreatingState => {
     step: "harness",
   };
 };
+
+// ─── the layout: a stacked nav sidebar beside the session pane ──────────────
+
+/**
+ * The four panes, and also the drill-down order: a project holds worktrees, a
+ * worktree holds sessions, a session has a detail. Selecting in one
+ * re-populates the ones below it.
+ */
+export type Column = "projects" | "worktrees" | "sessions" | "detail";
+
+export const COLUMNS: ReadonlyArray<Column> = ["projects", "worktrees", "sessions", "detail"];
+
+/** The three navigation panes — stacked in the sidebar, top to bottom. */
+export type NavSection = "projects" | "worktrees" | "sessions";
+
+export const NAV_SECTIONS: ReadonlyArray<NavSection> = ["projects", "worktrees", "sessions"];
+
+export const isNavSection = (column: Column): column is NavSection => column !== "detail";
+
+/**
+ * Which nav section stands open. The detail pane is not a nav section, so
+ * reading a record leaves the sidebar exactly as it was — sessions by default.
+ */
+const expandedSection = (focus: Column, lastNav: NavSection): NavSection =>
+  isNavSection(focus) ? focus : lastNav;
+
+/** The session pane is the work; the sidebar is how you point at it. */
+const SIDEBAR_SHARE = 0.25;
+/** Below this the sidebar stops being a list and starts being a rumour. */
+const MIN_SIDEBAR_WIDTH = 24;
+/** A record pane narrower than this wraps every line into noise. */
+const MIN_DETAIL_WIDTH = 48;
+/** Under this total width nothing sits side by side: one pane owns the screen. */
+const SPLIT_MIN_WIDTH = MIN_SIDEBAR_WIDTH + MIN_DETAIL_WIDTH;
+/** Two border rows and one row of content — the least a drawn pane can be. */
+const MIN_SECTION_HEIGHT = 3;
+/** Header, status and footer: the rows the body never gets. */
+const CHROME_ROWS = 3;
+
+export interface SectionLayout {
+  readonly section: NavSection;
+  /** The open section shows its list; the others show one summary line. */
+  readonly expanded: boolean;
+  /** Outer rows, the two border rows included. */
+  readonly height: number;
+  /** Rows the list itself gets. */
+  readonly rows: number;
+}
+
+export interface DashboardLayout {
+  /** Sidebar and session pane side by side; false = one pane owns the screen. */
+  readonly split: boolean;
+  /** Outer width of the stacked sidebar; 0 when it is off screen. */
+  readonly sidebarWidth: number;
+  /** The stacked sections, top to bottom; empty when the session pane owns the screen. */
+  readonly sections: ReadonlyArray<SectionLayout>;
+  /** Inner width and rows of the session pane; 0 when it is off screen. */
+  readonly detailWidth: number;
+  readonly detailRows: number;
+  /** The panes that did not fit — the breadcrumb states their selection. */
+  readonly offscreen: ReadonlyArray<Column>;
+  /** Whether a breadcrumb row was drawn; a terminal too short spends it on the pane. */
+  readonly breadcrumb: boolean;
+}
+
+/**
+ * Stack the sections: the open one takes everything the two summaries leave.
+ * Too short for three drawn panes and the open one takes the sidebar alone —
+ * three two-row lists nobody can navigate is the worse answer.
+ */
+const stackSections = (body: number, open: NavSection): ReadonlyArray<SectionLayout> => {
+  const room = body - (NAV_SECTIONS.length - 1) * MIN_SECTION_HEIGHT;
+  if (room < MIN_SECTION_HEIGHT) {
+    const height = Math.max(MIN_SECTION_HEIGHT, body);
+    return [{ section: open, expanded: true, height, rows: height - 2 }];
+  }
+  return NAV_SECTIONS.map((section) =>
+    section === open
+      ? { section, expanded: true, height: room, rows: room - 2 }
+      : { section, expanded: false, height: MIN_SECTION_HEIGHT, rows: 1 },
+  );
+};
+
+/**
+ * Where every pane sits. The session pane is the screen — three quarters of a
+ * usable terminal — and the sidebar is the quarter that points at it: projects,
+ * worktrees and sessions stacked, the focused one open and the other two folded
+ * to the line that says what is selected. A terminal too narrow for both gives
+ * the whole width to the side the keyboard is on, and the breadcrumb states the
+ * rest; a terminal too short for three drawn panes shows the open one alone.
+ */
+export const planLayout = (
+  width: number,
+  height: number,
+  focus: Column,
+  lastNav: NavSection,
+): DashboardLayout => {
+  const split = width >= SPLIT_MIN_WIDTH;
+  const navVisible = split || isNavSection(focus);
+  const sidebarOuter = split
+    ? Math.max(
+        MIN_SIDEBAR_WIDTH,
+        Math.min(width - MIN_DETAIL_WIDTH, Math.round(width * SIDEBAR_SHARE)),
+      )
+    : navVisible
+      ? Math.max(4, width)
+      : 0;
+  const detailOuter = split ? width - sidebarOuter : navVisible ? 0 : Math.max(4, width);
+  const build = (body: number, breadcrumb: boolean): DashboardLayout => {
+    const sections = navVisible ? stackSections(body, expandedSection(focus, lastNav)) : [];
+    const shown = new Set<Column>(sections.map((section) => section.section));
+    if (detailOuter > 0) shown.add("detail");
+    return {
+      split,
+      sidebarWidth: navVisible ? sidebarOuter : 0,
+      sections,
+      detailWidth: detailOuter === 0 ? 0 : Math.max(1, detailOuter - 2),
+      detailRows: detailOuter === 0 ? 0 : Math.max(1, body - 2),
+      offscreen: COLUMNS.filter((column) => !shown.has(column)),
+      breadcrumb,
+    };
+  };
+  const body = Math.max(MIN_SECTION_HEIGHT, height - CHROME_ROWS);
+  const full = build(body, false);
+  if (full.offscreen.length === 0) return full;
+  // A breadcrumb is a row like any other, and the body pays for it — but only
+  // while the body can still draw a pane. On a terminal that short, the pane wins.
+  return body - 1 >= MIN_SECTION_HEIGHT ? build(body - 1, true) : full;
+};
+
+/**
+ * Move through the hierarchy. Every destination is reachable — planLayout
+ * opens whatever the focus lands on; only the endpoints stop a step.
+ */
+export const stepColumn = (focus: Column, delta: number): Column => {
+  const at = COLUMNS.indexOf(focus);
+  if (at === -1) return "sessions";
+  return COLUMNS[Math.max(0, Math.min(COLUMNS.length - 1, at + delta))] ?? focus;
+};
+
+/**
+ * The hints that FIT, joined: a key footer or a row's fact line cut mid-word is
+ * one nobody trusts. Hints are ordered most-essential first and drop from the
+ * end; an ellipsis then says there is more (the full list is `mend help ui`).
+ */
+export const fitHints = (hints: ReadonlyArray<string>, width: number): string => {
+  const kept: Array<string> = [];
+  for (const hint of hints) {
+    const candidate = [...kept, hint].join(" · ");
+    const wouldTruncate = kept.length + 1 < hints.length;
+    if (candidate.length + (wouldTruncate ? 2 : 0) > width) break;
+    kept.push(hint);
+  }
+  if (kept.length === hints.length) return kept.join(" · ");
+  return kept.length === 0 ? "…" : `${kept.join(" · ")} …`;
+};
+
+/** Keep a list index inside its list after the list itself changed under it. */
+export const clampIndex = (length: number, index: number): number =>
+  length === 0 ? 0 : Math.max(0, Math.min(length - 1, index));
+
+// ─── the keymap: one table, so the footer cannot drift from the handler ─────
+
+/**
+ * Every verb the dashboard's base layer answers to. Modal layers (the harness
+ * picker, the creation modal, the adopt offer, the label input) own the
+ * keyboard while they are open and are not described here.
+ */
+export type DashboardVerb =
+  | "quit"
+  | "moveUp"
+  | "moveDown"
+  | "pageUp"
+  | "pageDown"
+  | "columnLeft"
+  | "columnRight"
+  | "attach"
+  | "resume"
+  | "newSession"
+  | "newWorktree"
+  | "rename"
+  | "openWeb"
+  | "review"
+  | "stop"
+  | "remove"
+  | "refresh";
+
+export interface KeyBinding {
+  readonly verb: DashboardVerb;
+  /** opentui key names this binding answers to. */
+  readonly keys: ReadonlyArray<string>;
+  /** Whether shift must be held; "any" when the key already encodes it. */
+  readonly shift: boolean | "any";
+  /**
+   * How the footer names this verb, per column. A verb with no entry for a
+   * column still works there — it is simply not worth a line of help.
+   */
+  readonly hints: Partial<Record<Column, string>>;
+}
+
+/**
+ * The keymap AND the on-screen help, in one table and in footer order (most
+ * essential first, because a narrow footer drops from the end). Nothing else
+ * in the dashboard may bind a base-layer key: a binding the footer never
+ * names, or help naming a key nothing answers to, is the drift this table
+ * exists to make impossible — and `dashboard-model.test.ts` proves it.
+ */
+export const KEY_BINDINGS: ReadonlyArray<KeyBinding> = [
+  {
+    verb: "moveUp",
+    keys: ["up", "k"],
+    shift: false,
+    hints: {
+      projects: "↑↓ move",
+      worktrees: "↑↓ move",
+      sessions: "↑↓ move",
+      detail: "↑↓ scroll",
+    },
+  },
+  { verb: "moveDown", keys: ["down", "j"], shift: false, hints: {} },
+  { verb: "pageUp", keys: ["pageup"], shift: false, hints: {} },
+  { verb: "pageDown", keys: ["pagedown"], shift: false, hints: {} },
+  {
+    verb: "columnRight",
+    keys: ["return", "linefeed", "l", "right", "tab"],
+    shift: false,
+    hints: { projects: "→ worktrees", worktrees: "←→ panes", sessions: "←→ panes" },
+  },
+  {
+    verb: "columnLeft",
+    keys: ["left", "h", "-", "backspace"],
+    shift: false,
+    hints: { detail: "← sessions" },
+  },
+  { verb: "columnLeft", keys: ["backtab"], shift: "any", hints: {} },
+  { verb: "columnLeft", keys: ["tab"], shift: true, hints: {} },
+  {
+    verb: "attach",
+    keys: ["a"],
+    shift: false,
+    hints: { worktrees: "a attach", sessions: "a attach", detail: "a attach" },
+  },
+  {
+    verb: "resume",
+    keys: ["r"],
+    shift: false,
+    hints: { worktrees: "r resume", sessions: "r resume", detail: "r resume" },
+  },
+  {
+    verb: "newSession",
+    keys: ["n"],
+    shift: false,
+    hints: {
+      projects: "n/w new worktree",
+      worktrees: "n new session",
+      sessions: "n new session",
+    },
+  },
+  {
+    verb: "newWorktree",
+    keys: ["w"],
+    shift: false,
+    hints: { worktrees: "w new worktree", sessions: "w new worktree" },
+  },
+  {
+    verb: "stop",
+    keys: ["k"],
+    shift: true,
+    hints: { worktrees: "⇧K stop all", sessions: "⇧K stop" },
+  },
+  { verb: "stop", keys: ["x"], shift: false, hints: {} },
+  {
+    verb: "remove",
+    keys: ["d"],
+    shift: true,
+    hints: { worktrees: "⇧D remove worktree", sessions: "⇧D remove" },
+  },
+  {
+    verb: "review",
+    keys: ["v"],
+    shift: false,
+    hints: { worktrees: "v review", sessions: "v review", detail: "v review" },
+  },
+  {
+    verb: "rename",
+    keys: ["e"],
+    shift: false,
+    hints: { sessions: "e rename", detail: "e rename" },
+  },
+  { verb: "openWeb", keys: ["o"], shift: false, hints: { sessions: "o web", detail: "o web" } },
+  {
+    verb: "refresh",
+    keys: ["r"],
+    shift: true,
+    hints: { projects: "⇧R refresh", worktrees: "⇧R refresh", detail: "⇧R refresh" },
+  },
+  {
+    verb: "quit",
+    keys: ["q"],
+    shift: false,
+    hints: { projects: "q quit", worktrees: "q quit", sessions: "q quit", detail: "q quit" },
+  },
+];
+
+/** The verb a keystroke means in the base layer; null = the dashboard ignores it. */
+export const verbForKey = (name: string, shift: boolean): DashboardVerb | null =>
+  KEY_BINDINGS.find(
+    (binding) =>
+      binding.keys.includes(name) && (binding.shift === "any" || binding.shift === shift),
+  )?.verb ?? null;
+
+/** The footer's hints for one column, most essential first. */
+export const verbHints = (focus: Column): ReadonlyArray<string> =>
+  KEY_BINDINGS.flatMap((binding) => {
+    const hint = binding.hints[focus];
+    return hint === undefined ? [] : [hint];
+  });

@@ -11,11 +11,24 @@ npm install -g @sealant/mend
 
 Requires Node 22+ and a running Mend server.
 
-Run bare `mend` for the interactive dashboard. Highlight a session and press `v` to review its
-accumulated change in the terminal: navigate files and hunks, switch between unified and split
-diffs, reveal whitespace, select line ranges, add line or whole-change comments, inspect linked
-evidence, and draft a follow-up for the same session. Press `y` to deliver a pending follow-up and
-relaunch that session, or `o` to continue the review in the web app.
+Run bare `mend` for the interactive dashboard. The session pane takes three quarters of the screen
+and previews the recorded conversation without taking terminal control. The remaining quarter is a
+sidebar of three stacked sections — **Projects**, **Worktrees**, **Sessions** — where the section
+you are in stands open and the other two fold to the line that says what is selected; moving into
+the session pane leaves the sidebar as it was.
+
+Use `↑↓` to select rows and `←→` or Tab to move between the sections and the session pane. Enter
+moves right; it never launches or attaches. Press `a` to attach, `r` to resume a settled session, or
+`n` to create a session in the selected worktree (`w` creates a worktree). After starting or
+resuming, press `a` when ready to attach. Nothing is ever squeezed: a terminal too narrow for both
+gives the whole width to the side you are on, a terminal too short for three drawn panes shows the
+open section alone, and a one-line breadcrumb states whatever did not fit.
+
+Highlight a session and press `v` to review its accumulated change in the terminal: navigate files
+and hunks, switch between unified and split diffs, reveal whitespace, select line ranges, add line
+or whole-change comments, inspect linked evidence, and draft a follow-up for the same session. Press
+`y` to deliver a pending follow-up and relaunch that session, or `o` to continue the review in the
+web app.
 
 ## Local server
 
@@ -75,7 +88,7 @@ mend doctor                      # every fact above, on one screen
 
 ### mend pair
 
-```
+```text
 mend pair [--url <base url>]
 ```
 
@@ -88,7 +101,7 @@ from the Mend app later. The device names itself when it claims the code.
 
 ### mend doctor
 
-```
+```sh
 mend doctor
 ```
 
@@ -97,7 +110,7 @@ account, adopted projects, the `claude` / `codex` / `gh` CLIs on PATH and whethe
 exist on this machine, and the tailnet address. One line per fact — `✓` observed, `○` not set up
 yet, `✗` a blocker — and every line that needs an action ends with the one command that takes it:
 
-```
+```text
 ✓ server      http://localhost:3105 · mend 0.5.0
 ✓ signed in   token accepted
 ✓ sealant     connected · http://127.0.0.1:4000
@@ -112,7 +125,7 @@ It exits 1 when a `✗` is printed, so a setup script can gate on it. No request
 
 ## Commands
 
-```
+```text
 mend adopt [git-url] [--name <name>]  clone a network Git repository into the store
                                       (default: the current checkout's origin URL)
 mend codex|claude|opencode            new session worktree + launch the harness in it
@@ -138,7 +151,7 @@ mend version                          this CLI's version, and the server's when 
 
 ## Signing in
 
-```
+```sh
 mend login                 # opens the browser at <server>/authorize; press Authorize there
 mend login --url https://mend.example.com
 mend logout                # revokes this terminal's device token and forgets it
@@ -227,6 +240,15 @@ on first connection, but refuses a changed key. Rerunning setup does not replace
 | `MEND_TOKEN`              | Bearer token for that server (normally written by `mend login`)                                            |
 | `MEND_DETACH_KEY`         | Set to `none` when an outer multiplexer detaches                                                           |
 | `~/.config/mend/cli.json` | `{ "url": ..., "token": ..., "deviceId": ... }` — env vars win; a pre-XDG `~/.mend/cli.json` keeps working |
+
+## Colors
+
+The dashboard and review screen use Ayu Mirage backgrounds and accents, with brighter text and
+borders for terminal legibility. `src/tui-theme.ts` defines the shared palette. Inactive pane titles
+use the primary text color, not the border color.
+
+Palette tests require at least 7:1 text contrast on the main backgrounds and 6:1 on selected rows.
+Selection and diff backgrounds use solid, precomposited colors. The web theme is unchanged.
 
 ## Herdr
 

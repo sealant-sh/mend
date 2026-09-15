@@ -21,9 +21,11 @@ import { commentRange, deliverReview } from "./review-workflow.ts";
 import { isPendingId, pendingId } from "./shared.ts";
 import { openUrl } from "./terminal.ts";
 import {
+  ACCENT,
   ADD_WASH,
-  COBALT,
+  CANVAS,
   DELETE_WASH,
+  ERROR,
   FAINT,
   GREEN,
   INK,
@@ -271,7 +273,7 @@ const anchorOf = (comment: ReviewCommentDto): string =>
 const passFact = (pass: ChangePassDto): { readonly text: string; readonly color: string } => {
   const label = pass.kind === "suggest" ? "suggestions" : pass.kind;
   if (pass.status === "running") return { text: `${label} running`, color: INK_2 };
-  if (pass.status === "failed") return { text: `${label} failed`, color: RED };
+  if (pass.status === "failed") return { text: `${label} failed`, color: ERROR };
   return {
     text: `${label} observed · ${pass.findings ?? 0} ${pass.kind === "tour" ? "stops" : "drafts"}`,
     color: MUTED,
@@ -281,7 +283,7 @@ const passFact = (pass: ChangePassDto): { readonly text: string; readonly color:
 const FileRow = ({ file, selected }: { readonly file: ReviewFile; readonly selected: boolean }) => (
   <box height={2} flexShrink={0} backgroundColor={selected ? WASH : "transparent"}>
     <text height={1} bg="transparent">
-      <span fg={selected ? COBALT : FAINT}>{selected ? "▌ " : "  "}</span>
+      <span fg={selected ? ACCENT : FAINT}>{selected ? "▌ " : "  "}</span>
       <span fg={INK}>{file.path}</span>
       {file.binary ? <span fg={MUTED}> · binary</span> : null}
       {file.likelyGenerated ? <span fg={FAINT}> · inferred · likely generated</span> : null}
@@ -308,7 +310,7 @@ const CommentRow = ({
 }) => (
   <box height={2} flexShrink={0} backgroundColor={selected ? WASH : "transparent"}>
     <text height={1} bg="transparent">
-      <span fg={selected ? COBALT : FAINT}>{selected ? "▌ " : "  "}</span>
+      <span fg={selected ? ACCENT : FAINT}>{selected ? "▌ " : "  "}</span>
       <span fg={stateColor(comment.state)}>{comment.state}</span>
       <span fg={FAINT}> · {anchorOf(comment)}</span>
     </text>
@@ -342,6 +344,7 @@ const Description = ({
       border
       borderStyle="rounded"
       borderColor={RULE}
+      titleColor={INK}
       title=" change description "
       titleAlignment="left"
       backgroundColor="transparent"
@@ -441,6 +444,7 @@ const CompactTourEvidence = ({
       border
       borderStyle="rounded"
       borderColor={RULE}
+      titleColor={INK}
       title={` tour stop ${index + 1}/${total} · ${stop.grounded ? "direct record" : "inferred reading"} `}
       titleAlignment="left"
       backgroundColor="transparent"
@@ -481,6 +485,7 @@ const EvidenceCard = ({
     border
     borderStyle="rounded"
     borderColor={RULE}
+    titleColor={INK}
     title={` ${anchorOf(comment)} · ${comment.authorKind === "mend" ? "Mend" : "You"} `}
     titleAlignment="left"
     backgroundColor="transparent"
@@ -525,7 +530,7 @@ const EditorPanel = ({
     <box
       border
       borderStyle="rounded"
-      borderColor={COBALT}
+      borderColor={ACCENT}
       title={title}
       titleAlignment="left"
       backgroundColor="transparent"
@@ -755,7 +760,7 @@ export function ReviewScreen({
               anchor.newLine <= Math.max(start, selectedLine),
           );
     for (const anchor of highlighted) {
-      diffRef.current.setLineColor(anchor.unifiedRow, { gutter: COBALT, content: WASH });
+      diffRef.current.setLineColor(anchor.unifiedRow, { gutter: ACCENT, content: WASH });
     }
     return () => {
       if (diffRef.current === null) return;
@@ -1133,7 +1138,7 @@ export function ReviewScreen({
 
   if (data === undefined) {
     return (
-      <box flexGrow={1} backgroundColor="transparent" alignItems="center" justifyContent="center">
+      <box flexGrow={1} backgroundColor={CANVAS} alignItems="center" justifyContent="center">
         <text bg="transparent">
           <span fg={failureReason === null ? INK_2 : MUTED}>
             {failureReason === null
@@ -1173,7 +1178,8 @@ export function ReviewScreen({
       <box
         border
         borderStyle="rounded"
-        borderColor={focus === "files" ? COBALT : RULE}
+        borderColor={focus === "files" ? ACCENT : RULE}
+        titleColor={focus === "files" ? ACCENT : INK}
         title={` files · ${files.length} `}
         titleAlignment="left"
         backgroundColor="transparent"
@@ -1207,7 +1213,8 @@ export function ReviewScreen({
       <box
         border
         borderStyle="rounded"
-        borderColor={focus === "comments" ? COBALT : RULE}
+        borderColor={focus === "comments" ? ACCENT : RULE}
+        titleColor={focus === "comments" ? ACCENT : INK}
         title={` comments · ${openCount} open${draftCount > 0 ? ` · ${draftCount} draft` : ""} `}
         titleAlignment="left"
         backgroundColor="transparent"
@@ -1241,7 +1248,10 @@ export function ReviewScreen({
   ) : null;
 
   return (
-    <box flexGrow={1} flexDirection="column" backgroundColor="transparent">
+    // The review screen replaces the dashboard root rather than nesting inside
+    // it, so it paints its own canvas; without this the terminal's own
+    // background shows through and the screen stops matching the dashboard.
+    <box flexGrow={1} flexDirection="column" backgroundColor={CANVAS}>
       <box height={2} flexShrink={0} flexDirection="column" backgroundColor="transparent">
         <text height={1} bg="transparent">
           <span fg={INK}> mend</span>
@@ -1292,7 +1302,8 @@ export function ReviewScreen({
           <box
             border
             borderStyle="rounded"
-            borderColor={focus === "diff" ? COBALT : RULE}
+            borderColor={focus === "diff" ? ACCENT : RULE}
+            titleColor={focus === "diff" ? ACCENT : INK}
             title={
               selectedFile === null
                 ? " diff "
