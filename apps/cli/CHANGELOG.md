@@ -1,5 +1,13 @@
 # @sealant/mend
 
+## 0.27.5
+
+### Patch Changes
+
+- 11083ed: Prevent coding-agent transcript data from being lost when a capture executor is replaced,
+  and show when ended sessions without an observed transcript are omitted from a project's visible
+  count.
+
 ## 0.27.4
 
 ### Patch Changes
