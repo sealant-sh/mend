@@ -3,7 +3,13 @@ import * as path from "node:path";
 
 import { CaptureStoreRepo, StoreRefsRepo } from "@mend/db";
 import { Sha } from "@mend/domain";
-import { BlobStore, WORKTREE_TREE_REF, captureIdOf } from "@mend/store";
+import {
+  BlobStore,
+  WORKTREE_TREE_REF,
+  captureIdOf,
+  decodeManifest,
+  materialize,
+} from "@mend/store";
 import { buildManifest, uploadObjects } from "@mend/store/testing";
 import { Effect, Exit, Fiber, Layer, Scope } from "effect";
 import type * as Context from "effect/Context";
@@ -54,7 +60,7 @@ describe("SessionRepositoryCapturedLive", () => {
     fs.rmSync(world.scratch, { recursive: true, force: true });
   });
 
-  it("createWorktree resolves the base and writes the branch ref; attachWorktree registers capture 0 from a base pack and releases the lease", async () => {
+  it("createWorktree resolves the base; attachWorktree registers capture 0 with a materializable harness root and releases the lease", async () => {
     const worktreeId = newWorktreeId();
     const created = await run(
       Effect.gen(function* () {
@@ -93,10 +99,26 @@ describe("SessionRepositoryCapturedLive", () => {
     expect(seen.lease?.live).toBe(false);
     expect(seen.lease?.epoch).toBe(1);
     // The base pack sits under the project prefix, never an epoch's, and the manifest names it.
+    // Materializing the initial workspace must create a real harness directory before daemon watch
+    // setup. A rootless capture 0 reproduces the transcript-only cadence loss.
     const manifestKey = seen.chain?.head?.manifestKey ?? "";
-    const manifest = JSON.parse(fs.readFileSync(path.join(world.blobRoot, manifestKey), "utf8"));
+    const materialized = path.join(world.scratch, `materialized-${worktreeId}`);
+    const manifest = await run(
+      Effect.gen(function* () {
+        const decoded = yield* decodeManifest(
+          manifestKey,
+          new Uint8Array(fs.readFileSync(path.join(world.blobRoot, manifestKey))),
+        );
+        yield* materialize(decoded, "workspace", materialized);
+        return decoded;
+      }),
+    );
     expect(manifest.sections.git.packs[0]).toMatch(/^projects\/proj-cap\/packs\/[0-9a-f]{64}$/);
-    expect(fs.existsSync(path.join(world.blobRoot, manifest.sections.git.packs[0]))).toBe(true);
+    expect(fs.existsSync(path.join(world.blobRoot, manifest.sections.git.packs[0] ?? ""))).toBe(
+      true,
+    );
+    expect(fs.lstatSync(path.join(materialized, "harness")).isDirectory()).toBe(true);
+    expect(fs.lstatSync(path.join(materialized, "harness")).isSymbolicLink()).toBe(false);
     expect(manifest.checkpoint).toEqual({
       ordinal: 0,
       sha: world.baseSha,
@@ -120,6 +142,24 @@ describe("SessionRepositoryCapturedLive", () => {
       }),
     );
     expect(clash._tag).toBe("GitError");
+  });
+
+  it("prepareStandby builds the same real empty harness root", async () => {
+    const alias = `standby-${newWorktreeId()}`;
+    const prepared = await run(
+      Effect.gen(function* () {
+        const repo = yield* SessionRepository;
+        if (repo.prepareStandby === undefined)
+          throw new Error("captured repository has no standby");
+        return yield* repo.prepareStandby(world.project.id, alias, 42, null, undefined);
+      }),
+    );
+    const materialized = path.join(world.scratch, alias);
+    await run(materialize(prepared.manifest, "workspace", materialized));
+    expect(prepared.manifest.sections.workspace).not.toBe("pending");
+    expect(fs.readdirSync(materialized)).toEqual(["harness"]);
+    expect(fs.lstatSync(path.join(materialized, "harness")).isDirectory()).toBe(true);
+    expect(fs.lstatSync(path.join(materialized, "harness")).isSymbolicLink()).toBe(false);
   });
 
   it(

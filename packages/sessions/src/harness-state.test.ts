@@ -1,3 +1,4 @@
+import { execFileSync, spawnSync } from "node:child_process";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -150,6 +151,120 @@ describe("harness home", () => {
     // store-side observer; a detached root loop re-opens read bits.
     expect(script).toContain("chmod -R go+rX");
     expect(script).toContain(".mode-keeper.pid");
+  });
+
+  it("executes relocation against a capture root without starting the co-located mode keeper", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-executor-home-"));
+    const captureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mend-capture-harness-"));
+    fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+    fs.mkdirSync(path.join(captureRoot, ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".codex", "config.toml"), "ephemeral");
+    fs.writeFileSync(path.join(home, ".codex", "auth.json"), "injected credential");
+    fs.writeFileSync(path.join(captureRoot, ".codex", "config.toml"), "restored");
+
+    const script = relocateHarnessHomeScript(captureRoot, { keepStoreReadable: false });
+    expect(script).not.toContain(".mode-keeper.pid");
+    execFileSync("sh", ["-c", script], { env: { ...process.env, HOME: home } });
+
+    expect(fs.realpathSync(path.join(home, ".codex"))).toBe(path.join(captureRoot, ".codex"));
+    expect(fs.lstatSync(path.join(captureRoot, ".codex")).isDirectory()).toBe(true);
+    expect(fs.lstatSync(path.join(captureRoot, ".codex")).isSymbolicLink()).toBe(false);
+    expect(fs.readFileSync(path.join(captureRoot, ".codex", "config.toml"), "utf8")).toBe(
+      "restored",
+    );
+    expect(fs.readFileSync(path.join(captureRoot, ".codex", "auth.json"), "utf8")).toBe(
+      "injected credential",
+    );
+
+    const transcript = path.join(home, ".claude", "projects", "repo", "session.jsonl");
+    fs.mkdirSync(path.dirname(transcript), { recursive: true });
+    fs.writeFileSync(transcript, "conversation\n");
+    execFileSync("sh", ["-c", script], { env: { ...process.env, HOME: home } });
+    expect(
+      fs.readFileSync(
+        path.join(captureRoot, ".claude", "projects", "repo", "session.jsonl"),
+        "utf8",
+      ),
+    ).toBe("conversation\n");
+  });
+
+  it("keeps HOME state when a checked copy fails", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-copy-failure-home-"));
+    const captureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mend-copy-failure-root-"));
+    const bin = fs.mkdtempSync(path.join(os.tmpdir(), "mend-copy-failure-bin-"));
+    fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".codex", "session.jsonl"), "must survive\n");
+    fs.writeFileSync(path.join(bin, "cp"), "#!/bin/sh\nexit 23\n", { mode: 0o755 });
+
+    const result = spawnSync(
+      "sh",
+      ["-c", relocateHarnessHomeScript(captureRoot, { keepStoreReadable: false })],
+      { env: { ...process.env, HOME: home, PATH: `${bin}:${process.env["PATH"] ?? ""}` } },
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(fs.lstatSync(path.join(home, ".codex")).isDirectory()).toBe(true);
+    expect(fs.readFileSync(path.join(home, ".codex", "session.jsonl"), "utf8")).toBe(
+      "must survive\n",
+    );
+  });
+
+  it("rejects missing, linked, and indirectly linked capture roots", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-unsafe-root-home-"));
+    fs.mkdirSync(path.join(home, ".codex"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".codex", "session.jsonl"), "must survive\n");
+    const missing = path.join(os.tmpdir(), `missing-capture-root-${crypto.randomUUID()}`);
+    const missingResult = spawnSync(
+      "sh",
+      ["-c", relocateHarnessHomeScript(missing, { keepStoreReadable: false })],
+      { env: { ...process.env, HOME: home } },
+    );
+    expect(missingResult.status).not.toBe(0);
+
+    const target = fs.mkdtempSync(path.join(os.tmpdir(), "mend-unsafe-root-target-"));
+    const linkedRoot = `${target}-link`;
+    fs.symlinkSync(target, linkedRoot);
+    const linkedResult = spawnSync(
+      "sh",
+      ["-c", relocateHarnessHomeScript(linkedRoot, { keepStoreReadable: false })],
+      { env: { ...process.env, HOME: home } },
+    );
+    expect(linkedResult.status).not.toBe(0);
+
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), "mend-unsafe-root-parent-"));
+    const actualParent = fs.mkdtempSync(path.join(os.tmpdir(), "mend-unsafe-root-actual-"));
+    const indirectParent = path.join(parent, "linked-parent");
+    fs.symlinkSync(actualParent, indirectParent);
+    const indirectRoot = path.join(indirectParent, "harness-home");
+    fs.mkdirSync(indirectRoot);
+    const indirectResult = spawnSync(
+      "sh",
+      ["-c", relocateHarnessHomeScript(indirectRoot, { keepStoreReadable: false })],
+      { env: { ...process.env, HOME: home } },
+    );
+    expect(indirectResult.status).not.toBe(0);
+
+    expect(fs.lstatSync(path.join(home, ".codex")).isDirectory()).toBe(true);
+    expect(fs.readFileSync(path.join(home, ".codex", "session.jsonl"), "utf8")).toBe(
+      "must survive\n",
+    );
+  });
+
+  it("rejects a HOME link that does not resolve to the configured capture directory", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-unsafe-source-home-"));
+    const captureRoot = fs.mkdtempSync(path.join(os.tmpdir(), "mend-unsafe-source-root-"));
+    const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), "mend-unsafe-source-target-"));
+    fs.symlinkSync(elsewhere, path.join(home, ".codex"));
+
+    const result = spawnSync(
+      "sh",
+      ["-c", relocateHarnessHomeScript(captureRoot, { keepStoreReadable: false })],
+      { env: { ...process.env, HOME: home } },
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(fs.realpathSync(path.join(home, ".codex"))).toBe(elsewhere);
+    expect(fs.readdirSync(elsewhere)).toEqual([]);
   });
 
   it("reads live state presence from the harness home, absence as false", async () => {

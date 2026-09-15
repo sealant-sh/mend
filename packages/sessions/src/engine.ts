@@ -937,7 +937,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 "capture mode: a workspace needs its session row or its standby row",
               );
             }
-            return { source: { kind: "capture", endpoint: endpoint.url, token } };
+            return {
+              source: {
+                kind: "capture",
+                endpoint: endpoint.url,
+                token,
+                harnessHome: HARNESS_HOME_MOUNT_PATH,
+              },
+            };
           }
           return {
             source: {
@@ -945,6 +952,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               endpoint: endpoint.url,
               worktreeId: session.value.worktreeId,
               token,
+              harnessHome: HARNESS_HOME_MOUNT_PATH,
             },
           };
         });
@@ -2108,6 +2116,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const project = yield* projects.byId(session.projectId);
         const stateDir = processStatePathOf(project.storePath, session.id, agentProcess.id);
         if (capture !== null) {
+          // A missing head is an unavailable observation, not evidence that the head has no
+          // transcript. Keep it distinct from a successful listing with no matching file.
+          const chain = yield* capture.repo.headOf(session.worktreeId);
+          if (chain === null || chain.head === null) {
+            return yield* new HarnessStateIOError({
+              sessionId,
+              operation: "read-transcript",
+              path: session.worktreeId,
+              message: `Could not read a capture head for session ${sessionId}.`,
+              cause: null,
+            });
+          }
           // The `exec tar | base64` archive path is retired in capture mode: the harness home is
           // the workspace class of the head capture, and it is read there, streamed.
           const located = yield* harvestFromCapture(session, agentProcess);
@@ -2314,7 +2334,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const project = yield* projects.byId(session.projectId);
         const chain = yield* capture.repo.headOf(session.worktreeId);
         const head = chain?.head ?? null;
-        if (head === null) return null;
+        if (head === null) {
+          return yield* new HarnessStateIOError({
+            sessionId: session.id,
+            operation: "read-transcript",
+            path: session.worktreeId,
+            message: `Could not read a capture head for session ${session.id}.`,
+            cause: null,
+          });
+        }
+        if (
+          typeof head.sections === "object" &&
+          head.sections !== null &&
+          "workspace" in head.sections &&
+          head.sections.workspace === "pending"
+        ) {
+          return yield* new HarnessStateIOError({
+            sessionId: session.id,
+            operation: "read-transcript",
+            path: head.manifestKey,
+            message: `The head capture workspace is pending for session ${session.id}.`,
+            cause: null,
+          });
+        }
         const io = <A>(
           operation: HarnessStateIOError["operation"],
           at: string,
@@ -2660,20 +2702,54 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.andThen(stopWorkspaceIfUnleased(sessionId, options)),
         );
 
+      /** Await one executor's final ship before any capture-backed harvest reads the chain head. */
+      const flushBeforeHarvest = Effect.fn("SessionEngine.flushBeforeHarvest")(function* (
+        session: Session,
+        workspaceId: SealantWorkspaceId | null,
+        why: string,
+      ) {
+        if (capture === null) return true;
+        if (workspaceId === null) {
+          yield* Effect.logWarning(
+            "session engine: pre-harvest capture flush had no workspace",
+          ).pipe(Effect.annotateLogs({ sessionId: session.id, why }));
+          return false;
+        }
+        const workspace = yield* sealant
+          .getWorkspace(workspaceId)
+          .pipe(Effect.option, asSealantUser(session.ownerUserId));
+        if (Option.isNone(workspace)) {
+          yield* Effect.logWarning("session engine: pre-harvest workspace was unreachable").pipe(
+            Effect.annotateLogs({ sessionId: session.id, workspaceId, why }),
+          );
+          return false;
+        }
+        return yield* observeCaptureFlush(session, workspace.value, why, CHECKPOINT_FLUSH_TIMEOUT);
+      });
+
       /**
        * Whether a session left a conversation behind, decided once at settle: a harvest that
        * captured a transcript says yes; "nothing to capture" or "no transcript" says no; any
        * other failure (the workspace already gone) asks the durable harness home instead. A
        * false answer is a dead end — nothing to resume — and the dashboard hides such sessions.
        */
-      const classifyTranscript = (agentProcess: SessionProcess, harvestFailed: boolean) =>
+      const classifyTranscript = (
+        agentProcess: SessionProcess,
+        harvest: "captured" | "absent" | "unknown",
+      ) =>
         Effect.gen(function* () {
           const harness = agentProcess.harness;
           if (harness === null || HARNESS_STATE[harness] === undefined) return;
           const session = yield* sessions.byId(agentProcess.sessionId);
           if (session.hasTranscript === true) return;
-          if (!harvestFailed) {
+          if (harvest === "captured") {
             yield* sessions.setHasTranscript(session.id, true);
+            return;
+          }
+          if (capture !== null) {
+            // A clean head read can prove absence. A failed head read is unknown and must remain
+            // nullable so the dashboard does not hide a session whose transcript may still exist.
+            if (harvest === "absent") yield* sessions.setHasTranscript(session.id, false);
             return;
           }
           const project = yield* projects.byId(session.projectId);
@@ -2691,18 +2767,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       const tryHarvest = (agentProcess: SessionProcess) =>
         harvestHarnessState(agentProcess).pipe(
-          Effect.map(() => false),
-          Effect.catch((error) =>
-            Effect.logWarning("session engine: harness-state harvest failed").pipe(
+          Effect.map((): "captured" => "captured"),
+          Effect.catch((error) => {
+            const harvest: "absent" | "unknown" =
+              capture !== null &&
+              error._tag === "HarnessStateCommandError" &&
+              error.operation === "capture-archive" &&
+              error.exitCode === 3
+                ? "absent"
+                : "unknown";
+            return Effect.logWarning("session engine: harness-state harvest failed").pipe(
               Effect.annotateLogs({
                 sessionId: agentProcess.sessionId,
                 processId: agentProcess.id,
                 error: String(error),
               }),
-              Effect.as(true),
-            ),
-          ),
-          Effect.flatMap((harvestFailed) => classifyTranscript(agentProcess, harvestFailed)),
+              Effect.as(harvest),
+            );
+          }),
+          Effect.flatMap((harvest) => classifyTranscript(agentProcess, harvest)),
         );
 
       /**
@@ -2755,9 +2838,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
 
-      /** The tail of a settle without a process of its own: late harvest, then reap. Both quiet. */
+      /** The tail of a settle without a process of its own: final flush, late harvest, then reap. */
       const sweepWorkspace = (sessionId: SessionId) =>
-        harvestLatestIfMissing(sessionId).pipe(Effect.andThen(stopWorkspaceQuietly(sessionId)));
+        Effect.gen(function* () {
+          const session = yield* sessions.byId(sessionId);
+          const captureReady = yield* flushBeforeHarvest(
+            session,
+            session.sealantWorkspaceId,
+            "settle harvest",
+          );
+          if (captureReady) yield* harvestLatestIfMissing(sessionId);
+          yield* stopWorkspaceQuietly(sessionId);
+        }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
 
       /**
        * The session's harness state as one "latest" view over per-process captures: the newest
@@ -2779,14 +2871,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // No committed capture — the settle never harvested (a crashed workspace). The
           // durable harness home may still hold the state; committing a capture from it
           // here is what turns "Saved harness state is missing" into a working resume.
-          Effect.catchTag("HarnessStateNotFoundError", (error) =>
-            harvestFromHarnessHome(session).pipe(
-              Effect.orElseSucceed(() => null),
+          Effect.catchTag("HarnessStateNotFoundError", (error) => {
+            const liveHarvest = harvestFromHarnessHome(session);
+            return (
+              capture === null ? liveHarvest.pipe(Effect.orElseSucceed(() => null)) : liveHarvest
+            ).pipe(
               Effect.flatMap((located) =>
                 located === null ? Effect.fail(error) : Effect.succeed(located),
               ),
-            ),
-          ),
+            );
+          }),
         );
       });
 
@@ -2897,9 +2991,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
-       * The tail of an agent process's end: harvest its harness state while the workspace is
-       * still warm, snapshot the worktree (the end of an agent process is a turn boundary), then
-       * let the fold release the workspace if nothing else holds it. `trigger` null skips the
+       * The tail of an agent process's end: flush and snapshot the worktree, harvest harness state
+       * from that registered head while the workspace is still warm, then let the fold release the
+       * workspace if nothing else holds it. `trigger` null skips the
        * snapshot (the caller took its own). `sweep` false keeps the workspace even when nothing
        * else leases it — the observed-agent path: quiet transcript writes are an inference, not
        * an exit, and reaping on them would kill an agent that is merely between turns.
@@ -2910,19 +3004,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sweep = true,
       ) =>
         Effect.gen(function* () {
-          yield* tryHarvest(agentProcess);
           if (trigger !== null) {
             const session = yield* sessions.byId(agentProcess.sessionId);
             const run =
               agentProcess.sealantRunId === null
                 ? null
                 : yield* sessionRuns.bySealantRunId(agentProcess.sealantRunId);
+            // Capture checkpoints synchronously flush and register before deriving their snapshot.
+            // Harvest must follow that barrier or it can read the previous chain head forever.
             yield* tryCheckpoint(session, trigger, {
               sealantRunId: agentProcess.sealantRunId,
               sequence: run?.lastSeenSequence ?? 0n,
             });
             yield* refreshChangeHead(session).pipe(Effect.ignore);
           }
+          const session = yield* sessions.byId(agentProcess.sessionId);
+          const captureReady = yield* flushBeforeHarvest(
+            session,
+            agentProcess.sealantWorkspaceId,
+            "process-end harvest",
+          );
+          if (captureReady) yield* tryHarvest(agentProcess);
           yield* reconcileSession(agentProcess.sessionId, { sweep });
         }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
 
@@ -3915,6 +4017,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return true;
       });
 
+      /**
+       * Put every supported harness directory under the root sealantd captures, or under the
+       * co-located store mount. Capture mode treats failure as a launch failure: starting anyway
+       * would put the conversation in the executor's disposable HOME.
+       */
+      const relocateHarnessHome = Effect.fn("SessionEngine.relocateHarnessHome")(function* (
+        session: Session,
+        workspace: Workspace,
+      ) {
+        const result = yield* sealant.exec(workspace, [
+          "sh",
+          "-c",
+          relocateHarnessHomeScript(HARNESS_HOME_MOUNT_PATH, {
+            keepStoreReadable: capture === null,
+          }),
+        ]);
+        if (result.exitCode === 0) return;
+        return yield* new SealantPlatformError({
+          code: "harness_home_relocation_failed",
+          status: null,
+          message: `Could not place ${session.harness} state in the durable harness root: ${result.stderr}`,
+          cause: null,
+        });
+      });
+
       /** Stage converted harness files through the mounted worktree into one workspace home. */
       const placeConvertedFiles = (
         session: Session,
@@ -4338,20 +4465,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (provisioned.extraMounts.length > 0) {
           yield* sessions.setExtraMounts(sessionId, provisioned.extraMounts);
         }
-        // Make harness state durable from the first turn: whatever restore/import just laid
-        // into $HOME moves onto the mounted harness home, and the $HOME state dirs become
-        // symlinks into it (harness-state.ts). After the restore/import steps so their
-        // output migrates too; before the harness starts so nothing is written ephemerally.
-        // Best-effort: a failure costs durability, never the launch.
-        // Capture mode: sealantd's capture roots cover the harness home (the workspace class's
-        // `harness/`), so no mount and no relocation; the note lives in the captured tree.
+        // Make harness state durable from the first turn. Restore, connected-account injection and
+        // native imports write into $HOME first; this step moves them into the durable root and
+        // replaces each harness directory with a symlink before the process starts. Capture mode's
+        // root is local to sealantd, so it does not need the co-located permission keeper.
+        const relocation = relocateHarnessHome(session, workspace);
         if (capture === null) {
-          yield* sealant.exec(workspace, ["sh", "-c", relocateHarnessHomeScript()]).pipe(
-            Effect.flatMap((result) =>
-              result.exitCode === 0
-                ? Effect.void
-                : Effect.fail(new Error(`exit ${result.exitCode}: ${result.stderr}`)),
-            ),
+          // Keep the established co-located policy: report a failed mount relocation but let the
+          // launch continue. Capture executors are disposable, so their failure is load-bearing.
+          yield* relocation.pipe(
             Effect.catch((error) =>
               Effect.logWarning("session engine: harness-home relocation failed").pipe(
                 Effect.annotateLogs({ sessionId, error: String(error) }),
@@ -4366,6 +4488,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             worktree,
             provisioned.referenceMounts,
             provisioned.extraMounts,
+          );
+        } else {
+          yield* relocation.pipe(
+            Effect.tapError(() => sealant.stopWorkspace(workspace).pipe(Effect.ignore)),
+            settleOnFailure,
           );
         }
 
@@ -4725,6 +4852,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
           }
           yield* socketHost.start(sessionId, socketApiFor(sessionId)).pipe(Effect.ignore);
+          const relocation = relocateHarnessHome(session, workspace);
+          if (capture === null) {
+            yield* relocation.pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("session engine: harness-home relocation failed").pipe(
+                  Effect.annotateLogs({ sessionId, error: String(error) }),
+                ),
+              ),
+            );
+          } else {
+            // A retained executor may predate this layout. Re-run the idempotent relocation before
+            // every join or resume rather than start another process with an ephemeral HOME.
+            yield* relocation.pipe(
+              Effect.tapError((error) =>
+                sessions
+                  .settle(sessionId, "failed", `resume failed: ${error.message}`)
+                  .pipe(Effect.ignore),
+              ),
+            );
+          }
           const interactiveShell = argv[0] === "bash";
           const shapedArgv = interactiveShell
             ? interactiveShellArgv(session.workspaceImage, argv.slice(1))
@@ -5300,8 +5447,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
           if (recorded) {
             handedOver = agent;
-            // Synchronous, not the forked finish tail: the relaunch below
-            // needs the harvested provider id and transcript immediately.
+            // Synchronous, not the forked finish tail: the relaunch below needs the harvested
+            // provider id and transcript immediately. Capture mode must register the final write
+            // first; there is no sleep or cadence guess between process close and harvest.
+            const captureReady = yield* flushBeforeHarvest(
+              session,
+              agent.sealantWorkspaceId,
+              "handoff harvest",
+            );
+            if (!captureReady) {
+              return yield* new SealantPlatformError({
+                code: "handoff_capture_flush_incomplete",
+                status: null,
+                message: "The final agent state was not captured; handoff was stopped.",
+                cause: null,
+              });
+            }
             yield* tryHarvest(agent);
           }
         }
@@ -6688,17 +6849,33 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             .byId(session.projectId)
             .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
           if (project === null) continue;
-          const captured = yield* harnessStateFor(session).pipe(
-            Effect.map(() => true),
-            Effect.catch(() => Effect.succeed(false)),
+          const classification = yield* harnessStateFor(session).pipe(
+            Effect.map((): "captured" => "captured"),
+            Effect.catchTag("HarnessStateNotFoundError", () => Effect.succeed<"absent">("absent")),
+            Effect.catch((error) =>
+              Effect.logWarning(
+                "session engine: restart transcript classification unavailable",
+              ).pipe(
+                Effect.annotateLogs({ sessionId: session.id, error: String(error) }),
+                Effect.map((): "unknown" => "unknown"),
+              ),
+            ),
           );
-          const live = captured
-            ? null
-            : yield* locateLiveTranscript(
-                harnessHomePathOf(project.storePath, session.id),
-                session.harness,
-              );
-          yield* sessions.setHasTranscript(session.id, captured || live !== null);
+          if (classification === "unknown") continue;
+          if (classification === "captured") {
+            yield* sessions.setHasTranscript(session.id, true);
+            continue;
+          }
+          if (capture !== null) {
+            // Startup has no durable proof that a transcript-less capture came from the settle
+            // barrier. Checkpoint and manual flushes also register same-epoch final captures.
+            continue;
+          }
+          const live = yield* locateLiveTranscript(
+            harnessHomePathOf(project.storePath, session.id),
+            session.harness,
+          );
+          yield* sessions.setHasTranscript(session.id, live !== null);
         }
       });
       const resume = Effect.fn("SessionEngine.resume")(function* () {
