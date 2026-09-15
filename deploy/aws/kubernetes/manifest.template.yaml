@@ -1,0 +1,454 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: __NAMESPACE__
+  labels:
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/audit: restricted
+    pod-security.kubernetes.io/warn: restricted
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: __BUILD_NAMESPACE__
+  labels:
+    # Rootless BuildKit v0.20.2 needs unconfined seccomp/AppArmor and setuid newuidmap.
+    pod-security.kubernetes.io/enforce: privileged
+    pod-security.kubernetes.io/audit: baseline
+    pod-security.kubernetes.io/warn: baseline
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sealant-api
+  namespace: __NAMESPACE__
+  annotations:
+    eks.amazonaws.com/role-arn: __API_ROLE_ARN__
+    eks.amazonaws.com/sts-regional-endpoints: "true"
+automountServiceAccountToken: false
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sealant-worker
+  namespace: __NAMESPACE__
+  annotations:
+    eks.amazonaws.com/role-arn: __WORKER_ROLE_ARN__
+    eks.amazonaws.com/sts-regional-endpoints: "true"
+# The worker needs its Kubernetes token only to create and inspect BuildKit jobs in the build namespace.
+automountServiceAccountToken: true
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: sealant-build
+  namespace: __BUILD_NAMESPACE__
+automountServiceAccountToken: false
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: sealant-image-builder
+  namespace: __BUILD_NAMESPACE__
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["list"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+  - apiGroups: ["batch"]
+    resources: ["jobs"]
+    verbs: ["create", "get", "list", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: sealant-image-builder
+  namespace: __BUILD_NAMESPACE__
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: sealant-image-builder
+subjects:
+  - kind: ServiceAccount
+    name: sealant-worker
+    namespace: __NAMESPACE__
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sealant-common-config
+  namespace: __NAMESPACE__
+data:
+  NODE_ENV: production
+  AWS_EC2_METADATA_DISABLED: "true"
+  DEFAULT_RUNTIME_ADAPTER: microvm
+  SEALANT_K8S_DOCKER_ENABLED: "false"
+  SEALANT_MICROVM_REGION: __REGION__
+  SEALANT_MICROVM_AGENT_PORT: "8080"
+  REGISTRY_BASE_URL: http://sealant-registry.__NAMESPACE__.svc.cluster.local:5000
+  REGISTRY_PUSH_REGISTRY: sealant-registry.__NAMESPACE__.svc.cluster.local:5000
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sealant-worker-config
+  namespace: __NAMESPACE__
+data:
+  DOCKER_RUNTIME_ENABLED: "false"
+  SEALANT_MICROVM_IMAGE_ARN: __MICROVM_IMAGE_ARN__
+  SEALANT_MICROVM_IMAGE_VERSION: "__MICROVM_IMAGE_VERSION__"
+  SEALANT_MICROVM_EXEC_ROLE_ARN: __MICROVM_EXEC_ROLE_ARN__
+  SEALANT_MICROVM_EGRESS_CONNECTOR: __MICROVM_EGRESS_CONNECTOR__
+  SEALANT_MICROVM_INGRESS_CONNECTOR: __MICROVM_INGRESS_CONNECTOR__
+  SEALANT_MICROVM_LOG_GROUP: __MICROVM_LOG_GROUP__
+  SEALANT_MICROVM_MAX_DURATION_SECONDS: "3600"
+  # Setting only the build namespace selects the public Kubernetes BuildKit builder without
+  # registering the Kubernetes runtime adapter or its PVC launch-material stager.
+  SEALANT_K8S_BUILD_NAMESPACE: __BUILD_NAMESPACE__
+  SEALANT_K8S_BUILD_SERVICE_ACCOUNT: sealant-build
+  SEALANT_K8S_BUILDKIT_IMAGE: moby/buildkit:v0.20.2-rootless
+  SEALANT_K8S_BUILD_CPU_REQUEST: 500m
+  SEALANT_K8S_BUILD_MEMORY_REQUEST: 1Gi
+  SEALANT_K8S_BUILD_CPU_LIMIT: 1500m
+  SEALANT_K8S_BUILD_MEMORY_LIMIT: 3Gi
+  SEALANT_K8S_BUILD_TIMEOUT_MS: "1800000"
+  SEALANT_K8S_BUILD_TTL_SECONDS: "3600"
+  SEALANT_K8S_REGISTRY_INSECURE: "true"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: sealant-registry-config
+  namespace: __NAMESPACE__
+data:
+  config.json: |
+    {
+      "distSpecVersion": "1.1.1",
+      "storage": {
+        "rootDirectory": "/var/lib/registry",
+        "dedupe": true,
+        "gc": true,
+        "gcDelay": "1h",
+        "gcInterval": "24h"
+      },
+      "http": { "address": "0.0.0.0", "port": "5000", "compat": ["docker2s2"] },
+      "log": { "level": "info" }
+    }
+---
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: sealant-registry
+  namespace: __NAMESPACE__
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: mend-gp3
+  resources:
+    requests:
+      storage: 10Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sealant-registry
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: sealant
+    app.kubernetes.io/component: registry
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: sealant
+    app.kubernetes.io/component: registry
+  ports:
+    - name: http
+      port: 5000
+      targetPort: http
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sealant-registry
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: sealant
+    app.kubernetes.io/component: registry
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sealant
+      app.kubernetes.io/component: registry
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sealant
+        app.kubernetes.io/component: registry
+    spec:
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        fsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: zot
+          image: ghcr.io/project-zot/zot-minimal:v2.1.15
+          imagePullPolicy: IfNotPresent
+          args: [serve, /etc/zot/config.json]
+          ports:
+            - { name: http, containerPort: 5000 }
+          readinessProbe:
+            httpGet: { path: /v2/, port: http }
+            periodSeconds: 5
+            failureThreshold: 12
+          livenessProbe:
+            httpGet: { path: /v2/, port: http }
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 300m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+          volumeMounts:
+            - { name: config, mountPath: /etc/zot, readOnly: true }
+            - { name: data, mountPath: /var/lib/registry }
+      volumes:
+        - name: config
+          configMap: { name: sealant-registry-config }
+        - name: data
+          persistentVolumeClaim: { claimName: sealant-registry }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: sealant-api
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: sealant
+    app.kubernetes.io/component: api
+spec:
+  type: ClusterIP
+  selector:
+    app.kubernetes.io/name: sealant
+    app.kubernetes.io/component: api
+  ports:
+    - { name: http, port: 4000, targetPort: http }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sealant-api
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: sealant
+    app.kubernetes.io/component: api
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sealant
+      app.kubernetes.io/component: api
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sealant
+        app.kubernetes.io/component: api
+    spec:
+      serviceAccountName: sealant-api
+      automountServiceAccountToken: false
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      initContainers:
+        - name: migrate
+          image: ghcr.io/sealant-sh/sealant-api:0.32.0
+          imagePullPolicy: IfNotPresent
+          command: [node, dist/migrate.js]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: __DATABASE_SECRET__, key: __DATABASE_SECRET_KEY__ }
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { cpu: 500m, memory: 512Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+      containers:
+        - name: api
+          image: ghcr.io/sealant-sh/sealant-api:0.32.0
+          imagePullPolicy: IfNotPresent
+          ports:
+            - { name: http, containerPort: 4000 }
+          envFrom:
+            - configMapRef: { name: sealant-common-config }
+          env:
+            - { name: PORT, value: "4000" }
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: __DATABASE_SECRET__, key: __DATABASE_SECRET_KEY__ }
+            - name: SEALANT_CREDENTIALS_KEY
+              valueFrom:
+                secretKeyRef: { name: __CREDENTIALS_SECRET__, key: __CREDENTIALS_SECRET_KEY__ }
+            - name: SEALANT_SERVICE_KEYS
+              valueFrom:
+                secretKeyRef: { name: __SERVICE_KEYS_SECRET__, key: __SERVICE_KEYS_SECRET_KEY__ }
+            - name: SEALANT_CONTROL_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: { name: __CONTROL_SECRET__, key: __CONTROL_SECRET_KEY__ }
+          startupProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+            failureThreshold: 30
+          readinessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 5
+            failureThreshold: 3
+          livenessProbe:
+            httpGet: { path: /healthz, port: http }
+            periodSeconds: 20
+            failureThreshold: 3
+          resources:
+            requests: { cpu: 100m, memory: 384Mi }
+            limits: { cpu: 750m, memory: 1Gi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: sealant-worker
+  namespace: __NAMESPACE__
+  labels:
+    app.kubernetes.io/name: sealant
+    app.kubernetes.io/component: worker
+spec:
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: sealant
+      app.kubernetes.io/component: worker
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: sealant
+        app.kubernetes.io/component: worker
+    spec:
+      serviceAccountName: sealant-worker
+      nodeSelector:
+        kubernetes.io/arch: arm64
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        runAsGroup: 1000
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: worker
+          image: ghcr.io/sealant-sh/sealant-worker:0.32.0
+          imagePullPolicy: IfNotPresent
+          envFrom:
+            - configMapRef: { name: sealant-common-config }
+            - configMapRef: { name: sealant-worker-config }
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef: { name: __DATABASE_SECRET__, key: __DATABASE_SECRET_KEY__ }
+            - name: SEALANT_CREDENTIALS_KEY
+              valueFrom:
+                secretKeyRef: { name: __CREDENTIALS_SECRET__, key: __CREDENTIALS_SECRET_KEY__ }
+            - name: SEALANT_CONTROL_BEARER_TOKEN
+              valueFrom:
+                secretKeyRef: { name: __CONTROL_SECRET__, key: __CONTROL_SECRET_KEY__ }
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            limits: { cpu: 750m, memory: 1536Mi }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: [ALL] }
+---
+# Cluster-internal only. The configured Mend namespace can reach the API; no ingress or public
+# Service is created here. Enforcement still depends on the EKS CNI network-policy setting.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sealant-default-deny-ingress
+  namespace: __NAMESPACE__
+spec:
+  podSelector: {}
+  policyTypes: [Ingress]
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sealant-api-ingress
+  namespace: __NAMESPACE__
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sealant
+      app.kubernetes.io/component: api
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector: {}
+      ports:
+        - { protocol: TCP, port: 4000 }
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: __MEND_NAMESPACE__
+      ports:
+        - { protocol: TCP, port: 4000 }
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: sealant-registry-ingress
+  namespace: __NAMESPACE__
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/name: sealant
+      app.kubernetes.io/component: registry
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/component
+                operator: In
+                values: [api, worker]
+      ports:
+        - { protocol: TCP, port: 5000 }
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: __BUILD_NAMESPACE__
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/managed-by: sealant
+              app.kubernetes.io/component: image-build
+      ports:
+        - { protocol: TCP, port: 5000 }

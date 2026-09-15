@@ -7,6 +7,26 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-15 · 0.32.0 · MicroVM image build requires an unpublished sealantctl binary
+
+**Observed in the AWS deployment attempt; upstream packaging fix prepared, not released.** Core main
+`abe4d6c`, also the `v0.32.0` release, stages `sealantd`, `sealantctl` and `socat` from
+`ghcr.io/sealant-sh/sealantd:0.15.2` for its public MicroVM image recipe. The ARM64 image contains
+only `sealantd` and `socat`. Running the recipe fails before submitting an AWS build:
+`ships no /usr/local/bin/sealantctl`.
+
+- **Needed:** the matching `sealantctl` binary at `/usr/local/bin/sealantctl`. The MicroVM agent's
+  suspend and terminate hooks invoke `sealantctl --socket /run/sealant/control.sock capture flush`.
+  Skipping it would remove the final capture barrier.
+- **Cause:** sealantd's tagged `docker/Dockerfile` builds and copies only the daemon; its release
+  workflow publishes no separate CLI binary. The CLI crate exists in the same tagged source and
+  supports the exact hook command.
+- **Platform fix:** build and ship the CLI alongside the daemon in the public image, and verify both
+  executables in the image build. The AWS POC may use a clearly labelled private candidate assembled
+  from the public daemon image and CLI built from its exact source revision
+  `5173e4920d44d5663b6a4fec4606ab58e7607ca1`. That is candidate-platform evidence, not evidence that
+  the unmodified published image works. Mend's SDK calls and flush behavior stay unchanged.
+
 ## 2026-09-15 · 0.31.2 · Capture sources could not name the harness root; credential policy still excludes auth files
 
 **Harness-root surface shipped in SDK 0.32.0.** Public `WorkspaceCaptureSource.harnessHome` is

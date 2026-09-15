@@ -1,0 +1,36 @@
+# Allowlist source files so arbitrarily named plans, state, inputs, credentials,
+# provider caches, kubeconfigs and output dumps stay local by default.
+/*
+!/.gitignore
+!/README.md
+!/TEARDOWN.md
+!/shell.nix
+!/scripts/
+/scripts/*
+!/scripts/bootstrap-databases.py
+!/scripts/build-sealantctl-pod.json
+!/scripts/build-workspace-image.sh
+!/scripts/inventory.sh
+!/scripts/render-mend.py
+!/scripts/sealantd-candidate.Dockerfile
+!/scripts/session-smoke.py
+!/kubernetes/
+/kubernetes/*
+!/kubernetes/.gitignore
+!/kubernetes/README.md
+!/kubernetes/configure-kubeconfig.sh
+!/kubernetes/manifest.template.yaml
+!/kubernetes/render.py
+!/kubernetes/smoke.sh
+!/kubernetes/smoke.test.sh
+!/kubernetes/validate.sh
+!/tofu/
+/tofu/*
+!/tofu/*.tf
+!/tofu/.terraform.lock.hcl
+!/tofu/example.tfvars
+
+# Even source-shaped local overrides and secrets must not be tracked.
+/tofu/*override.tf
+/tofu/secret*.tf
+/tofu/credential*.tf

@@ -53,8 +53,12 @@ captureStore:
     # endpoint: `s3://<bucket>?endpoint=<url>&region=<name>&forcePathStyle=<bool>`
     # (packages/store/src/blob-store.ts). Leave `endpoint=` unencoded as below.
     url: "" # e.g. s3://mend?endpoint=http://rook-ceph-rgw-mend.rook-ceph.svc:80&region=us-east-1&forcePathStyle=true
-    # Keys AWS_ACCESS_KEY_ID / AWS_SECRET_ACCESS_KEY; required with `url`, ignored with the OBC.
+    # With `url`, choose exactly one credential source: this Secret's AWS_ACCESS_KEY_ID /
+    # AWS_SECRET_ACCESS_KEY, or useDefaultCredentials. OBC credentials come from its own Secret.
     credentialsSecret: ""
+    # Explicit opt-in to the AWS SDK default credential chain, e.g. IRSA via api.serviceAccountName.
+    # No static AWS credential env is rendered. Cannot be combined with either Secret mode.
+    useDefaultCredentials: false
     # The endpoint workspace Pods resolve; presigned URLs carry it (MEND_BLOB_STORE_PUBLIC_URL).
     # Empty = the same in-cluster endpoint the API uses (the OBC's host:port, or `endpoint=`
     # from `url`), which is right whenever workspace Pods share the cluster DNS.
@@ -105,6 +109,10 @@ api:
     repository: ghcr.io/sealant-sh/mend-api
     tag: ""
   command: []
+  # Precreated in the release namespace, e.g. an IRSA-annotated service account. The chart
+  # creates no ServiceAccount or IAM role. Empty keeps Kubernetes' default service account.
+  # The ordinary API token stays unmounted; IRSA injects its own projected identity token.
+  serviceAccountName: ""
   replicaCount: 1
   resources: { requests: { cpu: 500m, memory: 1Gi }, limits: { cpu: "4", memory: 4Gi } }
   # Source addresses the API treats as proxy hops when reading x-forwarded-for
@@ -150,6 +158,17 @@ serviceHost:
 # The network session channel workspaces use instead of the per-session socket.
 sessionChannel:
   port: 3106
+  # Address reachable by workspaces outside cluster DNS, e.g. http://mend-session.internal:3106.
+  # Empty uses the cluster Service URL. An http(s) origin, with no path except an optional /;
+  # scheme must match tls.enabled. An external load balancer must pass TCP/TLS through.
+  advertisedUrl: ""
+  service:
+    type: ClusterIP # ClusterIP or NodePort; never creates a load balancer
+    # Required for NodePort, in Kubernetes' default range 30000-32767; unset for ClusterIP.
+    # NodePort uses externalTrafficPolicy: Local to preserve sources for CIDR rules. An external
+    # private load balancer must target healthy nodes hosting the API and preserve client IPs.
+    # Restrict node security groups/firewalls too; NetworkPolicy alone is not a perimeter.
+    nodePort: null
   tls:
     enabled: false
     secretName: "" # kubernetes.io/tls secret with tls.crt/tls.key
@@ -160,8 +179,12 @@ networkPolicies:
   # With `externalTrafficPolicy: Cluster` a cross-node hop SNATs the source to the cluster's POD
   # CIDR — include it, or use externalTrafficPolicy: Local for real client addresses.
   clientCidrs: []
-  # Where Sealant workspace Pods live (they are the only clients of the session channel; they
-  # also reach the bucket directly, which the SEALANT chart's workspace policy governs).
+  # Additional workspace source networks, e.g. MicroVM private subnets. Grants only the session
+  # channel's pod port, never browser/API or supervised Service ports. Empty adds no ingress.
+  # Use the source CIDRs the CNI actually observes after any load-balancer/NAT hops.
+  sessionChannelCidrs: []
+  # Where Sealant workspace Pods live (they also reach the bucket directly, which the SEALANT
+  # chart's workspace policy governs). Their existing session-channel access is unchanged.
   workspaceNamespace: sealant
   # Where the Sealant API lives (the worker and web call it).
   sealantNamespace: sealant
