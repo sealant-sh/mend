@@ -29,14 +29,20 @@ describe("what an event stales", () => {
   it("routes pointer events to their families", () => {
     expect(eventFamilies('{"type":"project"}')).toEqual(["workbench"]);
     expect(eventFamilies('{"type":"session-process"}')).toEqual(["workbench"]);
-    expect(eventFamilies('{"type":"session"}')).toEqual(["workbench", "review"]);
+    // A session's status and its turns also move the detail pane's read-only
+    // output preview, which reads the same conversation record.
+    expect(eventFamilies('{"type":"session"}')).toEqual(["workbench", "review", "transcript"]);
     expect(eventFamilies('{"type":"agent-conversation"}')).toEqual(["workbench", "review"]);
+    expect(eventFamilies('{"type":"agent-conversation","kind":"item"}')).not.toContain(
+      "transcript",
+    );
     expect(eventFamilies('{"type":"session-change"}')).toEqual(["workbench", "review"]);
     expect(eventFamilies('{"type":"worktree"}')).toEqual(["workbench"]);
     expect(eventFamilies('{"type":"review-comment"}')).toEqual(["workbench", "review"]);
   });
 
   it("ignores per-record-line progress, queue-era types, and noise", () => {
+    // Per-line progress would otherwise refetch the preview on a 250ms loop.
     expect(eventFamilies('{"type":"session-progress","line":"…"}')).toEqual([]);
     expect(eventFamilies('{"type":"brief"}')).toEqual([]);
     expect(eventFamilies("not json")).toEqual([]);

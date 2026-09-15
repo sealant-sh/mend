@@ -7,7 +7,7 @@ import {
   useQuery,
   useQueryClient,
 } from "@tanstack/react-query";
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
 
 import type { AgentShareHandle, ShareEvent } from "./agent-share.ts";
 import {
@@ -16,38 +16,57 @@ import {
   type AdoptOffer,
 } from "./dashboard-adoption.ts";
 import {
+  advanceFromBase,
+  baseStepNotice,
+  clampIndex,
+  createLaunchGate,
   deriveHarnesses,
   deriveProjects,
-  advanceFromBase,
-  type BranchDto,
-  type CreatingState,
-  deriveRows,
   deriveWorktrees,
-  filterBranches,
-  foldGroupStatus,
-  rowKeyOf,
-  worktreeDisplayName,
   fetchWorkbench,
-  type HarnessItem,
-  enterTargetOf,
+  filterBranches,
+  fitHints,
+  foldGroupStatus,
+  isNavSection,
+  groupActivityAt,
+  groupBaseLabel,
   liveProtocolOf,
   liveShellOf,
   mapWorkbenchSessions,
   markSessionStopped,
-  removeWorktreeGroup,
+  planAttach,
+  planLayout,
+  planResume,
   prependSession,
   removeSession,
+  removeWorktreeGroup,
   replaceSession,
+  sessionDisplayName,
+  stepColumn,
+  verbForKey,
+  verbHints,
   WORKBENCH_KEY,
+  type BranchDto,
+  type Column,
+  type CreatingState,
+  type HarnessItem,
+  type NavSection,
   type ProjectItem,
-  type SelectableRow,
-  type ServiceDto,
+  type SectionLayout,
   type SessionDto,
   type SessionItem,
   type SessionProcessDto,
   type Workbench,
   type WorktreeGroup,
 } from "./dashboard-model.ts";
+import {
+  fetchTranscript,
+  previewLines,
+  previewWindow,
+  TRANSCRIPT_KEY,
+  type PreviewLine,
+  type PreviewLineKind,
+} from "./dashboard-preview.ts";
 import { reviewTargetForSession } from "./review-workflow.ts";
 import { ReviewScreen } from "./review.tsx";
 import {
@@ -60,7 +79,52 @@ import {
   pendingId,
 } from "./shared.ts";
 import { openUrl } from "./terminal.ts";
-import { COBALT, FAINT, INK, INK_2, MUTED, RED, RULE, SURFACE, WASH } from "./tui-theme.ts";
+import {
+  ACCENT,
+  CANVAS,
+  ERROR,
+  FAINT,
+  INK,
+  INK_2,
+  MUTED,
+  PANEL,
+  RULE,
+  SURFACE,
+  WASH,
+} from "./tui-theme.ts";
+import { createSseParser, eventFamilies, type InvalidateFamily } from "./workbench-events.ts";
+
+/**
+ * The workbench dashboard (bare `mend`): the session pane takes three quarters
+ * of the screen, because the record is the thing you are here to read. The
+ * remaining quarter is a stacked sidebar — projects, the worktrees inside the
+ * selected project, the conversations inside the selected worktree — where the
+ * section the keyboard is in stands open and the other two fold to the one line
+ * that says what is selected. Reading the record leaves the sidebar as it was.
+ *
+ * Selection only ever navigates: moving through a section re-populates the ones
+ * below it and the session pane previews what the agent has been writing, and
+ * NOTHING takes the terminal until an explicit verb asks for it (`a` attach,
+ * `r` resume, `n` new session). The accent border says which pane the keyboard
+ * is in; ⇥ and ←→ move between them.
+ *
+ * Nothing is ever squeezed: a terminal too narrow for both gives the whole
+ * width to the side the keyboard is on, a terminal too short for three drawn
+ * panes shows the open section alone, and a one-line breadcrumb states whatever
+ * did not fit.
+ *
+ * Server state lives in TanStack Query: one workbench entry, plus the selected
+ * session's transcript for the preview. The SSE stream (the same one the web
+ * app uses) is parsed outside React and each pointer event invalidates only
+ * the query families it can stale — heartbeats and per-record-line progress
+ * invalidate nothing. Writes are optimistic mutations: a rename, a new
+ * session, a resume all land in the cache immediately and the server's answer
+ * reconciles on settle, so the keyboard never waits on a round trip.
+ *
+ * This module is imported lazily and only where node:ffi exists (Node 26
+ * with --experimental-ffi — main.ts gates and re-execs), so every plain
+ * command keeps running dependency-free on Node >= 22.
+ */
 
 // Near-mono on purpose: a status is a word, and only an observed failure
 // earns color. Live states read at full ink; settled ones recede.
@@ -70,9 +134,12 @@ const STATUS_COLOR: Record<string, string> = {
   waiting: INK_2,
   idle: INK_2,
   completed: FAINT,
-  failed: RED,
+  failed: ERROR,
   stopped: FAINT,
 };
+
+/** The agent itself is still working: never remove from under it. Idle (agent gone) may go. */
+const AGENT_LIVE_STATUSES: ReadonlySet<string> = new Set(["starting", "running", "waiting"]);
 
 const timeAgo = (iso: string): string => {
   const ms = Date.now() - new Date(iso).getTime();
@@ -85,30 +152,11 @@ const timeAgo = (iso: string): string => {
   return `${Math.floor(hours / 24)}d ago`;
 };
 
-import { createSseParser, eventFamilies, type InvalidateFamily } from "./workbench-events.ts";
+const shortAge = (iso: string): string => timeAgo(iso).replace(" ago", "");
 
-/** The agent itself is still working: never remove from under it. Idle (agent gone) may go. */
-const AGENT_LIVE_STATUSES: ReadonlySet<string> = new Set(["starting", "running", "waiting"]);
-
-/**
- * The workbench dashboard (bare `mend`): a drawn multi-pane interface —
- * projects pane and sessions pane side by side, a session detail panel
- * beneath them, and the harness picker as a panel that takes the detail
- * slot. Focus moves between panes (tab, h/l); the cobalt border says which
- * pane the keyboard is in. Rendered with @opentui/react.
- *
- * Server state lives in one TanStack Query cache entry; the SSE stream (the
- * same one the web app uses) is parsed outside React and each pointer event
- * invalidates only the query families it can stale — heartbeats and
- * per-record-line progress invalidate nothing. Writes are optimistic
- * mutations: a rename, a new session, a resume all land in the cache
- * immediately and the server's answer reconciles on settle, so the keyboard
- * never waits on a round trip.
- *
- * This module is imported lazily and only where node:ffi exists (Node 26
- * with --experimental-ffi — main.ts gates and re-execs), so every plain
- * command keeps running dependency-free on Node >= 22.
- */
+/** Cut to width with an ellipsis, so a long name never wraps a one-line row. */
+const fit = (text: string, width: number): string =>
+  text.length <= width ? text : `${text.slice(0, Math.max(0, width - 1))}…`;
 
 export interface DashboardContext {
   readonly config: { readonly url: string; readonly token: string | null };
@@ -130,13 +178,25 @@ export interface DashboardContext {
 
 // ─── panes and rows ─────────────────────────────────────────────────────────
 
+const COLUMN_TITLE: Readonly<Record<Column, string>> = {
+  projects: "projects",
+  worktrees: "worktrees",
+  sessions: "sessions",
+  detail: "session",
+};
+
+/** Rows are two lines in the worktree and session columns: a name, then its facts. */
+const WORKTREE_ROW_HEIGHT = 2;
+const SESSION_ROW_HEIGHT = 2;
+
 const Gutter = ({ selected }: { readonly selected: boolean }) => (
-  <span fg={selected ? COBALT : FAINT}>{selected ? "▌ " : "  "}</span>
+  <span fg={selected ? ACCENT : FAINT}>{selected ? "▌ " : "  "}</span>
 );
 
 /**
- * A drawn pane: rounded border, a title in the frame, cobalt when the
- * keyboard lives here. Everything the dashboard shows sits in one of these.
+ * A drawn pane: the panel ground a step above the canvas, a rounded border, a
+ * title in the frame, highlighted when the keyboard lives here. Everything the
+ * dashboard shows sits in one of these.
  */
 const Pane = ({
   title,
@@ -156,10 +216,12 @@ const Pane = ({
   <box
     border
     borderStyle="rounded"
-    borderColor={focused ? COBALT : RULE}
+    borderColor={focused ? ACCENT : RULE}
+    titleColor={focused ? ACCENT : INK}
     title={` ${title} `}
     titleAlignment="left"
-    backgroundColor="transparent"
+    backgroundColor={PANEL}
+    overflow="hidden"
     {...(width === undefined ? {} : { width, flexShrink: 0, minHeight: 0 })}
     {...(height === undefined ? {} : { height, flexShrink: 0 })}
     {...(grow === true ? { flexGrow: 1, flexShrink: 1, minHeight: 0, minWidth: 0 } : {})}
@@ -169,6 +231,33 @@ const Pane = ({
   </box>
 );
 
+/**
+ * A folded section's one line: what is selected there, and the single fact that
+ * says what state it is in. It is the section's answer to "where am I", kept
+ * where the section itself lives instead of in a breadcrumb somewhere else.
+ */
+const SummaryRow = ({
+  name,
+  fact,
+  width,
+  empty,
+}: {
+  readonly name: string;
+  readonly fact: string;
+  readonly width: number;
+  readonly empty: boolean;
+}) => {
+  const factWidth = fact === "" ? 0 : Math.min(fact.length, Math.max(0, width - 8));
+  const nameWidth = Math.max(4, width - factWidth - 3);
+  return (
+    <text height={1} bg="transparent">
+      <span fg={FAINT}>{"  "}</span>
+      <span fg={empty ? FAINT : INK_2}>{fit(name, nameWidth - 1).padEnd(nameWidth)}</span>
+      {factWidth === 0 ? null : <span fg={FAINT}>{fit(fact, factWidth)}</span>}
+    </text>
+  );
+};
+
 const paneScrollStyle = {
   rootOptions: { backgroundColor: "transparent", border: false },
   wrapperOptions: { backgroundColor: "transparent" },
@@ -176,126 +265,129 @@ const paneScrollStyle = {
   contentOptions: { backgroundColor: "transparent" },
 } as const;
 
+/** A pane with nothing in it says why, in the pane's own words. */
+const EmptyNote = ({ text }: { readonly text: string }) => (
+  <text height={1} fg={FAINT} bg="transparent">
+    {`  ${text}`}
+  </text>
+);
+
 const ProjectRow = ({
   item,
   selected,
-  nameWidth,
+  width,
 }: {
   readonly item: ProjectItem;
   readonly selected: boolean;
-  readonly nameWidth: number;
-}) => (
-  <box height={1} flexShrink={0} backgroundColor={selected ? WASH : "transparent"}>
-    <text height={1} bg="transparent">
-      <Gutter selected={selected} />
-      <span fg={INK}>{item.project.name.padEnd(nameWidth)}</span>
-      <span fg={item.total === 0 ? FAINT : MUTED}>{`  ${item.total}`}</span>
-      {item.live > 0 ? <span fg={MUTED}>{` · ${item.live} live`}</span> : null}
-      {item.open > 0 ? <span fg={MUTED}>{` · ${item.open}`}</span> : null}
-    </text>
-  </box>
-);
-
-const ProcessLines = ({
-  processes,
-  services,
-  indent,
-}: {
-  readonly processes: ReadonlyArray<SessionProcessDto>;
-  readonly services: ReadonlyArray<ServiceDto>;
-  readonly indent: string;
-}) => (
-  <>
-    {processes.map((process) => (
-      <box key={process.id} height={1} flexShrink={0} backgroundColor="transparent">
-        <text height={1} bg="transparent">
-          <span fg={FAINT}>{indent}</span>
-          <span fg={INK_2}>
-            {process.kind === "shell"
-              ? (process.label ?? "shell")
-              : (process.harness ?? process.kind)}
-          </span>
-          <span fg={FAINT}>
-            {process.kind === "agent-protocol"
-              ? " · protocol"
-              : process.kind === "agent-external"
-                ? " · external"
-                : ""}
-            {` ${process.status}`}
-          </span>
-        </text>
-      </box>
-    ))}
-    {services.map((service) => (
-      <box key={service.id} height={1} flexShrink={0} backgroundColor="transparent">
-        <text height={1} bg="transparent">
-          <span fg={FAINT}>{indent}</span>
-          <span fg={service.status === "reachable" ? INK_2 : MUTED}>
-            {`${service.label ?? service.id.slice(0, 6)} :${service.workspacePort ?? "?"}${service.protocol === "udp" ? "u" : ""}→${service.hostPort ?? "?"}`}
-          </span>
-          <span fg={FAINT}>{` ${service.status}`}</span>
-        </text>
-      </box>
-    ))}
-  </>
-);
-
-/** A worktree's header: the place, its folded status, its member facts. */
-const WorktreeHeaderRow = ({
-  group,
-  selected,
-}: {
-  readonly group: WorktreeGroup;
-  readonly selected: boolean;
+  readonly width: number;
 }) => {
-  const folded = foldGroupStatus(group);
-  const color = group.live > 0 ? (STATUS_COLOR[folded] ?? MUTED) : FAINT;
-  const age = timeAgo(group.sessions.at(-1)?.session.createdAt ?? group.createdAt).replace(
-    " ago",
-    "",
-  );
-  const open = group.annotation?.openComments ?? 0;
+  const nameWidth = Math.max(6, width - 9);
   return (
     <box height={1} flexShrink={0} backgroundColor={selected ? WASH : "transparent"}>
       <text height={1} bg="transparent">
         <Gutter selected={selected} />
-        <span fg={INK}>{group.name.slice(0, 30).padEnd(31)}</span>
-        <span fg={color}>{(group.live > 0 ? folded : "settled").padEnd(10)}</span>
-        <span fg={FAINT}>{age.padEnd(9)}</span>
-        <span fg={MUTED}>
-          {`${group.sessions.length} session${group.sessions.length === 1 ? "" : "s"}`}
+        <span fg={INK}>{fit(item.project.name, nameWidth).padEnd(nameWidth + 1)}</span>
+        <span fg={item.live > 0 ? MUTED : FAINT}>
+          {item.live > 0 ? `${item.live}/${item.total}` : String(item.total)}
         </span>
-        {open > 0 ? <span fg={MUTED}>{` · ${open} open`}</span> : null}
       </text>
     </box>
   );
 };
 
-/** One conversation inside a worktree — the label is its identity. */
-const SessionChildRow = ({
+/**
+ * A worktree row: the place's name, then what it is — the base it forked from
+ * and when it last saw work. Two lines, because a name squeezed next to four
+ * facts is a name nobody reads.
+ */
+const WorktreeRow = ({
+  group,
+  selected,
+  width,
+}: {
+  readonly group: WorktreeGroup;
+  readonly selected: boolean;
+  readonly width: number;
+}) => {
+  const folded = foldGroupStatus(group);
+  const live = group.live > 0;
+  const status = live ? folded : "settled";
+  const color = live ? (STATUS_COLOR[folded] ?? MUTED) : FAINT;
+  const open = group.annotation?.openComments ?? 0;
+  const sessions = group.sessions.length;
+  const nameWidth = Math.max(6, width - 5 - status.length);
+  const factWidth = Math.max(8, width - 3);
+  // Base first — it is what the worktree IS; the counts drop before it does.
+  // One session is the ordinary case and says nothing worth a column of width.
+  const facts = fitHints(
+    [
+      fit(groupBaseLabel(group), factWidth),
+      shortAge(groupActivityAt(group)),
+      ...(open > 0 ? [`${open} open`] : []),
+      ...(sessions === 0 ? ["empty"] : sessions === 1 ? [] : [`${sessions} sessions`]),
+    ],
+    factWidth,
+  );
+  return (
+    <box flexShrink={0} flexDirection="column" backgroundColor={selected ? WASH : "transparent"}>
+      <box height={1} flexShrink={0} backgroundColor="transparent">
+        <text height={1} bg="transparent">
+          <Gutter selected={selected} />
+          <span fg={INK}>{fit(group.name, nameWidth - 1).padEnd(nameWidth)}</span>
+          <span fg={color}>{status}</span>
+        </text>
+      </box>
+      <box height={1} flexShrink={0} backgroundColor="transparent">
+        <text height={1} bg="transparent" fg={FAINT}>
+          {`  ${facts}`}
+        </text>
+      </box>
+    </box>
+  );
+};
+
+/** One conversation inside the worktree: what it is, then which agent and when. */
+const SessionRow = ({
   item,
   selected,
+  width,
 }: {
   readonly item: SessionItem;
   readonly selected: boolean;
+  readonly width: number;
 }) => {
-  const { session, services, processes } = item;
-  const color = STATUS_COLOR[session.status] ?? MUTED;
-  const age = timeAgo(session.createdAt).replace(" ago", "");
-  const name = session.label ?? `session ${session.id.slice(0, 8)}`;
+  const { session, processes, services } = item;
+  const status = session.status;
+  const color = STATUS_COLOR[status] ?? MUTED;
+  const agents = processes.filter((process) => process.kind !== "shell").length;
+  const shells = processes.filter((process) => process.kind === "shell").length;
+  const nameWidth = Math.max(6, width - 5 - status.length);
+  const factWidth = Math.max(8, width - 3);
+  // The harness leads: it is the fact the machine id used to crowd out.
+  const facts = fitHints(
+    [
+      session.harness,
+      shortAge(session.createdAt),
+      ...(shells > 0 ? [`${shells} shell`] : []),
+      ...(agents > 0 ? [`${agents} agent`] : []),
+      ...(services.length > 0 ? [`${services.length} service`] : []),
+    ],
+    factWidth,
+  );
   return (
-    <box flexShrink={0} flexDirection="column" backgroundColor="transparent">
-      <box height={1} flexShrink={0} backgroundColor={selected ? WASH : "transparent"}>
+    <box flexShrink={0} flexDirection="column" backgroundColor={selected ? WASH : "transparent"}>
+      <box height={1} flexShrink={0} backgroundColor="transparent">
         <text height={1} bg="transparent">
           <Gutter selected={selected} />
-          <span fg={FAINT}>{"  └ "}</span>
-          <span fg={INK}>{name.slice(0, 26).padEnd(27)}</span>
-          <span fg={color}>{session.status.padEnd(10)}</span>
-          <span fg={FAINT}>{age.padEnd(9)}</span>
-          <span fg={MUTED}>{session.harness.padEnd(10)}</span>
+          <span fg={INK}>{fit(sessionDisplayName(session), nameWidth - 1).padEnd(nameWidth)}</span>
+          <span fg={color}>{status}</span>
         </text>
       </box>
-      <ProcessLines processes={processes} services={services} indent={"       └ "} />
+      <box height={1} flexShrink={0} backgroundColor="transparent">
+        <text height={1} bg="transparent" fg={FAINT}>
+          {`  ${facts}`}
+        </text>
+      </box>
     </box>
   );
 };
@@ -303,12 +395,14 @@ const SessionChildRow = ({
 const HarnessRow = ({
   item,
   selected,
+  background,
 }: {
   readonly item: HarnessItem;
   readonly selected: boolean;
+  readonly background: string;
 }) => (
-  <box height={1} flexShrink={0} backgroundColor={selected ? WASH : "transparent"}>
-    <text height={1} bg="transparent">
+  <box height={1} flexShrink={0} backgroundColor={selected ? WASH : background}>
+    <text height={1} bg={selected ? WASH : background}>
       <Gutter selected={selected} />
       <span fg={INK}>{item.label.padEnd(12)}</span>
       <span fg={FAINT}>{item.hint}</span>
@@ -316,76 +410,120 @@ const HarnessRow = ({
   </box>
 );
 
+// ─── the detail column ──────────────────────────────────────────────────────
+
+/** Who spoke: a two-character gutter drawn only on a block's first line. */
+const PREVIEW_GLYPH: Readonly<Record<PreviewLineKind, string>> = {
+  user: "› ",
+  assistant: "  ",
+  reasoning: "· ",
+  command: "$ ",
+  output: "  ",
+  meta: "  ",
+  blank: "  ",
+};
+
+const PREVIEW_COLOR: Readonly<Record<PreviewLineKind, string>> = {
+  user: INK,
+  assistant: INK_2,
+  reasoning: FAINT,
+  command: MUTED,
+  output: FAINT,
+  meta: FAINT,
+  blank: FAINT,
+};
+
+const PreviewRow = ({ line }: { readonly line: PreviewLine }) => (
+  <box height={1} flexShrink={0} backgroundColor="transparent">
+    <text height={1} bg="transparent">
+      <span fg={FAINT}>{line.lead ? PREVIEW_GLYPH[line.kind] : "  "}</span>
+      <span fg={PREVIEW_COLOR[line.kind]}>{line.text}</span>
+    </text>
+  </box>
+);
+
 /**
- * The detail panel: everything about the selected session that the one-line
- * rows no longer carry — branch and base, services, the review state, the
- * summary. The panes above stay scannable because this panel holds the depth.
+ * The facts about the selected conversation that the one-line rows cannot
+ * carry, most important first — a short pane keeps the first `rows` of them
+ * and gives what is left to the record.
  */
-const SessionDetail = ({ item }: { readonly item: SessionItem | null }) => {
-  if (item === null) {
-    return (
-      <text height={1} bg="transparent" fg={FAINT}>
-        {"  no session selected — n starts one"}
-      </text>
-    );
-  }
+const SessionFacts = ({
+  group,
+  item,
+  rows,
+}: {
+  readonly group: WorktreeGroup | null;
+  readonly item: SessionItem;
+  readonly rows: number;
+}) => {
   const { session, annotation, services } = item;
   const color = STATUS_COLOR[session.status] ?? MUTED;
   const summary = session.summary?.split("\n")[0] ?? null;
-  return (
-    <>
-      <text height={1} bg="transparent">
-        <span>{"  "}</span>
-        <span fg={color}>{session.status}</span>
-        <span fg={FAINT}> · </span>
-        <span fg={MUTED}>{session.branch}</span>
-        <span fg={FAINT}>
-          {session.baseSha === "" ? "" : ` vs ${session.baseRef ?? session.baseSha.slice(0, 12)}`} ·
-          started {timeAgo(session.createdAt)}
-        </span>
-      </text>
-      <text height={1} bg="transparent">
-        <span>{"  "}</span>
-        {services.length === 0 ? (
-          <span fg={FAINT}>no services running</span>
-        ) : (
-          services.slice(0, 3).map((service, index) => (
-            <span key={service.id}>
-              {index > 0 ? <span fg={FAINT}> · </span> : null}
-              <span fg={service.status === "reachable" ? INK_2 : MUTED}>
-                {`${service.label ?? service.id.slice(0, 6)} :${service.workspacePort ?? "?"}${service.protocol === "udp" ? "u" : ""}→${service.hostPort ?? "?"} ${service.status}`}
-              </span>
+  const change = annotation ?? group?.annotation;
+  const lines: ReadonlyArray<ReactNode> = [
+    <text key="name" height={1} bg="transparent">
+      <span>{"  "}</span>
+      <span fg={INK}>{sessionDisplayName(session)}</span>
+      <span fg={FAINT}>{` · ${session.harness}`}</span>
+    </text>,
+    <text key="status" height={1} bg="transparent">
+      <span>{"  "}</span>
+      <span fg={color}>{session.status}</span>
+      <span fg={FAINT}>{" · "}</span>
+      <span fg={MUTED}>{session.branch}</span>
+      <span fg={FAINT}>
+        {session.baseSha === "" ? "" : ` vs ${session.baseRef ?? session.baseSha.slice(0, 12)}`}
+      </span>
+    </text>,
+    <text key="started" height={1} bg="transparent" fg={FAINT}>
+      {`  started ${timeAgo(session.createdAt)} · ${isPendingId(session.id) ? "provisioning" : session.id.slice(0, 8)}`}
+    </text>,
+    <text key="services" height={1} bg="transparent">
+      <span>{"  "}</span>
+      {services.length === 0 ? (
+        <span fg={FAINT}>no services running</span>
+      ) : (
+        services.slice(0, 2).map((service, index) => (
+          <span key={service.id}>
+            {index > 0 ? <span fg={FAINT}>{" · "}</span> : null}
+            <span fg={service.status === "reachable" ? INK_2 : MUTED}>
+              {`${service.label ?? service.id.slice(0, 6)} :${service.workspacePort ?? "?"}${service.protocol === "udp" ? "u" : ""}→${service.hostPort ?? "?"} ${service.status}`}
             </span>
-          ))
-        )}
-        {services.length > 3 ? <span fg={FAINT}>{` · +${services.length - 3} more`}</span> : null}
-      </text>
-      <text height={1} bg="transparent">
-        <span>{"  "}</span>
-        {annotation === undefined || annotation.openComments === 0 ? (
-          <span fg={FAINT}>no open review comments</span>
-        ) : (
-          <span fg={INK_2}>
-            {annotation.openComments} open comment{annotation.openComments === 1 ? "" : "s"}
           </span>
-        )}
-        {annotation?.pendingFollowUp === true ? (
-          <>
-            <span fg={FAINT}> · </span>
-            <span fg={INK_2}>follow-up pending</span>
-          </>
-        ) : null}
-        {annotation?.changeId != null ? (
-          <>
-            <span fg={FAINT}> · </span>
-            <span fg={MUTED}>v reviews the change</span>
-          </>
-        ) : null}
-      </text>
-      <text height={1} bg="transparent" fg={summary === null ? FAINT : MUTED}>
-        {`  ${summary ?? "no summary yet"}`}
-      </text>
-    </>
+        ))
+      )}
+      {services.length > 2 ? <span fg={FAINT}>{` · +${services.length - 2} more`}</span> : null}
+    </text>,
+    <text key="comments" height={1} bg="transparent">
+      <span>{"  "}</span>
+      {change === undefined || change.openComments === 0 ? (
+        <span fg={FAINT}>no open review comments</span>
+      ) : (
+        <span fg={INK_2}>
+          {change.openComments} open comment{change.openComments === 1 ? "" : "s"}
+        </span>
+      )}
+      {change?.pendingFollowUp === true ? (
+        <>
+          <span fg={FAINT}>{" · "}</span>
+          <span fg={INK_2}>follow-up pending</span>
+        </>
+      ) : null}
+      {change?.changeId == null ? null : (
+        <>
+          <span fg={FAINT}>{" · "}</span>
+          <span fg={MUTED}>v reviews the change</span>
+        </>
+      )}
+    </text>,
+    <text key="summary" height={1} bg="transparent" fg={summary === null ? FAINT : MUTED}>
+      {`  ${fit(summary ?? "no summary yet", 200)}`}
+    </text>,
+  ];
+  return (
+    <box flexShrink={0} flexDirection="column" backgroundColor="transparent">
+      {lines.slice(0, Math.max(0, rows))}
+    </box>
   );
 };
 
@@ -420,11 +558,11 @@ const StatusLine = ({
     return undefined;
   }, [busy, status]);
   const text =
-    busy !== null
-      ? ` ${busy} ${Math.max(0, Math.round((now - busyStarted) / 1000))}s`
-      : status !== null && Date.now() - status.at < 5000
+    busy === null
+      ? status !== null && Date.now() - status.at < 5000
         ? ` ${status.text}`
-        : "";
+        : ""
+      : ` ${busy} ${Math.max(0, Math.round((now - busyStarted) / 1000))}s`;
   return (
     <text height={1} fg={INK_2} bg="transparent">
       {text}
@@ -435,22 +573,32 @@ const StatusLine = ({
 const errorText = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
-/** Keep a 1-line-per-row selection inside its scrollbox's real viewport. */
-const keepSpanVisible = (scroll: ScrollBoxRenderable | null, top: number, height: number): void => {
-  if (scroll === null) return;
-  const viewH = Math.max(1, scroll.viewport.height);
-  if (top < scroll.scrollTop) scroll.scrollTo(top);
+/**
+ * Keep a selection inside its scrollbox. The viewport is passed in rather than
+ * read off the renderable: a section that just opened or resized has not laid
+ * itself out yet, and the layout already knows exactly how many rows it gave.
+ */
+const keepSpanVisible = (
+  scroll: ScrollBoxRenderable | null,
+  top: number,
+  height: number,
+  viewRows: number,
+): void => {
+  if (scroll === null || viewRows <= 0) return;
+  const viewH = Math.max(1, viewRows);
+  // A row taller than the viewport shows its first line: a name half off the
+  // top is worse than facts half off the bottom.
+  if (top < scroll.scrollTop || height > viewH) scroll.scrollTo(top);
   else if (top + height > scroll.scrollTop + viewH) scroll.scrollTo(top + height - viewH);
 };
 
-const keepRowVisible = (scroll: ScrollBoxRenderable | null, index: number): void =>
-  keepSpanVisible(scroll, index, 1);
-
 // ─── the app ────────────────────────────────────────────────────────────────
 
-type Focus = "projects" | "sessions";
+/** How much of the record the preview keeps in memory — a glance, with scrollback. */
+const PREVIEW_MAX_LINES = 300;
 
-const PROJECTS_PANE_WIDTH = 30;
+/** The facts SessionFacts can state; the preview gets every row they leave. */
+const SESSION_FACT_ROWS = 6;
 
 /** The header's share fact when no share runs. */
 const noShare = (): "off" => "off";
@@ -466,9 +614,14 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     retryDelay: 1000,
   });
 
-  const [focusState, setFocus] = useState<Focus>("sessions");
+  const [focus, setFocusState] = useState<Column>("sessions");
+  /**
+   * The section the sidebar keeps open while the keyboard is in the session
+   * pane: reading a record must not fold the list you were just walking.
+   */
+  const [lastNav, setLastNav] = useState<NavSection>("sessions");
   const [projectKey, setProjectKey] = useState<string | null>(null);
-  /** A row key (`wt:<id>` | `s:<id>`), so selection survives regrouping. */
+  const [worktreeKey, setWorktreeKey] = useState<string | null>(null);
   const [sessionKey, setSessionKey] = useState<string | null>(null);
   const [picker, setPicker] = useState<{
     readonly session: SessionDto | null;
@@ -486,6 +639,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const [editing, setEditing] = useState<SessionDto | null>(null);
   /** Session id a stop is armed against; the second press fires it. */
   const [stopArmed, setStopArmed] = useState<string | null>(null);
+  /** Removal is armed like stops: the first press states the facts. */
+  const [removeArmed, setRemoveArmed] = useState<string | null>(null);
   /**
    * The whole worktree creation is ONE modal: name, base (fuzzy over the
    * project's branches), harness — every step visible, the active one
@@ -503,55 +658,112 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     readonly changeId: string;
     readonly projectName: string;
   } | null>(null);
-  /** Set synchronously around attach/launch so keystrokes can't double-fire. */
+  /** Set synchronously around attach so keystrokes can't double-fire. */
   const lockRef = useRef(false);
-  /** Latest modal state for mutation callbacks — closures there go stale. */
-  const modalRef = useRef(false);
-  modalRef.current = editing !== null || reviewing !== null || picker !== null || creating !== null;
+  /**
+   * The starting verbs' one-at-a-time guard. Taken in the key handler BEFORE
+   * any await, so a held `r` or a double `enter` on the harness picker cannot
+   * provision two workspaces for one intention.
+   */
+  const [gate] = useState(createLaunchGate);
+  const creatingRef = useRef(creating);
+  creatingRef.current = creating;
+  const branchRequest = useRef(0);
 
   const { width: terminalCols, height: terminalRows } = useTerminalDimensions();
-  const showProjectsPane = terminalCols >= 72;
-  const showDetail = terminalRows >= 18;
-  const focus: Focus = showProjectsPane ? focusState : "sessions";
 
-  // ── pane data ──
+  // ── selection, left to right ──
   const projectItems = deriveProjects(data);
   const homeProject =
     data === undefined ? undefined : matchProjectByCwd(data.projects, cwdFacts(ctx.cwd));
   const projectIndexRaw =
     projectKey === null ? -1 : projectItems.findIndex((p) => p.project.id === projectKey);
   const projectIndex =
-    projectIndexRaw !== -1
-      ? projectIndexRaw
-      : Math.max(
+    projectIndexRaw === -1
+      ? Math.max(
           0,
           homeProject === undefined
             ? 0
             : projectItems.findIndex((p) => p.project.id === homeProject.id),
-        );
+        )
+      : projectIndexRaw;
   const selectedProject = projectItems[projectIndex] ?? null;
   const worktreeGroups = deriveWorktrees(data, selectedProject?.project.id ?? null);
-  const rows = deriveRows(worktreeGroups);
-  const rowIndexRaw =
-    sessionKey === null ? -1 : rows.findIndex((row) => rowKeyOf(row) === sessionKey);
-  const rowIndex = rowIndexRaw === -1 ? 0 : rowIndexRaw;
-  const selectedRow = rows[rowIndex] ?? null;
-  const selectedGroup = selectedRow?.group ?? null;
-  // A worktree header still names a concrete conversation for session verbs:
-  // the newest live member, else the newest at all.
-  const selectedSession =
-    selectedRow === null
-      ? null
-      : selectedRow.kind === "session"
-        ? selectedRow.item
-        : (selectedRow.group.sessions.find((item) => LIVE_STATUSES.has(item.session.status)) ??
-          selectedRow.group.sessions[0] ??
-          null);
+  const worktreeIndexRaw =
+    worktreeKey === null ? -1 : worktreeGroups.findIndex((group) => group.key === worktreeKey);
+  const sessionWorktreeIndex = worktreeGroups.findIndex((group) =>
+    group.sessions.some((item) => item.session.id === sessionKey),
+  );
+  const worktreeIndex =
+    worktreeIndexRaw === -1 ? Math.max(0, sessionWorktreeIndex) : worktreeIndexRaw;
+  const selectedGroup = worktreeGroups[worktreeIndex] ?? null;
+  const sessionItems = selectedGroup?.sessions ?? [];
+  const sessionIndexRaw =
+    sessionKey === null ? -1 : sessionItems.findIndex((item) => item.session.id === sessionKey);
+  const sessionIndex = sessionIndexRaw === -1 ? 0 : sessionIndexRaw;
+  const selectedItem = sessionItems[sessionIndex] ?? null;
+  const selectedSession = selectedItem?.session ?? null;
   const pickerItems = picker === null ? [] : deriveHarnesses(picker.session);
-  const selectSession = (id: string): void => setSessionKey(`s:${id}`);
 
+  // ── where every pane sits ──
+  const layout = planLayout(terminalCols, terminalRows, focus, lastNav);
+  const detailWidth = layout.detailWidth;
+  const sectionRows = (section: NavSection): number =>
+    layout.sections.find((entry) => entry.section === section)?.rows ?? 0;
+
+  // ── the read-only preview ──
+  const previewSessionId =
+    selectedSession !== null && !isPendingId(selectedSession.id) ? selectedSession.id : null;
+  const previewLive = selectedSession !== null && LIVE_STATUSES.has(selectedSession.status);
+  const transcript = useQuery({
+    queryKey: TRANSCRIPT_KEY(previewSessionId ?? "none"),
+    queryFn: () => fetchTranscript(ctx.api, previewSessionId ?? ""),
+    enabled: previewSessionId !== null && selectedSession?.harness !== "shell" && detailWidth > 0,
+    staleTime: 3000,
+    // A live agent writes while you watch; the record is a read, not an
+    // attach, so following it costs one GET while that session is selected.
+    refetchInterval: previewLive ? 8000 : false,
+    retry: 1,
+  });
+  const preview = useMemo(
+    () =>
+      transcript.data === undefined
+        ? []
+        : previewLines(transcript.data, {
+            width: Math.max(16, detailWidth - 6),
+            maxLines: PREVIEW_MAX_LINES,
+          }),
+    [transcript.data, detailWidth],
+  );
+  /**
+   * How far back from the newest line the reader has walked. The preview is
+   * pinned to the tail (a new turn appears without moving the view) and this
+   * offset is the only thing that moves it, so a growing record can never
+   * scroll the newest line off the bottom.
+   */
+  const [previewOffset, setPreviewOffset] = useState(0);
+  // The pane's own rows, split between the facts, their divider and the record.
+  // Slicing to exactly what fits is what keeps the newest line on screen — an
+  // over-count would push it under the bottom border. A pane too short for the
+  // facts drops them from the end rather than pushing the record out.
+  const factRows = Math.max(0, Math.min(SESSION_FACT_ROWS, layout.detailRows - 2));
+  const showFactRule = factRows > 0 && layout.detailRows - factRows > 1;
+  const previewRows = Math.max(1, layout.detailRows - factRows - (showFactRule ? 1 : 0));
+  const previewView = previewWindow(preview, previewRows, previewOffset);
+
+  /** Focus and the sidebar's open section move together. */
+  const setFocus = (column: Column): void => {
+    setFocusState(column);
+    if (isNavSection(column)) setLastNav(column);
+  };
+  /** Selecting a conversation re-pins its preview to the newest line. */
+  const selectSession = (id: string): void => {
+    setSessionKey(id);
+    setPreviewOffset(0);
+  };
   const say = (text: string): void => setStatus({ text, at: Date.now() });
   const refetch = (): void => void queryClient.invalidateQueries({ queryKey: WORKBENCH_KEY });
+
   // Signature requests are facts from outside React — the status line says them.
   useEffect(() => {
     const share = ctx.agentShare;
@@ -576,26 +788,34 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [data, homeProject]);
 
-  // Keep each pane's selection on screen — the one imperative escape hatch.
+  // Keep each section's selection on screen — the one imperative escape hatch.
+  // The row count is a dependency too: a section that opens, folds or is
+  // resized must land on its selected row, not at whatever it was scrolled to.
   const projectScrollRef = useRef<ScrollBoxRenderable | null>(null);
+  const worktreeScrollRef = useRef<ScrollBoxRenderable | null>(null);
   const sessionScrollRef = useRef<ScrollBoxRenderable | null>(null);
+  const projectRows = sectionRows("projects");
+  const worktreeRows = sectionRows("worktrees");
+  const sessionRows = sectionRows("sessions");
   useEffect(() => {
-    keepRowVisible(projectScrollRef.current, projectIndex);
-  }, [projectIndex]);
+    keepSpanVisible(projectScrollRef.current, projectIndex, 1, projectRows);
+  }, [projectIndex, projectRows]);
   useEffect(() => {
-    // Rows vary in height (header = 1; a session row carries its process and
-    // service fact lines), so the scroll target is the row's y offset.
-    const rowHeight = (row: SelectableRow | undefined): number =>
-      row === undefined || row.kind === "worktree"
-        ? 1
-        : 1 + row.item.processes.length + row.item.services.length;
-    let top = 0;
-    for (const [index, row] of rows.entries()) {
-      if (index === rowIndex) break;
-      top += rowHeight(row);
-    }
-    keepSpanVisible(sessionScrollRef.current, top, rowHeight(rows[rowIndex]));
-  }, [rowIndex, rows]);
+    keepSpanVisible(
+      worktreeScrollRef.current,
+      worktreeIndex * WORKTREE_ROW_HEIGHT,
+      WORKTREE_ROW_HEIGHT,
+      worktreeRows,
+    );
+  }, [worktreeIndex, worktreeRows]);
+  useEffect(() => {
+    keepSpanVisible(
+      sessionScrollRef.current,
+      sessionIndex * SESSION_ROW_HEIGHT,
+      SESSION_ROW_HEIGHT,
+      sessionRows,
+    );
+  }, [sessionIndex, sessionRows]);
 
   const attachFlow = async (session: SessionDto): Promise<void> => {
     const short = session.id.slice(0, 8);
@@ -607,7 +827,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       outcome = await ctx.attachTty(session.id, session.harness);
       if (outcome === "unavailable") {
         // A live session whose terminal ended (idle: a workspace held open,
-        // no PTY behind it). Enter still means "get me in" — REJOIN the shell
+        // no PTY behind it). `a` still means "get me in" — REJOIN the shell
         // already holding the workspace when one is live; only open a fresh
         // one when nothing is attachable (stacking a new bash per attempt is
         // how a session ends up held open by orphan shells).
@@ -624,20 +844,20 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           process.stdout.write(`taking over from the protocol session — same conversation…\n\n`);
           await ctx.api<SessionDto>("POST", `/sessions/${session.id}/handoff`, { to: "pty" });
           outcome = await ctx.attachTty(session.id, session.harness);
-        } else if (existing !== null) {
-          process.stdout.write(`no live terminal — rejoining the open shell\n\n`);
-          outcome = await ctx.attachTty(session.id, "shell", existing.id);
-        } else {
+        } else if (existing === null) {
           const shell = await ctx.api<{ readonly id: string }>(
             "POST",
             `/sessions/${session.id}/shell`,
           );
           process.stdout.write(`no live terminal — opened a shell in the workspace\n\n`);
           outcome = await ctx.attachTty(session.id, "shell", shell.id);
+        } else {
+          process.stdout.write(`no live terminal — rejoining the open shell\n\n`);
+          outcome = await ctx.attachTty(session.id, "shell", existing.id);
         }
       }
     } catch (error) {
-      say(error instanceof Error ? error.message : String(error));
+      say(errorText(error));
       return;
     } finally {
       renderer.resume();
@@ -649,8 +869,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         : outcome === "detached" || outcome === "interrupted"
           ? `detached — ${short} keeps running`
           : outcome === "dropped"
-            ? `disconnected — ${short} keeps running`
-            : `session settled · ${short}`,
+            ? `disconnected · ${short} — refreshing session status`
+            : `terminal ended · ${short} — refreshing session status`,
     );
     refetch();
   };
@@ -665,18 +885,10 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     const current = workbench();
     if (current !== undefined) queryClient.setQueryData(WORKBENCH_KEY, f(current));
   };
-  /** Attaching yanks the terminal; only do it unasked when nothing else is open. */
-  const attachIfIdle = async (session: SessionDto): Promise<void> => {
-    if (lockRef.current || modalRef.current) {
-      say(`session ready · ${session.id.slice(0, 8)} — enter attaches`);
-      return;
-    }
-    await attachFlow(session);
-  };
 
-  // A new session appears as a `starting` row the moment enter is pressed;
-  // the keyboard stays free while the workspace provisions, and the terminal
-  // attaches when the launch answers — unless something else has the screen.
+  // A new session appears as a `starting` row the moment the harness is
+  // chosen; the keyboard stays free while the workspace provisions. Nothing
+  // attaches by itself — the row reads running and `a` takes the terminal.
   const launchMutation = useMutation({
     mutationFn: async (vars: {
       readonly projectId: string;
@@ -684,6 +896,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       readonly name: string | null;
       readonly base: string | null;
       readonly pendingKey: string;
+      readonly gateKey: string;
     }) => {
       const argv = HARNESS_COMMANDS[vars.harness];
       if (argv === undefined) throw new Error(`unknown harness "${vars.harness}"`);
@@ -711,6 +924,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           createdAt: new Date().toISOString(),
         }),
       );
+      setWorktreeKey(vars.pendingKey);
       selectSession(vars.pendingKey);
       setBusy(`provisioning ${vars.harness} workspace — a first launch builds the harness image ·`);
       setBusyStarted(Date.now());
@@ -720,15 +934,21 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       setBusy(null);
       say(errorText(error));
     },
-    onSuccess: async (session, vars) => {
+    onSuccess: (session, vars) => {
       patchWorkbench((current) =>
         replaceSession(current, vars.projectId, vars.pendingKey, session),
       );
-      selectSession(session.id);
+      setWorktreeKey((current) =>
+        current === vars.pendingKey ? (session.worktreeId ?? session.id) : current,
+      );
+      setSessionKey((current) => (current === vars.pendingKey ? session.id : current));
       setBusy(null);
-      await attachIfIdle(session);
+      say(`started · ${sessionDisplayName(session)} — a attaches`);
     },
-    onSettled: settleRefetch,
+    onSettled: (_data, _error, vars) => {
+      gate.release(vars.gateKey);
+      settleRefetch();
+    },
   });
 
   const resumeMutation = useMutation({
@@ -736,6 +956,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       readonly projectId: string;
       readonly session: SessionDto;
       readonly harness: string | null;
+      readonly gateKey: string;
     }) =>
       ctx.api<SessionDto>("POST", `/sessions/${vars.session.id}/resume`, {
         harness: vars.harness,
@@ -749,7 +970,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       );
       selectSession(vars.session.id);
       setBusy(
-        `resuming ${vars.session.id.slice(0, 8)} — a fresh workspace restores the saved state ·`,
+        `resuming ${sessionDisplayName(vars.session)} — a fresh workspace restores the saved state ·`,
       );
       setBusyStarted(Date.now());
     },
@@ -758,15 +979,17 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       say(errorText(error));
       refetch();
     },
-    onSuccess: async (resumed, vars) => {
+    onSuccess: (resumed, vars) => {
       patchWorkbench((current) =>
         replaceSession(current, vars.projectId, vars.session.id, resumed),
       );
-      selectSession(resumed.id);
       setBusy(null);
-      await attachIfIdle(resumed);
+      say(`resumed · ${sessionDisplayName(resumed)} — a attaches`);
     },
-    onSettled: settleRefetch,
+    onSettled: (_data, _error, vars) => {
+      gate.release(vars.gateKey);
+      settleRefetch();
+    },
   });
 
   const ADOPT_AUTH_MODES = [
@@ -810,8 +1033,9 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         return;
       }
       const project = result.project;
-      say(`adopted · ${project.name} — n starts a worktree`);
+      say(`adopted · ${project.name} — w starts a worktree`);
       setProjectKey(project.id);
+      setWorktreeKey(null);
       setSessionKey(null);
     },
     onSettled: settleRefetch,
@@ -851,7 +1075,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       await queryClient.cancelQueries({ queryKey: WORKBENCH_KEY });
       // The row settles and its live process/service facts drop in one paint.
       patchWorkbench((current) => markSessionStopped(current, session.id));
-      say(`stopped · ${worktreeDisplayName(session)} — the record and review remain`);
+      say(`stopped · ${sessionDisplayName(session)} — the record and review remain`);
     },
     onError: (error) => {
       say(errorText(error));
@@ -860,13 +1084,14 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     onSettled: settleRefetch,
   });
 
-  // A new conversation inside an existing worktree — the `s` key's flow.
+  // A new conversation inside an existing worktree — the `n` key's flow.
   const launchInWorktreeMutation = useMutation({
     mutationFn: async (vars: {
       readonly projectId: string;
       readonly worktreeId: string;
       readonly harness: string;
       readonly pendingKey: string;
+      readonly gateKey: string;
     }) => {
       const argv = HARNESS_COMMANDS[vars.harness];
       if (argv === undefined) throw new Error(`unknown harness "${vars.harness}"`);
@@ -902,24 +1127,27 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       setBusy(null);
       say(errorText(error));
     },
-    onSuccess: async (session, vars) => {
+    onSuccess: (session, vars) => {
       patchWorkbench((current) =>
         replaceSession(current, vars.projectId, vars.pendingKey, session),
       );
-      selectSession(session.id);
+      setSessionKey((current) => (current === vars.pendingKey ? session.id : current));
       setBusy(null);
-      await attachIfIdle(session);
+      say(`started · ${sessionDisplayName(session)} — a attaches`);
     },
-    onSettled: settleRefetch,
+    onSettled: (_data, _error, vars) => {
+      gate.release(vars.gateKey);
+      settleRefetch();
+    },
   });
 
   // The one explicit destructive act. Against a pre-worktree server the
   // session delete IS the old combined removal — same key, old semantics.
   const removeWorktreeMutation = useMutation({
     mutationFn: (group: WorktreeGroup) =>
-      group.id !== null
-        ? ctx.api("DELETE", `/worktrees/${group.id}`)
-        : ctx.api("DELETE", `/sessions/${group.sessions[0]?.session.id ?? ""}`),
+      group.id === null
+        ? ctx.api("DELETE", `/sessions/${group.sessions[0]?.session.id ?? ""}`)
+        : ctx.api("DELETE", `/worktrees/${group.id}`),
     onMutate: async (group) => {
       await queryClient.cancelQueries({ queryKey: WORKBENCH_KEY });
       const projectId = selectedProject?.project.id;
@@ -927,6 +1155,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       if (projectId !== undefined) {
         patchWorkbench((current) => removeWorktreeGroup(current, projectId, group));
       }
+      setWorktreeKey(null);
+      setSessionKey(null);
       say(`removing worktree · ${group.name}`);
     },
     onError: (error) => {
@@ -952,136 +1182,163 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       if (projectId !== undefined) {
         patchWorkbench((current) => removeSession(current, projectId, session.id));
       }
-      say(`removing session · ${worktreeDisplayName(session)}`);
+      setSessionKey(null);
+      say(`removing session · ${sessionDisplayName(session)}`);
     },
     onError: (error) => {
       say(errorText(error));
       refetch();
     },
     onSuccess: (_result, session) => {
-      say(`removed · ${worktreeDisplayName(session)} — the worktree remains`);
+      say(`removed · ${sessionDisplayName(session)} — the worktree remains`);
       refetch();
     },
     onSettled: settleRefetch,
   });
-  /** Removal is armed like stops: the first press states the facts. */
-  const [removeArmed, setRemoveArmed] = useState<string | null>(null);
+
+  const confirmationVisible = (prefix: string): boolean =>
+    busy === null &&
+    status !== null &&
+    Date.now() - status.at < 5000 &&
+    status.text.startsWith(prefix);
+
   const armRemove = (): void => {
-    // A session row removes THAT session; a worktree header removes the whole worktree.
-    if (selectedRow?.kind === "session") {
-      const session = selectedRow.item.session;
-      if (isPendingId(session.id)) return;
-      if (AGENT_LIVE_STATUSES.has(session.status)) {
-        say(`the agent is still working — kill it first (⇧K) · ${worktreeDisplayName(session)}`);
+    // The worktree column removes the worktree; anywhere else removes the
+    // selected conversation. A row always says what ⇧D will take.
+    if (focus === "worktrees") {
+      const group = selectedGroup;
+      if (group === null || group.sessions.some((item) => isPendingId(item.session.id))) return;
+      if (group.live > 0) {
+        say(
+          `${group.live} session${group.live === 1 ? "" : "s"} live — stop them first (⇧K) · ${group.name}`,
+        );
         return;
       }
-      if (removeArmed === session.id) {
+      if (removeArmed === `wt:${group.key}` && confirmationVisible("press ⇧D again")) {
         setRemoveArmed(null);
-        removeSessionMutation.mutate(session);
+        removeWorktreeMutation.mutate(group);
         return;
       }
-      setRemoveArmed(session.id);
-      say(
-        `press again to remove session · ${worktreeDisplayName(session)} — its record goes, the worktree stays`,
-      );
+      setRemoveArmed(`wt:${group.key}`);
+      const facts =
+        group.sessions.length === 1
+          ? "its session and change go with it"
+          : `${group.sessions.length} sessions and the change go with it`;
+      say(`press ⇧D again to remove worktree · ${group.name} — ${facts}`);
       return;
     }
-    const group = selectedGroup;
-    if (group === null || group.sessions.some((item) => isPendingId(item.session.id))) return;
-    if (group.live > 0) {
-      say(
-        `${group.live} session${group.live === 1 ? "" : "s"} live — stop them first · ${group.name}`,
-      );
+    const session = selectedSession;
+    if (session === null || isPendingId(session.id)) return;
+    if (AGENT_LIVE_STATUSES.has(session.status)) {
+      say(`the agent is still working — stop it first (⇧K) · ${sessionDisplayName(session)}`);
       return;
     }
-    if (removeArmed === group.key) {
+    if (removeArmed === session.id && confirmationVisible("press ⇧D again")) {
       setRemoveArmed(null);
-      removeWorktreeMutation.mutate(group);
+      removeSessionMutation.mutate(session);
       return;
     }
-    setRemoveArmed(group.key);
-    const facts =
-      group.sessions.length === 1
-        ? "its session and change go with it"
-        : `${group.sessions.length} sessions and the change go with it`;
-    say(`press again to remove worktree · ${group.name} — ${facts}`);
+    setRemoveArmed(session.id);
+    say(
+      `press ⇧D again to remove session · ${sessionDisplayName(session)} — its record goes, the worktree stays`,
+    );
   };
 
   const armStop = (): void => {
-    // A worktree header arms a stop of EVERY live conversation in it.
-    if (selectedRow?.kind === "worktree") {
-      const group = selectedRow.group;
+    // The worktree column arms a stop of EVERY live conversation in it.
+    if (focus === "worktrees") {
+      const group = selectedGroup;
+      if (group === null) return;
       const live = group.sessions.filter((item) => LIVE_STATUSES.has(item.session.status));
       if (live.length === 0) {
         say("nothing to stop — the worktree is settled");
         return;
       }
-      if (stopArmed === `wt:${group.key}`) {
+      if (stopArmed === `wt:${group.key}` && confirmationVisible("press ⇧K again")) {
         setStopArmed(null);
         for (const item of live) stopMutation.mutate(item.session);
         return;
       }
       setStopArmed(`wt:${group.key}`);
       say(
-        `press again to stop ${live.length} live session${live.length === 1 ? "" : "s"} · ${group.name}`,
+        `press ⇧K again to stop ${live.length} live session${live.length === 1 ? "" : "s"} · ${group.name}`,
       );
       return;
     }
-    const item = selectedSession;
-    if (item === null || isPendingId(item.session.id)) return;
-    if (!LIVE_STATUSES.has(item.session.status)) {
+    const session = selectedSession;
+    if (session === null || isPendingId(session.id)) return;
+    if (!LIVE_STATUSES.has(session.status)) {
       say("nothing to stop — the session is settled");
       return;
     }
-    if (stopArmed === item.session.id) {
+    if (stopArmed === session.id && confirmationVisible("press ⇧K again")) {
       setStopArmed(null);
-      stopMutation.mutate(item.session);
+      stopMutation.mutate(session);
       return;
     }
-    setStopArmed(item.session.id);
-    say(`press again to stop · ${worktreeDisplayName(item.session)}`);
+    setStopArmed(session.id);
+    say(`press ⇧K again to stop · ${sessionDisplayName(session)}`);
   };
 
   /** Open the creation modal; the branch list starts loading immediately. */
   const openCreateModal = (projectId: string): void => {
-    setCreating({
+    const request = ++branchRequest.current;
+    const draft: CreatingState = {
       projectId,
       step: "name",
       name: "",
       branches: null,
+      branchError: null,
       query: "",
       baseIndex: 0,
       base: null,
       joins: false,
       harnessIndex: 0,
-    });
+    };
+    creatingRef.current = draft;
+    setCreating(draft);
     // The checkout mend ran in names its branch; creating in THAT project
     // prefills the base with it — the list highlights it once loaded.
     const prefill = projectId === homeProject?.id ? ctx.cwdBranch : null;
     void ctx.api<ReadonlyArray<BranchDto>>("GET", `/projects/${projectId}/branches`).then(
       (branches) =>
         setCreating((current) => {
-          if (current === null) return current;
+          if (current?.projectId !== projectId || request !== branchRequest.current) return current;
           const match =
             prefill === null ? undefined : branches.find((candidate) => candidate.name === prefill);
           const ordered = filterBranches(branches, "");
           return {
             ...current,
             branches,
-            base: match === undefined || match.isDefault ? null : match.name,
-            baseIndex:
-              match === undefined
-                ? 0
-                : Math.max(
-                    0,
-                    ordered.findIndex((candidate) => candidate.name === match.name),
-                  ),
+            branchError: null,
+            // A late response may populate the list, but not change a base
+            // the user has already selected or a filter they are navigating.
+            ...(current.step === "name" ||
+            (current.step === "base" && current.query === "" && current.baseIndex === 0)
+              ? {
+                  base: match === undefined || match.isDefault ? null : match.name,
+                  baseIndex:
+                    match === undefined
+                      ? 0
+                      : Math.max(
+                          0,
+                          ordered.findIndex((candidate) => candidate.name === match.name),
+                        ),
+                }
+              : {}),
           };
         }),
-      () =>
-        // An unreadable list falls back to the default base; the base step
-        // then shows only the default and enter moves on.
-        setCreating((current) => (current === null ? current : { ...current, branches: [] })),
+      (error: unknown) => {
+        if (creatingRef.current?.projectId !== projectId || request !== branchRequest.current)
+          return;
+        const message = errorText(error);
+        say(`could not read branches — ${message}`);
+        setCreating((current) =>
+          current?.projectId === projectId
+            ? { ...current, branches: [], branchError: message }
+            : current,
+        );
+      },
     );
   };
 
@@ -1119,6 +1376,12 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     if (current === null) return;
     const choice = deriveHarnesses(null)[current.harnessIndex];
     if (choice?.harness == null) return;
+    const gateKey = `launch:${current.projectId}:${current.name}`;
+    if (!gate.take(gateKey)) {
+      setCreating(null);
+      say("that worktree is already starting — wait for it to finish before starting another");
+      return;
+    }
     setCreating(null);
     setFocus("sessions");
     launchMutation.mutate({
@@ -1127,12 +1390,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       name: current.name === "" ? null : current.name,
       base: current.base,
       pendingKey: pendingId(),
+      gateKey,
     });
-  };
-
-  const resumeSession = (projectId: string, session: SessionDto, harness: string | null): void => {
-    setFocus("sessions");
-    resumeMutation.mutate({ projectId, session, harness });
   };
 
   const submitRename = (session: SessionDto, value: string): void => {
@@ -1146,98 +1405,162 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     setPickerIndex(0);
   };
 
+  // ── the explicit verbs ──
+
+  /** `a` — take the terminal, and only when there is a live one to take. */
+  const attachSelected = (): void => {
+    const plan = planAttach(selectedSession);
+    switch (plan.kind) {
+      case "attach":
+        void attachFlow(plan.session);
+        return;
+      case "starting":
+        say(
+          `still starting · ${sessionDisplayName(plan.session)} — a attaches once the row reads running`,
+        );
+        return;
+      case "settled":
+        say(`settled · ${sessionDisplayName(plan.session)} — r resumes it, ⇧D removes it`);
+        return;
+      case "pending":
+        say("still provisioning — the row fills in when the workspace answers");
+        return;
+      case "none":
+        say("no session selected — n starts one");
+        return;
+    }
+  };
+
+  /** `r` — bring a settled conversation back, on a harness you pick. */
+  const resumeSelected = (): void => {
+    const plan = planResume(selectedSession);
+    switch (plan.kind) {
+      case "resume":
+        if (gate.held(`resume:${plan.session.id}`)) {
+          say(`already resuming · ${sessionDisplayName(plan.session)}`);
+          return;
+        }
+        openPicker(plan.session);
+        return;
+      case "live":
+        say(`already live · ${sessionDisplayName(plan.session)} — a attaches`);
+        return;
+      case "pending":
+        say("still provisioning — nothing to resume yet");
+        return;
+      case "none":
+        say("no session selected — n starts one");
+        return;
+    }
+  };
+
+  const resumeSession = (projectId: string, session: SessionDto, harness: string | null): void => {
+    const gateKey = `resume:${session.id}`;
+    if (!gate.take(gateKey)) {
+      say(`already resuming · ${sessionDisplayName(session)}`);
+      return;
+    }
+    setFocus("sessions");
+    resumeMutation.mutate({ projectId, session, harness, gateKey });
+  };
+
+  /** `n` — another conversation in the selected worktree; a new worktree when there is none. */
+  const newSession = (): void => {
+    const projectId = selectedProject?.project.id;
+    if (projectId === undefined) {
+      say("no project selected");
+      return;
+    }
+    const group = selectedGroup;
+    // At the project tier nothing names a worktree yet, so the only thing `n`
+    // can honestly start there is a new one — never a session in whichever
+    // worktree happened to sort first.
+    if (focus === "projects") {
+      openCreateModal(projectId);
+      return;
+    }
+    if (group === null || group.id === null) {
+      // No worktree to join (or a server that predates shared worktrees):
+      // the honest thing `n` can start is a new worktree.
+      openCreateModal(projectId);
+      return;
+    }
+    if (gate.held(`worktree-session:${group.id}`)) {
+      say(`already starting a session in ${group.name}`);
+      return;
+    }
+    openPicker(null, group);
+  };
+
+  const launchInWorktree = (projectId: string, group: WorktreeGroup, harness: string): void => {
+    if (group.id === null) return;
+    const gateKey = `worktree-session:${group.id}`;
+    if (!gate.take(gateKey)) {
+      say(`already starting a session in ${group.name}`);
+      return;
+    }
+    setFocus("sessions");
+    launchInWorktreeMutation.mutate({
+      projectId,
+      worktreeId: group.id,
+      harness,
+      pendingKey: pendingId(),
+      gateKey,
+    });
+  };
+
+  // ── movement ──
+
   const moveSelection = (delta: number): void => {
     if (picker !== null) {
-      setPickerIndex((current) => Math.max(0, Math.min(pickerItems.length - 1, current + delta)));
+      setPickerIndex((current) => clampIndex(pickerItems.length, current + delta));
       return;
     }
-    if (focus === "projects") {
-      if (projectItems.length === 0) return;
-      const next = Math.max(0, Math.min(projectItems.length - 1, projectIndex + delta));
-      const item = projectItems[next];
-      if (item !== undefined) {
+    switch (focus) {
+      case "projects": {
+        const item = projectItems[clampIndex(projectItems.length, projectIndex + delta)];
+        if (item === undefined) return;
         setProjectKey(item.project.id);
+        setWorktreeKey(null);
         setSessionKey(null);
+        setPreviewOffset(0);
+        return;
       }
-      return;
+      case "worktrees": {
+        const group = worktreeGroups[clampIndex(worktreeGroups.length, worktreeIndex + delta)];
+        if (group === undefined) return;
+        setWorktreeKey(group.key);
+        setSessionKey(null);
+        setPreviewOffset(0);
+        return;
+      }
+      case "sessions": {
+        const item = sessionItems[clampIndex(sessionItems.length, sessionIndex + delta)];
+        if (item === undefined) return;
+        selectSession(item.session.id);
+        return;
+      }
+      case "detail":
+        // Down walks toward the newest line, so the offset shrinks.
+        setPreviewOffset(
+          Math.max(
+            0,
+            Math.min(Math.max(0, preview.length - previewRows), previewView.offset - delta),
+          ),
+        );
+        return;
     }
-    if (rows.length === 0) return;
-    const next = Math.max(0, Math.min(rows.length - 1, rowIndex + delta));
-    const row = rows[next];
-    if (row !== undefined) setSessionKey(rowKeyOf(row));
   };
 
-  /**
-   * Enter on a session whose workspace is still booting. Our own launch or
-   * resume attaches by itself when the server answers; one started elsewhere
-   * (the web, a phone) needs another Enter once its row reads running.
-   */
-  const sayStillStarting = (session: SessionDto): void => {
-    say(
-      busy !== null
-        ? `still starting · ${worktreeDisplayName(session)} — attaches when the workspace answers`
-        : `still starting · ${worktreeDisplayName(session)} — enter attaches once the row reads running`,
-    );
-  };
-
-  const activate = (): void => {
-    if (picker !== null) {
-      const choice = pickerItems[pickerIndex];
-      const projectId = selectedProject?.project.id;
-      if (choice === undefined || projectId === undefined) return;
-      setPicker(null);
-      if (picker.worktree !== undefined && picker.worktree.id !== null) {
-        if (choice.harness !== null) {
-          setFocus("sessions");
-          launchInWorktreeMutation.mutate({
-            projectId,
-            worktreeId: picker.worktree.id,
-            harness: choice.harness,
-            pendingKey: pendingId(),
-          });
-        }
-      } else if (picker.session !== null) {
-        resumeSession(projectId, picker.session, choice.harness);
-      }
-      return;
-    }
-    if (focus === "projects") {
-      setFocus("sessions");
-      return;
-    }
-    if (selectedRow?.kind === "worktree") {
-      // Enter on the place: attach its newest live conversation, or open a
-      // new one when nothing is live.
-      const target = enterTargetOf(selectedRow.group.sessions.map((item) => item.session));
-      if (target.kind === "attach") {
-        void attachFlow(target.session);
-      } else if (target.kind === "wait") {
-        sayStillStarting(target.session);
-      } else if (selectedRow.group.id !== null) {
-        openPicker(null, selectedRow.group);
-      }
-      return;
-    }
-    const item = selectedSession;
-    if (item === null) return;
-    if (isPendingId(item.session.id)) {
-      say("still provisioning — the row fills in when the workspace answers");
-      return;
-    }
-    const target = enterTargetOf([item.session]);
-    if (target.kind === "attach") {
-      void attachFlow(target.session);
-    } else if (target.kind === "wait") {
-      sayStillStarting(target.session);
-    } else {
-      openPicker(item.session);
-    }
-  };
+  const moveColumn = (delta: number): void => setFocus(stepColumn(focus, delta));
 
   useKeyboard((key) => {
     if (reviewing !== null) return;
     if (lockRef.current) return;
     if (key.ctrl && key.name === "c") return onQuit();
+    const verb = verbForKey(key.name ?? "", key.shift === true);
+    if (verb !== "stop") setStopArmed(null);
+    if (verb !== "remove") setRemoveArmed(null);
     if (adoptOffer !== null) {
       if (key.name === "return" || key.name === "linefeed" || key.name === "y") {
         adoptMutation.mutate(adoptOffer);
@@ -1317,17 +1640,11 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           if (current === null) return current;
           if (current.step === "base") {
             const matches = filterBranches(current.branches ?? [], current.query).length;
-            return {
-              ...current,
-              baseIndex: Math.max(0, Math.min(matches - 1, current.baseIndex + delta)),
-            };
+            return { ...current, baseIndex: clampIndex(matches, current.baseIndex + delta) };
           }
           if (current.step === "harness") {
             const count = deriveHarnesses(null).length;
-            return {
-              ...current,
-              harnessIndex: Math.max(0, Math.min(count - 1, current.harnessIndex + delta)),
-            };
+            return { ...current, harnessIndex: clampIndex(count, current.harnessIndex + delta) };
           }
           return current;
         });
@@ -1351,8 +1668,20 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           return moveSelection(-1);
         case "return":
         case "linefeed":
-        case "l":
-          return activate();
+        case "l": {
+          const choice = pickerItems[pickerIndex];
+          const projectId = selectedProject?.project.id;
+          const target = picker;
+          if (choice === undefined || projectId === undefined) return;
+          setPicker(null);
+          if (target.worktree !== undefined) {
+            if (choice.harness !== null)
+              launchInWorktree(projectId, target.worktree, choice.harness);
+          } else if (target.session !== null) {
+            resumeSession(projectId, target.session, choice.harness);
+          }
+          return;
+        }
         case "escape":
         case "q":
         case "h":
@@ -1361,76 +1690,75 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           return;
       }
     }
-    // Shift+K (and x below): stop the selected session. Lowercase k stays
-    // vim-up; the shift is the deliberateness the arm-confirm then doubles.
-    if (key.shift === true && key.name === "k") return armStop();
-    // Shift+D: remove the selected worktree — the one explicit destructive act.
-    if (key.shift === true && key.name === "d") return armRemove();
-    switch (key.name) {
-      case "q":
+    // Ctrl-combinations belong to the terminal, never to a bare verb.
+    if (key.ctrl === true) return;
+    // Project focus never acts on an implicitly selected child session.
+    if (
+      focus === "projects" &&
+      ["attach", "resume", "stop", "remove", "rename", "openWeb", "review"].includes(verb ?? "")
+    ) {
+      say("select a session first — → opens worktrees");
+      return;
+    }
+    // One table decides what a keystroke means; the footer reads the same one.
+    switch (verb) {
+      case "quit":
         return onQuit();
-      case "down":
-      case "j":
+      case "moveDown":
         return moveSelection(1);
-      case "up":
-      case "k":
+      case "moveUp":
         return moveSelection(-1);
-      case "x":
-        return armStop();
-      case "return":
-      case "linefeed":
-        return activate();
-      case "l":
-      case "right":
-        if (focus === "projects") setFocus("sessions");
-        return;
-      case "h":
-      case "left":
-      case "-":
-      case "backspace":
-        if (showProjectsPane) setFocus("projects");
-        return;
-      case "tab":
-        if (showProjectsPane) setFocus(focus === "projects" ? "sessions" : "projects");
-        return;
-      case "n":
-        // The whole creation is one modal: name, base, harness.
+      case "pageDown":
+        return moveSelection(10);
+      case "pageUp":
+        return moveSelection(-10);
+      case "columnRight":
+        // Enter DRILLS IN. It never attaches, resumes or starts anything:
+        // the only things that take the terminal are a, r and n.
+        return moveColumn(1);
+      case "columnLeft":
+        return moveColumn(-1);
+      case "attach":
+        return attachSelected();
+      case "resume":
+        return resumeSelected();
+      case "newSession":
+        return newSession();
+      case "newWorktree":
         if (selectedProject !== null) openCreateModal(selectedProject.project.id);
         return;
-      case "s": {
-        // A new conversation inside the selected worktree.
-        const group = selectedGroup;
-        if (group === null) return;
-        if (group.id === null) {
-          say("this server predates shared worktrees — n starts a new one");
-          return;
-        }
-        openPicker(null, group);
+      case "stop":
+        return armStop();
+      case "remove":
+        return armRemove();
+      case "refresh":
+        say("refreshing…");
+        refetch();
+        void queryClient.invalidateQueries({ queryKey: ["transcript"] });
+        return;
+      case "rename": {
+        const session = selectedSession;
+        if (session !== null && !isPendingId(session.id)) setEditing(session);
         return;
       }
-      case "e": {
-        const item = selectedSession;
-        if (item !== null && !isPendingId(item.session.id)) setEditing(item.session);
-        return;
-      }
-      case "o": {
-        const item = selectedSession;
-        if (item !== null && !isPendingId(item.session.id)) {
-          openUrl(`${ctx.config.url}/sessions/${item.session.id}`);
-          say(`opened · ${ctx.config.url}/sessions/${item.session.id.slice(0, 8)}…`);
+      case "openWeb": {
+        const session = selectedSession;
+        if (session !== null && !isPendingId(session.id)) {
+          openUrl(`${ctx.config.url}/sessions/${session.id}`);
+          say(`opened · ${ctx.config.url}/sessions/${session.id.slice(0, 8)}…`);
         }
         return;
       }
-      case "v": {
-        const item = selectedSession;
-        if (item === null) return;
-        if (isPendingId(item.session.id)) {
+      case "review": {
+        const session = selectedSession;
+        if (session === null) return;
+        if (isPendingId(session.id)) {
           say("still provisioning — nothing to review yet");
           return;
         }
         const target = reviewTargetForSession(
-          item.session,
-          selectedGroup?.annotation ?? item.annotation,
+          session,
+          selectedItem?.annotation ?? selectedGroup?.annotation,
           selectedProject?.project.name ?? "project",
         );
         if (target === null) {
@@ -1440,62 +1768,58 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         setReviewing(target);
         return;
       }
-      case "r":
-        say("refreshing…");
-        refetch();
-        return;
-      default:
+      case null:
         return;
     }
   });
 
   // ── chrome ──
   const liveTotal = projectItems.reduce((sum, item) => sum + item.live, 0);
-  const nameWidth = Math.min(16, Math.max(...projectItems.map((p) => p.project.name.length), 4));
-  const sessionsTitle =
-    selectedProject === null
-      ? "sessions"
-      : `sessions — ${selectedProject.project.name}${
-          selectedProject.live > 0 ? ` · ${selectedProject.live} live` : ""
-        }`;
-  const detailTitle =
-    selectedSession === null || selectedGroup === null
-      ? "session"
-      : `worktree — ${selectedGroup.name} · ${selectedSession.session.harness} ${selectedSession.session.id.slice(0, 8)}`;
+  const columnTitle = (column: Column): string => {
+    if (column === "worktrees") {
+      return selectedProject === null
+        ? "worktrees"
+        : `worktrees · ${worktreeGroups.length}${selectedProject.live > 0 ? ` · ${selectedProject.live} live` : ""}`;
+    }
+    if (column === "sessions") {
+      return selectedGroup === null ? "sessions" : `sessions · ${sessionItems.length}`;
+    }
+    if (column === "detail") {
+      if (selectedSession === null) return "session";
+      return previewView.offset === 0
+        ? "session · read-only"
+        : `session · read-only · ${previewView.later} newer below`;
+    }
+    return COLUMN_TITLE[column];
+  };
   const pickerTitle =
     picker === null
       ? ""
-      : picker.worktree !== undefined
-        ? `new session in ${picker.worktree.name} — pick a harness`
-        : picker.session === null
+      : picker.worktree === undefined
+        ? picker.session === null
           ? "new session — pick a harness"
-          : `resume ${picker.session.id.slice(0, 8)} — pick a harness`;
+          : `resume ${sessionDisplayName(picker.session)} — pick a harness`
+        : `new session in ${picker.worktree.name} — pick a harness`;
   // One big fixed-size modal: every step visible at once, nothing shifts as
   // focus moves through name → base → harness.
   const creatingHeight = 2 + 1 + 1 + 6 + 1 + deriveHarnesses(null).length;
   const footerText =
-    adoptOffer !== null
-      ? " enter adopt · ←→ auth mode · esc not now"
-      : editing !== null
-        ? " enter save · esc cancel"
-        : creating !== null
-          ? creating.step === "name"
+    adoptOffer === null
+      ? editing === null
+        ? creating === null
+          ? picker === null
+            ? ` ${fitHints(verbHints(focus), Math.max(12, terminalCols - 2))}`
+            : " ↑↓ move · enter start · esc cancel"
+          : creating.step === "name"
             ? " enter continue · esc cancel"
             : creating.step === "base"
               ? " type to filter · ↑↓ move · enter choose base · esc back"
               : " ↑↓ move · enter launch · esc back"
-          : picker !== null
-            ? " ↑↓ move · enter start · esc cancel"
-            : focus === "projects"
-              ? " ↑↓ move · enter/l sessions · ⇥ panes · r refresh · q quit"
-              : " ↑↓ move · enter attach/resume · n new worktree · s session here · ⇧K kill · ⇧D remove · v review · e rename · o web · q quit";
+        : " enter save · esc cancel"
+      : " enter adopt · ←→ auth mode · esc not now";
 
   const loadFailure =
-    data === undefined && failureReason !== null
-      ? failureReason instanceof Error
-        ? failureReason.message
-        : String(failureReason)
-      : null;
+    data === undefined && failureReason !== null ? errorText(failureReason) : null;
 
   if (reviewing !== null) {
     return (
@@ -1513,8 +1837,200 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     );
   }
 
+  const breadcrumbValue = (column: Column): string => {
+    if (column === "projects") return selectedProject?.project.name ?? "no project";
+    if (column === "worktrees") return selectedGroup?.name ?? "no worktree";
+    return selectedSession === null ? "no session" : sessionDisplayName(selectedSession);
+  };
+
+  /** A folded section's single fact: the state of what it has selected. */
+  const sectionFact = (section: NavSection): string => {
+    if (section === "projects") {
+      if (selectedProject === null) return "";
+      return selectedProject.live > 0 ? `${selectedProject.live} live` : "settled";
+    }
+    if (section === "worktrees") {
+      if (selectedGroup === null) return "";
+      return selectedGroup.live > 0 ? foldGroupStatus(selectedGroup) : "settled";
+    }
+    return selectedSession?.status ?? "";
+  };
+
+  const sectionEmpty = (section: NavSection): boolean =>
+    section === "projects"
+      ? selectedProject === null
+      : section === "worktrees"
+        ? selectedGroup === null
+        : selectedSession === null;
+
+  // A title wider than its frame is dropped whole by the border, so it is cut
+  // to fit first — a pane with no name at all is worse than an elided one.
+  const paneTitle = (column: Column, width: number): string =>
+    fit(columnTitle(column), Math.max(6, width - 6));
+
+  const renderSection = (entry: SectionLayout): ReactNode => {
+    const inner = Math.max(4, layout.sidebarWidth - 2);
+    if (!entry.expanded) {
+      return (
+        <Pane
+          key={entry.section}
+          title={paneTitle(entry.section, layout.sidebarWidth)}
+          focused={false}
+          height={entry.height}
+        >
+          <SummaryRow
+            name={breadcrumbValue(entry.section)}
+            fact={sectionFact(entry.section)}
+            width={inner}
+            empty={sectionEmpty(entry.section)}
+          />
+        </Pane>
+      );
+    }
+    const focused = focus === entry.section;
+    switch (entry.section) {
+      case "projects":
+        return (
+          <Pane
+            key={entry.section}
+            title={paneTitle("projects", layout.sidebarWidth)}
+            focused={focused}
+            grow
+          >
+            <scrollbox
+              ref={projectScrollRef}
+              flexGrow={1}
+              flexShrink={1}
+              minHeight={0}
+              style={paneScrollStyle}
+            >
+              {projectItems.map((item, index) => (
+                <ProjectRow
+                  key={item.project.id}
+                  item={item}
+                  selected={index === projectIndex}
+                  width={inner}
+                />
+              ))}
+              {data !== undefined && projectItems.length === 0 ? (
+                <EmptyNote text="none adopted yet" />
+              ) : null}
+            </scrollbox>
+          </Pane>
+        );
+      case "worktrees":
+        return (
+          <Pane
+            key={entry.section}
+            title={paneTitle("worktrees", layout.sidebarWidth)}
+            focused={focused}
+            grow
+          >
+            <scrollbox
+              ref={worktreeScrollRef}
+              flexGrow={1}
+              flexShrink={1}
+              minHeight={0}
+              style={paneScrollStyle}
+            >
+              {worktreeGroups.map((group, index) => (
+                <WorktreeRow
+                  key={group.key}
+                  group={group}
+                  selected={index === worktreeIndex}
+                  width={inner}
+                />
+              ))}
+              {data !== undefined && worktreeGroups.length === 0 ? (
+                <EmptyNote text="no worktrees — w starts one" />
+              ) : null}
+            </scrollbox>
+          </Pane>
+        );
+      case "sessions":
+        return (
+          <Pane
+            key={entry.section}
+            title={paneTitle("sessions", layout.sidebarWidth)}
+            focused={focused}
+            grow
+          >
+            <scrollbox
+              ref={sessionScrollRef}
+              flexGrow={1}
+              flexShrink={1}
+              minHeight={0}
+              style={paneScrollStyle}
+            >
+              {sessionItems.map((item, index) => (
+                <SessionRow
+                  key={item.session.id}
+                  item={item}
+                  selected={index === sessionIndex}
+                  width={inner}
+                />
+              ))}
+              {data !== undefined && sessionItems.length === 0 ? (
+                <EmptyNote
+                  text={
+                    selectedGroup === null ? "no worktree selected" : "no sessions — n starts one"
+                  }
+                />
+              ) : null}
+              {loadFailure === null ? null : (
+                <text height={1} fg={INK_2} bg="transparent">
+                  {`  ${loadFailure} — retrying`}
+                </text>
+              )}
+            </scrollbox>
+          </Pane>
+        );
+    }
+  };
+
+  const renderDetail = (): ReactNode => (
+    <Pane title={paneTitle("detail", detailWidth + 2)} focused={focus === "detail"} grow>
+      {selectedItem === null ? (
+        <EmptyNote text="no session selected — n starts one" />
+      ) : (
+        <>
+          <SessionFacts group={selectedGroup} item={selectedItem} rows={factRows} />
+          {showFactRule ? (
+            <text height={1} bg="transparent" fg={FAINT}>
+              {`  ${"─".repeat(Math.max(4, detailWidth - 4))}`}
+            </text>
+          ) : null}
+          <box flexGrow={1} flexShrink={1} minHeight={0} flexDirection="column">
+            {previewSessionId === null ? (
+              <EmptyNote text="provisioning — no record yet" />
+            ) : selectedSession?.harness === "shell" ? (
+              <EmptyNote text="shell — no conversation record; a attaches if live" />
+            ) : transcript.isPending ? (
+              <EmptyNote text="reading the record…" />
+            ) : transcript.error === null ? (
+              previewView.lines.length === 0 ? (
+                <EmptyNote text="no conversation recorded yet" />
+              ) : (
+                previewView.lines.map((line, index) => (
+                  <PreviewRow key={`${index}-${line.kind}`} line={line} />
+                ))
+              )
+            ) : (
+              <text height={1} fg={INK_2} bg="transparent">
+                {`  could not read the record — ${errorText(transcript.error)}`}
+              </text>
+            )}
+          </box>
+        </>
+      )}
+    </Pane>
+  );
+
+  const offNav = layout.offscreen.filter(isNavSection);
+  const detailOffscreen = layout.offscreen.includes("detail");
+
   return (
-    <box flexGrow={1} flexDirection="column" backgroundColor="transparent">
+    <box flexGrow={1} flexDirection="column" backgroundColor={CANVAS}>
       <box height={1} flexDirection="row" justifyContent="space-between">
         <text height={1} bg="transparent">
           <span fg={INK}> mend</span>
@@ -1524,6 +2040,12 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           </span>
           <span fg={FAINT}> · </span>
           <span fg={liveTotal > 0 ? MUTED : FAINT}>{liveTotal} live</span>
+          {gate.count() > 0 ? (
+            <>
+              <span fg={FAINT}> · </span>
+              <span fg={INK_2}>{gate.count()} starting</span>
+            </>
+          ) : null}
           {shareState === "off" ? null : (
             <>
               <span fg={FAINT}> · </span>
@@ -1537,83 +2059,77 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           {`${ctx.config.url}  `}
         </text>
       </box>
+      {!layout.breadcrumb ? null : (
+        <text height={1} bg="transparent">
+          <span fg={FAINT}>{"  "}</span>
+          {offNav.map((column, index) => (
+            <span key={column}>
+              {index > 0 ? <span fg={FAINT}>{" ▸ "}</span> : null}
+              <span fg={index === offNav.length - 1 ? INK_2 : MUTED}>
+                {fit(breadcrumbValue(column), 28)}
+              </span>
+            </span>
+          ))}
+          <span fg={FAINT}>
+            {detailOffscreen ? `${offNav.length > 0 ? " · " : ""}record hidden · → opens it` : " ▸"}
+          </span>
+        </text>
+      )}
       <box flexGrow={1} flexShrink={1} minHeight={0} flexDirection="row">
-        {showProjectsPane ? (
-          <Pane title="projects" focused={focus === "projects"} width={PROJECTS_PANE_WIDTH}>
-            <scrollbox
-              ref={projectScrollRef}
-              flexGrow={1}
-              flexShrink={1}
-              minHeight={0}
-              style={paneScrollStyle}
-            >
-              {projectItems.map((item, index) => (
-                <ProjectRow
-                  key={item.project.id}
-                  item={item}
-                  selected={index === projectIndex}
-                  nameWidth={nameWidth}
-                />
-              ))}
-              {data !== undefined && projectItems.length === 0 ? (
-                <text height={1} fg={FAINT} bg="transparent">
-                  {"  none adopted yet"}
-                </text>
-              ) : null}
-            </scrollbox>
-          </Pane>
-        ) : null}
-        <Pane title={sessionsTitle} focused={focus === "sessions"} grow>
-          <scrollbox
-            ref={sessionScrollRef}
-            flexGrow={1}
-            flexShrink={1}
+        {layout.sidebarWidth === 0 ? null : (
+          <box
+            width={layout.sidebarWidth}
+            flexShrink={0}
             minHeight={0}
-            style={paneScrollStyle}
+            flexDirection="column"
+            backgroundColor="transparent"
           >
-            {rows.map((row, index) =>
-              row.kind === "worktree" ? (
-                <WorktreeHeaderRow
-                  key={rowKeyOf(row)}
-                  group={row.group}
-                  selected={index === rowIndex}
-                />
-              ) : (
-                <SessionChildRow
-                  key={rowKeyOf(row)}
-                  item={row.item}
-                  selected={index === rowIndex}
-                />
-              ),
-            )}
-            {data !== undefined && rows.length === 0 ? (
-              <text height={1} fg={FAINT} bg="transparent">
-                {"  no sessions yet — n starts one"}
-              </text>
-            ) : null}
-            {loadFailure !== null ? (
-              <text height={1} fg={INK_2} bg="transparent">
-                {`  ${loadFailure} — retrying`}
-              </text>
-            ) : null}
-          </scrollbox>
-        </Pane>
+            {layout.sections.map(renderSection)}
+          </box>
+        )}
+        {detailWidth === 0 ? null : renderDetail()}
       </box>
 
-      {picker !== null ? (
-        <Pane title={pickerTitle} focused height={2 + pickerItems.length}>
-          {pickerItems.map((item, index) => (
-            <HarnessRow key={String(item.harness)} item={item} selected={index === pickerIndex} />
-          ))}
-        </Pane>
-      ) : editing !== null ? (
+      {picker === null ? null : (
         <box
+          position="absolute"
+          zIndex={12}
+          left={Math.max(1, Math.floor((terminalCols - Math.min(74, terminalCols - 4)) / 2))}
+          top={Math.max(1, Math.floor((terminalRows - (2 + pickerItems.length)) / 2))}
+          width={Math.min(74, terminalCols - 4)}
+          height={2 + pickerItems.length}
           border
           borderStyle="rounded"
-          borderColor={COBALT}
+          borderColor={ACCENT}
+          title={` ${pickerTitle} `}
+          titleAlignment="left"
+          backgroundColor={SURFACE}
+          flexDirection="column"
+        >
+          {pickerItems.map((item, index) => (
+            <HarnessRow
+              key={String(item.harness)}
+              item={item}
+              selected={index === pickerIndex}
+              background={SURFACE}
+            />
+          ))}
+        </box>
+      )}
+
+      {editing === null ? null : (
+        <box
+          position="absolute"
+          zIndex={12}
+          left={Math.max(1, Math.floor((terminalCols - Math.min(74, terminalCols - 4)) / 2))}
+          top={Math.max(1, Math.floor((terminalRows - 3) / 2))}
+          width={Math.min(74, terminalCols - 4)}
+          border
+          borderStyle="rounded"
+          borderColor={ACCENT}
           title={` label — ${editing.harness} ${editing.id.slice(0, 8)} `}
           titleAlignment="left"
-          backgroundColor="transparent"
+          backgroundColor={SURFACE}
           height={3}
           flexShrink={0}
         >
@@ -1621,8 +2137,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             focused
             value={editing.label ?? ""}
             placeholder="a few words for what this session is doing (empty clears)"
-            backgroundColor="transparent"
-            focusedBackgroundColor="transparent"
+            backgroundColor={SURFACE}
+            focusedBackgroundColor={SURFACE}
             textColor={INK}
             focusedTextColor={INK}
             placeholderColor={FAINT}
@@ -1633,13 +2149,9 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             }}
           />
         </box>
-      ) : showDetail ? (
-        <Pane title={detailTitle} focused={false} height={6}>
-          <SessionDetail item={selectedSession} />
-        </Pane>
-      ) : null}
+      )}
 
-      {adoptOffer !== null ? (
+      {adoptOffer === null ? null : (
         <box
           position="absolute"
           zIndex={11}
@@ -1649,7 +2161,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           height={7}
           border
           borderStyle="rounded"
-          borderColor={COBALT}
+          borderColor={ACCENT}
           title=" adopt this repository URL? "
           titleAlignment="left"
           backgroundColor={SURFACE}
@@ -1668,7 +2180,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             {ADOPT_AUTH_MODES.map((candidate, index) => (
               <span key={candidate.mode}>
                 {index > 0 ? <span fg={FAINT}>{" · "}</span> : null}
-                <span fg={index === adoptOffer.modeIndex ? COBALT : FAINT}>
+                <span fg={index === adoptOffer.modeIndex ? ACCENT : FAINT}>
                   {index === adoptOffer.modeIndex ? `▸ ${candidate.label}` : candidate.label}
                 </span>
               </span>
@@ -1681,8 +2193,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             {"  enter adopt · ←→ auth mode · esc not now"}
           </text>
         </box>
-      ) : null}
-      {creating !== null ? (
+      )}
+      {creating === null ? null : (
         <box
           position="absolute"
           zIndex={10}
@@ -1692,7 +2204,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           height={creatingHeight}
           border
           borderStyle="rounded"
-          borderColor={COBALT}
+          borderColor={ACCENT}
           title={` new worktree — ${selectedProject?.project.name ?? "project"} `}
           titleAlignment="left"
           backgroundColor={SURFACE}
@@ -1702,9 +2214,9 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             <text height={1} bg={SURFACE}>
               <Gutter selected={creating.step === "name"} />
               <span fg={FAINT}>{"name     "}</span>
-              {creating.step !== "name" ? (
+              {creating.step === "name" ? null : (
                 <span fg={INK}>{creating.name === "" ? "auto" : creating.name}</span>
-              ) : null}
+              )}
               {creating.joins ? <span fg={FAINT}>{"  · joins the existing worktree"}</span> : null}
             </text>
             {creating.step === "name" ? (
@@ -1735,40 +2247,34 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             <text height={1} bg={SURFACE}>
               <Gutter selected={creating.step === "base"} />
               <span fg={FAINT}>{"base     "}</span>
-              {creating.step !== "base" ? (
+              {creating.step === "base" ? null : (
                 <span fg={creating.step === "name" && !creating.joins ? FAINT : INK}>
                   {creating.joins
                     ? "fixed by the existing worktree"
                     : (creating.base ?? "default branch")}
                 </span>
-              ) : null}
+              )}
             </text>
-            {creating.step === "base" ? (
-              creating.branches === null ? (
-                <text height={1} bg={SURFACE} fg={FAINT}>
-                  reading branches…
-                </text>
-              ) : (
-                <input
-                  focused
-                  value=""
-                  placeholder="type to filter (enter = highlighted; empty = default)"
-                  backgroundColor={SURFACE}
-                  focusedBackgroundColor={SURFACE}
-                  textColor={INK}
-                  focusedTextColor={INK}
-                  placeholderColor={FAINT}
-                  cursorColor={INK}
-                  flexGrow={1}
-                  onInput={(value: string) => {
-                    const clean = value.replace(/\t/g, "");
-                    setCreating((current) =>
-                      current === null ? current : { ...current, query: clean, baseIndex: 0 },
-                    );
-                  }}
-                  onSubmit={() => submitCreateBase()}
-                />
-              )
+            {creating.step === "base" && creating.branches !== null ? (
+              <input
+                focused
+                value=""
+                placeholder="type to filter (enter = highlighted; empty = default)"
+                backgroundColor={SURFACE}
+                focusedBackgroundColor={SURFACE}
+                textColor={INK}
+                focusedTextColor={INK}
+                placeholderColor={FAINT}
+                cursorColor={INK}
+                flexGrow={1}
+                onInput={(value: string) => {
+                  const clean = value.replace(/\t/g, "");
+                  setCreating((current) =>
+                    current === null ? current : { ...current, query: clean, baseIndex: 0 },
+                  );
+                }}
+                onSubmit={() => submitCreateBase()}
+              />
             ) : null}
           </box>
           {Array.from({ length: 6 }, (_, index) => {
@@ -1778,11 +2284,17 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
                 : filterBranches(creating.branches, creating.query)[index];
             const active = creating.step === "base";
             if (branch === undefined) {
+              // The list's own state — loading, the error that stopped it, or
+              // genuine emptiness — is stated on the first empty slot.
+              const notice = creating.joins ? null : baseStepNotice(creating);
               return (
-                <text key={`slot-${index}`} height={1} bg={SURFACE} fg={FAINT}>
-                  {index === 0 && active && creating.branches !== null
-                    ? "     no branch matches — enter uses the default"
-                    : " "}
+                <text
+                  key={`slot-${index}`}
+                  height={1}
+                  bg={SURFACE}
+                  fg={creating.branchError === null ? FAINT : ERROR}
+                >
+                  {index === 0 && notice !== null ? `     ${fit(notice, 66)}` : " "}
                 </text>
               );
             }
@@ -1799,9 +2311,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
                   <Gutter selected={highlighted} />
                   <span fg={active ? INK : FAINT}>{branch.name.slice(0, 40).padEnd(41)}</span>
                   <span fg={FAINT}>{branch.sha.slice(0, 8).padEnd(10)}</span>
-                  <span fg={active ? MUTED : FAINT}>
-                    {timeAgo(branch.committedAt).replace(" ago", "").padEnd(6)}
-                  </span>
+                  <span fg={active ? MUTED : FAINT}>{shortAge(branch.committedAt).padEnd(6)}</span>
                   {branch.isDefault ? <span fg={FAINT}>default</span> : null}
                 </text>
               </box>
@@ -1831,9 +2341,15 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             );
           })}
         </box>
-      ) : null}
+      )}
 
-      <StatusLine busy={busy} busyStarted={busyStarted} status={status} />
+      {loadFailure === null ? (
+        <StatusLine busy={busy} busyStarted={busyStarted} status={status} />
+      ) : (
+        <text height={1} fg={ERROR} bg="transparent">
+          {` could not load workbench — ${loadFailure} · retrying`}
+        </text>
+      )}
       <text height={1} fg={FAINT} bg="transparent">
         {footerText}
       </text>
@@ -1844,7 +2360,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
 // ─── entry ──────────────────────────────────────────────────────────────────
 
 export const runDashboard = async (ctx: DashboardContext): Promise<void> => {
-  const renderer = await createCliRenderer({ exitOnCtrlC: false });
+  const renderer = await createCliRenderer({ exitOnCtrlC: false, backgroundColor: CANVAS });
   const queryClient = new QueryClient();
   const controller = new AbortController();
   let eventTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1911,7 +2427,7 @@ export const runDashboard = async (ctx: DashboardContext): Promise<void> => {
         if (controller.signal.aborted) return;
       }
       // A dropped stream may have swallowed events — re-read once on reconnect.
-      pendingFamilies.add("workbench").add("review");
+      pendingFamilies.add("workbench").add("review").add("transcript");
       if (eventTimer === null && !controller.signal.aborted) {
         eventTimer = setTimeout(flushInvalidations, 250);
       }

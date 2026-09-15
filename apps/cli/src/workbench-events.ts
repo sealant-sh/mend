@@ -2,13 +2,16 @@
  * The dashboard's side of `/api/events` (the same SSE stream the web app
  * reads): parse frames out of the byte stream, drop the `: ping` heartbeats,
  * and map each pointer event to the query families it can actually stale —
- * mirroring apps/web/src/lib/workbench-events.ts, reduced to the TUI's two
+ * mirroring apps/web/src/lib/workbench-events.ts, reduced to the TUI's three
  * cache families. Pure functions; dashboard.tsx owns the socket and the
  * QueryClient.
  */
 
-/** The TUI's two cache families: ["workbench"] and ["review", changeId]. */
-export type InvalidateFamily = "workbench" | "review";
+/**
+ * The TUI's three cache families: ["workbench"], ["review", changeId], and
+ * ["transcript", sessionId] — the detail pane's read-only output preview.
+ */
+export type InvalidateFamily = "workbench" | "review" | "transcript";
 
 /**
  * An incremental SSE frame splitter: feed decoded text chunks, get back the
@@ -44,7 +47,7 @@ export const createSseParser = (): { readonly push: (chunk: string) => ReadonlyA
  * renders no live lines; treating it as a pointer refetched the entire
  * workbench on a 250ms loop for as long as a session was busy. Unknown types
  * are also nothing, like the web: every state change the TUI renders emits
- * one of the types below, and `r` remains the manual override.
+ * one of the types below, and ⇧R remains the manual override.
  */
 export const eventFamilies = (payload: string): ReadonlyArray<InvalidateFamily> => {
   let parsed: unknown;
@@ -59,10 +62,13 @@ export const eventFamilies = (payload: string): ReadonlyArray<InvalidateFamily> 
     case "worktree":
     case "session-process":
       return ["workbench"];
-    // Session facts feed both surfaces: rows and annotations on the
-    // dashboard; status and the follow-up banner inside a review.
+    // Settlement refreshes the final transcript immediately. Conversation
+    // items can arrive many times per second; the live preview's bounded
+    // polling reads those instead of repeatedly fetching the whole record.
     case "session":
+      return ["workbench", "review", "transcript"];
     case "agent-conversation":
+      return ["workbench", "review"];
     // A comment moves the review AND the dashboard's open-comment counts.
     case "session-change":
     case "review-comment":

@@ -182,7 +182,9 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "the dashboard: every project and session, live",
     synopsis: [],
     description: [
-      "A full-screen view of every project and session, updating live. Pick a session to attach, stop, or take over. Bare mend with no command opens the same thing.",
+      "A full-screen view of every project and session, updating live. The session pane takes three quarters of the screen: a read-only detail for the selected session with the conversation record it has written so far. The remaining quarter is a sidebar of three stacked sections, projects then worktrees then sessions, where the section you are in stands open and the other two fold to the line that says what is selected. Bare mend with no command opens the same thing.",
+      "Moving the selection only ever navigates: arrows or j/k move inside the open section, enter and the arrows move between the sidebar and the session pane, and nothing takes this terminal until you ask. Reading the record leaves the sidebar as it was. The verbs are a to attach a live session, r to resume a settled one, n for another session in the selected worktree, w for a new worktree, e to rename, v to review the change, o to open it in the browser, Shift+K to stop, Shift+D to remove, and Shift+R to refresh.",
+      "Nothing is ever squeezed. A terminal too narrow for both gives the whole width to the side you are on, a terminal too short for three drawn panes shows the open section alone, and a one-line breadcrumb states whatever did not fit.",
       "The dashboard needs Node 26 or newer for its terminal. Every other command works on Node 22.",
     ],
     see: ["sessions", "attach"],
