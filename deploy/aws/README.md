@@ -14,9 +14,30 @@ Owner-only Tailscale HTTPS is installed at <https://mend-access.tailc79e49.ts.ne
 Tailscale and use the existing Mend login. See the
 [deployment record](../../docs/operations/aws-access-deployment.md) for versions, restrictions,
 verification, remaining acceptance and rollback notes. This does not make Mend public-ready or
-enable teammate access. The infrastructure observations below predate this access change.
+enable teammate access. The original infrastructure observations below predate this access change.
 
-## Observed deployment — 2026-09-15 UTC
+## Application and Docker update
+
+As of 2026-09-16 UTC, Mend API/web **0.28.0** and Sealant API/worker **0.33.0** are now deployed
+with digest-pinned images. Fresh Docker-required workspaces select the separately retained
+`mend-capture-poc-workspace-docker` image, version **1.0**. The ordinary image is unchanged. Both
+application IAM policies now allow that exact Docker image ARN; no actions, role trust or other
+resource grants changed.
+
+One shell-only Mend session passed Docker info, build, run, Compose, root-owned bind writes, nested
+DNS and closed Docker TCP ports. CLI and Mend planned-stop capture flushes reported nothing pending
+and no fence. The test VM was independently confirmed terminated, test data was removed, and the
+normal **3600-second** limit was restored. No new inference calls were recorded. A redundant SDK
+flush ran after normal VM termination; the checker's later post-stop file read was not reached. See
+the [Docker service record](../../docs/operations/aws-docker-service.md) for that qualification,
+resource limits and remaining gaps.
+
+The upgrade preserved existing Helm values, owner-only HTTPS, storage, networking and projects. Its
+private evidence and rollback inputs are under `~/.config/mend/aws-poc/upgrade-0.28.0/`. Do not
+reconstruct this live release with `scripts/render-mend.py`: it still defaults to Mend 0.27.5 and a
+localhost origin. Use the saved live values and the released chart for subsequent upgrades.
+
+## Original deployment observations, 2026-09-15 UTC
 
 - EKS `mend-capture-poc`: one healthy ARM64 `m7g.large`, desired/min/max **1**. All four managed
   add-ons are healthy. No autoscaling or executor EC2 fleet.
@@ -137,9 +158,10 @@ shared StorageClass and Mend service account belong to `render-mend.py`, not the
 
 Docker capability work uses a separate opt-in image and does not change this deployed default. See
 the [AWS Docker service runbook](../../docs/operations/aws-docker-service.md) for the released
-configuration, privilege model, source-selection options and acceptance limits. Source now pins
-Sealant 0.33.0 for the SDK, packaged services, AWS control-plane templates and MicroVM recipe. The
-recorded live deployment still runs 0.32.0; no rollout is implied by these source updates.
+configuration, privilege model, source-selection options and acceptance limits. Source pins Sealant
+0.33.0 for the SDK, packaged services, AWS control-plane templates and MicroVM recipe; the private
+deployment now runs that release. The original ordinary-image acceptance below remains a separate
+observation.
 
 The official Core recipe at `abe4d6c7258a5d6b479b72162de368c45953d9ee` reproduces a packaging
 failure: `sealantd:0.15.2` contains the daemon and socat but no `sealantctl`. The CLI is required
@@ -155,11 +177,11 @@ pinned public daemon image. The private candidate digest is recorded in `deploym
 Set `SEALANTD_IMAGE` to the candidate when running `scripts/build-workspace-image.sh`. The script
 defaults to the official Core 0.33.0 recipe at `17a23ffcbe47bb16f5b9516c7b8bbfa89c9a61d3`, adds
 pinned pnpm/Codex/Claude CLI versions, and uses the scoped build role and artifact bucket. The fixed
-AWS image is **not** the OCI output of a workspace-profile BuildKit job. The provisioning profile
-uses `node:24-bookworm` (its custom-base contract requires Git, Node and npm), no extra packages and
-no Docker service. A bare Amazon Linux profile failed that prerequisite before any VM launch. The
-actual VM still runs the separately built Amazon Linux image: Debian or arbitrary profile/image
-customization is **not** established by this deployment.
+AWS image is **not** the OCI output of a workspace-profile BuildKit job. The original ordinary-image
+acceptance used `node:24-bookworm` (its custom-base contract requires Git, Node and npm), no extra
+packages and no Docker service. A bare Amazon Linux profile failed that prerequisite before any VM
+launch. The actual VM still runs the separately built Amazon Linux image: Debian or arbitrary
+profile/image customization is **not** established by this deployment.
 
 With the loopback tunnel running, `scripts/session-smoke.py` provides explicit `provision`,
 `launch`, `restore`, `status` and `stop` phases. It uses public Mend HTTP routes, a dedicated test

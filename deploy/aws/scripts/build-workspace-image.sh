@@ -13,21 +13,24 @@ SOURCE_DIR="${SEALANT_MICROVM_SOURCE_DIR:-}"
 export MICROVM_DOCKER_ENABLED="${MICROVM_DOCKER_ENABLED-false}"
 export MICROVM_IMAGE_NAME=mend-capture-poc-workspace
 
-refuse() { printf '%s\n' "$*" >&2; exit 2; }
-(( $# <= 1 )) || refuse 'usage: build-workspace-image.sh [--update]'
+refuse() {
+  printf '%s\n' "$*" >&2
+  exit 2
+}
+(($# <= 1)) || refuse 'usage: build-workspace-image.sh [--update]'
 [[ "${1-}" == '' || "${1-}" == --update ]] || refuse 'usage: build-workspace-image.sh [--update]'
 [[ "$SOURCE_REV" =~ ^[0-9a-f]{40}$ ]] || refuse 'SEALANT_MICROVM_SOURCE_REV must be an immutable 40-character commit SHA'
 if [[ -n "$SOURCE_DIR" && -v SEALANT_MICROVM_SOURCE_REV ]]; then
   refuse 'Choose SEALANT_MICROVM_SOURCE_DIR or SEALANT_MICROVM_SOURCE_REV, not both'
 fi
 case "$MICROVM_DOCKER_ENABLED" in
-  false) ;;
-  true)
-    [[ "${MICROVM_DOCKER_IMAGE_NAME:-}" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || refuse 'Set an explicit MICROVM_DOCKER_IMAGE_NAME'
-    [[ "$MICROVM_DOCKER_IMAGE_NAME" != "$MICROVM_IMAGE_NAME" ]] || refuse 'The Docker image name must differ from the deployed default'
-    [[ -n "$SOURCE_DIR" || "$SOURCE_REV" != "$LEGACY_SOURCE_REV" ]] || refuse 'Docker requires a newer platform recipe; the selected legacy revision does not support it'
-    ;;
-  *) refuse 'MICROVM_DOCKER_ENABLED must be exactly true or false' ;;
+false) ;;
+true)
+  [[ "${MICROVM_DOCKER_IMAGE_NAME:-}" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || refuse 'Set an explicit MICROVM_DOCKER_IMAGE_NAME'
+  [[ "$MICROVM_DOCKER_IMAGE_NAME" != "$MICROVM_IMAGE_NAME" ]] || refuse 'The Docker image name must differ from the deployed default'
+  [[ -n "$SOURCE_DIR" || "$SOURCE_REV" != "$LEGACY_SOURCE_REV" ]] || refuse 'Docker requires a newer platform recipe; the selected legacy revision does not support it'
+  ;;
+*) refuse 'MICROVM_DOCKER_ENABLED must be exactly true or false' ;;
 esac
 
 FILES=(Dockerfile agent.mjs build-image.sh)

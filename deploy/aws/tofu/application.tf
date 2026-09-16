@@ -2,6 +2,8 @@
 locals {
   microvm_image_name = "mend-capture-poc-workspace"
   microvm_image_arn  = "arn:aws:lambda:${local.region}:${local.account_id}:microvm-image:${local.microvm_image_name}"
+  # Separate retained image; Docker still requires the explicit API/worker image pair.
+  microvm_docker_image_arn = "${local.microvm_image_arn}-docker"
   application_subjects = {
     mend           = "system:serviceaccount:mend:mend-api"
     sealant_api    = "system:serviceaccount:sealant:sealant-api"
@@ -57,7 +59,7 @@ data "aws_iam_policy_document" "sealant_api" {
   statement {
     actions = ["lambda:CreateMicrovmAuthToken", "lambda:GetMicrovm"]
     # These operations authorize against the image, not an individual VM ARN.
-    resources = [local.microvm_image_arn]
+    resources = [local.microvm_image_arn, local.microvm_docker_image_arn]
   }
 }
 
@@ -70,7 +72,7 @@ resource "aws_iam_role_policy" "sealant_api" {
 data "aws_iam_policy_document" "sealant_worker" {
   statement {
     actions   = ["lambda:RunMicrovm", "lambda:GetMicrovm", "lambda:TerminateMicrovm", "lambda:CreateMicrovmAuthToken"]
-    resources = [local.microvm_image_arn]
+    resources = [local.microvm_image_arn, local.microvm_docker_image_arn]
   }
   statement {
     # RunMicrovm rejected an otherwise matching grant with

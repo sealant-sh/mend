@@ -2,13 +2,41 @@
 
 ## Status
 
-The bounded provider test passed on 2026-09-16 using candidate image 3.0. It exercised the real AWS
-MicroVM adapter and authenticated control channel, not the deployed Mend provisioning flow.
+Mend [v0.28.0](https://github.com/sealant-sh/mend/releases/tag/v0.28.0) and Sealant
+[v0.33.0](https://github.com/sealant-sh/sealant/releases/tag/v0.33.0) are deployed on the private
+AWS POC. All four application images are digest-pinned. Fresh workspaces requesting Docker select
+`mend-capture-poc-workspace-docker`, version **1.0**. The ordinary image remains
+`mend-capture-poc-workspace`, version **1.0**, without added capabilities.
 
-Sealant [v0.33.0](https://github.com/sealant-sh/sealant/releases/tag/v0.33.0) ships the opt-in
-Docker service. Mend now pins its SDK, packaged services and AWS templates to that release. The
-recorded deployment still runs Sealant 0.32.0 and refuses Docker in MicroVM workspaces. Updating
-source pins does not change the deployed API, worker, default image or user sessions.
+One real Mend session passed Docker 29.8.1 info, build, run, Compose, root-owned bind writes,
+nested-container DNS and closed Docker TCP ports. It ran an explicit shell command with project
+automation disabled; no new Mend inference calls were recorded. The shell exited 0. Its CLI flush
+and Mend's planned-stop flush both reported `pending=0` and `fenced=false`. Mend recorded three
+checkpoints and a change from the base, then terminated the executor.
+
+The checker attempted an additional SDK flush after that termination and reported failure. Saved
+receipts independently establish the Docker and planned-stop flush observations above; they do not
+establish the post-stop file read that the checker skipped. No further VM was launched. Native
+resume and Docker-plus-capture restoration remain untested.
+
+This rollout used one retained image build and one actual acceptance VM. An earlier session attempt
+was rejected before VM creation because the existing application IAM policies named only the
+ordinary image. Both policies now include the exact retained Docker image ARN; their actions, other
+resources, role trust and application identities are unchanged. The provider confirmed the test VM's
+900-second maximum and `TERMINATED` state. The test session, worktree and project were removed. The
+normal **3600-second** limit is restored on both API and worker. The Docker image and its build
+artifact are deliberately retained.
+
+Owner-only HTTPS, storage, networking and existing projects were preserved. Private rollout and
+acceptance evidence is under `~/.config/mend/aws-poc/upgrade-0.28.0/`; `completion.json` records the
+observations and the checker qualification. Release-tag sources, not the dirty working scripts, were
+used for the build and Helm upgrade.
+
+### Earlier disposable provider acceptance
+
+The bounded provider test passed on 2026-09-16 using disposable candidate image 3.0. It exercised
+the real AWS MicroVM adapter and authenticated control channel, not the deployed Mend provisioning
+flow.
 
 Local tests cover packaging, capability selection, guest readiness and failure handling. Candidate
 image version 1.0 reached `CREATED`; the provider confirms `additionalOsCapabilities: ["ALL"]`. The
@@ -122,8 +150,8 @@ AWS README until the platform publishes a complete image. Do not remove the flus
 
 ## Release and activation
 
-Sealant v0.33.0 is released; activation remains a separate operation. Both API and worker must run
-that release or newer and receive the same pair:
+For another deployment, activation remains explicit. Both API and worker must run Sealant v0.33.0 or
+newer and receive the same pair:
 
 ```text
 SEALANT_MICROVM_DOCKER_IMAGE_ARN=<separate Docker image ARN>
@@ -132,8 +160,14 @@ SEALANT_MICROVM_DOCKER_IMAGE_VERSION=<exact tested version>
 
 Keep the existing default `SEALANT_MICROVM_IMAGE_ARN` and version. A partial Docker pair, a dangling
 pair without the base MicroVM adapter, or reuse of the ordinary image ARN must be rejected. The
-current AWS renderer pins v0.33.0, but does not configure the Docker pair. Updating source is not an
-instruction to apply a new manifest or patch the running deployments.
+current AWS renderer pins v0.33.0, but does not configure the Docker pair. The live pair was added
+with scoped deployment patches. Keep it when updating either service. Updating source alone does not
+activate Docker.
+
+The API and worker IAM policies authorize MicroVM operations against image ARNs. Add the separate
+Docker ARN to both existing policies, not a wildcard. `deploy/aws/tofu/application.tf` now includes
+the retained POC Docker image alongside the ordinary image. Configuring the image pair without this
+grant causes `RunMicrovm` to fail before VM creation.
 
 Do not enable `DOCKER_RUNTIME_ENABLED` or set `SEALANT_K8S_NAMESPACE`. Neither activates Docker
 inside a MicroVM. Mend's Docker profile setting applies when it creates a fresh workspace; joining

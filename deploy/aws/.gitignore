@@ -4,6 +4,7 @@
 !/.gitignore
 !/README.md
 !/TEARDOWN.md
+!/poc-cost-plans.md
 !/shell.nix
 !/scripts/
 /scripts/*

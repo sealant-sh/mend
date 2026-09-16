@@ -12,11 +12,13 @@ The fixed deployment identity is:
 - EKS cluster and kubeconfig context alias: `mend-capture-poc` / `mend-aws-capture-poc`
 - deployment metadata: `~/.config/mend/aws-poc/deployment.json`
 - explicit kubeconfig: `~/.config/mend/aws-poc/kubeconfig`
-- externally managed MicroVM image: `mend-capture-poc-workspace`, currently version `1.0`
+- externally managed ordinary image: `mend-capture-poc-workspace`, version `1.0`
+- externally managed Docker image: `mend-capture-poc-workspace-docker`, version `1.0`
+- Docker rollout metadata: `~/.config/mend/aws-poc/upgrade-0.28.0/authorization.json`
 - PlanetScale: organization `mend`, database `aws-poc`, branch `main`
 
-The MicroVM image, Kubernetes application objects, and PlanetScale database are outside the Tofu
-state. `tofu destroy` cannot remove them.
+Both MicroVM images, Kubernetes application objects, and the PlanetScale database are outside the
+Tofu state. `tofu destroy` cannot remove them.
 
 ## Safety gates
 
@@ -112,15 +114,20 @@ If graceful stop fails, preserve the workspace ID, run ID, record, and failure o
 the public stop path has been attempted and capture state is accounted for may step 2 terminate a
 stranded VM.
 
-## 2. Terminate every POC MicroVM and remove the external image
+## 2. Terminate every POC MicroVM and remove both external images
 
-The current external image identity is recorded in metadata. Assert it before using it:
+The ordinary image identity is recorded in the original metadata. The retained Docker image and its
+build artifact are recorded in the upgrade ledger. Assert both identities before using them:
 
 ```sh
 IMAGE_ARN="$(jq -r .microvm_image_arn "$METADATA")"
 IMAGE_VERSION="$(jq -r .microvm_image_version "$METADATA")"
 test "$IMAGE_ARN" = "arn:aws:lambda:eu-central-1:954648881795:microvm-image:mend-capture-poc-workspace"
 test "$IMAGE_VERSION" = 1.0
+DOCKER_METADATA="$HOME/.config/mend/aws-poc/upgrade-0.28.0/authorization.json"
+DOCKER_IMAGE_ARN="$(jq -r .dockerImageArn "$DOCKER_METADATA")"
+test "$DOCKER_IMAGE_ARN" = "arn:aws:lambda:eu-central-1:954648881795:microvm-image:mend-capture-poc-workspace-docker"
+test "$(jq -r .dockerImageVersion "$DOCKER_METADATA")" = 1.0
 ```
 
 Enumerate both account-wide and image-specific instances, including suspended instances:
@@ -167,8 +174,14 @@ aws lambda-microvms delete-microvm-image \
   --image-identifier "$IMAGE_ARN"
 ```
 
-Verify both the exact ARN and the name filter are absent. This image was created outside Tofu, so a
-successful Tofu destroy does not prove it is gone.
+Verify that the selected image's exact ARN and name are absent. Then set
+`IMAGE_ARN="$DOCKER_IMAGE_ARN"` and repeat the image-specific inventory, version deletion, image
+deletion and absence checks above. Do not finish this step while either POC image remains. Both
+images were created outside Tofu, so a successful Tofu destroy does not prove either is gone.
+
+The Docker build artifact is intentionally retained during normal operation. Include the exact
+`retainedCodeArtifact` URI from the upgrade ledger in the later artifact-bucket inventory. Do not
+remove it as acceptance-test cleanup.
 
 ## 3. Remove Kubernetes workloads and PVCs while CSI still works
 

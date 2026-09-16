@@ -8,12 +8,16 @@ anything.
 The contract comes from Core tag `v0.33.0` (`17a23ff`), especially its environment reference,
 Kubernetes BuildKit builder, MicroVM adapter, and published Helm chart. The control images are
 pinned to `ghcr.io/sealant-sh/sealant-api:0.33.0` and `sealant-worker:0.33.0`. Zot and BuildKit
-match that release's chart pins. These are source pins, not evidence of a live upgrade. The recorded
-AWS deployment still runs 0.32.0 until a separate rollout is approved.
+match that release's chart pins. The private AWS deployment now runs 0.33.0 with digest-pinned
+application images and the separate Docker image enabled; see the
+[Docker service runbook](../../../docs/operations/aws-docker-service.md) for observed results and
+remaining acceptance.
 
-Docker remains disabled for MicroVM workspaces until both API and worker receive the same separate
-Docker image ARN/version and base image configuration. This renderer does not configure that pair.
-See the [Docker service runbook](../../../docs/operations/aws-docker-service.md) before activation.
+Docker requires the same separate image ARN/version and base image configuration on both API and
+worker. This renderer does not configure that pair. Preserve the live deployment's explicit pair and
+digest pins when preparing any later apply; renderer output alone does not reproduce them. Both
+application IAM policies must also authorize the exact separate image ARN. The parent OpenTofu
+configuration includes the retained POC Docker image alongside the ordinary image.
 
 ## Runtime shape
 

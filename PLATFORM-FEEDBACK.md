@@ -9,11 +9,10 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
 ## 2026-09-16 · 0.32.0 · Docker service missing from AWS MicroVM workspaces
 
-**Shipped in Sealant 0.33.0; not enabled on the deployed AWS server.** Mend pins the released SDK
-and server artifacts. It already sends `workspaces.create({ services: { docker: true } })` through
-the public SDK for fresh workspaces. Core 0.32.0 rejects that requirement for MicroVMs, and its
-fixed guest image contains no Docker daemon. Installing a client package or enabling the host-Docker
-runtime is not a fix.
+**Shipped in Sealant 0.33.0 and enabled on the private AWS deployment with Mend 0.28.0.** Mend sends
+`workspaces.create({ services: { docker: true } })` through the public SDK for fresh workspaces.
+Core 0.32.0 rejected that requirement for MicroVMs, and its ordinary fixed guest image contained no
+Docker daemon. Installing a client package or enabling the host-Docker runtime is not a fix.
 
 - **Platform change:** an explicit, separately named Docker-capable image, selected only for Docker
   requests. The API and worker require the same pinned Docker image ARN/version. Ordinary workspaces
@@ -35,6 +34,16 @@ runtime is not a fix.
   artifacts were deleted. This is adapter/provider evidence, not deployed Mend session acceptance.
   See the [AWS Docker runbook](docs/operations/aws-docker-service.md) for the test history and
   activation limits.
+- **Deployed-session observations:** a separately authorized retained image build and one real Mend
+  session exercised Docker info/build/run/Compose, root-owned bind writes, nested DNS and closed TCP
+  listeners. CLI and Mend planned-stop capture flushes completed with `pending=0`, `fenced=false`.
+  The test VM and application test data were cleaned; the normal one-hour limit was restored. The
+  checker attempted another flush after normal VM termination and did not reach its post-stop file
+  read. No inference calls were recorded. This is not Docker-plus-capture restoration acceptance.
+- **Deployment requirement:** both existing application IAM policies must name the separate Docker
+  image ARN. The first deployed-session attempt was denied before VM creation because only the
+  ordinary image was authorized. Adding that exact ARN to both policies resolved the refusal; no
+  wildcard or new action was needed.
 
 ## 2026-09-15 · 0.32.0 · MicroVM image build requires an unpublished sealantctl binary
 
