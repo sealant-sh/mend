@@ -136,12 +136,15 @@ shared StorageClass and Mend service account belong to `render-mend.py`, not the
 ## Candidate image and acceptance
 
 Docker capability work uses a separate opt-in image and does not change this deployed default. See
-the [AWS Docker service runbook](../../docs/operations/aws-docker-service.md) for the proposed
-configuration, privilege model, source-selection options and acceptance limits.
+the [AWS Docker service runbook](../../docs/operations/aws-docker-service.md) for the released
+configuration, privilege model, source-selection options and acceptance limits. Source now pins
+Sealant 0.33.0 for the SDK, packaged services, AWS control-plane templates and MicroVM recipe. The
+recorded live deployment still runs 0.32.0; no rollout is implied by these source updates.
 
 The official Core recipe at `abe4d6c7258a5d6b479b72162de368c45953d9ee` reproduces a packaging
 failure: `sealantd:0.15.2` contains the daemon and socat but no `sealantctl`. The CLI is required
-for suspend and terminate capture flushes. The hook has not been removed or bypassed.
+for suspend and terminate capture flushes. Sealant 0.33.0 still uses that daemon release, so the
+packaging gap remains. The hook has not been removed or bypassed.
 
 `scripts/build-sealantctl-pod.json` builds the CLI natively on ARM64 from daemon revision
 `5173e4920d44d5663b6a4fec4606ab58e7607ca1`, with Rust **1.96.1** explicitly selected (the
@@ -150,12 +153,13 @@ then remove the temporary pod. `scripts/sealantd-candidate.Dockerfile` adds only
 pinned public daemon image. The private candidate digest is recorded in `deployment.json`.
 
 Set `SEALANTD_IMAGE` to the candidate when running `scripts/build-workspace-image.sh`. The script
-uses the official Core recipe, adds pinned pnpm/Codex/Claude CLI versions, and uses the scoped build
-role and artifact bucket. The fixed AWS image is **not** the OCI output of a workspace-profile
-BuildKit job. The provisioning profile uses `node:24-bookworm` (its custom-base contract requires
-Git, Node and npm), no extra packages and no Docker service. A bare Amazon Linux profile failed that
-prerequisite before any VM launch. The actual VM still runs the separately built Amazon Linux image:
-Debian or arbitrary profile/image customization is **not** established by this deployment.
+defaults to the official Core 0.33.0 recipe at `17a23ffcbe47bb16f5b9516c7b8bbfa89c9a61d3`, adds
+pinned pnpm/Codex/Claude CLI versions, and uses the scoped build role and artifact bucket. The fixed
+AWS image is **not** the OCI output of a workspace-profile BuildKit job. The provisioning profile
+uses `node:24-bookworm` (its custom-base contract requires Git, Node and npm), no extra packages and
+no Docker service. A bare Amazon Linux profile failed that prerequisite before any VM launch. The
+actual VM still runs the separately built Amazon Linux image: Debian or arbitrary profile/image
+customization is **not** established by this deployment.
 
 With the loopback tunnel running, `scripts/session-smoke.py` provides explicit `provision`,
 `launch`, `restore`, `status` and `stop` phases. It uses public Mend HTTP routes, a dedicated test

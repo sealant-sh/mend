@@ -55,10 +55,24 @@ refused() {
 }
 
 run
-[[ $(wc -l < "$ROOT/output/downloads") -eq 3 ]] || fail 'legacy recipe download changed'
-grep -Fq 'abe4d6c7258a5d6b479b72162de368c45953d9ee/' "$ROOT/output/downloads"
+[[ $(wc -l < "$ROOT/output/downloads") -eq 6 ]] || fail 'released recipe download incomplete'
+grep -Fq '17a23ffcbe47bb16f5b9516c7b8bbfa89c9a61d3/' "$ROOT/output/downloads"
 grep -Fq 'pnpm@10.32.1 @openai/codex@0.154.0 @anthropic-ai/claude-code@2.1.273' "$ROOT/output/Dockerfile"
-printf 'ok - legacy pinned build preserved\n'
+grep -Fxq 'false' "$ROOT/output/selection"
+printf 'ok - Sealant 0.33.0 default stages all recipe files without enabling Docker\n'
+
+run MICROVM_DOCKER_ENABLED=true MICROVM_DOCKER_IMAGE_NAME=mend-docker-candidate
+[[ $(wc -l < "$ROOT/output/downloads") -eq 6 ]] || fail 'released Docker recipe incomplete'
+grep -Fq '17a23ffcbe47bb16f5b9516c7b8bbfa89c9a61d3/' "$ROOT/output/downloads"
+grep -Fxq 'mend-docker-candidate' "$ROOT/output/selection"
+grep -Fxq 'true' "$ROOT/output/selection"
+printf 'ok - released Docker recipe uses the explicit separate image name\n'
+
+LEGACY_REV=abe4d6c7258a5d6b479b72162de368c45953d9ee
+run SEALANT_MICROVM_SOURCE_REV="$LEGACY_REV"
+[[ $(wc -l < "$ROOT/output/downloads") -eq 3 ]] || fail 'legacy override download changed'
+grep -Fq "$LEGACY_REV/" "$ROOT/output/downloads"
+printf 'ok - explicit legacy ordinary recipe remains supported\n'
 
 run MICROVM_DOCKER_ENABLED=true MICROVM_DOCKER_IMAGE_NAME=mend-docker-candidate \
   SEALANT_MICROVM_SOURCE_DIR="$ROOT/platform"
@@ -76,7 +90,8 @@ run MICROVM_DOCKER_ENABLED=true MICROVM_DOCKER_IMAGE_NAME=mend-docker-candidate 
 grep -Fq "$REV/packages/workspaces/microvm-image/docker-service.mjs" "$ROOT/output/downloads"
 printf 'ok - immutable remote Docker recipe supported\n'
 
-refused MICROVM_DOCKER_ENABLED=true MICROVM_DOCKER_IMAGE_NAME=mend-docker-candidate
+refused MICROVM_DOCKER_ENABLED=true MICROVM_DOCKER_IMAGE_NAME=mend-docker-candidate \
+  SEALANT_MICROVM_SOURCE_REV="$LEGACY_REV"
 refused MICROVM_DOCKER_ENABLED=1
 refused SEALANT_MICROVM_SOURCE_REV=main
 refused MICROVM_DOCKER_ENABLED=true SEALANT_MICROVM_SOURCE_DIR="$ROOT/platform"

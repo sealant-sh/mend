@@ -9,10 +9,11 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
 ## 2026-09-16 · 0.32.0 · Docker service missing from AWS MicroVM workspaces
 
-**Implemented and provider-tested in Core; not released or enabled on the deployed server.** Mend
-already sends `workspaces.create({ services: { docker: true } })` through the public SDK for fresh
-workspaces. Core 0.32.0 rejects that requirement for MicroVMs, and its fixed guest image contains no
-Docker daemon. Installing a client package or enabling the host-Docker runtime is not a fix.
+**Shipped in Sealant 0.33.0; not enabled on the deployed AWS server.** Mend pins the released SDK
+and server artifacts. It already sends `workspaces.create({ services: { docker: true } })` through
+the public SDK for fresh workspaces. Core 0.32.0 rejects that requirement for MicroVMs, and its
+fixed guest image contains no Docker daemon. Installing a client package or enabling the host-Docker
+runtime is not a fix.
 
 - **Platform change:** an explicit, separately named Docker-capable image, selected only for Docker
   requests. The API and worker require the same pinned Docker image ARN/version. Ordinary workspaces
@@ -25,7 +26,8 @@ Docker daemon. Installing a client package or enabling the host-Docker runtime i
   is still a separate gap.
 - **Mend change:** preserve the platform's runtime-specific refusal instead of replacing every
   refusal with Kubernetes instructions. The AWS image wrapper can stage an explicitly reviewed local
-  recipe or newer immutable platform revision and still pins Mend's coding tools.
+  recipe or another immutable platform revision and still pins Mend's coding tools. Its default
+  recipe now comes from the immutable Sealant 0.33.0 release commit.
 - **Acceptance:** the bounded real-AWS test passed on candidate image 3.0 after fixing runtime
   directory preparation and an HTTP test-fixture defect. It covered build/run, Compose, bind writes,
   authenticated forwarding, default nested DNS, closed Docker TCP ports and daemon-loss detection.

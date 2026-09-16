@@ -280,7 +280,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       initContainers:
         - name: migrate
-          image: ghcr.io/sealant-sh/sealant-api:0.32.0
+          image: ghcr.io/sealant-sh/sealant-api:0.33.0
           imagePullPolicy: IfNotPresent
           command: [node, dist/migrate.js]
           env:
@@ -295,7 +295,7 @@ spec:
             capabilities: { drop: [ALL] }
       containers:
         - name: api
-          image: ghcr.io/sealant-sh/sealant-api:0.32.0
+          image: ghcr.io/sealant-sh/sealant-api:0.33.0
           imagePullPolicy: IfNotPresent
           ports:
             - { name: http, containerPort: 4000 }
@@ -366,7 +366,7 @@ spec:
         seccompProfile: { type: RuntimeDefault }
       containers:
         - name: worker
-          image: ghcr.io/sealant-sh/sealant-worker:0.32.0
+          image: ghcr.io/sealant-sh/sealant-worker:0.33.0
           imagePullPolicy: IfNotPresent
           envFrom:
             - configMapRef: { name: sealant-common-config }

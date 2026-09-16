@@ -5,9 +5,10 @@
 The bounded provider test passed on 2026-09-16 using candidate image 3.0. It exercised the real AWS
 MicroVM adapter and authenticated control channel, not the deployed Mend provisioning flow.
 
-The deployed Sealant 0.32.0 server still refuses Docker in MicroVM workspaces. The changes under
-review add an opt-in platform image and guest service. They do not change the deployed API, worker,
-default image or user sessions.
+Sealant [v0.33.0](https://github.com/sealant-sh/sealant/releases/tag/v0.33.0) ships the opt-in
+Docker service. Mend now pins its SDK, packaged services and AWS templates to that release. The
+recorded deployment still runs Sealant 0.32.0 and refuses Docker in MicroVM workspaces. Updating
+source pins does not change the deployed API, worker, default image or user sessions.
 
 Local tests cover packaging, capability selection, guest readiness and failure handling. Candidate
 image version 1.0 reached `CREATED`; the provider confirms `additionalOsCapabilities: ["ALL"]`. The
@@ -88,10 +89,12 @@ work.
 ## Build a candidate
 
 Use the AWS tools and account checks described in the deployment README. Keep credentials, artifact
-metadata and build logs outside Git. The default wrapper still uses its existing immutable Core
-revision and ordinary recipe.
+metadata and build logs outside Git. The wrapper defaults to Sealant v0.33.0 at immutable commit
+`17a23ffcbe47bb16f5b9516c7b8bbfa89c9a61d3`. Docker stays off unless explicitly enabled with a
+separate image name. All six recipe files are staged even for an ordinary build, because the
+released agent imports the Docker service module.
 
-A Docker build requires an explicitly reviewed newer recipe. Choose one source:
+To override the released recipe, choose one source:
 
 - `SEALANT_MICROVM_SOURCE_DIR`, a local directory containing the reviewed platform image files; or
 - `SEALANT_MICROVM_SOURCE_REV`, the complete 40-character commit SHA of a platform revision that
@@ -119,8 +122,8 @@ AWS README until the platform publishes a complete image. Do not remove the flus
 
 ## Release and activation
 
-Activation is a separate operation after provider acceptance and a platform release. Both API and
-worker must run the new implementation and receive the same pair:
+Sealant v0.33.0 is released; activation remains a separate operation. Both API and worker must run
+that release or newer and receive the same pair:
 
 ```text
 SEALANT_MICROVM_DOCKER_IMAGE_ARN=<separate Docker image ARN>
@@ -129,8 +132,8 @@ SEALANT_MICROVM_DOCKER_IMAGE_VERSION=<exact tested version>
 
 Keep the existing default `SEALANT_MICROVM_IMAGE_ARN` and version. A partial Docker pair, a dangling
 pair without the base MicroVM adapter, or reuse of the ordinary image ARN must be rejected. The
-current AWS renderer pins the deployed server version; this source change is not an instruction to
-apply a new manifest or patch the running deployments.
+current AWS renderer pins v0.33.0, but does not configure the Docker pair. Updating source is not an
+instruction to apply a new manifest or patch the running deployments.
 
 Do not enable `DOCKER_RUNTIME_ENABLED` or set `SEALANT_K8S_NAMESPACE`. Neither activates Docker
 inside a MicroVM. Mend's Docker profile setting applies when it creates a fresh workspace; joining

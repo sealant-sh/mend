@@ -1,13 +1,14 @@
 #!/usr/bin/env bash
 # Run inside deploy/aws/shell.nix. Builds a paid AWS image, never a workspace.
-# Default: the existing public, pinned Sealant recipe. Docker requires an explicitly selected
-# newer immutable revision or a reviewed local recipe, plus a separate Docker image name.
+# Default: the public Sealant 0.33.0 recipe, pinned to its release commit. Docker remains opt-in
+# and requires a separate image name. A reviewed local recipe or immutable revision can override it.
 # Only allowlisted recipe files enter the context; credentials and repository contents do not.
 set -euo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TF="$HERE/../tofu"
 LEGACY_SOURCE_REV=abe4d6c7258a5d6b479b72162de368c45953d9ee
-SOURCE_REV="${SEALANT_MICROVM_SOURCE_REV:-$LEGACY_SOURCE_REV}"
+DEFAULT_SOURCE_REV=17a23ffcbe47bb16f5b9516c7b8bbfa89c9a61d3
+SOURCE_REV="${SEALANT_MICROVM_SOURCE_REV:-$DEFAULT_SOURCE_REV}"
 SOURCE_DIR="${SEALANT_MICROVM_SOURCE_DIR:-}"
 export MICROVM_DOCKER_ENABLED="${MICROVM_DOCKER_ENABLED-false}"
 export MICROVM_IMAGE_NAME=mend-capture-poc-workspace
@@ -24,7 +25,7 @@ case "$MICROVM_DOCKER_ENABLED" in
   true)
     [[ "${MICROVM_DOCKER_IMAGE_NAME:-}" =~ ^[A-Za-z0-9_-]{1,64}$ ]] || refuse 'Set an explicit MICROVM_DOCKER_IMAGE_NAME'
     [[ "$MICROVM_DOCKER_IMAGE_NAME" != "$MICROVM_IMAGE_NAME" ]] || refuse 'The Docker image name must differ from the deployed default'
-    [[ -n "$SOURCE_DIR" || "$SOURCE_REV" != "$LEGACY_SOURCE_REV" ]] || refuse 'Docker requires a reviewed newer platform recipe; the default pinned release does not support it'
+    [[ -n "$SOURCE_DIR" || "$SOURCE_REV" != "$LEGACY_SOURCE_REV" ]] || refuse 'Docker requires a newer platform recipe; the selected legacy revision does not support it'
     ;;
   *) refuse 'MICROVM_DOCKER_ENABLED must be exactly true or false' ;;
 esac
