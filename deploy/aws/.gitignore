@@ -10,6 +10,7 @@
 !/scripts/bootstrap-databases.py
 !/scripts/build-sealantctl-pod.json
 !/scripts/build-workspace-image.sh
+!/scripts/build-workspace-image.test.sh
 !/scripts/inventory.sh
 !/scripts/render-mend.py
 !/scripts/sealantd-candidate.Dockerfile

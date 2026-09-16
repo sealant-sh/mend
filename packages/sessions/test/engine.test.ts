@@ -1874,6 +1874,73 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("reports the platform's runtime-specific Docker refusal without Kubernetes-only advice", async () => {
+    const created: CreateOptions[] = [];
+    const platformCause = new Error("MicroVM capability refusal");
+    const platformMessage =
+      "This deployment runs workspaces on the 'microvm' runtime, which has no workspace-scoped Docker. Turn Docker off for this workspace.";
+
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: null,
+            base: null,
+          });
+
+          const failure = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+
+          expect(failure).toBeInstanceOf(SealantPlatformError);
+          const platformFailure = failure instanceof SealantPlatformError ? failure : null;
+          expect(platformFailure?.code).toBe("workspace-docker-unsupported");
+          expect(platformFailure?.status).toBe(422);
+          expect(platformFailure?.cause).toBe(platformCause);
+          expect(platformFailure?.message).toBe(`launch refused · Docker · ${platformMessage}`);
+          expect(platformFailure?.message).not.toContain("Sealant chart");
+          expect(platformFailure?.message).not.toContain("workspaces.docker");
+          expect(created).toHaveLength(1);
+          const settled = world.sessions.get(session.id);
+          expect(settled?.status).toBe("failed");
+          expect(settled?.summary).toContain(platformMessage);
+          expect(settled?.summary).not.toContain("Sealant chart");
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(
+          created,
+          () => false,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          () =>
+            Effect.fail(
+              new SealantPlatformError({
+                code: "workspace-docker-unsupported",
+                status: 422,
+                message: platformMessage,
+                cause: platformCause,
+              }),
+            ),
+        ),
+        workspaceImage: {
+          mode: "family",
+          os: "ubuntu",
+          packages: [],
+          shell: "bash",
+          services: { docker: true },
+        },
+      },
+    );
+  });
+
   it("delivers the launching owner's skills and lets project skills override by name", async () => {
     const created: CreateOptions[] = [];
     const requestedOwners: Array<string | null> = [];

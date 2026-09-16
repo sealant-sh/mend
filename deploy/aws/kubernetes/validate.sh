@@ -24,8 +24,8 @@ for expected in \
   'DOCKER_RUNTIME_ENABLED: "false"' \
   'SEALANT_K8S_BUILD_CPU_REQUEST: 500m' \
   'SEALANT_K8S_BUILD_MEMORY_REQUEST: 1Gi' \
-  'ghcr.io/sealant-sh/sealant-api:0.32.0' \
-  'ghcr.io/sealant-sh/sealant-worker:0.32.0'; do
+  'ghcr.io/sealant-sh/sealant-api:0.33.0' \
+  'ghcr.io/sealant-sh/sealant-worker:0.33.0'; do
   grep -Fq "$expected" "$manifest" || {
     echo "missing required pin: $expected" >&2
     exit 1

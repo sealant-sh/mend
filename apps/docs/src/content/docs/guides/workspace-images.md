@@ -71,8 +71,14 @@ and git. The build checks the contract and fails readably when the base misses a
 
 ## Docker inside a workspace
 
-The Docker switch supplies a disposable rootless daemon for that workspace. Mend does not mount the
-host Docker socket. Compose files can run inside the workspace against that daemon.
+The Docker switch requests a disposable daemon scoped to that workspace. Its isolation and privilege
+model depend on the workspace runtime. Mend does not mount the host Docker socket. Compose files can
+run inside the workspace against the provided daemon.
+
+Changing the switch does not retrofit a workspace that is already running or retained. Joining or
+resuming a session that reuses that workspace keeps the Docker capability it was created with. A
+cold replacement uses the instance default or project override that applies when the replacement is
+created.
 
 On a Kubernetes deployment the operator has to enable the daemon (`workspaces.docker.enabled` on the
 Sealant chart); otherwise a launch with the switch on is refused at create and the session says so.

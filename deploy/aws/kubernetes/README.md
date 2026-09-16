@@ -1,14 +1,19 @@
 # Sealant control plane on the AWS POC
 
-Standalone Kubernetes resources for Sealant Core `v0.32.0`. This directory deploys only the API,
+Standalone Kubernetes resources for Sealant Core `v0.33.0`. This directory deploys only the API,
 worker, and the OCI build cache they require. It does not deploy Mend, expose HTTP/SSH, create AWS
 resources or shared storage classes, create Secret values, build the MicroVM image, or apply
 anything.
 
-The contract comes from Core tag `v0.32.0` (`abe4d6c`), especially its environment reference,
+The contract comes from Core tag `v0.33.0` (`17a23ff`), especially its environment reference,
 Kubernetes BuildKit builder, MicroVM adapter, and published Helm chart. The control images are
-pinned to `ghcr.io/sealant-sh/sealant-api:0.32.0` and `sealant-worker:0.32.0`. Zot and BuildKit
-match that release's chart pins.
+pinned to `ghcr.io/sealant-sh/sealant-api:0.33.0` and `sealant-worker:0.33.0`. Zot and BuildKit
+match that release's chart pins. These are source pins, not evidence of a live upgrade. The recorded
+AWS deployment still runs 0.32.0 until a separate rollout is approved.
+
+Docker remains disabled for MicroVM workspaces until both API and worker receive the same separate
+Docker image ARN/version and base image configuration. This renderer does not configure that pair.
+See the [Docker service runbook](../../../docs/operations/aws-docker-service.md) before activation.
 
 ## Runtime shape
 
@@ -26,14 +31,14 @@ match that release's chart pins.
 - Build requests are `500m` CPU and `1Gi` memory. API, worker, and Zot requests total another `250m`
   CPU and `1Gi` memory. Limits allow bursts but do not reserve that capacity.
 - Zot is an unauthenticated, cluster-only, plain-HTTP registry on a 10 GiB encrypted gp3 claim. Core
-  v0.32.0's BuildKit integration supports this directly. ECR would need registry credentials or a
+  v0.33.0's BuildKit integration supports this directly. ECR would need registry credentials or a
   credential-helper path that this builder does not expose, so this deployment does not pretend IRSA
   alone authenticates BuildKit to ECR.
 
-Core v0.32.0 always builds and publishes an OCI workspace image before runtime launch. The MicroVM
-adapter then launches the separately built, versioned Lambda MicroVM image and sends the workspace
-archive inline. The OCI artifact is real build output, but it is not the VM root image. The live
-smoke test reports both phases separately.
+Core v0.33.0 builds and publishes an OCI workspace image before runtime launch. The MicroVM adapter
+then launches the separately built, versioned Lambda MicroVM image and sends the workspace archive
+inline. The OCI artifact is real build output, but it is not the VM root image. The live smoke test
+reports both phases separately.
 
 ## Inputs
 
@@ -60,7 +65,7 @@ The parent creates `sealant-secrets` in the Sealant namespace with these keys:
 The API and worker reference the same bearer-token key. No secret value is rendered or tracked. Each
 Secret name and key can be overridden independently; see `render.py --help`.
 
-The IRSA policies stay in the parent OpenTofu stack. Core v0.32.0's API code uses
+The IRSA policies stay in the parent OpenTofu stack. Core v0.33.0's API code uses
 `lambda:CreateMicrovmAuthToken`. The worker uses `lambda:RunMicrovm`, `lambda:GetMicrovm`,
 `lambda:TerminateMicrovm`, and `lambda:CreateMicrovmAuthToken`. The worker also needs `iam:PassRole`
 restricted to the rendered `microvm_exec_role_arn`. The live RunMicrovm request failed with the
@@ -107,7 +112,7 @@ The read-only smoke path checks deployments, RBAC, API `/healthz`, Zot `/v2/`, a
 ```
 
 A real workspace is the only honest proof of the BuildKit and MicroVM path. Supply a request body
-produced for the public Core v0.32.0 `POST /v1/workspaces` contract, then opt in to the
+produced for the public Core v0.33.0 `POST /v1/workspaces` contract, then opt in to the
 state-changing test:
 
 ```sh

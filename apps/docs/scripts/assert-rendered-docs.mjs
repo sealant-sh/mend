@@ -56,4 +56,22 @@ assert.ok(
   "CLI reference must not offer local-path adoption",
 );
 
+const workspaceImagesPage = await readFile(
+  new URL("../dist/guides/workspace-images/index.html", import.meta.url),
+  "utf8",
+);
+const workspaceImagesText = workspaceImagesPage.replace(/\s+/g, " ");
+assert.ok(
+  workspaceImagesText.includes("isolation and privilege model depend on the workspace runtime"),
+  "Workspace image docs must describe Docker privilege as runtime-specific",
+);
+assert.ok(
+  !workspaceImagesText.includes("disposable rootless daemon"),
+  "Workspace image docs must not promise a rootless daemon on every runtime",
+);
+assert.ok(
+  workspaceImagesText.includes("does not retrofit a workspace that is already running or retained"),
+  "Workspace image docs must explain Docker behavior when a session reuses its workspace",
+);
+
 process.stdout.write("Rendered docs structure is valid\n");
