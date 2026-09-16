@@ -1,10 +1,10 @@
 # AWS Mend access plan
 
-Status: proposed, 2026-09-16. No enrollment, DNS change, ingress, deployment, or merge was performed
-while producing or publishing this plan. The Mend, Core, Docker and team reviews are now available
-and inform the gates below. No reviewed fixes are established as deployed. This is a runbook for a
-later approved rollout, not an exposure approval. The current cluster is not established as
-configured for Tailscale.
+Status: historical plan, 2026-09-16. No infrastructure change was made while publishing this plan.
+The owner subsequently approved a private Tailscale rollout; see the separate
+[deployment record](aws-access-deployment.md) for installed versions, observed checks and remaining
+acceptance. The gate statuses below describe the planning baseline, not current deployment status.
+The owner-only pilot does not establish that every gate has passed or authorize public/team access.
 
 ## Decision and evidence
 
