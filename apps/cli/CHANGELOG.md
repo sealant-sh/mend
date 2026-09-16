@@ -1,5 +1,28 @@
 # @sealant/mend
 
+## 0.28.0
+
+### Minor Changes
+
+- 6a2c50e: Redesign the dashboard with stacked project, worktree, and session navigation beside a
+  larger read-only conversation preview. Keep browsing separate from explicit attach, resume, and
+  new-session actions, guard duplicate launches and destructive confirmations, and show launch and
+  branch lookup failures.
+
+  Use Ayu Mirage backgrounds and accents with brighter text and independent pane-title colors.
+  Support narrow terminals, sanitize recorded output, and preserve readable Unicode wrapping in the
+  preview.
+
+### Patch Changes
+
+- 4f00a9c: Adopt Sealant 0.33.0 in the public SDK, bundled service images and AWS deployment
+  templates. Pin the AWS workspace-image recipe to the same release and retain the platform's
+  runtime-specific Docker errors.
+
+  AWS workspace Docker remains opt-in and requires a separate Docker-capable image with matching
+  configuration on API and worker. Updating Mend does not install Docker into retained workspaces or
+  change a running AWS deployment. The matching `sealantctl` packaging requirement still applies.
+
 ## 0.27.5
 
 ### Patch Changes
