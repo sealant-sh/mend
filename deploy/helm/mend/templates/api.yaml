@@ -1,3 +1,4 @@
+{{- include "mend.validateSessionService" . -}}
 # The Mend API server (apps/api): the typed contract, auth, the WebSocket data planes, the
 # session engine, and the workers — MEND_MODE=all in ONE replica (Recreate). The engine holds
 # live in-memory state (process supervision, service listeners, leases), so this tier stays a
@@ -19,8 +20,18 @@ metadata:
   name: {{ .Release.Name }}-session
   labels: {{ include "mend.labels" . | nindent 4 }}
 spec:
+  type: {{ .Values.sessionChannel.service.type }}
+  {{- if eq .Values.sessionChannel.service.type "NodePort" }}
+  externalTrafficPolicy: Local
+  {{- end }}
   selector: {{ include "mend.component" (dict "root" . "name" "api") | nindent 4 }}
-  ports: [{ name: session, port: {{ .Values.sessionChannel.port }}, targetPort: session }]
+  ports:
+    - name: session
+      port: {{ .Values.sessionChannel.port }}
+      targetPort: session
+      {{- if eq .Values.sessionChannel.service.type "NodePort" }}
+      nodePort: {{ .Values.sessionChannel.service.nodePort }}
+      {{- end }}
 ---
 apiVersion: apps/v1
 kind: Deployment
@@ -36,6 +47,9 @@ spec:
     metadata:
       labels: {{ include "mend.component" (dict "root" . "name" "api") | nindent 8 }}
     spec:
+      {{- with .Values.api.serviceAccountName }}
+      serviceAccountName: {{ . | quote }}
+      {{- end }}
       automountServiceAccountToken: false
       # Docker-link-style env injection (MEND_API_PORT=tcp://...) collides with real config.
       enableServiceLinks: false

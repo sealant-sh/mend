@@ -21,6 +21,21 @@ const render = (...args) => {
   return result;
 };
 
+const documentOf = (manifest, kind, name) => {
+  const doc = manifest
+    .split(/^---$/m)
+    .find((d) => d.includes(`kind: ${kind}\n`) && d.includes(`name: ${name}\n`));
+  assert.ok(doc, `${kind} ${name} rendered`);
+  return doc;
+};
+
+const renderFixture = (fixture, ...settings) =>
+  render(
+    "-f",
+    path.join(chart, `ci/${fixture}-values.yaml`),
+    ...settings.flatMap((s) => ["--set", s]),
+  );
+
 const envOf = (manifest, deployment) => {
   // The container env block of one Deployment, as `name → value | valueFrom source`.
   const doc = manifest
@@ -189,3 +204,304 @@ test("nothing RWX is rendered and the store claim is the API Pod's alone", { ski
   );
   assert.match(created.stdout, /storage: 50Gi/);
 });
+
+test(
+  "default credentials use a precreated API service account without static AWS keys",
+  { skip },
+  () => {
+    const result = renderFixture("default-chain");
+    assert.equal(result.status, 0, result.stderr);
+    const env = envOf(result.stdout, "mend-api");
+    assert.equal(env.get("MEND_BLOB_STORE"), "s3://mend-captures?region=eu-west-1");
+    assert.equal(
+      env.get("MEND_BLOB_STORE_PUBLIC_URL"),
+      "https://mend-captures.s3.eu-west-1.amazonaws.com",
+    );
+    for (const key of [
+      "AWS_ACCESS_KEY_ID",
+      "AWS_SECRET_ACCESS_KEY",
+      "AWS_SESSION_TOKEN",
+      "BUCKET_HOST",
+    ]) {
+      assert.equal(env.get(key), undefined, `${key} is not injected by the chart`);
+    }
+    const api = documentOf(result.stdout, "Deployment", "mend-api");
+    assert.match(api, /serviceAccountName: "mend-capture-writer"/);
+    assert.match(api, /automountServiceAccountToken: false/);
+    const web = documentOf(result.stdout, "Deployment", "mend-web");
+    assert.doesNotMatch(web, /serviceAccountName:/);
+    assert.doesNotMatch(result.stdout, /kind: (ServiceAccount|Role|RoleBinding)\n/);
+    assert.doesNotMatch(web, /AWS_|MEND_BLOB_STORE/);
+
+    // Other default-chain providers need no named service account; opting in remains explicit.
+    const unnamed = renderFixture("default-chain", "api.serviceAccountName=");
+    assert.equal(unnamed.status, 0, unnamed.stderr);
+    assert.doesNotMatch(unnamed.stdout, /serviceAccountName:/);
+  },
+);
+
+for (const [name, fixture, settings, message] of [
+  [
+    "URL without credentials",
+    "plain-url",
+    ["captureStore.blobStore.credentialsSecret="],
+    /credentialsSecret is required/,
+  ],
+  [
+    "default chain and static Secret",
+    "plain-url",
+    ["captureStore.blobStore.useDefaultCredentials=true"],
+    /useDefaultCredentials cannot be combined/,
+  ],
+  [
+    "default chain and OBC",
+    "obc",
+    ["captureStore.blobStore.useDefaultCredentials=true"],
+    /useDefaultCredentials cannot be combined/,
+  ],
+  [
+    "OBC and separate static Secret",
+    "obc",
+    ["captureStore.blobStore.credentialsSecret=other"],
+    /credentialsSecret cannot be combined/,
+  ],
+  ["OBC and URL", "obc", ["captureStore.blobStore.url=s3://other"], /fromObjectBucketClaim OR url/],
+  [
+    "OBC without Secret",
+    "obc",
+    ["captureStore.blobStore.fromObjectBucketClaim.secret="],
+    /fromObjectBucketClaim.secret/,
+  ],
+  [
+    "orphan OBC Secret",
+    "default-chain",
+    [
+      "captureStore.blobStore.useDefaultCredentials=false",
+      "captureStore.blobStore.fromObjectBucketClaim.secret=orphan",
+    ],
+    /configMap is required/,
+  ],
+  [
+    "non-boolean credential opt-in",
+    "plain-url",
+    ["captureStore.blobStore.useDefaultCredentials=yes"],
+    /useDefaultCredentials must be a boolean/,
+  ],
+]) {
+  test(`the chart refuses ${name}`, { skip }, () => {
+    const result = renderFixture(fixture, ...settings);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, message);
+  });
+}
+
+test(
+  "existing fixtures keep cluster DNS, ClusterIP, and no extra ingress or service account",
+  { skip },
+  () => {
+    for (const fixture of ["obc", "plain-url"]) {
+      const result = renderFixture(fixture);
+      assert.equal(result.status, 0, result.stderr);
+      assert.equal(
+        envOf(result.stdout, "mend-api").get("MEND_SESSION_ENDPOINT_URL"),
+        "http://mend-session.mend.svc:3106",
+      );
+      const service = documentOf(result.stdout, "Service", "mend-session");
+      assert.match(service, /type: ClusterIP/);
+      assert.doesNotMatch(service, /nodePort:|externalTrafficPolicy:/);
+      assert.doesNotMatch(result.stdout, /serviceAccountName:|ipBlock:/);
+    }
+    const tls = renderFixture(
+      "obc",
+      "sessionChannel.tls.enabled=true",
+      "sessionChannel.tls.secretName=session-tls",
+    );
+    assert.equal(tls.status, 0, tls.stderr);
+    assert.equal(
+      envOf(tls.stdout, "mend-api").get("MEND_SESSION_ENDPOINT_URL"),
+      "https://mend-session.mend.svc:3106",
+    );
+  },
+);
+
+test("NodePort and advertised URL change only the workspace entry point", { skip }, () => {
+  const result = renderFixture("default-chain");
+  assert.equal(result.status, 0, result.stderr);
+  const env = envOf(result.stdout, "mend-api");
+  assert.equal(env.get("MEND_SESSION_ENDPOINT_URL"), "https://mend-session.internal:3106");
+  assert.equal(env.get("MEND_SESSION_ENDPOINT_LISTEN"), "0.0.0.0:3106");
+  assert.equal(env.get("MEND_SESSION_ENDPOINT_TLS_CERT"), "/etc/mend/session-tls/tls.crt");
+  assert.equal(env.get("MEND_SESSION_ENDPOINT_TLS_KEY"), "/etc/mend/session-tls/tls.key");
+  const service = documentOf(result.stdout, "Service", "mend-session");
+  assert.match(service, /type: NodePort/);
+  assert.match(service, /externalTrafficPolicy: Local/);
+  assert.match(service, /port: 3106\n\s+targetPort: session\n\s+nodePort: 30106/);
+  for (const name of ["mend-api", "mend-web"]) {
+    assert.doesNotMatch(documentOf(result.stdout, "Service", name), /NodePort|nodePort:/);
+  }
+  assert.doesNotMatch(result.stdout, /kind: Ingress\n|type: LoadBalancer/);
+
+  // An advertised address does not itself expose a port or grant ingress.
+  const http = renderFixture(
+    "plain-url",
+    "sessionChannel.advertisedUrl=http://private.example:8443/",
+  );
+  assert.equal(http.status, 0, http.stderr);
+  assert.equal(
+    envOf(http.stdout, "mend-api").get("MEND_SESSION_ENDPOINT_URL"),
+    "http://private.example:8443/",
+  );
+  assert.doesNotMatch(http.stdout, /nodePort:|ipBlock:/);
+});
+
+test(
+  "workspace CIDRs grant only the session pod port, separately from browser and service clients",
+  { skip },
+  () => {
+    const result = renderFixture(
+      "default-chain",
+      "sessionChannel.port=3206",
+      "networkPolicies.sessionChannelCidrs[0]=10.42.16.0/20",
+      "networkPolicies.sessionChannelCidrs[1]=10.43.0.0/24",
+      "networkPolicies.clientCidrs[0]=192.0.2.0/24",
+      "serviceHost.expose.enabled=true",
+      "serviceHost.portMax=43110",
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const api = documentOf(result.stdout, "NetworkPolicy", "mend-api");
+    const ingress = api.split("  ingress:\n")[1].split("  egress:\n")[0];
+    const rules = ingress.split("    - from:\n").slice(1);
+    assert.equal(
+      rules.length,
+      5,
+      "existing namespace, workspace Pods, workspace CIDRs, clients, Services",
+    );
+    const workspace = rules.find((rule) => rule.includes("10.42.16.0/20"));
+    assert.ok(workspace);
+    assert.match(workspace, /10.43.0.0\/24/);
+    assert.match(workspace, /ports: \[\{ protocol: TCP, port: 3206 \}\]/);
+    assert.doesNotMatch(workspace, /192\.0\.2|3101|3105|30106|43100|endPort/);
+    assert.match(rules[1], /app.kubernetes.io\/managed-by: sealant/);
+    assert.match(rules[1], /port: 3206/);
+    const clientRules = rules.filter((rule) => rule.includes("192.0.2.0/24"));
+    assert.equal(clientRules.length, 2);
+    assert.match(clientRules[0], /port: 3101/);
+    assert.match(clientRules[1], /port: 43100, endPort: 43110/);
+    for (const rule of clientRules) assert.doesNotMatch(rule, /3206|30106|10\.42|10\.43/);
+    for (const name of ["mend-web", "mend-postgres"]) {
+      assert.doesNotMatch(
+        documentOf(result.stdout, "NetworkPolicy", name),
+        /10\.42|10\.43|3206|30106/,
+      );
+    }
+
+    const disabled = renderFixture("default-chain", "networkPolicies.enabled=false");
+    assert.equal(disabled.status, 0, disabled.stderr);
+    assert.doesNotMatch(disabled.stdout, /kind: NetworkPolicy/);
+  },
+);
+
+for (const [name, settings, message] of [
+  [
+    "missing NodePort",
+    ["sessionChannel.service.type=NodePort"],
+    /explicit integer between 30000 and 32767/,
+  ],
+  [
+    "low NodePort",
+    ["sessionChannel.service.type=NodePort", "sessionChannel.service.nodePort=29999"],
+    /explicit integer between 30000 and 32767/,
+  ],
+  [
+    "high NodePort",
+    ["sessionChannel.service.type=NodePort", "sessionChannel.service.nodePort=32768"],
+    /explicit integer between 30000 and 32767/,
+  ],
+  [
+    "fractional NodePort",
+    ["sessionChannel.service.type=NodePort", "sessionChannel.service.nodePort=30106.5"],
+    /explicit integer between 30000 and 32767/,
+  ],
+  [
+    "NodePort on ClusterIP",
+    ["sessionChannel.service.nodePort=30106"],
+    /only be set with type=NodePort/,
+  ],
+  [
+    "unsupported service type",
+    ["sessionChannel.service.type=LoadBalancer"],
+    /type must be ClusterIP or NodePort/,
+  ],
+  [
+    "invalid listen port",
+    ["sessionChannel.port=65536"],
+    /port must be an integer between 1 and 65535/,
+  ],
+  [
+    "non-HTTP URL",
+    ["sessionChannel.advertisedUrl=tcp://mend.internal:3106"],
+    /must be an http\(s\) origin/,
+  ],
+  [
+    "relative URL",
+    ["sessionChannel.advertisedUrl=mend.internal:3106"],
+    /must be an http\(s\) origin/,
+  ],
+  ["URL without host", ["sessionChannel.advertisedUrl=http:///"], /must be an http\(s\) origin/],
+  [
+    "URL with path",
+    ["sessionChannel.advertisedUrl=http://mend.internal/channel"],
+    /must be an http\(s\) origin/,
+  ],
+  [
+    "URL with credentials",
+    ["sessionChannel.advertisedUrl=http://user:password@mend.internal"],
+    /must be an http\(s\) origin/,
+  ],
+  [
+    "URL with query",
+    ["sessionChannel.advertisedUrl=http://mend.internal?token=value"],
+    /must be an http\(s\) origin/,
+  ],
+  [
+    "URL with fragment",
+    ["sessionChannel.advertisedUrl=http://mend.internal#channel"],
+    /must be an http\(s\) origin/,
+  ],
+  [
+    "HTTPS without TLS",
+    ["sessionChannel.advertisedUrl=https://mend.internal"],
+    /scheme must match sessionChannel.tls.enabled/,
+  ],
+  [
+    "HTTP with TLS",
+    [
+      "sessionChannel.advertisedUrl=http://mend.internal",
+      "sessionChannel.tls.enabled=true",
+      "sessionChannel.tls.secretName=session-tls",
+    ],
+    /scheme must match sessionChannel.tls.enabled/,
+  ],
+  ["TLS without Secret", ["sessionChannel.tls.enabled=true"], /sessionChannel.tls.secretName/],
+]) {
+  test(`the chart refuses ${name}`, { skip }, () => {
+    const result = renderFixture("plain-url", ...settings);
+    assert.notEqual(result.status, 0);
+    assert.match(result.stderr, message);
+  });
+}
+
+for (const nodePort of [30000, 32767]) {
+  test(`NodePort boundary ${nodePort} is accepted`, { skip }, () => {
+    const result = renderFixture(
+      "plain-url",
+      "sessionChannel.service.type=NodePort",
+      `sessionChannel.service.nodePort=${nodePort}`,
+    );
+    assert.equal(result.status, 0, result.stderr);
+    assert.match(
+      documentOf(result.stdout, "Service", "mend-session"),
+      new RegExp(`nodePort: ${nodePort}`),
+    );
+  });
+}

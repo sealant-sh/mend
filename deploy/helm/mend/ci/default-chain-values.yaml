@@ -1,0 +1,21 @@
+# Rendering fixture only: infrastructure supplies the bucket, IRSA service account and private LB.
+store:
+  create:
+    enabled: true
+captureStore:
+  blobStore:
+    url: s3://mend-captures?region=eu-west-1
+    publicUrl: https://mend-captures.s3.eu-west-1.amazonaws.com
+    useDefaultCredentials: true
+api:
+  serviceAccountName: mend-capture-writer
+sessionChannel:
+  advertisedUrl: https://mend-session.internal:3106
+  service:
+    type: NodePort
+    nodePort: 30106
+  tls:
+    enabled: true
+    secretName: mend-session-tls
+networkPolicies:
+  sessionChannelCidrs: [10.42.16.0/20]
