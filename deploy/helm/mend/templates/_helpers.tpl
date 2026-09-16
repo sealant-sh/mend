@@ -98,12 +98,19 @@ outputs or a plain URL. Returns "obc" or "url".
 {{- define "mend.sessionEndpointUrl" -}}
 {{- if .Values.sessionChannel.tls.enabled -}}https{{- else -}}http{{- end -}}://{{ .Release.Name }}-session.{{ .Release.Namespace }}.svc:{{ .Values.sessionChannel.port }}
 {{- end -}}
+{{- /* Browser-facing configuration only. Never include API credentials in the web tier. */ -}}
+{{- define "mend.browserOriginEnv" -}}
+- { name: APP_URL, value: {{ .Values.web.appUrl | quote }} }
+{{- with .Values.web.allowedOrigins }}
+- { name: MEND_ALLOWED_ORIGINS, value: {{ toJson . | quote }} }
+{{- end }}
+{{- end -}}
 {{- define "mend.commonEnv" -}}
 - { name: NODE_ENV, value: production }
 - { name: MEND_DEPLOYMENT_MODE, value: kubernetes }
 - { name: MEND_STORE_ROOT, value: {{ .Values.store.mountPath | quote }} }
 - { name: SEALANT_BASE_URL, value: {{ .Values.sealant.baseUrl | quote }} }
-- { name: APP_URL, value: {{ .Values.web.appUrl | quote }} }
+{{ include "mend.browserOriginEnv" . }}
 - { name: MEND_VERSION, value: {{ include "mend.tag" . | quote }} }
 - name: BETTER_AUTH_SECRET
   valueFrom: { secretKeyRef: { name: {{ .Values.secrets.existingSecret }}, key: BETTER_AUTH_SECRET } }

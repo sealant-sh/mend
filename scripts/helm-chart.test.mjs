@@ -189,3 +189,59 @@ test("nothing RWX is rendered and the store claim is the API Pod's alone", { ski
   );
   assert.match(created.stdout, /storage: 50Gi/);
 });
+
+for (const appUrl of ["http://localhost:3105", "https://mend.example.ts.net"]) {
+  test(
+    `both tiers receive the browser origin ${appUrl} without sharing backend credentials`,
+    { skip },
+    () => {
+      for (const fixture of ["ci/obc-values.yaml", "ci/plain-url-values.yaml"]) {
+        const result = render(
+          "-f",
+          path.join(chart, fixture),
+          "--set-string",
+          `web.appUrl=${appUrl}`,
+        );
+        assert.equal(result.status, 0, result.stderr);
+        const api = envOf(result.stdout, "mend-api");
+        const web = envOf(result.stdout, "mend-web");
+        assert.equal(api.get("APP_URL"), appUrl);
+        assert.equal(web.get("APP_URL"), appUrl);
+        assert.equal(web.get("MEND_API_URL"), "http://mend-api.mend.svc:3101");
+        assert.equal(api.get("MEND_ALLOWED_ORIGINS"), undefined);
+        assert.equal(web.get("MEND_ALLOWED_ORIGINS"), undefined);
+        for (const key of [
+          "DATABASE_URL",
+          "MEND_DB_PASSWORD",
+          "BETTER_AUTH_SECRET",
+          "SEALANT_SERVICE_KEY",
+          "AWS_ACCESS_KEY_ID",
+          "AWS_SECRET_ACCESS_KEY",
+          "MEND_BLOB_STORE",
+        ]) {
+          assert.equal(web.get(key), undefined, `${key} must stay out of the web tier`);
+        }
+      }
+    },
+  );
+}
+
+test("an explicit browser-origin list reaches both tiers", { skip }, () => {
+  const origins = ["https://mend.example.ts.net", "https://mend.example.test"];
+  const result = render(
+    "-f",
+    path.join(chart, "ci/obc-values.yaml"),
+    "--set-string",
+    `web.appUrl=${origins[0]}`,
+    "--set-json",
+    `web.allowedOrigins=${JSON.stringify(origins)}`,
+  );
+  assert.equal(result.status, 0, result.stderr);
+  for (const deployment of ["mend-api", "mend-web"]) {
+    // PublicNetwork decodes this environment variable as a JSON array, not a CSV list.
+    assert.deepEqual(
+      JSON.parse(envOf(result.stdout, deployment).get("MEND_ALLOWED_ORIGINS")),
+      origins,
+    );
+  }
+});
