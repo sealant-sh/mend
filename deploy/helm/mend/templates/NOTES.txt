@@ -7,7 +7,14 @@ Session channel:   {{ include "mend.sessionEndpointUrl" . }} (workspaces only, p
 API replicas:      {{ .Values.api.replicaCount }} (keep 1 — see docs/KUBERNETES.md)
 Web replicas:      {{ .Values.web.replicaCount }} (stateless — scale freely)
 
-Nothing is exposed publicly. Port-forward the web tier:
+{{- if eq .Values.sessionChannel.service.type "NodePort" }}
+Session NodePort: {{ .Values.sessionChannel.service.nodePort }} (externalTrafficPolicy: Local).
+Restrict node firewalls/security groups to workspace sources or your private load balancer.
+Allow only the observed workspace source CIDRs in networkPolicies.sessionChannelCidrs.
+The chart creates no load balancer; route only to healthy nodes hosting the API Pod.
+{{- end }}
+
+No Ingress is created. Port-forward the web tier:
   kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }}-web 3105:3105
 
 Pair the Sealant chart. Workspace Pods ({{ .Values.networkPolicies.workspaceNamespace }}) reach the

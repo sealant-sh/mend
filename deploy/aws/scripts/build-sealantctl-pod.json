@@ -1,0 +1,38 @@
+{
+  "apiVersion": "v1",
+  "kind": "Pod",
+  "metadata": {
+    "name": "sealantctl-build",
+    "namespace": "sealant-build",
+    "labels": { "app": "sealantctl-build" }
+  },
+  "spec": {
+    "restartPolicy": "Never",
+    "automountServiceAccountToken": false,
+    "nodeSelector": { "kubernetes.io/arch": "arm64" },
+    "containers": [
+      {
+        "name": "build",
+        "image": "rust:1.96.1-slim",
+        "env": [{ "name": "RUSTUP_TOOLCHAIN", "value": "1.96.1" }],
+        "command": [
+          "sh",
+          "-euc",
+          "apt-get update -qq; apt-get install -y --no-install-recommends musl-tools curl ca-certificates; mkdir /src; curl -fLsS https://github.com/sealant-sh/sealantd/archive/5173e4920d44d5663b6a4fec4606ab58e7607ca1.tar.gz | tar xz -C /src --strip-components=1; cd /src; rustup target add aarch64-unknown-linux-musl; cargo build --locked --release --bin sealantctl --target aarch64-unknown-linux-musl; target/aarch64-unknown-linux-musl/release/sealantctl --help; target/aarch64-unknown-linux-musl/release/sealantctl capture flush --help; touch /build-complete; sleep 1800"
+        ],
+        "resources": {
+          "requests": { "cpu": "500m", "memory": "1Gi" },
+          "limits": { "cpu": "2", "memory": "3Gi" }
+        },
+        "readinessProbe": {
+          "exec": { "command": ["test", "-f", "/build-complete"] },
+          "periodSeconds": 10
+        },
+        "securityContext": {
+          "allowPrivilegeEscalation": false,
+          "capabilities": { "drop": ["NET_RAW"] }
+        }
+      }
+    ]
+  }
+}
