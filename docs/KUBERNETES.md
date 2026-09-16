@@ -306,6 +306,24 @@ Postgres (or `DATABASE_URL` from the secret), NetworkPolicies per tier (clients�
 workspaces→session port, API→bucket endpoint, Postgres←API only), and a PodDisruptionBudget for the
 API tier. No Ingress; port-forward or bring your own.
 
+When adding a private HTTPS ingress, set the browser-facing URL in the chart:
+
+```yaml
+web:
+  appUrl: https://mend.example.ts.net
+  allowedOrigins:
+    - https://mend.example.ts.net
+```
+
+The chart passes `APP_URL` and the optional `MEND_ALLOWED_ORIGINS` list to both tiers. Web's tRPC
+origin checks need the same browser origin as API authentication and streaming routes. Leaving
+`allowedOrigins` empty retains the application's default origin list, including `APP_URL`.
+`MEND_APP_URL` is different: it selects web's internal TanStack app server, not the browser-facing
+URL. `extraEnv` applies only to the API tier; use these `web` values for shared origin
+configuration. Database, provider and bucket credentials remain API-only. This configures origin
+checks, not TLS termination, enrollment or project authorization; it does not make public exposure
+safe.
+
 **Pair it with the Sealant chart.** Workspace Pods reach two things in Mend's world and mount
 nothing: the session channel (`<release>-session:3106`) and the bucket, whose presigned URLs name
 `MEND_BLOB_STORE_PUBLIC_URL`. The Sealant chart's workspace NetworkPolicy denies private ranges by

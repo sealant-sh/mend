@@ -47,6 +47,7 @@ spec:
           ports:
             - { containerPort: 3105, name: http }
           env:
+            {{- include "mend.browserOriginEnv" . | nindent 12 }}
             - { name: PORT, value: "3105" }
             - { name: MEND_API_URL, value: "http://{{ .Release.Name }}-api.{{ .Release.Namespace }}.svc:3101" }
           # /api/health rides the proxy: web readiness honestly includes "the API is reachable".

@@ -134,7 +134,12 @@ web:
   service:
     type: ClusterIP
     annotations: {}
+  # Browser-facing URL, supplied as APP_URL to BOTH tiers. Use the external HTTPS origin
+  # behind a private ingress; MEND_APP_URL instead names the web process's internal app server.
   appUrl: http://localhost:3105
+  # Optional exact browser origins, supplied as MEND_ALLOWED_ORIGINS to BOTH tiers.
+  # Empty keeps the application's defaults, which include APP_URL. No wildcard origins.
+  allowedOrigins: []
 
 # Supervised Service listeners (`mend service run/add`) — the same operator policy as
 # everywhere else (MEND_SERVICE_HOSTS, MEND_SERVICE_PORT_MIN/MAX). Defaults match local mode:
@@ -189,5 +194,6 @@ networkPolicies:
   # Where the Sealant API lives (the worker and web call it).
   sealantNamespace: sealant
 
-# Extra env for both tiers (plain values only).
+# Extra API-tier env (plain values only). Not forwarded to the web tier.
+# Configure shared browser origins through web.appUrl / web.allowedOrigins above.
 extraEnv: []
