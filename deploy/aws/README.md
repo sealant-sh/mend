@@ -135,6 +135,10 @@ shared StorageClass and Mend service account belong to `render-mend.py`, not the
 
 ## Candidate image and acceptance
 
+Docker capability work uses a separate opt-in image and does not change this deployed default. See
+the [AWS Docker service runbook](../../docs/operations/aws-docker-service.md) for the proposed
+configuration, privilege model, source-selection options and acceptance limits.
+
 The official Core recipe at `abe4d6c7258a5d6b479b72162de368c45953d9ee` reproduces a packaging
 failure: `sealantd:0.15.2` contains the daemon and socat but no `sealantctl`. The CLI is required
 for suspend and terminate capture flushes. The hook has not been removed or bypassed.

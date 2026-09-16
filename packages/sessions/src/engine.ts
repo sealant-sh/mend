@@ -3655,29 +3655,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // The platform's typed code IS Mend's capability check (a config flag could lie): the
           // workspace runtime refused the request synchronously — no workspace exists, no build
           // queued. Restate it naming what was refused, observationally.
-          Effect.mapError((error) =>
-            error.code === "runtime-env-references-unsupported"
-              ? new SealantPlatformError({
-                  code: error.code,
-                  status: error.status,
-                  cause: error.cause,
-                  message:
-                    `launch refused · ${clusterBindingNames.join(", ")}` +
-                    (clusterBindings.serviceAccount === null
-                      ? ""
-                      : ` · service account ${clusterBindings.serviceAccount}`) +
-                    " · cluster bindings do not resolve on this deployment's workspace runtime — remove them in project setup to launch here",
-                })
-              : error.code === "workspace-docker-unsupported"
-                ? new SealantPlatformError({
-                    code: error.code,
-                    status: error.status,
-                    cause: error.cause,
-                    message:
-                      "launch refused · Docker · this deployment's workspace runtime does not provide workspace-scoped Docker — turn Docker off in the workspace environment (Settings, or the project's image override), or ask the operator to enable `workspaces.docker` on the Sealant chart",
-                  })
-                : error,
-          ),
+          Effect.mapError((error) => {
+            if (error.code === "runtime-env-references-unsupported") {
+              return new SealantPlatformError({
+                code: error.code,
+                status: error.status,
+                cause: error.cause,
+                message:
+                  `launch refused · ${clusterBindingNames.join(", ")}` +
+                  (clusterBindings.serviceAccount === null
+                    ? ""
+                    : ` · service account ${clusterBindings.serviceAccount}`) +
+                  " · cluster bindings do not resolve on this deployment's workspace runtime — remove them in project setup to launch here",
+              });
+            }
+            if (error.code === "workspace-docker-unsupported") {
+              return new SealantPlatformError({
+                code: error.code,
+                status: error.status,
+                cause: error.cause,
+                message: `launch refused · Docker · ${error.message}`,
+              });
+            }
+            return error;
+          }),
           report,
           Effect.onInterrupt(() =>
             input.onFailure("workspace provisioning was interrupted").pipe(Effect.ignore),
