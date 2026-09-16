@@ -8,6 +8,14 @@ See the [capture-store ADR](../../docs/adr/0002-session-capture-store.md),
 [workbench plan](../../MEND-AGENT-WORKBENCH-PLAN.md), [Sealant manifests](kubernetes/README.md), and
 [teardown procedure](TEARDOWN.md).
 
+## Private access update — 2026-09-16 UTC
+
+Owner-only Tailscale HTTPS is installed at <https://mend-access.tailc79e49.ts.net>. Connect
+Tailscale and use the existing Mend login. See the
+[deployment record](../../docs/operations/aws-access-deployment.md) for versions, restrictions,
+verification, remaining acceptance and rollback notes. This does not make Mend public-ready or
+enable teammate access. The infrastructure observations below predate this access change.
+
 ## Observed deployment — 2026-09-15 UTC
 
 - EKS `mend-capture-poc`: one healthy ARM64 `m7g.large`, desired/min/max **1**. All four managed

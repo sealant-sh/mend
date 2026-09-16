@@ -172,6 +172,15 @@ successful Tofu destroy does not prove it is gone.
 
 ## 3. Remove Kubernetes workloads and PVCs while CSI still works
 
+If the owner-only Tailscale access path is installed, remove it before uninstalling Mend or
+terminating the cluster. Keep the Tailscale operator running while deleting `mend/mend-access`;
+verify its finalizer removes the proxy and associated tailnet device. Then uninstall the operator
+and remove its dedicated resources, operator device, OAuth client and unused access grants. Preserve
+unrelated tailnet policy. See the
+[access deployment record](../../docs/operations/aws-access-deployment.md) for the boundary and
+private manifests. Do not strip finalizers to hide failed remote cleanup. Tailscale devices and
+OAuth configuration are outside Tofu state too.
+
 First record every PVC, PV, StorageClass, and EBS volume handle. Confirm the shared class still has
 the expected safety properties:
 
