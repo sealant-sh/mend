@@ -59,6 +59,14 @@ export class HealthStatus extends Schema.Class<HealthStatus>("HealthStatus")({
   }),
   /** `MEND_TENANCY` (docs/adr/0003-organizations-and-tenancy.md). */
   tenancy: TenancyMode,
+  /**
+   * The multi mode gate as evaluated at start: whether it passes, and the ids of the items that do
+   * not. Details stay with the operator (`GET /operator/gate`).
+   */
+  tenancyGate: Schema.Struct({
+    passed: Schema.Boolean,
+    failing: Schema.Array(Schema.String),
+  }),
 }) {}
 
 export class ProcessLogChunk extends Schema.Class<ProcessLogChunk>("ProcessLogChunk")({

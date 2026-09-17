@@ -1,27 +1,22 @@
-import { OrganizationsRepo } from "@mend/db";
+import { InstanceRolesRepo, OrganizationsRepo } from "@mend/db";
 import { TenancyMode } from "@mend/domain/workbench";
 import { Config, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 /** `MEND_TENANCY` as this process runs it (docs/adr/0003-organizations-and-tenancy.md). */
-export class TenancyConfig extends Context.Service<TenancyConfig, { readonly mode: TenancyMode }>()(
-  "@mend/api/TenancyConfig",
-) {}
+export class TenancyConfig extends Context.Service<
+  TenancyConfig,
+  {
+    readonly mode: TenancyMode;
+    /** The multi mode gate as evaluated at start, in either mode. */
+    readonly gate: ReadonlyArray<GateOutcome>;
+  }
+>()("@mend/api/TenancyConfig") {}
 
 /** The process must not start in the requested tenancy mode; the message says why and what to do. */
 export class TenancyRefused extends Schema.TaggedErrorClass<TenancyRefused>()("TenancyRefused", {
   message: Schema.String,
 }) {}
-
-/**
- * Items of the multi mode gate that are not yet in place. Later steps of the organizations stack
- * remove entries as they land; the final step replaces this list with computed checks.
- */
-export const MULTI_MODE_MISSING: ReadonlyArray<string> = [
-  "Mend-managed folders in place of host paths",
-  "checked git source addresses pinned against DNS rebinding",
-  "a sealantd that declares every upload's size (PLATFORM-FEEDBACK.md, 2026-09-17)",
-];
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
 
@@ -47,39 +42,125 @@ export interface TenancyPosture {
   readonly captureRequireSizes?: boolean;
   /** MEND_BLOB_STORE: only an S3-compatible bucket enforces a signed length. */
   readonly blobStore?: string;
+  /** MEND_SESSION_STORE: `captured` workspaces mount no folders or references yet. */
+  readonly sessionStore?: "captured" | "colocated";
+  /** Accounts holding the operator role. */
+  readonly operatorCount?: number;
 }
+
+/** One item of the multi mode gate, as observed on this instance. */
+export interface GateOutcome {
+  readonly id: string;
+  readonly ok: boolean;
+  /** What was observed, in plain words. */
+  readonly detail: string;
+  /** What would satisfy it, when it is not. */
+  readonly fix: string | null;
+}
+
+const item = (id: string, ok: boolean, detail: string, fix: string): GateOutcome => ({
+  id,
+  ok,
+  detail,
+  fix: ok ? null : fix,
+});
+
+/**
+ * The multi mode gate (docs/adr/0003-organizations-and-tenancy.md, "Multi mode gate"), computed
+ * from what this build contains and how this instance is configured. Items this build already
+ * carries answer from the code that implements them; configuration items answer from the posture;
+ * items that wait on work outside this build say so.
+ */
+export const evaluateGate = (posture: TenancyPosture): ReadonlyArray<GateOutcome> => {
+  const exposed = exposedServiceHosts(posture.serviceHosts);
+  return [
+    item(
+      "cross-organization-authorization",
+      true,
+      "every route is classified and refuses across organizations with zero effects (project-access.test.ts)",
+      "",
+    ),
+    item(
+      "per-account-resources",
+      true,
+      "signers, push devices, notifications and GitHub identity belong to one account",
+      "",
+    ),
+    item(
+      "folders-reach-workspaces",
+      posture.sessionStore === "colocated",
+      posture.sessionStore === "colocated"
+        ? "folders and references are mounted beside each worktree"
+        : "captured workspaces mount no folders or references yet",
+      "a platform that ships read-only sources to captured workspaces (PLATFORM-FEEDBACK.md, 2026-09-17)",
+    ),
+    item(
+      "source-policy",
+      posture.sourcePolicy === "tenant",
+      `Mend's own git follows the ${posture.sourcePolicy ?? "operator"} source policy`,
+      "set MEND_SOURCE_POLICY=tenant",
+    ),
+    item(
+      "source-address-pinning",
+      false,
+      "a checked host is resolved again when git dials it",
+      "pin checked addresses for ssh and HTTPS (docs/GIT-ACCESS.md)",
+    ),
+    item(
+      "transport-bound-to-origin",
+      posture.transportBoundToOrigin !== false,
+      posture.transportBoundToOrigin === false
+        ? "a workspace's git transport may sign against any remote"
+        : "a workspace's git transport signs only against its project's remote",
+      "unset MEND_GIT_TRANSPORT_BIND_ORIGIN",
+    ),
+    item(
+      "upload-length-binding",
+      posture.captureRequireSizes === true && posture.blobStore?.startsWith("s3://") === true,
+      posture.captureRequireSizes === true
+        ? posture.blobStore?.startsWith("s3://") === true
+          ? "every capture upload is signed for its size, and the bucket enforces it"
+          : "sizes are required, but a directory blob store cannot enforce them"
+        : "capture uploads without a declared size are accepted",
+      "set MEND_CAPTURE_REQUIRE_SIZES=true with an S3-compatible MEND_BLOB_STORE",
+    ),
+    item(
+      "daemon-declares-sizes",
+      false,
+      "sealantd sizes only multipart uploads",
+      "a sealantd that declares every upload's size (PLATFORM-FEEDBACK.md, 2026-09-17)",
+    ),
+    item(
+      "raw-service-ports",
+      exposed.length === 0,
+      exposed.length === 0
+        ? "raw service listeners stay on loopback"
+        : `raw service listeners on ${exposed.join(", ")}`,
+      "unset MEND_SERVICE_HOSTS",
+    ),
+    item(
+      "operator-present",
+      (posture.operatorCount ?? 0) > 0,
+      `${posture.operatorCount ?? 0} operator account(s)`,
+      "grant the operator role to an account",
+    ),
+  ];
+};
 
 /** Why this combination must not start, or null when it may. */
 export const tenancyRefusal = (
   mode: TenancyMode,
   organizationCount: number,
-  posture: TenancyPosture = {},
+  gate: ReadonlyArray<GateOutcome>,
 ): string | null => {
   if (mode === "multi") {
-    const exposed = exposedServiceHosts(posture.serviceHosts);
-    const missing = [
-      ...MULTI_MODE_MISSING,
-      ...(exposed.length === 0
-        ? []
-        : [`raw service listeners on ${exposed.join(", ")} (unset MEND_SERVICE_HOSTS)`]),
-      ...(posture.sourcePolicy === "tenant"
-        ? []
-        : ["the tenant source policy (set MEND_SOURCE_POLICY=tenant)"]),
-      ...(posture.transportBoundToOrigin === false
-        ? ["git transport bound to each project's remote (unset MEND_GIT_TRANSPORT_BIND_ORIGIN)"]
-        : []),
-      ...(posture.captureRequireSizes === true
-        ? []
-        : ["capture uploads signed for their size (set MEND_CAPTURE_REQUIRE_SIZES=true)"]),
-      ...(posture.blobStore?.startsWith("s3://") === true
-        ? []
-        : ["an S3-compatible blob store, which enforces signed lengths (MEND_BLOB_STORE=s3://…)"]),
-    ];
+    const failing = gate.filter((outcome) => !outcome.ok);
+    if (failing.length === 0) return null;
     return [
       "MEND_TENANCY=multi is refused: the multi mode gate",
       "(docs/adr/0003-organizations-and-tenancy.md, 'Multi mode gate') is not complete.",
-      `Missing: ${missing.join("; ")}.`,
-      "Start with MEND_TENANCY=single (the default).",
+      ...failing.map((outcome) => `\n  ${outcome.id}: ${outcome.detail} (${outcome.fix ?? ""})`),
+      "\nStart with MEND_TENANCY=single (the default).",
     ].join(" ");
   }
   if (organizationCount > 1) {
@@ -95,7 +176,7 @@ export const tenancyRefusal = (
 export const TenancyConfigLive: Layer.Layer<
   TenancyConfig,
   TenancyRefused | Config.ConfigError,
-  OrganizationsRepo
+  InstanceRolesRepo | OrganizationsRepo
 > = Layer.effect(
   TenancyConfig,
   Effect.gen(function* () {
@@ -116,16 +197,33 @@ export const TenancyConfigLive: Layer.Layer<
       Config.withDefault(false),
     );
     const blobStore = yield* Config.string("MEND_BLOB_STORE").pipe(Config.withDefault(""));
+    const sessionStore = yield* Config.schema(
+      Schema.Literals(["captured", "colocated"]),
+      "MEND_SESSION_STORE",
+    ).pipe(Config.withDefault("captured" as const));
     const organizations = yield* OrganizationsRepo;
-    const refusal = tenancyRefusal(mode, yield* organizations.count(), {
+    const operators = yield* (yield* InstanceRolesRepo).operators();
+    const gate = evaluateGate({
       serviceHosts,
       sourcePolicy,
       transportBoundToOrigin,
       captureRequireSizes,
       blobStore,
+      sessionStore,
+      operatorCount: operators.length,
     });
+    const refusal = tenancyRefusal(mode, yield* organizations.count(), gate);
     if (refusal !== null) return yield* new TenancyRefused({ message: refusal });
-    yield* Effect.logInfo("tenancy").pipe(Effect.annotateLogs({ mode }));
-    return { mode };
+    yield* Effect.logInfo("tenancy").pipe(
+      Effect.annotateLogs({
+        mode,
+        gate: gate.every((outcome) => outcome.ok) ? "passed" : "not passed",
+        failing: gate
+          .filter((outcome) => !outcome.ok)
+          .map((outcome) => outcome.id)
+          .join(","),
+      }),
+    );
+    return { mode, gate };
   }),
 );

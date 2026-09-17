@@ -356,6 +356,15 @@ label. A workspace that cannot reach the bucket logs `capture materialize failed
 
 The images come from `ghcr.io/sealant-sh/mend` (`.github/workflows/image.yml`).
 
+## Multi mode gate
+
+`MEND_TENANCY=multi` refuses to start until every item of the multi mode gate is in place
+(docs/adr/0003). `mend operator gate` prints each item, what this instance shows, and what would
+satisfy an open one; `/health` carries `tenancyGate.passed` and the open item ids. The configuration
+items: `MEND_SOURCE_POLICY=tenant`, `MEND_GIT_TRANSPORT_BIND_ORIGIN` unset,
+`MEND_CAPTURE_REQUIRE_SIZES=true` with an `s3://` `MEND_BLOB_STORE`, `MEND_SERVICE_HOSTS` on
+loopback, and an operator account.
+
 ## Request bodies at the ingress
 
 Uploading into an organization folder sends up to 4 MiB of files per request, which is about 5.5 MiB

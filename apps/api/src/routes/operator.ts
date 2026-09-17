@@ -1,5 +1,6 @@
 import {
   MendApi,
+  MultiModeGateItem,
   NotFound,
   OneTimeLink,
   OrganizationRejected,
@@ -45,6 +46,12 @@ const organizationOr404 = (id: OrganizationId) =>
  */
 export const OperatorGroupLive = HttpApiBuilder.group(MendApi, "operator", (handlers) =>
   handlers
+    .handle("gate", () =>
+      Effect.gen(function* () {
+        yield* operator;
+        return (yield* TenancyConfig).gate.map((outcome) => new MultiModeGateItem(outcome));
+      }),
+    )
     .handle("organizations", () =>
       Effect.gen(function* () {
         yield* operator;

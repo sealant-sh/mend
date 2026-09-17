@@ -114,6 +114,10 @@ export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers
             ? { mode: "unix-socket", endpoint: null }
             : { mode: "network", endpoint: deployment.sessionEndpoint.url },
         tenancy: tenancy.mode,
+        tenancyGate: {
+          passed: tenancy.gate.every((outcome) => outcome.ok),
+          failing: tenancy.gate.filter((outcome) => !outcome.ok).map((outcome) => outcome.id),
+        },
       });
     }),
   ),
