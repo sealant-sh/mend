@@ -6,6 +6,8 @@ import { Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { Socket } from "effect/unstable/socket";
 
+import { SessionSteering } from "../session-steering.ts";
+
 /**
  * The Service tunnel (docs/SESSION-SERVICES.md): the client-side data plane
  * for supervised Services. The server-side listener (`MEND_SERVICE_HOSTS`)
@@ -34,6 +36,7 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
     const services = yield* ServicesRepo;
     const forwards = yield* ServiceForwardsRepo;
     const sessions = yield* SessionsRepo;
+    const steering = yield* SessionSteering;
     const sealant = yield* SealantClient;
 
     yield* router.add("GET", "/api/service-tunnel", (request) =>
@@ -58,6 +61,16 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
         if (service === null) {
           return HttpServerResponse.text("unknown service", { status: 404 });
         }
+        const owner = yield* sessions.byId(service.sessionId).pipe(Effect.option);
+        if (Option.isNone(owner)) {
+          return HttpServerResponse.text("unknown session", { status: 404 });
+        }
+        const authorized = yield* steering
+          .authorizeUser(owner.value, authed.value.user.id)
+          .pipe(Effect.option);
+        if (Option.isNone(authorized)) {
+          return HttpServerResponse.text("forbidden", { status: 403 });
+        }
         if (service.transport === "udp") {
           return HttpServerResponse.text("UDP Services have no connection to tunnel", {
             status: 409,
@@ -68,22 +81,13 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
         // unbindable — e.g. a stale Pod-IP policy — while the Service process runs on).
         const forward =
           service.currentForwardId === null ? null : yield* forwards.byId(service.currentForwardId);
-        const owner = yield* sessions.byId(service.sessionId).pipe(Effect.option);
-        const ownerUserId = Option.isSome(owner) ? owner.value.ownerUserId : null;
-        // Authenticated is not authorized. The raw listener cannot gate per
-        // user — network reach is its only gate — but this path can, so it
-        // does: only the session owner tunnels its Services. (`/api/tty`
-        // still admits any signed-in user; align it when session sharing is
-        // decided.)
-        if (ownerUserId !== null && ownerUserId !== authed.value.user.id) {
-          return HttpServerResponse.text("not your Service", { status: 403 });
-        }
+        const ownerUserId = owner.value.ownerUserId;
+        // Authenticated is not authorized. Both raw steering routes apply the same owner rule;
+        // the unauthenticated raw listener can only rely on network reach.
         const workspaceId =
           forward !== null && (forward.state === "binding" || forward.state === "bound")
             ? forward.sealantWorkspaceId
-            : Option.isSome(owner)
-              ? owner.value.sealantWorkspaceId
-              : null;
+            : owner.value.sealantWorkspaceId;
         if (workspaceId === null) {
           return HttpServerResponse.text("the Service has no live workspace", { status: 409 });
         }

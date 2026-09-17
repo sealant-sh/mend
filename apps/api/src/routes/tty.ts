@@ -7,6 +7,8 @@ import { Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { Socket } from "effect/unstable/socket";
 
+import { SessionSteering } from "../session-steering.ts";
+
 /**
  * The terminal proxy (plan §8.1.F) as a DATA PLANE: one WebSocket per attach.
  * The CLI (and later the phone/web pane) reaches a session's platform PTY
@@ -36,6 +38,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
     const auth = yield* Auth;
     const sessions = yield* SessionsRepo;
     const processes = yield* SessionProcessesRepo;
+    const steering = yield* SessionSteering;
     const sealant = yield* SealantClient;
 
     yield* router.add("GET", "/api/tty", (request) =>
@@ -69,6 +72,16 @@ export const TtyRoutes = HttpRouter.use((router) =>
           if (process === null) {
             return HttpServerResponse.text("unknown process", { status: 404 });
           }
+          const owner = yield* sessions.byId(process.sessionId).pipe(Effect.option);
+          if (Option.isNone(owner)) {
+            return HttpServerResponse.text("unknown session", { status: 404 });
+          }
+          const authorized = yield* steering
+            .authorizeUser(owner.value, authed.value.user.id)
+            .pipe(Effect.option);
+          if (Option.isNone(authorized)) {
+            return HttpServerResponse.text("forbidden", { status: 403 });
+          }
           if (process.kind === "agent-protocol") {
             return HttpServerResponse.text("protocol agents use the structured conversation API", {
               status: 409,
@@ -79,16 +92,21 @@ export const TtyRoutes = HttpRouter.use((router) =>
             // Adopted Services forward a port; there is no PTY to attach.
             return HttpServerResponse.text("process has no platform PTY", { status: 409 });
           }
-          const owner = yield* sessions.byId(process.sessionId).pipe(Effect.option);
           target = {
             sealantWorkspaceId: process.sealantWorkspaceId,
             sealantSessionId: processPtyId,
-            ownerUserId: Option.isSome(owner) ? owner.value.ownerUserId : null,
+            ownerUserId: owner.value.ownerUserId,
           };
         } else if (sessionParam !== null) {
           const session = yield* sessions.byId(SessionId.make(sessionParam)).pipe(Effect.option);
           if (Option.isNone(session)) {
             return HttpServerResponse.text("unknown session", { status: 404 });
+          }
+          const authorized = yield* steering
+            .authorizeUser(session.value, authed.value.user.id)
+            .pipe(Effect.option);
+          if (Option.isNone(authorized)) {
+            return HttpServerResponse.text("forbidden", { status: 403 });
           }
           const agent = currentAgentProcess(yield* processes.listForSession(session.value.id));
           if (agent?.kind === "agent-protocol") {

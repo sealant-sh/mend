@@ -9,10 +9,12 @@ import { NodeHttpServer } from "@effect/platform-node";
 import { gitKeysGroup } from "@mend/api-contracts";
 import { Auth, createAuthHandler } from "@mend/auth";
 import {
+  AgentConversationRepo,
   ServiceForwardsRepo,
   ServicesRepo,
   SessionProcessesRepo,
   SessionsRepo,
+  UserDotfilesRepo,
   UserEvents,
   UserGitAccessRepo,
 } from "@mend/db";
@@ -28,6 +30,7 @@ import { publicNetworkPolicy } from "./public-network-policy.ts";
 import { AuthMiddlewareLive } from "./routes/api-live.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
 import { GitKeysGroupLive } from "./routes/workbench.ts";
+import { SessionSteeringLive } from "./session-steering.ts";
 
 const network = makePublicNetwork(PublicOrigin.make("http://localhost:3105"), [
   PublicOrigin.make("http://mac-mini.local:3105"),
@@ -95,19 +98,22 @@ const startServer = async () => {
     // announcement passes silently while every other database access stays a defect.
     Layer.mock(UserEvents, { changed: () => Effect.void }),
     Layer.mock(UserGitAccessRepo, {}),
+    Layer.mock(AgentConversationRepo, {}),
     Layer.mock(SealantClient, {}),
     Layer.mock(SessionsRepo, {}),
     Layer.mock(SessionProcessesRepo, {}),
     Layer.mock(ServicesRepo, {}),
     Layer.mock(ServiceForwardsRepo, {}),
+    Layer.mock(UserDotfilesRepo, {}),
   );
   const api = HttpApiBuilder.layer(HttpApi.make("mend").add(gitKeysGroup).prefix("/api")).pipe(
     Layer.provide(GitKeysGroupLive),
     Layer.provide(AuthMiddlewareLive),
   );
+  const websocketRoutes = WebSocketRoutes.pipe(Layer.provide(SessionSteeringLive));
   const server = createServer();
   const runtime = ManagedRuntime.make(
-    HttpRouter.serve(Layer.mergeAll(api, WebSocketRoutes, publicNetworkPolicy(network)), {
+    HttpRouter.serve(Layer.mergeAll(api, websocketRoutes, publicNetworkPolicy(network)), {
       disableLogger: true,
       disableListenLog: true,
     }).pipe(

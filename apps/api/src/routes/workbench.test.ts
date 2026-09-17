@@ -251,6 +251,7 @@ const requestProject = async (
   world: TestWorld,
   path = `/api/projects/${PROJECT_ID}`,
   authorization: string | null = AUTHORIZATION,
+  init: RequestInit = {},
 ): Promise<{ readonly response: Response; readonly detail: ProjectDetail | null }> => {
   const projectRouteDependencies = Layer.mergeAll(
     projectsLayer(world),
@@ -273,9 +274,13 @@ const requestProject = async (
     const requestContext = await dependenciesRuntime.runPromise(
       Effect.context<ProjectRouteServices>(),
     );
-    const requestInit = authorization === null ? {} : { headers: { authorization } };
+    const headers = new Headers(init.headers);
+    if (authorization !== null) headers.set("authorization", authorization);
+    if (init.body !== undefined && !headers.has("content-type")) {
+      headers.set("content-type", "application/json");
+    }
     const response = await handler(
-      new Request(`http://api.internal${path}`, requestInit),
+      new Request(`http://api.internal${path}`, { ...init, headers }),
       requestContext,
     );
     if (response.status !== 200) return { response, detail: null };
@@ -397,5 +402,28 @@ describe("GET /projects/:id response", () => {
 
     expect(response.status).toBe(404);
     expect(detail).toBeNull();
+  });
+
+  it("does not disclose an existing project's id, scope, or store path on adoption conflict", async () => {
+    const world = makeWorld([]);
+    const existing = world.projects[0];
+    if (existing === undefined) throw new Error("The test world needs one existing project");
+
+    const { response } = await requestProject(world, "/api/projects", AUTHORIZATION, {
+      method: "POST",
+      body: JSON.stringify({
+        name: existing.name,
+        source: "https://example.invalid/replacement.git",
+      }),
+    });
+    const body: unknown = await response.json();
+
+    expect(response.status).toBe(422);
+    expect(body).toEqual({
+      _tag: "StoreFailure",
+      message: `A project named "${existing.name}" already exists.`,
+    });
+    expect(JSON.stringify(body)).not.toContain(existing.id);
+    expect(JSON.stringify(body)).not.toContain(existing.storePath);
   });
 });
