@@ -1,0 +1,347 @@
+# Access without a private network: Mend as its own authenticated front door
+
+Status: proposed 2026-09-17. Commits Mend to the work that makes a private network layer a choice
+and not a prerequisite. It closes the Mend findings the organizations stack left open in
+[public exposure findings](../reviews/public-exposure-findings.md) (MEND-05, MEND-08, MEND-11, the
+event-stream lifecycle, and the edge), names the platform halves (CORE-01, -03, -04, -05, -08 and
+the executor channel's transport), and defines the **public exposure gate**.
+
+**This ADR does not authorize public exposure.** Public Mend is gate **G7** of the
+[access plan](../operations/aws-access-plan.md), and G7 needs an independent reassessment of the
+exact release. Nothing here, and no green test, stands in for that.
+
+## Context
+
+[Plan §7.5](../../MEND-AGENT-WORKBENCH-PLAN.md) was written with a tailnet assumed: bind to loopback
+and private interfaces, show the machine's tailnet address, require no public inbound port. The
+network was the perimeter, and the application was allowed to lean on it.
+
+The organizations stack ([ADR 0003](0003-organizations-and-tenancy.md), #263 to #280, #282) removed
+most of that leaning: registration is closed and by invitation, an operator role exists, every route
+authorizes against the project before any effect, signers, devices, notifications and GitHub
+identity belong to one account, folders replaced host mounts, Mend's own git follows a source policy
+with pinned addresses, uploads are signed for their length, and raw service ports stay on loopback.
+ADR 0003 deliberately deferred budgets: "an invited beta tenant is unlikely to exhaust resources on
+purpose". An unauthenticated stranger on the Internet is not an invited tenant, so a public front
+door is what makes them required.
+
+What still leans on the network, as observed on `main` at `2c05944ce`:
+
+- **No budgets (MEND-05).** No body-size limit exists anywhere in `apps/api`; `pasteImage`,
+  `skills.sync`, `folders.upload` and the dotfiles push decode a whole base64 body into memory
+  before any check. WebSocket frames have no `maxPayload`. Nothing bounds the launches, streams or
+  sockets one account holds. Only pairing is rate limited.
+- **Bearers in URLs (MEND-08).** `/api/tty`, `/api/service-tunnel` and `/api/keys/bridge/ws` fold
+  `?token=` into `Authorization`. The CLI, desktop, the mobile socket and the mobile `/tty-embed`
+  WebView all put a long-lived device or session bearer in that query string. No request log exists
+  in Mend today, so Mend itself writes none of them down. Every proxy in front of it may.
+- **Errors and headers (MEND-11).** No security header is set by web or API. Upstream detail crosses
+  to clients: a Sealant dial error is a 502 body on the service tunnel, platform messages ride
+  `AccountRejected` and `SealantUnavailable`, and there is no defect handler.
+- **The edge.** Cookies carry no explicit attributes, so `Secure` follows the scheme of `APP_URL`
+  silently. `MEND_TRUSTED_PROXIES` feeds only the pairing limiter. API and web listen on every
+  interface of their container; the Docker publish address is the only bind control. The chart has
+  no Ingress. `mend server setup` validates an `https://` URL and stops there.
+- **How reachability is described.** `apps/api/src/routes/machine.ts` infers "tailnet" from an
+  interface in `100.64.0.0/10`. The shell says `tailnet · reachable` or `tailnet · not detected`,
+  and `mend doctor` has a `tailnet` check. For a LAN or public install the second is a false alarm,
+  and the first was never a statement about who can reach the instance.
+- **The event stream.** The per-stream `LISTEN` that let one closing browser silence the others is
+  already gone: #267 moved every stream onto one application-owned fan-out (`events-bus.ts`) with
+  cross-user filtering (`events.ts`). What remains is a lifecycle test through the real route, and a
+  bound on how many streams one account may hold.
+
+The platform halves, observed at Core `97c741c` and sealantd `aeb9b60`:
+
+- Core serves every `/v1` route without a credential when `SEALANT_SERVICE_KEYS` is unset (CORE-01),
+  reads "no owner named" as "unscoped" and updates runs and renames workspaces by id alone
+  (CORE-03), has no budgets (CORE-04), sends an installation token to whatever URL a spec names and
+  a session token to whatever endpoint it names (CORE-05), and interpolates registry names into URLs
+  with no deadline or size bound (CORE-08).
+- sealantd's `HttpRegistrar` and `PresignedHttp` dial any URL, `http://` included, follow ten
+  redirects, verify against the bundled public roots only, and honour `HTTP_PROXY`. The recorded AWS
+  deployment runs the executor channel over private-VPC HTTP.
+
+## Decision
+
+### The access model
+
+**Mend web is the one front door.** A person reaches Mend at one HTTPS origin. Web serves the app
+and proxies `/api/*`, the event stream and every WebSocket to the API on that origin. The CLI, the
+desktop app, the phone and the editor extension use the same origin. There is no second API hostname
+and no separate terminal listener.
+
+**Mend authenticates and authorizes every request itself.** A network that admits a connection says
+nothing about who is on it. A tailnet, a LAN, a VPN or an identity-aware proxy in front of Mend is
+an extra gate an operator may add. Mend never reads its headers as identity and never trusts a
+request more because of where it came from.
+
+**TLS ends at an edge the operator runs; Mend is told the truth about it.** Mend does not terminate
+public TLS in its own process. The edge is a reverse proxy, an ingress controller or a load balancer
+that holds the certificate and forwards to web over a private hop. The chart can render an Ingress
+and the packaged install can run a Caddy edge; both are opt-in deployment shapes of the same
+contract:
+
+- `APP_URL` is the exact browser origin and must be `https:` when the instance is exposed beyond the
+  machine. Alternate origins stay an exact list (`MEND_ALLOWED_ORIGINS`). No wildcard, no discovery
+  from `Host` or forwarded headers.
+- `MEND_TRUSTED_PROXIES` names the hops whose `X-Forwarded-For` entries Mend believes. One resolver
+  (`@mend/network`) derives the client address for everything that keys on it (pairing, budgets,
+  audit). It takes the rightmost entry that is not a trusted hop, so a client cannot choose its own
+  address. Web keeps deleting inbound `Forwarded`, `X-Forwarded-Host` and `X-Forwarded-Proto`.
+- Cookies are `Secure`, `HttpOnly` and `SameSite=Lax` whenever `APP_URL` is `https:`, set explicitly
+  and tested, not inferred.
+
+**Everything behind Mend stays private.** Core, its registry, Postgres, the bucket's admin surface,
+raw service ports and the Kubernetes API get no new exposure. Core stays a trusted control plane
+called with a service key. It is never an authorization server for Mend's users, and a service key
+never reaches a browser, a phone or a workspace.
+
+**The executor channel does not assume a private network either.** A workspace reaches Mend's
+session channel over HTTPS with a verified certificate, or the daemon refuses to boot. Plain HTTP is
+dialled only when the launcher states that the network between executor and channel is private. Mend
+states that from its own configuration and never by default for a public instance.
+
+### Exposure is declared, and reported as observed
+
+`MEND_EXPOSURE=loopback|private|public`, default `loopback`.
+
+- `loopback`: reached from this machine only.
+- `private`: reached over a network the operator controls admission to (a tailnet, a LAN, a VPN).
+- `public`: reachable from the Internet.
+
+The declaration is the operator's statement of intent. Mend cannot observe who can reach it: a
+container does not know what is published in front of it. So the product reports what it can observe
+beside what was declared, and never a verdict:
+
+```
+exposure · declared public · https origin · 1 trusted proxy hop · gate 2 open
+```
+
+`machine.ts`, the shell and `mend doctor` stop saying "tailnet · reachable". They report the
+declared exposure, the origin's scheme, whether the request that asked arrived through a trusted
+hop, the interface families the host holds (a CGNAT address is reported as "an address in
+100.64.0.0/10", which is what was observed, not "tailnet"), and the open gate items. A missing
+tailnet is not a failed check. It is not a check.
+
+### Public exposure gate
+
+Starting with `MEND_EXPOSURE=public` is refused until the items this build can observe are closed,
+in the style of the multi mode gate (`apps/api/src/exposure.ts`). Start-up names each open item with
+its fix; `/health` reports whether the gate passes and the open ids; `GET /operator/exposure`
+(`mend operator exposure`) gives the operator the detail. Each item carries how it was established:
+`observed` (this process read it), `declared` (the operator stated it and this process cannot check
+it), or `open`.
+
+Observed by this build, and required to start `public`:
+
+1. **https-origin**: `APP_URL` and every alternate origin are `https:`.
+2. **secure-cookies**: session cookies are `Secure`, `HttpOnly`, `SameSite=Lax`.
+3. **trusted-proxies**: `MEND_TRUSTED_PROXIES` is set, and does not trust every address.
+4. **enrollment-closed**: registration is by invitation (carried by the build since #265).
+5. **tenancy-gate**: every multi mode gate item this build observes is closed, in either tenancy
+   mode. An Internet-facing single-organization install needs the same source policy, upload binding
+   and loopback service ports as a multi-tenant one.
+6. **budgets**: every budget below is set; none is `0`.
+7. **no-bearers-in-urls**: `MEND_URL_BEARERS=refuse` (the default once every first-party client
+   sends tickets; see "Upgrade tickets").
+8. **browser-headers**: the header policy is on (it has no off switch outside `loopback`).
+9. **error-redaction**: public error detail is off (`MEND_ERROR_DETAIL` unset).
+10. **executor-channel-transport**: the session channel's advertised URL is `https:`, or the
+    operator declared the executor network private (`MEND_EXECUTOR_NETWORK=private`), which is
+    reported as `declared`.
+
+Not observable by this build. Reported, never inferred, and they do not block start:
+
+11. **core-private**: Core, its registry and the database are not reachable from the Internet. What
+    would verify it: a connection attempt to each from outside the deployment's network.
+12. **edge-tls**: the certificate chains to a public root, renews, and the edge redirects port 80.
+    What would verify it: `mend doctor --from-outside` run against the origin from another network.
+13. **reassessment**: an independent security reassessment of this exact release. The operator
+    records one with `MEND_EXPOSURE_REASSESSED=<version>`. The item reads `declared` only when that
+    value equals the running version, and `open` otherwise, so an upgrade reopens it.
+
+The gate passing means every item is closed or declared. It is a report of what was observed and
+stated. It is not a statement that the instance is safe, and the product never words it as one.
+
+Rejected: refusing `public` until item 13 is recorded (a build cannot tell a real reassessment from
+a typed version string, so it would be theatre that also blocks the honest operator); and treating
+`private` as ungated (it gets the same report, it just does not refuse to start).
+
+### Budgets (MEND-05)
+
+Hitting a budget refuses new work with a stated reason and a `Retry-After`. It never stops a running
+session, never closes a socket that is already open, and never drops a capture. Every refusal
+happens before the effect it guards.
+
+- **Bodies, before decode.** A global middleware refuses a declared `Content-Length` over the
+  route's limit with 413 before a byte is read, and sets `HttpIncomingMessage.MaxBodySize` so a
+  chunked body is cut at the same point. Default 1 MiB; the upload routes (`pasteImage`,
+  `skills.sync`, `folders.upload`, dotfiles, workspace image) get named larger limits.
+- **Frames.** WebSocket servers get `maxPayload`. Terminal input frames are small; the tunnel and
+  the key bridge get their own limits.
+- **Requests.** Per account and, before authentication, per client address: one sliding-window
+  limiter generalized from the pairing limiter, keyed by the single client-address resolver. Sign-in
+  and invitation acceptance get a tighter window than the rest.
+- **Concurrent work.** Per account: live sessions, launches in flight, and open long-lived
+  connections by kind (event streams, terminals, tunnels, key bridges). `ConnectionRegistry` already
+  holds every long-lived connection per account, so it is where the connection budget is counted and
+  refused. Per organization: live sessions.
+- **One fan-out.** Already in place (#267). This ADR adds the per-account stream bound and a bound
+  on the per-stream work a slow consumer can queue (the bus is a sliding buffer; the refresh work a
+  stream does per event is bounded too).
+
+Defaults are sized for a small team and are all configuration. Core enforces its own budgets
+(CORE-04) behind Mend's; Mend maps a Core 429 to the same refusal shape and does not retry into it.
+
+### Upgrade tickets (MEND-08)
+
+A browser cannot set headers on a WebSocket, and a WebView cannot set them on a page load. Those are
+the only two places a credential still has to ride a URL, so that credential becomes worthless
+anywhere else:
+
+- `POST /api/upgrade-tickets` (authenticated by cookie or `Authorization`) mints a **ticket**: 32
+  random bytes, stored hashed, single use, 30 seconds to live, bound to the account, to one target
+  (`tty`, `service-tunnel`, `keys-bridge`, `tty-embed`) and to that target's exact parameters (the
+  session or process id, the service id, the bridge host).
+- The three WebSocket routes accept `?ticket=`. A ticket is consumed under a row lock on first use,
+  refused for any other target or parameter, and refused after expiry. Authorization still runs as
+  the ticket's account, exactly as for a header.
+- `/tty-embed` takes a ticket and exchanges it, in the page, for a second ticket for the socket. No
+  bearer reaches the WebView's URL, history or referrer.
+- Native clients (CLI, desktop main process, mobile socket, editor extension) send
+  `Authorization: Bearer` on the upgrade. Every one of them can: only browsers cannot.
+- `?token=` is refused with 400 when `MEND_URL_BEARERS=refuse`, and accepted with a logged
+  deprecation when `accept`. `accept` exists for one release, so a newer server still serves an
+  older CLI or phone build. It is an open gate item.
+- **Redaction through the chain.** Web strips `token` and `ticket` from anything it logs and sets
+  `Referrer-Policy: no-referrer` on the embed. The chart's Ingress annotations and the Caddy edge's
+  log format drop query strings. The docs say what an operator's own proxy must do. Mend's error
+  bodies, audit rows and Sealant records never contain a request URL's query.
+
+### Errors and browser headers (MEND-11)
+
+- **Errors.** One boundary maps what leaves the API. A declared contract error crosses with its tag
+  and a message written for the person reading it. Anything else (an upstream message, a platform
+  error's text, a defect) crosses as its tag or `InternalError` and a short reference id. The detail
+  goes to the server log under that id. `MEND_ERROR_DETAIL=verbose` restores upstream text for an
+  operator debugging a private instance, and is an open gate item.
+- **Headers.** Web sets them on every response, API on its own: `Content-Security-Policy` (self
+  only; `connect-src` self plus `wss:` on the same origin; `wasm-unsafe-eval` for the terminal;
+  `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`,
+  `Referrer-Policy: strict-origin-when-cross-origin` (`no-referrer` on `/tty-embed`), a
+  `Permissions-Policy` that turns off what Mend does not use,
+  `Cross-Origin-Opener-Policy: same-origin`, and `Strict-Transport-Security` when the origin is
+  `https:`.
+- **The terminal embed stays supported.** The one supported embedder of `/tty-embed` is the mobile
+  app's WebView, which loads it as a top-level document, not a frame. `frame-ancestors 'none'` does
+  not apply to it, and a test pins both halves: the embed page loads under the policy, and the
+  policy forbids framing it.
+
+### Event stream lifecycle
+
+A test through the real `/api/events` route: two streams open, one is torn down mid-delivery, the
+other keeps receiving and nothing is unsubscribed at the database; a stream ended by member removal
+releases its registration; a refused stream over the account's budget leaves no subscription behind.
+
+### The platform halves
+
+- **sealantd**: one transport policy for the channel and for presigned object URLs. HTTPS with
+  verified certificates or refuse; plain HTTP to loopback or under the launcher's explicit
+  exception; a CA bundle for each path; no redirects; no ambient proxy.
+- **Core**: fail closed without service keys (CORE-01); an owner named and checked on every
+  operation, with the SSH gateway as its own narrower authority (CORE-03); per-credential and
+  per-owner budgets (CORE-04); an installation token only to the repository it was issued for and a
+  session token only to an approved channel (CORE-05); registry names held to the OCI grammar with
+  bounded answers (CORE-08). Core stays private throughout.
+
+Each bakes the one below, so the release order is sealantd, then Core, then Mend. No PR in one
+repository depends on an unmerged PR in another: Mend adopts `transport` on the capture source, and
+the owner on every record read, in the PR that bumps its Sealant pin.
+
+## Consequences
+
+- The product language gains `exposure` (`loopback`, `private`, `public`), the
+  `public exposure gate`, `upgrade ticket`, `budget` and `edge`. "Tailnet" leaves the product's own
+  words and stays in the docs as one way to run `private`.
+- Plan §7.5 is rewritten: Mend is its own front door; a private network is one deployment shape.
+- A `public` instance that loses an observed item at restart (an `http:` origin after a bad config
+  push) refuses to start, which is a worse failure for the operator than a warning and the only one
+  that cannot be missed.
+- Older first-party clients that still send `?token=` keep working for one release under
+  `MEND_URL_BEARERS=accept`, then stop.
+- Raw service forwards stay loopback-only on a `public` instance and are reached through the
+  authenticated tunnel. Executor-served HTML is never served under the authenticated origin.
+
+## Delivery
+
+One ready-for-review PR per step, stacked:
+
+1. This ADR.
+2. Budgets: body limits before decode, frame limits, the request limiter and the single client
+   address resolver, per-account and per-organization ceilings, the connection budget in
+   `ConnectionRegistry`.
+3. Upgrade tickets, header authentication on every native client, `MEND_URL_BEARERS`, query
+   redaction.
+4. The error boundary and the browser header policy, with the terminal-embed test.
+5. The event stream lifecycle test and the per-account stream bound.
+6. The edge: `MEND_EXPOSURE`, explicit cookie attributes, the public exposure gate,
+   `GET /operator/exposure`, the chart's Ingress and the packaged install's Caddy edge.
+7. Reporting and docs: `machine.ts`, the shell, `mend doctor`, plan §7.5, `AGENTS.md`, the
+   self-hosting and remote-access guides.
+
+Follows the Sealant release that carries the platform halves: the Sealant pin bump, `transport` on
+the capture source from `MEND_EXECUTOR_NETWORK` and the channel's TLS settings, and gate item 10
+reading the real value.
+
+## Decision log
+
+Choices a reviewer may overturn without touching the rest. Each names what was taken and why.
+
+1. **TLS ends at an operator-run edge, not in Mend's process.** Taken: edge. Certificates, renewal,
+   HTTP/2 and port 80 redirects are a solved problem in Caddy, ingress controllers and load
+   balancers, and every serious deployment already has one. Rejected: an ACME client inside the web
+   process (a second thing holding a private key, for no gain).
+2. **Exposure is declared, not detected.** Taken: `MEND_EXPOSURE`. A process cannot observe what is
+   published in front of its container, and a guess that reads "reachable" or "not reachable" is a
+   verdict Mend cannot back. Rejected: inferring from interfaces, which is what `machine.ts` does
+   today.
+3. **`public` refuses to start on observed items only.** Taken. Items a build cannot observe are
+   reported as `declared` or `open`. Rejected: blocking on the reassessment record, see above.
+4. **Tickets, not signed URLs or a cookie-only rule.** Taken: opaque, hashed, single-use rows, the
+   same storage pattern as pairing codes and session channel tokens. Rejected: a signed stateless
+   token (cannot be single use without state anyway) and cookie-only browser sockets (the WebView
+   and cross-origin dev setups have no cookie).
+5. **Ticket lifetime 30 seconds.** Long enough for a phone on a bad network to open the socket it
+   just asked for; short enough that a logged ticket is dead before anyone reads the log.
+6. **`MEND_URL_BEARERS=accept` for one release.** Taken, so the server and the phone build do not
+   have to ship on the same day. It is an open gate item for that release.
+7. **Budgets refuse, they never kill.** Carried from ADR 0003. A budget that stops a running session
+   destroys work to protect capacity, which is the wrong trade for this product.
+8. **In-memory request windows.** Taken for v1: per API process, so N replicas admit N times the
+   rate. The API runs as a singleton today. Concurrency ceilings are counted from Postgres and
+   `ConnectionRegistry`. A shared limiter is later work if the API ever scales out.
+9. **`frame-ancestors 'none'`, with the embed as a top-level document.** Taken, because the only
+   supported embedder is a WebView. If a framed embed is ever supported it gets an exact-origin
+   allowlist, never a wildcard.
+10. **The chart renders an Ingress; it does not install a controller or an issuer.** Those are
+    cluster decisions. The packaged install does run an edge (Caddy) when asked, because a single
+    Docker host has no cluster to delegate to.
+11. **Core budgets sit behind Mend's, not instead of them.** Mend refuses earlier and with better
+    words; Core's are the backstop for a caller that is not Mend.
+
+## Open questions
+
+Decisions that are the owner's. Work proceeds on the default stated with each.
+
+1. **Does `private` also refuse to start on open items, or only report?** Default: only report, so
+   existing tailnet and LAN installs upgrade without a new start-up failure.
+2. **Budget defaults.** The numbers in PR 2 are sized from the author's own use. Default: ship them,
+   all configurable.
+3. **Who may record a reassessment?** Default: an environment variable, so it is an operator act
+   that leaves a trace in deployment configuration. An audit-logged `mend operator` command is the
+   alternative.
+4. **The release that flips `MEND_URL_BEARERS` to `refuse` by default.** Default: the release after
+   the mobile build that sends tickets is on the owner's phone.
+5. **A private object store behind a private CA.** sealantd takes a second CA bundle for object
+   URLs; whether Mend's chart should carry one is undecided. Default: not in this stack.
