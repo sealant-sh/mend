@@ -117,7 +117,16 @@ export const MemberRemovalLive: Layer.Layer<
       // Other processes close on the event; this one closes now.
       yield* userEvents.changed(input.userId, "access");
       yield* connections.closeForUser(input.userId);
-      yield* Effect.forkIn(windDown(input), scope);
+      yield* Effect.forkIn(
+        windDown(input).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("member removal: winding down the account's sessions failed").pipe(
+              Effect.annotateLogs({ userId: input.userId, cause: String(cause) }),
+            ),
+          ),
+        ),
+        scope,
+      );
     });
 
     return { remove };

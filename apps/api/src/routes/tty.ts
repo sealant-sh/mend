@@ -7,7 +7,7 @@ import { Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { Socket } from "effect/unstable/socket";
 
-import { ConnectionRegistry } from "../connections.ts";
+import { ConnectionRegistry, guardSocket } from "../connections.ts";
 import { SessionSteering } from "../session-steering.ts";
 
 /**
@@ -37,11 +37,11 @@ import { SessionSteering } from "../session-steering.ts";
 export const TtyRoutes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const auth = yield* Auth;
+    const connections = yield* ConnectionRegistry;
     const sessions = yield* SessionsRepo;
     const processes = yield* SessionProcessesRepo;
     const steering = yield* SessionSteering;
     const sealant = yield* SealantClient;
-    const connections = yield* ConnectionRegistry;
 
     yield* router.add("GET", "/api/tty", (request) =>
       Effect.gen(function* () {
@@ -171,10 +171,12 @@ export const TtyRoutes = HttpRouter.use((router) =>
             yield* Effect.addFinalizer(() => Effect.sync(() => attachment.close()));
             const socket = yield* request.upgrade;
             const write = yield* socket.writer;
-            // Removing the account closes this socket (docs/adr/0003).
-            yield* connections.register(
+            // Removing the account closes this socket, and drops its input from then on (docs/adr/0003).
+            const guard = yield* guardSocket(
+              connections,
               authed.value.user.id,
-              write(new Socket.CloseEvent(1008, "access revoked")).pipe(Effect.ignore),
+              write,
+              auth.getSession(headers).pipe(Effect.map(Option.isSome)),
             );
 
             const iterator = attachment.output[Symbol.asyncIterator]();
@@ -191,6 +193,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
 
             yield* socket
               .runRaw((data) => {
+                if (guard.revoked()) return Effect.void;
                 if (typeof data !== "string") {
                   attachment.send(data);
                   return Effect.void;

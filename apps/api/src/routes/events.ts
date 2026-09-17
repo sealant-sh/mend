@@ -154,10 +154,10 @@ export const EventsRoutes = HttpRouter.use((router) =>
         const revoked = yield* Deferred.make<void>();
         const events = Stream.unwrap(
           Effect.gen(function* () {
-            yield* connections.register(
-              userId,
-              Deferred.succeed(revoked, undefined).pipe(Effect.asVoid),
-            );
+            const end = Deferred.succeed(revoked, undefined).pipe(Effect.asVoid);
+            yield* connections.register(userId, end);
+            // A removal that landed between sign-in and registration ends the stream too.
+            if (Option.isNone(yield* auth.getSession(headers))) yield* end;
             const subscription = yield* bus.subscribe;
             return Stream.fromSubscription(subscription);
           }),

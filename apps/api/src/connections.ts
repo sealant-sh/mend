@@ -2,8 +2,9 @@ import { OrganizationsRepo } from "@mend/db";
 import { Effect, Layer, Stream } from "effect";
 import * as Context from "effect/Context";
 import type * as Scope from "effect/Scope";
+import { Socket } from "effect/unstable/socket";
 
-import { EventBus } from "./events-bus.ts";
+import { EventBus, type BusSignal } from "./events-bus.ts";
 
 /**
  * The long-lived connections this process holds for each account: terminals, Service tunnels,
@@ -24,9 +25,34 @@ export class ConnectionRegistry extends Context.Service<
   }
 >()("@mend/api/ConnectionRegistry") {}
 
+/** How long one connection's close may take before removal stops waiting on it. */
+const CLOSE_TIMEOUT = "5 seconds";
+
 interface Registration {
   readonly close: Effect.Effect<void>;
 }
+
+/**
+ * Track one upgraded socket for revocation. Closing marks it revoked before the close frame goes
+ * out, because a client may ignore that frame and keep sending until the close times out: the
+ * route drops input once `revoked()` answers true. The account is checked again right after
+ * registering, so a removal that landed between sign-in and registration still closes it.
+ */
+export const guardSocket = <E>(
+  connections: ConnectionRegistry["Service"],
+  userId: string,
+  write: (event: Socket.CloseEvent) => Effect.Effect<void, E>,
+  stillSignedIn: Effect.Effect<boolean>,
+) =>
+  Effect.gen(function* () {
+    let revoked = false;
+    const close = Effect.sync(() => {
+      revoked = true;
+    }).pipe(Effect.andThen(write(new Socket.CloseEvent(1008, "access revoked"))), Effect.ignore);
+    yield* connections.register(userId, close);
+    if (!(yield* stillSignedIn)) yield* close;
+    return { revoked: () => revoked };
+  });
 
 /** The in-memory registry, plus the accounts that hold connections right now. */
 export const makeConnectionRegistry = Effect.sync(() => {
@@ -52,7 +78,13 @@ export const makeConnectionRegistry = Effect.sync(() => {
   const closeForUser = (userId: string) =>
     Effect.gen(function* () {
       const held = [...(open.get(userId) ?? [])];
-      yield* Effect.forEach(held, (registration) => registration.close, { discard: true });
+      // All at once, each bounded: one socket that never finishes opening must not hold up the
+      // others, or the removal waiting on them.
+      yield* Effect.forEach(
+        held,
+        (registration) => registration.close.pipe(Effect.timeoutOption(CLOSE_TIMEOUT)),
+        { concurrency: "unbounded", discard: true },
+      );
       return held.length;
     });
 
@@ -75,26 +107,40 @@ export const ConnectionRegistryLive: Layer.Layer<
     const bus = yield* EventBus;
     const organizations = yield* OrganizationsRepo;
     const subscription = yield* bus.subscribe;
-    yield* Stream.fromSubscription(subscription).pipe(
-      Stream.runForEach((signal) => {
-        if (signal.kind === "resync") {
-          return Effect.forEach(
-            registry.accounts(),
-            (userId) =>
-              organizations
-                .membershipOf(userId)
-                .pipe(
-                  Effect.flatMap((membership) =>
-                    membership === null ? registry.closeForUser(userId) : Effect.void,
-                  ),
+    const handle = (signal: BusSignal) => {
+      if (signal.kind === "resync") {
+        return Effect.forEach(
+          registry.accounts(),
+          (userId) =>
+            organizations.membershipOf(userId).pipe(
+              Effect.flatMap((membership) =>
+                membership === null ? registry.closeForUser(userId) : Effect.void,
+              ),
+              Effect.catchCause((cause) =>
+                Effect.logWarning("connection registry: membership unreadable at resync").pipe(
+                  Effect.annotateLogs({ userId, cause: String(cause) }),
                 ),
-            { discard: true },
-          );
-        }
-        return signal.event.type === "user" && signal.event.facet === "access"
-          ? registry.closeForUser(signal.event.userId)
-          : Effect.void;
-      }),
+              ),
+            ),
+          { discard: true },
+        );
+      }
+      return signal.event.type === "user" && signal.event.facet === "access"
+        ? registry.closeForUser(signal.event.userId)
+        : Effect.void;
+    };
+    // A resync arrives right after the database connection dropped, so its membership reads can
+    // fail. One failed signal is logged; the subscriber keeps closing on later ones.
+    yield* Stream.fromSubscription(subscription).pipe(
+      Stream.runForEach((signal) =>
+        handle(signal).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("connection registry: a signal could not be handled").pipe(
+              Effect.annotateLogs({ signal: signal.kind, cause: String(cause) }),
+            ),
+          ),
+        ),
+      ),
       Effect.forkScoped,
     );
     return { register: registry.register, closeForUser: registry.closeForUser };

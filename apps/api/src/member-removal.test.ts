@@ -14,10 +14,16 @@ import { Organization } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
 import { Deferred, Effect, Exit, Layer, Queue, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
+import { Socket } from "effect/unstable/socket";
 import { describe, expect, it } from "vitest";
 
 import { makeProject, makeSession } from "../test/support/tenancy-harness.ts";
-import { ConnectionRegistry, ConnectionRegistryLive } from "./connections.ts";
+import {
+  ConnectionRegistry,
+  ConnectionRegistryLive,
+  guardSocket,
+  makeConnectionRegistry,
+} from "./connections.ts";
 import { EventBus, makeEventBus } from "./events-bus.ts";
 import { MemberRemoval, MemberRemovalLive } from "./member-removal.ts";
 
@@ -233,5 +239,73 @@ describe("the connection registry", () => {
       ),
     );
     expect(closed).toEqual(["carol"]);
+  });
+
+  it("keeps closing on later events after one signal could not be handled", async () => {
+    const closed = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const lost = yield* Deferred.make<void>();
+          const source = yield* Queue.unbounded<string>();
+          // The first listen drops once carol is connected (a resync whose membership read dies);
+          // the bus reconnects and the second listen carries events.
+          let attempts = 0;
+          const listen = Stream.unwrap(
+            Effect.sync(() => {
+              attempts += 1;
+              return attempts === 1
+                ? Stream.fromEffect(Deferred.await(lost)).pipe(
+                    Stream.flatMap(() => Stream.fail("connection lost")),
+                  )
+                : Stream.fromQueue(source);
+            }),
+          );
+          const built = yield* Layer.build(
+            ConnectionRegistryLive.pipe(
+              Layer.provide(Layer.effect(EventBus, makeEventBus(listen))),
+              Layer.provide(
+                Layer.mock(OrganizationsRepo, { membershipOf: () => Effect.die("db down") }),
+              ),
+            ),
+          );
+          const registry = Context.get(built, ConnectionRegistry);
+          const log: Array<string> = [];
+          yield* registry.register(
+            "carol",
+            Effect.sync(() => void log.push("carol")),
+          );
+          yield* Deferred.succeed(lost, undefined);
+          // The bus waits a second before listening again.
+          yield* Effect.sleep("1200 millis");
+          const afterResync = [...log];
+          yield* Queue.offer(
+            source,
+            JSON.stringify({ type: "user", userId: "carol", facet: "access" }),
+          );
+          yield* Effect.sleep("30 millis");
+          return { afterResync, log };
+        }),
+      ),
+    );
+    expect(closed).toEqual({ afterResync: [], log: ["carol"] });
+  });
+
+  it("a guarded socket drops input once revoked, and closes at once if the account is gone", async () => {
+    const result = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const registry = yield* makeConnectionRegistry;
+          const frames: Array<number> = [];
+          const write = (event: Socket.CloseEvent) =>
+            Effect.sync(() => void frames.push(event.code));
+          const live = yield* guardSocket(registry, "carol", write, Effect.succeed(true));
+          const before = live.revoked();
+          yield* registry.closeForUser("carol");
+          const gone = yield* guardSocket(registry, "dave", write, Effect.succeed(false));
+          return { before, after: live.revoked(), gone: gone.revoked(), frames };
+        }),
+      ),
+    );
+    expect(result).toEqual({ before: false, after: true, gone: true, frames: [1008, 1008] });
   });
 });

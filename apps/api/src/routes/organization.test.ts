@@ -363,13 +363,10 @@ describe("removing members, roles and departed members' projects (docs/adr/0003)
     ]);
   });
 
-  it("reads audit pages with a bounded limit and a valid time", () => {
-    expect(auditPage(undefined, undefined)).toEqual({ before: null, limit: 50 });
-    expect(auditPage("not a time", "5000")).toEqual({ before: null, limit: 200 });
-    expect(auditPage("2026-09-17T10:00:00.000Z", "0")).toEqual({
-      before: new Date("2026-09-17T10:00:00.000Z"),
-      limit: 1,
-    });
+  it("reads audit pages with a bounded limit after the previous page's last event", () => {
+    expect(auditPage(undefined, undefined)).toEqual({ beforeId: null, limit: 50 });
+    expect(auditPage("  ", "5000")).toEqual({ beforeId: null, limit: 200 });
+    expect(auditPage("event-9", "0")).toEqual({ beforeId: "event-9", limit: 1 });
   });
 });
 

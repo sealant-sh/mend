@@ -140,7 +140,7 @@ export const organizationGroup = HttpApiGroup.make("organization")
     }),
   )
   .add(
-    // Owners only; newest first. `before` is an ISO time from the previous page's last event.
+    // Owners only; newest first. `before` is the id of the previous page's last event.
     HttpApiEndpoint.get("audit", "/organization/audit", {
       query: { before: Schema.optional(Schema.String), limit: Schema.optional(Schema.String) },
       success: Schema.Array(AuditEvent),

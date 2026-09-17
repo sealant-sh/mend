@@ -5,7 +5,7 @@ import {
   type AuditAction,
   type AuditData,
 } from "@mend/domain/workbench";
-import { and, desc, eq, lt } from "drizzle-orm";
+import { and, desc, eq, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -29,10 +29,13 @@ export class AuditEventsRepo extends Context.Service<
   AuditEventsRepo,
   {
     readonly record: (event: NewAuditEvent) => Effect.Effect<void>;
-    /** Newest first; `before` pages back from an event's time. */
+    /**
+     * Newest first. `beforeId` is the last event of the previous page: the next page starts
+     * strictly after it in (time, id) order, so events sharing an instant are never skipped.
+     */
     readonly listForOrganization: (
       organizationId: OrganizationId,
-      page: { readonly before: Date | null; readonly limit: number },
+      page: { readonly beforeId: string | null; readonly limit: number },
     ) => Effect.Effect<ReadonlyArray<AuditEvent>>;
   }
 >()("@mend/db/AuditEventsRepo") {}
@@ -67,17 +70,20 @@ export const AuditEventsRepoLive: Layer.Layer<AuditEventsRepo, never, MendDB> = 
 
     const listForOrganization = Effect.fn("AuditEventsRepo.listForOrganization")(function* (
       organizationId: OrganizationId,
-      page: { readonly before: Date | null; readonly limit: number },
+      page: { readonly beforeId: string | null; readonly limit: number },
     ) {
+      // Compared in the database against the cursor row's stored time, at full precision.
+      const afterCursor =
+        page.beforeId === null
+          ? undefined
+          : sql`(${auditEvents.createdAt}, ${auditEvents.id}) < (
+              SELECT cursor.created_at, cursor.id FROM audit_events cursor
+              WHERE cursor.id = ${page.beforeId} AND cursor.organization_id = ${organizationId}
+            )`;
       const rows = yield* db
         .select()
         .from(auditEvents)
-        .where(
-          and(
-            eq(auditEvents.organizationId, organizationId),
-            page.before === null ? undefined : lt(auditEvents.createdAt, page.before),
-          ),
-        )
+        .where(and(eq(auditEvents.organizationId, organizationId), afterCursor))
         .orderBy(desc(auditEvents.createdAt), desc(auditEvents.id))
         .limit(Math.min(Math.max(1, page.limit), AUDIT_PAGE_MAX))
         .pipe(Effect.orDie);

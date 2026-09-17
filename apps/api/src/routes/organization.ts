@@ -52,15 +52,14 @@ export const invitationEmail = (
 const LAST_OWNER =
   "An organization needs an owner. Make someone else an owner before this one steps down.";
 
-/** An audit page request: a valid `before` time and a limit within the page maximum. */
+/** An audit page request: the previous page's last event id, and a limit within the maximum. */
 export const auditPage = (
   before: string | undefined,
   limit: string | undefined,
-): { readonly before: Date | null; readonly limit: number } => {
-  const at = before === undefined ? null : new Date(before);
+): { readonly beforeId: string | null; readonly limit: number } => {
   const count = limit === undefined ? Number.NaN : Number.parseInt(limit, 10);
   return {
-    before: at === null || Number.isNaN(at.getTime()) ? null : at,
+    beforeId: before === undefined || before.trim() === "" ? null : before.trim(),
     limit: Number.isNaN(count) ? 50 : Math.min(AUDIT_PAGE_MAX, Math.max(1, count)),
   };
 };
