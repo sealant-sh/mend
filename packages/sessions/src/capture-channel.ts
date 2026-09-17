@@ -1094,12 +1094,12 @@ export const CaptureChannelLive: Layer.Layer<
           if (underOwnPrefix(key, input.epoch)) {
             const reserved = ledger.get(key);
             if (reserved !== undefined && reserved !== head.size) {
-              yield* blobs.remove(key).pipe(Effect.ignore);
-              ledger.delete(key);
+              // Refuse without removing: an earlier register of this epoch may already
+              // reference the object, and the manifest never commits past this point.
               return yield* new CaptureRouteError({
                 status: 409,
                 reason: "size-mismatch",
-                message: `${key} holds ${head.size} bytes, not the ${reserved} declared; the object was removed`,
+                message: `${key} holds ${head.size} bytes, not the ${reserved} declared`,
                 key,
               });
             }
