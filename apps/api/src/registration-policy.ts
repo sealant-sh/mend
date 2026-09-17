@@ -56,24 +56,32 @@ export const RegistrationPolicyLive: Layer.Layer<
       return decision;
     });
 
+    /** An admitted account that could not join anything must not keep a working session. */
+    const strand = (userId: string, reason: string) =>
+      Effect.gen(function* () {
+        yield* users.deactivate(userId);
+        yield* Effect.logWarning(
+          "a registration was admitted but could not complete; the account is deactivated",
+        ).pipe(Effect.annotateLogs({ userId, reason }));
+      });
+
     const registered = Effect.fn("RegistrationPolicy.registered")(function* (
       user: { readonly id: string; readonly email: string },
       invitationToken: string | null,
     ) {
-      if (yield* organizations.bootstrapFirstAccount(user.id)) return;
-      if (invitationToken === null) {
-        return yield* Effect.logWarning(
-          "an account registered without an invitation after the first; it belongs to no organization",
-        ).pipe(Effect.annotateLogs({ userId: user.id }));
+      // An invitation is spent first: that is what an invited sign-up asked for. Bootstrap is the
+      // fallback, for the first account on an unclaimed instance (with or without a stray token).
+      if (invitationToken !== null) {
+        const accepted = yield* organizations.acceptInvitation(invitationToken, user).pipe(
+          Effect.as(null),
+          Effect.catch((error) => Effect.succeed(error._tag)),
+        );
+        if (accepted === null) return;
+        if (yield* organizations.bootstrapFirstAccount(user.id)) return;
+        return yield* strand(user.id, accepted);
       }
-      yield* organizations.acceptInvitation(invitationToken, user).pipe(
-        Effect.asVoid,
-        Effect.catch((error) =>
-          Effect.logWarning(
-            "an admitted registration could not spend its invitation; the account belongs to no organization",
-          ).pipe(Effect.annotateLogs({ userId: user.id, reason: error._tag })),
-        ),
-      );
+      if (yield* organizations.bootstrapFirstAccount(user.id)) return;
+      yield* strand(user.id, "no invitation");
     });
 
     return { decide, registered };

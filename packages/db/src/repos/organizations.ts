@@ -628,7 +628,9 @@ export const OrganizationsRepoLive: Layer.Layer<
               .limit(1)
               .pipe(Effect.orDie);
             if (existing === undefined) {
-              yield* tx
+              // A concurrent acceptance into another organization holds a different lock; the
+              // unique user_id is what refuses the second membership.
+              const joined = yield* tx
                 .insert(organizationMembers)
                 .values({
                   organizationId: row.organizationId,
@@ -636,7 +638,18 @@ export const OrganizationsRepoLive: Layer.Layer<
                   role: row.role,
                   addedByUserId: row.createdByUserId,
                 })
-                .pipe(Effect.orDie);
+                .pipe(
+                  Effect.as(true),
+                  Effect.catchTag("EffectDrizzleQueryError", (error) =>
+                    isUniqueViolation(error) ? Effect.succeed(false) : Effect.die(error),
+                  ),
+                );
+              if (!joined) {
+                return yield* new AlreadyInOrganizationError({
+                  userId: user.id,
+                  organizationId: row.organizationId,
+                });
+              }
             } else if (existing.organizationId !== row.organizationId) {
               return yield* new AlreadyInOrganizationError({
                 userId: user.id,
@@ -673,7 +686,11 @@ export const OrganizationsRepoLive: Layer.Layer<
     const bootstrapFirstAccount = Effect.fn("OrganizationsRepo.bootstrapFirstAccount")(function* (
       userId: string,
     ) {
-      const organization = yield* sole().pipe(Effect.orDie);
+      // Bootstrap only exists on an instance with exactly one organization.
+      const organization = yield* sole().pipe(
+        Effect.catchTag("NotSoleOrganizationError", () => Effect.succeed(null)),
+      );
+      if (organization === null) return false;
       const bootstrapped = yield* db
         .transaction((tx) =>
           Effect.gen(function* () {

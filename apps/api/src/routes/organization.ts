@@ -129,11 +129,11 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
 
 /** The join page's read, before the visitor has an account. Unknown tokens are 404. */
 export const InvitationsGroupLive = HttpApiBuilder.group(MendApi, "invitations", (handlers) =>
-  handlers.handle("preview", ({ params }) =>
+  handlers.handle("preview", ({ payload }) =>
     Effect.gen(function* () {
       const organizations = yield* OrganizationsRepo;
       const resolved = yield* organizations
-        .invitationByToken(params.token)
+        .invitationByToken(payload.token)
         .pipe(Effect.catchTag("InvitationUnknownError", () => new NotFound({ id: "invitation" })));
       return new InvitationPreview({
         organizationName: resolved.organization.name,

@@ -104,10 +104,20 @@ export const organizationGroup = HttpApiGroup.make("organization")
   )
   .middleware(AuthMiddleware);
 
-/** Public by design: the join page reads it before the visitor has an account. */
+/** The token of the link being previewed. */
+export class InvitationPreviewRequest extends Schema.Class<InvitationPreviewRequest>(
+  "InvitationPreviewRequest",
+)({
+  token: Schema.String,
+}) {}
+
+/**
+ * Public by design: the join page reads it before the visitor has an account. A POST, so the
+ * token stays out of request lines and the access logs that record them.
+ */
 export const invitationsGroup = HttpApiGroup.make("invitations").add(
-  HttpApiEndpoint.get("preview", "/invitations/:token", {
-    params: Schema.Struct({ token: Schema.String }),
+  HttpApiEndpoint.post("preview", "/invitations/preview", {
+    payload: InvitationPreviewRequest,
     success: InvitationPreview,
     error: NotFound,
   }),

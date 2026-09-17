@@ -190,12 +190,14 @@ describe("organization routes (docs/adr/0003)", () => {
   });
 
   it("previews a link without signing in, and without the bound email", async () => {
-    const response = await call(null, "/api/invitations/tok-open");
+    const preview = (token: string) =>
+      call(null, "/api/invitations/preview", { method: "POST", body: JSON.stringify({ token }) });
+    const response = await preview("tok-open");
     expect(response.status).toBe(200);
     const body: unknown = await response.json();
     expect(body).toMatchObject({ organizationName: "Acme", role: "member", state: "open" });
     expect(JSON.stringify(body)).not.toContain("bound@example.invalid");
-    const unknown = await call(null, "/api/invitations/nope");
+    const unknown = await preview("nope");
     expect(unknown.status).toBe(404);
   });
 });

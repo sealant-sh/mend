@@ -113,6 +113,12 @@ const createBetterAuth = (options: AuthHandlerOptions) =>
     baseURL: options.network.appUrl,
     basePath: "/api/auth",
     emailAndPassword: { enabled: true },
+    // Accounts are deactivated, never deleted (docs/adr/0003); sessions of one are refused.
+    user: {
+      additionalFields: {
+        deactivatedAt: { type: "date", required: false, input: false, fieldName: "deactivatedAt" },
+      },
+    },
     advanced: { disableOriginCheck: false },
     plugins: [bearer()],
     trustedOrigins: [...options.network.allowedOrigins],
@@ -200,7 +206,7 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
             `SELECT d.id AS device_id, d.last_used_at, u.id AS user_id, u.email, u.name
                FROM device_tokens d
                JOIN "user" u ON u.id = d.user_id
-              WHERE d.token_hash = $1 AND d.revoked_at IS NULL
+              WHERE d.token_hash = $1 AND d.revoked_at IS NULL AND u."deactivatedAt" IS NULL
               LIMIT 1`,
             [tokenHash],
           ),
@@ -236,7 +242,9 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
       const getSession = Effect.fn("Auth.getSession")(function* (headers: Headers) {
         if (staticToken !== "" && headers.get("authorization") === `Bearer ${staticToken}`) {
           const rows = yield* Effect.promise(() =>
-            pool.query('SELECT id, email, name FROM "user" ORDER BY "createdAt" ASC LIMIT 1'),
+            pool.query(
+              'SELECT id, email, name FROM "user" WHERE "deactivatedAt" IS NULL ORDER BY "createdAt" ASC LIMIT 1',
+            ),
           );
           const row = rows.rows[0] as
             | { readonly id: string; readonly email: string; readonly name: string }
@@ -251,6 +259,10 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
         const result = yield* Effect.promise(() => auth.api.getSession({ headers }));
         // Not a better-auth session: it may still be a paired device's token.
         if (result === null) return yield* deviceSession(headers);
+        // A deactivated account keeps no working session (docs/adr/0003).
+        if (result.user.deactivatedAt !== null && result.user.deactivatedAt !== undefined) {
+          return Option.none<AuthSession>();
+        }
         return Option.some<AuthSession>({
           user: {
             id: result.user.id,

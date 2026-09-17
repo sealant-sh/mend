@@ -436,7 +436,9 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           .create({
             id,
             organizationId,
-            visibility: payload.visibility ?? "private",
+            // Shared until the adopt surfaces offer the choice (docs/adr/0003, delivery step 6), so
+            // nothing adopted meanwhile disappears from teammates once visibility is enforced.
+            visibility: payload.visibility ?? "shared",
             createdByUserId: caller.user.id,
             name: payload.name,
             originUrl: payload.source,
@@ -445,7 +447,14 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             adoptedSha: adopted.headSha,
             gitAuthMode: mode,
           })
-          .pipe(Effect.catchTag("ProjectNameTakenError", () => Effect.fail(nameTaken)));
+          .pipe(
+            // Another adoption of the same name won the race; drop the clone this one made.
+            Effect.catchTag("ProjectNameTakenError", () =>
+              store
+                .removeProjectStore(adopted.storePath)
+                .pipe(Effect.andThen(Effect.fail(nameTaken))),
+            ),
+          );
       }),
     )
     .handle("detail", ({ params, query }) =>

@@ -47,10 +47,16 @@ const policy = (options: {
   readonly users: number;
   readonly invitation?: ResolvedInvitation;
   readonly bootstrapped?: boolean;
+  readonly acceptFails?: boolean;
   readonly calls?: Array<string>;
 }) =>
   RegistrationPolicyLive.pipe(
-    Layer.provide(Layer.mock(UsersRepo, { count: () => Effect.succeed(options.users) })),
+    Layer.provide(
+      Layer.mock(UsersRepo, {
+        count: () => Effect.succeed(options.users),
+        deactivate: () => Effect.sync(() => void options.calls?.push("deactivate")),
+      }),
+    ),
     Layer.provide(
       Layer.mock(OrganizationsRepo, {
         invitationByToken: () =>
@@ -63,20 +69,24 @@ const policy = (options: {
             return options.bootstrapped ?? false;
           }),
         acceptInvitation: () =>
-          Effect.sync(() => {
-            options.calls?.push("accept");
-            return {
-              organization: acme,
-              member: new OrganizationMember({
-                organizationId: acme.id,
-                userId: "u",
-                name: "U",
-                email: "u@example.invalid",
-                role: "member",
-                joinedAt: NOW,
+          options.acceptFails === true
+            ? Effect.sync(() => void options.calls?.push("accept")).pipe(
+                Effect.andThen(Effect.fail(new InvitationUnknownError())),
+              )
+            : Effect.sync(() => {
+                options.calls?.push("accept");
+                return {
+                  organization: acme,
+                  member: new OrganizationMember({
+                    organizationId: acme.id,
+                    userId: "u",
+                    name: "U",
+                    email: "u@example.invalid",
+                    role: "member",
+                    joinedAt: NOW,
+                  }),
+                };
               }),
-            };
-          }),
       }),
     ),
   );
@@ -142,12 +152,21 @@ describe("closed registration policy (docs/adr/0003)", () => {
     ).toEqual({ kind: "invitation", token: "t" });
   });
 
-  it("completes the first account by bootstrapping, and later ones by spending the invitation", async () => {
+  it("completes an invited account by spending the invitation, and the first by bootstrapping", async () => {
+    const invited: Array<string> = [];
+    await complete(policy({ users: 2, calls: invited }), "t");
+    expect(invited).toEqual(["accept"]);
     const first: Array<string> = [];
-    await complete(policy({ users: 1, bootstrapped: true, calls: first }), "t");
+    await complete(policy({ users: 1, bootstrapped: true, calls: first }), null);
     expect(first).toEqual(["bootstrap"]);
-    const later: Array<string> = [];
-    await complete(policy({ users: 2, bootstrapped: false, calls: later }), "t");
-    expect(later).toEqual(["bootstrap", "accept"]);
+  });
+
+  it("deactivates an admitted account that could not join anything", async () => {
+    const lostRace: Array<string> = [];
+    await complete(policy({ users: 2, acceptFails: true, calls: lostRace }), "t");
+    expect(lostRace).toEqual(["accept", "bootstrap", "deactivate"]);
+    const lostBootstrap: Array<string> = [];
+    await complete(policy({ users: 2, bootstrapped: false, calls: lostBootstrap }), null);
+    expect(lostBootstrap).toEqual(["bootstrap", "deactivate"]);
   });
 });
