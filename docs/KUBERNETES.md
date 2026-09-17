@@ -365,10 +365,75 @@ items: `MEND_SOURCE_POLICY=tenant`, `MEND_GIT_TRANSPORT_BIND_ORIGIN` unset,
 `MEND_CAPTURE_REQUIRE_SIZES=true` with an `s3://` `MEND_BLOB_STORE`, `MEND_SERVICE_HOSTS` on
 loopback, and an operator account.
 
+## Exposure, and an Ingress to the web tier
+
+The chart is cluster-internal by default. `exposure.mode` (`loopback`, `private`, `public`) is how
+you tell Mend it is reached ([ADR 0004](adr/0004-access-without-a-private-network.md)); it becomes
+`MEND_EXPOSURE` on the API. It is your statement: Mend cannot observe what is published in front of
+its Pods. `mend operator exposure` prints the public exposure gate, each item marked `observed`,
+`declared` or `open`, and `public` refuses to start while an item Mend can observe is open. Nothing
+in the chart says an instance is fit to expose; the gate's last items are yours to verify.
+
+`ingress.enabled=true` renders one Ingress: one host, TLS, the **web** Service only. Web proxies the
+API, the event stream and every WebSocket on that origin. The API, Sealant, the session channel and
+supervised Services are never routed. The chart renders the Ingress and nothing else: the controller
+and the certificate issuer are your cluster's.
+
+```yaml
+web:
+  appUrl: https://mend.example.com # exactly https://<ingress.host>, or the render fails
+ingress:
+  enabled: true
+  className: nginx
+  host: mend.example.com
+  tls: { secretName: mend-tls }
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt
+    nginx.ingress.kubernetes.io/proxy-body-size: 32m
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  controller:
+    namespace: ingress-nginx
+    podLabels: { app.kubernetes.io/name: ingress-nginx }
+api:
+  # The controller's Pods and the web tier, and nothing wider. Never 0.0.0.0/0.
+  trustedProxyCidrs: ["10.244.0.0/16"]
+exposure:
+  mode: private
+  executorNetwork: private # workspaces reach the session channel inside the cluster
+```
+
+What to check, because the chart cannot:
+
+- **Forwarded addresses.** The controller must append the client address to `X-Forwarded-For` and
+  must not pass one a client sent as its own. With ingress-nginx keep `use-forwarded-headers` off
+  unless another trusted proxy sits in front. Request budgets count the address
+  `MEND_TRUSTED_PROXIES` lets through; too wide a range lets a client choose it.
+- **Query strings in logs.** `/api/tty`, `/api/service-tunnel`, `/api/keys/bridge/ws` and
+  `/tty-embed` carry a single-use upgrade ticket in the query, and `/pair` a pairing code. A ticket
+  is dead thirty seconds after it was minted, and a log should still not hold one. With
+  ingress-nginx, set a `log-format-upstream` that uses `$uri` in place of `$request_uri`.
+- **Long-lived connections.** The read and send timeouts above keep terminals and the event stream
+  open. A controller that buffers responses breaks `/api/events`.
+- **NetworkPolicy enforcement** is a property of your CNI. The web policy admits the controller by
+  namespace and Pod label in one selector; verify it with a connection attempt from another Pod in
+  the controller's namespace, including while a Pod starts.
+- **The session channel.** `sessionChannel.tls` serves it over https;
+  `exposure.executorNetwork: private` declares that executors reach it over a network you control.
+  Today that is a statement in Mend's report only. The executor's own refusal of a plain-http
+  channel is in sealantd (sealant-sh/sealantd#86, unreleased when this was written), and Mend passes
+  the declaration down to it only once Mend pins a Sealant release that carries it.
+- **What only you can verify.** `exposure.declared: [core-private, edge-tls]` records that you
+  checked, from outside the cluster, that Sealant, its registry and the database answer nothing from
+  the Internet, and the Ingress's certificate, renewal and port 80 redirect. The report marks them
+  `declared` and says the server cannot check them.
+
 ## Request bodies at the ingress
 
-Uploading into an organization folder sends up to 4 MiB of files per request, which is about 5.5 MiB
-once encoded. An ingress that caps request bodies below that refuses the upload with 413. With
+Mend refuses a request body over its own budget before decoding it: 1 MiB, and 24 MiB on the routes
+that take a file ([budgets](operations/budgets.md)). Uploading into an organization folder sends up
+to 4 MiB of files per request, which is about 5.5 MiB once encoded, and a pasted image up to 8 MiB.
+An ingress that caps request bodies below that refuses the upload with 413 before Mend sees it. With
 ingress-nginx, whose default cap is 1 MiB, set the annotation on the ingress in front of the web
 tier:
 

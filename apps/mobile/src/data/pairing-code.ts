@@ -5,7 +5,7 @@
 export const CODE_LENGTH = 8;
 
 export interface PairPayload {
-  /** A base URL this phone can reach — tailnet or LAN, no trailing slash. */
+  /** A base URL this phone can reach, no trailing slash. */
   readonly url: string;
   /** Normalized: uppercase, dashes stripped. */
   readonly code: string;

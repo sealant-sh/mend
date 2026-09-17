@@ -231,14 +231,14 @@ export default function SettingsScreen() {
             <MonoText tone="faint">
               legacy path — the CLI bearer token (MEND_TOKEN), typed by hand. Pairing replaces it.
             </MonoText>
-            <UiText>Server URL (reachable from this phone — tailnet or LAN)</UiText>
+            <UiText>Server URL (one this phone can reach)</UiText>
             <TextInput
               value={url}
               onChangeText={(next) => {
                 setDraft({ url: next, token });
                 setSaved(false);
               }}
-              placeholder="http://your-machine.tailnet:3105"
+              placeholder="https://mend.example.com"
               autoCapitalize="none"
               autoCorrect={false}
               style={inputStyle}

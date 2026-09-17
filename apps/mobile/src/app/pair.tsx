@@ -219,7 +219,7 @@ export default function PairScreen() {
                 setUrl(next);
                 setClaim({ state: "idle" });
               }}
-              placeholder="http://your-machine.tailnet:3105"
+              placeholder="https://mend.example.com"
               autoCapitalize="none"
               autoCorrect={false}
               keyboardType="url"

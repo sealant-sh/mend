@@ -38,15 +38,24 @@ mend server setup --bind 0.0.0.0 --url http://mend-host:3105 \
 ```
 
 Postgres publishes no port and no image registry is published. Binding `0.0.0.0` opens every IPv4
-interface and sign-up stays open to anyone who can reach Mend, so keep the machine on a network you
-control. Read [Install Mend](/getting-started/install/#network-boundary).
+interface. Registration closes after the first account and everyone else joins by invitation, so
+create that account before anyone else can reach the server. Read
+[Install Mend](/getting-started/install/#network-boundary).
 
-Prefer Tailscale or another private network. Mend does not require public ingress for remote use. Do
-not publish the server directly to the internet.
+A private network is one way to run Mend, not a requirement. Mend authenticates and authorizes every
+request itself, so a tailnet or a VPN in front of it is an extra gate you may add. Tell Mend how it
+is reached with `MEND_EXPOSURE`: `loopback` (the default), `private` (a network you control
+admission to) or `public`. A server cannot observe what is published in front of it, so this is your
+statement, and `mend doctor` reports what Mend observes beside it.
 
-Plain HTTP on a LAN does not protect credentials from that network. If you are not using a private
-encrypted network, place a trusted TLS boundary in front of Mend and test terminal WebSockets before
-relying on it.
+Plain HTTP on a LAN does not protect credentials from that network. Beyond the machine, put a TLS
+edge in front of Mend: the bundle ships an opt-in Caddy overlay, and the chart can render an Ingress
+to the web tier. Test a terminal through it before relying on it.
+
+`public` refuses to start while an item of the public exposure gate that Mend can observe is open.
+`mend operator exposure` lists them. The last items are yours to verify, an independent security
+reassessment of the exact release among them. Nothing in Mend says an instance is fit to expose to
+the Internet.
 
 ## Pair another device
 

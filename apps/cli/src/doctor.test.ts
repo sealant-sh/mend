@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { formatCheck } from "./doctor.ts";
+import { exposureCheck, formatCheck } from "./doctor.ts";
 
 type Handler = (request: IncomingMessage, response: ServerResponse) => void;
 
@@ -118,6 +118,13 @@ const greenServer = (request: IncomingMessage, response: ServerResponse): void =
       hostname: "fixture",
       platform: "linux",
       tailnet: { status: "reachable", address: "100.64.1.2" },
+      exposure: {
+        declared: "private",
+        originScheme: "https",
+        arrivedVia: "trusted-proxy",
+        addressKinds: ["loopback", "private", "cgnat"],
+        gateOpen: 4,
+      },
     },
   };
   const body = routes[request.url ?? ""];
@@ -160,7 +167,12 @@ describe("mend doctor", () => {
       expect(result.stdout).toContain("✓ projects    1 adopted");
       expect(result.stdout).toContain("✓ claude cli  on PATH · credential present");
       expect(result.stdout).toContain("✓ gh cli      on PATH · credential present");
-      expect(result.stdout).toContain("✓ tailnet     100.64.1.2");
+      // A report of what was declared and observed. The interface in 100.64.0.0/10 is not in it:
+      // it never said who can reach the instance.
+      expect(result.stdout).toContain(
+        "✓ exposure    declared private · https origin · arrived via a trusted proxy · 4 gate items open → mend operator exposure",
+      );
+      expect(result.stdout).not.toContain("tailnet");
     } finally {
       await fake.close();
     }
@@ -180,9 +192,70 @@ describe("mend doctor", () => {
       expect(result.code).toBe(1);
       // A rejected token stops the reads that depend on it — nothing is guessed.
       expect(result.stdout).toContain("○ sealant     not checked");
-      expect(result.stdout).toContain("○ tailnet     not checked");
+      expect(result.stdout).toContain("○ exposure    not checked");
     } finally {
       await fake.close();
     }
+  });
+});
+
+describe("the exposure line", () => {
+  const observed = {
+    declared: "loopback",
+    originScheme: "http",
+    arrivedVia: "direct",
+    addressKinds: ["loopback"],
+    gateOpen: 0,
+  } as const;
+
+  it("reports a loopback install on http as it is, with nothing to do", () => {
+    expect(exposureCheck(observed)).toEqual({
+      label: "exposure",
+      state: "ok",
+      detail: "declared loopback · http origin",
+      fix: null,
+    });
+  });
+
+  it("does not count gate items on an install reached from this machine only", () => {
+    // Some items only ever close on an operator's statement: a laptop install would say
+    // "items open" for ever, which is the tailnet line again under another name.
+    expect(exposureCheck({ ...observed, gateOpen: 5 })).toEqual({
+      label: "exposure",
+      state: "ok",
+      detail: "declared loopback · http origin",
+      fix: null,
+    });
+    // The default declaration is `private`; APP_URL on the machine's own loopback still counts
+    // as reached from this machine only, so a laptop install is not asked for https.
+    expect(
+      exposureCheck({ ...observed, declared: "private", originOnMachine: true, gateOpen: 5 }),
+    ).toEqual({
+      label: "exposure",
+      state: "ok",
+      detail: "declared private · http origin",
+      fix: null,
+    });
+  });
+
+  it("asks for https only when the instance is declared reachable beyond the machine", () => {
+    for (const declared of ["private", "public"] as const) {
+      expect(exposureCheck({ ...observed, declared })).toMatchObject({
+        state: "todo",
+        fix: "serve it over https and set APP_URL to that origin",
+      });
+    }
+  });
+
+  it("points the operator at the gate when items are open, without calling anything safe", () => {
+    const check = exposureCheck({
+      ...observed,
+      declared: "public",
+      originScheme: "https",
+      gateOpen: 3,
+    });
+    expect(check).toMatchObject({ state: "ok", fix: "mend operator exposure" });
+    expect(check.detail).toBe("declared public · https origin · 3 gate items open");
+    expect(`${check.detail} ${check.fix}`.toLowerCase()).not.toMatch(/safe|reachable|secure/);
   });
 });

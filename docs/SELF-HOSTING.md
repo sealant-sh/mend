@@ -70,11 +70,11 @@ HTTP/WebSocket origin checks, pairing, and advertised URLs. Mend does not trust 
 Forwarded headers, discover interface addresses, or accept wildcard origins.
 
 Binding `0.0.0.0` exposes web and SSH on every IPv4 interface. Configure your firewall or private
-network yourself. Sign-up is open to anyone who can reach the server. Do not expose this default
-installation to the public internet. The application has Docker socket access, which is an
-administrative capability on the Docker host. Treat access to this deployment accordingly. Plain
-HTTP does not encrypt client traffic; use an encrypted private network or a properly configured
-HTTPS reverse proxy.
+network yourself. Registration closes after the first account and everyone else joins by invitation,
+so create that first account before anyone else can reach the server. The application has Docker
+socket access, which is an administrative capability on the Docker host. Treat access to this
+deployment accordingly. Plain HTTP does not encrypt client traffic; use an encrypted private network
+or the TLS edge below.
 
 On the laptop:
 
@@ -102,6 +102,88 @@ mend server setup --port 3205 --ssh-port 2322 --url http://localhost:3205
 
 Setup reruns retain saved settings unless you explicitly change them. Changing the Docker context
 requires care: volumes belong to a daemon and do not move with a context setting.
+
+## Access without a private network
+
+A private network is one way to run Mend, not a requirement
+([ADR 0004](adr/0004-access-without-a-private-network.md)). Mend authenticates and authorizes every
+request itself; a tailnet or a VPN in front of it is an extra gate you may add. **Nothing here says
+an instance is fit to expose to the Internet.** That needs an independent security reassessment of
+the exact release, and Mend reports it as open until you record one.
+
+Tell Mend how it is reached with `MEND_EXPOSURE`:
+
+| Value      | Meaning                                                                        |
+| ---------- | ------------------------------------------------------------------------------ |
+| `loopback` | From this machine only.                                                        |
+| `private`  | Over a network you control admission to: a tailnet, a LAN, a VPN. The default. |
+| `public`   | From the Internet. Refuses to start while an observable item is open.          |
+
+It is your statement. A server cannot observe what is published in front of it, so Mend reports what
+it observes beside what you declared: `mend doctor` prints one `exposure` line, and
+`mend operator exposure` prints the public exposure gate item by item, each marked `observed` (the
+server read it), `carried` (the build contains it and the server cannot see it in effect),
+`declared` (you stated it and the server cannot check it) or `open`. Two items can only be
+established from outside the deployment: that Sealant, its registry and the database answer nothing
+from the Internet (`core-private`), and the edge's certificate, renewal and port 80 redirect
+(`edge-tls`). Once you have checked them, `MEND_EXPOSURE_DECLARED=core-private,edge-tls` records
+your statement, and the report says it is yours. `/health` needs no sign-in, so it carries only the
+declaration and how many items are open.
+
+### A TLS edge for a Compose install you run yourself
+
+`deploy/docker/compose.edge.yaml` adds a Caddy edge in front of the bundle. It obtains and renews a
+certificate for one host, redirects port 80, and forwards everything to Mend's web tier, which
+proxies the API, the event stream and every WebSocket on that one origin.
+
+It is a deployment shape, not yet something `mend server setup` installs. Setup refuses the pair the
+edge needs (Mend's own port on loopback with a non-local `--url`), its `server.env` is checked
+against the server config so the overlay's variables cannot go in it, and `mend server start` and
+`mend server upgrade` run `compose.yaml` alone, which would recreate `mend` without the edge's
+network and settings. So today the overlay applies to a Compose project you run yourself from
+`compose.v2.yaml` and an `.env` holding the values that file names. `compose.edge.yaml` and
+`Caddyfile` are in the repository under `deploy/docker`, at the tag of the release you run; they are
+not among the release assets. What was checked: the merged files render (`docker compose config`, in
+CI), the edge is the only service published beyond loopback and shares a network with Mend alone,
+and the Caddyfile was validated with Caddy. What was not: a certificate issued and a browser session
+through it, end to end.
+
+```sh
+# in the directory that holds compose.v2.yaml and your .env; copy Caddyfile and compose.edge.yaml there first
+cat >> .env <<'ENV'
+MEND_EDGE_HOST=mend.example.com
+APP_URL=https://mend.example.com
+MEND_EXPOSURE=private
+ENV
+docker compose -f compose.v2.yaml -f compose.edge.yaml up -d
+```
+
+What the overlay does, and what it states on your behalf:
+
+- The edge publishes 80 and 443. Mend's own port stays on loopback, so the way in from outside is
+  through TLS. A public certificate puts the hostname in certificate transparency logs.
+- The edge shares a network with Mend alone. It cannot reach Postgres, the bucket or a workspace.
+- `MEND_TRUSTED_PROXIES` is exactly the edge's network, so request budgets count the browser behind
+  it and a client cannot choose the address it is counted by. That network is `192.168.250.0/28`;
+  set `MEND_EDGE_SUBNET` when that range is already routed where the host lives, and the trusted
+  range follows it.
+- `MEND_EXECUTOR_NETWORK=private`: workspaces reach the session channel over plain HTTP on the
+  Compose network, which never leaves the host. Mend reports that as declared.
+- The edge's log replaces the value of `ticket`, `token` and `code` in every URL. The terminal,
+  tunnel and key bridge sockets carry a single-use ticket there, and pairing carries a code.
+
+If you run your own reverse proxy instead, it must do the same five things: terminate TLS for
+exactly the `APP_URL` origin, forward to web only, pass WebSocket upgrades and never buffer
+`/api/events`, append the client address to `X-Forwarded-For` and be listed in
+`MEND_TRUSTED_PROXIES`, and keep query strings on `/api/tty`, `/api/service-tunnel`,
+`/api/keys/bridge/ws`, `/tty-embed` and `/pair` out of its logs.
+
+Before declaring `public`: create the first account over a private path (an instance with no
+operator refuses `public`), set `MEND_SOURCE_POLICY=tenant` and the rest of the
+[multi mode gate](adr/0003-organizations-and-tenancy.md), set `MEND_URL_BEARERS=refuse` once your
+CLI, desktop and phone builds send upgrade tickets, keep every [budget](operations/budgets.md) on,
+and keep Sealant, Postgres and the bucket off any public address. Sealant is a control plane behind
+Mend; it is never offered to the Internet.
 
 ## Start, stop, inspect
 

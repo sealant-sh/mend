@@ -45,10 +45,26 @@ export const instanceGroup = HttpApiGroup.make("instance").add(
   HttpApiEndpoint.get("get", "/instance", { success: InstanceView }),
 );
 
+/** What kind of network an address belongs to. An observation about the address, nothing more. */
+export const AddressKind = Schema.Literals([
+  "loopback",
+  "private",
+  "cgnat",
+  "link-local",
+  "public",
+]);
+export type AddressKind = typeof AddressKind.Type;
+
 /**
- * The machine Mend runs on, as the shell shows it: hostname · platform, and whether a
- * tailnet address is bound (plan §7.5 — the private-network promise made visible).
- * "reachable" is an observation about the interface, not a promise about routing.
+ * The machine Mend runs on, and how this instance is reached
+ * (docs/adr/0004-access-without-a-private-network.md, "Exposure is declared, and reported as
+ * observed"). `declared` is the operator's statement (`MEND_EXPOSURE`). Everything else is what
+ * this server observed: the scheme of its browser origin, whether the request that asked arrived
+ * through a trusted proxy hop, and the kinds of address the host holds. None of it says who can
+ * reach the instance, because a server cannot observe what is published in front of it.
+ *
+ * `tailnet` stays for clients older than `exposure`. It reports an interface address in
+ * 100.64.0.0/10 and was never a statement about reachability; new clients do not read it.
  */
 export class MachineView extends Schema.Class<MachineView>("MachineView")({
   hostname: Schema.String,
@@ -57,6 +73,20 @@ export class MachineView extends Schema.Class<MachineView>("MachineView")({
     status: Schema.Literals(["reachable", "not-detected"]),
     address: Schema.NullOr(Schema.String),
   }),
+  exposure: Schema.optional(
+    Schema.Struct({
+      declared: Schema.Literals(["loopback", "private", "public"]),
+      originScheme: Schema.Literals(["http", "https"]),
+      /** Whether `APP_URL` names this machine's own loopback (localhost, 127.x, ::1). */
+      originOnMachine: Schema.Boolean,
+      /** How the request that asked arrived: straight to the server, or through a trusted hop. */
+      arrivedVia: Schema.Literals(["direct", "trusted-proxy"]),
+      /** The kinds of address bound on the host, without the addresses. */
+      addressKinds: Schema.Array(AddressKind),
+      /** Open public exposure gate items. The operator reads which (`mend operator exposure`). */
+      gateOpen: Schema.Int,
+    }),
+  ),
 }) {}
 
 export const machineGroup = HttpApiGroup.make("machine")

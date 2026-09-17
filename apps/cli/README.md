@@ -107,8 +107,9 @@ mend doctor
 
 Reads, and changes nothing: server reachable, token accepted, the Sealant connection, each connected
 account, adopted projects, the `claude` / `codex` / `gh` CLIs on PATH and whether their credentials
-exist on this machine, and the tailnet address. One line per fact — `✓` observed, `○` not set up
-yet, `✗` a blocker — and every line that needs an action ends with the one command that takes it:
+exist on this machine, and how the instance is exposed: what its operator declared and what the
+server observed. One line per fact — `✓` observed, `○` not set up yet, `✗` a blocker — and every
+line that needs an action ends with the one command that takes it:
 
 ```text
 ✓ server      http://localhost:3105 · mend 0.5.0
@@ -118,7 +119,7 @@ yet, `✗` a blocker — and every line that needs an action ends with the one c
 ○ codex       not connected → mend connect codex
 ✓ projects    2 adopted
 ○ gh cli      on PATH · no credential here → gh auth login
-○ tailnet     not detected
+✓ exposure    declared loopback · http origin
 ```
 
 It exits 1 when a `✗` is printed, so a setup script can gate on it. No request waits longer than 3s.

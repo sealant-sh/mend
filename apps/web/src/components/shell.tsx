@@ -152,34 +152,44 @@ function ProjectsBlock({ currentId }: { readonly currentId: string | undefined }
   );
 }
 
-/** hostname · platform, and whether a tailnet address is bound (plan §7.5). */
+/** What the footer says about how this instance is reached: facts, in the order they were learned. */
+export const exposureLine = (exposure: {
+  readonly declared: "loopback" | "private" | "public";
+  readonly originScheme: "http" | "https";
+  readonly arrivedVia: "direct" | "trusted-proxy";
+}): string =>
+  [
+    `exposure · ${exposure.declared}`,
+    exposure.originScheme,
+    ...(exposure.arrivedVia === "trusted-proxy" ? ["via proxy"] : []),
+  ].join(" · ");
+
+/**
+ * hostname · platform, then how this instance is reached: what the operator declared and what the
+ * server observed (docs/adr/0004). It is a report, so it carries no colour of success: a server
+ * cannot observe who can reach it. A server older than `exposure` shows the machine alone.
+ */
 function MachineBlock() {
   const trpc = useTRPC();
   const machine = useQuery(
     trpc.platform.machine.queryOptions(undefined, { staleTime: 30_000, refetchInterval: 30_000 }),
   ).data;
   if (machine === undefined) return null;
-  const reachable = machine.tailnet.status === "reachable";
+  const exposure = machine.exposure;
   return (
     <div className="flex flex-col gap-2">
       <p className="ev-eyebrow">machine</p>
       <p className="truncate font-mono text-[12px] text-ink-2">
         {machine.hostname} · {machine.platform}
       </p>
-      <p
-        className={`flex items-center gap-[7px] font-mono text-[11.5px] ${
-          reachable ? "text-success" : "text-ink-2"
-        }`}
-        title={machine.tailnet.address ?? undefined}
-      >
-        <span
-          className={`size-1.5 shrink-0 rounded-full ${
-            reachable ? "bg-success-dot" : "border-[1.5px] border-faint bg-transparent"
-          }`}
-          aria-hidden="true"
-        />
-        {reachable ? "tailnet · reachable" : "tailnet · not detected"}
-      </p>
+      {exposure === undefined ? null : (
+        <p
+          className="font-mono text-[11.5px] text-ink-2"
+          title={`declared by the operator · addresses on the host: ${exposure.addressKinds.join(", ")}`}
+        >
+          {exposureLine(exposure)}
+        </p>
+      )}
     </div>
   );
 }
