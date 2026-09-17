@@ -24,6 +24,12 @@ import {
   usageOf,
 } from "./help.ts";
 import { loginCommand } from "./login.ts";
+import {
+  folderCommand,
+  inviteCommand,
+  membersCommand,
+  sessionShareCommand,
+} from "./organization.ts";
 import { type ApiCall, pairCommand, qrCommand } from "./pair.ts";
 import { nodeServerRuntime, serverCommand } from "./server-setup.ts";
 import {
@@ -360,6 +366,11 @@ const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const name =
     nameFlag !== -1 && args[nameFlag + 1] !== undefined ? String(args[nameFlag + 1]) : null;
   const authFlagIndex = args.indexOf("--auth");
+  if (args.includes("--private") && args.includes("--shared")) {
+    return fail("--private and --shared pick one visibility; pass one of them");
+  }
+  // Default: private. Only the adopter sees it until an owner shares it (docs/adr/0003).
+  const visibility = args.includes("--shared") ? "shared" : "private";
   const positional = args.filter(
     (a, i) =>
       !a.startsWith("--") &&
@@ -388,10 +399,14 @@ const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const project = await api<ProjectDto>(config, "POST", "/projects", {
     name: projectName,
     source,
+    visibility,
     ...(auth === null ? {} : { gitAuthMode: auth }),
   });
   say(`${green("✓")} adopted · ${project.name} · ${dim(project.storePath)}`);
   say(`${dim("  default branch")} ${project.defaultBranch}`);
+  say(
+    `${dim("  visible to")} ${visibility === "private" ? "only you" : "everyone in the organization"}`,
+  );
   // Say which signer did the work — the clone already proved it answers.
   if (project.gitAuthMode === "mend-key") {
     say(`${dim("  git auth")} mend key ${dim("(your Mend key signed this clone)")}`);
@@ -3667,6 +3682,15 @@ const main = async () => {
       return connectCommand(config, rest);
     case "pair":
       return pairCommand(rest, boundApi(config));
+    case "invite":
+      return inviteCommand(boundApi(config), config.url, rest);
+    case "members":
+      return membersCommand(boundApi(config));
+    case "folder":
+      return folderCommand(boundApi(config), rest);
+    case "session":
+      if (rest[0] === "share") return sessionShareCommand(boundApi(config), rest.slice(1));
+      return fail(`unknown session command "${rest[0] ?? ""}" · mend help session share`);
     // Hidden in the catalog: the installer renders its own QR through this.
     case "qr":
       return qrCommand(rest);

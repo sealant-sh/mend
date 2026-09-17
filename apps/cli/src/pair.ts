@@ -22,7 +22,7 @@ export interface PairingDto {
 
 /** main.ts's one-shot API call: any failure prints `mend: …` and exits 1. */
 export type ApiCall = <T>(
-  method: "GET" | "POST" | "DELETE",
+  method: "GET" | "POST" | "PUT" | "DELETE",
   route: string,
   body?: unknown,
 ) => Promise<T>;

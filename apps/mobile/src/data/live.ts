@@ -380,6 +380,12 @@ export const useSession = (id: string | null) =>
         readonly change: SessionChangeDto | null;
         readonly processes: ReadonlyArray<SessionProcessDto>;
         readonly currentAgent: SessionProcessDto | null;
+        /** What this account may do (docs/adr/0003); absent from servers before organizations. */
+        readonly control?: {
+          readonly steer: boolean;
+          readonly stop: boolean;
+          readonly toggleSharedControl: boolean;
+        };
       }>("GET", `/sessions/${id}`),
     refetchInterval: 5_000,
   });
