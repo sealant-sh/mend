@@ -299,7 +299,11 @@ const ServerLive = Layer.unwrap(
         WebSocketRoutes,
         publicNetworkPolicy(network),
       ),
-    ).pipe(Layer.provide(NodeHttpServer.layer(createServer, { port })));
+    ).pipe(
+      Layer.provide(NodeHttpServer.layer(createServer, { port })),
+      // One LISTEN per process, fanned out to every SSE stream; the worker needs none.
+      Layer.provide(EventBusLive),
+    );
   }),
 );
 
@@ -573,8 +577,8 @@ const MainLive = Layer.unwrap(
     // on it, so it must be launched explicitly rather than provided.
     return Layer.merge(parts, SessionChannelNetworkLayer).pipe(
       Layer.provide(SessionSteeringLive),
-      // Who may see what (docs/adr/0003), and one LISTEN per process fanned out to SSE streams.
-      Layer.provide(Layer.merge(ProjectAccessLive, EventBusLive)),
+      // Who may see what (docs/adr/0003): every project-scoped route resolves through it.
+      Layer.provide(ProjectAccessLive),
       // MEND_TENANCY: refuses to build (so nothing serves) when the mode may not run here.
       Layer.provide(TenancyConfigLive),
       // Shared by the API (enqueue on comment) and the workers (one instance).

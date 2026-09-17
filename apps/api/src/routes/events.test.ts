@@ -1,7 +1,9 @@
 import type { MendEvent } from "@mend/db";
 import { Effect, Exit, PubSub, Queue, Scope, Stream } from "effect";
-import { describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-api.ts";
+import { ids } from "../../test/support/tenancy-harness.ts";
 import { makeEventBus } from "../events-bus.ts";
 import { admits, audienceOf, type EventView } from "./events.ts";
 
@@ -103,5 +105,62 @@ describe("what one stream may deliver (docs/adr/0003)", () => {
     expect(admits({ ...carol, operator: true }, audienceOf({ type: "issue", issueId: "i" }))).toBe(
       true,
     );
+  });
+});
+
+describe("GET /api/events over the two-organization world", () => {
+  let api: TenancyApi;
+  beforeAll(async () => {
+    api = await createTenancyApi();
+  });
+  afterAll(async () => {
+    await api.dispose();
+  });
+
+  const sharedA = ids("shared-a");
+  const privateAlice = ids("private-alice");
+
+  it("delivers a teammate's shared-project events and withholds everything else", async () => {
+    const carol = await api.events("carol");
+    const bob = await api.events("bob");
+    await api.notify({ type: "session", sessionId: sharedA.session, projectId: sharedA.project });
+    await api.notify({
+      type: "session",
+      sessionId: privateAlice.session,
+      projectId: privateAlice.project,
+    });
+    expect(await carol.next()).toContain(sharedA.session);
+    expect(await carol.next()).toBeNull();
+    expect(await bob.next()).toBeNull();
+    await carol.close();
+    await bob.close();
+  });
+
+  it("an account in no organization receives nothing, not even another member's events", async () => {
+    const dave = await api.events("dave");
+    await api.notify({ type: "session", sessionId: sharedA.session, projectId: sharedA.project });
+    await api.notify({ type: "organization", organizationId: "org-A" });
+    expect(await dave.next()).toBeNull();
+    await dave.close();
+  });
+
+  it("a project made private stops reaching the member who can no longer see it", async () => {
+    const carol = await api.events("carol");
+    api.world.setVisibility("shared-a", "private");
+    await api.notify({ type: "project", projectId: sharedA.project });
+    expect(await carol.next()).toContain(sharedA.project);
+    await api.notify({ type: "session", sessionId: sharedA.session, projectId: sharedA.project });
+    expect(await carol.next()).toBeNull();
+    api.world.setVisibility("shared-a", "shared");
+    await carol.close();
+  });
+
+  it("a project event for another organization neither reaches nor refreshes a stream", async () => {
+    const carol = await api.events("carol");
+    api.world.calls.splice(0, api.world.calls.length);
+    await api.notify({ type: "project", projectId: ids("shared-b").project });
+    expect(await carol.next()).toBeNull();
+    expect(api.world.calls).toEqual([]);
+    await carol.close();
   });
 });

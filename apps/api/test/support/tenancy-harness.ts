@@ -115,8 +115,9 @@ export const ids = (project: HarnessProject) => ({
   skill: SkillId.make(`skill-${project}`),
 });
 
-/** Carol's own session inside alice's shared project. */
+/** Carol's own session inside alice's shared project, alone in its own worktree. */
 export const CAROL_SESSION_IN_SHARED_A = SessionId.make("session-shared-a-carol");
+export const CAROL_WORKTREE_IN_SHARED_A = WorktreeId.make("worktree-shared-a-carol");
 /** A pre-organizations session with no owner in `shared-a`; it runs as the first account. */
 export const NULL_OWNER_SESSION = SessionId.make("session-shared-a-null-owner");
 /** An agent-protocol process and a UDP Service on alice's session in `shared-a`. */
@@ -140,11 +141,14 @@ export const AUTHORIZATION_READS: ReadonlySet<string> = new Set([
   "worktrees.byId",
   "changes.byId",
   "processes.byId",
+  // The terminal route picks a session's current agent process before it attaches.
   "processes.listForSession",
   "services.byId",
   "conversation.byTurnId",
   "conversation.byRequestId",
+  // The owner a pre-organizations session runs as.
   "userDotfiles.firstUserId",
+  // A skill's scope decides whose access applies, so it is read first.
   "skills.byId",
 ]);
 
@@ -197,6 +201,8 @@ export interface TenancyWorld {
   readonly processes: ReadonlyMap<SessionProcessId, SessionProcess>;
   readonly services: ReadonlyMap<ServiceId, Service>;
   readonly skills: ReadonlyMap<SkillId, SkillWithFiles>;
+  /** Flip a project's visibility, as an owner's `PUT /projects/:id/visibility` would. */
+  readonly setVisibility: (project: HarnessProject, visibility: ProjectVisibility) => void;
   /** Tokens: each user's bearer is their name. */
   readonly authLayer: Layer.Layer<Auth>;
   /** The authorization reads over the world, recorded like everything else. */
@@ -462,9 +468,16 @@ export const createTenancyWorld = async (): Promise<TenancyWorld> => {
     );
   }
   const sharedA = ids("shared-a");
+  const sharedAWorktree = worktrees.get(sharedA.worktree);
+  if (sharedAWorktree !== undefined) {
+    worktrees.set(
+      CAROL_WORKTREE_IN_SHARED_A,
+      new Worktree({ ...sharedAWorktree, id: CAROL_WORKTREE_IN_SHARED_A, name: "carol" }),
+    );
+  }
   sessions.set(
     CAROL_SESSION_IN_SHARED_A,
-    makeSession(CAROL_SESSION_IN_SHARED_A, sharedA.project, sharedA.worktree, "carol"),
+    makeSession(CAROL_SESSION_IN_SHARED_A, sharedA.project, CAROL_WORKTREE_IN_SHARED_A, "carol"),
   );
   sessions.set(
     NULL_OWNER_SESSION,
@@ -655,6 +668,10 @@ export const createTenancyWorld = async (): Promise<TenancyWorld> => {
     processes,
     services,
     skills,
+    setVisibility: (key, visibility) => {
+      const row = projects.get(ids(key).project);
+      if (row !== undefined) projects.set(row.id, new Project({ ...row, visibility }));
+    },
     authLayer,
     accessLayers,
     dispose: () => rm(root, { recursive: true, force: true }),

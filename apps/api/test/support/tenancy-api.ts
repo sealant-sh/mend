@@ -26,6 +26,7 @@ import {
   UserEvents,
   UserGitAccessRepo,
   UsersRepo,
+  type MendEvent,
 } from "@mend/db";
 import { JobRunner } from "@mend/jobs";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
@@ -40,11 +41,13 @@ import {
   Store,
   StoreConfig,
 } from "@mend/store";
-import { Effect, Layer, ManagedRuntime, Schema } from "effect";
+import { Effect, Layer, ManagedRuntime, Queue, Schema, Stream } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 
 import { ProjectAccessLive } from "../../src/access.ts";
+import { EventBus, makeEventBus } from "../../src/events-bus.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
+import { EventsRoutes } from "../../src/routes/events.ts";
 import { Gh } from "../../src/routes/github.ts";
 import { ServiceTunnelRoutes } from "../../src/routes/service-tunnel.ts";
 import { TtyRoutes } from "../../src/routes/tty.ts";
@@ -63,6 +66,14 @@ export interface TenancyApi {
     path: string,
     body?: unknown,
   ) => Promise<Response>;
+  /** Publish one NOTIFY payload into the in-memory event bus, as Postgres would. */
+  readonly notify: (event: MendEvent) => Promise<void>;
+  /** Open `/api/events` as `user`; frames are read one at a time, `null` after the timeout. */
+  readonly events: (user: HarnessUser) => Promise<{
+    readonly status: number;
+    readonly next: (timeoutMs?: number) => Promise<string | null>;
+    readonly close: () => Promise<void>;
+  }>;
   /** Send a raw (WebSocket upgrade) route request: `/api/tty` and `/api/service-tunnel`. */
   readonly rawRequest: (user: HarnessUser, path: string) => Promise<Response>;
   readonly dispose: () => Promise<void>;
@@ -167,6 +178,14 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
     Layer.provide(authorization),
   );
   const raw = HttpRouter.toWebHandler(rawLayer, { disableLogger: true });
+  const source = Effect.runSync(Queue.unbounded<string>());
+  const busLayer = Layer.effect(EventBus, makeEventBus(Stream.fromQueue(source)));
+  const eventsLayer = EventsRoutes.pipe(
+    Layer.provide(HttpServer.layerServices),
+    Layer.provide(busLayer),
+    Layer.provide(authorization),
+  );
+  const eventRoutes = HttpRouter.toWebHandler(eventsLayer, { disableLogger: true });
 
   return {
     world,
@@ -183,6 +202,54 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
         context,
       );
     },
+    notify: (event) =>
+      Effect.runPromise(
+        Queue.offer(source, JSON.stringify(event)).pipe(Effect.andThen(Effect.sleep("20 millis"))),
+      ),
+    events: async (user) => {
+      const controller = new AbortController();
+      const response = await eventRoutes.handler(
+        new Request("http://api.internal/api/events", {
+          headers: { authorization: `Bearer ${user}` },
+          signal: controller.signal,
+        }),
+      );
+      const reader = response.body?.getReader();
+      const decoder = new TextDecoder();
+      let pending = "";
+      // One read at a time: a read that loses the timeout race stays in flight and is awaited
+      // by the next call instead of being replaced (which would drop its chunk).
+      let inFlight: Promise<ReadableStreamReadResult<Uint8Array>> | null = null;
+      const next = async (timeoutMs = 200): Promise<string | null> => {
+        while (!pending.includes("\n\n")) {
+          if (reader === undefined) return null;
+          inFlight ??= reader.read();
+          const chunk = await Promise.race([
+            inFlight,
+            new Promise<null>((resolve) => setTimeout(() => resolve(null), timeoutMs)),
+          ]);
+          if (chunk === null) return null;
+          inFlight = null;
+          if (chunk.done) return null;
+          pending += decoder.decode(chunk.value);
+        }
+        const end = pending.indexOf("\n\n");
+        const frame = pending.slice(0, end);
+        pending = pending.slice(end + 2);
+        return frame;
+      };
+      // The subscription starts when the body is first pulled; pull once so nothing published
+      // after `events()` returns can be missed.
+      await next(50);
+      return {
+        status: response.status,
+        next,
+        close: async () => {
+          controller.abort();
+          await reader?.cancel().catch(() => undefined);
+        },
+      };
+    },
     rawRequest: (user, path) =>
       raw.handler(
         new Request(`http://api.internal${path}`, {
@@ -192,6 +259,7 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
     dispose: async () => {
       await dispose();
       await raw.dispose();
+      await eventRoutes.dispose();
       await runtime.dispose();
       await world.dispose();
     },

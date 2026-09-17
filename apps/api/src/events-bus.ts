@@ -1,6 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { MEND_EVENTS_CHANNEL, MendEvent } from "@mend/db";
-import { Effect, Layer, PubSub, Schedule, Schema, Stream } from "effect";
+import { Effect, Layer, PubSub, Ref, Schedule, Schema, Stream } from "effect";
 import * as Context from "effect/Context";
 import type * as Scope from "effect/Scope";
 
@@ -45,18 +45,29 @@ export const pumpEvents = <E, R>(
 export const makeEventBus = <E, R>(listen: Stream.Stream<string, E, R>) =>
   Effect.gen(function* () {
     const pubsub = yield* PubSub.sliding<BusSignal>(BUFFER);
-    const loop = Effect.gen(function* () {
-      yield* pumpEvents(pubsub, listen).pipe(
+    /** True from the moment the connection is lost until a payload arrives again. */
+    const down = yield* Ref.make(false);
+    const attempt = Effect.gen(function* () {
+      yield* pumpEvents(
+        pubsub,
+        Stream.tap(listen, () => Ref.set(down, false)),
+      ).pipe(
         Effect.catchCause((cause) =>
           Effect.logWarning("the events listen connection ended; reconnecting").pipe(
             Effect.annotateLogs({ cause: String(cause) }),
           ),
         ),
       );
-      // Whatever was notified while not listening is gone: tell subscribers to re-read.
-      yield* PubSub.publish(pubsub, { kind: "resync" });
-    }).pipe(Effect.repeat(Schedule.spaced("1 second")));
-    yield* Effect.forkScoped(loop);
+      // Whatever was notified while not listening is gone: tell subscribers to re-read, once per
+      // outage, so a database that stays down does not make every client refetch every second.
+      if (!(yield* Ref.getAndSet(down, true))) {
+        yield* PubSub.publish(pubsub, { kind: "resync" });
+      }
+    });
+    const reconnect = Schedule.exponential("1 second").pipe(
+      Schedule.either(Schedule.spaced("30 seconds")),
+    );
+    yield* Effect.forkScoped(Effect.repeat(attempt, reconnect));
     return { subscribe: PubSub.subscribe(pubsub) };
   });
 

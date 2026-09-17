@@ -8,6 +8,7 @@ import { createTenancyApi, type TenancyApi } from "../../test/support/tenancy-ap
 import {
   CAROL_SESSION_IN_SHARED_A,
   CAROL_USER_SKILL,
+  CAROL_WORKTREE_IN_SHARED_A,
   ids,
   type HarnessProject,
   type HarnessUser,
@@ -577,6 +578,34 @@ describe("owners stop sessions in their organization", () => {
 
 const skill = (id: string): Call => ({ method: "GET", path: `/api/skills/${id}`, id });
 const remove = (id: string): Call => ({ method: "DELETE", path: `/api/skills/${id}`, id });
+
+describe("worktree removal by a member", () => {
+  it("is allowed when the member owns every session in it, and refused before any effect otherwise", async () => {
+    const own = await send("carol", {
+      method: "DELETE",
+      path: `/api/worktrees/${CAROL_WORKTREE_IN_SHARED_A}`,
+      id: CAROL_WORKTREE_IN_SHARED_A,
+    });
+    expect(own.status).not.toBe(404);
+    api.world.calls.splice(0, api.world.calls.length);
+    const shared = await send("carol", {
+      method: "DELETE",
+      path: `/api/worktrees/${ids("shared-a").worktree}`,
+      id: ids("shared-a").worktree,
+    });
+    expect({ status: shared.status, calls: api.world.calls }).toEqual({ status: 404, calls: [] });
+  });
+});
+
+describe("adoption needs an organization", () => {
+  it("refuses an account in no organization before cloning anything", async () => {
+    const response = await api.request("dave", "POST", "/api/projects", {
+      name: "stray",
+      source: "https://example.invalid/stray.git",
+    });
+    expect({ status: response.status, calls: api.world.calls }).toEqual({ status: 422, calls: [] });
+  });
+});
 
 describe("skills follow their project", () => {
   it("reads a project skill where the project is visible, and a user skill only as its owner", async () => {
