@@ -14,11 +14,13 @@ import {
   removeSession,
   resumeSession,
   setSessionLabel,
+  setSharedControl,
   stopSession,
   type TranscriptEventDto,
 } from "#/lib/api";
 import { useResolvedDark } from "#/lib/theme";
 import { useTRPC } from "#/lib/trpc";
+import { runsAsLine, useViewer } from "#/lib/viewer";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 
 export const Route = createFileRoute("/sessions/$sessionId")({
@@ -98,9 +100,17 @@ function SessionPage() {
   const { sessionId } = Route.useParams();
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const { session, checkpoints, change, currentAgent } = useSuspenseQuery(
+  const { session, checkpoints, change, currentAgent, control } = useSuspenseQuery(
     trpc.sessions.detail.queryOptions({ id: sessionId }),
   ).data;
+  // Steering is the owner's unless they share control (docs/adr/0003); the API says what this
+  // viewer may do, and the roster names whose credentials the session runs on.
+  const viewer = useViewer();
+  const members = useQuery(trpc.organization.members.queryOptions(undefined, { retry: false }));
+  const names = new Map((members.data ?? []).map((member) => [member.userId, member.name]));
+  const runsAs = runsAsLine(session, viewer?.userId ?? null, names);
+  const ownerName =
+    session.ownerUserId === null ? null : (names.get(session.ownerUserId) ?? "its owner");
   // The agent's liveness, not the session fold: a shell holding the workspace keeps the session
   // `idle`, but the terminal, stop, and resume controls are about the AGENT.
   const agentLive = agentIsLive(session, currentAgent);
@@ -159,14 +169,16 @@ function SessionPage() {
             <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">
               {session.harness}
               {session.label === null ? "" : ` — ${session.label}`}
-              <button
-                type="button"
-                onClick={() => setLabelDraft(session.label ?? "")}
-                title="Rename this session"
-                className="ml-3 align-middle font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-              >
-                rename
-              </button>
+              {control.own ? (
+                <button
+                  type="button"
+                  onClick={() => setLabelDraft(session.label ?? "")}
+                  title="Rename this session"
+                  className="ml-3 align-middle font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+                >
+                  rename
+                </button>
+              ) : null}
             </h1>
           ) : (
             <div className="flex items-center gap-2">
@@ -197,6 +209,7 @@ function SessionPage() {
           {session.startedAt === null
             ? ""
             : ` · started ${new Date(session.startedAt).toLocaleTimeString()}`}
+          {runsAs === null ? "" : ` · ${runsAs}`}
         </p>
         {session.summary !== null && (
           <p className="mt-3 max-w-[760px] text-[14.5px] leading-relaxed text-ink-2">
@@ -211,7 +224,15 @@ function SessionPage() {
             checkpoints, and review are live
           </p>
         )}
-        <FollowUpBanner sessionId={sessionId} followUp={followUp} />
+        {control.steer ? <FollowUpBanner sessionId={sessionId} followUp={followUp} /> : null}
+        <SharedControl
+          sessionId={sessionId}
+          ownerSteers={viewer !== null && viewer.userId === session.ownerUserId}
+          shared={session.sharedControlEnabledAt !== null}
+          canToggle={control.toggleSharedControl}
+          steer={control.steer}
+          ownerName={ownerName}
+        />
 
         <div className="mt-6 flex flex-wrap items-center gap-3">
           {change !== null && (
@@ -231,7 +252,7 @@ function SessionPage() {
           >
             {pending === "checkpoint" ? "Marking…" : "Mark checkpoint"}
           </button>
-          {agentLive && (
+          {agentLive && control.stop && (
             <button
               type="button"
               disabled={pending !== null}
@@ -241,7 +262,7 @@ function SessionPage() {
               {pending === "stop" ? "Stopping…" : "Stop"}
             </button>
           )}
-          {!agentLive && (
+          {!agentLive && control.own && (
             <button
               type="button"
               disabled={deleting === "working"}
@@ -256,7 +277,7 @@ function SessionPage() {
                   : "Delete…"}
             </button>
           )}
-          {!agentLive && (
+          {!agentLive && control.steer && (
             <div className="flex items-center gap-2">
               <span className="text-xs text-label">resume with:</span>
               {(["claude", "codex", "opencode"] as const).map((harness) => (
@@ -299,7 +320,7 @@ function SessionPage() {
                   </p>
                 </div>
               </>
-            ) : agentPty !== null && agentLive ? (
+            ) : agentPty !== null && agentLive && control.steer ? (
               <>
                 <p className="text-xs font-medium text-label">Terminal</p>
                 <div className="mt-3 overflow-hidden rounded-2xl bg-card shadow-sm">
@@ -327,7 +348,9 @@ function SessionPage() {
                     <p className="font-mono text-[11.5px] text-muted-foreground">
                       {session.sealantRunId === null
                         ? "no record — the session was not supervised"
-                        : `run ${session.sealantRunId} · the durable record`}
+                        : agentLive
+                          ? `run ${session.sealantRunId} · the owner's terminal; the record updates as the session runs`
+                          : `run ${session.sealantRunId} · the durable record`}
                     </p>
                   </div>
                   {session.sealantRunId === null ? (
@@ -364,10 +387,115 @@ function SessionPage() {
                 ))
               )}
             </div>
-            <ServicesCard sessionId={sessionId} sessionLive={ACTIVE.has(session.status)} />
+            <ServicesCard
+              sessionId={sessionId}
+              sessionLive={ACTIVE.has(session.status)}
+              steer={control.steer}
+            />
           </section>
         </div>
       </div>
     </AppShell>
+  );
+}
+
+/**
+ * Shared control (docs/adr/0003): the owner lends their credentials so everyone who can see the
+ * project may steer; an organization owner may take it back. Everyone else is told who steers.
+ */
+export function SharedControl({
+  sessionId,
+  ownerSteers,
+  shared,
+  canToggle,
+  steer,
+  ownerName,
+}: {
+  readonly sessionId: string;
+  /** The viewer owns the session. */
+  readonly ownerSteers: boolean;
+  readonly shared: boolean;
+  readonly canToggle: boolean;
+  readonly steer: boolean;
+  readonly ownerName: string | null;
+}) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const toggle = (enabled: boolean) => {
+    setPending(true);
+    setError(null);
+    void setSharedControl(sessionId, enabled)
+      .then(() => queryClient.invalidateQueries(trpc.sessions.pathFilter()))
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setPending(false));
+  };
+
+  if (!ownerSteers && !canToggle) {
+    if (steer || ownerName === null) return null;
+    return (
+      <p className="mt-4 max-w-[760px] border-l-2 border-[var(--sw-accent)] pl-3 text-[13px] leading-relaxed text-ink-2">
+        Only {ownerName} steers this session. You can read the record and review the change.
+      </p>
+    );
+  }
+
+  return (
+    <div className="mt-4 max-w-[760px]">
+      {ownerSteers ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-xs font-medium text-label">Shared control</span>
+          <div role="group" aria-label="Shared control" className="flex rounded-lg bg-wash p-0.5">
+            {([false, true] as const).map((enabled) => (
+              <button
+                key={String(enabled)}
+                type="button"
+                aria-pressed={shared === enabled}
+                disabled={pending}
+                onClick={() => {
+                  if (shared !== enabled) toggle(enabled);
+                }}
+                className={`rounded-md px-2.5 py-1 font-sans text-xs font-medium transition-colors ${
+                  shared === enabled
+                    ? "bg-panel text-foreground shadow-[var(--shadow-xs)]"
+                    : "text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {enabled ? "On" : "Off"}
+              </button>
+            ))}
+          </div>
+          <p className="basis-full text-[12.5px] leading-relaxed text-muted-foreground">
+            On lets everyone who can see this project send turns, answer approvals, interrupt, and
+            type in the terminal, using your provider logins and Git access. Every action is
+            recorded with who sent it.
+          </p>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="text-[13px] text-ink-2">
+            {ownerName ?? "Its owner"} shares control of this session.
+          </span>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => toggle(false)}
+            className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+          >
+            {pending ? "Turning off…" : "Turn off"}
+          </button>
+        </div>
+      )}
+      {error === null ? null : (
+        <p
+          role="alert"
+          className="mt-2 border-l-2 border-[var(--sw-red)] pl-3 text-[13px] leading-relaxed text-danger"
+        >
+          {error}
+        </p>
+      )}
+    </div>
   );
 }

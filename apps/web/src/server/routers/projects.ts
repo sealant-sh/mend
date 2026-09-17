@@ -10,6 +10,8 @@ import {
   ProjectInstallCommandRequest,
   ProjectInheritUserSkillsRequest,
   ProjectReferenceSelection,
+  ProjectVisibilityRequest,
+  SetProjectFoldersRequest,
   ProjectWorkspaceImageRequest,
 } from "@mend/api-contracts";
 import { ProjectId, ProjectLinkId, ProjectMountId } from "@mend/domain";
@@ -31,6 +33,36 @@ export const projectsRouter = router({
   adopt: procedure
     .input(input(AdoptProject))
     .mutation(({ ctx, input: payload }) => run(ctx, (api) => api.projects.adopt({ payload }))),
+  setVisibility: procedure
+    .input(
+      input(
+        Schema.Struct({ id: ProjectId, visibility: ProjectVisibilityRequest.fields.visibility }),
+      ),
+    )
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.projects.visibility({ params: { id: i.id }, payload: { visibility: i.visibility } }),
+      ),
+    ),
+  folders: procedure
+    .input(byId)
+    .query(({ ctx, input: i }) =>
+      run(ctx, (api) => api.folders.forProject({ params: { id: i.id } })),
+    ),
+  setFolders: procedure
+    .input(
+      input(
+        Schema.Struct({ id: ProjectId, selections: SetProjectFoldersRequest.fields.selections }),
+      ),
+    )
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.folders.selectForProject({
+          params: { id: i.id },
+          payload: { selections: i.selections },
+        }),
+      ),
+    ),
   remove: procedure
     .input(byId)
     .mutation(({ ctx, input: i }) =>

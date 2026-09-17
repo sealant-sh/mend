@@ -3,7 +3,13 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { GitKeyCard } from "#/components/git-key-card";
-import { adoptProject, initGitKey, type GitAuthModeDto, type GitKeyDto } from "#/lib/api";
+import {
+  adoptProject,
+  initGitKey,
+  type GitAuthModeDto,
+  type GitKeyDto,
+  type ProjectDto,
+} from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
 
 /**
@@ -25,6 +31,11 @@ export function AdoptPanel({ onAdopted }: { readonly onAdopted: () => void }) {
   const gitKey = createdKey ?? (access?.key.exists === true ? access.key : null);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
+  // Private until chosen otherwise (docs/adr/0003): only the adopter sees it; an owner can share it.
+  const [visibility, setVisibility] = useState<ProjectDto["visibility"]>("private");
+  const organization = useQuery(
+    trpc.organization.current.queryOptions(undefined, { retry: false, staleTime: 60_000 }),
+  ).data;
   const trimmedSource = source.trim();
   const sourceIssue = trimmedSource === "" ? null : repositoryCloneUrlIssue(trimmedSource);
   const displayedError = error ?? sourceIssue;
@@ -38,7 +49,12 @@ export function AdoptPanel({ onAdopted }: { readonly onAdopted: () => void }) {
     setPending(true);
     setError(null);
     try {
-      await adoptProject(name === "" ? inferName(trimmedSource) : name, trimmedSource, auth);
+      await adoptProject(
+        name === "" ? inferName(trimmedSource) : name,
+        trimmedSource,
+        auth,
+        visibility,
+      );
       await queryClient.invalidateQueries(trpc.projects.pathFilter());
       setName("");
       setSource("");
@@ -111,6 +127,26 @@ export function AdoptPanel({ onAdopted }: { readonly onAdopted: () => void }) {
             }`}
           >
             {mode === "mend-key" ? "mend key" : mode}
+          </button>
+        ))}
+      </div>
+      <div className="mt-3 flex items-center gap-2">
+        <span className="text-xs text-label">visible to:</span>
+        {(["private", "shared"] as const).map((choice) => (
+          <button
+            key={choice}
+            type="button"
+            aria-pressed={visibility === choice}
+            onClick={() => setVisibility(choice)}
+            className={`rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors ${
+              visibility === choice
+                ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                : "border-border bg-card text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {choice === "private"
+              ? "only you"
+              : `everyone in ${organization?.organization.name ?? "the organization"}`}
           </button>
         ))}
       </div>

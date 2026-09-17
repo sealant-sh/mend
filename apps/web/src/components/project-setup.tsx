@@ -19,8 +19,11 @@ import {
   setProjectApplyDotfiles,
   setProjectGitAuth,
   setProjectHotSessions,
+  setProjectFolders,
   setProjectInstallCommand,
+  setProjectVisibility,
   type AutomationChoiceDto,
+  type FolderDto,
   type GitAuthModeDto,
   type ProjectDto,
   type ReferenceDto,
@@ -1206,6 +1209,161 @@ export function InstallCommandSection({ project }: { readonly project: ProjectDt
       <p className="mt-2 font-mono text-xs text-ink-2">
         {current === "" ? "detected from the lockfile at launch" : `runs · ${current}`}
       </p>
+      {error !== null && (
+        <p className="mt-2 border-l-2 border-[var(--sw-red)] pl-2 text-xs text-danger">{error}</p>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Private or shared (docs/adr/0003-organizations-and-tenancy.md). Only organization owners see
+ * this: the setup page renders it when the project's capabilities allow the change.
+ */
+export function VisibilitySection({ project }: { readonly project: ProjectDto }) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = (visibility: ProjectDto["visibility"]) => {
+    if (busy || visibility === project.visibility) return;
+    setBusy(true);
+    setError(null);
+    void setProjectVisibility(project.id, visibility)
+      .then(() => queryClient.invalidateQueries(trpc.projects.pathFilter()))
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <section id="visibility" className="project-setup-card">
+      <h2 className="font-sans text-sm font-semibold">Visibility</h2>
+      <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
+        Private: only its creator sees it. Shared: every member sees it, starts sessions in it, and
+        reviews its changes. Making a shared project private drains other members&apos; warm
+        workspaces; their sessions keep running until they end.
+      </p>
+      <div
+        role="group"
+        aria-label="Visibility"
+        className="mt-3 flex w-fit rounded-lg bg-wash p-0.5"
+      >
+        {(["private", "shared"] as const).map((choice) => (
+          <button
+            key={choice}
+            type="button"
+            aria-pressed={project.visibility === choice}
+            disabled={busy}
+            onClick={() => save(choice)}
+            className={`rounded-md px-2.5 py-1 font-sans text-xs font-medium transition-colors ${
+              project.visibility === choice
+                ? "bg-panel text-foreground shadow-[var(--shadow-xs)]"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+          >
+            {choice}
+          </button>
+        ))}
+      </div>
+      {error !== null && (
+        <p className="mt-2 border-l-2 border-[var(--sw-red)] pl-2 text-xs text-danger">{error}</p>
+      )}
+    </section>
+  );
+}
+
+/**
+ * Which organization folders this project's sessions mount (docs/adr/0003), at
+ * /workspace/home/<name>. Folders themselves are created and filled in Settings.
+ */
+export function ProjectFoldersSection({
+  projectId,
+  mountDelivery,
+}: {
+  readonly projectId: ProjectDto["id"];
+  readonly mountDelivery: "bind" | "none";
+}) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const folders = useQuery(trpc.folders.list.queryOptions()).data ?? [];
+  const selected = useQuery(trpc.projects.folders.queryOptions({ id: projectId })).data ?? [];
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const save = (
+    next: ReadonlyArray<{
+      readonly folderId: FolderDto["id"];
+      readonly name: string;
+      readonly readOnly: boolean;
+    }>,
+  ) => {
+    setBusy(true);
+    setError(null);
+    void setProjectFolders(projectId, next)
+      .then(() => queryClient.invalidateQueries(trpc.projects.folders.pathFilter()))
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setBusy(false));
+  };
+
+  const current = selected.map((view) => ({
+    folderId: view.folder.id,
+    name: view.name,
+    readOnly: view.readOnly,
+  }));
+  const toggle = (folder: FolderDto) =>
+    save(
+      current.some((entry) => entry.folderId === folder.id)
+        ? current.filter((entry) => entry.folderId !== folder.id)
+        : [...current, { folderId: folder.id, name: folder.name, readOnly: true }],
+    );
+  const setReadOnly = (folderId: FolderDto["id"], readOnly: boolean) =>
+    save(current.map((entry) => (entry.folderId === folderId ? { ...entry, readOnly } : entry)));
+
+  return (
+    <section id="folders" className="project-setup-card">
+      <h2 className="font-sans text-sm font-semibold">Folders</h2>
+      <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
+        Organization folders this project&apos;s next sessions mount at{" "}
+        <span className="font-mono">/workspace/home/&lt;name&gt;</span>, read-only unless chosen
+        otherwise. Create and fill folders in Settings.
+        {mountDelivery === "none"
+          ? " This deployment records the selection but does not mount folders into captured workspaces yet."
+          : ""}
+      </p>
+      <div className="mt-3 space-y-2">
+        {folders.length === 0 ? (
+          <p className="font-mono text-xs text-faint">no folders in this organization yet</p>
+        ) : (
+          folders.map((folder) => {
+            const entry = current.find((candidate) => candidate.folderId === folder.id);
+            return (
+              <div key={folder.id} className="flex items-center justify-between gap-3">
+                <label className="flex min-w-0 items-center gap-2 font-mono text-xs text-ink-2">
+                  <input
+                    type="checkbox"
+                    checked={entry !== undefined}
+                    disabled={busy}
+                    onChange={() => toggle(folder)}
+                  />
+                  {folder.name}
+                </label>
+                {entry === undefined ? null : (
+                  <label className="flex items-center gap-2 font-sans text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={!entry.readOnly}
+                      disabled={busy}
+                      onChange={() => setReadOnly(folder.id, !entry.readOnly)}
+                    />
+                    sessions may write
+                  </label>
+                )}
+              </div>
+            );
+          })
+        )}
+      </div>
       {error !== null && (
         <p className="mt-2 border-l-2 border-[var(--sw-red)] pl-2 text-xs text-danger">{error}</p>
       )}

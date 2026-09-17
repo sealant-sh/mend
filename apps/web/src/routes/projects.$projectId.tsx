@@ -16,6 +16,7 @@ import { ProjectWorktreeContent, WorktreeTree } from "#/components/project-detai
 import { ProjectShell } from "#/components/project-shell";
 import { removeWorktree } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
+import { useViewer } from "#/lib/viewer";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 import { sessionMenu, worktreeMenu } from "#/lib/workbench-menus";
 
@@ -37,6 +38,7 @@ function ProjectPage() {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const launchContext = { queryClient, trpc };
+  const viewer = useViewer();
   const { project, sessions, hiddenEndedSessions, annotations, worktrees, worktreeAnnotations } =
     useSuspenseQuery(trpc.projects.detail.queryOptions({ id: projectId })).data;
   const navigate = useNavigate();
@@ -62,6 +64,7 @@ function ProjectPage() {
           annotations.find((row) => row.sessionId === session.id),
           navigate,
           launchContext,
+          viewer,
         ),
       ),
   };

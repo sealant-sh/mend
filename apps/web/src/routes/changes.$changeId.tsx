@@ -227,14 +227,16 @@ function ChangeReview({
               pass={passOf("suggest")}
             />
             <ReadChangeButton changeId={changeId} pass={passOf("read")} />
-            <button
-              type="button"
-              disabled={openUnsent.length === 0}
-              onClick={() => setSendOpen(true)}
-              className="rounded-xl bg-primary px-4 py-2 font-sans text-sm font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-opacity disabled:opacity-50"
-            >
-              Send review to session
-            </button>
+            {sessionDetail?.control.steer === false ? null : (
+              <button
+                type="button"
+                disabled={openUnsent.length === 0}
+                onClick={() => setSendOpen(true)}
+                className="rounded-xl bg-primary px-4 py-2 font-sans text-sm font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-opacity disabled:opacity-50"
+              >
+                Send review to session
+              </button>
+            )}
           </div>
         </div>
         <p className="mt-2 font-mono text-xs text-faint">
@@ -252,6 +254,12 @@ function ChangeReview({
           {" · "}
           <ObservedStamp observation={review.observation} />
         </p>
+        {sessionDetail?.control.steer === false ? (
+          <p className="mt-2 max-w-[760px] border-l-2 border-[var(--sw-accent)] pl-3 text-[13px] leading-relaxed text-ink-2">
+            Comments stay here; only the session&apos;s owner can send them to the session, unless
+            they share control.
+          </p>
+        ) : null}
         {review.worktreeChangedSinceSnapshot && (
           <p className="mt-2 rounded-lg border border-warning/30 bg-warning/10 px-3 py-2 font-mono text-xs text-warning">
             Worktree changed since this review snapshot. This patch remains pinned.

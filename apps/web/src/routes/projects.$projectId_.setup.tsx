@@ -10,11 +10,13 @@ import {
   InstallCommandSection,
   LinksSection,
   MountsSection,
+  ProjectFoldersSection,
   ReferencesSection,
   RemoveProjectSection,
   ReviewAutomationSection,
   ServicesSection,
   SessionLifecycleSection,
+  VisibilitySection,
 } from "#/components/project-setup";
 import { ProjectShell } from "#/components/project-shell";
 import { ProjectSkillsSection } from "#/components/project-skills-section";
@@ -101,7 +103,9 @@ export const Route = createFileRoute("/projects/$projectId_/setup")({
 function ProjectSetupPage() {
   const { projectId } = Route.useParams();
   const trpc = useTRPC();
-  const { project } = useSuspenseQuery(trpc.projects.detail.queryOptions({ id: projectId })).data;
+  const { project, capabilities, mountDelivery } = useSuspenseQuery(
+    trpc.projects.detail.queryOptions({ id: projectId }),
+  ).data;
   useWorkbenchEvents();
 
   return (
@@ -116,31 +120,42 @@ function ProjectSetupPage() {
         </p>
 
         <div className="mt-8 space-y-6">
-          <div id="environment" className="scroll-mt-6">
-            <WorkspaceImagePanel project={project} />
-          </div>
-          <ProjectSkillsSection project={project} />
-          <div id="variables" className="scroll-mt-6 space-y-6">
-            <VariablesComposer projectId={projectId} />
-            <ConfigurationPanel projectId={projectId} />
-          </div>
-          <div id="secrets" className="scroll-mt-6">
-            <SecretsPanel projectId={projectId} />
-          </div>
-          <div id="cluster-bindings" className="scroll-mt-6">
-            <ClusterBindingsPanel projectId={projectId} />
-          </div>
-          <ReferencesSection projectId={projectId} />
-          <MountsSection projectId={projectId} />
-          <LinksSection projectId={projectId} />
-          <ServicesSection projectId={projectId} />
-          <DotfilesSection project={project} />
-          <HotSessionsSection project={project} />
-          <InstallCommandSection project={project} />
-          <GitAccessSection project={project} />
-          <SessionLifecycleSection project={project} />
-          <ReviewAutomationSection project={project} />
-          <RemoveProjectSection projectId={projectId} />
+          {capabilities.changeVisibility ? <VisibilitySection project={project} /> : null}
+          {capabilities.manage ? (
+            <>
+              <div id="environment" className="scroll-mt-6">
+                <WorkspaceImagePanel project={project} />
+              </div>
+              <ProjectSkillsSection project={project} />
+              <div id="variables" className="scroll-mt-6 space-y-6">
+                <VariablesComposer projectId={projectId} />
+                <ConfigurationPanel projectId={projectId} />
+              </div>
+              <div id="secrets" className="scroll-mt-6">
+                <SecretsPanel projectId={projectId} />
+              </div>
+              <div id="cluster-bindings" className="scroll-mt-6">
+                <ClusterBindingsPanel projectId={projectId} />
+              </div>
+              <ReferencesSection projectId={projectId} />
+              <ProjectFoldersSection projectId={project.id} mountDelivery={mountDelivery} />
+              {capabilities.hostMounts ? <MountsSection projectId={projectId} /> : null}
+              <LinksSection projectId={projectId} />
+              <ServicesSection projectId={projectId} />
+              <DotfilesSection project={project} />
+              <HotSessionsSection project={project} />
+              <InstallCommandSection project={project} />
+              <GitAccessSection project={project} />
+              <SessionLifecycleSection project={project} />
+              <ReviewAutomationSection project={project} />
+            </>
+          ) : (
+            <p className="max-w-[64ch] border-l-2 border-[var(--sw-accent)] pl-3 text-[13px] leading-relaxed text-ink-2">
+              How sessions here launch is set by the project&apos;s creator or an organization
+              owner. You can start sessions and review changes as it stands.
+            </p>
+          )}
+          {capabilities.remove ? <RemoveProjectSection projectId={projectId} /> : null}
         </div>
       </div>
     </ProjectShell>

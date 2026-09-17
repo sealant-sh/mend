@@ -40,7 +40,8 @@ export function ProjectShell({
               {project.name}
             </h1>
             <p className="mt-2 font-mono text-xs text-muted-foreground break-all">
-              {project.defaultBranch} · {project.originUrl ?? "No origin recorded"}
+              {project.defaultBranch} · {project.originUrl ?? "No origin recorded"} ·{" "}
+              {project.visibility}
             </p>
             <Popover>
               <PopoverTrigger className="mt-2 inline-flex items-center gap-1 rounded-sm text-xs text-muted-foreground">

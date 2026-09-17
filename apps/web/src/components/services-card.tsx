@@ -182,7 +182,7 @@ function ServiceRow({
               Open
             </a>
           )}
-          {live && attempt !== null && attempt.argv.length > 0 && (
+          {live && actionable && attempt !== null && attempt.argv.length > 0 && (
             <RowAction
               onClick={() => onAction("restart", service)}
               disabled={pending !== null}
@@ -191,7 +191,7 @@ function ServiceRow({
               {pending === `restart:${stable.id}` ? "Restarting…" : "Restart"}
             </RowAction>
           )}
-          {live && (
+          {live && actionable && (
             <RowAction
               onClick={() => onAction("stop", service)}
               disabled={pending !== null}
@@ -223,9 +223,12 @@ function ServiceRow({
 export function ServicesCard({
   sessionId,
   sessionLive,
+  steer,
 }: {
   readonly sessionId: string;
   readonly sessionLive: boolean;
+  /** Whether the viewer may steer the session (docs/adr/0003); otherwise the card only reads. */
+  readonly steer: boolean;
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
@@ -240,7 +243,7 @@ export function ServicesCard({
 
   const services = serviceViews.data ?? [];
   const liveServices = services.filter(serviceIsLive);
-  const canStart = sessionLive || liveServices.length > 0;
+  const canStart = steer && (sessionLive || liveServices.length > 0);
   const liveNames = new Set(liveServices.map((view) => view.service.name));
   const endedByName = new Map<string, ServiceViewDto>();
   for (const view of services.filter((item) => !serviceIsLive(item))) {

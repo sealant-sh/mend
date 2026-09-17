@@ -44,6 +44,13 @@ export const sessionsRouter = router({
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.pasteImage({ params: { id: i.id }, payload: i.upload })),
     ),
+  setSharedControl: procedure
+    .input(input(Schema.Struct({ id: SessionId, enabled: Schema.Boolean })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.sessions.sharedControl({ params: { id: i.id }, payload: { enabled: i.enabled } }),
+      ),
+    ),
   stop: procedure
     .input(byId)
     .mutation(({ ctx, input: i }) =>

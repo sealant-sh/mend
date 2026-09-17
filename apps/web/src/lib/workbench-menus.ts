@@ -1,3 +1,4 @@
+import type { Viewer } from "@mend/domain/workbench";
 import type { ContextMenuEntry, ContextMenuSpec } from "@mend/ui/context-menu";
 import type { UseNavigateResult } from "@tanstack/react-router";
 
@@ -21,6 +22,7 @@ import {
   type Harness,
   type LaunchContext,
 } from "#/lib/session-launch";
+import { canRemove, sessionActions } from "#/lib/viewer";
 
 /** Session states with a live process behind them. */
 export const LIVE_STATES: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
@@ -60,6 +62,7 @@ export const projectMenu = (
   project: ProjectDto,
   navigate: Navigate,
   context: LaunchContext,
+  viewer: Viewer | null,
 ): ContextMenuSpec => {
   const { queryClient, trpc } = context;
   const entries: ContextMenuEntry[] = [
@@ -86,6 +89,7 @@ export const projectMenu = (
       onSelect: () => copyText(originUrl),
     });
   }
+  if (!canRemove(project, viewer)) return { title: project.name, entries };
   entries.push("separator", {
     label: "Remove project…",
     confirm: "Really remove project and store copy?",
@@ -110,6 +114,7 @@ export const sessionMenu = (
   annotation: SessionAnnotationDto | undefined,
   navigate: Navigate,
   context: LaunchContext,
+  viewer: Viewer | null,
 ): ContextMenuSpec => {
   const { queryClient, trpc } = context;
   const invalidateSession = () =>
@@ -118,6 +123,8 @@ export const sessionMenu = (
       queryClient.invalidateQueries(trpc.projects.pathFilter()),
     ]);
   const live = LIVE_STATES.has(session.status);
+  // Only what this viewer may do (docs/adr/0003): steering is the owner's unless shared.
+  const { own, steer, stop } = sessionActions(session, viewer);
   const entries: ContextMenuEntry[] = [
     {
       label: "Open session",
@@ -134,21 +141,21 @@ export const sessionMenu = (
   }
   entries.push("separator");
   if (live) {
-    entries.push(
-      {
-        label: "Mark checkpoint",
-        onSelect: () =>
-          void checkpointSession(session.id, "user-mark").then(() => invalidateSession()),
-      },
-      {
+    entries.push({
+      label: "Mark checkpoint",
+      onSelect: () =>
+        void checkpointSession(session.id, "user-mark").then(() => invalidateSession()),
+    });
+    if (stop) {
+      entries.push({
         label: "Stop session",
         onSelect: () =>
           void stopSession(session.id)
             .catch(() => undefined)
             .finally(() => invalidateSession()),
-      },
-    );
-  } else {
+      });
+    }
+  } else if (steer) {
     entries.push({
       // Same worktree, restored state, fresh workspace; harness null = last used.
       label: "Resume session",
@@ -160,7 +167,7 @@ export const sessionMenu = (
       },
     });
   }
-  if (!live) {
+  if (!live && own) {
     entries.push("separator", {
       label: "Delete session…",
       confirm: "Really delete this session? The worktree, its change, and checkpoints remain.",

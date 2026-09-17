@@ -20,6 +20,7 @@ import {
   type WorkbenchEventDto,
 } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
+import { useViewer } from "#/lib/viewer";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 import { LIVE_STATES, projectMenu, sessionMenu, worktreeDisplayName } from "#/lib/workbench-menus";
 
@@ -56,6 +57,7 @@ function HomePage() {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const launchContext = { queryClient, trpc };
+  const viewer = useViewer();
   const projects = useSuspenseQuery(trpc.projects.list.queryOptions()).data;
   const details = useSuspenseQueries({
     queries: projects.map((project) => trpc.projects.detail.queryOptions({ id: project.id })),
@@ -183,7 +185,7 @@ function HomePage() {
                 onContextMenu={(event) =>
                   openMenu(
                     event,
-                    sessionMenu(entry.session, entry.annotation, navigate, launchContext),
+                    sessionMenu(entry.session, entry.annotation, navigate, launchContext, viewer),
                   )
                 }
               />
@@ -201,7 +203,7 @@ function HomePage() {
                 onContextMenu={(event) =>
                   openMenu(
                     event,
-                    sessionMenu(entry.session, entry.annotation, navigate, launchContext),
+                    sessionMenu(entry.session, entry.annotation, navigate, launchContext, viewer),
                   )
                 }
               />
@@ -218,7 +220,7 @@ function HomePage() {
                 project={project}
                 changeId={annotation?.changeId ?? ""}
                 onContextMenu={(event) =>
-                  openMenu(event, sessionMenu(session, annotation, navigate, launchContext))
+                  openMenu(event, sessionMenu(session, annotation, navigate, launchContext, viewer))
                 }
               />
             ))}
@@ -257,7 +259,13 @@ function HomePage() {
                     onContextMenu={(event) =>
                       openMenu(
                         event,
-                        sessionMenu(entry.session, entry.annotation, navigate, launchContext),
+                        sessionMenu(
+                          entry.session,
+                          entry.annotation,
+                          navigate,
+                          launchContext,
+                          viewer,
+                        ),
                       )
                     }
                   />
@@ -292,7 +300,7 @@ function HomePage() {
                   <div
                     key={project.id}
                     onContextMenu={(event) =>
-                      openMenu(event, projectMenu(project, navigate, launchContext))
+                      openMenu(event, projectMenu(project, navigate, launchContext, viewer))
                     }
                     className="rounded-2xl bg-card shadow-sm"
                   >
@@ -326,7 +334,7 @@ function HomePage() {
                             onContextMenu={(event) =>
                               openMenu(
                                 event,
-                                sessionMenu(session, annotation, navigate, launchContext),
+                                sessionMenu(session, annotation, navigate, launchContext, viewer),
                               )
                             }
                             className={`flex items-center justify-between gap-3 px-5 py-3 ${sessionIndex === 0 ? "" : "border-t border-rule-faint"}`}
