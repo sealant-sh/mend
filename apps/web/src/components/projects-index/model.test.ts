@@ -1,4 +1,4 @@
-import { ProjectId } from "@mend/domain";
+import { OrganizationId, ProjectId } from "@mend/domain";
 import { describe, expect, it } from "vitest";
 
 import type { ProjectDto } from "#/lib/api";
@@ -8,6 +8,9 @@ import { matchesQuery, projectEntries, shortOrigin, sourceLabel, tailPath } from
 const project: ProjectDto = {
   id: ProjectId.make("project-layout-test"),
   name: "Mend",
+  organizationId: OrganizationId.make("org-test"),
+  visibility: "shared",
+  createdByUserId: null,
   originUrl: "git@github.com:sealant-sh/mend.git",
   storePath: "/home/developer/.local/share/mend/store/mend/repo.git",
   defaultBranch: "main",

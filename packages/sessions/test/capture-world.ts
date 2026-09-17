@@ -13,7 +13,7 @@ import {
   WorktreesRepo,
   type StoreRef,
 } from "@mend/db";
-import { ProjectId, Sha, WorktreeId } from "@mend/domain";
+import { OrganizationId, ProjectId, Sha, WorktreeId } from "@mend/domain";
 import { Project, Worktree } from "@mend/domain/workbench";
 import {
   BlobStore,
@@ -168,6 +168,9 @@ export const projectFor = (storePath: string, baseSha: string) =>
   new Project({
     id: PROJECT,
     name: "fixture",
+    organizationId: OrganizationId.make("org-capture"),
+    visibility: "shared",
+    createdByUserId: null,
     originUrl: null,
     storePath,
     defaultBranch: "main",
@@ -190,6 +193,8 @@ export const projectsFor = (project: Project): Layer.Layer<ProjectsRepo> =>
   Layer.succeed(ProjectsRepo, {
     create: () => Effect.die("not in test"),
     setGitAuthMode: () => Effect.die("not in test"),
+    listForOrganization: () => Effect.die("not in test"),
+    setVisibility: () => Effect.die("not in test"),
     setWorkspaceImage: () => Effect.die("not in test"),
     setApplyDotfiles: () => Effect.die("not in test"),
     setInheritUserSkills: () => Effect.die("not in test"),
@@ -200,7 +205,7 @@ export const projectsFor = (project: Project): Layer.Layer<ProjectsRepo> =>
         ? Effect.succeed(project)
         : Effect.fail(new ProjectNotFoundError({ projectId: id })),
     byName: () => Effect.succeed(null),
-    list: () => Effect.succeed([project]),
+    listAll: () => Effect.succeed([project]),
     setAutomation: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),
   });

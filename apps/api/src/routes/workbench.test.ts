@@ -2,6 +2,7 @@ import { projectsGroup, ProjectDetail } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
 import {
   HotWorkspacesRepo,
+  OrganizationsRepo,
   ProjectNotFoundError,
   ProjectsRepo,
   ServiceForwardsRepo,
@@ -12,8 +13,14 @@ import {
   WorktreeChangesRepo,
   WorktreesRepo,
 } from "@mend/db";
-import { ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
-import { Project, Session, Worktree, type SessionStatus } from "@mend/domain/workbench";
+import { OrganizationId, ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
+import {
+  Organization,
+  Project,
+  Session,
+  Worktree,
+  type SessionStatus,
+} from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
 import { SessionEngine, WorktreeReads } from "@mend/sessions";
@@ -38,6 +45,9 @@ const project = (id: ProjectId, name: string): Project =>
   new Project({
     id,
     name,
+    organizationId: OrganizationId.make("org-test"),
+    visibility: "shared",
+    createdByUserId: null,
     originUrl: `https://example.invalid/${name}.git`,
     storePath: `/store/${name}/repo.git`,
     defaultBranch: "main",
@@ -133,9 +143,13 @@ const projectsLayer = (world: TestWorld): Layer.Layer<ProjectsRepo> =>
         ? Effect.fail(new ProjectNotFoundError({ projectId: id }))
         : Effect.succeed(found);
     },
-    byName: (name) =>
-      Effect.succeed(world.projects.find((candidate) => candidate.name === name) ?? null),
-    list: () => Effect.succeed(world.projects),
+    byName: (organizationId, name) =>
+      Effect.succeed(
+        world.projects.find(
+          (candidate) => candidate.organizationId === organizationId && candidate.name === name,
+        ) ?? null,
+      ),
+    listAll: () => Effect.succeed(world.projects),
   });
 
 const sessionsLayer = (world: TestWorld): Layer.Layer<SessionsRepo> =>
@@ -204,7 +218,8 @@ type ProjectRouteServices =
   | SealantClient
   | JobRunner
   | WorktreeReads
-  | Gh;
+  | Gh
+  | OrganizationsRepo;
 
 type UnusedProjectRouteServices = Exclude<
   ProjectRouteServices,
@@ -224,6 +239,20 @@ const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.
   Layer.mock(JobRunner, {}),
   Layer.mock(WorktreeReads, {}),
   Layer.mock(Gh, {}),
+  Layer.mock(OrganizationsRepo, {
+    membershipOf: () =>
+      Effect.succeed({
+        organization: new Organization({
+          id: OrganizationId.make("org-test"),
+          name: "Test",
+          createdByUserId: null,
+          createdAt: new Date(0),
+          updatedAt: new Date(0),
+        }),
+        role: "owner",
+        joinedAt: new Date(0),
+      }),
+  }),
 );
 
 const ProjectsApi = HttpApi.make("mend").add(projectsGroup).prefix("/api");

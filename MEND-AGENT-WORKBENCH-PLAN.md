@@ -210,12 +210,25 @@ Examples:
 - persistent remote devbox;
 - home server reached over Tailscale.
 
+### 5.1a Organization and roles
+
+An organization is the tenant (decided 2026-09-17, `docs/adr/0003-organizations-and-tenancy.md`). It
+owns its members, projects, folders, reference repositories and audit log. An account belongs to
+exactly one organization, as its `owner` or a `member`. Owners invite people with single-use links,
+remove them, change roles, decide project visibility and manage folders and references; members work
+in the projects they can see. The `operator` is an instance role that administers the machine and
+has no default read access to any organization's content. `MEND_TENANCY=single` (the default) runs
+one organization and keeps it nearly invisible; `multi` hosts many and stays refused until the multi
+mode gate passes.
+
 ### 5.2 Project
 
-A project is a repository adopted into Mend's central store on a machine. Adoption clones the
-repository (from a remote or an existing local path) into the store — `<store>/<project>/repo.git`
-bare, plus one git worktree per session. The store copy is canonical for Mend; the user's
-pre-existing checkout, if any, is a peer that syncs through git, never an execution target.
+A project is a repository adopted into Mend's central store on a machine, owned by one organization.
+Its name is unique within that organization, and it is `private` (visible to its creator) or
+`shared` (visible to the organization). Adoption clones the repository into the store —
+`<store>/<project id>/repo.git` bare (older projects keep `<store>/<name>/`), plus one git worktree
+per session. The store copy is canonical for Mend; the user's pre-existing checkout, if any, is a
+peer that syncs through git, never an execution target.
 
 A project owns:
 
@@ -1326,6 +1339,12 @@ understand the work.
 ## 17. Open decisions
 
 ### Decided
+
+- **2026-09-17: organizations are the tenant.** One organization per account, owners and members, an
+  operator role with no default read access, private and shared projects, owner-only steering with
+  opt-in shared control, invitation-only registration, and `MEND_TENANCY=single|multi` with `multi`
+  refused until the isolation gate passes. Details and the delivery stack:
+  [ADR 0003](docs/adr/0003-organizations-and-tenancy.md).
 
 - **2026-09-05: CLI-installed, two-container server.** Installing Mend installs only the CLI;
   `mend server setup` creates one application container containing Mend and its pinned Sealant

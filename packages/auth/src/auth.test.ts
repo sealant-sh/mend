@@ -2,7 +2,13 @@ import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { ConfigProvider, Effect, Layer, Result, Schema } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { AuthLive, createAuthHandler } from "./auth.ts";
+import {
+  AuthLive,
+  createAuthHandler,
+  INVITATION_HEADER,
+  RegistrationPolicy,
+  type RegistrationDecision,
+} from "./auth.ts";
 
 const decodeOrigin = Schema.decodeUnknownSync(PublicOrigin);
 const network = makePublicNetwork(decodeOrigin("http://localhost:3105"), [
@@ -95,13 +101,91 @@ describe("the Better Auth origin policy", () => {
       }),
     );
     const networkLayer = Layer.succeed(NetworkConfig, network);
+    const registrationLayer = Layer.succeed(RegistrationPolicy, {
+      decide: () => Effect.succeed({ kind: "bootstrap" }),
+      registered: () => Effect.void,
+    });
     const result = await Effect.runPromise(
-      Layer.build(AuthLive.pipe(Layer.provide(networkLayer), Layer.provide(config))).pipe(
-        Effect.scoped,
-        Effect.result,
-      ),
+      Layer.build(
+        AuthLive.pipe(
+          Layer.provide(networkLayer),
+          Layer.provide(registrationLayer),
+          Layer.provide(config),
+        ),
+      ).pipe(Effect.scoped, Effect.result),
     );
     expect(Result.isFailure(result)).toBe(true);
     expect(String(result)).toContain("BETTER_AUTH_TRUSTED_ORIGINS");
+  });
+});
+
+describe("closed registration (docs/adr/0003)", () => {
+  const origin = "http://localhost:3105";
+
+  const withPolicy = (decide: (token: string | null) => RegistrationDecision) => {
+    const registered: Array<{ readonly email: string; readonly token: string | null }> = [];
+    const decided: Array<string | null> = [];
+    const policyHandler = createAuthHandler({
+      network,
+      secret: "test-secret-with-at-least-thirty-two-bytes",
+      registration: {
+        decide: ({ invitationToken }) =>
+          Effect.sync(() => {
+            decided.push(invitationToken);
+            return decide(invitationToken);
+          }),
+        registered: (user, token) =>
+          Effect.sync(() => {
+            registered.push({ email: user.email, token });
+          }),
+      },
+    });
+    const signUp = (email: string, invitation?: string) =>
+      policyHandler(
+        new Request(`${origin}/api/auth/sign-up/email`, {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            origin,
+            ...(invitation === undefined ? {} : { [INVITATION_HEADER]: invitation }),
+          },
+          body: JSON.stringify({ email, password: "disposable-registration-password", name: "X" }),
+        }),
+      );
+    return { signUp, registered, decided };
+  };
+
+  it("refuses a sign-up the policy refuses, with its message, and creates nothing", async () => {
+    const { signUp, registered } = withPolicy(() => ({
+      kind: "refused",
+      message: "Registration is by invitation.",
+    }));
+    const response = await signUp("stranger@example.invalid");
+    expect(response.status).toBe(403);
+    await expect(response.json()).resolves.toMatchObject({
+      message: "Registration is by invitation.",
+    });
+    expect(registered).toEqual([]);
+  });
+
+  it("admits the first account and completes it", async () => {
+    const { signUp, registered } = withPolicy(() => ({ kind: "bootstrap" }));
+    const response = await signUp("first@example.invalid");
+    expect(response.status).toBe(200);
+    expect(registered).toEqual([{ email: "first@example.invalid", token: null }]);
+  });
+
+  it("passes the invitation header to the decision and to completion", async () => {
+    const { signUp, registered, decided } = withPolicy((token) =>
+      token === "tok-123"
+        ? { kind: "invitation", token }
+        : { kind: "refused", message: "Registration is by invitation." },
+    );
+    const refused = await signUp("guest@example.invalid");
+    expect(refused.status).toBe(403);
+    const admitted = await signUp("guest@example.invalid", "tok-123");
+    expect(admitted.status).toBe(200);
+    expect(decided).toEqual([null, "tok-123"]);
+    expect(registered).toEqual([{ email: "guest@example.invalid", token: "tok-123" }]);
   });
 });

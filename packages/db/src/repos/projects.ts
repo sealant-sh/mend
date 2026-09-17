@@ -1,13 +1,19 @@
 import { PgClient } from "@effect/sql-pg";
-import { ProjectId, WorkspaceImage, type Sha } from "@mend/domain";
-import { Project, type AutomationChoice, type GitAuthMode } from "@mend/domain/workbench";
-import { asc, eq } from "drizzle-orm";
+import { type OrganizationId, type ProjectId, WorkspaceImage, type Sha } from "@mend/domain";
+import {
+  Project,
+  type AutomationChoice,
+  type GitAuthMode,
+  type ProjectVisibility,
+} from "@mend/domain/workbench";
+import { and, asc, eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import { projects } from "../schema/workbench.ts";
+import { isUniqueViolation } from "./unique-violation.ts";
 
 export class ProjectNotFoundError extends Schema.TaggedErrorClass<ProjectNotFoundError>()(
   "ProjectNotFoundError",
@@ -16,7 +22,18 @@ export class ProjectNotFoundError extends Schema.TaggedErrorClass<ProjectNotFoun
   },
 ) {}
 
+/** The organization already has a project with that name. */
+export class ProjectNameTakenError extends Schema.TaggedErrorClass<ProjectNameTakenError>()(
+  "ProjectNameTakenError",
+  { name: Schema.String },
+) {}
+
 export interface NewProject {
+  /** Minted by the caller: new stores are laid out by project id. */
+  readonly id: ProjectId;
+  readonly organizationId: OrganizationId;
+  readonly visibility: ProjectVisibility;
+  readonly createdByUserId: string;
   readonly name: string;
   readonly originUrl: string | null;
   readonly storePath: string;
@@ -29,10 +46,24 @@ export interface NewProject {
 export class ProjectsRepo extends Context.Service<
   ProjectsRepo,
   {
-    readonly create: (project: NewProject) => Effect.Effect<Project>;
+    readonly create: (project: NewProject) => Effect.Effect<Project, ProjectNameTakenError>;
     readonly byId: (id: ProjectId) => Effect.Effect<Project, ProjectNotFoundError>;
-    readonly byName: (name: string) => Effect.Effect<Project | null>;
-    readonly list: () => Effect.Effect<ReadonlyArray<Project>>;
+    /** Names are unique within an organization, not across the instance. */
+    readonly byName: (
+      organizationId: OrganizationId,
+      name: string,
+    ) => Effect.Effect<Project | null>;
+    /** Every project on the instance, for machine work (sweeps, pools). Never a caller's list. */
+    readonly listAll: () => Effect.Effect<ReadonlyArray<Project>>;
+    /** The organization's projects, by name, before any visibility filter. */
+    readonly listForOrganization: (
+      organizationId: OrganizationId,
+    ) => Effect.Effect<ReadonlyArray<Project>>;
+    /** `private` (creator only) or `shared` (the organization). */
+    readonly setVisibility: (
+      id: ProjectId,
+      visibility: ProjectVisibility,
+    ) => Effect.Effect<Project, ProjectNotFoundError>;
     /** The project's stance on the cascade switches (settings → project), replaced together. */
     readonly setAutomation: (
       id: ProjectId,
@@ -96,9 +127,15 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
       const create = Effect.fn("ProjectsRepo.create")(function* (project: NewProject) {
         const [row] = yield* db
           .insert(projects)
-          .values({ id: ProjectId.make(crypto.randomUUID()), ...project })
+          .values(project)
           .returning()
-          .pipe(Effect.orDie);
+          .pipe(
+            Effect.catchTag("EffectDrizzleQueryError", (error) =>
+              isUniqueViolation(error)
+                ? Effect.fail(new ProjectNameTakenError({ name: project.name }))
+                : Effect.die(error),
+            ),
+          );
         if (row === undefined) return yield* Effect.die("project insert returned no row");
         const created = toProject(row);
         yield* notifyEvent(sql, { type: "project", projectId: created.id });
@@ -116,23 +153,54 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return toProject(row);
       });
 
-      const byName = Effect.fn("ProjectsRepo.byName")(function* (name: string) {
+      const byName = Effect.fn("ProjectsRepo.byName")(function* (
+        organizationId: OrganizationId,
+        name: string,
+      ) {
         const [row] = yield* db
           .select()
           .from(projects)
-          .where(eq(projects.name, name))
+          .where(and(eq(projects.organizationId, organizationId), eq(projects.name, name)))
           .limit(1)
           .pipe(Effect.orDie);
         return row === undefined ? null : toProject(row);
       });
 
-      const list = Effect.fn("ProjectsRepo.list")(function* () {
+      const listAll = Effect.fn("ProjectsRepo.listAll")(function* () {
         const rows = yield* db
           .select()
           .from(projects)
           .orderBy(asc(projects.name))
           .pipe(Effect.orDie);
         return rows.map(toProject);
+      });
+
+      const listForOrganization = Effect.fn("ProjectsRepo.listForOrganization")(function* (
+        organizationId: OrganizationId,
+      ) {
+        const rows = yield* db
+          .select()
+          .from(projects)
+          .where(eq(projects.organizationId, organizationId))
+          .orderBy(asc(projects.name))
+          .pipe(Effect.orDie);
+        return rows.map(toProject);
+      });
+
+      const setVisibility = Effect.fn("ProjectsRepo.setVisibility")(function* (
+        id: ProjectId,
+        visibility: ProjectVisibility,
+      ) {
+        const [row] = yield* db
+          .update(projects)
+          .set({ visibility, updatedAt: new Date() })
+          .where(eq(projects.id, id))
+          .returning()
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
+        const updated = toProject(row);
+        yield* notifyEvent(sql, { type: "project", projectId: updated.id });
+        return updated;
       });
 
       const setAutomation = Effect.fn("ProjectsRepo.setAutomation")(function* (
@@ -261,7 +329,9 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         create,
         byId,
         byName,
-        list,
+        listAll,
+        listForOrganization,
+        setVisibility,
         setAutomation,
         setGitAuthMode,
         setWorkspaceImage,

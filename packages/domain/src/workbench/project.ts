@@ -1,8 +1,9 @@
 import { Effect, Schema } from "effect";
 
-import { ProjectId, Sha } from "../ids.ts";
+import { OrganizationId, ProjectId, Sha } from "../ids.ts";
 import { WorkspaceImage } from "../settings.ts";
 import { Timestamp } from "../timestamp.ts";
+import { ProjectVisibility } from "./organization.ts";
 
 /**
  * A project's stance on one review-automation switch: follow the Settings
@@ -100,11 +101,20 @@ export type GitTransportKind = "fetch" | "push" | "archive";
  */
 export class Project extends Schema.Class<Project>("Project")({
   id: ProjectId,
-  /** Short name; also the store directory name. */
+  /** Short name, unique within the organization. */
   name: Schema.String,
+  /** The organization that owns the project (docs/adr/0003-organizations-and-tenancy.md). */
+  organizationId: OrganizationId,
+  /** `private`: its creator only. `shared`: every member of its organization. */
+  visibility: ProjectVisibility,
+  /** The account that adopted it; the creator a private project is visible to. */
+  createdByUserId: Schema.NullOr(Schema.String),
   /** Network Git URL used for adoption. Null only for legacy bare-created repositories. */
   originUrl: Schema.NullOr(Schema.String),
-  /** Absolute path of the bare repo inside the store: `<storeRoot>/<name>/repo.git`. */
+  /**
+   * Absolute path of the bare repo inside the store: `<storeRoot>/<projectId>/repo.git` for
+   * projects adopted after organizations, `<storeRoot>/<name>/repo.git` before.
+   */
   storePath: Schema.String,
   defaultBranch: Schema.String,
   /** HEAD of the default branch at adoption — display only; git is the source of truth. */

@@ -48,9 +48,11 @@ import { Config, Effect, Layer, Option, Stream } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
+import { TenancyConfig } from "../tenancy.ts";
 import { DevicePairingLive } from "./devices.ts";
 import { GithubGroupLive } from "./github.ts";
 import { MachineGroupLive } from "./machine.ts";
+import { InvitationsGroupLive, OrganizationGroupLive } from "./organization.ts";
 import { SkillsGroupLive } from "./skills.ts";
 import {
   DotfilesGroupLive,
@@ -98,6 +100,7 @@ export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers
       );
       const deployment = yield* DeploymentConfig;
       const store = yield* StoreConfig;
+      const tenancy = yield* TenancyConfig;
       return new HealthStatus({
         status: "ok",
         version,
@@ -107,6 +110,7 @@ export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers
           deployment.sessionEndpoint === undefined
             ? { mode: "unix-socket", endpoint: null }
             : { mode: "network", endpoint: deployment.sessionEndpoint.url },
+        tenancy: tenancy.mode,
       });
     }),
   ),
@@ -118,7 +122,10 @@ export const InstanceGroupLive = HttpApiBuilder.group(MendApi, "instance", (hand
     Effect.gen(function* () {
       const users = yield* UsersRepo;
       const count = yield* users.count();
-      return new InstanceView({ users: count === 0 ? "none" : "some" });
+      return new InstanceView({
+        users: count === 0 ? "none" : "some",
+        registration: count === 0 ? "open" : "closed",
+      });
     }),
   ),
 );
@@ -569,6 +576,8 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
       SealantGroupLive,
       AccountsGroupLive,
       WorkspaceSshGroupLive,
+      OrganizationGroupLive,
+      InvitationsGroupLive,
     ),
   ),
   Layer.provide(SettingsGroupLive),

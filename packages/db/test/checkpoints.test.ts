@@ -93,8 +93,9 @@ describe.skipIf(!reachable)("checkpoints repo", () => {
           yield* migration;
         }
         yield* sql`
-          INSERT INTO projects (id, name, origin_url, store_path, default_branch)
-          VALUES (${PROJECT}, 'checkpoints-fixture', NULL, '/store/checkpoints-fixture/repo.git', 'main')`;
+          INSERT INTO projects (id, name, organization_id, origin_url, store_path, default_branch)
+          VALUES (${PROJECT}, 'checkpoints-fixture', (SELECT id FROM organizations LIMIT 1), NULL,
+                  '/store/checkpoints-fixture/repo.git', 'main')`;
       }),
     );
   });

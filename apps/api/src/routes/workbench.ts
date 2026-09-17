@@ -62,6 +62,7 @@ import {
   CheckpointsRepo,
   FollowUpsRepo,
   HotWorkspacesRepo,
+  OrganizationsRepo,
   ProjectClusterBindingsRepo,
   ProjectEnvironmentRepo,
   ProjectMountsRepo,
@@ -91,7 +92,7 @@ import {
   MendSettings,
   workspaceImagesEqual,
   type ChangeId,
-  type ProjectId,
+  ProjectId,
   type ReviewSliceId,
   type WorktreeId,
 } from "@mend/domain";
@@ -279,7 +280,7 @@ const rewarmHotSessions = (projectId: ProjectId) =>
 const rewarmAllHotSessions = Effect.gen(function* () {
   const projects = yield* ProjectsRepo;
   const engine = yield* SessionEngine;
-  const all = yield* projects.list();
+  const all = yield* projects.listAll();
   yield* Effect.forEach(
     all.filter((project) => project.hotSessions > 0),
     (project) => engine.reconcileHotSessions(project.id),
@@ -390,7 +391,8 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     .handle("list", () =>
       Effect.gen(function* () {
         const projects = yield* ProjectsRepo;
-        return yield* projects.list();
+        // Unfiltered until project access lands (docs/adr/0003, delivery step 3).
+        return yield* projects.listAll();
       }),
     )
     .handle("adopt", ({ payload }) =>
@@ -402,32 +404,57 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             message: `"${payload.name}" is not a usable project name (lowercase letters, digits, ".", "_", "-").`,
           });
         }
-        const existing = yield* projects.byName(payload.name);
-        if (existing !== null) {
+        const caller = yield* CurrentUser;
+        const organizations = yield* OrganizationsRepo;
+        const membership = yield* organizations.membershipOf(caller.user.id);
+        if (membership === null) {
           return yield* new StoreFailure({
-            message: `A project named "${payload.name}" already exists.`,
+            message: "This account belongs to no organization, so it cannot adopt projects.",
           });
         }
+        const organizationId = membership.organization.id;
+        const nameTaken = new StoreFailure({
+          message: `A project named "${payload.name}" already exists.`,
+        });
+        if ((yield* projects.byName(organizationId, payload.name)) !== null) {
+          return yield* nameTaken;
+        }
         // The user's git access default decides a new project's mode unless the request says.
-        const caller = yield* CurrentUser;
         const gitAccess = yield* UserGitAccessRepo;
         const mode = payload.gitAuthMode ?? (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
         const remoteEnv = yield* remoteEnvFor(mode, caller.user.id);
+        // New stores are laid out by project id: names are unique only within an organization.
+        const id = ProjectId.make(crypto.randomUUID());
         const adopted = yield* withSignerContext(
           mode,
           `adopt ${payload.name} → ${payload.source}`,
           store
-            .adopt(payload.name, payload.source, remoteEnv)
+            .adopt(id, payload.source, remoteEnv)
             .pipe(Effect.mapError((error) => readableGitFailure(error.cause, mode))),
         );
-        return yield* projects.create({
-          name: payload.name,
-          originUrl: payload.source,
-          storePath: adopted.storePath,
-          defaultBranch: adopted.defaultBranch,
-          adoptedSha: adopted.headSha,
-          gitAuthMode: mode,
-        });
+        return yield* projects
+          .create({
+            id,
+            organizationId,
+            // Shared until the adopt surfaces offer the choice (docs/adr/0003, delivery step 6), so
+            // nothing adopted meanwhile disappears from teammates once visibility is enforced.
+            visibility: payload.visibility ?? "shared",
+            createdByUserId: caller.user.id,
+            name: payload.name,
+            originUrl: payload.source,
+            storePath: adopted.storePath,
+            defaultBranch: adopted.defaultBranch,
+            adoptedSha: adopted.headSha,
+            gitAuthMode: mode,
+          })
+          .pipe(
+            // Another adoption of the same name won the race; drop the clone this one made.
+            Effect.catchTag("ProjectNameTakenError", () =>
+              store
+                .removeProjectStore(adopted.storePath)
+                .pipe(Effect.andThen(Effect.fail(nameTaken))),
+            ),
+          );
       }),
     )
     .handle("detail", ({ params, query }) =>

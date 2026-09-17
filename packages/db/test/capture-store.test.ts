@@ -114,8 +114,9 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
           yield* migration;
         }
         yield* sql`
-          INSERT INTO projects (id, name, origin_url, store_path, default_branch)
-          VALUES (${PROJECT}, 'capture-fixture', NULL, '/store/capture-fixture/repo.git', 'main')`;
+          INSERT INTO projects (id, name, organization_id, origin_url, store_path, default_branch)
+          VALUES (${PROJECT}, 'capture-fixture', (SELECT id FROM organizations LIMIT 1), NULL,
+                  '/store/capture-fixture/repo.git', 'main')`;
       }),
     );
   });

@@ -6703,7 +6703,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* socketHost.start(entry.id, socketApiFor(entry.id)).pipe(Effect.ignore);
           }
         }
-        const allProjects = yield* projects.list();
+        const allProjects = yield* projects.listAll();
         for (const project of allProjects) {
           if (project.hotSessions > 0) projectIds.add(project.id);
         }

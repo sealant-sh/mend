@@ -48,7 +48,7 @@ const rewarmForOwner = (owner: SkillOwner) =>
       yield* engine.reconcileHotSessions(owner.projectId);
       return;
     }
-    const all = yield* projects.list();
+    const all = yield* projects.listAll();
     yield* Effect.forEach(
       all.filter((project) => project.hotSessions > 0),
       (project) => engine.reconcileHotSessions(project.id),

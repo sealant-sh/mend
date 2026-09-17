@@ -34,6 +34,15 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   finding links to the record or ships a runnable check). Cardinality: sessions are many per
   project, one worktree each; one change per session; landing a change (merge/commit/PR) is
   publication, optional by definition.
+- Tenancy nouns (`docs/adr/0003-organizations-and-tenancy.md`): `organization` (the tenant; owns its
+  members, projects, folders, reference repositories and audit log; an account belongs to exactly
+  one), `owner` and `member` (organization roles), `operator` (an instance role that administers the
+  machine and has no default read access to organization content), `invitation` (a single-use link;
+  registration is closed after the first account), `folder` (a Mend-managed directory that replaces
+  host mounts). A project's visibility is `private` (its creator only) or `shared` (its
+  organization). Only a session's owner steers it unless they turn on `shared control`, which lets
+  others steer while spending the owner's credentials. `MEND_TENANCY=single|multi` picks the
+  posture; `single` is the default and `multi` stays refused until the multi mode gate passes.
 - The queue is gone: no triage/queued/mending stages, no issue intake, no kanban. Issues and PRs are
   optional references attached to work, never its identity.
 - Platform nouns follow Sealant: `workspace` (the live environment; sessions run in workspaces that

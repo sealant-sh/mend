@@ -37,6 +37,8 @@ export const healthGroup = HttpApiGroup.make("health").add(
 export class InstanceView extends Schema.Class<InstanceView>("InstanceView")({
   /** `none` until the first account is created. */
   users: Schema.Literals(["none", "some"]),
+  /** `open` only until the first account exists; after that accounts come by invitation. */
+  registration: Schema.Literals(["open", "closed"]),
 }) {}
 
 export const instanceGroup = HttpApiGroup.make("instance").add(

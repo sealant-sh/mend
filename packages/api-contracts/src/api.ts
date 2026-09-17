@@ -4,6 +4,7 @@ import { accountsGroup } from "./accounts.ts";
 import { sessionChangesGroup } from "./changes.ts";
 import { cliAuthGroup, devicesGroup, userDevicesGroup, pairGroup } from "./devices.ts";
 import { githubGroup } from "./github.ts";
+import { invitationsGroup, organizationGroup } from "./organization.ts";
 import {
   projectClusterBindingsGroup,
   projectEnvironmentGroup,
@@ -37,6 +38,8 @@ export const MendApi = HttpApi.make("mend")
   .add(sealantGroup)
   .add(workspaceSshGroup)
   .add(accountsGroup)
+  .add(organizationGroup)
+  .add(invitationsGroup)
   .add(settingsGroup)
   .add(dotfilesGroup)
   .add(skillsGroup)

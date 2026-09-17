@@ -50,6 +50,7 @@ import {
   CheckpointId,
   ProjectClusterBindingId,
   ProjectEnvironmentVariableId,
+  OrganizationId,
   ProjectId,
   SealantRunId,
   SealantWorkspaceId,
@@ -1217,6 +1218,8 @@ const projectsLayer = (world: World) =>
   Layer.succeed(ProjectsRepo, {
     create: () => Effect.die("not in test"),
     setGitAuthMode: () => Effect.die("not in test"),
+    listForOrganization: () => Effect.die("not in test"),
+    setVisibility: () => Effect.die("not in test"),
     setWorkspaceImage: () => Effect.die("not in test"),
     setApplyDotfiles: () => Effect.die("not in test"),
     setInheritUserSkills: () => Effect.die("not in test"),
@@ -1229,7 +1232,7 @@ const projectsLayer = (world: World) =>
         : Effect.succeed(found);
     },
     byName: () => Effect.succeed(null),
-    list: () => Effect.succeed([...world.projects.values()]),
+    listAll: () => Effect.succeed([...world.projects.values()]),
     setAutomation: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),
   });
@@ -1667,6 +1670,9 @@ const setup = (tmp: string, world: World) => {
     const project = new Project({
       id: ProjectId.make("proj-1"),
       name: "fixture",
+      organizationId: OrganizationId.make("org-test"),
+      visibility: "shared",
+      createdByUserId: null,
       originUrl: source,
       storePath: adopted.storePath,
       defaultBranch: adopted.defaultBranch,
@@ -5521,6 +5527,9 @@ describe("SessionEngine capture mode", () => {
             const project = new Project({
               id: ProjectId.make("project-capture-storage-unavailable"),
               name: "capture-storage-unavailable",
+              organizationId: OrganizationId.make("org-test"),
+              visibility: "shared",
+              createdByUserId: null,
               originUrl: RepositoryCloneUrl.make("git://capture-storage-unavailable/repo"),
               storePath: path.join(tmp, "store", "capture-storage-unavailable", "repo.git"),
               defaultBranch: "main",

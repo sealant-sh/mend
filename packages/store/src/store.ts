@@ -27,7 +27,7 @@ export class StoreConfig extends Context.Service<
 }
 
 export class AdoptError extends Schema.TaggedErrorClass<AdoptError>()("AdoptError", {
-  name: Schema.String,
+  directory: Schema.String,
   source: RepositoryCloneUrl,
   cause: GitError,
 }) {}
@@ -295,10 +295,12 @@ export class Store extends Context.Service<
     /**
      * Clone a parsed network Git `source` into the store as a bare repo.
      * `remoteEnv` carries the resolved auth (`GIT_SSH_COMMAND`, prompt policy)
-     * from the git-auth seam — the store itself never decides credentials.
+     * from the git-auth seam — the store itself never decides credentials. `directory` is the
+     * store path segment: the project id for projects adopted after organizations, because names
+     * are unique only within an organization (docs/adr/0003-organizations-and-tenancy.md).
      */
     readonly adopt: (
-      name: string,
+      directory: string,
       source: RepositoryCloneUrl,
       remoteEnv: Record<string, string>,
     ) => Effect.Effect<AdoptedRepo, AdoptError>;
@@ -509,11 +511,11 @@ export class Store extends Context.Service<
       });
 
       const adopt = Effect.fn("Store.adopt")(function* (
-        name: string,
+        directory: string,
         source: RepositoryCloneUrl,
         remoteEnv: Record<string, string>,
       ) {
-        const projectDir = path.join(config.root, name);
+        const projectDir = path.join(config.root, directory);
         const storePath = path.join(projectDir, "repo.git");
         const attempt = Effect.gen(function* () {
           yield* Effect.sync(() => fs.mkdirSync(config.root, { recursive: true }));
@@ -530,7 +532,7 @@ export class Store extends Context.Service<
           return { storePath, defaultBranch, headSha: sha(head) };
         });
         return yield* attempt.pipe(
-          Effect.catch((cause) => Effect.fail(new AdoptError({ name, source, cause }))),
+          Effect.catch((cause) => Effect.fail(new AdoptError({ directory, source, cause }))),
         );
       });
 
