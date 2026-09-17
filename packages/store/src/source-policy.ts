@@ -26,14 +26,36 @@ export interface SourceActor {
   readonly isOperator: boolean;
 }
 
+/** A remote the policy let through, with the addresses it checked. */
+export interface SourceClearance {
+  readonly scheme: "http" | "https" | "ssh" | "git";
+  readonly host: string;
+  readonly port: number | null;
+  readonly addresses: ReadonlyArray<string>;
+}
+
 export class SourcePolicy extends Context.Service<
   SourcePolicy,
   {
     readonly profile: SourceProfile;
     /** Refuse a clone URL this actor may not make Mend reach. Never names resolved addresses. */
-    readonly check: (source: string, actor: SourceActor) => Effect.Effect<void, SourceRefused>;
+    readonly check: (
+      source: string,
+      actor: SourceActor,
+    ) => Effect.Effect<SourceClearance, SourceRefused>;
+    /**
+     * The git environment that dials exactly the address the policy checked, so a name cannot
+     * answer differently between the check and the connection (DNS rebinding). `tenant` pins
+     * HTTPS through `http.curloptResolve` and ssh through `HostName` with `HostKeyAlias` (known
+     * hosts still match the name); `operator` leaves the environment as it is, so a single
+     * team's ssh configuration keeps working.
+     */
+    readonly pinnedEnv: (
+      clearance: SourceClearance,
+      env: Readonly<Record<string, string>>,
+    ) => Record<string, string>;
   }
->()("@mend/api/SourcePolicy") {}
+>()("@mend/store/SourcePolicy") {}
 
 // ─── Addresses ──────────────────────────────────────────────────────────────
 
@@ -155,6 +177,12 @@ export const makeSourcePolicy = (options: SourcePolicyOptions): SourcePolicy["Se
               catch: () => refused(`${host} does not resolve from this Mend.`),
             });
     if (addresses.length === 0) return yield* refused(`${host} does not resolve from this Mend.`);
+    const clearance: SourceClearance = {
+      scheme: location.scheme,
+      host,
+      port: location.port,
+      addresses,
+    };
     for (const address of addresses) {
       const kind = classifyAddress(address);
       if (kind === "public") continue;
@@ -174,9 +202,38 @@ export const makeSourcePolicy = (options: SourcePolicyOptions): SourcePolicy["Se
         `${host} is on a private or reserved network. The operator can allow it with MEND_SOURCE_ALLOWED_HOSTS.`,
       );
     }
+    return clearance;
   });
 
-  return { profile: options.profile, check };
+  const pinnedEnv = (
+    clearance: SourceClearance,
+    env: Readonly<Record<string, string>>,
+  ): Record<string, string> => {
+    const address = clearance.addresses[0];
+    if (options.profile === "operator" || address === undefined || isIP(clearance.host) !== 0) {
+      return { ...env };
+    }
+    if (clearance.scheme === "ssh") {
+      return {
+        ...env,
+        GIT_SSH_COMMAND: `${env["GIT_SSH_COMMAND"] ?? "ssh"} -o HostName=${address} -o HostKeyAlias=${clearance.host}`,
+      };
+    }
+    if (clearance.scheme === "http" || clearance.scheme === "https") {
+      const port = clearance.port ?? (clearance.scheme === "https" ? 443 : 80);
+      const existing = Number(env["GIT_CONFIG_COUNT"] ?? "0");
+      const index = Number.isInteger(existing) && existing > 0 ? existing : 0;
+      return {
+        ...env,
+        GIT_CONFIG_COUNT: String(index + 1),
+        [`GIT_CONFIG_KEY_${index}`]: "http.curloptResolve",
+        [`GIT_CONFIG_VALUE_${index}`]: `${clearance.host}:${port}:${isIP(address) === 6 ? `[${address}]` : address}`,
+      };
+    }
+    return { ...env };
+  };
+
+  return { profile: options.profile, check, pinnedEnv };
 };
 
 const resolveAll = async (host: string): Promise<ReadonlyArray<string>> =>

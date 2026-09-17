@@ -157,6 +157,7 @@ import {
   worktreePathOf,
   type DiffFileFact,
   type GitError,
+  SourcePolicy,
 } from "@mend/store";
 import { Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
@@ -169,7 +170,6 @@ import {
   saveResolvedWorkspaceEnvironment,
 } from "../services/workspace-environment.ts";
 import { SessionSteering } from "../session-steering.ts";
-import { SourcePolicy } from "../source-policy.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { classifyGhError, Gh, parseGithubRepo } from "./github.ts";
 import { digestReviewPatch, lineAnchorExists, parseReviewDiff } from "./review-diff.ts";
@@ -253,9 +253,12 @@ const reachableSource = <E>(source: string, toError: (message: string) => E) =>
   Effect.gen(function* () {
     const caller = yield* CurrentUser;
     const isOperator = yield* (yield* ProjectAccess).isOperator(caller.user.id);
-    yield* (yield* SourcePolicy)
+    const policy = yield* SourcePolicy;
+    const clearance = yield* policy
       .check(source, { isOperator })
       .pipe(Effect.mapError((refused) => toError(refused.message)));
+    // The git that runs next dials the address just checked (DNS rebinding).
+    return (env: Readonly<Record<string, string>>) => policy.pinnedEnv(clearance, env);
   });
 
 export const LIVE_STATES: ReadonlySet<SessionStatus> = new Set([
@@ -459,11 +462,14 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         if ((yield* projects.byName(organizationId, payload.name)) !== null) {
           return yield* nameTaken;
         }
-        yield* reachableSource(payload.source, (message) => new StoreFailure({ message }));
+        const pinned = yield* reachableSource(
+          payload.source,
+          (message) => new StoreFailure({ message }),
+        );
         // The user's git access default decides a new project's mode unless the request says.
         const gitAccess = yield* UserGitAccessRepo;
         const mode = payload.gitAuthMode ?? (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
-        const remoteEnv = yield* remoteEnvFor(mode, caller.user.id);
+        const remoteEnv = pinned(yield* remoteEnvFor(mode, caller.user.id));
         // New stores are laid out by project id: names are unique only within an organization.
         const id = ProjectId.make(crypto.randomUUID());
         const adopted = yield* withSignerContext(
@@ -796,10 +802,11 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const project = yield* (yield* ProjectAccess).project(params.id);
         const caller = yield* CurrentUser;
         // Checked on use too: the policy may have tightened, or the name moved, since adoption.
-        if (project.originUrl !== null) {
-          yield* reachableSource(project.originUrl, (message) => new StoreFailure({ message }));
-        }
-        const remoteEnv = yield* remoteEnvFor(project.gitAuthMode, caller.user.id);
+        const pinned =
+          project.originUrl === null
+            ? (env: Readonly<Record<string, string>>) => ({ ...env })
+            : yield* reachableSource(project.originUrl, (message) => new StoreFailure({ message }));
+        const remoteEnv = pinned(yield* remoteEnvFor(project.gitAuthMode, caller.user.id));
         yield* withSignerContext(
           project.gitAuthMode,
           caller.user.id,
@@ -1935,14 +1942,17 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
             message: `"${payload.name}" is not a usable reference name (lowercase letters, digits, ".", "_", "-").`,
           });
         }
-        yield* reachableSource(payload.source, (message) => new StoreFailure({ message }));
+        const pinned = yield* reachableSource(
+          payload.source,
+          (message) => new StoreFailure({ message }),
+        );
         if ((yield* references.byName(viewer.organizationId, payload.name)) !== null) {
           return yield* new StoreFailure({
             message: `A reference named "${payload.name}" already exists.`,
           });
         }
         const { userId, mode } = yield* callerGitMode;
-        const remoteEnv = yield* remoteEnvFor(mode, userId);
+        const remoteEnv = pinned(yield* remoteEnvFor(mode, userId));
         const id = ReferenceId.make(crypto.randomUUID());
         const cloned = yield* withSignerContext(
           mode,
@@ -2000,9 +2010,12 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
         const reference = yield* ownedReference(params.id);
         const references = yield* ReferencesRepo;
         const store = yield* Store;
-        yield* reachableSource(reference.originUrl, (message) => new StoreFailure({ message }));
+        const pinned = yield* reachableSource(
+          reference.originUrl,
+          (message) => new StoreFailure({ message }),
+        );
         const { userId, mode } = yield* callerGitMode;
-        const remoteEnv = yield* remoteEnvFor(mode, userId);
+        const remoteEnv = pinned(yield* remoteEnvFor(mode, userId));
         const refreshed = yield* withSignerContext(
           mode,
           userId,

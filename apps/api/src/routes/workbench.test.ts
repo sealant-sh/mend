@@ -26,7 +26,7 @@ import {
 import { JobRunner } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
 import { SessionEngine, WorktreeReads } from "@mend/sessions";
-import { AgentBridge, DeploymentConfig, MendKeys, Store } from "@mend/store";
+import { AgentBridge, DeploymentConfig, MendKeys, Store, SourcePolicy } from "@mend/store";
 import { Effect, Layer, ManagedRuntime, Option, Schema } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
@@ -34,7 +34,6 @@ import { describe, expect, it } from "vitest";
 
 import { ProjectAccess, ProjectAccessLive } from "../access.ts";
 import { GithubIdentity } from "../github-identity.ts";
-import { SourcePolicy } from "../source-policy.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
 import { Gh } from "./github.ts";
@@ -247,7 +246,7 @@ type UnusedProjectRouteServices = Exclude<
 
 const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.mergeAll(
   Layer.mock(AuditEventsRepo, {}),
-  Layer.mock(SourcePolicy, { profile: "operator" }),
+  Layer.mock(SourcePolicy, { profile: "operator", pinnedEnv: (_clearance, env) => ({ ...env }) }),
   Layer.mock(AgentBridge, { socketPath: () => "/unused/project-detail-agent-bridge.sock" }),
   Layer.mock(Store, {}),
   Layer.mock(UserGitAccessRepo, {}),

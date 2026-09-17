@@ -11,3 +11,4 @@ export * from "./remote-env.ts";
 export * from "./runner.ts";
 export * from "./secret-cipher.ts";
 export * from "./store.ts";
+export * from "./source-policy.ts";

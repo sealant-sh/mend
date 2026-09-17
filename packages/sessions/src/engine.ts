@@ -110,6 +110,7 @@ import {
   worktreesRootOf,
   BlobStore,
   DeploymentConfig,
+  SourcePolicy,
 } from "@mend/store";
 import type {
   Harness,
@@ -838,7 +839,8 @@ type SessionEngineRequirements =
   | SessionRepository
   | SessionGitOpsRepo
   | MendKeys
-  | AgentBridge;
+  | AgentBridge
+  | SourcePolicy;
 
 export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineRequirements> =
   Layer.effect(
@@ -1530,6 +1532,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const projectLinks = yield* ProjectLinksRepo;
       const organizations = yield* OrganizationsRepo;
       const foldersRepo = yield* FoldersRepo;
+      const sourcePolicy = yield* SourcePolicy;
       // A workspace's git transport signs with its owner's key, so by default it only reaches the
       // project's own remote (docs/adr/0003, "Multi mode gate"). An operator may turn that off on
       // a machine they alone use, for mirrors and forks.
@@ -3521,9 +3524,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 report,
               )
             : null;
+        // The repository was checked when it was saved; checked again here, and the clone dials the
+        // address just checked, because a name can answer differently at every launch. The owner's
+        // actual role was applied at save; this recheck guards the tenant profile's networks.
+        const dotfilesCloneEnv =
+          dotfilesRepository === null
+            ? {}
+            : sourcePolicy.pinnedEnv(
+                yield* sourcePolicy.check(dotfilesRepository.url, { isOperator: true }).pipe(
+                  Effect.mapError(
+                    (refused) =>
+                      new DotfilesResolveError({
+                        message: `dotfiles repository refused: ${refused.message}`,
+                      }),
+                  ),
+                  report,
+                ),
+                {},
+              );
         const dotfilesArchives = yield* resolveDotfilesArchives({
           repository: dotfilesRepository,
           snapshot: dotfilesSnapshot,
+          cloneEnv: dotfilesCloneEnv,
         }).pipe(report);
         // The project env store, read ONCE per fresh workspace (plan: one snapshot per launch, a
         // live workspace is never mutated). Configuration rides `env` (plaintext by contract);

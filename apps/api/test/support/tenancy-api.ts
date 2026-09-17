@@ -44,6 +44,8 @@ import {
   SecretCipher,
   Store,
   StoreConfig,
+  makeSourcePolicy,
+  SourcePolicy,
 } from "@mend/store";
 import { Effect, Layer, ManagedRuntime, Queue, Schema, Stream } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
@@ -60,7 +62,6 @@ import { ServiceTunnelRoutes } from "../../src/routes/service-tunnel.ts";
 import { TtyRoutes } from "../../src/routes/tty.ts";
 import { HostEnvironment } from "../../src/services/host-environment.ts";
 import { SessionSteeringLive } from "../../src/session-steering.ts";
-import { makeSourcePolicy, SourcePolicy } from "../../src/source-policy.ts";
 import { TenancyConfig } from "../../src/tenancy.ts";
 import { createTenancyWorld, type HarnessUser, type TenancyWorld } from "./tenancy-harness.ts";
 import { recording } from "./tenancy-harness.ts";

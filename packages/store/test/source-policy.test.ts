@@ -1,7 +1,7 @@
 import { Effect, Exit } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { classifyAddress, makeSourcePolicy, type SourceProfile } from "./source-policy.ts";
+import { classifyAddress, makeSourcePolicy, type SourceProfile } from "../src/source-policy.ts";
 
 describe("classifyAddress", () => {
   it("tells public addresses from private, loopback, link-local and metadata ones", () => {
@@ -108,5 +108,53 @@ describe("the source policy", () => {
         .pipe(Effect.exit),
     );
     expect(JSON.stringify(exit)).not.toContain("10.0.0.5");
+  });
+});
+
+const clearance = (
+  scheme: "https" | "ssh",
+  host: string,
+  port: number | null,
+  address: string,
+) => ({
+  scheme,
+  host,
+  port,
+  addresses: [address],
+});
+
+describe("pinning a checked remote (DNS rebinding)", () => {
+  it("tenant: HTTPS resolves the name to the checked address, ssh dials it and keeps the host key name", () => {
+    const tenant = policy("tenant");
+    expect(tenant.pinnedEnv(clearance("https", "git.acme.dev", null, "140.82.112.3"), {})).toEqual({
+      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_KEY_0: "http.curloptResolve",
+      GIT_CONFIG_VALUE_0: "git.acme.dev:443:140.82.112.3",
+    });
+    expect(
+      tenant.pinnedEnv(clearance("https", "git.acme.dev", 8443, "2606:50c0::153"), {
+        GIT_CONFIG_COUNT: "1",
+        GIT_CONFIG_KEY_0: "safe.directory",
+        GIT_CONFIG_VALUE_0: "*",
+      }),
+    ).toMatchObject({
+      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_KEY_1: "http.curloptResolve",
+      GIT_CONFIG_VALUE_1: "git.acme.dev:8443:[2606:50c0::153]",
+    });
+    expect(
+      tenant.pinnedEnv(clearance("ssh", "github.com", null, "140.82.112.3"), {
+        GIT_SSH_COMMAND: "ssh -o BatchMode=yes",
+      }),
+    ).toEqual({
+      GIT_SSH_COMMAND: "ssh -o BatchMode=yes -o HostName=140.82.112.3 -o HostKeyAlias=github.com",
+    });
+  });
+
+  it("operator: the environment stays as it is, so a team's own ssh configuration keeps working", () => {
+    const env = { GIT_SSH_COMMAND: "ssh -o BatchMode=yes" };
+    expect(
+      policy("operator").pinnedEnv(clearance("ssh", "github.com", null, "140.82.112.3"), env),
+    ).toEqual(env);
   });
 });

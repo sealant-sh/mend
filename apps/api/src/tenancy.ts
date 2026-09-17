@@ -102,9 +102,11 @@ export const evaluateGate = (posture: TenancyPosture): ReadonlyArray<GateOutcome
     ),
     item(
       "source-address-pinning",
-      false,
-      "a checked host is resolved again when git dials it",
-      "pin checked addresses for ssh and HTTPS (docs/GIT-ACCESS.md)",
+      posture.sourcePolicy === "tenant",
+      posture.sourcePolicy === "tenant"
+        ? "git dials the address the source policy checked, for ssh and HTTPS"
+        : "the operator source policy leaves git to resolve names itself",
+      "set MEND_SOURCE_POLICY=tenant",
     ),
     item(
       "transport-bound-to-origin",
