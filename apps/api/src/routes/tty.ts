@@ -7,8 +7,10 @@ import { Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { Socket } from "effect/unstable/socket";
 
+import { Budgets } from "../budgets.ts";
 import { ConnectionRegistry, guardSocket } from "../connections.ts";
 import { SessionSteering } from "../session-steering.ts";
+import { connectionRefusal, makeFrameGuard } from "../socket-budgets.ts";
 
 /**
  * The terminal proxy (plan §8.1.F) as a DATA PLANE: one WebSocket per attach.
@@ -38,6 +40,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const auth = yield* Auth;
     const connections = yield* ConnectionRegistry;
+    const budgets = yield* Budgets;
     const sessions = yield* SessionsRepo;
     const processes = yield* SessionProcessesRepo;
     const steering = yield* SessionSteering;
@@ -60,6 +63,15 @@ export const TtyRoutes = HttpRouter.use((router) =>
         }
         const authed = yield* auth.getSession(headers);
         if (Option.isNone(authed)) return HttpServerResponse.empty({ status: 401 });
+
+        // Before anything is resolved, dialled or upgraded (docs/adr/0004, "Budgets").
+        const overBudget = yield* connectionRefusal(
+          budgets,
+          connections,
+          authed.value.user.id,
+          "terminal",
+        );
+        if (overBudget !== null) return overBudget;
 
         // Two address forms resolve to one (workspace, PTY) pair.
         const processParam = url.searchParams.get("process");
@@ -194,7 +206,9 @@ export const TtyRoutes = HttpRouter.use((router) =>
               write,
               auth.getSession(headers).pipe(Effect.map(Option.isSome)),
               sessionId,
+              "terminal",
             );
+            const frames = makeFrameGuard(budgets.limits.frameBytes, write);
 
             const iterator = attachment.output[Symbol.asyncIterator]();
             const pumpOutput = Effect.gen(function* () {
@@ -211,6 +225,8 @@ export const TtyRoutes = HttpRouter.use((router) =>
             yield* socket
               .runRaw((data) => {
                 if (guard.revoked()) return Effect.void;
+                const overFrame = frames.refuse(data);
+                if (overFrame !== null) return overFrame;
                 if (typeof data !== "string") {
                   attachment.send(data);
                   return Effect.void;

@@ -149,6 +149,9 @@ export const AUTHORIZATION_READS: ReadonlySet<string> = new Set([
   "projects.byId",
   "projects.listForOrganization",
   "sessions.byId",
+  // The session budgets count before anything is created; a count is a read, not an effect.
+  "sessions.countUnsettledForOrganization",
+  "sessions.listUnsettledForOwner",
   // Worktree removal by a non-manager needs every member session's owner.
   "sessions.listForWorktree",
   "worktrees.byId",
@@ -666,6 +669,16 @@ export const createTenancyWorld = async (): Promise<TenancyWorld> => {
         listForWorktree: (worktreeId) =>
           Effect.succeed([...sessions.values()].filter((row) => row.worktreeId === worktreeId)),
         listActive: () => Effect.succeed([...sessions.values()]),
+        listUnsettled: () => Effect.succeed([...sessions.values()]),
+        // What the session budgets count (docs/adr/0004): every session in the world is unsettled.
+        countUnsettledForOrganization: (organizationId) =>
+          Effect.succeed(
+            [...sessions.values()].filter(
+              (row) => projects.get(row.projectId)?.organizationId === organizationId,
+            ).length,
+          ),
+        listUnsettledForOwner: (userId) =>
+          Effect.succeed([...sessions.values()].filter((row) => row.ownerUserId === userId)),
         setSharedControl: (id, enabledByUserId) =>
           Effect.gen(function* () {
             const row = yield* found(

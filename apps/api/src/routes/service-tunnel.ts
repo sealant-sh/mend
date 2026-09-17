@@ -6,8 +6,10 @@ import { Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { Socket } from "effect/unstable/socket";
 
+import { Budgets } from "../budgets.ts";
 import { ConnectionRegistry, guardSocket } from "../connections.ts";
 import { SessionSteering } from "../session-steering.ts";
+import { connectionRefusal, makeFrameGuard } from "../socket-budgets.ts";
 
 /**
  * The Service tunnel (docs/SESSION-SERVICES.md): the client-side data plane
@@ -35,6 +37,7 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const auth = yield* Auth;
     const connections = yield* ConnectionRegistry;
+    const budgets = yield* Budgets;
     const services = yield* ServicesRepo;
     const forwards = yield* ServiceForwardsRepo;
     const sessions = yield* SessionsRepo;
@@ -54,6 +57,15 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
         }
         const authed = yield* auth.getSession(headers);
         if (Option.isNone(authed)) return HttpServerResponse.empty({ status: 401 });
+
+        // Before anything is resolved, dialled or upgraded (docs/adr/0004, "Budgets").
+        const overBudget = yield* connectionRefusal(
+          budgets,
+          connections,
+          authed.value.user.id,
+          "tunnel",
+        );
+        if (overBudget !== null) return overBudget;
 
         const serviceParam = url.searchParams.get("service");
         if (serviceParam === null) {
@@ -125,7 +137,9 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
               write,
               auth.getSession(headers).pipe(Effect.map(Option.isSome)),
               owner.value.id,
+              "tunnel",
             );
+            const frames = makeFrameGuard(budgets.limits.frameBytes, write);
 
             const iterator = pipe.output[Symbol.asyncIterator]();
             const pumpOutput = Effect.gen(function* () {
@@ -141,6 +155,8 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
             yield* socket
               .runRaw((data) => {
                 if (guard.revoked()) return Effect.void;
+                const overFrame = frames.refuse(data);
+                if (overFrame !== null) return overFrame;
                 if (typeof data !== "string") {
                   pipe.send(data);
                   return Effect.void;

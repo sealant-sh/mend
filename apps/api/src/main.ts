@@ -102,7 +102,7 @@ import {
   SummaryObserverLive,
   SummaryObserveWorkerLive,
 } from "@mend/jobs";
-import { NetworkConfig, NetworkConfigLive } from "@mend/network";
+import { NetworkConfig, NetworkConfigLive, trustedProxyCidrs } from "@mend/network";
 import { asSealantUser, SealantLiveFromEnv } from "@mend/sealant";
 import {
   CaptureChannelLive,
@@ -150,15 +150,17 @@ import {
   SourcePolicyLive,
 } from "@mend/store";
 import { Config, Effect, Layer, Option, Schema } from "effect";
-import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
+import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
 import { ProjectAccessLive } from "./access.ts";
+import { Budgets, BudgetsLive } from "./budgets.ts";
 import { ConnectionRegistryLive } from "./connections.ts";
 import { EventBusLive } from "./events-bus.ts";
 import { GithubIdentityLive } from "./github-identity.ts";
 import { MemberRemovalLive } from "./member-removal.ts";
 import { publicNetworkPolicy } from "./public-network-policy.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
+import { boundedWebRequest, requestBudgets } from "./request-budgets.ts";
 import { MendApiLive } from "./routes/api-live.ts";
 import { EventsRoutes } from "./routes/events.ts";
 import { GhLive } from "./routes/github.ts";
@@ -295,7 +297,9 @@ const AuthRoutes = HttpRouter.use((router) =>
     const auth = yield* Auth;
     yield* router.add("*", "/api/auth/*", (request) =>
       Effect.gen(function* () {
-        const webRequest = yield* HttpServerRequest.toWeb(request).pipe(Effect.orDie);
+        // Read under the body budget: better-auth would otherwise buffer an undeclared body whole.
+        const webRequest = yield* boundedWebRequest(request);
+        if (webRequest === null) return HttpServerResponse.empty({ status: 413 });
         const response = yield* auth.handler(webRequest);
         return HttpServerResponse.fromWeb(response);
       }),
@@ -308,6 +312,8 @@ const ServerLive = Layer.unwrap(
   Effect.gen(function* () {
     const port = yield* Config.int("PORT").pipe(Config.orElse(() => Config.succeed(3101)));
     const network = yield* NetworkConfig;
+    const budgets = yield* Budgets;
+    const trustedProxies = yield* trustedProxyCidrs;
     return HttpRouter.serve(
       Layer.mergeAll(
         MendApiLive,
@@ -315,6 +321,8 @@ const ServerLive = Layer.unwrap(
         EventsRoutes,
         WebSocketRoutes,
         publicNetworkPolicy(network),
+        // Budgets before routing, authentication and body decoding (docs/adr/0004, MEND-05).
+        requestBudgets(budgets, trustedProxies),
       ),
     ).pipe(
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
@@ -607,7 +615,8 @@ const MainLive = Layer.unwrap(
       // Who may see what (docs/adr/0003), and whose GitHub identity calls to GitHub may use.
       Layer.provide(Layer.merge(ProjectAccessLive, GithubIdentityLive)),
       // MEND_TENANCY: refuses to build (so nothing serves) when the mode may not run here.
-      Layer.provide(TenancyConfigLive),
+      // Budgets ride the same step: `pipe` takes at most twenty.
+      Layer.provide(Layer.merge(TenancyConfigLive, BudgetsLive)),
       // Shared by the API (enqueue on comment) and the workers (one instance).
       Layer.provide(JobRunner.pgBossLayer),
       // Follow-up delivery owns persistence → process acceptance → correlation.

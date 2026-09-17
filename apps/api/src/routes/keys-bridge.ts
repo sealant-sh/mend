@@ -3,7 +3,9 @@ import { AgentBridge } from "@mend/store";
 import { Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
+import { Budgets } from "../budgets.ts";
 import { ConnectionRegistry, guardSocket } from "../connections.ts";
+import { connectionRefusal, makeFrameGuard } from "../socket-budgets.ts";
 
 /**
  * The ssh-agent bridge's transport (docs/GIT-ACCESS.md decision 2): one
@@ -20,6 +22,7 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const auth = yield* Auth;
     const connections = yield* ConnectionRegistry;
+    const budgets = yield* Budgets;
     const bridge = yield* AgentBridge;
 
     yield* router.add("GET", "/api/keys/bridge/ws", (request) =>
@@ -35,6 +38,15 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
         const authed = yield* auth.getSession(headers);
         if (Option.isNone(authed)) return HttpServerResponse.empty({ status: 401 });
 
+        // Before anything is resolved, dialled or upgraded (docs/adr/0004, "Budgets").
+        const overBudget = yield* connectionRefusal(
+          budgets,
+          connections,
+          authed.value.user.id,
+          "key-bridge",
+        );
+        if (overBudget !== null) return overBudget;
+
         const clientName = url.searchParams.get("host") ?? "unknown machine";
 
         yield* Effect.scoped(
@@ -47,7 +59,10 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
               authed.value.user.id,
               write,
               auth.getSession(headers).pipe(Effect.map(Option.isSome)),
+              undefined,
+              "key-bridge",
             );
+            const frames = makeFrameGuard(budgets.limits.frameBytes, write);
 
             // The bridge speaks through a plain callback; each frame rides
             // its own forked fiber (writes are tiny and ordered enough — the
@@ -64,6 +79,8 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
             yield* socket
               .runRaw((data) => {
                 if (guard.revoked()) return Effect.void;
+                const overFrame = frames.refuse(data);
+                if (overFrame !== null) return overFrame;
                 if (typeof data === "string") handle.feed(data);
                 else handle.feed(Buffer.from(data).toString("utf8"));
                 return Effect.void;

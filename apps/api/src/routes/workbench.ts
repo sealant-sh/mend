@@ -163,12 +163,14 @@ import { Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
+import { Budgets } from "../budgets.ts";
 import { GithubIdentity } from "../github-identity.ts";
 import { HostEnvironment } from "../services/host-environment.ts";
 import {
   resolveWorkspaceEnvironment,
   saveResolvedWorkspaceEnvironment,
 } from "../services/workspace-environment.ts";
+import { budgetExceeded, requireSessionRoom } from "../session-budgets.ts";
 import { SessionSteering } from "../session-steering.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { classifyGhError, Gh, parseGithubRepo } from "./github.ts";
@@ -2101,11 +2103,13 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("create", ({ params, payload }) =>
       Effect.gen(function* () {
-        yield* (yield* ProjectAccess).project(params.id);
+        const project = yield* (yield* ProjectAccess).project(params.id);
         const engine = yield* SessionEngine;
         // Ownership is stamped at provision: launches apply the OWNER's dotfiles, and the
         // auth middleware guarantees a real account here (the CLI's static token included).
         const caller = yield* CurrentUser;
+        // After authorization, before the worktree exists: a refusal leaves nothing behind.
+        yield* requireSessionRoom(caller.user.id, project.organizationId);
         return yield* engine
           .provision({
             projectId: params.id,
@@ -2900,38 +2904,48 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           payload.mode === "protocol"
             ? engine.launchProtocol(params.id, payload, caller.user.id)
             : engine.launch(params.id, argv);
-        return yield* launch.pipe(
-          Effect.tap(() => (inlineNamePrompt === null ? queueAutoName : Effect.void)),
-          Effect.catchTag("SessionNotFoundError", () =>
-            Effect.fail(new NotFound({ id: params.id })),
+        // A launch holds a platform workspace build for minutes. One account starts a bounded
+        // number at once; a launch already under way is never touched.
+        const budgets = yield* Budgets;
+        const launched = yield* budgets.withLaunchSlot(
+          caller.user.id,
+          launch.pipe(
+            Effect.tap(() => (inlineNamePrompt === null ? queueAutoName : Effect.void)),
+            Effect.catchTag("SessionNotFoundError", () =>
+              Effect.fail(new NotFound({ id: params.id })),
+            ),
+            Effect.catchTag("LegacyBenchReadOnlyError", () =>
+              Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
+            ),
+            Effect.catchTag("ProjectNotFoundError", () =>
+              Effect.fail(new NotFound({ id: params.id })),
+            ),
+            Effect.catchTag("SealantPlatformError", (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+            ),
+            Effect.catchTag("ProtocolHarnessUnsupportedError", (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+            ),
+            Effect.catchTags({
+              HarnessStateNotFoundError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              HarnessStateIOError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              HarnessStateInvalidError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              HarnessStateCommandError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              SessionLaunchSetupError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+              DotfilesResolveError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+            }),
           ),
-          Effect.catchTag("LegacyBenchReadOnlyError", () =>
-            Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
-          ),
-          Effect.catchTag("ProjectNotFoundError", () =>
-            Effect.fail(new NotFound({ id: params.id })),
-          ),
-          Effect.catchTag("SealantPlatformError", (error) =>
-            Effect.fail(new StoreFailure({ message: error.message })),
-          ),
-          Effect.catchTag("ProtocolHarnessUnsupportedError", (error) =>
-            Effect.fail(new StoreFailure({ message: error.message })),
-          ),
-          Effect.catchTags({
-            HarnessStateNotFoundError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            HarnessStateIOError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            HarnessStateInvalidError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            HarnessStateCommandError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            SessionLaunchSetupError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            DotfilesResolveError: (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-          }),
         );
+        if (launched === null) {
+          return yield* budgetExceeded("accountLaunchesInFlight", budgets.limits);
+        }
+        return launched;
       }),
     )
     .handle("followUpPending", ({ params }) =>

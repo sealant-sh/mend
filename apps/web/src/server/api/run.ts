@@ -23,6 +23,11 @@ const credentialHeaders = (headers: Headers): Record<string, string> => {
   if (cookie !== null) forwarded["cookie"] = cookie;
   if (authorization !== null) forwarded["authorization"] = authorization;
   if (origin !== null) forwarded["origin"] = origin;
+  // The chain the front proxy appended to (`proxy-headers.ts`) rides along, so the API counts this
+  // call against the browser it was made for and not against the web tier. The API believes only
+  // the entries its trusted hops appended (`clientAddressOf`), so this grants nothing.
+  const forwardedFor = headers.get("x-forwarded-for");
+  if (forwardedFor !== null) forwarded["x-forwarded-for"] = forwardedFor;
   return forwarded;
 };
 

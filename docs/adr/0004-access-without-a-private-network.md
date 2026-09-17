@@ -178,11 +178,14 @@ happens before the effect it guards.
   route's limit with 413 before a byte is read, and sets `HttpIncomingMessage.MaxBodySize` so a
   chunked body is cut at the same point. Default 1 MiB; the upload routes (`pasteImage`,
   `skills.sync`, `folders.upload`, dotfiles, workspace image) get named larger limits.
-- **Frames.** WebSocket servers get `maxPayload`. Terminal input frames are small; the tunnel and
-  the key bridge get their own limits.
+- **Frames.** A terminal, a tunnel or the key bridge refuses to forward a client frame over the
+  budget and closes the socket with 1009 (decision 12 says why this is not `maxPayload`).
 - **Requests.** Per account and, before authentication, per client address: one sliding-window
   limiter generalized from the pairing limiter, keyed by the single client-address resolver. Sign-in
-  and invitation acceptance get a tighter window than the rest.
+  and invitation acceptance get a tighter window than the rest. No request is exempt because its
+  whole chain is trusted: it is counted under the socket's address (only a bare loopback socket with
+  no `X-Forwarded-For` is this machine's own, and sign-in attempts are counted even then). A
+  credential is the bearer or a session cookie's value, never the client-writable rest of `Cookie`.
 - **Concurrent work.** Per account: live sessions, launches in flight, and open long-lived
   connections by kind (event streams, terminals, tunnels, key bridges). `ConnectionRegistry` already
   holds every long-lived connection per account, so it is where the connection budget is counted and
@@ -329,6 +332,14 @@ Choices a reviewer may overturn without touching the rest. Each names what was t
     Docker host has no cluster to delegate to.
 11. **Core budgets sit behind Mend's, not instead of them.** Mend refuses earlier and with better
     words; Core's are the backstop for a caller that is not Mend.
+
+12. **WebSocket frames are bounded in Mend's handlers, not in the `ws` server.** Effect's Node HTTP
+    server builds its WebSocket server without options and does not expose it, so `maxPayload`
+    cannot be set. Taken: refuse to forward an oversized frame and close the socket with 1009, and
+    bound connections per account, so the total is bounded. Rejected: patching the `ws` prototype
+    (reaches into a transitive dependency's internals from application code) and copying
+    `NodeHttpServer.make` to own the upgrade path (sixty lines of a moving library). The residual is
+    one frame of up to `ws`'s own 100 MiB default buffered per connection before Mend can refuse it.
 
 ## Open questions
 

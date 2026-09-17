@@ -27,7 +27,7 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
 import { NotFound } from "./accounts.ts";
-import { AuthMiddleware, ProcessLogPage } from "./common.ts";
+import { AuthMiddleware, BudgetExceeded, ProcessLogPage } from "./common.ts";
 import {
   AgentRequestResolved,
   HandoffRequest,
@@ -115,7 +115,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: ProjectId },
       payload: NewWorkbenchSession,
       success: Session,
-      error: [NotFound, StoreFailure],
+      error: [NotFound, StoreFailure, BudgetExceeded],
     }),
   )
   .add(
@@ -357,7 +357,7 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       payload: LaunchRequest,
       success: Session,
-      error: [NotFound, SessionNotSteerable, StoreFailure],
+      error: [NotFound, SessionNotSteerable, StoreFailure, BudgetExceeded],
     }),
   )
   .add(

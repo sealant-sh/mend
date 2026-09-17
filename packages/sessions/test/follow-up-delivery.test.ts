@@ -448,6 +448,7 @@ const testLayer = (world: TestWorld) => {
     setSharedControl: () => Effect.die("not in test"),
     disableSharedControlForOwner: () => Effect.succeed([]),
     listUnsettledForOwner: () => Effect.succeed([]),
+    countUnsettledForOrganization: () => Effect.succeed(0),
     recentOwnersForProject: () => Effect.succeed([]),
     listRecentlySettled: () => Effect.die("not in test"),
     setSealantIds: () => Effect.die("not in test"),
