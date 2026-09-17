@@ -27,6 +27,7 @@ export const audienceOf = (event: MendEvent): EventAudience => {
     case "worktree":
     case "session-change":
     case "review-comment":
+    case "shared-control-off":
       return { kind: "project", projectId: event.projectId };
     case "organization":
       return { kind: "organization", organizationId: event.organizationId };

@@ -5,6 +5,7 @@ import {
   OrganizationsRepo,
   ProjectsRepo,
   PushDevicesRepo,
+  SessionControlEventsRepo,
   SessionsRepo,
   UserEvents,
   UsersRepo,
@@ -52,6 +53,9 @@ const removalWorld = (options: { readonly lastOwner?: boolean } = {}) => {
           revokeAllForUser: (userId) =>
             note(`devices.revokeAllForUser:${userId}`).pipe(Effect.as(1)),
         }),
+        Layer.mock(SessionControlEventsRepo, {
+          record: (event) => note(`controlEvents.record:${event.kind}:${event.sessionId}`),
+        }),
         Layer.mock(PushDevicesRepo, {
           removeAllForUser: (userId) => note(`pushDevices.removeAllForUser:${userId}`),
         }),
@@ -65,6 +69,10 @@ const removalWorld = (options: { readonly lastOwner?: boolean } = {}) => {
           closeForUser: (userId) => note(`connections.closeForUser:${userId}`).pipe(Effect.as(0)),
         }),
         Layer.mock(SessionsRepo, {
+          disableSharedControlForOwner: (userId) =>
+            note(`sessions.disableSharedControlForOwner:${userId}`).pipe(
+              Effect.as([SessionId.make("session-shared")]),
+            ),
           listUnsettledForOwner: (userId) =>
             Effect.succeed([
               makeSession(
@@ -120,6 +128,8 @@ describe("member removal (docs/adr/0003)", () => {
     expect(Exit.isSuccess(exit)).toBe(true);
     expect(world.effects).toEqual([
       "organizations.removeMember:carol",
+      "sessions.disableSharedControlForOwner:carol",
+      "controlEvents.record:shared-control-off:session-shared",
       "users.deactivate:carol",
       "users.revokeAuthSessions:carol",
       "devices.revokeAllForUser:carol",
@@ -288,6 +298,38 @@ describe("the connection registry", () => {
       ),
     );
     expect(closed).toEqual({ afterResync: [], log: ["carol"] });
+  });
+
+  it("turning shared control off closes the other accounts' sockets on that session only", async () => {
+    const closed = await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const source = yield* Queue.unbounded<string>();
+          const registry = yield* buildRegistry(
+            Stream.fromQueue(source),
+            new Set(["alice", "carol"]),
+          );
+          const log: Array<string> = [];
+          const note = (entry: string) => Effect.sync(() => void log.push(entry));
+          yield* registry.register("alice", note("alice:s1"), "s1");
+          yield* registry.register("carol", note("carol:s1"), "s1");
+          yield* registry.register("carol", note("carol:s2"), "s2");
+          yield* registry.register("carol", note("carol:events"));
+          yield* Queue.offer(
+            source,
+            JSON.stringify({
+              type: "shared-control-off",
+              sessionId: "s1",
+              projectId: "p1",
+              ownerUserId: "alice",
+            }),
+          );
+          yield* Effect.sleep("30 millis");
+          return log;
+        }),
+      ),
+    );
+    expect(closed).toEqual(["carol:s1"]);
   });
 
   it("a guarded socket drops input once revoked, and closes at once if the account is gone", async () => {

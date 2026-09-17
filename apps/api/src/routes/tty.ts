@@ -1,5 +1,5 @@
 import { Auth } from "@mend/auth";
-import { SessionProcessesRepo, SessionsRepo } from "@mend/db";
+import { SessionControlEventsRepo, SessionProcessesRepo, SessionsRepo } from "@mend/db";
 import { SessionId, SessionProcessId, type SealantWorkspaceId } from "@mend/domain";
 import { currentAgentProcess } from "@mend/domain/workbench";
 import { asSealantUser, SealantClient } from "@mend/sealant";
@@ -42,6 +42,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
     const processes = yield* SessionProcessesRepo;
     const steering = yield* SessionSteering;
     const sealant = yield* SealantClient;
+    const controlEvents = yield* SessionControlEventsRepo;
 
     yield* router.add("GET", "/api/tty", (request) =>
       Effect.gen(function* () {
@@ -68,6 +69,9 @@ export const TtyRoutes = HttpRouter.use((router) =>
           readonly sealantSessionId: string;
           /** The session owner: the PTY belongs to THEIR Sealant user, whoever attaches. */
           readonly ownerUserId: string | null;
+          /** The session the PTY belongs to, and the process when one was named. */
+          readonly sessionId: SessionId;
+          readonly processId: string | null;
         };
         if (processParam !== null) {
           const process = yield* processes.byId(SessionProcessId.make(processParam));
@@ -100,6 +104,8 @@ export const TtyRoutes = HttpRouter.use((router) =>
             sealantWorkspaceId: process.sealantWorkspaceId,
             sealantSessionId: processPtyId,
             ownerUserId: owner.value.ownerUserId,
+            sessionId: owner.value.id,
+            processId: process.id,
           };
         } else if (sessionParam !== null) {
           const session = yield* sessions.byId(SessionId.make(sessionParam)).pipe(Effect.option);
@@ -127,12 +133,16 @@ export const TtyRoutes = HttpRouter.use((router) =>
                   sealantWorkspaceId: agent.sealantWorkspaceId,
                   sealantSessionId: agent.sealantSessionId,
                   ownerUserId,
+                  sessionId: session.value.id,
+                  processId: agent.id,
                 }
               : session.value.sealantWorkspaceId !== null && session.value.sealantSessionId !== null
                 ? {
                     sealantWorkspaceId: session.value.sealantWorkspaceId,
                     sealantSessionId: session.value.sealantSessionId,
                     ownerUserId,
+                    sessionId: session.value.id,
+                    processId: null,
                   }
                 : null;
           if (resolved === null) {
@@ -142,7 +152,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
         } else {
           return HttpServerResponse.text("missing ?process or ?session", { status: 400 });
         }
-        const { sealantWorkspaceId, sealantSessionId, ownerUserId } = target;
+        const { sealantWorkspaceId, sealantSessionId, ownerUserId, sessionId } = target;
         const from = BigInt(url.searchParams.get("from") ?? "0");
 
         const resolved = yield* Effect.gen(function* () {
@@ -171,12 +181,19 @@ export const TtyRoutes = HttpRouter.use((router) =>
             yield* Effect.addFinalizer(() => Effect.sync(() => attachment.close()));
             const socket = yield* request.upgrade;
             const write = yield* socket.writer;
+            yield* controlEvents.record({
+              sessionId,
+              actorUserId: authed.value.user.id,
+              kind: "terminal-attach",
+              refId: target.processId,
+            });
             // Removing the account closes this socket, and drops its input from then on (docs/adr/0003).
             const guard = yield* guardSocket(
               connections,
               authed.value.user.id,
               write,
               auth.getSession(headers).pipe(Effect.map(Option.isSome)),
+              sessionId,
             );
 
             const iterator = attachment.output[Symbol.asyncIterator]();

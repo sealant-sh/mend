@@ -120,3 +120,6 @@ export type FolderId = typeof FolderId.Type;
 
 export const AuditEventId = Schema.String.pipe(Schema.brand("AuditEventId"));
 export type AuditEventId = typeof AuditEventId.Type;
+
+export const SessionControlEventId = Schema.String.pipe(Schema.brand("SessionControlEventId"));
+export type SessionControlEventId = typeof SessionControlEventId.Type;

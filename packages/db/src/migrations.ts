@@ -1776,6 +1776,34 @@ const auditEventsMigration = Effect.gen(function* () {
     CREATE INDEX audit_events_org_created_idx ON audit_events (organization_id, created_at DESC)`;
 });
 
+/**
+ * docs/adr/0003-organizations-and-tenancy.md: shared control on a session, and the record of who
+ * steered it beyond turns and approvals.
+ */
+const sharedControlMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE agent_sessions
+      ADD COLUMN shared_control_enabled_by_user_id text REFERENCES "user" (id) ON DELETE RESTRICT,
+      ADD COLUMN shared_control_enabled_at timestamptz,
+      ADD CONSTRAINT agent_sessions_shared_control_check
+        CHECK ((shared_control_enabled_by_user_id IS NULL) = (shared_control_enabled_at IS NULL))`;
+  yield* sql`
+    CREATE TABLE session_control_events (
+      id text PRIMARY KEY,
+      session_id text NOT NULL REFERENCES agent_sessions (id) ON DELETE CASCADE,
+      actor_user_id text NOT NULL REFERENCES "user" (id) ON DELETE RESTRICT,
+      kind text NOT NULL CHECK (kind IN (
+        'interrupt', 'terminal-attach', 'shell-open', 'stop', 'shared-control-on', 'shared-control-off'
+      )),
+      ref_id text,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE INDEX session_control_events_session_idx
+    ON session_control_events (session_id, created_at)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1837,4 +1865,5 @@ export const migrations = {
   "0057_folders": foldersMigration,
   "0058_hot_pool_owners": hotPoolOwnersMigration,
   "0059_audit_events": auditEventsMigration,
+  "0060_shared_control": sharedControlMigration,
 };

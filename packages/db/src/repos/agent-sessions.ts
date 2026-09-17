@@ -155,6 +155,15 @@ export class SessionsRepo extends Context.Service<
      */
     readonly setSummary: (id: SessionId, summary: string | null) => Effect.Effect<void>;
     readonly setLabel: (id: SessionId, label: string | null) => Effect.Effect<void>;
+    /** Share control as `enabledByUserId`, or stop sharing with null; answers the updated row. */
+    readonly setSharedControl: (
+      id: SessionId,
+      enabledByUserId: string | null,
+    ) => Effect.Effect<Session, SessionNotFoundError>;
+    /** Stop sharing every session of one account: what removing them does first. Answers which. */
+    readonly disableSharedControlForOwner: (
+      userId: string,
+    ) => Effect.Effect<ReadonlyArray<SessionId>>;
     /** The auto-namer's write: fills the label only while null; true when the write landed. */
     readonly setLabelIfUnset: (id: SessionId, label: string) => Effect.Effect<boolean>;
     /** Hard delete — comments, checkpoints, follow-ups, change and tour cascade. */
@@ -595,6 +604,69 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* notify(id);
       });
 
+      const setSharedControl = Effect.fn("SessionsRepo.setSharedControl")(function* (
+        id: SessionId,
+        enabledByUserId: string | null,
+      ) {
+        const [row] = yield* db
+          .update(agentSessions)
+          .set({
+            sharedControlEnabledByUserId: enabledByUserId,
+            sharedControlEnabledAt: enabledByUserId === null ? null : new Date(),
+            updatedAt: new Date(),
+          })
+          .where(eq(agentSessions.id, id))
+          .returning()
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* new SessionNotFoundError({ sessionId: id });
+        yield* notify(id);
+        if (enabledByUserId === null) {
+          yield* notifyEvent(pg, {
+            type: "shared-control-off",
+            sessionId: id,
+            projectId: row.projectId,
+            ownerUserId: row.ownerUserId,
+          });
+        }
+        return toSession(row);
+      });
+
+      const disableSharedControlForOwner = Effect.fn("SessionsRepo.disableSharedControlForOwner")(
+        function* (userId: string) {
+          const rows = yield* db
+            .update(agentSessions)
+            .set({
+              sharedControlEnabledByUserId: null,
+              sharedControlEnabledAt: null,
+              updatedAt: new Date(),
+            })
+            .where(
+              and(
+                eq(agentSessions.ownerUserId, userId),
+                isNotNull(agentSessions.sharedControlEnabledAt),
+              ),
+            )
+            .returning({ id: agentSessions.id, projectId: agentSessions.projectId })
+            .pipe(Effect.orDie);
+          yield* Effect.forEach(
+            rows,
+            (row) =>
+              notify(row.id).pipe(
+                Effect.andThen(
+                  notifyEvent(pg, {
+                    type: "shared-control-off",
+                    sessionId: row.id,
+                    projectId: row.projectId,
+                    ownerUserId: userId,
+                  }),
+                ),
+              ),
+            { discard: true },
+          );
+          return rows.map((row) => row.id);
+        },
+      );
+
       /**
        * The auto-namer's write: fills the label ONLY while it is still null,
        * so a user-typed label (or an earlier naming) always wins the race.
@@ -680,6 +752,8 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         reopen,
         setSummary,
         setLabel,
+        setSharedControl,
+        disableSharedControlForOwner,
         setLabelIfUnset,
         remove,
         setHarness,

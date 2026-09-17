@@ -10,6 +10,7 @@ import {
 import type {
   AgentItemId,
   AuditEventId,
+  SessionControlEventId,
   AgentRequestId,
   AgentTurnId,
   BriefCommentId,
@@ -93,6 +94,7 @@ import type {
   PassStatus,
   DiffDigest,
   ProtocolLaunchOptions,
+  SessionControlKind,
   SessionExtraMount,
   ServiceBrowserScheme,
   ServiceDeclarationSource,
@@ -350,6 +352,26 @@ export const auditEvents = pgTable(
   (table) => [
     index("audit_events_org_created_idx").on(table.organizationId, table.createdAt.desc()),
   ],
+);
+
+/**
+ * Steering acts on a session beyond turns and approvals (docs/adr/0003): who interrupted, attached
+ * a terminal, opened a shell, stopped it, or shared control.
+ */
+export const sessionControlEvents = pgTable(
+  "session_control_events",
+  {
+    id: text().$type<SessionControlEventId>().primaryKey(),
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    actorUserId: text().notNull(),
+    kind: text().$type<SessionControlKind>().notNull(),
+    refId: text(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("session_control_events_session_idx").on(table.sessionId, table.createdAt)],
 );
 
 /** Instance roles, separate from organization ownership. Only `operator` exists. */
@@ -895,6 +917,9 @@ export const agentSessions = pgTable(
     dotfiles: jsonbOf(SessionDotfiles),
     // Who provisioned the session — whose dotfiles apply. NULL for pre-column rows.
     ownerUserId: text(),
+    // Shared control (0060): both set while the owner lets others steer, both null otherwise.
+    sharedControlEnabledByUserId: text(),
+    sharedControlEnabledAt: timestamp({ mode: "date", withTimezone: true }),
     // Null until settle classifies it (0050); false = a dead end the dashboard hides.
     hasTranscript: boolean(),
     status: text().$type<SessionStatus>().notNull().default("starting"),

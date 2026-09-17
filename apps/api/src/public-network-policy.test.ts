@@ -14,6 +14,7 @@ import {
   ServicesRepo,
   SessionProcessesRepo,
   SessionsRepo,
+  SessionControlEventsRepo,
   UserDotfilesRepo,
   UserEvents,
   UserGitAccessRepo,
@@ -107,6 +108,8 @@ const startServer = async () => {
     Layer.mock(ServicesRepo, {}),
     Layer.mock(ServiceForwardsRepo, {}),
     Layer.mock(UserDotfilesRepo, {}),
+    // A rejected upgrade never attaches, so it never records a terminal attach.
+    Layer.mock(SessionControlEventsRepo, { record: () => Effect.void }),
   );
   const api = HttpApiBuilder.layer(HttpApi.make("mend").add(gitKeysGroup).prefix("/api")).pipe(
     Layer.provide(GitKeysGroupLive),
@@ -117,6 +120,7 @@ const startServer = async () => {
     Effect.map(makeConnectionRegistry, (registry) => ({
       register: registry.register,
       closeForUser: registry.closeForUser,
+      closeForSession: registry.closeForSession,
     })),
   );
   const websocketRoutes = WebSocketRoutes.pipe(

@@ -400,6 +400,10 @@ const CASES: ReadonlyArray<AccessCase> = [
   session("steer", "DELETE", "")("sessions.remove"),
   session("steer", "POST", "/label", { label: "renamed" })("sessions.label"),
   session("stop", "POST", "/stop")("sessions.stop"),
+  // Turning it off: the owner or an organization owner. Turning it on is the owner's alone
+  // (shared-control.test.ts); off leaves the world unshared for every other case.
+  session("stop", "PUT", "/shared-control", { enabled: false })("sessions.sharedControl"),
+  session("project-read", "GET", "/control-events")("sessions.controlEvents"),
   session("project-read", "POST", "/checkpoints", { trigger: "user-mark" })("sessions.checkpoint"),
   session("steer", "POST", "/launch", { argv: ["codex"] })("sessions.launch"),
   session("project-read", "GET", "/transcript")("sessions.transcript"),
