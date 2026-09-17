@@ -81,6 +81,9 @@ the capture store is the store there too, and `mend server setup` runs Garage be
 | `MEND_BLOB_STORE_PUBLIC_URL`         | unset                   | The bucket endpoint workspace Pods resolve; presigned URLs name it.                               |
 | `MEND_SESSION_STORE`                 | `captured`              | `colocated` opts back into the deprecated shared-claim store (warned at start).                   |
 | `MEND_TENANCY`                       | `single`                | `multi` is refused at start until the multi mode gate passes (docs/adr/0003).                     |
+| `MEND_SOURCE_POLICY`                 | `operator`              | `tenant` keeps adoption, references and dotfiles off private, local and metadata addresses.       |
+| `MEND_SOURCE_ALLOWED_HOSTS`          | unset                   | Names or CIDRs a `tenant` policy may still reach, such as a Git server on the private network.    |
+| `MEND_GIT_TRANSPORT_BIND_ORIGIN`     | `true`                  | `false` lets a workspace's git transport sign against any remote, not only its project's.         |
 | `MEND_CAPTURE_MULTIPART_THRESHOLD`   | 16 MiB                  | Packs at or above this go up as multipart uploads (`captureStore.multipart`).                     |
 | `MEND_CAPTURE_MULTIPART_PART_SIZE`   | 16 MiB                  | Part size for those uploads; S3 and R2 refuse parts under 5 MiB.                                  |
 | `MEND_CAPTURE_BYTE_QUOTA_FLOOR`      | 8 GiB                   | Floor of a session's byte quota, `max(floor, 4× footprint)` (`captureStore.byteQuotaFloorBytes`). |

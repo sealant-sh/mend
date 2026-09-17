@@ -84,6 +84,42 @@ export const repositoryCloneUrlIssue = (value: string): string | null => {
 };
 
 /** A network Git clone URL accepted for project adoption. */
+/** A remote's network location as git dials it: scheme, host without brackets, explicit port. */
+export interface GitRemoteLocation {
+  readonly scheme: "http" | "https" | "ssh" | "git";
+  readonly host: string;
+  readonly port: number | null;
+}
+
+/**
+ * Where an accepted clone URL points, or null for one `repositoryCloneUrlIssue` refuses. SCP-style
+ * `user@host:path` is ssh on its default port.
+ */
+export const gitRemoteLocation = (value: string): GitRemoteLocation | null => {
+  if (repositoryCloneUrlIssue(value) !== null) return null;
+  if (!value.includes("://")) {
+    const hostPart = value.slice(value.indexOf("@") + 1, value.lastIndexOf(":"));
+    const host = hostPart.startsWith("[") ? hostPart.slice(1, -1) : hostPart;
+    return { scheme: "ssh", host: host.toLowerCase(), port: null };
+  }
+  const url = new URL(value);
+  const scheme = url.protocol.slice(0, -1);
+  if (scheme !== "http" && scheme !== "https" && scheme !== "ssh" && scheme !== "git") return null;
+  const host = url.hostname.startsWith("[") ? url.hostname.slice(1, -1) : url.hostname;
+  return { scheme, host: host.toLowerCase(), port: url.port === "" ? null : Number(url.port) };
+};
+
+/**
+ * Whether a workspace's git transport target is the project's own remote: the same host, and the
+ * same ssh port (22 when unspecified).
+ */
+export const isSameGitRemote = (
+  origin: GitRemoteLocation,
+  target: { readonly host: string; readonly port: number | null },
+): boolean =>
+  origin.host === target.host.toLowerCase() &&
+  (origin.scheme === "ssh" ? (origin.port ?? 22) === (target.port ?? 22) : true);
+
 export const RepositoryCloneUrl = Schema.String.pipe(
   Schema.check(Schema.makeFilter((value: string) => repositoryCloneUrlIssue(value) ?? undefined)),
   Schema.brand("RepositoryCloneUrl"),

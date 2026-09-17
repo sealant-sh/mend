@@ -163,6 +163,7 @@ import { GhLive } from "./routes/github.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
 import { SessionSteeringLive } from "./session-steering.ts";
+import { SourcePolicyLive } from "./source-policy.ts";
 import { TenancyConfigLive } from "./tenancy.ts";
 
 /**
@@ -595,8 +596,9 @@ const MainLive = Layer.unwrap(
     // on it, so it must be launched explicitly rather than provided.
     return Layer.merge(parts, SessionChannelNetworkLayer).pipe(
       Layer.provide(SessionSteeringLive),
-      // Who may see what (docs/adr/0003), and whose GitHub identity calls to GitHub may use.
-      Layer.provide(Layer.merge(ProjectAccessLive, GithubIdentityLive)),
+      // Who may see what (docs/adr/0003), whose GitHub identity calls to GitHub may use, and which
+      // git remotes Mend may reach (MEND_SOURCE_POLICY).
+      Layer.provide(Layer.mergeAll(ProjectAccessLive, GithubIdentityLive, SourcePolicyLive)),
       // MEND_TENANCY: refuses to build (so nothing serves) when the mode may not run here.
       Layer.provide(TenancyConfigLive),
       // Shared by the API (enqueue on comment) and the workers (one instance).

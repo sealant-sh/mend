@@ -144,7 +144,18 @@ import type {
   WorkspaceCaptureReplanned,
   WorkspaceCaptureStatus,
 } from "@sealant/sdk";
-import { Deferred, Duration, Effect, Fiber, Layer, Schedule, Stream, type Scope } from "effect";
+import {
+  Cause,
+  Deferred,
+  Duration,
+  Effect,
+  Exit,
+  Fiber,
+  Layer,
+  Schedule,
+  Stream,
+  type Scope,
+} from "effect";
 
 import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store-memory.ts";
 import { memoryStoreRefs } from "./capture-world.ts";
@@ -5191,6 +5202,10 @@ const verifyDeferredFinalHarvest = async (pathKind: "stop" | "handoff" | "sweep"
   );
 };
 
+/** What a failed exit says, for assertions about refusal messages. */
+const failureText = (exit: Exit.Exit<unknown, unknown>) =>
+  Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "";
+
 describe("SessionEngine capture mode", () => {
   it(
     "relocates HOME into the configured capture root before launch, harvests the final flush, and restores it before pickup",
@@ -6743,6 +6758,46 @@ describe("SessionEngine capture mode", () => {
         sealantLayer: sealantLaunchLayer(created),
         hotWorkspacesLayer: pool.layer,
       },
+    );
+  });
+
+  it("a workspace's git transport reaches only the project's own remote with the owner's signer", async () => {
+    const created: Array<CreateOptions> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const api = servedSocketApis.get(session.id);
+          if (api === undefined) throw new Error("the session serves no socket api");
+          const origin = new URL(project.originUrl ?? "");
+          const elsewhere = yield* api
+            .gitTransport({
+              host: "github.com",
+              port: null,
+              command: "git-receive-pack 'acme/api.git'",
+            })
+            .pipe(Effect.exit);
+          expect(failureText(elsewhere)).toContain(`bound to ${origin.hostname}`);
+          const home = yield* api
+            .gitTransport({
+              host: origin.hostname,
+              port: null,
+              command: "git-upload-pack 'fixture.git'",
+            })
+            .pipe(Effect.exit);
+          expect(failureText(home)).not.toContain("bound to");
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
     );
   });
 

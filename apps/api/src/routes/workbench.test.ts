@@ -34,6 +34,7 @@ import { describe, expect, it } from "vitest";
 
 import { ProjectAccess, ProjectAccessLive } from "../access.ts";
 import { GithubIdentity } from "../github-identity.ts";
+import { SourcePolicy } from "../source-policy.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
 import { Gh } from "./github.ts";
@@ -209,6 +210,7 @@ const authLayer: Layer.Layer<Auth> = Layer.succeed(Auth, {
 
 type ProjectRouteServices =
   | AuditEventsRepo
+  | SourcePolicy
   | ProjectsRepo
   | AgentBridge
   | Store
@@ -245,6 +247,7 @@ type UnusedProjectRouteServices = Exclude<
 
 const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.mergeAll(
   Layer.mock(AuditEventsRepo, {}),
+  Layer.mock(SourcePolicy, { profile: "operator" }),
   Layer.mock(AgentBridge, { socketPath: () => "/unused/project-detail-agent-bridge.sock" }),
   Layer.mock(Store, {}),
   Layer.mock(UserGitAccessRepo, {}),

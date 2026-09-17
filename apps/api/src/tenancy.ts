@@ -19,7 +19,7 @@ export class TenancyRefused extends Schema.TaggedErrorClass<TenancyRefused>()("T
  */
 export const MULTI_MODE_MISSING: ReadonlyArray<string> = [
   "Mend-managed folders in place of host paths",
-  "egress and local-source policy",
+  "checked git source addresses pinned against DNS rebinding",
   "upload length binding",
 ];
 
@@ -36,19 +36,34 @@ export const exposedServiceHosts = (serviceHosts: string | undefined): ReadonlyA
     .map((address) => address.trim())
     .filter((address) => address !== "" && !LOOPBACK.has(address));
 
+/** The deployment facts the multi mode gate reads from configuration. */
+export interface TenancyPosture {
+  readonly serviceHosts?: string;
+  /** MEND_SOURCE_POLICY: `tenant` keeps Mend's own git off private and local networks. */
+  readonly sourcePolicy?: "operator" | "tenant";
+  /** MEND_GIT_TRANSPORT_BIND_ORIGIN: a workspace signs only against its project's remote. */
+  readonly transportBoundToOrigin?: boolean;
+}
+
 /** Why this combination must not start, or null when it may. */
 export const tenancyRefusal = (
   mode: TenancyMode,
   organizationCount: number,
-  serviceHosts?: string,
+  posture: TenancyPosture = {},
 ): string | null => {
   if (mode === "multi") {
-    const exposed = exposedServiceHosts(serviceHosts);
+    const exposed = exposedServiceHosts(posture.serviceHosts);
     const missing = [
       ...MULTI_MODE_MISSING,
       ...(exposed.length === 0
         ? []
         : [`raw service listeners on ${exposed.join(", ")} (unset MEND_SERVICE_HOSTS)`]),
+      ...(posture.sourcePolicy === "tenant"
+        ? []
+        : ["the tenant source policy (set MEND_SOURCE_POLICY=tenant)"]),
+      ...(posture.transportBoundToOrigin === false
+        ? ["git transport bound to each project's remote (unset MEND_GIT_TRANSPORT_BIND_ORIGIN)"]
+        : []),
     ];
     return [
       "MEND_TENANCY=multi is refused: the multi mode gate",
@@ -80,8 +95,19 @@ export const TenancyConfigLive: Layer.Layer<
     const serviceHosts = yield* Config.string("MEND_SERVICE_HOSTS").pipe(
       Config.withDefault("127.0.0.1"),
     );
+    const sourcePolicy = yield* Config.schema(
+      Schema.Literals(["operator", "tenant"]),
+      "MEND_SOURCE_POLICY",
+    ).pipe(Config.withDefault("operator" as const));
+    const transportBoundToOrigin = yield* Config.boolean("MEND_GIT_TRANSPORT_BIND_ORIGIN").pipe(
+      Config.withDefault(true),
+    );
     const organizations = yield* OrganizationsRepo;
-    const refusal = tenancyRefusal(mode, yield* organizations.count(), serviceHosts);
+    const refusal = tenancyRefusal(mode, yield* organizations.count(), {
+      serviceHosts,
+      sourcePolicy,
+      transportBoundToOrigin,
+    });
     if (refusal !== null) return yield* new TenancyRefused({ message: refusal });
     yield* Effect.logInfo("tenancy").pipe(Effect.annotateLogs({ mode }));
     return { mode };

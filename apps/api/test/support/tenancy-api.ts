@@ -60,6 +60,7 @@ import { ServiceTunnelRoutes } from "../../src/routes/service-tunnel.ts";
 import { TtyRoutes } from "../../src/routes/tty.ts";
 import { HostEnvironment } from "../../src/services/host-environment.ts";
 import { SessionSteeringLive } from "../../src/session-steering.ts";
+import { makeSourcePolicy, SourcePolicy } from "../../src/source-policy.ts";
 import { TenancyConfig } from "../../src/tenancy.ts";
 import { createTenancyWorld, type HarnessUser, type TenancyWorld } from "./tenancy-harness.ts";
 import { recording } from "./tenancy-harness.ts";
@@ -187,6 +188,15 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
       }),
       Layer.succeed(StoreConfig, { root: world.root }),
       Layer.succeed(TenancyConfig, { mode: "single" }),
+      // Every remote in the harness is public; the policy's own tests cover the refusals.
+      Layer.succeed(
+        SourcePolicy,
+        makeSourcePolicy({
+          profile: "operator",
+          allowedHosts: [],
+          resolve: async () => ["140.82.112.3"],
+        }),
+      ),
     ),
   );
   const dependencies = Layer.mergeAll(world.authLayer, world.accessLayers, effects);
