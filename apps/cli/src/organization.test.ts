@@ -8,7 +8,13 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { renderMembers, renderOrganizations, scanFolder, uploadBatches } from "./organization.ts";
+import {
+  renderGate,
+  renderMembers,
+  renderOrganizations,
+  scanFolder,
+  uploadBatches,
+} from "./organization.ts";
 
 interface Recorded {
   readonly method: string;
@@ -233,6 +239,23 @@ describe("the commands against a server", () => {
 });
 
 describe("operator", () => {
+  it("prints the gate item by item and says what multi still needs", () => {
+    const lines = renderGate([
+      { id: "source-policy", ok: true, detail: "tenant source policy", fix: null },
+      {
+        id: "daemon-declares-sizes",
+        ok: false,
+        detail: "sealantd sizes only multipart uploads",
+        fix: "a newer sealantd",
+      },
+    ]);
+    expect(lines).toEqual([
+      "✓ source-policy          tenant source policy",
+      "· daemon-declares-sizes  sealantd sizes only multipart uploads · a newer sealantd",
+      "1 of 2 items open; MEND_TENANCY=multi refuses to start",
+    ]);
+  });
+
   it("lists organizations and says when one has no owner", () => {
     expect(
       renderOrganizations([

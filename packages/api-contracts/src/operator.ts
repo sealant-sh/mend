@@ -37,7 +37,22 @@ export class AccountEmailRequest extends Schema.Class<AccountEmailRequest>("Acco
   email: Schema.String,
 }) {}
 
+/** One item of the multi mode gate as observed on this instance (docs/adr/0003). */
+export class MultiModeGateItem extends Schema.Class<MultiModeGateItem>("MultiModeGateItem")({
+  id: Schema.String,
+  ok: Schema.Boolean,
+  detail: Schema.String,
+  fix: Schema.NullOr(Schema.String),
+}) {}
+
 export const operatorGroup = HttpApiGroup.make("operator")
+  .add(
+    // Every gate item with what was observed and what would satisfy it.
+    HttpApiEndpoint.get("gate", "/operator/gate", {
+      success: Schema.Array(MultiModeGateItem),
+      error: NotFound,
+    }),
+  )
   .add(
     HttpApiEndpoint.get("organizations", "/operator/organizations", {
       success: Schema.Array(OrganizationSummary),

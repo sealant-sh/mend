@@ -657,6 +657,16 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     see: ["operator org invite-owner", "operator grant-owner"],
   },
   {
+    name: "operator gate",
+    section: "this machine",
+    summary: "what MEND_TENANCY=multi still needs on this instance",
+    synopsis: [],
+    description: [
+      "Operator only. One line per item of the multi mode gate: what this instance shows, and what would satisfy an open item. Multi tenancy refuses to start while any item is open.",
+    ],
+    see: ["operator org list"],
+  },
+  {
     name: "operator org create",
     section: "this machine",
     summary: "create an organization (multi tenancy only)",

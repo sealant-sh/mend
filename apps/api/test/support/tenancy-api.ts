@@ -187,7 +187,7 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
         sessionStore: "captured",
       }),
       Layer.succeed(StoreConfig, { root: world.root }),
-      Layer.succeed(TenancyConfig, { mode: "single" }),
+      Layer.succeed(TenancyConfig, { mode: "single", gate: [] }),
       // Every remote in the harness is public; the policy's own tests cover the refusals.
       Layer.succeed(
         SourcePolicy,

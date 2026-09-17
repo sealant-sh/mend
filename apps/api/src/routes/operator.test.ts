@@ -85,7 +85,7 @@ const dependencies = Layer.mergeAll(
   }),
   Layer.mock(UsersRepo, { byEmail: (email) => Effect.succeed(accounts.get(email) ?? null) }),
   Layer.mock(AuditEventsRepo, { record: (event) => Effect.sync(() => void audited.push(event)) }),
-  Layer.succeed(TenancyConfig, { mode: "single" }),
+  Layer.succeed(TenancyConfig, { mode: "single", gate: [] }),
 );
 
 // Only alice operates: everyone else is refused the way ProjectAccess refuses them.

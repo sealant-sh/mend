@@ -214,7 +214,7 @@ const dependencies = Layer.mergeAll(
           : new UserFacts({ id, name: id === "bob" ? "Bob" : id, email: `${id}@example.invalid` }),
       ),
   }),
-  Layer.succeed(TenancyConfig, { mode: "single" }),
+  Layer.succeed(TenancyConfig, { mode: "single", gate: [] }),
   Layer.succeed(DeploymentConfig, {
     mode: "local",
     sessionEndpoint: undefined,

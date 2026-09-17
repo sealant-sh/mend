@@ -280,6 +280,30 @@ interface OrganizationSummaryDto {
   readonly ownerCount: number;
 }
 
+interface GateItemDto {
+  readonly id: string;
+  readonly ok: boolean;
+  readonly detail: string;
+  readonly fix: string | null;
+}
+
+/** The multi mode gate as the terminal prints it: a verdict-free line per item, then a summary. */
+export const renderGate = (items: ReadonlyArray<GateItemDto>): ReadonlyArray<string> => {
+  const width = Math.max(...items.map((item) => item.id.length));
+  const open = items.filter((item) => !item.ok).length;
+  return [
+    ...items.map(
+      (item) =>
+        `${item.ok ? green("✓") : "·"} ${item.id.padEnd(width)}  ${item.detail}${
+          item.fix === null ? "" : dim(` · ${item.fix}`)
+        }`,
+    ),
+    open === 0
+      ? "every item is in place; MEND_TENANCY=multi may start"
+      : `${open} of ${items.length} items open; MEND_TENANCY=multi refuses to start`,
+  ];
+};
+
 interface OneTimeLinkDto {
   readonly path: string;
   readonly expiresAt: string;
@@ -383,6 +407,11 @@ export const operatorCommand = async (
       default:
         return fail(`unknown operator org command "${second}" · mend help operator org list`);
     }
+  }
+  if (first === "gate") {
+    const items = await api<ReadonlyArray<GateItemDto>>("GET", "/operator/gate");
+    for (const line of renderGate(items)) say(line);
+    return;
   }
   if (first === "grant-owner") {
     if (third === undefined) return fail("usage: mend operator grant-owner <org> <email>");

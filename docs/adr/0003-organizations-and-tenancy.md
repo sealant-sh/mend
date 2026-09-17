@@ -40,8 +40,11 @@ organization count at one and hides organization chrome.
 
 ### Multi mode gate
 
-Starting with `MEND_TENANCY=multi` is refused until isolation is complete. Startup names every item
-still missing. Required:
+Starting with `MEND_TENANCY=multi` is refused until isolation is complete. The gate is computed at
+start (`apps/api/src/tenancy.ts`): items this build carries answer from the code, configuration
+items from the environment, and items waiting on work elsewhere (the platform) say so. Startup names
+each open item with its fix; `/health` reports whether the gate passes and the open item ids, and
+`GET /operator/gate` (`mend operator gate`) gives the operator the details. Required:
 
 1. Authorization across organizations, proven by a route-level harness with two organizations and
    two users per organization, asserting both the refusal and that the refused call had **zero
