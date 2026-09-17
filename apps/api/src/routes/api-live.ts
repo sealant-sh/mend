@@ -49,6 +49,7 @@ import { HttpServerRequest } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
+import { ExposureConfig } from "../exposure.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { DevicePairingLive } from "./devices.ts";
 import { FoldersGroupLive } from "./folders.ts";
@@ -105,6 +106,7 @@ export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers
       const deployment = yield* DeploymentConfig;
       const store = yield* StoreConfig;
       const tenancy = yield* TenancyConfig;
+      const exposure = yield* ExposureConfig;
       return new HealthStatus({
         status: "ok",
         version,
@@ -120,6 +122,14 @@ export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers
           failing: tenancy.gate.filter((outcome) => !outcome.ok).map((outcome) => outcome.id),
         },
         upgradeTickets: true,
+        exposure: {
+          declared: exposure.exposure,
+          // Counts, not ids: this answer needs no sign-in (see the contract).
+          open: exposure.gate.filter((outcome) => outcome.established === "open").length,
+          unobservable: exposure.gate.filter(
+            (outcome) => outcome.established === "open" && !outcome.blocksStart,
+          ).length,
+        },
       });
     }),
   ),

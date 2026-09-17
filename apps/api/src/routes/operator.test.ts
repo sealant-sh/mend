@@ -15,6 +15,7 @@ import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { ProjectAccess } from "../access.ts";
+import { ExposureConfig } from "../exposure.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
 import { OperatorGroupLive } from "./operator.ts";
@@ -86,6 +87,25 @@ const dependencies = Layer.mergeAll(
   Layer.mock(UsersRepo, { byEmail: (email) => Effect.succeed(accounts.get(email) ?? null) }),
   Layer.mock(AuditEventsRepo, { record: (event) => Effect.sync(() => void audited.push(event)) }),
   Layer.succeed(TenancyConfig, { mode: "single", gate: [] }),
+  Layer.succeed(ExposureConfig, {
+    exposure: "private",
+    gate: [
+      {
+        id: "https-origin",
+        established: "open",
+        detail: "plain http origin(s): http://10.0.0.216:3105",
+        fix: "set APP_URL and every MEND_ALLOWED_ORIGINS entry to https",
+        blocksStart: true,
+      },
+      {
+        id: "reassessment",
+        established: "open",
+        detail: "no independent reassessment of dev is recorded",
+        fix: "after an independent security reassessment of this exact release, set MEND_EXPOSURE_REASSESSED=dev",
+        blocksStart: false,
+      },
+    ],
+  }),
 );
 
 // Only alice operates: everyone else is refused the way ProjectAccess refuses them.
@@ -194,5 +214,35 @@ describe("operator recovery (docs/adr/0003)", () => {
     expect(audited.map((event) => [event.organizationId, event.action])).toEqual([
       [ACME, "recovery.password_reset_issued"],
     ]);
+  });
+});
+
+describe("the exposure report (docs/adr/0004)", () => {
+  it("is the operator's alone", async () => {
+    expect((await call("sam", "GET", "/operator/exposure")).status).toBe(404);
+  });
+
+  it("states what was declared and how each item was established", async () => {
+    const response = await call("alice", "GET", "/operator/exposure");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({
+      declared: "private",
+      items: [
+        {
+          id: "https-origin",
+          established: "open",
+          detail: "plain http origin(s): http://10.0.0.216:3105",
+          fix: "set APP_URL and every MEND_ALLOWED_ORIGINS entry to https",
+          blocksStart: true,
+        },
+        {
+          id: "reassessment",
+          established: "open",
+          detail: "no independent reassessment of dev is recorded",
+          fix: "after an independent security reassessment of this exact release, set MEND_EXPOSURE_REASSESSED=dev",
+          blocksStart: false,
+        },
+      ],
+    });
   });
 });

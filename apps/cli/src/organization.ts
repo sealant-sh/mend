@@ -304,6 +304,59 @@ export const renderGate = (items: ReadonlyArray<GateItemDto>): ReadonlyArray<str
   ];
 };
 
+interface ExposureItemDto {
+  readonly id: string;
+  readonly established: "observed" | "carried" | "declared" | "open";
+  readonly detail: string;
+  readonly fix: string | null;
+  readonly blocksStart: boolean;
+}
+
+interface ExposureReportDto {
+  readonly declared: "loopback" | "private" | "public";
+  readonly items: ReadonlyArray<ExposureItemDto>;
+}
+
+const EXPOSURE_WORDS: Readonly<Record<ExposureReportDto["declared"], string>> = {
+  loopback: "reached from this machine only",
+  private: "reached over a network you control admission to",
+  public: "reachable from the Internet",
+};
+
+/**
+ * The public exposure gate as the terminal prints it (docs/adr/0004): what was declared, a line
+ * per item with how it was established, and a count. It reports; it does not say the instance is
+ * fit to expose, because nothing here can know that.
+ */
+export const renderExposure = (report: ExposureReportDto): ReadonlyArray<string> => {
+  const width = Math.max(...report.items.map((item) => item.id.length));
+  // No colour of success here: an observed item is a fact about one setting, not a verdict.
+  const marks: Readonly<Record<ExposureItemDto["established"], string>> = {
+    observed: "●",
+    carried: "◐",
+    declared: "○",
+    open: "·",
+  };
+  const mark = (item: ExposureItemDto) => marks[item.established];
+  const open = report.items.filter((item) => item.established === "open");
+  const blocking = open.filter((item) => item.blocksStart).length;
+  const unobservable = open.length - blocking;
+  return [
+    `exposure · declared ${report.declared} · ${EXPOSURE_WORDS[report.declared]}`,
+    ...report.items.map(
+      (item) =>
+        `${mark(item)} ${item.id.padEnd(width)}  ${item.established.padEnd(8)}  ${item.detail}${
+          item.fix === null ? "" : dim(` · ${item.fix}`)
+        }`,
+    ),
+    open.length === 0
+      ? "nothing open · every item was observed here, is carried by this build, or was declared by the operator"
+      : `${open.length} of ${report.items.length} items open · ${blocking} this build can observe${
+          blocking === 0 ? "" : "; MEND_EXPOSURE=public refuses to start"
+        } · ${unobservable} it cannot`,
+  ];
+};
+
 interface OneTimeLinkDto {
   readonly path: string;
   readonly expiresAt: string;
@@ -407,6 +460,11 @@ export const operatorCommand = async (
       default:
         return fail(`unknown operator org command "${second}" · mend help operator org list`);
     }
+  }
+  if (first === "exposure") {
+    const report = await api<ExposureReportDto>("GET", "/operator/exposure");
+    for (const line of renderExposure(report)) say(line);
+    return;
   }
   if (first === "gate") {
     const items = await api<ReadonlyArray<GateItemDto>>("GET", "/operator/gate");

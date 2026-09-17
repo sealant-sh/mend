@@ -65,6 +65,7 @@ import {
   type ConnectionKind,
 } from "../../src/connections.ts";
 import { EventBus, makeEventBus } from "../../src/events-bus.ts";
+import { ExposureConfig } from "../../src/exposure.ts";
 import { GithubIdentityLive } from "../../src/github-identity.ts";
 import { MemberRemovalLive } from "../../src/member-removal.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
@@ -125,6 +126,8 @@ export const createTenancyApi = async (
   options: {
     readonly urlBearers?: "accept" | "refuse";
     readonly clock?: () => number;
+    /** `MEND_EXPOSURE` and its gate as this world reports them; loopback and empty unless stated. */
+    readonly exposure?: ExposureConfig["Service"];
     /** Credentials that no longer stand (`session:<account>`): add one to sign that account out. */
     readonly revokedCredentials?: ReadonlySet<string>;
   } = {},
@@ -225,6 +228,7 @@ export const createTenancyApi = async (
       }),
       Layer.succeed(StoreConfig, { root: world.root }),
       Layer.succeed(TenancyConfig, { mode: "single", gate: [] }),
+      Layer.succeed(ExposureConfig, options.exposure ?? { exposure: "loopback", gate: [] }),
       // Every remote in the harness is public; the policy's own tests cover the refusals.
       Layer.succeed(
         SourcePolicy,

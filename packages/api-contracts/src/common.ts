@@ -106,6 +106,21 @@ export class HealthStatus extends Schema.Class<HealthStatus>("HealthStatus")({
    * true means something between the client and Mend refused the mint, and the bearer stays put.
    */
   upgradeTickets: Schema.optional(Schema.Boolean),
+  /**
+   * `MEND_EXPOSURE` as declared, and the public exposure gate as evaluated at start
+   * (docs/adr/0004-access-without-a-private-network.md), as two counts: the items still open,
+   * and those of them that are open because no build can observe them. `/health` needs no
+   * sign-in, so it says how many and never which: on an instance the Internet can reach, the ids
+   * would be a list of what to try. They stay with the operator (`GET /operator/exposure`).
+   * Optional on the wire so a client reads an older server.
+   */
+  exposure: Schema.optional(
+    Schema.Struct({
+      declared: Schema.Literals(["loopback", "private", "public"]),
+      open: Schema.Int,
+      unobservable: Schema.Int,
+    }),
+  ),
 }) {}
 
 export class ProcessLogChunk extends Schema.Class<ProcessLogChunk>("ProcessLogChunk")({

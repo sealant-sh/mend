@@ -1,0 +1,74 @@
+# Opt-in overlay: a TLS edge in front of a packaged Mend install
+# (docs/adr/0004-access-without-a-private-network.md, "The access model").
+#
+# For a Compose install you run yourself, from compose.v2.yaml and your own .env:
+#
+#   docker compose -f compose.v2.yaml -f compose.edge.yaml up -d
+#
+# In .env, beside what compose.v2.yaml needs:
+#   MEND_EDGE_HOST=mend.example.com        the name the certificate is for; its DNS points here
+#   APP_URL=https://mend.example.com       exactly https://<MEND_EDGE_HOST>
+#   MEND_EXPOSURE=public                   or private, when admission to this host is yours to control
+#
+# `mend server setup` installs do not know this overlay yet. Their lifecycle commands
+# (`mend server start`, `upgrade`) run compose.yaml alone, which recreates `mend` without the
+# edge's network and settings, and the edge then answers 502 until the overlay is applied again.
+# server.env is checked against the server config, so the overlay's variables do not go in it.
+# This file and the Caddyfile are in the repository (deploy/docker), not among the release assets.
+#
+# The edge publishes 80 and 443. Mend's own port stays on loopback (MEND_BIND_HOST), so the only
+# way in from outside is through TLS. Ports 80/443 on a public address mean a public certificate,
+# and the hostname appears in certificate transparency logs.
+#
+# This does not make an instance fit to expose. `mend operator exposure` reports what Mend observes
+# and what is still open; the last items are yours to verify.
+services:
+  edge:
+    image: caddy:2.10-alpine
+    restart: unless-stopped
+    depends_on:
+      mend:
+        condition: service_started
+    ports:
+      - "${MEND_EDGE_BIND_HOST:-0.0.0.0}:80:80"
+      - "${MEND_EDGE_BIND_HOST:-0.0.0.0}:443:443"
+      - "${MEND_EDGE_BIND_HOST:-0.0.0.0}:443:443/udp"
+    environment:
+      MEND_EDGE_HOST:
+        "${MEND_EDGE_HOST:?set MEND_EDGE_HOST in .env, the name the certificate is for}"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - mend-edge-data:/data
+      - mend-edge-config:/config
+    # The edge talks to Mend and to nothing else: it is not on the network that holds Postgres,
+    # the bucket and the workspaces.
+    networks: [edge]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]
+    security_opt: ["no-new-privileges:true"]
+
+  mend:
+    networks: [default, edge]
+    environment:
+      # The one hop whose X-Forwarded-For entries Mend believes: the edge's network, fixed below.
+      # Both follow MEND_EDGE_SUBNET, so moving the subnet cannot leave the old range trusted.
+      MEND_TRUSTED_PROXIES: ${MEND_TRUSTED_PROXIES:-${MEND_EDGE_SUBNET:-192.168.250.0/28}}
+      MEND_EXPOSURE: ${MEND_EXPOSURE:-private}
+      # Executors reach the session channel over plain http on this Compose network, which never
+      # leaves the host. That is this overlay's statement, reported by Mend as declared.
+      MEND_EXECUTOR_NETWORK: ${MEND_EXECUTOR_NETWORK:-private}
+      MEND_URL_BEARERS: ${MEND_URL_BEARERS:-accept}
+      MEND_EXPOSURE_REASSESSED: ${MEND_EXPOSURE_REASSESSED:-}
+      MEND_EXPOSURE_DECLARED: ${MEND_EXPOSURE_DECLARED:-}
+
+networks:
+  edge:
+    ipam:
+      config:
+        # Sixteen addresses for one edge and one Mend. Set MEND_EDGE_SUBNET when this range is
+        # already routed where the host lives (no private range is free everywhere).
+        - subnet: ${MEND_EDGE_SUBNET:-192.168.250.0/28}
+
+volumes:
+  mend-edge-data:
+  mend-edge-config:

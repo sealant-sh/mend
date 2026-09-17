@@ -104,10 +104,11 @@ states that from its own configuration and never by default for a public instanc
 
 ### Exposure is declared, and reported as observed
 
-`MEND_EXPOSURE=loopback|private|public`, default `loopback`.
+`MEND_EXPOSURE=loopback|private|public`, default `private`.
 
 - `loopback`: reached from this machine only.
-- `private`: reached over a network the operator controls admission to (a tailnet, a LAN, a VPN).
+- `private` (the default): reached over a network the operator controls admission to (a tailnet, a
+  LAN, a VPN).
 - `public`: reachable from the Internet.
 
 The declaration is the operator's statement of intent. Mend cannot observe who can reach it: a
@@ -128,24 +129,31 @@ tailnet is not a failed check. It is not a check.
 
 Starting with `MEND_EXPOSURE=public` is refused until the items this build can observe are closed,
 in the style of the multi mode gate (`apps/api/src/exposure.ts`). Start-up names each open item with
-its fix; `/health` reports whether the gate passes and the open ids; `GET /operator/exposure`
-(`mend operator exposure`) gives the operator the detail. Each item carries how it was established:
-`observed` (this process read it), `declared` (the operator stated it and this process cannot check
-it), or `open`.
+its fix; `/health` reports the declaration and how many items are open, never which (it needs no
+sign-in, and on a public instance the ids would be a list of what to try); `GET /operator/exposure`
+(`mend operator exposure`) gives the operator the ids and the detail. Each item carries how it was
+established: `observed` (this process read it, in effect, on this instance), `carried` (this build
+contains it and this process cannot see it in effect; the item says what would observe it),
+`declared` (the operator stated it and this process cannot check it), or `open`.
 
-Observed by this build, and required to start `public`:
+Required to start `public`, and `observed` unless marked:
 
 1. **https-origin**: `APP_URL` and every alternate origin are `https:`.
 2. **secure-cookies**: session cookies are `Secure`, `HttpOnly`, `SameSite=Lax`.
 3. **trusted-proxies**: `MEND_TRUSTED_PROXIES` is set, and does not trust every address.
-4. **enrollment-closed**: registration is by invitation (carried by the build since #265).
+4. **enrollment-closed** (`carried`): registration is by invitation (in the build since #265). It is
+   behaviour, not configuration, so the API reports that the build carries it and what would observe
+   it: a sign-up without an invitation, from outside, answering a refusal.
 5. **tenancy-gate**: every multi mode gate item this build observes is closed, in either tenancy
    mode. An Internet-facing single-organization install needs the same source policy, upload binding
    and loopback service ports as a multi-tenant one.
 6. **budgets**: every budget below is set; none is `0`.
 7. **no-bearers-in-urls**: `MEND_URL_BEARERS=refuse` (the default once every first-party client
    sends tickets; see "Upgrade tickets").
-8. **browser-headers**: the header policy is on (it has no off switch outside `loopback`).
+8. **browser-headers** (`carried`): the header policy has no off switch, and it is set by the web
+   tier, which the API cannot see: a skewed web image, or a client reaching the API's port directly,
+   would make an "observed" here untrue. What would observe it: `mend doctor` against the public
+   origin, reading the headers a browser receives.
 9. **error-redaction**: public error detail is off (`MEND_ERROR_DETAIL` unset).
 10. **executor-channel-transport**: the session channel's advertised URL is `https:`, or the
     operator declared the executor network private (`MEND_EXECUTOR_NETWORK=private`), which is
@@ -156,13 +164,20 @@ Not observable by this build. Reported, never inferred, and they do not block st
 11. **core-private**: Core, its registry and the database are not reachable from the Internet. What
     would verify it: a connection attempt to each from outside the deployment's network.
 12. **edge-tls**: the certificate chains to a public root, renews, and the edge redirects port 80.
-    What would verify it: `mend doctor --from-outside` run against the origin from another network.
+    What would verify it: `mend doctor` run against the origin from another network.
 13. **reassessment**: an independent security reassessment of this exact release. The operator
     records one with `MEND_EXPOSURE_REASSESSED=<version>`. The item reads `declared` only when that
-    value equals the running version, and `open` otherwise, so an upgrade reopens it.
+    value equals the running version, and `open` otherwise, so an upgrade reopens it. A build with
+    no version of its own (`dev`) has nothing a reassessment could name, and stays `open`.
 
-The gate passing means every item is closed or declared. It is a report of what was observed and
-stated. It is not a statement that the instance is safe, and the product never words it as one.
+Items 11 and 12 stay `open` until the operator, having verified them from outside, names them in
+`MEND_EXPOSURE_DECLARED` (the chart's `exposure.declared`); they then read `declared`, with the
+words "this process cannot check it". Nothing else can be declared: an item this process can read is
+read, never taken on someone's word, and naming one there refuses to start.
+
+"Nothing open" means every item was observed, is carried by the build, or was declared by the
+operator. It is a report of what was observed and stated. It is not a statement that the instance is
+safe, and the product never words it as one: no check mark, no colour of success.
 
 Rejected: refusing `public` until item 13 is recorded (a build cannot tell a real reassessment from
 a typed version string, so it would be theatre that also blocks the honest operator); and treating
@@ -393,6 +408,36 @@ Choices a reviewer may overturn without touching the rest. Each names what was t
     the person who has to fix their base ref), and editing the eighty-odd call sites one by one (the
     next one written would be missed).
 
+15. **The packaged install's edge is a Compose overlay, not a `mend server setup` flag, for now.**
+    The bundle is a versioned release contract with its own packaged acceptance run, and a release
+    was in flight while this was written. Taken: `deploy/docker/compose.edge.yaml` and a
+    `Caddyfile`, opt-in, validated with the real Caddy binary and rendered in CI. The edge publishes
+    80 and 443, Mend's own port stays on loopback, the edge shares a network with Mend alone, and
+    Mend trusts exactly that network as a proxy hop. A `--edge` flag that writes the same overlay
+    belongs with the next bundle contract revision.
+16. **A `public` instance needs an operator before it starts.** `operator-present` is part of the
+    tenancy gate, and the exposure gate includes every tenancy item. Until the first account exists,
+    registration is open to whoever arrives first; on the Internet that is not the owner. Create the
+    first account over a private path, then declare `public`.
+
+17. **`carried` is its own word.** An independent review found two items reporting `observed` from a
+    hardcoded `true`. Taken: a fourth status for what the build contains and the process cannot see
+    in effect, with what would observe it. Rejected: dropping the items (the operator should still
+    see them) and leaving them `observed` (it is not what happened).
+18. **The unobservable items can be closed only by the operator's statement.** Without one the gate
+    could never read "nothing open", which made that branch dead code and the report less useful to
+    an operator who had done the outside checks. Taken: `MEND_EXPOSURE_DECLARED`, limited to
+    `core-private` and `edge-tls`. It never affects whether `public` starts.
+19. **`/health` counts open items and does not name them.** It is unauthenticated. The ids are one
+    sign-in away, for the operator.
+20. **The default is `private`, not `loopback`.** Owner's call. An unset variable is far more often
+    a tailnet, LAN or cluster install than one reached from its own machine (the packaged bundle
+    cannot set the variable at all yet, and a tailnet install made with `--bind 0.0.0.0` would have
+    reported `declared loopback`). The two modes differ only in the report: neither refuses to
+    start. So the doctor's line keys its "serve it over https" and its gate count on the origin
+    being reachable beyond the machine (a non-loopback host), not on the declaration alone, and a
+    laptop install on `http://localhost` stays quiet.
+
 ## Open questions
 
 Decisions that are the owner's. Work proceeds on the default stated with each.
@@ -406,5 +451,8 @@ Decisions that are the owner's. Work proceeds on the default stated with each.
    alternative.
 4. **The release that flips `MEND_URL_BEARERS` to `refuse` by default.** Default: the release after
    the mobile build that sends tickets is on the owner's phone.
-5. **A private object store behind a private CA.** sealantd takes a second CA bundle for object
+5. **`/health` still names the open multi mode gate items** (`tenancyGate.failing`, from #263–#280,
+   read by released clients). The same reasoning as decision 19 applies to it on a public instance.
+   Default: left as released; changing it is a contract change for `mend doctor`.
+6. **A private object store behind a private CA.** sealantd takes a second CA bundle for object
    URLs; whether Mend's chart should carry one is undecided. Default: not in this stack.

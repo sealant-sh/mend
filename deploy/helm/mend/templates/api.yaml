@@ -87,6 +87,31 @@ spec:
             # who can reach this port; these CIDRs name that same set.
             - { name: MEND_TRUSTED_PROXIES, value: {{ join "," .Values.api.trustedProxyCidrs | quote }} }
             {{- end }}
+            # How this instance is reached, as the operator declares it (docs/adr/0004).
+            {{- if not (has .Values.exposure.mode (list "loopback" "private" "public")) }}
+            {{ fail (printf "exposure.mode must be loopback, private or public (got %q)" .Values.exposure.mode) }}
+            {{- end }}
+            - { name: MEND_EXPOSURE, value: {{ .Values.exposure.mode | quote }} }
+            {{- with .Values.exposure.executorNetwork }}
+            {{- if ne . "private" }}
+            {{ fail (printf "exposure.executorNetwork must be empty or \"private\" (got %q)" .) }}
+            {{- end }}
+            - { name: MEND_EXECUTOR_NETWORK, value: {{ . | quote }} }
+            {{- end }}
+            {{- range .Values.exposure.declared }}
+            {{- if not (has . (list "core-private" "edge-tls")) }}
+            {{ fail (printf "exposure.declared takes only core-private and edge-tls (got %q)" .) }}
+            {{- end }}
+            {{- end }}
+            {{- with .Values.exposure.declared }}
+            - { name: MEND_EXPOSURE_DECLARED, value: {{ join "," . | quote }} }
+            {{- end }}
+            {{- if .Values.exposure.refuseUrlBearers }}
+            - { name: MEND_URL_BEARERS, value: refuse }
+            {{- end }}
+            {{- with .Values.exposure.reassessedVersion }}
+            - { name: MEND_EXPOSURE_REASSESSED, value: {{ . | quote }} }
+            {{- end }}
             # The machine git key (`mend keys init`) must survive Pod replacement: it lives on
             # the store claim, mounted at its own path so it never sits inside the store tree.
             - { name: MEND_KEYS_ROOT, value: /var/lib/mend/keys }

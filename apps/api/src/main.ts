@@ -158,6 +158,7 @@ import { Budgets, BudgetsLive } from "./budgets.ts";
 import { ConnectionRegistryLive } from "./connections.ts";
 import { ErrorDetail, ErrorDetailLive } from "./error-boundary.ts";
 import { EventBusLive } from "./events-bus.ts";
+import { ExposureConfigLive } from "./exposure.ts";
 import { GithubIdentityLive } from "./github-identity.ts";
 import { apiMiddleware } from "./http-middleware.ts";
 import { MemberRemovalLive } from "./member-removal.ts";
@@ -621,8 +622,14 @@ const MainLive = Layer.unwrap(
       Layer.provide(Layer.merge(ProjectAccessLive, GithubIdentityLive)),
       // MEND_TENANCY: refuses to build (so nothing serves) when the mode may not run here.
       // Budgets ride the same step: `pipe` takes at most twenty.
+      // MEND_EXPOSURE: refuses to build a `public` instance while an observable gate item is open.
+      // It reads the settings beneath it, so they are provided to it and to everything above.
       Layer.provide(
-        Layer.mergeAll(TenancyConfigLive, BudgetsLive, UrlBearersLive, ErrorDetailLive),
+        ExposureConfigLive.pipe(
+          Layer.provideMerge(
+            Layer.mergeAll(TenancyConfigLive, BudgetsLive, UrlBearersLive, ErrorDetailLive),
+          ),
+        ),
       ),
       // Shared by the API (enqueue on comment) and the workers (one instance).
       Layer.provide(JobRunner.pgBossLayer),

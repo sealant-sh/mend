@@ -7,6 +7,7 @@ import {
   createAuthHandler,
   INVITATION_HEADER,
   RegistrationPolicy,
+  sessionCookiePolicy,
   type RegistrationDecision,
 } from "./auth.ts";
 
@@ -34,6 +35,59 @@ const signIn = (origin: string, host = "spoofed.invalid") =>
       body: JSON.stringify({ email: "nobody@example.com", password: "not-a-real-password" }),
     }),
   );
+
+describe("the session cookie", () => {
+  const signedInCookie = async (appUrl: string) => {
+    const primary = decodeOrigin(appUrl);
+    const isolated = createAuthHandler({
+      network: makePublicNetwork(primary, []),
+      secret: "test-secret-with-at-least-thirty-two-bytes",
+    });
+    const credentials = {
+      email: "cookie-test@example.invalid",
+      password: "disposable-cookie-password",
+    };
+    const post = (route: string, body: object) =>
+      isolated(
+        new Request(`${appUrl}/api/auth/${route}`, {
+          method: "POST",
+          headers: { "content-type": "application/json", origin: appUrl },
+          body: JSON.stringify(body),
+        }),
+      );
+    await post("sign-up/email", { ...credentials, name: "Cookie test" });
+    const signedIn = await post("sign-in/email", credentials);
+    expect(signedIn.status).toBe(200);
+    return (signedIn.headers.get("set-cookie") ?? "").toLowerCase();
+  };
+
+  it("is Secure, HttpOnly and SameSite=Lax over an https origin", async () => {
+    const cookie = await signedInCookie("https://mend.example.com");
+    expect(cookie).toContain("__secure-");
+    expect(cookie).toContain("session_token=");
+    expect(cookie).toContain("secure");
+    expect(cookie).toContain("httponly");
+    expect(cookie).toContain("samesite=lax");
+  });
+
+  it("is HttpOnly and SameSite=Lax over http, and does not claim Secure", async () => {
+    const cookie = await signedInCookie("http://localhost:3105");
+    expect(cookie).toContain("session_token=");
+    expect(cookie).toContain("httponly");
+    expect(cookie).toContain("samesite=lax");
+    expect(cookie).not.toContain("__secure-");
+    expect(cookie).not.toMatch(/;\s*secure/);
+  });
+
+  it("states its policy from the primary origin alone", () => {
+    expect(sessionCookiePolicy({ appUrl: "https://mend.example.com" })).toEqual({
+      secure: true,
+      httpOnly: true,
+      sameSite: "lax",
+    });
+    expect(sessionCookiePolicy({ appUrl: "http://10.0.0.216:3105" }).secure).toBe(false);
+  });
+});
 
 describe("the Better Auth origin policy", () => {
   it.each(network.allowedOrigins)(
