@@ -151,6 +151,7 @@ import {
   resolveWorkspaceEnvironment,
   saveResolvedWorkspaceEnvironment,
 } from "../services/workspace-environment.ts";
+import { SessionSteering } from "../session-steering.ts";
 import { classifyGhError, Gh, parseGithubRepo } from "./github.ts";
 import { digestReviewPatch, lineAnchorExists, parseReviewDiff } from "./review-diff.ts";
 
@@ -404,7 +405,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const existing = yield* projects.byName(payload.name);
         if (existing !== null) {
           return yield* new StoreFailure({
-            message: `"${payload.name}" is already adopted — its store lives at ${existing.storePath}`,
+            message: `A project named "${payload.name}" already exists.`,
           });
         }
         // The user's git access default decides a new project's mode unless the request says.
@@ -1929,12 +1930,10 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("submitTurn", ({ params, payload }) =>
       Effect.gen(function* () {
-        const sessions = yield* SessionsRepo;
+        const steering = yield* SessionSteering;
+        yield* steering.session(params.id);
         const engine = yield* SessionEngine;
         const caller = yield* CurrentUser;
-        yield* sessions
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         return yield* engine
           .submitTurn(params.id, payload.input, caller.user.id)
           .pipe(
@@ -1946,11 +1945,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("pasteImage", ({ params, payload }) =>
       Effect.gen(function* () {
-        const sessions = yield* SessionsRepo;
+        const steering = yield* SessionSteering;
+        const session = yield* steering.session(params.id);
         const projects = yield* ProjectsRepo;
-        const session = yield* sessions
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         const project = yield* projects
           .byId(session.projectId)
           .pipe(Effect.mapError(() => new NotFound({ id: session.projectId })));
@@ -1976,10 +1973,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("interruptTurn", ({ params }) =>
       Effect.gen(function* () {
-        const conversation = yield* AgentConversationRepo;
+        const steering = yield* SessionSteering;
+        yield* steering.turn(params.id);
         const engine = yield* SessionEngine;
-        const turn = yield* conversation.byTurnId(params.id);
-        if (turn === null) return yield* new NotFound({ id: params.id });
         yield* engine
           .interruptTurn(params.id)
           .pipe(
@@ -2026,11 +2022,10 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("respondAgentRequest", ({ params, payload }) =>
       Effect.gen(function* () {
-        const conversation = yield* AgentConversationRepo;
+        const steering = yield* SessionSteering;
+        yield* steering.agentRequest(params.id);
         const engine = yield* SessionEngine;
         const caller = yield* CurrentUser;
-        const request = yield* conversation.byRequestId(params.id);
-        if (request === null) return yield* new NotFound({ id: params.id });
         return yield* engine.respondRequest(params.id, payload, caller.user.id).pipe(
           Effect.catchTag("ProtocolHostNotLiveError", (error) =>
             Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),
@@ -2056,6 +2051,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("openShell", ({ params }) =>
       Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        yield* steering.session(params.id);
         const engine = yield* SessionEngine;
         return yield* engine.openShell(params.id).pipe(
           Effect.catchTag("SessionNotFoundError", () =>
@@ -2075,6 +2072,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("stopShell", ({ params }) =>
       Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        yield* steering.process(params.id);
         const engine = yield* SessionEngine;
         return yield* engine
           .stopShell(params.id)
@@ -2087,6 +2086,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("renameShell", ({ params, payload }) =>
       Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        yield* steering.process(params.id);
         const engine = yield* SessionEngine;
         return yield* engine.renameShell(params.id, payload.label).pipe(
           Effect.catchTag("ShellProcessNotFoundError", () =>
@@ -2100,6 +2101,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("addService", ({ params, payload }) =>
       Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        yield* steering.session(params.id);
         const engine = yield* SessionEngine;
         return yield* engine
           .addService(
@@ -2130,6 +2133,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("runService", ({ params, payload }) =>
       Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        yield* steering.session(params.id);
         const engine = yield* SessionEngine;
         return yield* engine
           .runService(
@@ -2163,6 +2168,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("runServiceRecipe", ({ params, payload }) =>
       Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        yield* steering.session(params.id);
         const engine = yield* SessionEngine;
         return yield* engine.runServiceRecipe(params.id, payload.name).pipe(
           Effect.catchTag("SessionNotFoundError", () =>
@@ -2291,6 +2298,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("restartService", ({ params }) =>
       Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        yield* steering.service(params.id);
         const engine = yield* SessionEngine;
         return yield* engine.restartService(params.id).pipe(
           Effect.catchTag("ServiceNotFoundError", () =>
@@ -2307,6 +2316,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("stopService", ({ params }) =>
       Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        yield* steering.service(params.id);
         const engine = yield* SessionEngine;
         return yield* engine
           .stopService(params.id)
@@ -2319,14 +2330,13 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("remove", ({ params }) =>
       Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        const session = yield* steering.session(params.id);
         const sessions = yield* SessionsRepo;
         const projects = yield* ProjectsRepo;
         const processes = yield* SessionProcessesRepo;
         const services = yield* ServicesRepo;
         const forwards = yield* ServiceForwardsRepo;
-        const session = yield* sessions
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         const liveProcesses = (yield* processes.listForSession(params.id)).filter(
           (process) => process.exitedAt === null,
         );
@@ -2385,10 +2395,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("label", ({ params, payload }) =>
       Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        yield* steering.session(params.id);
         const sessions = yield* SessionsRepo;
-        yield* sessions
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         const trimmed = payload.label === null ? null : payload.label.trim();
         yield* sessions.setLabel(params.id, trimmed === "" ? null : trimmed);
         return yield* sessions
@@ -2398,6 +2407,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("stop", ({ params }) =>
       Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        yield* steering.session(params.id);
         const engine = yield* SessionEngine;
         const sessions = yield* SessionsRepo;
         yield* engine.stop(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
@@ -2449,6 +2460,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("handoff", ({ params, payload }) =>
       Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        yield* steering.session(params.id);
         const engine = yield* SessionEngine;
         return yield* engine
           .handoff(
@@ -2520,6 +2533,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("resume", ({ params, payload }) =>
       Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        yield* steering.session(params.id);
         const engine = yield* SessionEngine;
         return yield* engine.resumeSession(params.id, payload.harness, payload.fresh ?? false).pipe(
           Effect.catchTag("SessionNotFoundError", () =>
@@ -2556,12 +2571,10 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("launch", ({ params, payload }) =>
       Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        const session = yield* steering.session(params.id);
         const engine = yield* SessionEngine;
-        const sessions = yield* SessionsRepo;
         const caller = yield* CurrentUser;
-        const session = yield* sessions
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         if (payload.mode === "protocol" && payload.argv !== undefined) {
           return yield* new StoreFailure({
             message: "Protocol launches use the supported harness adapter and cannot take argv.",
@@ -2660,6 +2673,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("followUpDeliver", ({ params, payload }) =>
       Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        yield* steering.session(params.id);
         const delivery = yield* FollowUpDelivery;
         return yield* delivery
           .deliver({

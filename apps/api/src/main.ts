@@ -148,6 +148,7 @@ import { EventsRoutes } from "./routes/events.ts";
 import { GhLive } from "./routes/github.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
+import { SessionSteeringLive } from "./session-steering.ts";
 
 /**
  * The composition boundary (ARCHITECTURE.md §2): every service is wired here
@@ -561,6 +562,7 @@ const MainLive = Layer.unwrap(
     // The network session channel is a sibling service: it serves workspaces, nothing depends
     // on it, so it must be launched explicitly rather than provided.
     return Layer.merge(parts, SessionChannelNetworkLayer).pipe(
+      Layer.provide(SessionSteeringLive),
       // Shared by the API (enqueue on comment) and the workers (one instance).
       Layer.provide(JobRunner.pgBossLayer),
       // Follow-up delivery owns persistence → process acceptance → correlation.
