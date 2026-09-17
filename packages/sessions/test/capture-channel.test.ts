@@ -145,6 +145,7 @@ describe("capture channel routes", () => {
           // The byte quota's floor, for a scope with no footprint; the shared session below
           // names a footprint that puts its budget well above every byte this file ships.
           byteQuotaFloorBytes: 4_096,
+          requireSizes: false,
         }),
       ),
     ),
@@ -468,6 +469,47 @@ describe("capture channel routes", () => {
     const widePlan = (manyParts.json["multipart"] as Record<string, typeof plan>)[wide];
     expect(widePlan?.part_urls).toHaveLength(2_000);
     expect(PRESIGN_TTL_SECONDS).toBe(15 * 60);
+  });
+
+  it("a declared size fixes the parts and the stored bytes: a wrong count is refused, a wrong size removed", async () => {
+    const keys2 = captureKeys(WORKTREE, 2);
+    const key = keys2.pack("7a".repeat(32));
+    const minted = await post(address, "/upload.urls", token, {
+      worktree_id: WORKTREE,
+      epoch: 2,
+      keys: [key],
+      sizes: { [key]: 70 },
+    });
+    expect(minted.status).toBe(200);
+    const plan = (
+      minted.json["multipart"] as Record<string, { upload_id: string; part_urls: Array<string> }>
+    )[key];
+    if (plan === undefined) throw new Error("no plan");
+    // 70 declared bytes are three parts of 32; the executor wrote 15 short.
+    const parts = plan.part_urls.map((url, index) => {
+      fs.writeFileSync(url.slice("file://".length), Buffer.alloc(index === 2 ? 5 : 25));
+      return { part_number: index + 1, etag: `"part-${index + 1}"` };
+    });
+    const tooFew = await post(address, "/upload.complete", token, {
+      worktree_id: WORKTREE,
+      epoch: 2,
+      key,
+      upload_id: plan.upload_id,
+      parts: parts.slice(0, 2),
+    });
+    expect(tooFew.status).toBe(400);
+    const short = await post(address, "/upload.complete", token, {
+      worktree_id: WORKTREE,
+      epoch: 2,
+      key,
+      upload_id: plan.upload_id,
+      parts,
+    });
+    expect({ status: short.status, reason: short.json["reason"] }).toEqual({
+      status: 409,
+      reason: "size-mismatch",
+    });
+    expect(fs.existsSync(path.join(blobRoot, key))).toBe(false);
   });
 
   it("capture.register is the CAS: 409 on a stale epoch or wrong parent, 422 on missing bytes, 200 on a lost ack", async () => {
@@ -929,6 +971,13 @@ describe("capture channel routes", () => {
     });
     expect(memory.chains.get(WORKTREE)?.headCapture).toBe(head.id);
     expect(memory.packs.size).toBe(packRows);
+  });
+
+  it("sizes are required only when MEND_CAPTURE_REQUIRE_SIZES says so", () => {
+    expect(resolveCaptureUploadPolicy({}).requireSizes).toBe(false);
+    expect(resolveCaptureUploadPolicy({ MEND_CAPTURE_REQUIRE_SIZES: "true" }).requireSizes).toBe(
+      true,
+    );
   });
 
   it("the byte quota floor is 8 GiB unless MEND_CAPTURE_BYTE_QUOTA_FLOOR names another size", () => {

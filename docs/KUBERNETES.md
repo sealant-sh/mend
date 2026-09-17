@@ -87,6 +87,7 @@ the capture store is the store there too, and `mend server setup` runs Garage be
 | `MEND_CAPTURE_MULTIPART_THRESHOLD`   | 16 MiB                  | Packs at or above this go up as multipart uploads (`captureStore.multipart`).                     |
 | `MEND_CAPTURE_MULTIPART_PART_SIZE`   | 16 MiB                  | Part size for those uploads; S3 and R2 refuse parts under 5 MiB.                                  |
 | `MEND_CAPTURE_BYTE_QUOTA_FLOOR`      | 8 GiB                   | Floor of a session's byte quota, `max(floor, 4× footprint)` (`captureStore.byteQuotaFloorBytes`). |
+| `MEND_CAPTURE_REQUIRE_SIZES`         | `false`                 | `true` refuses unsized upload keys; every URL is then signed for its exact size.                  |
 
 The chart sets every capture variable on the API tier from `captureStore` (`values.yaml`):
 

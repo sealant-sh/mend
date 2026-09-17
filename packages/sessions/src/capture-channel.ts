@@ -151,6 +151,7 @@ export const CaptureRefusalReason = Schema.Literals([
   "quota-exceeded",
   "byte-quota",
   "exists",
+  "size-mismatch",
 ]);
 export type CaptureRefusalReason = typeof CaptureRefusalReason.Type;
 
@@ -262,6 +263,11 @@ export class CaptureUploadPolicy extends Context.Service<
     readonly keysPerCall: number;
     /** The byte quota is `max(byteQuotaFloorBytes, BYTE_QUOTA_MULTIPLIER × footprint)`. */
     readonly byteQuotaFloorBytes: number;
+    /**
+     * Refuse a key the executor does not size (docs/adr/0003, multi mode gate). With sizes, every
+     * upload URL is signed for exactly the declared bytes and the stored size is verified.
+     */
+    readonly requireSizes: boolean;
   }
 >()("@mend/sessions/CaptureUploadPolicy") {}
 
@@ -273,6 +279,7 @@ export const CaptureUploadPolicyDefault: Layer.Layer<CaptureUploadPolicy> = Laye
     callsPerHour: UPLOAD_CALLS_PER_HOUR,
     keysPerCall: UPLOAD_KEYS_PER_CALL,
     byteQuotaFloorBytes: BYTE_QUOTA_FLOOR,
+    requireSizes: false,
   },
 );
 
@@ -284,6 +291,7 @@ export interface CaptureUploadPolicyEnvLike {
   readonly MEND_CAPTURE_MULTIPART_THRESHOLD?: string | undefined;
   readonly MEND_CAPTURE_MULTIPART_PART_SIZE?: string | undefined;
   readonly MEND_CAPTURE_BYTE_QUOTA_FLOOR?: string | undefined;
+  readonly MEND_CAPTURE_REQUIRE_SIZES?: string | undefined;
 }
 
 const positiveBytes = (name: string, raw: string | undefined, fallback: number): number => {
@@ -300,8 +308,9 @@ const positiveBytes = (name: string, raw: string | undefined, fallback: number):
 
 /**
  * `MEND_CAPTURE_MULTIPART_THRESHOLD` (bytes, default 16 MiB),
- * `MEND_CAPTURE_MULTIPART_PART_SIZE` (bytes, default 16 MiB, at least 5 MiB for S3 and R2) and
- * `MEND_CAPTURE_BYTE_QUOTA_FLOOR` (bytes, default 8 GiB).
+ * `MEND_CAPTURE_MULTIPART_PART_SIZE` (bytes, default 16 MiB, at least 5 MiB for S3 and R2),
+ * `MEND_CAPTURE_BYTE_QUOTA_FLOOR` (bytes, default 8 GiB) and `MEND_CAPTURE_REQUIRE_SIZES`
+ * (`true` refuses unsized upload keys).
  */
 export const resolveCaptureUploadPolicy = (
   env: CaptureUploadPolicyEnvLike,
@@ -329,6 +338,9 @@ export const resolveCaptureUploadPolicy = (
       "MEND_CAPTURE_BYTE_QUOTA_FLOOR",
       env.MEND_CAPTURE_BYTE_QUOTA_FLOOR,
       BYTE_QUOTA_FLOOR,
+    ),
+    requireSizes: ["1", "true", "yes"].includes(
+      (env.MEND_CAPTURE_REQUIRE_SIZES ?? "").trim().toLowerCase(),
     ),
   };
 };
@@ -795,10 +807,22 @@ export const CaptureChannelLive: Layer.Layer<
           const size = sizes[key];
           wanted.set(key, size === undefined || size < 0 ? null : size);
         }
-        const plans: Array<{ readonly key: string; readonly parts: number }> = [];
+        if (policy.requireSizes) {
+          const unsized = [...wanted].find(([, size]) => size === null);
+          if (unsized !== undefined) {
+            return yield* bad(
+              `${unsized[0]} has no declared size; this Mend signs every upload for its exact size`,
+            );
+          }
+        }
+        const plans: Array<{
+          readonly key: string;
+          readonly parts: number;
+          readonly size: number | null;
+        }> = [];
         for (const [key, size] of wanted) {
           if (size === null || size < policy.multipartThresholdBytes) {
-            plans.push({ key, parts: 0 });
+            plans.push({ key, parts: 0, size });
             continue;
           }
           const parts = Math.ceil(size / policy.partSizeBytes);
@@ -807,7 +831,7 @@ export const CaptureChannelLive: Layer.Layer<
               `${key}: ${size} bytes is ${parts} parts of ${policy.partSizeBytes}; the cap is ${MULTIPART_MAX_PARTS}`,
             );
           }
-          plans.push({ key, parts });
+          plans.push({ key, parts, size });
         }
         // The byte quota, enforced here: every sized key not yet priced is charged at its
         // declared size, and a batch that would take the session over is refused whole — no
@@ -837,16 +861,23 @@ export const CaptureChannelLive: Layer.Layer<
           if (created === null || created.kind === "exists") {
             // Below the threshold, or the bucket already holds the key: one PUT URL. For an
             // existing key the PUT carries the same bytes by construction; no plan is opened.
+            // A declared size is signed into the URL: the bucket takes those bytes or none.
             urls[plan.key] = yield* blobs
-              .presign(plan.key, "PUT", PRESIGN_TTL_SECONDS)
+              .presign(plan.key, "PUT", PRESIGN_TTL_SECONDS, plan.size ?? undefined)
               .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
             continue;
           }
           const partUrls: Array<string> = [];
           for (let partNumber = 1; partNumber <= plan.parts; partNumber += 1) {
+            const partBytes =
+              plan.size === null
+                ? undefined
+                : partNumber < plan.parts
+                  ? policy.partSizeBytes
+                  : plan.size - policy.partSizeBytes * (plan.parts - 1);
             partUrls.push(
               yield* blobs
-                .presignPart(plan.key, created.uploadId, partNumber, PRESIGN_TTL_SECONDS)
+                .presignPart(plan.key, created.uploadId, partNumber, PRESIGN_TTL_SECONDS, partBytes)
                 .pipe(Effect.catch(storeError("presigning a part", plan.key))),
             );
           }
@@ -877,6 +908,20 @@ export const CaptureChannelLive: Layer.Layer<
           input.parts.some((part) => part.part_number < 1 || part.etag === "")
         ) {
           return yield* bad("parts must be non-empty, distinct by part_number, each with an etag");
+        }
+        // A declared size fixes how many parts assemble the object: each part URL was signed
+        // for its bytes, so a missing or extra part is refused before the bucket assembles it.
+        const declared = ledger.get(input.key);
+        if (declared !== undefined) {
+          const expected = Math.max(1, Math.ceil(declared / policy.partSizeBytes));
+          if (
+            input.parts.length !== expected ||
+            !input.parts.every((part) => part.part_number <= expected)
+          ) {
+            return yield* bad(
+              `${input.key} was declared as ${declared} bytes: ${expected} parts numbered 1 to ${expected}`,
+            );
+          }
         }
         const parts = input.parts.map((part) => ({
           partNumber: part.part_number,
@@ -909,6 +954,17 @@ export const CaptureChannelLive: Layer.Layer<
         const assembled = yield* blobs
           .head(input.key)
           .pipe(Effect.catch(() => Effect.succeed(null)));
+        if (assembled !== null && declared !== undefined && assembled.size !== declared) {
+          // Nothing references the object before register, so removing it is safe.
+          yield* blobs.remove(input.key).pipe(Effect.ignore);
+          ledger.delete(input.key);
+          return yield* new CaptureRouteError({
+            status: 409,
+            reason: "size-mismatch",
+            message: `${input.key} holds ${assembled.size} bytes, not the ${declared} declared; the object was removed`,
+            key: input.key,
+          });
+        }
         return assembled === null ? {} : { size: assembled.size };
       });
 
@@ -1036,7 +1092,18 @@ export const CaptureChannelLive: Layer.Layer<
           }
           if (key.endsWith(".idx")) continue;
           if (underOwnPrefix(key, input.epoch)) {
-            if (!ledger.has(key)) newBytes += head.size;
+            const reserved = ledger.get(key);
+            if (reserved !== undefined && reserved !== head.size) {
+              // Refuse without removing: an earlier register of this epoch may already
+              // reference the object, and the manifest never commits past this point.
+              return yield* new CaptureRouteError({
+                status: 409,
+                reason: "size-mismatch",
+                message: `${key} holds ${head.size} bytes, not the ${reserved} declared`,
+                key,
+              });
+            }
+            if (reserved === undefined) newBytes += head.size;
             priced.set(key, head.size);
           }
           records.push({

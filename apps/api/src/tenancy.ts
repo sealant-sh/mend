@@ -20,7 +20,7 @@ export class TenancyRefused extends Schema.TaggedErrorClass<TenancyRefused>()("T
 export const MULTI_MODE_MISSING: ReadonlyArray<string> = [
   "Mend-managed folders in place of host paths",
   "checked git source addresses pinned against DNS rebinding",
-  "upload length binding",
+  "a sealantd that declares every upload's size (PLATFORM-FEEDBACK.md, 2026-09-17)",
 ];
 
 const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
@@ -43,6 +43,10 @@ export interface TenancyPosture {
   readonly sourcePolicy?: "operator" | "tenant";
   /** MEND_GIT_TRANSPORT_BIND_ORIGIN: a workspace signs only against its project's remote. */
   readonly transportBoundToOrigin?: boolean;
+  /** MEND_CAPTURE_REQUIRE_SIZES: every capture upload is signed for its declared size. */
+  readonly captureRequireSizes?: boolean;
+  /** MEND_BLOB_STORE: only an S3-compatible bucket enforces a signed length. */
+  readonly blobStore?: string;
 }
 
 /** Why this combination must not start, or null when it may. */
@@ -64,6 +68,12 @@ export const tenancyRefusal = (
       ...(posture.transportBoundToOrigin === false
         ? ["git transport bound to each project's remote (unset MEND_GIT_TRANSPORT_BIND_ORIGIN)"]
         : []),
+      ...(posture.captureRequireSizes === true
+        ? []
+        : ["capture uploads signed for their size (set MEND_CAPTURE_REQUIRE_SIZES=true)"]),
+      ...(posture.blobStore?.startsWith("s3://") === true
+        ? []
+        : ["an S3-compatible blob store, which enforces signed lengths (MEND_BLOB_STORE=s3://…)"]),
     ];
     return [
       "MEND_TENANCY=multi is refused: the multi mode gate",
@@ -102,11 +112,17 @@ export const TenancyConfigLive: Layer.Layer<
     const transportBoundToOrigin = yield* Config.boolean("MEND_GIT_TRANSPORT_BIND_ORIGIN").pipe(
       Config.withDefault(true),
     );
+    const captureRequireSizes = yield* Config.boolean("MEND_CAPTURE_REQUIRE_SIZES").pipe(
+      Config.withDefault(false),
+    );
+    const blobStore = yield* Config.string("MEND_BLOB_STORE").pipe(Config.withDefault(""));
     const organizations = yield* OrganizationsRepo;
     const refusal = tenancyRefusal(mode, yield* organizations.count(), {
       serviceHosts,
       sourcePolicy,
       transportBoundToOrigin,
+      captureRequireSizes,
+      blobStore,
     });
     if (refusal !== null) return yield* new TenancyRefused({ message: refusal });
     yield* Effect.logInfo("tenancy").pipe(Effect.annotateLogs({ mode }));
