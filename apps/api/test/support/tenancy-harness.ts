@@ -596,6 +596,7 @@ export const createTenancyWorld = async (): Promise<TenancyWorld> => {
 
   const authLayer = Layer.succeed(Auth, {
     handler: () => Effect.succeed(new Response(null, { status: 404 })),
+    issuePasswordReset: () => Effect.die("unused"),
     getSession: (headers: Headers) => {
       const token = headers.get("authorization")?.replace(/^Bearer /, "") ?? "";
       const known = token === "alice" || token === "carol" || token === "bob" || token === "dave";

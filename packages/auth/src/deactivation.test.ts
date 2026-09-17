@@ -168,6 +168,51 @@ describe.skipIf(!reachable)("deactivated accounts", () => {
       static: await signedIn(bearer(STATIC_TOKEN)),
     }).toEqual({ session: false, device: false, static: false });
   });
+
+  it("a handed-over reset link sets a new password once and signs the account out", async () => {
+    const { rows } = await (scratch ?? admin).query<{ id: string }>(
+      `SELECT id FROM "user" WHERE email = 'operator@example.invalid'`,
+    );
+    const userId = rows[0]?.id ?? "";
+    const reset = (token: string) =>
+      Effect.runPromise(
+        Effect.gen(function* () {
+          const auth = yield* Auth;
+          const response = yield* auth.handler(
+            new Request(`${origin}/api/auth/reset-password`, {
+              method: "POST",
+              headers: { "content-type": "application/json", origin },
+              body: JSON.stringify({ token, newPassword: "a-new-disposable-password" }),
+            }),
+          );
+          return response.status;
+        }).pipe(Effect.provide(authLayer), Effect.scoped),
+      );
+    const issued = await Effect.runPromise(
+      Effect.gen(function* () {
+        const auth = yield* Auth;
+        return yield* auth.issuePasswordReset(userId);
+      }).pipe(Effect.provide(authLayer), Effect.scoped),
+    );
+    const newer = await Effect.runPromise(
+      Effect.gen(function* () {
+        const auth = yield* Auth;
+        return yield* auth.issuePasswordReset(userId);
+      }).pipe(Effect.provide(authLayer), Effect.scoped),
+    );
+    // Only the newest link works.
+    expect(await reset(issued.token)).toBe(400);
+    const replaced = issued;
+    expect(await reset(newer.token)).toBe(200);
+    // The old session is gone, and the link does not work twice.
+    const sessions = await (scratch ?? admin).query<{ count: string }>(
+      `SELECT count(*) AS count FROM "session" WHERE "userId" = $1`,
+      [userId],
+    );
+    expect(sessions.rows[0]?.count).toBe("0");
+    expect(await reset(newer.token)).toBe(400);
+    expect(replaced.token).not.toBe(newer.token);
+  });
 });
 
 afterAll(async () => {

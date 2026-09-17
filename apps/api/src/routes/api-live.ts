@@ -54,6 +54,7 @@ import { DevicePairingLive } from "./devices.ts";
 import { FoldersGroupLive } from "./folders.ts";
 import { GithubGroupLive } from "./github.ts";
 import { MachineGroupLive } from "./machine.ts";
+import { OperatorGroupLive } from "./operator.ts";
 import { InvitationsGroupLive, OrganizationGroupLive } from "./organization.ts";
 import { SkillsGroupLive } from "./skills.ts";
 import {
@@ -615,6 +616,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
       OrganizationGroupLive,
       InvitationsGroupLive,
       FoldersGroupLive,
+      OperatorGroupLive,
     ),
   ),
   Layer.provide(SettingsGroupLive),

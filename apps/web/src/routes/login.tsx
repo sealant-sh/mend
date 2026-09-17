@@ -17,11 +17,12 @@ export const Route = createFileRoute("/login")({
   // compiling; absent means the workbench root.
   validateSearch: (
     search: Record<string, unknown>,
-  ): { readonly next?: string; readonly reason?: "access" } => {
+  ): { readonly next?: string; readonly reason?: "access" | "reset" } => {
     const next = safeNextPath(search["next"]);
+    const reason = search["reason"];
     return {
       ...(next === "/" ? {} : { next }),
-      ...(search["reason"] === "access" ? { reason: "access" as const } : {}),
+      ...(reason === "access" || reason === "reset" ? { reason } : {}),
     };
   },
   component: LoginPage,
@@ -113,6 +114,14 @@ function LoginPage() {
             ? "This Mend has no accounts yet. Yours comes first; the next step picks how it reaches your repositories."
             : "One account per person: sessions, keys and devices are yours alone."}
       </p>
+      {search.reason === "reset" ? (
+        <p
+          role="status"
+          className="mt-5 border-l-2 border-[var(--sw-accent)] pl-3 text-[13px] leading-relaxed text-ink-2"
+        >
+          Password changed. Sign in with the new one.
+        </p>
+      ) : null}
       {search.reason === "access" ? (
         <p
           role="status"

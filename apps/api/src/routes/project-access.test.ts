@@ -88,6 +88,7 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "organization.orphanedProjects",
   "organization.takeOverProject",
   "organization.audit",
+  "organization.issuePasswordReset",
   "invitations.preview",
   "settings.get",
   "dotfiles.get",
@@ -221,6 +222,27 @@ const CASES: ReadonlyArray<AccessCase> = [
   })("briefs.comment"),
   fixed("operator", "GET", "/api/issues/issue-1/brief/versions", "queue")("briefs.versions"),
   fixed("operator", "GET", "/api/runs/run-1", "queue")("runs.detail"),
+  // ── Operator recovery: organizations are named and recovered, never read ──
+  fixed("operator", "GET", "/api/operator/organizations", "operator")("operator.organizations"),
+  fixed("operator", "POST", "/api/operator/organizations", "operator", { name: "Globex" })(
+    "operator.createOrganization",
+  ),
+  fixed("operator", "PUT", "/api/operator/organizations/org-A/name", "operator", {
+    name: "Acme",
+  })("operator.renameOrganization"),
+  fixed(
+    "operator",
+    "POST",
+    "/api/operator/organizations/org-A/invitations",
+    "operator",
+    {},
+  )("operator.inviteOwner"),
+  fixed("operator", "POST", "/api/operator/organizations/org-A/owners", "operator", {
+    email: "carol@example.invalid",
+  })("operator.grantOwner"),
+  fixed("operator", "POST", "/api/operator/password-resets", "operator", {
+    email: "carol@example.invalid",
+  })("operator.issuePasswordReset"),
   fixed("operator", "GET", "/api/runs/run-1/trace", "queue")("runs.trace"),
   fixed("operator", "GET", "/api/runs/run-1/sources", "queue")("runs.sources"),
 

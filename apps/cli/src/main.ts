@@ -28,6 +28,7 @@ import {
   folderCommand,
   inviteCommand,
   membersCommand,
+  operatorCommand,
   sessionShareCommand,
 } from "./organization.ts";
 import { type ApiCall, pairCommand, qrCommand } from "./pair.ts";
@@ -3688,6 +3689,13 @@ const main = async () => {
       return membersCommand(boundApi(config));
     case "folder":
       return folderCommand(boundApi(config), rest);
+    case "operator":
+      return operatorCommand(
+        boundApi(config),
+        (method, route, body) => request(config, method, route, body),
+        config.url,
+        rest,
+      );
     case "session":
       if (rest[0] === "share") return sessionShareCommand(boundApi(config), rest.slice(1));
       return fail(`unknown session command "${rest[0] ?? ""}" · mend help session share`);

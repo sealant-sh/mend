@@ -1,6 +1,7 @@
 import {
   AuditEntry,
   CurrentUser,
+  OneTimeLink,
   InvitationCreated,
   InvitationPreview,
   InvitationSpent,
@@ -9,6 +10,7 @@ import {
   OrganizationRejected,
   OrganizationView,
 } from "@mend/api-contracts";
+import { Auth } from "@mend/auth";
 import {
   AuditEventsRepo,
   UsersRepo,
@@ -230,6 +232,30 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
           data: { role: payload.role },
         });
         return member;
+      }),
+    )
+    .handle("issuePasswordReset", ({ params }) =>
+      Effect.gen(function* () {
+        const found = yield* ownership(params.userId);
+        const role = yield* memberOf(found, params.userId);
+        // An owner resets a member's password, never an owner's and never the operator's: a
+        // demoted operator reset by an owner would hand that owner the whole instance.
+        if (role === "owner" || (yield* (yield* InstanceRolesRepo).isOperator(params.userId))) {
+          return yield* new OrganizationRejected({
+            message:
+              "Owners and the operator reset their passwords through the operator of this Mend.",
+          });
+        }
+        const caller = yield* CurrentUser;
+        const reset = yield* (yield* Auth).issuePasswordReset(params.userId);
+        yield* (yield* AuditEventsRepo).record({
+          organizationId: found.organization.id,
+          actorUserId: caller.user.id,
+          action: "member.password_reset_issued",
+          subjectType: "member",
+          subjectId: params.userId,
+        });
+        return new OneTimeLink({ path: `/reset/${reset.token}`, expiresAt: reset.expiresAt });
       }),
     )
     .handle("orphanedProjects", () =>

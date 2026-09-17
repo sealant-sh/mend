@@ -36,6 +36,11 @@ export const organizationRouter = router({
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.organization.removeMember({ params: { userId: i.userId } })),
     ),
+  issuePasswordReset: procedure
+    .input(input(Schema.Struct({ userId: Schema.String })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.organization.issuePasswordReset({ params: { userId: i.userId } })),
+    ),
   orphanedProjects: procedure.query(({ ctx }) =>
     run(ctx, (api) => api.organization.orphanedProjects()),
   ),

@@ -46,6 +46,8 @@ const acme = new Organization({
 const roles: Record<string, OrganizationMembership["role"] | undefined> = {
   alice: "owner",
   carol: "member",
+  // The operator, demoted to member by an owner: still never theirs to reset.
+  olivia: "member",
 };
 const writes: Array<string> = [];
 const audited: Array<NewAuditEvent> = [];
@@ -132,8 +134,15 @@ const organizationsLayer = Layer.mock(OrganizationsRepo, {
       : Effect.fail(new InvitationUnknownError()),
 });
 
+const resets: Array<string> = [];
+
 const authLayer = Layer.succeed(Auth, {
   handler: () => Effect.succeed(new Response(null, { status: 404 })),
+  issuePasswordReset: (userId) =>
+    Effect.sync(() => {
+      resets.push(userId);
+      return { token: `reset-${userId}`, expiresAt: new Date("2026-09-18T10:00:00Z") };
+    }),
   getSession: (headers) => {
     const user = headers.get("authorization")?.replace("Bearer ", "") ?? "";
     return Effect.succeed(
@@ -162,7 +171,9 @@ const projectOf = (id: string): Project | null => {
 const dependencies = Layer.mergeAll(
   authLayer,
   organizationsLayer,
-  Layer.mock(InstanceRolesRepo, { isOperator: (userId) => Effect.succeed(userId === "alice") }),
+  Layer.mock(InstanceRolesRepo, {
+    isOperator: (userId) => Effect.succeed(userId === "alice" || userId === "olivia"),
+  }),
   Layer.mock(AuditEventsRepo, {
     record: (event) => Effect.sync(() => void audited.push(event)),
     listForOrganization: () => Effect.sync(() => (writes.push("audit"), [])),
@@ -237,6 +248,7 @@ beforeEach(() => {
   minted.splice(0, minted.length);
   audited.splice(0, audited.length);
   removals.splice(0, removals.length);
+  resets.splice(0, resets.length);
 });
 
 describe("organization routes (docs/adr/0003)", () => {
@@ -381,6 +393,30 @@ describe("removing members, roles and departed members' projects (docs/adr/0003)
     expect(writes).toEqual(["setCreatedBy:p-bob:alice"]);
     expect(audited.map((event) => [event.action, event.subjectId, event.data])).toEqual([
       ["project.taken_over", "p-bob", { fromUserId: "bob" }],
+    ]);
+  });
+
+  it("an owner hands a member a reset link; owners and other callers get none", async () => {
+    const byMember = await call("carol", "/api/organization/members/carol/password-reset", {
+      method: "POST",
+    });
+    const forOwner = await call("alice", "/api/organization/members/alice/password-reset", {
+      method: "POST",
+    });
+    const forOperator = await call("alice", "/api/organization/members/olivia/password-reset", {
+      method: "POST",
+    });
+    expect([byMember.status, forOwner.status, forOperator.status]).toEqual([404, 422, 422]);
+    expect(resets).toEqual([]);
+
+    const issued = await call("alice", "/api/organization/members/carol/password-reset", {
+      method: "POST",
+    });
+    expect(issued.status).toBe(200);
+    await expect(issued.json()).resolves.toMatchObject({ path: "/reset/reset-carol" });
+    expect(resets).toEqual(["carol"]);
+    expect(audited.map((event) => [event.action, event.subjectId])).toEqual([
+      ["member.password_reset_issued", "carol"],
     ]);
   });
 

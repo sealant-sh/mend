@@ -22,6 +22,11 @@ export const AuditAction = Schema.Literals([
   "reference.removed",
   "session.shared_control_on",
   "session.shared_control_off",
+  "member.password_reset_issued",
+  "organization.created",
+  "organization.renamed",
+  "recovery.owner_granted",
+  "recovery.password_reset_issued",
 ]);
 export type AuditAction = typeof AuditAction.Type;
 
