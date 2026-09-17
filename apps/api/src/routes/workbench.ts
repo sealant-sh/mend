@@ -574,7 +574,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
               (yield* TenancyConfig).mode === "single" &&
               (yield* (yield* ProjectAccess).isOperator(viewer.userId)),
           }),
-          mountDelivery: (yield* DeploymentConfig).sessionStore === "captured" ? "none" : "bind",
+          mountDelivery: (yield* DeploymentConfig).sessionStore === "captured" ? "sources" : "bind",
         });
       }),
     )

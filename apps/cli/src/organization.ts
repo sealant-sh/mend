@@ -30,7 +30,7 @@ interface OrganizationView {
   readonly role: "owner" | "member";
   readonly operator: boolean;
   readonly memberCount: number;
-  readonly mountDelivery: "bind" | "none";
+  readonly mountDelivery: "bind" | "sources";
 }
 
 interface MemberDto {

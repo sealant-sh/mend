@@ -226,6 +226,24 @@ export const digestOfKey = (key: string): string | null => {
 /** Git pack keys travel as `packs/<sha>` with the index at `packs/<sha>.idx`. */
 export const packIdxKeyOf = (packKey: string): string => `${packKey}.idx`;
 
+/**
+ * Where one source archive lives for a session's epoch: content beside the worktree that Mend
+ * publishes and sealantd lays down (`@mend/sessions/capture-sources.ts`). It sits under the
+ * session's own epoch prefix, so the executor only ever holds URLs under that prefix and capture
+ * retention sweeps it with the rest of the fenced epoch.
+ */
+export const captureSourceKey = (worktreeId: string, epoch: number, sha256: string): string =>
+  `captures/${worktreeId}/${epoch}/sources/${sha256}.tar.gz`;
+
+const SOURCE_KEY_TAIL = /\/sources\/[0-9a-f]{64}\.tar\.gz$/;
+
+/**
+ * Whether a key names a source archive. Kept apart from [`isCaptureObjectKey`]: an executor may
+ * write and register capture objects, while a source is Mend's to publish and the executor's only
+ * to read.
+ */
+export const isCaptureSourceKey = (key: string): boolean => SOURCE_KEY_TAIL.test(key);
+
 const OBJECT_KEY_TAIL =
   /\/(packs\/[0-9a-f]{64}(\.idx)?|trees\/[0-9a-f]{64}|manifests\/[0-9a-f]{64})$/;
 

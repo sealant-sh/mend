@@ -115,7 +115,7 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
           memberCount: yield* organizations.memberCount(found.organization.id),
           operator: yield* roles.isOperator(caller.user.id),
           tenancy: (yield* TenancyConfig).mode,
-          mountDelivery: (yield* DeploymentConfig).sessionStore === "captured" ? "none" : "bind",
+          mountDelivery: (yield* DeploymentConfig).sessionStore === "captured" ? "sources" : "bind",
         });
       }),
     )

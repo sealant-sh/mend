@@ -262,7 +262,7 @@ describe("organization routes (docs/adr/0003)", () => {
       operator: false,
       userId: "carol",
       tenancy: "single",
-      mountDelivery: "none",
+      mountDelivery: "sources",
     });
   });
 

@@ -10,6 +10,12 @@ import { Timestamp } from "../timestamp.ts";
  * Each organization keeps its own list, managed by its owners; each project selects which of
  * its organization's references its sessions mount at `/workspace/ref/<name>`.
  */
+/**
+ * Where a reference reaches a session: a bind mount of the clone on a co-located install, and the
+ * path sealantd lays its `git archive HEAD` down at in a captured workspace.
+ */
+export const referenceMountPath = (name: string): string => `/workspace/ref/${name}`;
+
 export class Reference extends Schema.Class<Reference>("Reference")({
   id: ReferenceId,
   /** Short name, unique within the organization; also the mount directory name. */

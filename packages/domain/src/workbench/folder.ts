@@ -22,6 +22,12 @@ export class Folder extends Schema.Class<Folder>("Folder")({
   updatedAt: Timestamp,
 }) {}
 
+/**
+ * Where a folder reaches a session: a bind mount on a co-located install, and the path sealantd
+ * lays the folder's archive down at in a captured workspace (`capture-sources.ts`).
+ */
+export const folderMountPath = (name: string): string => `/workspace/home/${name}`;
+
 /** One project's choice of a folder: where it mounts and whether sessions may write to it. */
 export class ProjectFolder extends Schema.Class<ProjectFolder>("ProjectFolder")({
   projectId: ProjectId,

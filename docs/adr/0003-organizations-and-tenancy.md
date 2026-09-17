@@ -51,7 +51,10 @@ each open item with its fix; `/health` reports whether the gate passes and the o
    effects**. It covers HTTP, SSE, WebSocket (TTY, service tunnel) and job paths.
 2. Per-user SSH-agent signer, push devices, notifications and GitHub identity (MEND-02, MEND-03,
    MEND-09).
-3. Mend-managed folders in place of host paths for tenants (MEND-07, B3).
+3. Mend-managed folders in place of host paths for tenants (MEND-07, B3). A co-located install binds
+   them beside the worktree; a captured one publishes each folder and reference as a
+   content-addressed archive on the session plan, which sealantd lays down beside the worktree
+   (sealantd 0.16.0, ADR-0015 "Sources beside the worktree"). Nothing there travels back.
 4. Local Git sources and private or loopback destinations refused for tenants (MEND-06, MEND-07):
    `MEND_SOURCE_POLICY=tenant` checks every clone and fetch Mend itself runs, and a workspace's git
    transport signs only against its project's own remote. Git then dials the addresses that were

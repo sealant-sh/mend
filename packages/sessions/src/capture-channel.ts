@@ -19,6 +19,7 @@ import {
 import { Duration, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import { CaptureSources, type PlanSource } from "./capture-sources.ts";
 import { CaptureGitVerifier } from "./capture-verify.ts";
 
 /**
@@ -64,6 +65,12 @@ export interface PlanGetResponse {
     readonly manifest: CaptureManifest;
   } | null;
   readonly get_urls: Readonly<Record<string, string>>;
+  /**
+   * Content to lay down beside the worktree — the project's folders and references, which a
+   * captured workspace cannot bind-mount (`capture-sources.ts`). Absent when the project selected
+   * none; a sealantd older than 0.16.0 ignores it.
+   */
+  readonly sources?: ReadonlyArray<PlanSource>;
 }
 
 /**
@@ -450,7 +457,7 @@ const VERIFIED_AT_REGISTER = new Set<CaptureManifest["kind"]>([
 export const CaptureChannelLive: Layer.Layer<
   CaptureChannel,
   never,
-  CaptureStoreRepo | BlobStore | CaptureUploadPolicy | CaptureGitVerifier
+  CaptureStoreRepo | BlobStore | CaptureUploadPolicy | CaptureGitVerifier | CaptureSources
 > = Layer.effect(
   CaptureChannel,
   Effect.gen(function* () {
@@ -458,6 +465,25 @@ export const CaptureChannelLive: Layer.Layer<
     const blobs = yield* BlobStore;
     const policy = yield* CaptureUploadPolicy;
     const verifier = yield* CaptureGitVerifier;
+    const sources = yield* CaptureSources;
+    /**
+     * A GET URL per source archive, minted like the head's objects. A source whose URL cannot be
+     * minted is dropped rather than named without one: sealantd would only skip it anyway.
+     */
+    const sourceUrls = (beside: ReadonlyArray<PlanSource>) =>
+      Effect.gen(function* () {
+        const urls: Record<string, string> = {};
+        for (const source of beside) {
+          urls[source.key] = yield* blobs.presign(source.key, "GET", PRESIGN_TTL_SECONDS);
+        }
+        return urls;
+      }).pipe(
+        Effect.catchCause((cause) =>
+          Effect.logWarning("capture sources: presigning a source GET failed")
+            .pipe(Effect.annotateLogs({ cause: String(cause) }))
+            .pipe(Effect.as<Record<string, string>>({})),
+        ),
+      );
     const listeners = new Map<string, Set<RegisterListener>>();
     const publish = (row: CaptureRow): void => {
       const set = listeners.get(row.worktreeId);
@@ -732,10 +758,19 @@ export const CaptureChannelLive: Layer.Layer<
           );
           epoch = claimed.epoch;
         }
+        // Folders and references travel with the plan, so a captured workspace has them beside
+        // the worktree; an empty chain gets them too (the session still reads its folders).
+        const beside = yield* sources.forProject(scope.projectId, worktreeId, epoch);
         const chain = yield* repo.headOf(worktreeId);
         const head = chain?.head ?? null;
         if (head === null) {
-          return { worktree_id: worktreeId, epoch, head: null, get_urls: {} };
+          return {
+            worktree_id: worktreeId,
+            epoch,
+            head: null,
+            get_urls: yield* sourceUrls(beside),
+            ...(beside.length === 0 ? {} : { sources: beside }),
+          };
         }
         const stored = yield* readManifest(head);
         const manifest = planForPlatform(yield* planManifest(head, stored), input.platform);
@@ -743,7 +778,7 @@ export const CaptureChannelLive: Layer.Layer<
           Effect.provideService(BlobStore, blobs),
           Effect.catch(storeError("walking the head capture", head.manifestKey)),
         );
-        const urls: Record<string, string> = {};
+        const urls: Record<string, string> = yield* sourceUrls(beside);
         for (const key of [...keys, head.manifestKey]) {
           urls[key] = yield* blobs
             .presign(key, "GET", PRESIGN_TTL_SECONDS)
@@ -759,6 +794,7 @@ export const CaptureChannelLive: Layer.Layer<
             manifest,
           },
           get_urls: urls,
+          ...(beside.length === 0 ? {} : { sources: beside }),
         } satisfies PlanGetResponse;
       });
 

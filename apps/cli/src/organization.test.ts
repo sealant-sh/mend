@@ -243,15 +243,15 @@ describe("operator", () => {
     const lines = renderGate([
       { id: "source-policy", ok: true, detail: "tenant source policy", fix: null },
       {
-        id: "daemon-declares-sizes",
+        id: "upload-length-binding",
         ok: false,
-        detail: "sealantd sizes only multipart uploads",
-        fix: "a newer sealantd",
+        detail: "capture uploads without a declared size are accepted",
+        fix: "set MEND_CAPTURE_REQUIRE_SIZES=true",
       },
     ]);
     expect(lines).toEqual([
       "✓ source-policy          tenant source policy",
-      "· daemon-declares-sizes  sealantd sizes only multipart uploads · a newer sealantd",
+      "· upload-length-binding  capture uploads without a declared size are accepted · set MEND_CAPTURE_REQUIRE_SIZES=true",
       "1 of 2 items open; MEND_TENANCY=multi refuses to start",
     ]);
   });

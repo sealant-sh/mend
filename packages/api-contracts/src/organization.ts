@@ -44,7 +44,7 @@ export class OrganizationView extends Schema.Class<OrganizationView>("Organizati
   /** `single`: the organization stays out of the way. `multi`: its name is shown. */
   tenancy: Schema.Literals(["single", "multi"]),
   /** `none`: selected folders are recorded but not mounted into captured workspaces yet. */
-  mountDelivery: Schema.Literals(["bind", "none"]),
+  mountDelivery: Schema.Literals(["bind", "sources"]),
 }) {}
 
 /** One audit event with the name of the account that acted, departed members included. */

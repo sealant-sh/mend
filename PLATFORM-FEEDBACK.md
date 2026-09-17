@@ -9,6 +9,12 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
 ## 2026-09-17 · 0.33.0 · The capture executor declares every upload's size
 
+**Shipped in sealantd 0.16.0** (sealant-sh/sealantd#82). `UrlMinter::put_url` takes the object's
+size, so the single-key fallback mint declares that object's real length instead of the `0` it sent
+before, and the git pack index's upload is sized from `fs::metadata` with the error surfaced. Both
+PUT paths already sent `Content-Length`; the length in the signature and the length on the wire are
+now the same number by construction, which is what `MEND_CAPTURE_REQUIRE_SIZES=true` needs.
+
 - **Needed:** an exact size for every key sealantd asks `upload.urls` for, so Mend signs each PUT
   for exactly those bytes and verifies what landed (docs/adr/0003, multi mode gate: upload length
   binding).
@@ -20,6 +26,15 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
   object is sealed and content-addressed before it asks.
 
 ## 2026-09-17 · 0.33.0 · Read-only extra sources for capture-mode workspaces
+
+**Shipped in sealantd 0.16.0** (sealant-sh/sealantd#83), on the session channel rather than the
+create request: `plan.get` may answer `sources`, each a gzipped tar at an object key with the
+archive's sha256, and the daemon lays them down beside the worktree at boot and at every
+`capture.replan`. Nothing in Core changed — a capture source already hands the daemon an endpoint
+and a token, and everything else comes from the channel. Mend publishes each selected folder (`tar`)
+and reference (`git archive HEAD`) under the session's epoch prefix
+(`packages/sessions/src/capture-sources.ts`), so capture retention sweeps the archives with the
+fenced epoch.
 
 - **Needed:** organization folders and reference repositories (docs/adr/0003) mounted read-only
   beside the worktree in every workspace, as they are on a co-located install.

@@ -15,6 +15,7 @@ import {
   CaptureUploadPolicyDefault,
   planForPlatform,
 } from "../src/capture-channel.ts";
+import { CaptureSourcesOff } from "../src/capture-sources.ts";
 import { CaptureGitVerifierOff } from "../src/capture-verify.ts";
 import {
   dependencyCachePrefix,
@@ -79,6 +80,7 @@ describe("the shared dependency cache", () => {
   const layer = Layer.mergeAll(
     CaptureChannelLive.pipe(
       Layer.provide(CaptureGitVerifierOff),
+      Layer.provide(CaptureSourcesOff),
       Layer.provide(memory.layer),
       Layer.provide(blobs),
       Layer.provide(CaptureUploadPolicyDefault),

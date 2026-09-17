@@ -512,8 +512,8 @@ function FoldersPanel({ view }: { readonly view: OrganizationViewDto }) {
           agent should see beside the worktree. A project mounts a folder at{" "}
           <span className="font-mono text-[12px]">/workspace/home/&lt;name&gt;</span> for its next
           sessions, read-only unless chosen otherwise.
-          {view.mountDelivery === "none"
-            ? " This deployment records folder selections but does not mount them into captured workspaces yet."
+          {view.mountDelivery === "sources"
+            ? " This deployment runs captured workspaces, so a folder travels as a read-only copy: writes inside a session stay there."
             : ""}
         </>
       }

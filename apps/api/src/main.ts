@@ -107,6 +107,7 @@ import { asSealantUser, SealantLiveFromEnv } from "@mend/sealant";
 import {
   CaptureChannelLive,
   CaptureGitVerifierLive,
+  CaptureSourcesLive,
   CaptureRuntimeLive,
   CaptureUploadPolicyLive,
   CaptureRuntimeOff,
@@ -566,10 +567,17 @@ const MainLive = Layer.unwrap(
     );
     // The capture channel (routes + register hub) and the engine's view of the capture store.
     // Register and plan verify git sections on the runner (`CaptureGitVerifierLive`).
+    // Folders and references travel with the plan, since a captured workspace binds no host path.
+    const captureSources = CaptureSourcesLive.pipe(
+      Layer.provide(FoldersRepoLive.pipe(Layer.provide(DatabaseLive))),
+      Layer.provide(ReferencesRepoLive.pipe(Layer.provide(DatabaseLive))),
+      Layer.provide(captureStore),
+    );
     const captureChannel = CaptureChannelLive.pipe(
       Layer.provide(CaptureGitVerifierLive.pipe(Layer.provide(captureStore))),
       Layer.provide(captureStore),
       Layer.provide(CaptureUploadPolicyLive),
+      Layer.provide(captureSources),
     );
     const captureRuntime = captured
       ? CaptureRuntimeLive.pipe(Layer.provide(captureChannel), Layer.provide(captureStore))
