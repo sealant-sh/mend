@@ -141,7 +141,7 @@ export class ProjectDetail extends Schema.Class<ProjectDetail>("ProjectDetail")(
    * Whether this deployment mounts folders, references and linked projects into workspaces:
    * `bind` beside the store, `none` in capture mode, where executors mount nothing yet.
    */
-  mountDelivery: Schema.Literals(["bind", "none"]),
+  mountDelivery: Schema.Literals(["bind", "sources"]),
 }) {}
 
 /** The outcome of a destructive removal — what went, what would not. */

@@ -7,6 +7,7 @@ import { WorktreeId } from "@mend/domain";
 import {
   CaptureChannelLive,
   CaptureGitVerifierOff,
+  CaptureSourcesOff,
   CaptureRuntimeLive,
   CaptureUploadPolicyDefault,
 } from "@mend/sessions";
@@ -107,6 +108,7 @@ describe("CaptureRetention over dir://", () => {
   const blobs = BlobStoreFsLive(blobRoot);
   const channel = CaptureChannelLive.pipe(
     Layer.provide(CaptureGitVerifierOff),
+    Layer.provide(CaptureSourcesOff),
     Layer.provide(memory.layer),
     Layer.provide(blobs),
     Layer.provide(CaptureUploadPolicyDefault),

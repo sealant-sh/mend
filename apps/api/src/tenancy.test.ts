@@ -79,12 +79,7 @@ describe("MEND_TENANCY (docs/adr/0003)", () => {
 describe("the multi mode gate", () => {
   it("names what configuration still lacks", () => {
     expect(failing({})).toEqual(
-      expect.arrayContaining([
-        "source-policy",
-        "upload-length-binding",
-        "operator-present",
-        "folders-reach-workspaces",
-      ]),
+      expect.arrayContaining(["source-policy", "upload-length-binding", "operator-present"]),
     );
     expect(failing({ ...configured, serviceHosts: "127.0.0.1,0.0.0.0" })).toContain(
       "raw-service-ports",
@@ -98,9 +93,12 @@ describe("the multi mode gate", () => {
     expect(exposedServiceHosts("127.0.0.1, ::1,localhost")).toEqual([]);
   });
 
-  it("with everything configured, only work outside this build remains", () => {
-    expect(failing(configured)).toEqual(["folders-reach-workspaces", "daemon-declares-sizes"]);
-    expect(tenancyRefusal("multi", 1, evaluateGate(configured))).toContain("daemon-declares-sizes");
+  it("passes with everything configured, and single mode never refuses", () => {
+    // The two items that waited on the platform are in: sealantd declares every upload's length
+    // (sealantd#82) and lays down the plan's sources beside the worktree (sealantd#83).
+    expect(failing(configured)).toEqual([]);
+    expect(tenancyRefusal("multi", 1, evaluateGate(configured))).toBeNull();
+    expect(tenancyRefusal("multi", 1, evaluateGate({}))).toContain("source-policy");
     expect(tenancyRefusal("single", 1, evaluateGate({}))).toBeNull();
   });
 });

@@ -5,8 +5,10 @@ import * as path from "node:path";
 
 import {
   type CaptureStoreRepo,
+  FoldersRepo,
   ProjectNotFoundError,
   ProjectsRepo,
+  ReferencesRepo,
   StoreRefConflictError,
   StoreRefsRepo,
   WorktreeNotFoundError,
@@ -33,6 +35,7 @@ import {
   CaptureChannelLive,
   CaptureUploadPolicyDefault,
 } from "../src/capture-channel.ts";
+import { type CaptureSources, CaptureSourcesLive } from "../src/capture-sources.ts";
 import { CaptureGitVerifierLive } from "../src/capture-verify.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 
@@ -275,7 +278,9 @@ export interface CaptureWorld {
   >;
 }
 
-export const makeCaptureWorld = (): CaptureWorld => {
+export const makeCaptureWorld = (
+  options: { readonly sources?: Layer.Layer<CaptureSources> } = {},
+): CaptureWorld => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-capture-world-"));
   const repo = makeProjectRepo(scratch);
   const project = projectFor(repo.storePath, repo.baseSha);
@@ -291,11 +296,21 @@ export const makeCaptureWorld = (): CaptureWorld => {
     Layer.provide(storeConfig),
     Layer.provide(blobs),
   );
+  // Sources beside the worktree: the real publisher over whatever the world's project selected
+  // (nothing, unless a test hands `options.sources` its own repositories).
+  const sources =
+    options.sources ??
+    CaptureSourcesLive.pipe(
+      Layer.provide(Layer.mock(FoldersRepo, { listForProject: () => Effect.succeed([]) })),
+      Layer.provide(Layer.mock(ReferencesRepo, { listForProject: () => Effect.succeed([]) })),
+      Layer.provide(blobs),
+    );
   const channel = CaptureChannelLive.pipe(
     Layer.provide(CaptureGitVerifierLive.pipe(Layer.provide(runner), Layer.provide(refs))),
     Layer.provide(memory.layer),
     Layer.provide(blobs),
     Layer.provide(CaptureUploadPolicyDefault),
+    Layer.provide(sources),
   );
   const layer = Layer.mergeAll(
     store,

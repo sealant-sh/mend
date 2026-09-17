@@ -1282,7 +1282,7 @@ export function ProjectFoldersSection({
   mountDelivery,
 }: {
   readonly projectId: ProjectDto["id"];
-  readonly mountDelivery: "bind" | "none";
+  readonly mountDelivery: "bind" | "sources";
 }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
@@ -1327,8 +1327,8 @@ export function ProjectFoldersSection({
         Organization folders this project&apos;s next sessions mount at{" "}
         <span className="font-mono">/workspace/home/&lt;name&gt;</span>, read-only unless chosen
         otherwise. Create and fill folders in Settings.
-        {mountDelivery === "none"
-          ? " This deployment records the selection but does not mount folders into captured workspaces yet."
+        {mountDelivery === "sources"
+          ? " This deployment runs captured workspaces, so a selected folder travels as a read-only copy: writes inside a session stay there."
           : ""}
       </p>
       <div className="mt-3 space-y-2">

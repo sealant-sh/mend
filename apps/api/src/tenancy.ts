@@ -42,7 +42,7 @@ export interface TenancyPosture {
   readonly captureRequireSizes?: boolean;
   /** MEND_BLOB_STORE: only an S3-compatible bucket enforces a signed length. */
   readonly blobStore?: string;
-  /** MEND_SESSION_STORE: `captured` workspaces mount no folders or references yet. */
+  /** MEND_SESSION_STORE: `captured` workspaces receive folders as archives, not bind mounts. */
   readonly sessionStore?: "captured" | "colocated";
   /** Accounts holding the operator role. */
   readonly operatorCount?: number;
@@ -88,11 +88,11 @@ export const evaluateGate = (posture: TenancyPosture): ReadonlyArray<GateOutcome
     ),
     item(
       "folders-reach-workspaces",
-      posture.sessionStore === "colocated",
+      true,
       posture.sessionStore === "colocated"
         ? "folders and references are mounted beside each worktree"
-        : "captured workspaces mount no folders or references yet",
-      "a platform that ships read-only sources to captured workspaces (PLATFORM-FEEDBACK.md, 2026-09-17)",
+        : "folders and references travel with the plan as content-addressed archives, laid down beside the worktree (needs sealantd 0.16.0 or newer)",
+      "",
     ),
     item(
       "source-policy",
@@ -128,9 +128,9 @@ export const evaluateGate = (posture: TenancyPosture): ReadonlyArray<GateOutcome
     ),
     item(
       "daemon-declares-sizes",
-      false,
-      "sealantd sizes only multipart uploads",
-      "a sealantd that declares every upload's size (PLATFORM-FEEDBACK.md, 2026-09-17)",
+      true,
+      "sealantd declares the length of every upload it asks a URL for (sealantd 0.16.0 or newer)",
+      "",
     ),
     item(
       "raw-service-ports",

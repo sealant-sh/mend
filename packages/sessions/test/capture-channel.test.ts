@@ -6,10 +6,13 @@ import * as path from "node:path";
 
 import {
   CaptureStoreRepo,
+  FoldersRepo,
+  ReferencesRepo,
   SessionChannelTokensRepo,
   SessionChannelTokensRepoMemory,
 } from "@mend/db";
-import { ProjectId, SessionId, WorktreeId } from "@mend/domain";
+import { FolderId, OrganizationId, ProjectId, SessionId, WorktreeId } from "@mend/domain";
+import { Folder, ProjectFolder } from "@mend/domain/workbench";
 import {
   BlobStore,
   BlobStoreFsLive,
@@ -17,6 +20,7 @@ import {
   changeSummaryKey,
   DeploymentConfig,
   isCaptureObjectKey,
+  isCaptureSourceKey,
   type CaptureManifest,
 } from "@mend/store";
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
@@ -34,6 +38,7 @@ import {
   PRESIGN_TTL_SECONDS,
   resolveCaptureUploadPolicy,
 } from "../src/capture-channel.ts";
+import { CaptureSourcesLive } from "../src/capture-sources.ts";
 import { CaptureGitVerifierOff } from "../src/capture-verify.ts";
 import {
   SessionChannelNetworkHost,
@@ -99,6 +104,9 @@ const post = (
     request.end(JSON.stringify(body));
   });
 
+/** What a URL may be minted for: a capture object, or a source archive Mend published. */
+const isReadableKey = (key: string): boolean => isCaptureObjectKey(key) || isCaptureSourceKey(key);
+
 describe("capture channel routes", () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-capture-channel-"));
   const blobRoot = path.join(scratch, "blobs");
@@ -117,6 +125,39 @@ describe("capture channel routes", () => {
         ),
     })),
   ).pipe(Layer.provide(BlobStoreFsLive(blobRoot)));
+  // One folder the project selected, so `plan.get` is exercised with content beside the worktree.
+  const folderPath = path.join(scratch, "folder-docs");
+  fs.mkdirSync(folderPath, { recursive: true });
+  fs.writeFileSync(path.join(folderPath, "NOTES.md"), "read me\n");
+  const sources = CaptureSourcesLive.pipe(
+    Layer.provide(
+      Layer.mock(FoldersRepo, {
+        listForProject: () =>
+          Effect.succeed([
+            {
+              folder: new Folder({
+                id: FolderId.make("fold-docs"),
+                organizationId: OrganizationId.make("org-1"),
+                name: "docs",
+                path: folderPath,
+                createdByUserId: null,
+                createdAt: new Date(),
+                updatedAt: new Date(),
+              }),
+              selection: new ProjectFolder({
+                projectId: PROJECT,
+                folderId: FolderId.make("fold-docs"),
+                name: "docs",
+                readOnly: true,
+                createdAt: new Date(),
+              }),
+            },
+          ]),
+      }),
+    ),
+    Layer.provide(Layer.mock(ReferencesRepo, { listForProject: () => Effect.succeed([]) })),
+    Layer.provide(blobs),
+  );
   const registry = SessionChannelRegistryLive;
   const tokens = SessionChannelTokensRepoMemory;
   const deployment = Layer.succeed(DeploymentConfig, {
@@ -132,6 +173,7 @@ describe("capture channel routes", () => {
     ),
     CaptureChannelLive.pipe(
       Layer.provide(CaptureGitVerifierOff),
+      Layer.provide(sources),
       Layer.provide(memory.layer),
       Layer.provide(blobs),
       // Small numbers so a multipart plan is exercised with bytes a test can afford.
@@ -266,6 +308,20 @@ describe("capture channel routes", () => {
     }
     expect(urls[cap0.manifest.sections.workspace.root]).toMatch(/^file:\/\//);
     expect(urls[cap0.key]).toMatch(/^file:\/\//);
+    // The project's folder travels with the plan: a captured workspace cannot bind-mount it.
+    const beside = first.json["sources"] as ReadonlyArray<Record<string, unknown>>;
+    expect(beside).toHaveLength(1);
+    const docs = beside[0];
+    expect(docs?.["name"]).toBe("docs");
+    expect(docs?.["path"]).toBe("/workspace/home/docs");
+    expect(docs?.["read_only"]).toBe(true);
+    expect(docs?.["key"]).toBe(`captures/${WORKTREE}/2/sources/${docs?.["sha256"]}.tar.gz`);
+    expect(urls[String(docs?.["key"])]).toMatch(/^file:\/\//);
+    // The archive sits under the epoch the executor reads, and nowhere else: capture retention
+    // sweeps it when the epoch is fenced.
+    expect(fs.readFileSync(path.join(blobRoot, String(docs?.["key"]))).byteLength).toBe(
+      docs?.["bytes"],
+    );
     // The same executor re-planning under its epoch is fine; a stale epoch is fenced.
     const again = await post(address, "/plan.get", token, { epoch: 2 });
     expect(again.status).toBe(200);
@@ -765,8 +821,10 @@ describe("capture channel routes", () => {
     expect(plan.status).toBe(200);
     const urls = Object.keys(plan.json["get_urls"] as Record<string, string>);
     expect(urls).toEqual(expect.arrayContaining([...snapshot.packs, snapshot.root, pending.key]));
-    expect(urls.every(isCaptureObjectKey)).toBe(true);
-    expect(presigned.every(isCaptureObjectKey)).toBe(true);
+    // A URL is only ever minted for a capture object or a source archive, both under the
+    // session's own prefix.
+    expect(urls.every(isReadableKey)).toBe(true);
+    expect(presigned.every(isReadableKey)).toBe(true);
     expect([...headed, ...presigned]).not.toContain(bare);
     // upload.urls drops a prefix, a slash-terminated prefix and an empty key; upload.complete
     // refuses a prefix outright.
