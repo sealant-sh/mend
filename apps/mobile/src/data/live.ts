@@ -382,6 +382,7 @@ export const useSession = (id: string | null) =>
         readonly currentAgent: SessionProcessDto | null;
         /** What this account may do (docs/adr/0003); absent from servers before organizations. */
         readonly control?: {
+          readonly own: boolean;
           readonly steer: boolean;
           readonly stop: boolean;
           readonly toggleSharedControl: boolean;

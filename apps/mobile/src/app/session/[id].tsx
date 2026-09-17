@@ -375,6 +375,8 @@ export default function SessionScreen() {
   // organizations sends no control view; everything stays available there.
   const steer = detail.data?.control?.steer ?? true;
   const canStop = detail.data?.control?.stop ?? true;
+  // Handing a session off is the owner's even while control is shared.
+  const own = detail.data?.control?.own ?? true;
   const canOpenShell =
     session !== undefined && ["running", "waiting", "idle"].includes(session.status);
   const protocol =
@@ -384,7 +386,7 @@ export default function SessionScreen() {
   const [shellError, setShellError] = useState<string | null>(null);
   // Cross-mode pickup: claude and codex sessions continue here in structured
   // mode; other harnesses keep the raw terminal composer.
-  const canPickUp = steer && (session?.harness === "claude" || session?.harness === "codex");
+  const canPickUp = own && (session?.harness === "claude" || session?.harness === "codex");
 
   const openTerminal = () => {
     if (session === undefined) {
