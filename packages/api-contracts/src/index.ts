@@ -13,6 +13,7 @@ export * from "./worktrees.ts";
 export * from "./github.ts";
 export * from "./devices.ts";
 export * from "./folders.ts";
+export * from "./operator.ts";
 export * from "./organization.ts";
 export * from "./api.ts";
 export * from "./client.ts";

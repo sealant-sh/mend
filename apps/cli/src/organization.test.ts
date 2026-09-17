@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { renderMembers, scanFolder, uploadBatches } from "./organization.ts";
+import { renderMembers, renderOrganizations, scanFolder, uploadBatches } from "./organization.ts";
 
 interface Recorded {
   readonly method: string;
@@ -80,10 +80,11 @@ const runCli = async (url: string, args: ReadonlyArray<string>) => {
   }
 };
 
-const organization = (role: "owner" | "member") => ({
+const organization = (role: "owner" | "member", operator = false) => ({
   organization: { id: "org-1", name: "Acme" },
   userId: "alice",
   role,
+  operator,
   memberCount: 2,
   mountDelivery: "bind",
 });
@@ -225,6 +226,49 @@ describe("the commands against a server", () => {
             : null,
         ),
       ).toEqual(["private", "shared"]);
+    } finally {
+      await fake.close();
+    }
+  });
+});
+
+describe("operator", () => {
+  it("lists organizations and says when one has no owner", () => {
+    expect(
+      renderOrganizations([
+        { organization: { id: "o1", name: "Acme", createdAt: "" }, memberCount: 3, ownerCount: 1 },
+        {
+          organization: { id: "o2", name: "Globex", createdAt: "" },
+          memberCount: 1,
+          ownerCount: 0,
+        },
+      ]),
+    ).toEqual(["Acme    3 members · 1 owner", "Globex  1 member · no owner"]);
+  });
+
+  it("prints a reset link for the operator and refuses anyone else before asking for one", async () => {
+    let operator = true;
+    const fake = await startFakeMend((request) =>
+      request.url === "/api/organization"
+        ? { status: 200, body: organization("owner", operator) }
+        : { status: 200, body: { path: "/reset/tok", expiresAt: "2026-09-18T10:00:00Z" } },
+    );
+    try {
+      const issued = await runCli(fake.url, ["operator", "reset-link", "sam@acme.dev"]);
+      expect(issued.code).toBe(0);
+      expect(issued.stdout).toContain(`${fake.url}/reset/tok`);
+      expect(fake.recorded.at(-1)).toEqual({
+        method: "POST",
+        url: "/api/operator/password-resets",
+        body: { email: "sam@acme.dev" },
+      });
+
+      operator = false;
+      const before = fake.recorded.length;
+      const refused = await runCli(fake.url, ["operator", "reset-link", "sam@acme.dev"]);
+      expect(refused.code).toBe(1);
+      expect(refused.stderr).toContain("not the operator");
+      expect(fake.recorded.slice(before).map((entry) => entry.url)).toEqual(["/api/organization"]);
     } finally {
       await fake.close();
     }

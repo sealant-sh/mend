@@ -1,4 +1,4 @@
-import { createHash } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 
 import { NetworkConfig, type PublicNetwork } from "@mend/network";
 import { betterAuth, type BetterAuthOptions } from "better-auth";
@@ -112,7 +112,8 @@ const createBetterAuth = (options: AuthHandlerOptions) =>
     secret: options.secret,
     baseURL: options.network.appUrl,
     basePath: "/api/auth",
-    emailAndPassword: { enabled: true },
+    // A reset ends every session of the account: whoever held the old password is signed out.
+    emailAndPassword: { enabled: true, revokeSessionsOnPasswordReset: true },
     // Accounts are deactivated, never deleted (docs/adr/0003); sessions of one are refused.
     user: {
       additionalFields: {
@@ -139,8 +140,20 @@ export class Auth extends Context.Service<
   {
     readonly handler: (request: Request) => Effect.Effect<Response>;
     readonly getSession: (headers: Headers) => Effect.Effect<Option.Option<AuthSession>>;
+    /**
+     * A one-time password reset for an account (docs/adr/0003, "Recovery"): Mend sends no email,
+     * so an owner or the operator hands the link over. Stored through Better Auth's own
+     * verification storage and consumed by its `POST /api/auth/reset-password`, which also ends
+     * the account's sessions.
+     */
+    readonly issuePasswordReset: (
+      userId: string,
+    ) => Effect.Effect<{ readonly token: string; readonly expiresAt: Date }>;
   }
 >()("@mend/auth/Auth") {}
+
+/** How long a handed-over reset link works. */
+export const PASSWORD_RESET_TTL_MS = 24 * 60 * 60 * 1000;
 
 /** Postgres-backed Better Auth and paired-device authentication. */
 export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | RegistrationPolicy> =
@@ -278,6 +291,20 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
         });
       });
 
-      return { handler, getSession };
+      const issuePasswordReset = Effect.fn("Auth.issuePasswordReset")(function* (userId: string) {
+        const token = randomBytes(32).toString("base64url");
+        const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS);
+        const context = yield* Effect.promise(() => auth.$context);
+        yield* Effect.promise(() =>
+          context.internalAdapter.createVerificationValue({
+            value: userId,
+            identifier: `reset-password:${token}`,
+            expiresAt,
+          }),
+        );
+        return { token, expiresAt };
+      });
+
+      return { handler, getSession, issuePasswordReset };
     }),
   );

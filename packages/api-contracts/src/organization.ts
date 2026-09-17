@@ -90,6 +90,12 @@ export class MemberRoleRequest extends Schema.Class<MemberRoleRequest>("MemberRo
   role: OrganizationRole,
 }) {}
 
+/** A one-time link handed over by hand: relative to the web app's origin, and when it dies. */
+export class OneTimeLink extends Schema.Class<OneTimeLink>("OneTimeLink")({
+  path: Schema.String,
+  expiresAt: Schema.Date,
+}) {}
+
 export const organizationGroup = HttpApiGroup.make("organization")
   .add(
     HttpApiEndpoint.get("current", "/organization", {
@@ -137,6 +143,15 @@ export const organizationGroup = HttpApiGroup.make("organization")
       params: Schema.Struct({ userId: Schema.String }),
       payload: MemberRoleRequest,
       success: OrganizationMember,
+      error: [NotFound, OrganizationRejected],
+    }),
+  )
+  .add(
+    // Owners only, for a member (not another owner; the operator resets owners). The link sets a
+    // new password once and signs the account out everywhere.
+    HttpApiEndpoint.post("issuePasswordReset", "/organization/members/:userId/password-reset", {
+      params: Schema.Struct({ userId: Schema.String }),
+      success: OneTimeLink,
       error: [NotFound, OrganizationRejected],
     }),
   )

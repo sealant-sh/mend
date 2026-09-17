@@ -80,6 +80,7 @@ const startServer = async () => {
   if (session === null) throw new Error("Better Auth did not authenticate its cookie");
   const authLayer = Layer.succeed(Auth, {
     handler: (request) => Effect.promise(() => authHandler(request)),
+    issuePasswordReset: () => Effect.die("unused"),
     getSession: (headers) =>
       Effect.promise(async () => {
         const response = await authHandler(

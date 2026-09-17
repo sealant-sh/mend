@@ -45,6 +45,16 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       return `shared control of session ${event.subjectId}`;
     case "session.shared_control_off":
       return `turned off shared control of session ${event.subjectId}`;
+    case "member.password_reset_issued":
+      return `issued a password reset link for ${subject}`;
+    case "organization.created":
+      return `created the organization${name === null ? "" : ` as ${name}`}`;
+    case "organization.renamed":
+      return `renamed the organization${name === null ? "" : ` to ${name}`}`;
+    case "recovery.owner_granted":
+      return `made ${subject} an owner, as the operator`;
+    case "recovery.password_reset_issued":
+      return `issued a password reset link for ${subject}, as the operator`;
   }
 };
 

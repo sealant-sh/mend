@@ -647,6 +647,65 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
 
   // ── this machine ───────────────────────────────────────────────────────
   {
+    name: "operator org list",
+    section: "this machine",
+    summary: "list organizations with their member and owner counts",
+    synopsis: [],
+    description: [
+      "Operator only. One line per organization. An organization with no owner says so: bring one in with mend operator org invite-owner or mend operator grant-owner. The operator administers the instance and reads no organization content.",
+    ],
+    see: ["operator org invite-owner", "operator grant-owner"],
+  },
+  {
+    name: "operator org create",
+    section: "this machine",
+    summary: "create an organization (multi tenancy only)",
+    synopsis: ["<name>"],
+    description: [
+      "Operator only, and only when MEND_TENANCY=multi. The organization starts empty: invite its first owner next.",
+    ],
+    see: ["operator org invite-owner"],
+  },
+  {
+    name: "operator org rename",
+    section: "this machine",
+    summary: "rename an organization",
+    synopsis: ["<org> <name>"],
+    description: ["Operator only. Recorded in the organization's audit log."],
+    see: ["operator org list"],
+  },
+  {
+    name: "operator org invite-owner",
+    section: "this machine",
+    summary: "print a one-time owner invitation for an organization",
+    synopsis: ["<org> [--email <address>]"],
+    description: [
+      "Operator only. Prints a link that works once and makes whoever opens it an owner of the organization. Recorded in its audit log.",
+    ],
+    options: [{ flag: "--email <address>", text: "only an account with this email may accept it" }],
+    see: ["operator grant-owner"],
+  },
+  {
+    name: "operator grant-owner",
+    section: "this machine",
+    summary: "make an existing member an owner",
+    synopsis: ["<org> <email>"],
+    description: [
+      "Operator only. For an organization whose owners are gone or locked out. The account must already be a member. Recorded in the organization's audit log.",
+    ],
+    see: ["operator org invite-owner"],
+  },
+  {
+    name: "operator reset-link",
+    section: "this machine",
+    summary: "print a one-time password reset link for an account",
+    synopsis: ["<email>"],
+    description: [
+      "Operator only. Mend sends no email, so you hand the link over. It works once, expires after a day, and setting a password with it signs the account out everywhere. Owners reset their members' passwords from Settings.",
+    ],
+    see: ["operator grant-owner"],
+  },
+  {
     name: "server",
     section: "this machine",
     summary: "install and manage this machine's Mend server",

@@ -140,6 +140,14 @@ export class OrganizationsRepo extends Context.Service<
       organizationId: OrganizationId,
     ) => Effect.Effect<ReadonlyArray<OrganizationMember>>;
     readonly memberCount: (organizationId: OrganizationId) => Effect.Effect<number>;
+    /** Every organization with its member and owner counts, by name: the operator's list. */
+    readonly listWithCounts: () => Effect.Effect<
+      ReadonlyArray<{
+        readonly organization: Organization;
+        readonly memberCount: number;
+        readonly ownerCount: number;
+      }>
+    >;
     readonly addMember: (
       organizationId: OrganizationId,
       userId: string,
@@ -398,6 +406,36 @@ export const OrganizationsRepoLive: Layer.Layer<
         .where(eq(organizationMembers.organizationId, organizationId))
         .pipe(Effect.orDie);
       return row?.total ?? 0;
+    });
+
+    const listWithCounts = Effect.fn("OrganizationsRepo.listWithCounts")(function* () {
+      const rows = yield* db
+        .select()
+        .from(organizations)
+        .orderBy(asc(organizations.name))
+        .pipe(Effect.orDie);
+      const counts = yield* db
+        .select({
+          organizationId: organizationMembers.organizationId,
+          role: organizationMembers.role,
+          total: count(),
+        })
+        .from(organizationMembers)
+        .groupBy(organizationMembers.organizationId, organizationMembers.role)
+        .pipe(Effect.orDie);
+      const totalOf = (organizationId: OrganizationId, role?: OrganizationRole) =>
+        counts
+          .filter(
+            (entry) =>
+              entry.organizationId === organizationId &&
+              (role === undefined || entry.role === role),
+          )
+          .reduce((sum, entry) => sum + entry.total, 0);
+      return rows.map((row) => ({
+        organization: toOrganization(row),
+        memberCount: totalOf(row.id),
+        ownerCount: totalOf(row.id, "owner"),
+      }));
     });
 
     const alreadyIn = (userId: string) =>
@@ -721,6 +759,7 @@ export const OrganizationsRepoLive: Layer.Layer<
 
     return {
       count: countOrganizations,
+      listWithCounts,
       sole,
       byId,
       create,

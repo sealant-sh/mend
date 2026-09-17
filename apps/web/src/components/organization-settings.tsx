@@ -7,6 +7,7 @@ import {
   createFolder,
   createInvitation,
   deleteFolderFile,
+  issuePasswordReset,
   removeFolder,
   removeMember,
   revokeInvitation,
@@ -191,8 +192,24 @@ function MembersPanel({ view }: { readonly view: OrganizationViewDto }) {
   const [confirming, setConfirming] = useState<string | null>(null);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [reset, setReset] = useState<{
+    readonly name: string;
+    readonly link: string;
+    readonly expiresAt: Date;
+  } | null>(null);
   const owner = view.role === "owner";
   const refresh = () => queryClient.invalidateQueries(trpc.organization.pathFilter());
+
+  const issueReset = (member: OrganizationMemberDto) =>
+    act(member.userId, () =>
+      issuePasswordReset(member.userId).then((issued) =>
+        setReset({
+          name: member.name,
+          link: `${window.location.origin}${issued.path}`,
+          expiresAt: issued.expiresAt,
+        }),
+      ),
+    );
 
   const act = (userId: string, work: () => Promise<unknown>, after?: () => void) => {
     setPending(userId);
@@ -213,6 +230,19 @@ function MembersPanel({ view }: { readonly view: OrganizationViewDto }) {
       title="Members"
       description="Everyone here sees the organization's shared projects and their own private ones. Owners also invite and remove people, change roles, and manage folders and references. An organization keeps at least one owner."
     >
+      {reset === null ? null : (
+        <div>
+          <p className="mb-2 text-[13px] text-ink-2">
+            A password reset link for {reset.name}. Setting a password with it signs them out
+            everywhere.
+          </p>
+          <OneTimeLink
+            link={reset.link}
+            expiresAt={reset.expiresAt}
+            onDone={() => setReset(null)}
+          />
+        </div>
+      )}
       {members.map((member) => {
         const self = member.userId === view.userId;
         return (
@@ -239,6 +269,14 @@ function MembersPanel({ view }: { readonly view: OrganizationViewDto }) {
                   >
                     {member.role === "owner" ? "Make member" : "Make owner"}
                   </QuietButton>
+                  {member.role === "member" && !self ? (
+                    <QuietButton
+                      disabled={pending === member.userId}
+                      onClick={() => issueReset(member)}
+                    >
+                      Reset password
+                    </QuietButton>
+                  ) : null}
                   <QuietButton onClick={() => setConfirming(member.userId)}>
                     {self ? "Leave…" : "Remove…"}
                   </QuietButton>

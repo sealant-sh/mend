@@ -191,6 +191,7 @@ const processesLayer: Layer.Layer<SessionProcessesRepo> = Layer.mock(SessionProc
 
 const authLayer: Layer.Layer<Auth> = Layer.succeed(Auth, {
   handler: () => Effect.succeed(new Response(null, { status: 404 })),
+  issuePasswordReset: () => Effect.die("unused"),
   getSession: (headers) =>
     Effect.succeed(
       headers.get("authorization") === AUTHORIZATION

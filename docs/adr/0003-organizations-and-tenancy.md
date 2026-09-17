@@ -100,8 +100,10 @@ code), and letting organization owners administer the machine (there is no singl
   - Invitations are single-use links: a 32-byte random token hashed at rest, with an expiry and an
     optional email binding, revocable, and accepted under a row lock. An owner copies the link and
     shares it. Mend sends no email in v1.
-- Password recovery: an owner issues a one-time reset link for a member, and the operator for an
-  owner. Email delivery arrives with self-serve registration, if ever.
+- Password recovery: an owner issues a one-time reset link for a member, and the operator for any
+  account in an organization. The token lives in Better Auth's verification storage for a day and is
+  consumed by its reset endpoint, which also ends the account's sessions. Email delivery arrives
+  with self-serve registration, if ever.
 
 Rejected for v1: teams inside an organization (none of the blockers require them; one fewer level to
 secure), per-project roles, an admin role between owner and member, and self-serve registration.
@@ -193,9 +195,10 @@ is cold and starts warming for them. The setup page counts the viewer's own stan
 ### Audit log
 
 Owners see their organization's events: membership, invitations, role and visibility changes, shared
-control, recovery takeovers, folders and references. The operator sees operator events:
-organizations, limits, operator folders and recovery, never organization content. Stored in Postgres
-and kept indefinitely in v1.
+control, recovery takeovers, folders and references. The operator's acts on an organization (naming
+it, inviting or granting an owner, a password reset) are recorded in that organization's log, so its
+owners see what the operator did; the operator reads no organization content. Stored in Postgres and
+kept indefinitely in v1.
 
 ### Interface
 

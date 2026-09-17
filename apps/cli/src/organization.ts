@@ -28,6 +28,7 @@ interface OrganizationView {
   readonly organization: { readonly id: string; readonly name: string };
   readonly userId: string;
   readonly role: "owner" | "member";
+  readonly operator: boolean;
   readonly memberCount: number;
   readonly mountDelivery: "bind" | "none";
 }
@@ -269,4 +270,123 @@ export const sessionShareCommand = async (api: ApiCall, args: ReadonlyArray<stri
       ? `${green("✓")} shared control on · ${session.harness} ${dim(session.id.slice(0, 8))} · everyone who can see the project steers it on your credentials`
       : `${green("✓")} shared control off · ${session.harness} ${dim(session.id.slice(0, 8))}`,
   );
+};
+
+// ─── operator ───────────────────────────────────────────────────────────────
+
+interface OrganizationSummaryDto {
+  readonly organization: { readonly id: string; readonly name: string; readonly createdAt: string };
+  readonly memberCount: number;
+  readonly ownerCount: number;
+}
+
+interface OneTimeLinkDto {
+  readonly path: string;
+  readonly expiresAt: string;
+}
+
+/** The operator's organizations as the terminal prints them; an ownerless one says so. */
+export const renderOrganizations = (
+  rows: ReadonlyArray<OrganizationSummaryDto>,
+): ReadonlyArray<string> => {
+  if (rows.length === 0) return ["no organizations"];
+  const width = Math.max(...rows.map((row) => row.organization.name.length));
+  return rows.map(
+    (row) =>
+      `${row.organization.name.padEnd(width)}  ${row.memberCount} ${row.memberCount === 1 ? "member" : "members"} · ${
+        row.ownerCount === 0
+          ? "no owner"
+          : `${row.ownerCount} ${row.ownerCount === 1 ? "owner" : "owners"}`
+      }`,
+  );
+};
+
+const printLink = (baseUrl: string, link: OneTimeLinkDto, what: string) => {
+  say(`${baseUrl.replace(/\/+$/, "")}${link.path}`);
+  say(dim(`${what} · works once · expires ${day(link.expiresAt)}`));
+};
+
+/**
+ * `mend operator …` (docs/adr/0003, "Operator" and "Recovery"): name organizations, bring in an
+ * owner, reset a password. The operator never reads organization content from here.
+ */
+export const operatorCommand = async (
+  api: ApiCall,
+  baseUrl: string,
+  args: ReadonlyArray<string>,
+) => {
+  const words = args.filter((arg, index) => !arg.startsWith("--") && args[index - 1] !== "--email");
+  const view = await organizationOf(api).catch(() => null);
+  if (view === null || !view.operator) {
+    return fail("this account is not the operator of this Mend");
+  }
+  const organizationNamed = async (name: string | undefined) => {
+    if (name === undefined)
+      return fail("name the organization · mend operator org list shows them");
+    const rows = await api<ReadonlyArray<OrganizationSummaryDto>>("GET", "/operator/organizations");
+    const row = rows.find((candidate) => candidate.organization.name === name);
+    return row?.organization ?? fail(`no organization named "${name}"`);
+  };
+  const [first, second, third, fourth] = words;
+  if (first === "org") {
+    switch (second) {
+      case undefined:
+      case "list": {
+        const rows = await api<ReadonlyArray<OrganizationSummaryDto>>(
+          "GET",
+          "/operator/organizations",
+        );
+        for (const line of renderOrganizations(rows)) say(line);
+        return;
+      }
+      case "create": {
+        if (third === undefined) return fail("usage: mend operator org create <name>");
+        const created = await api<{ readonly name: string }>("POST", "/operator/organizations", {
+          name: third,
+        });
+        say(
+          `${green("✓")} created ${created.name} · mend operator org invite-owner ${created.name}`,
+        );
+        return;
+      }
+      case "rename": {
+        if (fourth === undefined) return fail("usage: mend operator org rename <org> <name>");
+        const organization = await organizationNamed(third);
+        await api("PUT", `/operator/organizations/${organization.id}/name`, { name: fourth });
+        say(`${green("✓")} renamed ${organization.name} to ${fourth}`);
+        return;
+      }
+      case "invite-owner": {
+        const organization = await organizationNamed(third);
+        const email = takeFlagValue(args, "--email");
+        const link = await api<OneTimeLinkDto>(
+          "POST",
+          `/operator/organizations/${organization.id}/invitations`,
+          email === null ? {} : { email },
+        );
+        printLink(
+          baseUrl,
+          link,
+          `owner of ${organization.name}${email === null ? "" : ` · for ${email}`}`,
+        );
+        return;
+      }
+      default:
+        return fail(`unknown operator org command "${second}" · mend help operator org list`);
+    }
+  }
+  if (first === "grant-owner") {
+    if (third === undefined) return fail("usage: mend operator grant-owner <org> <email>");
+    const organization = await organizationNamed(second);
+    await api("POST", `/operator/organizations/${organization.id}/owners`, { email: third });
+    say(`${green("✓")} ${third} is an owner of ${organization.name}`);
+    return;
+  }
+  if (first === "reset-link") {
+    if (second === undefined) return fail("usage: mend operator reset-link <email>");
+    const link = await api<OneTimeLinkDto>("POST", "/operator/password-resets", { email: second });
+    printLink(baseUrl, link, `password reset for ${second}`);
+    return;
+  }
+  return fail(`unknown operator command "${first ?? ""}" · mend help operator org list`);
 };

@@ -470,6 +470,8 @@ export const revokeInvitation = (id: InvitationDto["id"]) =>
   orLogin(trpcClient.organization.revokeInvitation.mutate({ id }));
 export const setMemberRole = (userId: string, role: OrganizationRoleDto) =>
   orLogin(trpcClient.organization.setMemberRole.mutate({ userId, role }));
+export const issuePasswordReset = (userId: string) =>
+  orLogin(trpcClient.organization.issuePasswordReset.mutate({ userId }));
 export const removeMember = (userId: string) =>
   orLogin(trpcClient.organization.removeMember.mutate({ userId }));
 export const takeOverProject = (id: ProjectDto["id"]) =>
