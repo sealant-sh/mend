@@ -1349,15 +1349,15 @@ export function ProjectFoldersSection({
                   {folder.name}
                 </label>
                 {entry === undefined ? null : (
-                  <button
-                    type="button"
-                    disabled={busy}
-                    aria-pressed={!entry.readOnly}
-                    onClick={() => setReadOnly(folder.id, !entry.readOnly)}
-                    className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
-                  >
-                    {entry.readOnly ? "read-only" : "read-write"}
-                  </button>
+                  <label className="flex items-center gap-2 font-sans text-xs text-muted-foreground">
+                    <input
+                      type="checkbox"
+                      checked={!entry.readOnly}
+                      disabled={busy}
+                      onChange={() => setReadOnly(folder.id, !entry.readOnly)}
+                    />
+                    sessions may write
+                  </label>
                 )}
               </div>
             );

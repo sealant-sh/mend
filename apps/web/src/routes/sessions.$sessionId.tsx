@@ -453,8 +453,10 @@ export function SharedControl({
                 key={String(enabled)}
                 type="button"
                 aria-pressed={shared === enabled}
-                disabled={pending || shared === enabled}
-                onClick={() => toggle(enabled)}
+                disabled={pending}
+                onClick={() => {
+                  if (shared !== enabled) toggle(enabled);
+                }}
                 className={`rounded-md px-2.5 py-1 font-sans text-xs font-medium transition-colors ${
                   shared === enabled
                     ? "bg-panel text-foreground shadow-[var(--shadow-xs)]"

@@ -182,7 +182,7 @@ function ServiceRow({
               Open
             </a>
           )}
-          {live && attempt !== null && attempt.argv.length > 0 && (
+          {live && actionable && attempt !== null && attempt.argv.length > 0 && (
             <RowAction
               onClick={() => onAction("restart", service)}
               disabled={pending !== null}
@@ -191,7 +191,7 @@ function ServiceRow({
               {pending === `restart:${stable.id}` ? "Restarting…" : "Restart"}
             </RowAction>
           )}
-          {live && (
+          {live && actionable && (
             <RowAction
               onClick={() => onAction("stop", service)}
               disabled={pending !== null}
