@@ -28,13 +28,20 @@ export const useViewer = (): Viewer | null => {
   return viewerOf(current.data);
 };
 
-/** What a session row offers this viewer. Unknown viewers get read-only rows. */
+/**
+ * What a session row offers this viewer. Unknown viewers get read-only rows. Deleting stays the
+ * owner's even while control is shared.
+ */
 export const sessionActions = (
   session: SteeringFacts,
   viewer: Viewer | null,
-): { readonly steer: boolean; readonly stop: boolean } => {
+): { readonly own: boolean; readonly steer: boolean; readonly stop: boolean } => {
   const steer = viewer !== null && canSteerSession(session, viewer.userId);
-  return { steer, stop: steer || viewer?.role === "owner" };
+  return {
+    own: viewer !== null && session.ownerUserId === viewer.userId,
+    steer,
+    stop: steer || viewer?.role === "owner",
+  };
 };
 
 export const canRemove = (project: ProjectTenancy, viewer: Viewer | null): boolean =>

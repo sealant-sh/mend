@@ -11,13 +11,14 @@ const shared = { ownerUserId: "alice", sharedControlEnabledAt: new Date() };
 
 describe("session rows", () => {
   it("offer steering to the owner, or anyone while control is shared, and stop to owners", () => {
-    expect(sessionActions(owned, alice)).toEqual({ steer: true, stop: true });
-    expect(sessionActions(owned, bob)).toEqual({ steer: false, stop: true });
+    expect(sessionActions(owned, alice)).toEqual({ own: true, steer: true, stop: true });
+    expect(sessionActions(owned, bob)).toEqual({ own: false, steer: false, stop: true });
     expect(sessionActions(shared, { ...bob, userId: "carol", role: "member" })).toEqual({
+      own: false,
       steer: true,
       stop: true,
     });
-    expect(sessionActions(owned, null)).toEqual({ steer: false, stop: false });
+    expect(sessionActions(owned, null)).toEqual({ own: false, steer: false, stop: false });
   });
 
   it("say whose credentials a session runs on", () => {

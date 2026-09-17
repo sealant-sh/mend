@@ -124,7 +124,7 @@ export const sessionMenu = (
     ]);
   const live = LIVE_STATES.has(session.status);
   // Only what this viewer may do (docs/adr/0003): steering is the owner's unless shared.
-  const { steer, stop } = sessionActions(session, viewer);
+  const { own, steer, stop } = sessionActions(session, viewer);
   const entries: ContextMenuEntry[] = [
     {
       label: "Open session",
@@ -167,7 +167,7 @@ export const sessionMenu = (
       },
     });
   }
-  if (!live && steer) {
+  if (!live && own) {
     entries.push("separator", {
       label: "Delete session…",
       confirm: "Really delete this session? The worktree, its change, and checkpoints remain.",

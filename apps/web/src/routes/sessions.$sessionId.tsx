@@ -169,7 +169,7 @@ function SessionPage() {
             <h1 className="font-display text-3xl font-medium tracking-tight text-foreground">
               {session.harness}
               {session.label === null ? "" : ` — ${session.label}`}
-              {control.steer ? (
+              {control.own ? (
                 <button
                   type="button"
                   onClick={() => setLabelDraft(session.label ?? "")}
@@ -262,7 +262,7 @@ function SessionPage() {
               {pending === "stop" ? "Stopping…" : "Stop"}
             </button>
           )}
-          {!agentLive && control.steer && (
+          {!agentLive && control.own && (
             <button
               type="button"
               disabled={deleting === "working"}
