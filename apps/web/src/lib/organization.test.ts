@@ -11,7 +11,12 @@ import {
   toBase64,
 } from "./organization.ts";
 
-const event = (action: AuditEvent["action"], data: AuditEvent["data"] = {}) => ({
+const event = (
+  action: AuditEvent["action"],
+  data: AuditEvent["data"] = {},
+  subjectName: string | null = null,
+) => ({
+  subjectName,
   event: new AuditEvent({
     id: AuditEventId.make("audit-1"),
     organizationId: OrganizationId.make("org-1"),
@@ -29,9 +34,7 @@ describe("describeAudit", () => {
     expect(describeAudit(event("member.role_changed", { role: "owner" }))).toBe(
       "made carol an owner",
     );
-    expect(describeAudit(event("member.removed"), new Map([["carol", "Carol Chen"]]))).toBe(
-      "removed Carol Chen",
-    );
+    expect(describeAudit(event("member.removed", {}, "Carol Chen"))).toBe("removed Carol Chen");
     expect(describeAudit(event("folder.created", { name: "fixtures" }))).toBe(
       "created folder fixtures",
     );
@@ -42,7 +45,7 @@ describe("describeAudit", () => {
 });
 
 describe("joinState", () => {
-  const open = { state: "open" as const, organizationName: "Acme" };
+  const open = { state: "open" as const, organizationId: OrganizationId.make("org-acme") };
 
   it("tells a spent link apart by what spent it", () => {
     expect(joinState({ ...open, state: "revoked" }, false, null)).toEqual({
@@ -53,15 +56,18 @@ describe("joinState", () => {
 
   it("registers a visitor, and never moves a signed-in account between organizations", () => {
     expect(joinState(open, false, null)).toEqual({ kind: "register" });
-    expect(joinState(open, true, "Acme")).toEqual({ kind: "already-member" });
-    expect(joinState(open, true, "Globex")).toEqual({
+    expect(joinState(open, true, { id: "org-acme", name: "Acme" })).toEqual({
+      kind: "already-member",
+    });
+    // Another organization with the same name is still another organization.
+    expect(joinState(open, true, { id: "org-acme-2", name: "Acme" })).toEqual({
       kind: "other-organization",
-      current: "Globex",
+      current: "Acme",
     });
   });
 });
 
-const file = (path: string, size: number) => ({ path, bytes: new Uint8Array(size) });
+const file = (path: string, size: number) => ({ path, size });
 
 describe("planUpload", () => {
   it("packs files into requests under the cap and names what it left out", () => {

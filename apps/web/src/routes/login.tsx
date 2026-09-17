@@ -118,8 +118,8 @@ function LoginPage() {
           role="status"
           className="mt-5 border-l-2 border-[var(--sw-accent)] pl-3 text-[13px] leading-relaxed text-ink-2"
         >
-          Your access to this Mend was removed. Sessions you were running were checkpointed and
-          stopped.
+          This account no longer belongs to an organization on this Mend. Its sessions are being
+          stopped; their work so far is kept.
         </p>
       ) : null}
       <form

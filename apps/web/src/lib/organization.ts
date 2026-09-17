@@ -11,15 +11,12 @@ const text = (value: string | number | boolean | null | undefined): string | nul
   typeof value === "string" ? value : null;
 
 /**
- * One audit event as a plain sentence, without the actor or time (the row shows those). Accounts
- * are named from `names` when the roster knows them.
+ * One audit event as a plain sentence, without the actor or time (the row shows those). Member
+ * events name the account the server resolved, removed members included.
  */
-export const describeAudit = (
-  entry: Pick<AuditEntryDto, "event">,
-  names: ReadonlyMap<string, string> = new Map(),
-): string => {
+export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName">): string => {
   const { event } = entry;
-  const subject = names.get(event.subjectId) ?? event.subjectId;
+  const subject = entry.subjectName ?? event.subjectId;
   const name = text(event.data["name"]);
   switch (event.action) {
     case "invitation.created":
@@ -69,24 +66,25 @@ const SPENT: Record<"accepted" | "revoked" | "expired", string> = {
  * organization, so the link either names it or names another one.
  */
 export const joinState = (
-  preview: Pick<InvitationPreviewDto, "state" | "organizationName">,
+  preview: Pick<InvitationPreviewDto, "state" | "organizationId">,
   signedIn: boolean,
-  currentOrganization: string | null,
+  current: { readonly id: string; readonly name: string } | null,
 ): JoinState => {
   if (preview.state !== "open") return { kind: "spent", message: SPENT[preview.state] };
   if (!signedIn) return { kind: "register" };
-  if (currentOrganization === preview.organizationName) return { kind: "already-member" };
-  return { kind: "other-organization", current: currentOrganization ?? "no organization" };
+  if (current?.id === preview.organizationId) return { kind: "already-member" };
+  return { kind: "other-organization", current: current?.name ?? "no organization" };
 };
 
+/** A picked file by its place in the folder and its size; bytes are read only once accepted. */
 export interface StagedFile {
   readonly path: string;
-  readonly bytes: Uint8Array;
+  readonly size: number;
 }
 
-export interface UploadPlan {
+export interface UploadPlan<F extends StagedFile> {
   /** Each batch fits one request. */
-  readonly batches: ReadonlyArray<ReadonlyArray<StagedFile>>;
+  readonly batches: ReadonlyArray<ReadonlyArray<F>>;
   /** Files left out, with the reason, in the order they were picked. */
   readonly rejected: ReadonlyArray<{ readonly path: string; readonly reason: string }>;
 }
@@ -98,33 +96,33 @@ const SKIPPED_SEGMENTS = new Set([".git", ".DS_Store", "node_modules"]);
  * Plan a folder upload: drop files over the per-file cap or under a skipped directory, and pack
  * the rest into requests under the per-request cap, in the order given.
  */
-export const planUpload = (
-  files: ReadonlyArray<StagedFile>,
+export const planUpload = <F extends StagedFile>(
+  files: ReadonlyArray<F>,
   limits: { readonly file: number; readonly request: number } = {
     file: FOLDER_MAX_FILE_BYTES,
     request: FOLDER_MAX_REQUEST_BYTES,
   },
-): UploadPlan => {
-  const batches: Array<Array<StagedFile>> = [];
+): UploadPlan<F> => {
+  const batches: Array<Array<F>> = [];
   const rejected: Array<{ readonly path: string; readonly reason: string }> = [];
-  let current: Array<StagedFile> = [];
+  let current: Array<F> = [];
   let size = 0;
   for (const file of files) {
     if (file.path.split("/").some((segment) => SKIPPED_SEGMENTS.has(segment))) {
       rejected.push({ path: file.path, reason: "skipped" });
       continue;
     }
-    if (file.bytes.byteLength > limits.file) {
+    if (file.size > limits.file) {
       rejected.push({ path: file.path, reason: "over 1 MiB" });
       continue;
     }
-    if (current.length > 0 && size + file.bytes.byteLength > limits.request) {
+    if (current.length > 0 && size + file.size > limits.request) {
       batches.push(current);
       current = [];
       size = 0;
     }
     current.push(file);
-    size += file.bytes.byteLength;
+    size += file.size;
   }
   if (current.length > 0) batches.push(current);
   return { batches, rejected };

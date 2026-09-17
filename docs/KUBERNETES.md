@@ -352,6 +352,17 @@ label. A workspace that cannot reach the bucket logs `capture materialize failed
 
 The images come from `ghcr.io/sealant-sh/mend` (`.github/workflows/image.yml`).
 
+## Request bodies at the ingress
+
+Uploading into an organization folder sends up to 4 MiB of files per request, which is about 5.5 MiB
+once encoded. An ingress that caps request bodies below that refuses the upload with 413. With
+ingress-nginx, whose default cap is 1 MiB, set the annotation on the ingress in front of the web
+tier:
+
+```yaml
+nginx.ingress.kubernetes.io/proxy-body-size: 8m
+```
+
 ## Adopting projects (git auth)
 
 The server clones and fetches; a Pod has no ambient git identity, so `--auth ambient` (the default,

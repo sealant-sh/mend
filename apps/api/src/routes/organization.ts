@@ -291,11 +291,24 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
         // Accounts are deactivated, never deleted, so a departed member still has a name.
         const users = yield* UsersRepo;
         const names = new Map<string, string>();
-        for (const actor of new Set(events.map((event) => event.actorUserId))) {
-          names.set(actor, (yield* users.byId(actor))?.name ?? "a removed account");
+        const accounts = new Set(
+          events.flatMap((event) =>
+            event.subjectType === "member"
+              ? [event.actorUserId, event.subjectId]
+              : [event.actorUserId],
+          ),
+        );
+        for (const account of accounts) {
+          names.set(account, (yield* users.byId(account))?.name ?? "a removed account");
         }
         return events.map(
-          (event) => new AuditEntry({ event, actorName: names.get(event.actorUserId) ?? "" }),
+          (event) =>
+            new AuditEntry({
+              event,
+              actorName: names.get(event.actorUserId) ?? "",
+              subjectName:
+                event.subjectType === "member" ? (names.get(event.subjectId) ?? null) : null,
+            }),
         );
       }),
     ),
@@ -310,6 +323,7 @@ export const InvitationsGroupLive = HttpApiBuilder.group(MendApi, "invitations",
         .invitationByToken(payload.token)
         .pipe(Effect.catchTag("InvitationUnknownError", () => new NotFound({ id: "invitation" })));
       return new InvitationPreview({
+        organizationId: resolved.organization.id,
         organizationName: resolved.organization.name,
         role: resolved.invitation.role,
         state: resolved.state,

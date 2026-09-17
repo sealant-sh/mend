@@ -55,7 +55,7 @@ function JoinPage() {
   }
 
   const invitation = preview.data;
-  const state = joinState(invitation, signedIn, current.data?.organization.name ?? null);
+  const state = joinState(invitation, signedIn, current.data?.organization ?? null);
   return (
     <SetupFrame>
       <p className="ev-eyebrow mb-2">invitation</p>

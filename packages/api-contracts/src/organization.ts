@@ -1,4 +1,4 @@
-import { InvitationId, ProjectId } from "@mend/domain";
+import { InvitationId, OrganizationId, ProjectId } from "@mend/domain";
 import {
   AuditEvent,
   Invitation,
@@ -51,6 +51,8 @@ export class OrganizationView extends Schema.Class<OrganizationView>("Organizati
 export class AuditEntry extends Schema.Class<AuditEntry>("AuditEntry")({
   event: AuditEvent,
   actorName: Schema.String,
+  /** The account a member event is about, by name, removed members included; null otherwise. */
+  subjectName: Schema.NullOr(Schema.String),
 }) {}
 
 export class CreateInvitationRequest extends Schema.Class<CreateInvitationRequest>(
@@ -76,6 +78,8 @@ export class InvitationCreated extends Schema.Class<InvitationCreated>("Invitati
  * inviter: holding the link must not reveal who it was meant for.
  */
 export class InvitationPreview extends Schema.Class<InvitationPreview>("InvitationPreview")({
+  /** Tells organizations with the same name apart for a signed-in visitor. */
+  organizationId: OrganizationId,
   organizationName: Schema.String,
   role: OrganizationRole,
   state: Schema.Literals(["open", "accepted", "revoked", "expired"]),

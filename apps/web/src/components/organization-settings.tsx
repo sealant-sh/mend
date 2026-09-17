@@ -170,7 +170,13 @@ export function RemovalConfirmation({
       </ul>
       <div className="mt-3 flex items-center gap-4">
         <QuietButton danger disabled={pending} onClick={onConfirm}>
-          {pending ? "Removing…" : self ? `Leave ${organizationName}` : `Remove ${member.name}`}
+          {pending
+            ? self
+              ? "Leaving…"
+              : "Removing…"
+            : self
+              ? `Leave ${organizationName}`
+              : `Remove ${member.name}`}
         </QuietButton>
         <QuietButton onClick={onCancel}>Cancel</QuietButton>
       </div>
@@ -387,7 +393,7 @@ function InvitationsPanel() {
         />
         <RolePicker value={role} onChange={setRole} />
         <button type="submit" disabled={pending} className={PRIMARY}>
-          {pending ? "Minting…" : "New link"}
+          {pending ? "Creating…" : "New link"}
         </button>
       </form>
       {minted === null ? null : (
@@ -558,13 +564,9 @@ function FolderRow({ folder, owner }: { readonly folder: FolderDto; readonly own
   );
 }
 
-const readPicked = async (picked: FileList): Promise<ReadonlyArray<StagedFile>> =>
-  Promise.all(
-    [...picked].map(async (file) => ({
-      path: stagedPath(file),
-      bytes: new Uint8Array(await file.arrayBuffer()),
-    })),
-  );
+/** Picked files by path and size; nothing is read until the plan accepts it. */
+const stagePicked = (picked: FileList): ReadonlyArray<StagedFile & { readonly file: File }> =>
+  [...picked].map((file) => ({ path: stagedPath(file), size: file.size, file }));
 
 function FolderFiles({ folder, owner }: { readonly folder: FolderDto; readonly owner: boolean }) {
   const trpc = useTRPC();
@@ -581,14 +583,16 @@ function FolderFiles({ folder, owner }: { readonly folder: FolderDto; readonly o
     setError(null);
     setStatus(null);
     void (async () => {
-      const plan = planUpload(await readPicked(picked));
+      const plan = planUpload(stagePicked(picked));
       let sent = 0;
       for (const batch of plan.batches) {
-        await uploadFolderFiles(
-          folder.id,
-          batch.map((file) => ({ path: file.path, contentsBase64: toBase64(file.bytes) })),
-          true,
+        const files = await Promise.all(
+          batch.map(async (staged) => ({
+            path: staged.path,
+            contentsBase64: toBase64(new Uint8Array(await staged.file.arrayBuffer())),
+          })),
         );
+        await uploadFolderFiles(folder.id, files, true);
         sent += batch.length;
       }
       const skipped = plan.rejected.length;
@@ -715,6 +719,9 @@ function OrphanedProjectsPanel() {
 
 // ─── Audit log ──────────────────────────────────────────────────────────────
 
+/** The server's default audit page size: a shorter page is the last one. */
+const AUDIT_PAGE_SIZE = 50;
+
 const formatMoment = (at: Date): string =>
   at.toLocaleString(undefined, {
     day: "numeric",
@@ -726,13 +733,19 @@ const formatMoment = (at: Date): string =>
 function AuditPanel() {
   const trpc = useTRPC();
   const first = useQuery(trpc.organization.audit.queryOptions({}));
-  const members = useQuery(trpc.organization.members.queryOptions()).data ?? [];
-  const [earlier, setEarlier] = useState<ReadonlyArray<AuditEntryDto>>([]);
-  const [exhausted, setExhausted] = useState(false);
+  // Earlier pages continue from the first page they were loaded after; when that page refreshes
+  // (a live event), they are dropped instead of leaving a gap between the two.
+  const [earlier, setEarlier] = useState<{
+    readonly after: number;
+    readonly entries: ReadonlyArray<AuditEntryDto>;
+    readonly exhausted: boolean;
+  }>({ after: 0, entries: [], exhausted: false });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const names = new Map(members.map((member) => [member.userId, member.name]));
-  const entries = [...(first.data ?? []), ...earlier];
+  const current = earlier.after === first.dataUpdatedAt ? earlier : null;
+  const entries = [...(first.data ?? []), ...(current?.entries ?? [])];
+  const exhausted =
+    current?.exhausted ?? (first.data !== undefined && first.data.length < AUDIT_PAGE_SIZE);
 
   const loadEarlier = () => {
     const last = entries.at(-1);
@@ -742,8 +755,11 @@ function AuditPanel() {
     void trpcClient.organization.audit
       .query({ before: last.event.id })
       .then((page) => {
-        setEarlier([...earlier, ...page]);
-        setExhausted(page.length === 0);
+        setEarlier({
+          after: first.dataUpdatedAt,
+          entries: [...(current?.entries ?? []), ...page],
+          exhausted: page.length < AUDIT_PAGE_SIZE,
+        });
         return page;
       })
       .catch((cause: unknown) => setError(describe(cause)))
@@ -766,7 +782,7 @@ function AuditPanel() {
                 {formatMoment(entry.event.createdAt)}
               </span>{" "}
               <span className="font-medium text-foreground">{entry.actorName}</span>{" "}
-              <span className="text-ink-2">{describeAudit(entry, names)}</span>
+              <span className="text-ink-2">{describeAudit(entry)}</span>
             </li>
           ))}
         </ol>
