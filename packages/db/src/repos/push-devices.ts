@@ -33,6 +33,8 @@ export class PushDevicesRepo extends Context.Service<
     readonly remove: (token: string) => Effect.Effect<void>;
     /** Unregister the caller's own device; another account's token is left untouched. */
     readonly removeOwned: (userId: string, token: string) => Effect.Effect<void>;
+    /** Drop every phone of an account that lost access. */
+    readonly removeAllForUser: (userId: string) => Effect.Effect<void>;
   }
 >()("@mend/db/PushDevicesRepo") {}
 
@@ -96,6 +98,12 @@ export const PushDevicesRepoLive: Layer.Layer<PushDevicesRepo, never, MendDB> = 
         .pipe(Effect.orDie);
     });
 
-    return { register, listForUsers, remove, removeOwned };
+    const removeAllForUser = Effect.fn("PushDevicesRepo.removeAllForUser")(function* (
+      userId: string,
+    ) {
+      yield* db.delete(pushDevices).where(eq(pushDevices.userId, userId)).pipe(Effect.orDie);
+    });
+
+    return { register, listForUsers, remove, removeOwned, removeAllForUser };
   }),
 );

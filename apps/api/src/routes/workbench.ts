@@ -58,6 +58,7 @@ import {
 import {
   ProjectLinksRepo,
   AgentConversationRepo,
+  AuditEventsRepo,
   ChangePassesRepo,
   ChangeToursRepo,
   CheckpointsRepo,
@@ -620,6 +621,14 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const project = yield* projects
           .setVisibility(params.id, payload.visibility)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* (yield* AuditEventsRepo).record({
+          organizationId: project.organizationId,
+          actorUserId: (yield* CurrentUser).user.id,
+          action: "project.visibility_changed",
+          subjectType: "project",
+          subjectId: project.id,
+          data: { visibility: project.visibility },
+        });
         // Who may run here changed: standbys warmed for accounts that lost access drain.
         yield* (yield* SessionEngine).reconcileHotSessions(params.id);
         return project;
@@ -1915,7 +1924,7 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
             )
             .pipe(Effect.mapError((error) => readableGitFailure(error.cause, mode))),
         );
-        return yield* references.create({
+        const created = yield* references.create({
           id,
           organizationId: viewer.organizationId,
           createdByUserId: userId,
@@ -1925,6 +1934,15 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
           pinnedRef: payload.ref,
           headSha: cloned.headSha,
         });
+        yield* (yield* AuditEventsRepo).record({
+          organizationId: viewer.organizationId,
+          actorUserId: userId,
+          action: "reference.added",
+          subjectType: "reference",
+          subjectId: created.id,
+          data: { name: created.name },
+        });
+        return created;
       }),
     )
     .handle("remove", ({ params }) =>
@@ -1934,6 +1952,14 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
         const store = yield* Store;
         yield* store.removeReference(reference.path);
         yield* references.remove(params.id);
+        yield* (yield* AuditEventsRepo).record({
+          organizationId: reference.organizationId,
+          actorUserId: (yield* CurrentUser).user.id,
+          action: "reference.removed",
+          subjectType: "reference",
+          subjectId: reference.id,
+          data: { name: reference.name },
+        });
       }),
     )
     .handle("refresh", ({ params }) =>

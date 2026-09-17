@@ -244,7 +244,35 @@ const found = <K, V, E>(map: ReadonlyMap<K, V>, key: K, missing: () => E) => {
   return value === undefined ? Effect.fail(missing()) : Effect.succeed(value);
 };
 
-const makeSession = (
+/** A project with only its tenancy facts and store path chosen; everything else is inert. */
+export const makeProject = (facts: {
+  readonly id: ProjectId;
+  readonly organizationId: OrganizationId;
+  readonly visibility: "private" | "shared";
+  readonly createdByUserId: string | null;
+  readonly storePath: string;
+}): Project =>
+  new Project({
+    ...facts,
+    name: String(facts.id),
+    originUrl: null,
+    defaultBranch: "main",
+    adoptedSha: Sha.make("0123456789abcdef"),
+    autoTour: "off",
+    autoSuggest: "off",
+    autoName: "off",
+    backgroundSessions: "off",
+    gitAuthMode: "ambient",
+    workspaceImage: null,
+    applyDotfiles: false,
+    inheritUserSkills: false,
+    hotSessions: 0,
+    installCommand: null,
+    createdAt: NOW,
+    updatedAt: NOW,
+  });
+
+export const makeSession = (
   id: SessionId,
   project: ProjectId,
   worktree: WorktreeId,
@@ -325,27 +353,15 @@ export const createTenancyWorld = async (): Promise<TenancyWorld> => {
     projects.set(
       own.project,
       new Project({
-        id: own.project,
+        ...makeProject({
+          id: own.project,
+          organizationId: organization.id,
+          visibility: facts.visibility,
+          createdByUserId: facts.creator,
+          storePath: join(root, projectKey, "repo.git"),
+        }),
         name: projectKey,
-        organizationId: organization.id,
-        visibility: facts.visibility,
-        createdByUserId: facts.creator,
         originUrl: `https://example.invalid/${projectKey}.git`,
-        storePath: join(root, projectKey, "repo.git"),
-        defaultBranch: "main",
-        adoptedSha: Sha.make("0123456789abcdef"),
-        autoTour: "off",
-        autoSuggest: "off",
-        autoName: "off",
-        backgroundSessions: "off",
-        gitAuthMode: "ambient",
-        workspaceImage: null,
-        applyDotfiles: false,
-        inheritUserSkills: false,
-        hotSessions: 0,
-        installCommand: null,
-        createdAt: NOW,
-        updatedAt: NOW,
       }),
     );
     worktrees.set(

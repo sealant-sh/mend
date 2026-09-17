@@ -1,5 +1,6 @@
 import { RegistrationPolicy } from "@mend/auth";
 import {
+  AuditEventsRepo,
   InvitationUnknownError,
   OrganizationsRepo,
   UsersRepo,
@@ -51,6 +52,7 @@ const policy = (options: {
   readonly calls?: Array<string>;
 }) =>
   RegistrationPolicyLive.pipe(
+    Layer.provide(Layer.mock(AuditEventsRepo, { record: () => Effect.void })),
     Layer.provide(
       Layer.mock(UsersRepo, {
         count: () => Effect.succeed(options.users),

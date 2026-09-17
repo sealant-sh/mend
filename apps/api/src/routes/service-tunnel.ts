@@ -6,6 +6,7 @@ import { Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { Socket } from "effect/unstable/socket";
 
+import { ConnectionRegistry, guardSocket } from "../connections.ts";
 import { SessionSteering } from "../session-steering.ts";
 
 /**
@@ -33,6 +34,7 @@ import { SessionSteering } from "../session-steering.ts";
 export const ServiceTunnelRoutes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const auth = yield* Auth;
+    const connections = yield* ConnectionRegistry;
     const services = yield* ServicesRepo;
     const forwards = yield* ServiceForwardsRepo;
     const sessions = yield* SessionsRepo;
@@ -116,6 +118,13 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
             yield* Effect.addFinalizer(() => Effect.sync(() => pipe.close()));
             const socket = yield* request.upgrade;
             const write = yield* socket.writer;
+            // Removing the account closes this socket, and drops its input from then on (docs/adr/0003).
+            const guard = yield* guardSocket(
+              connections,
+              authed.value.user.id,
+              write,
+              auth.getSession(headers).pipe(Effect.map(Option.isSome)),
+            );
 
             const iterator = pipe.output[Symbol.asyncIterator]();
             const pumpOutput = Effect.gen(function* () {
@@ -130,6 +139,7 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
 
             yield* socket
               .runRaw((data) => {
+                if (guard.revoked()) return Effect.void;
                 if (typeof data !== "string") {
                   pipe.send(data);
                   return Effect.void;

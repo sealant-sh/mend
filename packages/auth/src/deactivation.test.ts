@@ -51,13 +51,17 @@ const authLayer = AuthLive.pipe(
   ),
 );
 
-const signedIn = (headers: Headers) =>
+/** The signed-in account's email, or null when the headers sign nobody in. */
+const signedInAs = (headers: Headers) =>
   Effect.runPromise(
     Effect.gen(function* () {
       const auth = yield* Auth;
-      return Option.isSome(yield* auth.getSession(headers));
+      const session = yield* auth.getSession(headers);
+      return Option.isSome(session) ? session.value.user.email : null;
     }).pipe(Effect.provide(authLayer), Effect.scoped),
   );
+
+const signedIn = async (headers: Headers) => (await signedInAs(headers)) !== null;
 
 const bearer = (token: string) => new Headers({ authorization: `Bearer ${token}` });
 
@@ -95,6 +99,11 @@ describe.skipIf(!reachable)("deactivated accounts", () => {
         "expiresAt" timestamptz NOT NULL, "createdAt" timestamptz NOT NULL DEFAULT now(),
         "updatedAt" timestamptz NOT NULL DEFAULT now()
       );
+      CREATE TABLE instance_roles (
+        user_id text NOT NULL REFERENCES "user"(id), role text NOT NULL,
+        granted_by_user_id text, granted_at timestamptz NOT NULL DEFAULT now(),
+        PRIMARY KEY (user_id, role)
+      );
       CREATE TABLE device_tokens (
         id text PRIMARY KEY, user_id text NOT NULL REFERENCES "user"(id), name text NOT NULL,
         platform text NOT NULL, token_hash text NOT NULL UNIQUE,
@@ -119,6 +128,13 @@ describe.skipIf(!reachable)("deactivated accounts", () => {
     expect(response.status).toBe(200);
     sessionToken = response.headers.get("set-auth-token") ?? "";
     const { rows } = await scratch.query<{ id: string }>('SELECT id FROM "user" LIMIT 1');
+    await scratch.query("INSERT INTO instance_roles (user_id, role) VALUES ($1, 'operator')", [
+      rows[0]?.id,
+    ]);
+    // An older account that is not the operator: the static token must not act as it.
+    await scratch.query(
+      `INSERT INTO "user" (id, name, email, "createdAt") VALUES ('older', 'Older', 'older@example.invalid', '2020-01-01T00:00:00Z')`,
+    );
     await scratch.query(
       "INSERT INTO device_tokens (id, user_id, name, platform, token_hash) VALUES ($1, $2, $3, $4, $5)",
       [
@@ -141,11 +157,11 @@ describe.skipIf(!reachable)("deactivated accounts", () => {
     expect(sessionToken).not.toBe("");
     expect(await signedIn(bearer(sessionToken))).toBe(true);
     expect(await signedIn(bearer(DEVICE_TOKEN))).toBe(true);
-    expect(await signedIn(bearer(STATIC_TOKEN))).toBe(true);
+    expect(await signedInAs(bearer(STATIC_TOKEN))).toBe("operator@example.invalid");
   });
 
   it("a deactivated account is refused on every path", async () => {
-    await scratch?.query('UPDATE "user" SET "deactivatedAt" = now()');
+    await scratch?.query(`UPDATE "user" SET "deactivatedAt" = now() WHERE id <> 'older'`);
     expect({
       session: await signedIn(bearer(sessionToken)),
       device: await signedIn(bearer(DEVICE_TOKEN)),

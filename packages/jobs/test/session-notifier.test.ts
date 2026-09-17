@@ -72,6 +72,7 @@ describe("pushTargets", () => {
       }),
     remove: () => Effect.void,
     removeOwned: () => Effect.void,
+    removeAllForUser: () => Effect.void,
   };
 
   it("rings the owner's phones only, and nobody's for a session with no owner", async () => {

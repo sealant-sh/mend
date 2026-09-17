@@ -1,22 +1,31 @@
 import { invitationsGroup, organizationGroup } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
 import {
+  AuditEventsRepo,
   InstanceRolesRepo,
   InvitationUnknownError,
+  LastOwnerError,
   OrganizationsRepo,
+  ProjectNotFoundError,
+  ProjectsRepo,
+  type NewAuditEvent,
   type OrganizationMembership,
 } from "@mend/db";
-import { InvitationId, OrganizationId } from "@mend/domain";
-import { Invitation, Organization, OrganizationMember } from "@mend/domain/workbench";
+import { InvitationId, OrganizationId, ProjectId } from "@mend/domain";
+import { Invitation, Organization, OrganizationMember, type Project } from "@mend/domain/workbench";
+import { SessionEngine } from "@mend/sessions";
 import { Effect, Layer, ManagedRuntime, Option } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
+import { makeProject } from "../../test/support/tenancy-harness.ts";
+import { MemberRemoval, type RemoveMemberInput } from "../member-removal.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
 import {
   InvitationsGroupLive,
   OrganizationGroupLive,
+  auditPage,
   invitationDays,
   invitationEmail,
 } from "./organization.ts";
@@ -35,6 +44,17 @@ const roles: Record<string, OrganizationMembership["role"] | undefined> = {
   carol: "member",
 };
 const writes: Array<string> = [];
+const audited: Array<NewAuditEvent> = [];
+const removals: Array<RemoveMemberInput> = [];
+/** Whose projects exist: bob left Acme, so his private project is orphaned. */
+const projectRows = new Map<
+  string,
+  { organizationId: OrganizationId; createdByUserId: string | null }
+>([
+  ["p-bob", { organizationId: OrganizationId.make("org-acme"), createdByUserId: "bob" }],
+  ["p-carol", { organizationId: OrganizationId.make("org-acme"), createdByUserId: "carol" }],
+  ["p-elsewhere", { organizationId: OrganizationId.make("org-other"), createdByUserId: "zed" }],
+]);
 const minted: Array<{ readonly email: string | null; readonly expiresAt: Date }> = [];
 
 const invitation = (email: string | null, expiresAt: Date) =>
@@ -57,17 +77,38 @@ const organizationsLayer = Layer.mock(OrganizationsRepo, {
     return Effect.succeed(role === undefined ? null : { organization: acme, role, joinedAt: NOW });
   },
   memberCount: () => Effect.succeed(2),
+  roleOf: (_organizationId, userId) => Effect.succeed(roles[userId] ?? null),
   members: () =>
-    Effect.succeed([
-      new OrganizationMember({
-        organizationId: acme.id,
-        userId: "alice",
-        name: "Alice",
-        email: "alice@example.invalid",
-        role: "owner",
-        joinedAt: NOW,
-      }),
-    ]),
+    Effect.succeed(
+      Object.entries(roles).flatMap(([userId, role]) =>
+        role === undefined
+          ? []
+          : [
+              new OrganizationMember({
+                organizationId: acme.id,
+                userId,
+                name: userId,
+                email: `${userId}@example.invalid`,
+                role,
+                joinedAt: NOW,
+              }),
+            ],
+      ),
+    ),
+  setRole: (_organizationId, userId, role) =>
+    userId === "alice" && role === "member"
+      ? Effect.fail(new LastOwnerError({ organizationId: acme.id }))
+      : Effect.sync(() => {
+          writes.push(`setRole:${userId}:${role}`);
+          return new OrganizationMember({
+            organizationId: acme.id,
+            userId,
+            name: userId,
+            email: `${userId}@example.invalid`,
+            role,
+            joinedAt: NOW,
+          });
+        }),
   listInvitations: () => Effect.sync(() => (writes.push("listInvitations"), [])),
   createInvitation: (input) =>
     Effect.sync(() => {
@@ -102,10 +143,54 @@ const authLayer = Layer.succeed(Auth, {
   },
 });
 
+const projectOf = (id: string): Project | null => {
+  const row = projectRows.get(id);
+  if (row === undefined) return null;
+  return makeProject({
+    id: ProjectId.make(id),
+    organizationId: row.organizationId,
+    visibility: "private",
+    createdByUserId: row.createdByUserId,
+    storePath: `/store/${id}/repo.git`,
+  });
+};
+
 const dependencies = Layer.mergeAll(
   authLayer,
   organizationsLayer,
   Layer.mock(InstanceRolesRepo, { isOperator: (userId) => Effect.succeed(userId === "alice") }),
+  Layer.mock(AuditEventsRepo, {
+    record: (event) => Effect.sync(() => void audited.push(event)),
+    listForOrganization: () => Effect.sync(() => (writes.push("audit"), [])),
+  }),
+  Layer.mock(MemberRemoval, {
+    remove: (input) =>
+      input.userId === "alice"
+        ? Effect.fail(new LastOwnerError({ organizationId: acme.id }))
+        : Effect.sync(() => void removals.push(input)),
+  }),
+  Layer.mock(ProjectsRepo, {
+    listForOrganization: (organizationId) =>
+      Effect.succeed(
+        [...projectRows.keys()]
+          .map(projectOf)
+          .filter((project): project is Project => project?.organizationId === organizationId),
+      ),
+    byId: (id) => {
+      const project = projectOf(id);
+      return project === null
+        ? Effect.fail(new ProjectNotFoundError({ projectId: id }))
+        : Effect.succeed(project);
+    },
+    setCreatedBy: (id, userId) =>
+      Effect.sync(() => {
+        writes.push(`setCreatedBy:${id}:${userId}`);
+        const project = projectOf(id);
+        if (project === null) throw new Error("no project");
+        return project;
+      }),
+  }),
+  Layer.mock(SessionEngine, { reconcileHotSessions: () => Effect.void }),
 );
 const api = HttpApi.make("mend").add(organizationGroup).add(invitationsGroup).prefix("/api");
 const apiLayer = HttpApiBuilder.layer(api).pipe(
@@ -114,9 +199,7 @@ const apiLayer = HttpApiBuilder.layer(api).pipe(
   Layer.provide(HttpServer.layerServices),
 );
 const runtime = ManagedRuntime.make(dependencies);
-const context = await runtime.runPromise(
-  Effect.context<Auth | OrganizationsRepo | InstanceRolesRepo>(),
-);
+const context = await runtime.runPromise(Effect.context<Layer.Success<typeof dependencies>>());
 const { handler, dispose } = HttpRouter.toWebHandler(apiLayer, { disableLogger: true });
 
 const call = (user: string | null, path: string, init: RequestInit = {}) => {
@@ -134,6 +217,8 @@ afterAll(async () => {
 beforeEach(() => {
   writes.splice(0, writes.length);
   minted.splice(0, minted.length);
+  audited.splice(0, audited.length);
+  removals.splice(0, removals.length);
 });
 
 describe("organization routes (docs/adr/0003)", () => {
@@ -199,6 +284,89 @@ describe("organization routes (docs/adr/0003)", () => {
     expect(JSON.stringify(body)).not.toContain("bound@example.invalid");
     const unknown = await preview("nope");
     expect(unknown.status).toBe(404);
+  });
+});
+
+describe("removing members, roles and departed members' projects (docs/adr/0003)", () => {
+  it("refuses every owner action to a member as 404, before anything moves", async () => {
+    const statuses = [
+      (await call("carol", "/api/organization/members/alice", { method: "DELETE" })).status,
+      (
+        await call("carol", "/api/organization/members/carol/role", {
+          method: "PUT",
+          body: JSON.stringify({ role: "owner" }),
+        })
+      ).status,
+      (await call("carol", "/api/organization/orphaned-projects")).status,
+      (await call("carol", "/api/organization/projects/p-bob/takeover", { method: "POST" })).status,
+      (await call("carol", "/api/organization/audit")).status,
+    ];
+    expect({ statuses, writes, removals, audited }).toEqual({
+      statuses: [404, 404, 404, 404, 404],
+      writes: [],
+      removals: [],
+      audited: [],
+    });
+  });
+
+  it("an owner removes a member as themselves; the last owner cannot go", async () => {
+    const removed = await call("alice", "/api/organization/members/carol", { method: "DELETE" });
+    expect(removed.status).toBe(204);
+    expect(removals).toEqual([{ organizationId: acme.id, userId: "carol", actorUserId: "alice" }]);
+    const stranger = await call("alice", "/api/organization/members/zed", { method: "DELETE" });
+    expect(stranger.status).toBe(404);
+    expect(removals).toHaveLength(1);
+    const last = await call("alice", "/api/organization/members/alice", { method: "DELETE" });
+    expect(last.status).toBe(422);
+    await expect(last.json()).resolves.toMatchObject({ _tag: "OrganizationRejected" });
+  });
+
+  it("a role change is recorded, and demoting the last owner is refused without a record", async () => {
+    const promoted = await call("alice", "/api/organization/members/carol/role", {
+      method: "PUT",
+      body: JSON.stringify({ role: "owner" }),
+    });
+    expect(promoted.status).toBe(200);
+    const demoted = await call("alice", "/api/organization/members/alice/role", {
+      method: "PUT",
+      body: JSON.stringify({ role: "member" }),
+    });
+    expect(demoted.status).toBe(422);
+    expect(audited.map((event) => [event.action, event.subjectId, event.data])).toEqual([
+      ["member.role_changed", "carol", { role: "owner" }],
+    ]);
+  });
+
+  it("lists and takes over only a departed member's project in the owner's organization", async () => {
+    const orphaned = await call("alice", "/api/organization/orphaned-projects");
+    const listed: unknown = await orphaned.json();
+    expect(JSON.stringify(listed)).toContain("p-bob");
+    expect(JSON.stringify(listed)).not.toContain("p-carol");
+    expect(JSON.stringify(listed)).not.toContain("p-elsewhere");
+
+    const stillHere = await call("alice", "/api/organization/projects/p-carol/takeover", {
+      method: "POST",
+    });
+    const elsewhere = await call("alice", "/api/organization/projects/p-elsewhere/takeover", {
+      method: "POST",
+    });
+    expect([stillHere.status, elsewhere.status]).toEqual([422, 404]);
+    expect(writes).toEqual([]);
+
+    const taken = await call("alice", "/api/organization/projects/p-bob/takeover", {
+      method: "POST",
+    });
+    expect(taken.status).toBe(200);
+    expect(writes).toEqual(["setCreatedBy:p-bob:alice"]);
+    expect(audited.map((event) => [event.action, event.subjectId, event.data])).toEqual([
+      ["project.taken_over", "p-bob", { fromUserId: "bob" }],
+    ]);
+  });
+
+  it("reads audit pages with a bounded limit after the previous page's last event", () => {
+    expect(auditPage(undefined, undefined)).toEqual({ beforeId: null, limit: 50 });
+    expect(auditPage("  ", "5000")).toEqual({ beforeId: null, limit: 200 });
+    expect(auditPage("event-9", "0")).toEqual({ beforeId: "event-9", limit: 1 });
   });
 });
 

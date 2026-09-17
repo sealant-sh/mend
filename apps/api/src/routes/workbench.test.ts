@@ -1,6 +1,7 @@
 import { projectsGroup, ProjectDetail } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
 import {
+  AuditEventsRepo,
   HotWorkspacesRepo,
   InstanceRolesRepo,
   OrganizationsRepo,
@@ -206,6 +207,7 @@ const authLayer: Layer.Layer<Auth> = Layer.succeed(Auth, {
 });
 
 type ProjectRouteServices =
+  | AuditEventsRepo
   | ProjectsRepo
   | AgentBridge
   | Store
@@ -241,6 +243,7 @@ type UnusedProjectRouteServices = Exclude<
 >;
 
 const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.mergeAll(
+  Layer.mock(AuditEventsRepo, {}),
   Layer.mock(AgentBridge, { socketPath: () => "/unused/project-detail-agent-bridge.sock" }),
   Layer.mock(Store, {}),
   Layer.mock(UserGitAccessRepo, {}),

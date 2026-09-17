@@ -8,7 +8,7 @@ import {
   NotFound,
   ProjectFolderView,
 } from "@mend/api-contracts";
-import { FoldersRepo, ProjectMountsRepo } from "@mend/db";
+import { AuditEventsRepo, FoldersRepo, ProjectMountsRepo } from "@mend/db";
 import { FolderId, type ProjectId } from "@mend/domain";
 import { FOLDER_MAX_LISTED_FILES, type Folder } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
@@ -101,6 +101,14 @@ export const FoldersGroupLive = HttpApiBuilder.group(MendApi, "folders", (handle
               ),
             ),
           );
+        yield* (yield* AuditEventsRepo).record({
+          organizationId: viewer.organizationId,
+          actorUserId: caller.user.id,
+          action: "folder.created",
+          subjectType: "folder",
+          subjectId: created.id,
+          data: { name: created.name },
+        });
         return created;
       }),
     )
@@ -119,6 +127,14 @@ export const FoldersGroupLive = HttpApiBuilder.group(MendApi, "folders", (handle
           ),
         );
         yield* store.remove(directoryOf(folder));
+        yield* (yield* AuditEventsRepo).record({
+          organizationId: folder.organizationId,
+          actorUserId: (yield* CurrentUser).user.id,
+          action: "folder.removed",
+          subjectType: "folder",
+          subjectId: folder.id,
+          data: { name: folder.name },
+        });
       }),
     )
     .handle("files", ({ params }) =>

@@ -3,6 +3,8 @@ import { AgentBridge } from "@mend/store";
 import { Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
+import { ConnectionRegistry, guardSocket } from "../connections.ts";
+
 /**
  * The ssh-agent bridge's transport (docs/GIT-ACCESS.md decision 2): one
  * standing WebSocket from `mend keys share`, JSON text frames carrying
@@ -17,6 +19,7 @@ import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 export const KeysBridgeRoutes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const auth = yield* Auth;
+    const connections = yield* ConnectionRegistry;
     const bridge = yield* AgentBridge;
 
     yield* router.add("GET", "/api/keys/bridge/ws", (request) =>
@@ -38,6 +41,13 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
           Effect.gen(function* () {
             const socket = yield* request.upgrade;
             const write = yield* socket.writer;
+            // Removing the account closes this socket, and drops its input from then on (docs/adr/0003).
+            const guard = yield* guardSocket(
+              connections,
+              authed.value.user.id,
+              write,
+              auth.getSession(headers).pipe(Effect.map(Option.isSome)),
+            );
 
             // The bridge speaks through a plain callback; each frame rides
             // its own forked fiber (writes are tiny and ordered enough — the
@@ -53,6 +63,7 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
 
             yield* socket
               .runRaw((data) => {
+                if (guard.revoked()) return Effect.void;
                 if (typeof data === "string") handle.feed(data);
                 else handle.feed(Buffer.from(data).toString("utf8"));
                 return Effect.void;

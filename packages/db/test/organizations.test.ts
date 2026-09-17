@@ -7,6 +7,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
 import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
+import { AuditEventsRepo, AuditEventsRepoLive } from "../src/repos/audit-events.ts";
 import { FoldersRepo, FoldersRepoLive } from "../src/repos/folders.ts";
 import { HotWorkspacesRepo, HotWorkspacesRepoLive } from "../src/repos/hot-workspaces.ts";
 import { InstanceRolesRepo, InstanceRolesRepoLive } from "../src/repos/instance-roles.ts";
@@ -42,6 +43,7 @@ const reposLayer = Layer.mergeAll(
   FoldersRepoLive,
   SessionsRepoLive,
   HotWorkspacesRepoLive,
+  AuditEventsRepoLive,
 ).pipe(Layer.provideMerge(scratchDatabaseLayer));
 
 type Services =
@@ -52,6 +54,7 @@ type Services =
   | FoldersRepo
   | SessionsRepo
   | HotWorkspacesRepo
+  | AuditEventsRepo
   | SqlClient.SqlClient
   | PgClient.PgClient;
 
@@ -555,5 +558,27 @@ describe.skipIf(!reachable)("organizations", () => {
       carol: "hot-carol",
       carolAgain: null,
     });
+  });
+
+  it("audit pages never skip events that share an instant", async () => {
+    const pages = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const audit = yield* AuditEventsRepo;
+        yield* sql`
+          INSERT INTO audit_events (id, organization_id, actor_user_id, action, subject_type, subject_id, created_at)
+          VALUES
+            ('audit-a', ${acme}, 'alice', 'member.removed', 'member', 'x', '2026-09-17T10:00:00.123456Z'),
+            ('audit-b', ${acme}, 'alice', 'member.removed', 'member', 'y', '2026-09-17T10:00:00.123456Z'),
+            ('audit-c', ${acme}, 'alice', 'member.removed', 'member', 'z', '2026-09-17T10:00:00.123999Z')`;
+        const first = yield* audit.listForOrganization(acme, { beforeId: null, limit: 2 });
+        const second = yield* audit.listForOrganization(acme, {
+          beforeId: first.at(-1)?.id ?? null,
+          limit: 2,
+        });
+        return [first.map((event) => event.id), second.map((event) => event.id)];
+      }),
+    );
+    expect(pages).toEqual([["audit-c", "audit-b"], ["audit-a"]]);
   });
 });

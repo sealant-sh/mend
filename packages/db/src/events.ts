@@ -89,10 +89,11 @@ export const MendEvent = Schema.Union([
   Schema.Struct({
     // One account's own facts changed — connected accounts, paired devices and CLI
     // sign-ins, the git access choice or key. The first-run checklist and Settings
-    // re-read the facet; nothing project-scoped moves.
+    // re-read the facet; nothing project-scoped moves. `access`: the account was removed
+    // from its organization; every process closes its open connections.
     type: Schema.Literals(["user"]),
     userId: Schema.String,
-    facet: Schema.Literals(["accounts", "devices", "git-access"]),
+    facet: Schema.Literals(["accounts", "devices", "git-access", "access"]),
   }),
   Schema.Struct({
     // Membership, roles or invitations of one organization changed.

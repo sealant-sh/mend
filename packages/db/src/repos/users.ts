@@ -26,8 +26,10 @@ export class UsersRepo extends Context.Service<
     readonly byEmail: (email: string) => Effect.Effect<UserFacts | null>;
     /** The earliest registered account, or null on an unclaimed instance. */
     readonly oldest: () => Effect.Effect<UserFacts | null>;
-    /** Mark the account deactivated. Refusing its sign-ins lands with member removal. */
+    /** Mark the account deactivated; every sign-in path refuses it from then on. */
     readonly deactivate: (id: string) => Effect.Effect<void>;
+    /** End the account's browser and bearer sessions (better-auth's `session` rows). */
+    readonly revokeAuthSessions: (id: string) => Effect.Effect<void>;
   }
 >()("@mend/db/UsersRepo") {}
 
@@ -70,6 +72,10 @@ export const UsersRepoLive: Layer.Layer<UsersRepo, never, PgClient.PgClient> = L
         WHERE id = ${id} AND "deactivatedAt" IS NULL`.pipe(Effect.orDie);
     });
 
-    return { count, byId, byEmail, oldest, deactivate };
+    const revokeAuthSessions = Effect.fn("UsersRepo.revokeAuthSessions")(function* (id: string) {
+      yield* sql`DELETE FROM "session" WHERE "userId" = ${id}`.pipe(Effect.orDie);
+    });
+
+    return { count, byId, byEmail, oldest, deactivate, revokeAuthSessions };
   }),
 );

@@ -27,6 +27,7 @@ import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { ProjectAccess } from "./access.ts";
+import { ConnectionRegistry, makeConnectionRegistry } from "./connections.ts";
 import { publicNetworkPolicy } from "./public-network-policy.ts";
 import { AuthMiddlewareLive } from "./routes/api-live.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
@@ -111,7 +112,15 @@ const startServer = async () => {
     Layer.provide(GitKeysGroupLive),
     Layer.provide(AuthMiddlewareLive),
   );
+  const connections = Layer.effect(
+    ConnectionRegistry,
+    Effect.map(makeConnectionRegistry, (registry) => ({
+      register: registry.register,
+      closeForUser: registry.closeForUser,
+    })),
+  );
   const websocketRoutes = WebSocketRoutes.pipe(
+    Layer.provide(connections),
     Layer.provide(SessionSteeringLive),
     Layer.provide(Layer.mock(ProjectAccess, {})),
   );
