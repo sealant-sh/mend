@@ -80,6 +80,7 @@ const capArchive = (archive: Buffer, label: string): Effect.Effect<Buffer, Dotfi
  */
 const buildRepositoryArchive = (
   repository: DotfilesRepository,
+  cloneEnv: Readonly<Record<string, string>>,
 ): Effect.Effect<ResolvedDotfilesArchive, DotfilesResolveError> =>
   Effect.gen(function* () {
     const checkout = yield* Effect.sync(() =>
@@ -99,7 +100,7 @@ const buildRepositoryArchive = (
           checkout,
         ],
         os.tmpdir(),
-        { GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -o BatchMode=yes" },
+        { GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -o BatchMode=yes", ...cloneEnv },
       ).pipe(
         Effect.mapError(
           (error) =>
@@ -133,11 +134,13 @@ const buildRepositoryArchive = (
 export const resolveDotfilesArchives = (input: {
   readonly repository: DotfilesRepository | null;
   readonly snapshot: { readonly sha: string; readonly data: string } | null;
+  /** Pins the clone to the address the source policy checked; merged over the defaults. */
+  readonly cloneEnv?: Readonly<Record<string, string>>;
 }): Effect.Effect<ReadonlyArray<ResolvedDotfilesArchive>, DotfilesResolveError> =>
   Effect.gen(function* () {
     const archives: ResolvedDotfilesArchive[] = [];
     if (input.repository !== null) {
-      archives.push(yield* buildRepositoryArchive(input.repository));
+      archives.push(yield* buildRepositoryArchive(input.repository, input.cloneEnv ?? {}));
     }
     if (input.snapshot !== null) {
       archives.push({ data: input.snapshot.data, manager: "copy", bootstrap: false });

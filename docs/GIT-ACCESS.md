@@ -97,7 +97,10 @@ refreshes. `MEND_SOURCE_POLICY` decides where those may go. `operator` (the defa
 networks, refuses the cloud metadata service, and reaches this machine only for the operator.
 `tenant` also refuses private, reserved and local addresses and `git://`, unless
 `MEND_SOURCE_ALLOWED_HOSTS` names the host or its range; loopback and the metadata service can never
-be allowed. A refusal names the rule, never the addresses a host resolved to.
+be allowed. A refusal names the rule, never the addresses a host resolved to. Under `tenant`, git
+then dials exactly the address that was checked, so a name cannot answer differently a moment later:
+HTTPS through `http.curloptResolve`, ssh through `HostName` with `HostKeyAlias`, so known hosts
+still match the name. The dotfiles clone at each launch is checked and pinned the same way.
 
 A workspace's git transport signs with its owner's key, so it only reaches the project's own remote:
 the origin's host, and its port for ssh. Pushing a mirror or a fork elsewhere from inside a

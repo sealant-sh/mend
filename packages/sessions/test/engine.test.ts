@@ -132,6 +132,8 @@ import {
   listCaptureFiles,
   materialize,
   processStatePathOf,
+  makeSourcePolicy,
+  SourcePolicy,
 } from "@mend/store";
 import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import type {
@@ -1093,6 +1095,16 @@ const serviceStateLayer = (world: World) =>
     serviceObservationsLayer(world),
   );
 
+/** Every remote in these worlds is public: the policy's own tests cover refusals and pinning. */
+const sourcePolicyLayer = Layer.succeed(
+  SourcePolicy,
+  makeSourcePolicy({
+    profile: "operator",
+    allowedHosts: [],
+    resolve: async () => ["140.82.112.3"],
+  }),
+);
+
 /** One organization, `org-test`, whose members the world names. */
 const organizationsLayer = (world: World) =>
   Layer.mock(OrganizationsRepo, {
@@ -1875,6 +1887,7 @@ const withEngine = <A, E>(
         projectMountsEmptyLayer,
         projectLinksEmptyLayer,
         organizationsLayer(world),
+        sourcePolicyLayer,
         foldersEmptyLayer,
         projectRecipesEmptyLayer,
         options.hotWorkspacesLayer ?? hotWorkspacesEmptyLayer,
@@ -4597,6 +4610,7 @@ describe("SessionEngine", () => {
           projectMountsEmptyLayer,
           projectLinksEmptyLayer,
           organizationsLayer(world),
+          sourcePolicyLayer,
           foldersEmptyLayer,
           projectRecipesEmptyLayer,
           hotWorkspacesEmptyLayer,

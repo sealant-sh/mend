@@ -146,6 +146,7 @@ import {
   StoreConfig,
   COLOCATED_STORE_DEPRECATION,
   DeploymentConfigLive,
+  SourcePolicyLive,
 } from "@mend/store";
 import { Config, Effect, Layer, Option, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
@@ -163,7 +164,6 @@ import { GhLive } from "./routes/github.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
 import { SessionSteeringLive } from "./session-steering.ts";
-import { SourcePolicyLive } from "./source-policy.ts";
 import { TenancyConfigLive } from "./tenancy.ts";
 
 /**
@@ -596,9 +596,8 @@ const MainLive = Layer.unwrap(
     // on it, so it must be launched explicitly rather than provided.
     return Layer.merge(parts, SessionChannelNetworkLayer).pipe(
       Layer.provide(SessionSteeringLive),
-      // Who may see what (docs/adr/0003), whose GitHub identity calls to GitHub may use, and which
-      // git remotes Mend may reach (MEND_SOURCE_POLICY).
-      Layer.provide(Layer.mergeAll(ProjectAccessLive, GithubIdentityLive, SourcePolicyLive)),
+      // Who may see what (docs/adr/0003), and whose GitHub identity calls to GitHub may use.
+      Layer.provide(Layer.merge(ProjectAccessLive, GithubIdentityLive)),
       // MEND_TENANCY: refuses to build (so nothing serves) when the mode may not run here.
       Layer.provide(TenancyConfigLive),
       // Shared by the API (enqueue on comment) and the workers (one instance).
@@ -611,7 +610,9 @@ const MainLive = Layer.unwrap(
       Layer.provide(Layer.mergeAll(sessionRepository, worktreeReads, captureRuntime)),
       Layer.provide(StoreLive),
       Layer.provide(StoreConfig.layer),
-      Layer.provide(DeploymentConfigLive),
+      // `pipe` takes at most twenty steps; deployment facts and the source policy (which git
+      // remotes Mend may reach, for the routes and the engine) ride one.
+      Layer.provide(Layer.merge(DeploymentConfigLive, SourcePolicyLive)),
       // The per-user dotfiles store and the organization folders, read and written directly.
       Layer.provide(Layer.merge(DotfilesStoreLayer, FolderStoreLayer)),
       // The machine's Mend git key (docs/GIT-ACCESS.md — the mend-key auth mode).

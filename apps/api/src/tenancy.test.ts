@@ -99,11 +99,7 @@ describe("the multi mode gate", () => {
   });
 
   it("with everything configured, only work outside this build remains", () => {
-    expect(failing(configured)).toEqual([
-      "folders-reach-workspaces",
-      "source-address-pinning",
-      "daemon-declares-sizes",
-    ]);
+    expect(failing(configured)).toEqual(["folders-reach-workspaces", "daemon-declares-sizes"]);
     expect(tenancyRefusal("multi", 1, evaluateGate(configured))).toContain("daemon-declares-sizes");
     expect(tenancyRefusal("single", 1, evaluateGate({}))).toBeNull();
   });
