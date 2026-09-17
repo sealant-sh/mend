@@ -1,10 +1,11 @@
 import { Auth } from "@mend/auth";
 import { ProjectsRepo, type MendEvent } from "@mend/db";
 import { ProjectId } from "@mend/domain";
-import { Effect, Option, Ref, Schedule, Stream } from "effect";
+import { Deferred, Effect, Option, Ref, Schedule, Stream } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
 import { ProjectAccess } from "../access.ts";
+import { ConnectionRegistry } from "../connections.ts";
 import { EventBus, type BusSignal } from "../events-bus.ts";
 
 const encoder = new TextEncoder();
@@ -81,6 +82,7 @@ export const EventsRoutes = HttpRouter.use((router) =>
     const bus = yield* EventBus;
     const access = yield* ProjectAccess;
     const projects = yield* ProjectsRepo;
+    const connections = yield* ConnectionRegistry;
 
     const viewOf = (userId: string) =>
       Effect.gen(function* () {
@@ -148,8 +150,17 @@ export const EventsRoutes = HttpRouter.use((router) =>
             return admits(before, audience) ? frame : null;
           });
 
+        // Removing the account ends the stream; the client's reconnect is then refused.
+        const revoked = yield* Deferred.make<void>();
         const events = Stream.unwrap(
-          Effect.map(bus.subscribe, (subscription) => Stream.fromSubscription(subscription)),
+          Effect.gen(function* () {
+            yield* connections.register(
+              userId,
+              Deferred.succeed(revoked, undefined).pipe(Effect.asVoid),
+            );
+            const subscription = yield* bus.subscribe;
+            return Stream.fromSubscription(subscription);
+          }),
         );
         const ticks = Stream.fromSchedule(Schedule.spaced(VIEW_REFRESH)).pipe(
           Stream.map(() => ({ kind: "tick" as const })),
@@ -157,6 +168,7 @@ export const EventsRoutes = HttpRouter.use((router) =>
 
         return HttpServerResponse.stream(
           Stream.merge(events, ticks).pipe(
+            Stream.interruptWhen(Deferred.await(revoked)),
             Stream.mapEffect(frameFor),
             Stream.filter((frame): frame is string => frame !== null),
             Stream.map((chunk) => encoder.encode(chunk)),

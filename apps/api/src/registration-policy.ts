@@ -1,5 +1,5 @@
 import { RegistrationPolicy, type RegistrationDecision } from "@mend/auth";
-import { OrganizationsRepo, UsersRepo } from "@mend/db";
+import { AuditEventsRepo, OrganizationsRepo, UsersRepo } from "@mend/db";
 import { Effect, Layer } from "effect";
 
 const BY_INVITATION = "Registration is by invitation. Ask an owner of this Mend for a link.";
@@ -18,10 +18,11 @@ const SPENT: Record<"accepted" | "revoked" | "expired", string> = {
 export const RegistrationPolicyLive: Layer.Layer<
   RegistrationPolicy,
   never,
-  UsersRepo | OrganizationsRepo
+  AuditEventsRepo | UsersRepo | OrganizationsRepo
 > = Layer.effect(
   RegistrationPolicy,
   Effect.gen(function* () {
+    const audit = yield* AuditEventsRepo;
     const users = yield* UsersRepo;
     const organizations = yield* OrganizationsRepo;
 
@@ -73,6 +74,16 @@ export const RegistrationPolicyLive: Layer.Layer<
       // fallback, for the first account on an unclaimed instance (with or without a stray token).
       if (invitationToken !== null) {
         const accepted = yield* organizations.acceptInvitation(invitationToken, user).pipe(
+          Effect.tap((joined) =>
+            audit.record({
+              organizationId: joined.organization.id,
+              actorUserId: user.id,
+              action: "invitation.accepted",
+              subjectType: "member",
+              subjectId: user.id,
+              data: { role: joined.member.role },
+            }),
+          ),
           Effect.as(null),
           Effect.catch((error) => Effect.succeed(error._tag)),
         );

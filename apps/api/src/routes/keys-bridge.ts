@@ -2,6 +2,9 @@ import { Auth } from "@mend/auth";
 import { AgentBridge } from "@mend/store";
 import { Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
+import { Socket } from "effect/unstable/socket";
+
+import { ConnectionRegistry } from "../connections.ts";
 
 /**
  * The ssh-agent bridge's transport (docs/GIT-ACCESS.md decision 2): one
@@ -18,6 +21,7 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const auth = yield* Auth;
     const bridge = yield* AgentBridge;
+    const connections = yield* ConnectionRegistry;
 
     yield* router.add("GET", "/api/keys/bridge/ws", (request) =>
       Effect.gen(function* () {
@@ -38,6 +42,11 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
           Effect.gen(function* () {
             const socket = yield* request.upgrade;
             const write = yield* socket.writer;
+            // Removing the account closes this socket (docs/adr/0003).
+            yield* connections.register(
+              authed.value.user.id,
+              write(new Socket.CloseEvent(1008, "access revoked")).pipe(Effect.ignore),
+            );
 
             // The bridge speaks through a plain callback; each frame rides
             // its own forked fiber (writes are tiny and ordered enough — the

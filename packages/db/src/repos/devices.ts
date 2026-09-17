@@ -120,6 +120,8 @@ export class DevicesRepo extends Context.Service<
       userId: string,
       id: string,
     ) => Effect.Effect<PairedDevice, DeviceNotFoundError>;
+    /** Revoke every device of an account that lost access; answers how many were live. */
+    readonly revokeAllForUser: (userId: string) => Effect.Effect<number>;
     readonly createCliAuth: (input: {
       readonly deviceCodeHash: string;
       readonly userCode: string;
@@ -290,6 +292,18 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
         return new PairedDevice(row);
       });
 
+      const revokeAllForUser = Effect.fn("DevicesRepo.revokeAllForUser")(function* (
+        userId: string,
+      ) {
+        const rows = yield* db
+          .update(deviceTokens)
+          .set({ revokedAt: new Date() })
+          .where(and(eq(deviceTokens.userId, userId), isNull(deviceTokens.revokedAt)))
+          .returning({ id: deviceTokens.id })
+          .pipe(Effect.orDie);
+        return rows.length;
+      });
+
       const selectedCliAuth = {
         userCode: cliAuthRequests.userCode,
         name: cliAuthRequests.name,
@@ -451,6 +465,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
         claim,
         list,
         revoke,
+        revokeAllForUser,
         createCliAuth,
         getCliAuth,
         approveCliAuth,

@@ -1,9 +1,11 @@
-import { InvitationId } from "@mend/domain";
+import { InvitationId, ProjectId } from "@mend/domain";
 import {
+  AuditEvent,
   Invitation,
   Organization,
   OrganizationMember,
   OrganizationRole,
+  Project,
 } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
@@ -68,6 +70,10 @@ export class InvitationPreview extends Schema.Class<InvitationPreview>("Invitati
   expiresAt: Schema.Date,
 }) {}
 
+export class MemberRoleRequest extends Schema.Class<MemberRoleRequest>("MemberRoleRequest")({
+  role: OrganizationRole,
+}) {}
+
 export const organizationGroup = HttpApiGroup.make("organization")
   .add(
     HttpApiEndpoint.get("current", "/organization", {
@@ -100,6 +106,45 @@ export const organizationGroup = HttpApiGroup.make("organization")
       params: Schema.Struct({ id: InvitationId }),
       success: Invitation,
       error: [NotFound, InvitationSpent],
+    }),
+  )
+  .add(
+    // Owners only. Deactivates the account, revokes its sign-ins, closes its connections and
+    // stops its sessions; refused for the last owner.
+    HttpApiEndpoint.delete("removeMember", "/organization/members/:userId", {
+      params: Schema.Struct({ userId: Schema.String }),
+      error: [NotFound, OrganizationRejected],
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("setMemberRole", "/organization/members/:userId/role", {
+      params: Schema.Struct({ userId: Schema.String }),
+      payload: MemberRoleRequest,
+      success: OrganizationMember,
+      error: [NotFound, OrganizationRejected],
+    }),
+  )
+  .add(
+    // Owners only: projects whose creator no longer belongs to the organization.
+    HttpApiEndpoint.get("orphanedProjects", "/organization/orphaned-projects", {
+      success: Schema.Array(Project),
+      error: NotFound,
+    }),
+  )
+  .add(
+    // Owners only: become the creator of a project whose creator left.
+    HttpApiEndpoint.post("takeOverProject", "/organization/projects/:id/takeover", {
+      params: Schema.Struct({ id: ProjectId }),
+      success: Project,
+      error: [NotFound, OrganizationRejected],
+    }),
+  )
+  .add(
+    // Owners only; newest first. `before` is an ISO time from the previous page's last event.
+    HttpApiEndpoint.get("audit", "/organization/audit", {
+      query: { before: Schema.optional(Schema.String), limit: Schema.optional(Schema.String) },
+      success: Schema.Array(AuditEvent),
+      error: NotFound,
     }),
   )
   .middleware(AuthMiddleware);

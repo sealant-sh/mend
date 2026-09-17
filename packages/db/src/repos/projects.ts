@@ -64,6 +64,11 @@ export class ProjectsRepo extends Context.Service<
       id: ProjectId,
       visibility: ProjectVisibility,
     ) => Effect.Effect<Project, ProjectNotFoundError>;
+    /** Hand a project to another account: an owner taking over a departed member's project. */
+    readonly setCreatedBy: (
+      id: ProjectId,
+      userId: string,
+    ) => Effect.Effect<Project, ProjectNotFoundError>;
     /** The project's stance on the cascade switches (settings → project), replaced together. */
     readonly setAutomation: (
       id: ProjectId,
@@ -203,6 +208,22 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
+      const setCreatedBy = Effect.fn("ProjectsRepo.setCreatedBy")(function* (
+        id: ProjectId,
+        userId: string,
+      ) {
+        const [row] = yield* db
+          .update(projects)
+          .set({ createdByUserId: userId, updatedAt: new Date() })
+          .where(eq(projects.id, id))
+          .returning()
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
+        const updated = toProject(row);
+        yield* notifyEvent(sql, { type: "project", projectId: updated.id });
+        return updated;
+      });
+
       const setAutomation = Effect.fn("ProjectsRepo.setAutomation")(function* (
         id: ProjectId,
         choices: {
@@ -332,6 +353,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         listAll,
         listForOrganization,
         setVisibility,
+        setCreatedBy,
         setAutomation,
         setGitAuthMode,
         setWorkspaceImage,

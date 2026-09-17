@@ -9,6 +9,7 @@ import {
 } from "@mend/domain";
 import type {
   AgentItemId,
+  AuditEventId,
   AgentRequestId,
   AgentTurnId,
   BriefCommentId,
@@ -56,6 +57,7 @@ import type {
   WorktreeId,
 } from "@mend/domain";
 import {
+  AuditData,
   HotWorkspaceEnvironment,
   RecordLink,
   ReviewCommentAnchor,
@@ -321,6 +323,33 @@ export const organizationInvitations = pgTable(
     revokedAt: timestamp({ mode: "date", withTimezone: true }),
   },
   (table) => [index("organization_invitations_org_idx").on(table.organizationId, table.createdAt)],
+);
+
+/**
+ * An organization's audit log (docs/adr/0003-organizations-and-tenancy.md): append-only. Actions
+ * are validated by the domain schema, not a check constraint, so new ones need no migration.
+ */
+export const auditEvents = pgTable(
+  "audit_events",
+  {
+    id: text().$type<AuditEventId>().primaryKey(),
+    organizationId: text()
+      .$type<OrganizationId>()
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    // FK to "user"(id) ON DELETE RESTRICT, declared in the migration.
+    actorUserId: text().notNull(),
+    action: text().notNull(),
+    subjectType: text().notNull(),
+    subjectId: text().notNull(),
+    data: jsonbOf(AuditData)
+      .notNull()
+      .default(sql`'{}'::jsonb`),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("audit_events_org_created_idx").on(table.organizationId, table.createdAt.desc()),
+  ],
 );
 
 /** Instance roles, separate from organization ownership. Only `operator` exists. */

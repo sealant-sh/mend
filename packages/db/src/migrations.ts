@@ -1755,6 +1755,27 @@ const hotPoolOwnersMigration = Effect.gen(function* () {
     ON agent_sessions (project_id, owner_user_id, created_at DESC)`;
 });
 
+/**
+ * docs/adr/0003-organizations-and-tenancy.md: the organization audit log. Accounts are deactivated,
+ * never deleted, so an actor always resolves.
+ */
+const auditEventsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE audit_events (
+      id text PRIMARY KEY,
+      organization_id text NOT NULL REFERENCES organizations (id) ON DELETE RESTRICT,
+      actor_user_id text NOT NULL REFERENCES "user" (id) ON DELETE RESTRICT,
+      action text NOT NULL,
+      subject_type text NOT NULL,
+      subject_id text NOT NULL,
+      data jsonb NOT NULL DEFAULT '{}'::jsonb,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE INDEX audit_events_org_created_idx ON audit_events (organization_id, created_at DESC)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1815,4 +1836,5 @@ export const migrations = {
   "0056_per_account_resources": perAccountResourcesMigration,
   "0057_folders": foldersMigration,
   "0058_hot_pool_owners": hotPoolOwnersMigration,
+  "0059_audit_events": auditEventsMigration,
 };

@@ -74,6 +74,8 @@ export class SessionsRepo extends Context.Service<
     readonly listActive: () => Effect.Effect<ReadonlyArray<Session>>;
     /** Sessions to re-attach to after a crash/restart. */
     readonly listUnsettled: () => Effect.Effect<ReadonlyArray<Session>>;
+    /** One account's sessions that have not settled, starting ones included: what removal stops. */
+    readonly listUnsettledForOwner: (userId: string) => Effect.Effect<ReadonlyArray<Session>>;
     /** Recently settled sessions — the boot sweep reaps any workspace that outlived them. */
     readonly listRecentlySettled: () => Effect.Effect<ReadonlyArray<Session>>;
     /**
@@ -302,6 +304,18 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .orderBy(desc(latest))
           .pipe(Effect.orDie);
         return rows.flatMap((row) => (row.ownerUserId === null ? [] : [row.ownerUserId]));
+      });
+
+      const listUnsettledForOwner = Effect.fn("SessionsRepo.listUnsettledForOwner")(function* (
+        userId: string,
+      ) {
+        const rows = yield* db
+          .select()
+          .from(agentSessions)
+          .where(and(eq(agentSessions.ownerUserId, userId), isNull(agentSessions.settledAt)))
+          .orderBy(asc(agentSessions.createdAt))
+          .pipe(Effect.orDie);
+        return rows.map(toSession);
       });
 
       const listRecentlySettled = Effect.fn("SessionsRepo.listRecentlySettled")(function* () {
@@ -641,6 +655,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         byId,
         listForProject,
         recentOwnersForProject,
+        listUnsettledForOwner,
         listForWorktree,
         listActive,
         listUnsettled,

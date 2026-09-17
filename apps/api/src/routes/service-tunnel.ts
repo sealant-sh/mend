@@ -6,6 +6,7 @@ import { Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { Socket } from "effect/unstable/socket";
 
+import { ConnectionRegistry } from "../connections.ts";
 import { SessionSteering } from "../session-steering.ts";
 
 /**
@@ -38,6 +39,7 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
     const sessions = yield* SessionsRepo;
     const steering = yield* SessionSteering;
     const sealant = yield* SealantClient;
+    const connections = yield* ConnectionRegistry;
 
     yield* router.add("GET", "/api/service-tunnel", (request) =>
       Effect.gen(function* () {
@@ -116,6 +118,11 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
             yield* Effect.addFinalizer(() => Effect.sync(() => pipe.close()));
             const socket = yield* request.upgrade;
             const write = yield* socket.writer;
+            // Removing the account closes this socket (docs/adr/0003).
+            yield* connections.register(
+              authed.value.user.id,
+              write(new Socket.CloseEvent(1008, "access revoked")).pipe(Effect.ignore),
+            );
 
             const iterator = pipe.output[Symbol.asyncIterator]();
             const pumpOutput = Effect.gen(function* () {

@@ -1,4 +1,5 @@
 import {
+  AuditEventsRepo,
   BriefCommentsRepo,
   BriefsRepo,
   ChangePassesRepo,
@@ -47,8 +48,10 @@ import { Effect, Layer, ManagedRuntime, Queue, Schema, Stream } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 
 import { ProjectAccessLive } from "../../src/access.ts";
+import { ConnectionRegistry, makeConnectionRegistry } from "../../src/connections.ts";
 import { EventBus, makeEventBus } from "../../src/events-bus.ts";
 import { GithubIdentityLive } from "../../src/github-identity.ts";
+import { MemberRemovalLive } from "../../src/member-removal.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
 import { EventsRoutes } from "../../src/routes/events.ts";
 import { Gh } from "../../src/routes/github.ts";
@@ -100,6 +103,7 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
   const deviceWrites: Array<string> = [];
   const effects = Layer.mergeAll(
     Layer.mergeAll(
+      recording(AuditEventsRepo, "audit", {}, calls),
       recording(BriefCommentsRepo, "briefComments", {}, calls),
       recording(BriefsRepo, "briefs", {}, calls),
       recording(ChangePassesRepo, "changePasses", {}, calls),
@@ -184,11 +188,23 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
     ),
   );
   const dependencies = Layer.mergeAll(world.authLayer, world.accessLayers, effects);
+  const connections = Layer.effect(
+    ConnectionRegistry,
+    Effect.map(makeConnectionRegistry, (registry) => ({
+      register: registry.register,
+      closeForUser: registry.closeForUser,
+    })),
+  );
   const authorization = Layer.mergeAll(
     ProjectAccessLive,
     SessionSteeringLive,
     GithubIdentityLive,
-  ).pipe(Layer.provideMerge(ProjectAccessLive), Layer.provideMerge(dependencies));
+    MemberRemovalLive,
+  ).pipe(
+    Layer.provideMerge(ProjectAccessLive),
+    Layer.provideMerge(connections),
+    Layer.provideMerge(dependencies),
+  );
   const apiLayer = MendApiLive.pipe(
     Layer.provide(authorization),
     Layer.provide(HttpServer.layerServices),
@@ -236,6 +252,7 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
           headers: { authorization: `Bearer ${user}` },
           signal: controller.signal,
         }),
+        context,
       );
       const reader = response.body?.getReader();
       const decoder = new TextDecoder();
@@ -279,6 +296,7 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
         new Request(`http://api.internal${path}`, {
           headers: { authorization: `Bearer ${user}` },
         }),
+        context,
       ),
     dispose: async () => {
       await dispose();

@@ -1253,6 +1253,7 @@ const projectsLayer = (world: World) =>
     setGitAuthMode: () => Effect.die("not in test"),
     listForOrganization: () => Effect.die("not in test"),
     setVisibility: () => Effect.die("not in test"),
+    setCreatedBy: () => Effect.die("not in test"),
     setWorkspaceImage: () => Effect.die("not in test"),
     setApplyDotfiles: () => Effect.die("not in test"),
     setInheritUserSkills: () => Effect.die("not in test"),
@@ -1329,6 +1330,7 @@ const sessionsLayer = (world: World) => {
     listActive: () => Effect.succeed([]),
     listUnsettled: () =>
       Effect.succeed([...world.sessions.values()].filter((s) => s.settledAt === null)),
+    listUnsettledForOwner: () => Effect.succeed([]),
     // Owners of the world's sessions, most recent first, then any the test names on top.
     recentOwnersForProject: (projectId, since, excludeLabel) =>
       Effect.sync(() => {

@@ -241,9 +241,14 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
 
       const getSession = Effect.fn("Auth.getSession")(function* (headers: Headers) {
         if (staticToken !== "" && headers.get("authorization") === `Bearer ${staticToken}`) {
+          // The machine token acts as the longest-standing active operator (docs/adr/0003), never
+          // as whichever account happens to be oldest.
           const rows = yield* Effect.promise(() =>
             pool.query(
-              'SELECT id, email, name FROM "user" WHERE "deactivatedAt" IS NULL ORDER BY "createdAt" ASC LIMIT 1',
+              `SELECT u.id, u.email, u.name FROM "user" u
+               JOIN instance_roles r ON r.user_id = u.id AND r.role = 'operator'
+               WHERE u."deactivatedAt" IS NULL
+               ORDER BY r.granted_at ASC, u.id ASC LIMIT 1`,
             ),
           );
           const row = rows.rows[0] as

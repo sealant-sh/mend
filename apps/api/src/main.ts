@@ -35,6 +35,7 @@ import {
   ProjectLinksRepoLive,
   ProjectSecretsRepoLive,
   ProjectServiceRecipesRepoLive,
+  AuditEventsRepoLive,
   FoldersRepoLive,
   OrganizationsRepoLive,
   InstanceRolesRepoLive,
@@ -149,8 +150,10 @@ import { Config, Effect, Layer, Option, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import { ProjectAccessLive } from "./access.ts";
+import { ConnectionRegistryLive } from "./connections.ts";
 import { EventBusLive } from "./events-bus.ts";
 import { GithubIdentityLive } from "./github-identity.ts";
+import { MemberRemovalLive } from "./member-removal.ts";
 import { publicNetworkPolicy } from "./public-network-policy.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
 import { MendApiLive } from "./routes/api-live.ts";
@@ -184,6 +187,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   ServiceObservationsRepoLive,
   SessionRunsRepoLive,
   CheckpointsRepoLive,
+  AuditEventsRepoLive,
   FoldersRepoLive,
   OrganizationsRepoLive,
   InstanceRolesRepoLive,
@@ -310,6 +314,9 @@ const ServerLive = Layer.unwrap(
       ),
     ).pipe(
       Layer.provide(NodeHttpServer.layer(createServer, { port })),
+      // Removing a member revokes, closes their connections on every process, stops their sessions.
+      Layer.provide(MemberRemovalLive),
+      Layer.provide(ConnectionRegistryLive),
       // One LISTEN per process, fanned out to every SSE stream; the worker needs none.
       Layer.provide(EventBusLive),
     );

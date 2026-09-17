@@ -5,7 +5,7 @@ import * as Context from "effect/Context";
 import { notifyEvent } from "../events.ts";
 
 /** Which of one account's own facts moved. */
-export type UserEventFacet = "accounts" | "devices" | "git-access";
+export type UserEventFacet = "accounts" | "devices" | "git-access" | "access";
 
 /**
  * Announces that one account's own facts changed — connected accounts, device
