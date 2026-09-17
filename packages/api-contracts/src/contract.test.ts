@@ -5,6 +5,7 @@ import { HttpApi } from "effect/unstable/httpapi";
 import { describe, expect, it } from "vitest";
 
 import {
+  AdoptProject,
   MendApi,
   NewWorktree,
   ProcessLogPage,
@@ -88,6 +89,55 @@ describe("typed HTTP error contracts", () => {
     expect(statuses.get("create")?.has(409), "create should preserve WorktreeNameTaken").toBe(true);
     expect(statuses.get("remove")?.has(409), "remove should preserve WorktreeActive").toBe(true);
     expect(statuses.get("remove")?.has(422), "remove should preserve StoreFailure").toBe(true);
+  });
+
+  it("keeps team endpoint statuses typed: 404/409/422 never collapse to 500", () => {
+    const statuses = new Map<string, ReadonlySet<number>>();
+    HttpApi.reflect(MendApi, {
+      onGroup: () => {},
+      onEndpoint: ({ group, endpoint, errors }) => {
+        if (group.identifier === "teams") {
+          statuses.set(endpoint.name, new Set(errors.keys()));
+        }
+      },
+    });
+    expect([...statuses.keys()].toSorted()).toEqual([
+      "acceptInvite",
+      "addMember",
+      "create",
+      "createInvite",
+      "detail",
+      "invitePreview",
+      "list",
+      "remove",
+      "removeMember",
+      "rename",
+      "revokeInvite",
+      "setRole",
+    ]);
+    for (const [name, codes] of statuses) {
+      expect(codes.has(500), `${name} should not collapse its typed errors`).toBe(false);
+      if (name !== "list" && name !== "create") {
+        expect(codes.has(404), `${name} should preserve not-found`).toBe(true);
+      }
+    }
+    expect(statuses.get("create")?.has(422), "create should preserve TeamRejected").toBe(true);
+    expect(statuses.get("remove")?.has(422), "remove should preserve TeamRejected").toBe(true);
+    expect(statuses.get("acceptInvite")?.has(409), "accept should preserve InviteSpent").toBe(true);
+  });
+
+  it("adopts as a personal project when an older client sends no scope", () => {
+    const bare = Schema.decodeUnknownSync(AdoptProject)({
+      name: "mend",
+      source: "git@github.com:sealant-sh/mend.git",
+    });
+    expect(bare.scope).toBeUndefined();
+    const scoped = Schema.decodeUnknownSync(AdoptProject)({
+      name: "mend",
+      source: "git@github.com:sealant-sh/mend.git",
+      scope: { kind: "team", teamId: "team-1" },
+    });
+    expect(scoped.scope).toEqual({ kind: "team", teamId: "team-1" });
   });
 
   it("decodes worktree payloads: old-client omissions and the legacy change shape", () => {

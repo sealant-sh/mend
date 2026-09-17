@@ -2,6 +2,7 @@ import {
   ChangeId,
   MendSettings,
   DotfilesRepository,
+  TeamId,
   WorkspaceImage,
   WorktreeId,
 } from "@mend/domain";
@@ -41,6 +42,16 @@ export class AdoptProject extends Schema.Class<AdoptProject>("AdoptProject")({
   name: Schema.String,
   source: RepositoryCloneUrl,
   gitAuthMode: Schema.optional(GitAuthMode),
+  /**
+   * Where the project is visible (docs/adr/0002). Omitted — an older client — adopts as the
+   * caller's personal project: the narrowest scope, widened deliberately later.
+   */
+  scope: Schema.optional(
+    Schema.Struct({
+      kind: Schema.Literals(["personal", "team", "instance"]),
+      teamId: Schema.optional(TeamId),
+    }),
+  ),
 }) {}
 
 /**

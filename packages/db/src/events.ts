@@ -87,6 +87,12 @@ export const MendEvent = Schema.Union([
     projectId: Schema.String,
   }),
   Schema.Struct({
+    // A team's roster, name, invites or project set changed. The SSE endpoint re-reads the
+    // subscriber's standing on receipt, so a new member's projects appear without a reload.
+    type: Schema.Literals(["team"]),
+    teamId: Schema.String,
+  }),
+  Schema.Struct({
     // One account's own facts changed — connected accounts, paired devices and CLI
     // sign-ins, the git access choice or key. The first-run checklist and Settings
     // re-read the facet; nothing project-scoped moves.

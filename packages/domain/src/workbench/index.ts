@@ -42,5 +42,6 @@ export * from "./session-fold.ts";
 export * from "./session-process.ts";
 export * from "./session-run.ts";
 export * from "./skill.ts";
+export * from "./team.ts";
 export * from "./tour.ts";
 export * from "./worktree.ts";

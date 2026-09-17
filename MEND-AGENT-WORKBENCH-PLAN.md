@@ -1456,6 +1456,18 @@ understand the work.
   when no retained workspace exists because its worktree path is fixed; a session retained by live
   leases resumes in place. Status stays observational: "2 ready · 1 warming", never a promise.
 
+- **2026-09-12 — Teams: membership decides what an account can see.** Projects had no owner and
+  every signed-in account saw every project, session, worktree, terminal, and event on the instance.
+  Decided: a `team` is a named group of accounts (roles `owner` / `member`; at least one owner;
+  single-use, optionally email-bound invite links), and every project has one scope — personal (its
+  owner), team (the members), or instance (everyone, which is what every existing project stays on a
+  multi-account install; a single-account install takes ownership of its projects). Visibility is
+  the working permission; removal and re-scoping need the owner, a team owner, or anyone for an
+  instance project. One `ProjectAccess` service answers every project-scoped route, `/api/tty`, the
+  Service tunnel, and the SSE stream, always as 404. Per-user facts stay per-user; instance settings
+  stay instance-wide; Sealant needs no counterpart. Team governance beyond this (policies, audit)
+  stays a §14 non-goal. Details: `docs/adr/0002-teams-and-project-scope.md`.
+
 - **2026-08-22 — Mend owns the people; Sealant owns the resources.** Every Mend user ran as one
   Sealant user (`SEALANT_OWNER_USER_ID`): one set of connected accounts for the whole team, which
   shares subscriptions against the providers' terms, and every platform resource owned by one id.

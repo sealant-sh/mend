@@ -33,6 +33,7 @@ export default defineConfig({
             { label: "Adopt a project", slug: "getting-started/adopt-project" },
             { label: "Start a session", slug: "getting-started/first-session" },
             { label: "Work from another device", slug: "guides/remote-access" },
+            { label: "Teams and project scope", slug: "guides/teams" },
           ],
         },
         {

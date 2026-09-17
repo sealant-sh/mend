@@ -69,6 +69,14 @@ export type ProjectLinkId = typeof ProjectLinkId.Type;
 export const SkillId = Schema.String.pipe(Schema.brand("SkillId"));
 export type SkillId = typeof SkillId.Type;
 
+/** A named group of accounts on one instance (docs/adr/0002-teams-and-project-scope.md). */
+export const TeamId = Schema.String.pipe(Schema.brand("TeamId"));
+export type TeamId = typeof TeamId.Type;
+
+/** One single-use invitation into a team. */
+export const TeamInviteId = Schema.String.pipe(Schema.brand("TeamInviteId"));
+export type TeamInviteId = typeof TeamInviteId.Type;
+
 export const SessionProcessId = Schema.String.pipe(Schema.brand("SessionProcessId"));
 export type SessionProcessId = typeof SessionProcessId.Type;
 

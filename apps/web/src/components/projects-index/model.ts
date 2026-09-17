@@ -1,6 +1,7 @@
+import { projectScope } from "@mend/domain/workbench";
 import type { MouseEvent } from "react";
 
-import type { ProjectDto, SessionDto } from "#/lib/api";
+import type { ProjectDto, SessionDto, TeamViewDto } from "#/lib/api";
 import { LIVE_STATES } from "#/lib/workbench-menus";
 
 /** A repository and its observed live-session count for the directory. */
@@ -8,7 +9,29 @@ export interface ProjectEntry {
   readonly project: ProjectDto;
   /** Sessions in this project the server currently reports live. */
   readonly live: number | null;
+  /** Where the project is visible, as the directory prints it. */
+  readonly scope: string;
 }
+
+/**
+ * The scope column: "you" for a personal project, the team's name, or "everyone" for an
+ * instance project. A team the caller is not in cannot appear (the list is already filtered),
+ * so an unknown team id only happens between a roster change and the refetch.
+ */
+export const scopeLabel = (
+  project: Pick<ProjectDto, "teamId" | "ownerUserId">,
+  teams: ReadonlyArray<Pick<TeamViewDto, "team">> | undefined,
+): string => {
+  const scope = projectScope(project);
+  switch (scope.kind) {
+    case "personal":
+      return "you";
+    case "instance":
+      return "everyone";
+    case "team":
+      return teams?.find((entry) => entry.team.id === scope.teamId)?.team.name ?? "team";
+  }
+};
 
 /** The directory delegates project actions to the page's context menu. */
 export type ProjectMenuHandler = (event: MouseEvent<HTMLElement>, project: ProjectDto) => void;
@@ -23,6 +46,7 @@ export interface ProjectsDirectoryProps {
 export const projectEntries = (
   projects: ReadonlyArray<ProjectDto>,
   activeSessions: ReadonlyArray<Pick<SessionDto, "projectId" | "status">> | undefined,
+  teams?: ReadonlyArray<Pick<TeamViewDto, "team">>,
 ): ReadonlyArray<ProjectEntry> =>
   projects.map((project) => ({
     project,
@@ -30,6 +54,7 @@ export const projectEntries = (
       activeSessions?.filter(
         (session) => session.projectId === project.id && LIVE_STATES.has(session.status),
       ).length ?? null,
+    scope: scopeLabel(project, teams),
   }));
 
 /** Search on whatever you remember: the name, the origin, or the store path. */

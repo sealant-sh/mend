@@ -1,9 +1,16 @@
-import { ProjectId } from "@mend/domain";
+import { ProjectId, TeamId } from "@mend/domain";
 import { describe, expect, it } from "vitest";
 
 import type { ProjectDto } from "#/lib/api";
 
-import { matchesQuery, projectEntries, shortOrigin, sourceLabel, tailPath } from "./model";
+import {
+  matchesQuery,
+  projectEntries,
+  scopeLabel,
+  shortOrigin,
+  sourceLabel,
+  tailPath,
+} from "./model";
 
 const project: ProjectDto = {
   id: ProjectId.make("project-layout-test"),
@@ -12,6 +19,8 @@ const project: ProjectDto = {
   storePath: "/home/developer/.local/share/mend/store/mend/repo.git",
   defaultBranch: "main",
   adoptedSha: null,
+  teamId: null,
+  ownerUserId: null,
   autoTour: "inherit",
   autoSuggest: "inherit",
   autoName: "inherit",
@@ -44,7 +53,20 @@ describe("Projects index facts", () => {
         { projectId: ProjectId.make("another-project"), status: "running" },
       ],
     );
-    expect(entries).toEqual([{ project, live: 4 }]);
+    expect(entries).toEqual([{ project, live: 4, scope: "everyone" }]);
+  });
+
+  it("prints where a project is visible: you, the team's name, or everyone", () => {
+    const teams = [{ team: { id: "team-1", name: "Platform" } }];
+    expect(scopeLabel({ teamId: null, ownerUserId: "me" }, teams)).toBe("you");
+    expect(scopeLabel({ teamId: null, ownerUserId: null }, teams)).toBe("everyone");
+    expect(scopeLabel({ teamId: TeamId.make("team-1"), ownerUserId: null }, teams)).toBe(
+      "Platform",
+    );
+    // Between a roster change and the refetch the team may be unknown; never invent a name.
+    expect(scopeLabel({ teamId: TeamId.make("team-9"), ownerUserId: null }, undefined)).toBe(
+      "team",
+    );
   });
 
   it.each(["mend", " MEND ", "SEALANT-SH", "developer", " "])(

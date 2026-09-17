@@ -8,6 +8,7 @@ export * from "./projects.ts";
 export * from "./project-environment.ts";
 export * from "./sessions.ts";
 export * from "./skills.ts";
+export * from "./teams.ts";
 export * from "./changes.ts";
 export * from "./worktrees.ts";
 export * from "./github.ts";

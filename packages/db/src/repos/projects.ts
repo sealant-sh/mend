@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import { ProjectId, WorkspaceImage, type Sha } from "@mend/domain";
+import { ProjectId, WorkspaceImage, type Sha, type TeamId } from "@mend/domain";
 import { Project, type AutomationChoice, type GitAuthMode } from "@mend/domain/workbench";
 import { asc, eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
@@ -23,7 +23,16 @@ export interface NewProject {
   readonly defaultBranch: string;
   readonly adoptedSha: Sha | null;
   readonly gitAuthMode: GitAuthMode;
+  /** Scope at adoption (docs/adr/0002): a team, an owner, or neither for instance-wide. */
+  readonly teamId: TeamId | null;
+  readonly ownerUserId: string | null;
 }
+
+/** A project's scope as a write: exactly one of team / owner, or neither. */
+export type ProjectScopeWrite =
+  | { readonly kind: "team"; readonly teamId: TeamId }
+  | { readonly kind: "personal"; readonly ownerUserId: string }
+  | { readonly kind: "instance" };
 
 /** The index of adopted repositories (plan §5.2); the store itself is git on disk. */
 export class ProjectsRepo extends Context.Service<
@@ -33,6 +42,13 @@ export class ProjectsRepo extends Context.Service<
     readonly byId: (id: ProjectId) => Effect.Effect<Project, ProjectNotFoundError>;
     readonly byName: (name: string) => Effect.Effect<Project | null>;
     readonly list: () => Effect.Effect<ReadonlyArray<Project>>;
+    /** Projects scoped to one team, by name. */
+    readonly listForTeam: (teamId: TeamId) => Effect.Effect<ReadonlyArray<Project>>;
+    /** Move the project between scopes (docs/adr/0002); the store directory never moves. */
+    readonly setScope: (
+      id: ProjectId,
+      scope: ProjectScopeWrite,
+    ) => Effect.Effect<Project, ProjectNotFoundError>;
     /** The project's stance on the cascade switches (settings → project), replaced together. */
     readonly setAutomation: (
       id: ProjectId,
@@ -128,6 +144,36 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
           .orderBy(asc(projects.name))
           .pipe(Effect.orDie);
         return rows.map(toProject);
+      });
+
+      const listForTeam = Effect.fn("ProjectsRepo.listForTeam")(function* (teamId: TeamId) {
+        const rows = yield* db
+          .select()
+          .from(projects)
+          .where(eq(projects.teamId, teamId))
+          .orderBy(asc(projects.name))
+          .pipe(Effect.orDie);
+        return rows.map(toProject);
+      });
+
+      const setScope = Effect.fn("ProjectsRepo.setScope")(function* (
+        id: ProjectId,
+        scope: ProjectScopeWrite,
+      ) {
+        const [row] = yield* db
+          .update(projects)
+          .set({
+            teamId: scope.kind === "team" ? scope.teamId : null,
+            ownerUserId: scope.kind === "personal" ? scope.ownerUserId : null,
+            updatedAt: new Date(),
+          })
+          .where(eq(projects.id, id))
+          .returning()
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
+        const updated = toProject(row);
+        yield* notifyEvent(sql, { type: "project", projectId: updated.id });
+        return updated;
       });
 
       const setAutomation = Effect.fn("ProjectsRepo.setAutomation")(function* (
@@ -241,6 +287,8 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         byId,
         byName,
         list,
+        listForTeam,
+        setScope,
         setAutomation,
         setGitAuthMode,
         setWorkspaceImage,

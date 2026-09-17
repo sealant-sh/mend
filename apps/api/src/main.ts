@@ -39,6 +39,7 @@ import {
   ServiceObservationsRepoLive,
   ServicesRepoLive,
   SkillsRepoLive,
+  TeamsRepoLive,
   WorktreeChangesRepoLive,
   WorktreesRepoLive,
   SessionGitOpsRepoLive,
@@ -114,6 +115,7 @@ import {
 import { Config, Effect, Layer, Option, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
+import { ProjectAccessLive } from "./access.ts";
 import { publicNetworkPolicy } from "./public-network-policy.ts";
 import { MendApiLive } from "./routes/api-live.ts";
 import { EventsRoutes } from "./routes/events.ts";
@@ -153,6 +155,8 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   ProjectServiceRecipesRepoLive,
   SettingsRepoLive,
   SkillsRepoLive,
+  TeamsRepoLive,
+  TeamsRepoLive,
   InferenceCallsRepoLive,
   FollowUpsRepoLive,
   ReviewCommentsRepoLive,
@@ -175,6 +179,8 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
 const DatabaseLive = DrizzleRepositoriesLive.pipe(
   Layer.provideMerge(MigratorLive.pipe(Layer.provideMerge(PgLive))),
 );
+// Who may see which project (docs/adr/0002): the API groups and the raw data planes ask it.
+const AccessLive = ProjectAccessLive.pipe(Layer.provide(DatabaseLive));
 
 // ─── The central store (host-side git) + the session engine over it ────────
 // One instance each: the API handlers and the worker share them (memoized —
@@ -507,6 +513,7 @@ const MainLive = Layer.unwrap(
       Layer.provide(NetworkConfigLive),
       // One Sealant client per user, provisioned on first use (docs/SEALANT-IDENTITY.md).
       Layer.provide(SealantLiveFromEnv.pipe(Layer.provide(SealantIdentityStoreLive))),
+      Layer.provide(AccessLive),
       Layer.provide(DatabaseLive),
     );
   }),

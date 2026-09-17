@@ -579,3 +579,98 @@ describe.skipIf(!reachable)("0046 worktree containers", () => {
     expect(result.afterDelete[0]?.checkpoints).toBe("3");
   });
 });
+
+describe.skipIf(!reachable)("0053 teams and project scope", () => {
+  const SOLO_DB = `${SCRATCH_DB}_teams_solo`;
+  const MANY_DB = `${SCRATCH_DB}_teams_many`;
+  const layerFor = (name: string) => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${name}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  };
+  const withDb = <A, E>(name: string, effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(layerFor(name)), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${SOLO_DB}`);
+        yield* sql.unsafe(`CREATE DATABASE ${MANY_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${SOLO_DB} WITH (FORCE)`);
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${MANY_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  const seed = (users: ReadonlyArray<readonly [string, string]>) =>
+    Effect.gen(function* () {
+      const sql = yield* SqlClient.SqlClient;
+      yield* upTo("0052_project_inherit_user_skills");
+      for (const [id, email] of users) {
+        yield* sql`INSERT INTO "user" ("id", "name", "email") VALUES (${id}, ${id}, ${email})`;
+      }
+      yield* sql`
+        INSERT INTO projects (id, name, origin_url, store_path, default_branch)
+        VALUES ('project-a', 'a', NULL, '/store/a/repo.git', 'main'),
+               ('project-b', 'b', NULL, '/store/b/repo.git', 'main')`;
+      yield* migrations["0053_teams"];
+      return yield* sql<{
+        readonly id: string;
+        readonly team_id: string | null;
+        readonly owner_user_id: string | null;
+      }>`SELECT id, team_id, owner_user_id FROM projects ORDER BY id`;
+    });
+
+  it("a single account takes ownership of every existing project", async () => {
+    const rows = await withDb(SOLO_DB, seed([["only", "only@example.com"]]));
+    expect(rows).toEqual([
+      { id: "project-a", team_id: null, owner_user_id: "only" },
+      { id: "project-b", team_id: null, owner_user_id: "only" },
+    ]);
+  });
+
+  it("several accounts keep every existing project instance-wide, and the FKs hold", async () => {
+    const result = await withDb(
+      MANY_DB,
+      Effect.gen(function* () {
+        const rows = yield* seed([
+          ["one", "one@example.com"],
+          ["two", "two@example.com"],
+        ]);
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`INSERT INTO teams (id, name, created_by) VALUES ('team-1', 'Team', 'one')`;
+        yield* sql`
+          INSERT INTO team_members (team_id, user_id, role) VALUES ('team-1', 'one', 'owner')`;
+        yield* sql`UPDATE projects SET team_id = 'team-1' WHERE id = 'project-a'`;
+        // RESTRICT: a team with projects cannot be deleted underneath them.
+        const restricted = yield* sql`DELETE FROM teams WHERE id = 'team-1'`.pipe(Effect.result);
+        // SET NULL: a deleted account's personal project becomes an instance project.
+        yield* sql`UPDATE projects SET owner_user_id = 'two' WHERE id = 'project-b'`;
+        yield* sql`DELETE FROM "user" WHERE id = 'two'`;
+        const after = yield* sql<{
+          readonly id: string;
+          readonly team_id: string | null;
+          readonly owner_user_id: string | null;
+        }>`SELECT id, team_id, owner_user_id FROM projects ORDER BY id`;
+        return { rows, restricted, after };
+      }),
+    );
+    expect(result.rows).toEqual([
+      { id: "project-a", team_id: null, owner_user_id: null },
+      { id: "project-b", team_id: null, owner_user_id: null },
+    ]);
+    expect(result.restricted._tag).toBe("Failure");
+    expect(result.after).toEqual([
+      { id: "project-a", team_id: "team-1", owner_user_id: null },
+      { id: "project-b", team_id: null, owner_user_id: null },
+    ]);
+  });
+});

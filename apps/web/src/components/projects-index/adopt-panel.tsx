@@ -3,7 +3,14 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { GitKeyCard } from "#/components/git-key-card";
-import { adoptProject, initGitKey, type GitAuthModeDto, type GitKeyDto } from "#/lib/api";
+import { ScopePicker } from "#/components/scope-picker";
+import {
+  adoptProject,
+  initGitKey,
+  type GitAuthModeDto,
+  type GitKeyDto,
+  type ProjectScopeRequestDto,
+} from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
 
 /**
@@ -23,6 +30,9 @@ export function AdoptPanel({ onAdopted }: { readonly onAdopted: () => void }) {
   const auth: GitAuthModeDto = authOverride ?? access?.mode ?? "mend-key";
   const [createdKey, setCreatedKey] = useState<GitKeyDto | null>(null);
   const gitKey = createdKey ?? (access?.key.exists === true ? access.key : null);
+  // Where the project is visible (docs/adr/0002): the caller's own by default.
+  const teams = useQuery(trpc.teams.list.queryOptions()).data ?? [];
+  const [scope, setScope] = useState<ProjectScopeRequestDto>({ kind: "personal" });
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
   const trimmedSource = source.trim();
@@ -38,7 +48,7 @@ export function AdoptPanel({ onAdopted }: { readonly onAdopted: () => void }) {
     setPending(true);
     setError(null);
     try {
-      await adoptProject(name === "" ? inferName(trimmedSource) : name, trimmedSource, auth);
+      await adoptProject(name === "" ? inferName(trimmedSource) : name, trimmedSource, auth, scope);
       await queryClient.invalidateQueries(trpc.projects.pathFilter());
       setName("");
       setSource("");
@@ -113,6 +123,10 @@ export function AdoptPanel({ onAdopted }: { readonly onAdopted: () => void }) {
             {mode === "mend-key" ? "mend key" : mode}
           </button>
         ))}
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        <span className="text-xs text-label">visible to:</span>
+        <ScopePicker value={scope} onChange={setScope} teams={teams} />
       </div>
       {auth === "mend-key" && gitKey !== null && (
         <div className="mt-3 max-w-[560px]">

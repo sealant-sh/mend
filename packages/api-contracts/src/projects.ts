@@ -19,6 +19,7 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
 import { ProjectFileListing, ProjectPullRequests } from "./settings.ts";
+import { ProjectScopeRequest, TeamRejected } from "./teams.ts";
 import {
   AdoptProject,
   GitAccessView,
@@ -55,7 +56,7 @@ export const projectsGroup = HttpApiGroup.make("projects")
     HttpApiEndpoint.post("adopt", "/projects", {
       payload: AdoptProject,
       success: Project,
-      error: StoreFailure,
+      error: [StoreFailure, TeamRejected],
     }),
   )
   .add(
@@ -76,6 +77,16 @@ export const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       success: RemovalReport,
       error: [NotFound, StoreFailure],
+    }),
+  )
+  .add(
+    // Move the project between personal / team / instance scope (docs/adr/0002). Needs the
+    // manage permission: the owner, a team owner, or anyone for an instance project.
+    HttpApiEndpoint.put("scope", "/projects/:id/scope", {
+      params: Schema.Struct({ id: ProjectId }),
+      payload: ProjectScopeRequest,
+      success: Project,
+      error: [NotFound, TeamRejected],
     }),
   )
   .add(

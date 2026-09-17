@@ -11,6 +11,7 @@ import {
   MountsSection,
   ReferencesSection,
   RemoveProjectSection,
+  SharingSection,
   ReviewAutomationSection,
   ServicesSection,
   SessionLifecycleSection,
@@ -138,6 +139,7 @@ function ProjectSetupPage() {
           <GitAccessSection project={project} />
           <SessionLifecycleSection project={project} />
           <ReviewAutomationSection project={project} />
+          <SharingSection project={project} />
           <RemoveProjectSection projectId={projectId} />
         </div>
       </div>

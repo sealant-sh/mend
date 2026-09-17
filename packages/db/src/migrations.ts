@@ -1318,6 +1318,62 @@ const projectInheritUserSkillsMigration = Effect.gen(function* () {
       ADD COLUMN IF NOT EXISTS inherit_user_skills boolean NOT NULL DEFAULT true`;
 });
 
+/**
+ * Teams and project scope (docs/adr/0002-teams-and-project-scope.md). Projects were instance-wide
+ * — every account saw every project — so the upgrade must not hide anything: rows stay
+ * unassigned (instance scope) unless the instance has exactly one account, in which case they
+ * become that account's personal projects, which changes nothing that account can see.
+ */
+const teamsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS teams (
+      id text PRIMARY KEY,
+      name text NOT NULL UNIQUE,
+      created_by text REFERENCES "user"(id) ON DELETE SET NULL,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS team_members (
+      team_id text NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+      user_id text NOT NULL REFERENCES "user"(id) ON DELETE CASCADE,
+      role text NOT NULL,
+      added_by text,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (team_id, user_id)
+    )`;
+  yield* sql`
+    CREATE TABLE IF NOT EXISTS team_invites (
+      id text PRIMARY KEY,
+      team_id text NOT NULL REFERENCES teams(id) ON DELETE CASCADE,
+      token_hash text NOT NULL UNIQUE,
+      role text NOT NULL,
+      email text,
+      created_by text REFERENCES "user"(id) ON DELETE SET NULL,
+      expires_at timestamptz NOT NULL,
+      accepted_by text REFERENCES "user"(id) ON DELETE SET NULL,
+      accepted_at timestamptz,
+      revoked_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE INDEX IF NOT EXISTS team_invites_team_idx ON team_invites (team_id, created_at)`;
+  yield* sql`
+    ALTER TABLE projects
+      ADD COLUMN IF NOT EXISTS team_id text REFERENCES teams(id) ON DELETE RESTRICT,
+      ADD COLUMN IF NOT EXISTS owner_user_id text REFERENCES "user"(id) ON DELETE SET NULL`;
+  yield* sql`CREATE INDEX IF NOT EXISTS projects_team_idx ON projects (team_id)`;
+  yield* sql`CREATE INDEX IF NOT EXISTS projects_owner_idx ON projects (owner_user_id)`;
+  // A single account owns everything it adopted; more than one keeps today's instance scope.
+  yield* sql`
+    UPDATE projects
+       SET owner_user_id = (SELECT id FROM "user" LIMIT 1)
+     WHERE team_id IS NULL
+       AND owner_user_id IS NULL
+       AND (SELECT count(*) FROM "user") = 1`;
+});
+
 const worktreesMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
   yield* sql`
@@ -1520,4 +1576,5 @@ export const migrations = {
   "0050_session_has_transcript": sessionHasTranscriptMigration,
   "0051_user_git_access": userGitAccessMigration,
   "0052_project_inherit_user_skills": projectInheritUserSkillsMigration,
+  "0053_teams": teamsMigration,
 };

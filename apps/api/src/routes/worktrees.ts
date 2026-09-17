@@ -28,6 +28,7 @@ import { Store, worktreePathOf } from "@mend/store";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
+import { ProjectAccess } from "../access.ts";
 import { LIVE_STATES } from "./workbench.ts";
 
 /**
@@ -41,9 +42,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
       Effect.gen(function* () {
         const worktrees = yield* WorktreesRepo;
         const engine = yield* SessionEngine;
-        yield* (yield* ProjectsRepo)
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* (yield* ProjectAccess).project(params.id);
         // This verb PROVISIONS; joining an existing name is the sessions verb.
         if (payload.name !== null) {
           const existing = yield* worktrees.byName(params.id, payload.name);
@@ -74,9 +73,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         const sessions = yield* SessionsRepo;
         const changes = yield* WorktreeChangesRepo;
         const processes = yield* SessionProcessesRepo;
-        yield* (yield* ProjectsRepo)
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* (yield* ProjectAccess).project(params.id);
         const rows = yield* worktrees.listForProject(params.id);
         const projectSessions = yield* sessions.listForProject(params.id);
         const annotations = yield* changes.annotationsForProject(params.id);
@@ -110,13 +107,12 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
     )
     .handle("detail", ({ params }) =>
       Effect.gen(function* () {
-        const worktrees = yield* WorktreesRepo;
         const sessions = yield* SessionsRepo;
         const changes = yield* WorktreeChangesRepo;
         const checkpoints = yield* CheckpointsRepo;
         const processes = yield* SessionProcessesRepo;
-        const worktree = yield* worktrees
-          .byId(params.id)
+        const worktree = yield* (yield* ProjectAccess)
+          .worktree(params.id)
           .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
         const members = yield* sessions.listForWorktree(worktree.id);
         const change = yield* changes.byWorktree(worktree.id);
@@ -156,8 +152,8 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         const services = yield* ServicesRepo;
         const forwards = yield* ServiceForwardsRepo;
         const store = yield* Store;
-        const worktree = yield* worktrees
-          .byId(params.id)
+        const worktree = yield* (yield* ProjectAccess)
+          .worktree(params.id)
           .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
         const members = yield* sessions.listForWorktree(worktree.id);
         // Refuse while anything lives here — a live conversation, a process
@@ -211,6 +207,9 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
       Effect.gen(function* () {
         const engine = yield* SessionEngine;
         const caller = yield* CurrentUser;
+        yield* (yield* ProjectAccess)
+          .worktree(params.id)
+          .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
         return yield* engine
           .provisionSessionIn(params.id, {
             harness: payload.harness,
@@ -232,8 +231,8 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         const worktrees = yield* WorktreesRepo;
         const changes = yield* WorktreeChangesRepo;
         const engine = yield* SessionEngine;
-        const worktree = yield* worktrees
-          .byId(params.id)
+        const worktree = yield* (yield* ProjectAccess)
+          .worktree(params.id)
           .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
         // Snapshot through a conversation: newest live wins, else the change's
         // last contributor — provenance stays honest either way.

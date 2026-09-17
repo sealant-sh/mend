@@ -52,6 +52,7 @@ import { DevicePairingLive } from "./devices.ts";
 import { GithubGroupLive } from "./github.ts";
 import { MachineGroupLive } from "./machine.ts";
 import { SkillsGroupLive } from "./skills.ts";
+import { TeamsGroupLive } from "./teams.ts";
 import {
   DotfilesGroupLive,
   GitKeysGroupLive,
@@ -572,7 +573,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
     ),
   ),
   Layer.provide(SettingsGroupLive),
-  Layer.provide(Layer.mergeAll(DotfilesGroupLive, SkillsGroupLive)),
+  Layer.provide(Layer.mergeAll(DotfilesGroupLive, SkillsGroupLive, TeamsGroupLive)),
   Layer.provide(IssuesGroupLive),
   Layer.provide(BriefsGroupLive),
   Layer.provide(RunsGroupLive),

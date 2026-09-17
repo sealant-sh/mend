@@ -1,11 +1,14 @@
+import { CurrentUser } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
 import { SessionProcessesRepo, SessionsRepo } from "@mend/db";
-import { SessionId, SessionProcessId, type SealantWorkspaceId } from "@mend/domain";
+import { SessionId, SessionProcessId, type ProjectId, type SealantWorkspaceId } from "@mend/domain";
 import { currentAgentProcess } from "@mend/domain/workbench";
 import { asSealantUser, SealantClient } from "@mend/sealant";
 import { Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { Socket } from "effect/unstable/socket";
+
+import { ProjectAccess } from "../access.ts";
 
 /**
  * The terminal proxy (plan §8.1.F) as a DATA PLANE: one WebSocket per attach.
@@ -37,6 +40,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
     const sessions = yield* SessionsRepo;
     const processes = yield* SessionProcessesRepo;
     const sealant = yield* SealantClient;
+    const access = yield* ProjectAccess;
 
     yield* router.add("GET", "/api/tty", (request) =>
       Effect.gen(function* () {
@@ -63,6 +67,8 @@ export const TtyRoutes = HttpRouter.use((router) =>
           readonly sealantSessionId: string;
           /** The session owner: the PTY belongs to THEIR Sealant user, whoever attaches. */
           readonly ownerUserId: string | null;
+          /** Whoever attaches must be able to see the project (docs/adr/0002). */
+          readonly projectId: ProjectId;
         };
         if (processParam !== null) {
           const process = yield* processes.byId(SessionProcessId.make(processParam));
@@ -80,10 +86,14 @@ export const TtyRoutes = HttpRouter.use((router) =>
             return HttpServerResponse.text("process has no platform PTY", { status: 409 });
           }
           const owner = yield* sessions.byId(process.sessionId).pipe(Effect.option);
+          if (Option.isNone(owner)) {
+            return HttpServerResponse.text("unknown process", { status: 404 });
+          }
           target = {
             sealantWorkspaceId: process.sealantWorkspaceId,
             sealantSessionId: processPtyId,
-            ownerUserId: Option.isSome(owner) ? owner.value.ownerUserId : null,
+            ownerUserId: owner.value.ownerUserId,
+            projectId: owner.value.projectId,
           };
         } else if (sessionParam !== null) {
           const session = yield* sessions.byId(SessionId.make(sessionParam)).pipe(Effect.option);
@@ -97,18 +107,21 @@ export const TtyRoutes = HttpRouter.use((router) =>
             });
           }
           const ownerUserId = session.value.ownerUserId;
+          const projectId = session.value.projectId;
           const resolved =
             agent !== null && agent.sealantSessionId !== null
               ? {
                   sealantWorkspaceId: agent.sealantWorkspaceId,
                   sealantSessionId: agent.sealantSessionId,
                   ownerUserId,
+                  projectId,
                 }
               : session.value.sealantWorkspaceId !== null && session.value.sealantSessionId !== null
                 ? {
                     sealantWorkspaceId: session.value.sealantWorkspaceId,
                     sealantSessionId: session.value.sealantSessionId,
                     ownerUserId,
+                    projectId,
                   }
                 : null;
           if (resolved === null) {
@@ -119,6 +132,14 @@ export const TtyRoutes = HttpRouter.use((router) =>
           return HttpServerResponse.text("missing ?process or ?session", { status: 400 });
         }
         const { sealantWorkspaceId, sealantSessionId, ownerUserId } = target;
+        // Authenticated is not authorized: the terminal is the project's, so the project's
+        // visibility rule decides who attaches — the same 404 the API answers.
+        const visible = yield* access
+          .project(target.projectId)
+          .pipe(Effect.option, Effect.provideService(CurrentUser, authed.value));
+        if (Option.isNone(visible)) {
+          return HttpServerResponse.text("unknown session", { status: 404 });
+        }
         const from = BigInt(url.searchParams.get("from") ?? "0");
 
         const resolved = yield* Effect.gen(function* () {

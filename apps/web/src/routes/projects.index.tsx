@@ -31,13 +31,14 @@ function ProjectsPage() {
   const launchContext = { queryClient, trpc };
   const projects = useSuspenseQuery(trpc.projects.list.queryOptions()).data;
   const activeSessions = useQuery(trpc.sessions.listActive.queryOptions()).data;
+  const teams = useQuery(trpc.teams.list.queryOptions()).data;
   const navigate = useNavigate();
   const { openMenu, menuElement } = useContextMenu();
   const [query, setQuery] = useState("");
   const [adoptOpen, setAdoptOpen] = useState(false);
   useWorkbenchEvents();
 
-  const allEntries = projectEntries(projects, activeSessions);
+  const allEntries = projectEntries(projects, activeSessions, teams);
   const entries = allEntries.filter(({ project }) => matchesQuery(project, query));
   const live =
     activeSessions === undefined

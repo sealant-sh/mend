@@ -14,10 +14,11 @@ export function ProjectsDirectory({ entries, onProjectMenu }: ProjectsDirectoryP
       <div className="hidden items-center gap-4 border-b border-rule px-4 py-2 md:flex">
         <span className="ev-eyebrow min-w-0 flex-1">repository</span>
         <span className="ev-eyebrow w-[168px] shrink-0">default branch</span>
+        <span className="ev-eyebrow w-[112px] shrink-0">visible to</span>
         <span className="ev-eyebrow w-[92px] shrink-0">adopted</span>
         <span className="ev-eyebrow w-[136px] shrink-0">sessions</span>
       </div>
-      {entries.map(({ project, live }, index) => {
+      {entries.map(({ project, live, scope }, index) => {
         const source = project.originUrl ?? project.storePath;
         return (
           <Link
@@ -42,6 +43,12 @@ export function ProjectsDirectory({ entries, onProjectMenu }: ProjectsDirectoryP
               title={project.defaultBranch}
             >
               {project.defaultBranch}
+            </span>
+            <span
+              className="hidden w-[112px] shrink-0 truncate font-mono text-[11.5px] text-ink-2 md:block"
+              title={scope}
+            >
+              {scope}
             </span>
             <span className="hidden w-[92px] shrink-0 font-mono text-[11.5px] text-faint md:block">
               {adoptedLabel(project)}

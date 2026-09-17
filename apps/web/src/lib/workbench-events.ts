@@ -69,6 +69,12 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
           // Worktree list annotations carry comment/follow-up counts.
           void queryClient.invalidateQueries(trpc.worktrees.pathFilter());
           break;
+        case "team":
+          // A roster or invite moved, or a project changed scope: what this account can see
+          // may have changed with it.
+          void queryClient.invalidateQueries(trpc.teams.pathFilter());
+          void queryClient.invalidateQueries(trpc.projects.pathFilter());
+          break;
         case "user":
           // One account's own facts: the first-run checklist and Settings re-read
           // the facet named, so `mend connect` / `mend login` / `mend pair` in a

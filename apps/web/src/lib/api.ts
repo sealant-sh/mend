@@ -50,6 +50,19 @@ export type SealantIdentityDto = Outputs["platform"]["sealantIdentity"];
 export type ConnectedAccountDto = SealantIdentityDto["accounts"][number];
 export type ConnectedAccountProviderDto = ConnectedAccountDto["provider"];
 export type MachineDto = Outputs["platform"]["machine"];
+export type TeamViewDto = Outputs["teams"]["list"][number];
+export type TeamDto = TeamViewDto["team"];
+export type TeamRoleDto = TeamViewDto["role"];
+export type TeamDetailDto = Outputs["teams"]["detail"];
+export type TeamMemberDto = TeamDetailDto["members"][number];
+export type TeamInviteDto = TeamDetailDto["invites"][number];
+export type TeamInviteCreatedDto = Outputs["teams"]["createInvite"];
+export type TeamInvitePreviewDto = Outputs["teams"]["invitePreview"];
+/** Where a project is visible — the request shape of adoption and the scope setter. */
+export type ProjectScopeRequestDto =
+  | { readonly kind: "personal" }
+  | { readonly kind: "team"; readonly teamId: TeamDto["id"] }
+  | { readonly kind: "instance" };
 export type InstanceDto = Outputs["platform"]["instance"];
 
 export type ProjectDto = Outputs["projects"]["list"][number];
@@ -144,6 +157,8 @@ export interface WorkbenchEventDto {
   /** `user` events: whose facts moved, and which facet (accounts · devices · git-access). */
   readonly userId?: string;
   readonly facet?: string;
+  /** `team` events: which team's roster, invites, or projects moved. */
+  readonly teamId?: string;
 }
 
 // ─── Queue-era actions ──────────────────────────────────────────────────────
@@ -170,14 +185,43 @@ export const disconnectAccount = (id: string) =>
 
 // ─── Projects ───────────────────────────────────────────────────────────────
 
-export const adoptProject = (name: string, source: string, gitAuthMode?: GitAuthModeDto) =>
+export const adoptProject = (
+  name: string,
+  source: string,
+  gitAuthMode?: GitAuthModeDto,
+  scope?: ProjectScopeRequestDto,
+) =>
   orLogin(
     trpcClient.projects.adopt.mutate({
       name,
       source,
       ...(gitAuthMode === undefined ? {} : { gitAuthMode }),
+      ...(scope === undefined ? {} : { scope }),
     }),
   );
+export const setProjectScope = (id: string, request: ProjectScopeRequestDto) =>
+  orLogin(trpcClient.projects.setScope.mutate({ id, request }));
+
+// ─── Teams (docs/adr/0002) ──────────────────────────────────────────────────
+
+export const createTeam = (name: string) => orLogin(trpcClient.teams.create.mutate({ name }));
+export const renameTeam = (id: string, name: string) =>
+  orLogin(trpcClient.teams.rename.mutate({ id, request: { name } }));
+export const removeTeam = (id: string) => orLogin(trpcClient.teams.remove.mutate({ id }));
+export const addTeamMember = (id: string, email: string, role: TeamRoleDto) =>
+  orLogin(trpcClient.teams.addMember.mutate({ id, request: { email, role } }));
+export const setTeamRole = (id: string, userId: string, role: TeamRoleDto) =>
+  orLogin(trpcClient.teams.setRole.mutate({ id, userId, request: { role } }));
+export const removeTeamMember = (id: string, userId: string) =>
+  orLogin(trpcClient.teams.removeMember.mutate({ id, userId }));
+export const createTeamInvite = (
+  id: string,
+  request: { readonly role: TeamRoleDto; readonly email?: string; readonly expiresInDays?: number },
+) => orLogin(trpcClient.teams.createInvite.mutate({ id, request }));
+export const revokeTeamInvite = (id: string, inviteId: string) =>
+  orLogin(trpcClient.teams.revokeInvite.mutate({ id, inviteId }));
+export const acceptTeamInvite = (token: string) =>
+  orLogin(trpcClient.teams.acceptInvite.mutate({ token }));
 export const removeProject = (id: string) => orLogin(trpcClient.projects.remove.mutate({ id }));
 export const setProjectAutomation = (
   projectId: string,

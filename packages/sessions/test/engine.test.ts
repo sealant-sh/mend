@@ -1089,6 +1089,8 @@ const projectsLayer = (world: World) =>
     },
     byName: () => Effect.succeed(null),
     list: () => Effect.succeed([...world.projects.values()]),
+    listForTeam: () => Effect.succeed([]),
+    setScope: () => Effect.die("not in test"),
     setAutomation: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),
   });
@@ -1512,6 +1514,8 @@ const setup = (tmp: string, world: World) => {
       workspaceImage: null,
       applyDotfiles: true,
       inheritUserSkills: true,
+      teamId: null,
+      ownerUserId: null,
       hotSessions: 0,
       createdAt: now(),
       updatedAt: now(),

@@ -360,11 +360,14 @@ const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const name =
     nameFlag !== -1 && args[nameFlag + 1] !== undefined ? String(args[nameFlag + 1]) : null;
   const authFlagIndex = args.indexOf("--auth");
+  const teamFlagIndex = args.indexOf("--team");
+  const everyone = args.includes("--everyone");
   const positional = args.filter(
     (a, i) =>
       !a.startsWith("--") &&
       (nameFlag === -1 || i !== nameFlag + 1) &&
-      (authFlagIndex === -1 || i !== authFlagIndex + 1),
+      (authFlagIndex === -1 || i !== authFlagIndex + 1) &&
+      (teamFlagIndex === -1 || i !== teamFlagIndex + 1),
   );
   const source = positional[0] ?? gitOriginUrl(process.cwd());
   if (source === null) {
@@ -385,13 +388,39 @@ const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
     return fail(`--auth takes "ambient", "mend-key", or "bridge", not "${auth}"`);
   }
 
+  // Where the project is visible (docs/adr/0002): yours alone unless a team or --everyone says.
+  const teamName =
+    teamFlagIndex !== -1 && args[teamFlagIndex + 1] !== undefined
+      ? String(args[teamFlagIndex + 1])
+      : null;
+  if (teamName !== null && everyone) return fail("--team and --everyone are exclusive");
+  let scope: { readonly kind: "personal" | "team" | "instance"; readonly teamId?: string } = {
+    kind: everyone ? "instance" : "personal",
+  };
+  if (teamName !== null) {
+    const teams = await api<
+      ReadonlyArray<{ readonly team: { readonly id: string; readonly name: string } }>
+    >(config, "GET", "/teams");
+    const team = teams.find((entry) => entry.team.name.toLowerCase() === teamName.toLowerCase());
+    if (team === undefined) {
+      return fail(
+        `you are not in a team named "${teamName}" — mend lists yours at ${config.url}/teams`,
+      );
+    }
+    scope = { kind: "team", teamId: team.team.id };
+  }
+
   const project = await api<ProjectDto>(config, "POST", "/projects", {
     name: projectName,
     source,
     ...(auth === null ? {} : { gitAuthMode: auth }),
+    scope,
   });
   say(`${green("✓")} adopted · ${project.name} · ${dim(project.storePath)}`);
   say(`${dim("  default branch")} ${project.defaultBranch}`);
+  say(
+    `${dim("  visible to")} ${scope.kind === "team" ? teamName : scope.kind === "instance" ? "everyone on this Mend" : "only you"}`,
+  );
   // Say which signer did the work — the clone already proved it answers.
   if (project.gitAuthMode === "mend-key") {
     say(`${dim("  git auth")} mend key ${dim("(your Mend key signed this clone)")}`);

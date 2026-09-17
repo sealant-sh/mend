@@ -24,6 +24,7 @@ import { HttpRouter } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { ProjectAccess } from "./access.ts";
 import { publicNetworkPolicy } from "./public-network-policy.ts";
 import { AuthMiddlewareLive } from "./routes/api-live.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
@@ -97,6 +98,7 @@ const startServer = async () => {
     Layer.mock(UserGitAccessRepo, {}),
     Layer.mock(SealantClient, {}),
     Layer.mock(SessionsRepo, {}),
+    Layer.mock(ProjectAccess, {}),
     Layer.mock(SessionProcessesRepo, {}),
     Layer.mock(ServicesRepo, {}),
     Layer.mock(ServiceForwardsRepo, {}),

@@ -1,3 +1,4 @@
+import { CurrentUser } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
 import { ServiceForwardsRepo, ServicesRepo, SessionsRepo } from "@mend/db";
 import { ServiceId } from "@mend/domain";
@@ -5,6 +6,8 @@ import { asSealantUser, SealantClient } from "@mend/sealant";
 import { Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { Socket } from "effect/unstable/socket";
+
+import { ProjectAccess } from "../access.ts";
 
 /**
  * The Service tunnel (docs/SESSION-SERVICES.md): the client-side data plane
@@ -35,6 +38,7 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
     const forwards = yield* ServiceForwardsRepo;
     const sessions = yield* SessionsRepo;
     const sealant = yield* SealantClient;
+    const access = yield* ProjectAccess;
 
     yield* router.add("GET", "/api/service-tunnel", (request) =>
       Effect.gen(function* () {
@@ -72,11 +76,15 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
         const ownerUserId = Option.isSome(owner) ? owner.value.ownerUserId : null;
         // Authenticated is not authorized. The raw listener cannot gate per
         // user — network reach is its only gate — but this path can, so it
-        // does: only the session owner tunnels its Services. (`/api/tty`
-        // still admits any signed-in user; align it when session sharing is
-        // decided.)
-        if (ownerUserId !== null && ownerUserId !== authed.value.user.id) {
-          return HttpServerResponse.text("not your Service", { status: 403 });
+        // does: whoever can see the project tunnels its Services (docs/adr/0002),
+        // the same rule `/api/tty` applies. The dial itself runs as the owner.
+        const visible = Option.isNone(owner)
+          ? Option.none()
+          : yield* access
+              .project(owner.value.projectId)
+              .pipe(Effect.option, Effect.provideService(CurrentUser, authed.value));
+        if (Option.isNone(visible)) {
+          return HttpServerResponse.text("unknown service", { status: 404 });
         }
         const workspaceId =
           forward !== null && (forward.state === "binding" || forward.state === "bound")

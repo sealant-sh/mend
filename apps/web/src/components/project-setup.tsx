@@ -3,6 +3,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { GitKeyCard } from "#/components/git-key-card";
+import { ScopePicker } from "#/components/scope-picker";
 import {
   addProjectLink,
   addProjectMount,
@@ -23,6 +24,8 @@ import {
   type GitAuthModeDto,
   type ProjectDto,
   type ReferenceDto,
+  setProjectScope,
+  type ProjectScopeRequestDto,
 } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
 
@@ -415,6 +418,65 @@ export function SessionLifecycleSection({ project }: { readonly project: Project
           ))}
         </div>
       </div>
+    </section>
+  );
+}
+
+/**
+ * Where the project is visible (docs/adr/0002): only its owner, one team, or everyone on this
+ * Mend. Changing it is a manage action — the owner, a team owner, or anyone for an instance
+ * project; the server answers not-found to everyone else, which the panel reports as-is.
+ */
+export function SharingSection({ project }: { readonly project: ProjectDto }) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const teams = useQuery(trpc.teams.list.queryOptions()).data ?? [];
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const current: ProjectScopeRequestDto =
+    project.teamId !== null
+      ? { kind: "team", teamId: project.teamId }
+      : project.ownerUserId !== null
+        ? { kind: "personal" }
+        : { kind: "instance" };
+  const currentTeam = teams.find((entry) => entry.team.id === project.teamId);
+
+  const change = (scope: ProjectScopeRequestDto) => {
+    setBusy(true);
+    setError(null);
+    void setProjectScope(project.id, scope)
+      .then(() => queryClient.invalidateQueries(trpc.projects.pathFilter()))
+      .then(() => queryClient.invalidateQueries(trpc.teams.pathFilter()))
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <section id="sharing" className="project-setup-card">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h3 className="font-sans text-sm font-semibold">Visible to</h3>
+          <p className="mt-1 max-w-[58ch] text-[13px] leading-relaxed text-muted-foreground">
+            Who sees this project and works in it: only you, one of your teams, or every account on
+            this Mend. The store copy never moves; only who can reach it does.
+          </p>
+        </div>
+      </div>
+      <div className="mt-4">
+        <ScopePicker value={current} onChange={change} teams={teams} disabled={busy} />
+      </div>
+      <p className="mt-3 font-mono text-[12px] text-label">
+        {current.kind === "personal"
+          ? "personal · only you"
+          : current.kind === "instance"
+            ? "instance · everyone on this Mend"
+            : `team · ${currentTeam?.team.name ?? "a team you are not in"}`}
+      </p>
+      {error !== null && (
+        <p role="alert" className="mt-2 font-mono text-[12.5px] text-warning">
+          {error}
+        </p>
+      )}
     </section>
   );
 }

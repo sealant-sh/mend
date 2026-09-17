@@ -1,6 +1,6 @@
 import { Effect, Schema } from "effect";
 
-import { ProjectId, Sha } from "../ids.ts";
+import { ProjectId, Sha, TeamId } from "../ids.ts";
 import { WorkspaceImage } from "../settings.ts";
 import { Timestamp } from "../timestamp.ts";
 
@@ -143,6 +143,82 @@ export class Project extends Schema.Class<Project>("Project")({
    * effectively instant. Explicit resource intent: N ready containers per project.
    */
   hotSessions: Schema.Number,
+  /**
+   * The team this project is scoped to; null for a personal or instance project. With
+   * `ownerUserId` this is the project's scope (docs/adr/0002-teams-and-project-scope.md).
+   * Decodes to null from servers that predate scope so an updated client never fails on them.
+   */
+  teamId: Schema.NullOr(TeamId).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /** The owning account of a personal project; null for a team or instance project. */
+  ownerUserId: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
   createdAt: Timestamp,
   updatedAt: Timestamp,
 }) {}
+
+/**
+ * Where a project is visible: to its owner alone, to one team's members, or to every account on
+ * the instance. `instance` is what every project was before scope existed, so it stays the shape
+ * of an unassigned row rather than a migration-invented team.
+ */
+export type ProjectScope =
+  | { readonly kind: "personal"; readonly ownerUserId: string }
+  | { readonly kind: "team"; readonly teamId: TeamId }
+  | { readonly kind: "instance" };
+
+/** A project's scope from its two nullable columns; a team assignment wins over a stale owner. */
+export const projectScope = (project: Pick<Project, "teamId" | "ownerUserId">): ProjectScope => {
+  if (project.teamId !== null) return { kind: "team", teamId: project.teamId };
+  if (project.ownerUserId !== null) return { kind: "personal", ownerUserId: project.ownerUserId };
+  return { kind: "instance" };
+};
+
+/** The account's standing in every team it belongs to — the input to the visibility rules. */
+export interface TeamStanding {
+  /** Teams the account belongs to in any role. */
+  readonly memberOf: ReadonlySet<TeamId>;
+  /** The subset it owns. */
+  readonly ownerOf: ReadonlySet<TeamId>;
+}
+
+/**
+ * Visibility is the working permission: an account that can see a project can start sessions,
+ * review, and change its settings. Instance projects are visible to everyone.
+ */
+export const canViewProject = (
+  project: Pick<Project, "teamId" | "ownerUserId">,
+  userId: string,
+  standing: TeamStanding,
+): boolean => {
+  const scope = projectScope(project);
+  switch (scope.kind) {
+    case "instance":
+      return true;
+    case "personal":
+      return scope.ownerUserId === userId;
+    case "team":
+      return standing.memberOf.has(scope.teamId);
+  }
+};
+
+/**
+ * Management is narrower than working: removing a project or changing its scope. The owner of a
+ * personal project, an owner of the team a team project belongs to, and — unchanged from before
+ * scope existed — anyone for an instance project.
+ */
+export const canManageProject = (
+  project: Pick<Project, "teamId" | "ownerUserId">,
+  userId: string,
+  standing: TeamStanding,
+): boolean => {
+  const scope = projectScope(project);
+  switch (scope.kind) {
+    case "instance":
+      return true;
+    case "personal":
+      return scope.ownerUserId === userId;
+    case "team":
+      return standing.ownerOf.has(scope.teamId);
+  }
+};

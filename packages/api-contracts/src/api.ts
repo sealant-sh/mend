@@ -28,6 +28,7 @@ import {
   sealantGroup,
   workspaceSshGroup,
 } from "./system.ts";
+import { teamsGroup } from "./teams.ts";
 import { worktreesGroup } from "./worktrees.ts";
 
 export const MendApi = HttpApi.make("mend")
@@ -40,6 +41,7 @@ export const MendApi = HttpApi.make("mend")
   .add(settingsGroup)
   .add(dotfilesGroup)
   .add(skillsGroup)
+  .add(teamsGroup)
   .add(issuesGroup)
   .add(briefsGroup)
   .add(runsGroup)

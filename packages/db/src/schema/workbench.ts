@@ -50,6 +50,8 @@ import type {
   SessionProcessId,
   Sha,
   SkillId,
+  TeamId,
+  TeamInviteId,
   WorktreeId,
 } from "@mend/domain";
 import {
@@ -97,6 +99,7 @@ import type {
   SessionProcessStatus,
   SessionReferenceMount,
   SessionStatus,
+  TeamRole,
 } from "@mend/domain/workbench";
 import { sql } from "drizzle-orm";
 import {
@@ -283,9 +286,71 @@ export const projects = pgTable("projects", {
   workspaceServiceAccount: text(),
   // How many hot workspaces to keep ready for new sessions (0 = none).
   hotSessions: integer().notNull().default(0),
+  // Scope (docs/adr/0002): team → members see it; owner only → personal; both null → instance.
+  // A team cannot be deleted while it owns projects (RESTRICT); a deleted account's personal
+  // projects become instance projects (SET NULL) rather than vanishing with their store.
+  teamId: text()
+    .$type<TeamId>()
+    .references(() => teams.id, { onDelete: "restrict" }),
+  ownerUserId: text(),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * A named group of accounts on this instance — the unit a project is shared with
+ * (docs/adr/0002-teams-and-project-scope.md). Names are unique per instance.
+ */
+export const teams = pgTable("teams", {
+  id: text().$type<TeamId>().primaryKey(),
+  name: text().notNull().unique(),
+  // FK to better-auth's "user"(id) ON DELETE SET NULL, declared in the migration.
+  createdBy: text(),
+  createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
+/** One account's seat in a team. Every team keeps at least one owner (repo-enforced). */
+export const teamMembers = pgTable(
+  "team_members",
+  {
+    teamId: text()
+      .$type<TeamId>()
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    // FK to "user"(id) ON DELETE CASCADE, declared in the migration.
+    userId: text().notNull(),
+    role: text().$type<TeamRole>().notNull(),
+    addedBy: text(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.teamId, table.userId] })],
+);
+
+/**
+ * A single-use invitation into a team. Only the token's sha256 is stored — the link is shown
+ * once at minting, like a pairing code. `email` binds acceptance to one account when set.
+ */
+export const teamInvites = pgTable(
+  "team_invites",
+  {
+    id: text().$type<TeamInviteId>().primaryKey(),
+    teamId: text()
+      .$type<TeamId>()
+      .notNull()
+      .references(() => teams.id, { onDelete: "cascade" }),
+    tokenHash: text().notNull().unique(),
+    role: text().$type<TeamRole>().notNull(),
+    email: text(),
+    createdBy: text(),
+    expiresAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    acceptedBy: text(),
+    acceptedAt: timestamp({ mode: "date", withTimezone: true }),
+    revokedAt: timestamp({ mode: "date", withTimezone: true }),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("team_invites_team_idx").on(table.teamId, table.createdAt)],
+);
 
 /**
  * The durable container (plan §5.5/§5.6): one named git worktree in the project's

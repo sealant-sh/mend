@@ -97,18 +97,24 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "adopt",
     section: "start",
     summary: "adopt a repository into the store",
-    synopsis: ["[git-url] [--name <name>] [--auth ambient|mend-key|bridge]"],
+    synopsis: [
+      "[git-url] [--name <name>] [--auth ambient|mend-key|bridge] [--team <name> | --everyone]",
+    ],
     description: [
       "Clones a network Git repository into Mend's store. Every session then gets its own worktree of it. With no argument, Mend uses the current checkout's origin URL. HTTP(S), SSH, git://, and SCP-style URLs work; local paths and file:// URLs do not.",
       "--auth says how the store fetches from the remote. Default: your mode from mend keys mode. mend-key signs with your Mend key on the server (see mend keys). bridge relays this machine's ssh-agent while a mend command runs here, so hardware keys stay on your desk. ambient uses the server's own credentials.",
+      "A project is visible only to you unless you say otherwise: --team shares it with one of your teams, --everyone with every account on this Mend. Change it later from the project's Setup page.",
     ],
     options: [
       { flag: "--name <name>", text: "the project's name in Mend. Default: the repository's" },
       { flag: "--auth <mode>", text: "mend-key, bridge, or ambient. Default: mend keys mode" },
+      { flag: "--team <name>", text: "scope the project to one of your teams" },
+      { flag: "--everyone", text: "scope the project to every account on this Mend" },
     ],
     examples: [
       { command: "mend adopt", text: "the current repository's origin URL" },
       { command: "mend adopt git@github.com:acme/api.git --auth mend-key", text: "" },
+      { command: "mend adopt --team platform", text: "shared with the platform team" },
     ],
     see: ["keys init", "keys share", "refresh"],
   },

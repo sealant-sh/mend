@@ -9,6 +9,7 @@ import {
   ProjectHotSessionsRequest,
   ProjectInheritUserSkillsRequest,
   ProjectReferenceSelection,
+  ProjectScopeRequest,
   ProjectWorkspaceImageRequest,
 } from "@mend/api-contracts";
 import { ProjectId, ProjectLinkId, ProjectMountId } from "@mend/domain";
@@ -34,6 +35,11 @@ export const projectsRouter = router({
     .input(byId)
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.projects.remove({ params: { id: i.id } })),
+    ),
+  setScope: procedure
+    .input(input(Schema.Struct({ id: ProjectId, request: ProjectScopeRequest })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.projects.scope({ params: { id: i.id }, payload: i.request })),
     ),
   setAutomation: procedure
     .input(input(Schema.Struct({ id: ProjectId, choices: ProjectAutomationRequest })))

@@ -28,12 +28,14 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   `change` (the reviewable object: session worktree versus its base), `checkpoint` (a hidden git ref
   stamped with the record sequence; any two checkpoints define a reviewable slice), `context pack` /
   `context snapshot` (explicit, versioned selection; every session receives an immutable snapshot),
-  and `handoff` (the editable end-of-session summary promoted into durable context). Interface-side
-  inference deliberately has **no product noun** — write "Mend uses inference"; the machine review
-  pass is phrased "Mend reads the change" (draft comments and proposed checks, never verdicts; every
-  finding links to the record or ships a runnable check). Cardinality: sessions are many per
-  project, one worktree each; one change per session; landing a change (merge/commit/PR) is
-  publication, optional by definition.
+  `handoff` (the editable end-of-session summary promoted into durable context), and `team` (a named
+  group of accounts on one instance; a project's `scope` is personal, one team, or the whole
+  instance, and scope is what every access check reads —
+  `docs/adr/0002-teams-and-project-scope.md`). Interface-side inference deliberately has **no
+  product noun** — write "Mend uses inference"; the machine review pass is phrased "Mend reads the
+  change" (draft comments and proposed checks, never verdicts; every finding links to the record or
+  ships a runnable check). Cardinality: sessions are many per project, one worktree each; one change
+  per session; landing a change (merge/commit/PR) is publication, optional by definition.
 - The queue is gone: no triage/queued/mending stages, no issue intake, no kanban. Issues and PRs are
   optional references attached to work, never its identity.
 - Platform nouns follow Sealant: `workspace` (the live environment; sessions run in workspaces that
