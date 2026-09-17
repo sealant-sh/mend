@@ -3,6 +3,7 @@ import {
   AgentConversationRepo,
   MEND_EVENTS_CHANNEL,
   MendEvent,
+  OrganizationsRepo,
   ProjectsRepo,
   PushDevicesRepo,
   SessionProcessesRepo,
@@ -13,9 +14,11 @@ import {
   agentProcessOutcome,
   currentAgentProcess,
   type AgentTurn,
+  type ProjectTenancy,
   type Session,
   type SessionProcess,
 } from "@mend/domain/workbench";
+import { mayRunIn } from "@mend/sessions";
 import { Effect, Layer, Schema, Stream } from "effect";
 
 import { notificationRecipients } from "./notification-recipients.ts";
@@ -113,6 +116,21 @@ export const pushTargets = (
     return yield* devices.listForUsers([...recipients]);
   });
 
+/**
+ * The account that sent the latest turn, while it can still see the project; null otherwise. A
+ * teammate who lost access hears nothing more about the session.
+ */
+export const latestSenderWhoSees = (
+  organizations: OrganizationsRepo["Service"],
+  project: ProjectTenancy,
+  turns: ReadonlyArray<Pick<AgentTurn, "author">>,
+) =>
+  Effect.gen(function* () {
+    const author = turns.findLast((turn) => turn.author !== null)?.author ?? null;
+    if (author === null) return null;
+    return (yield* mayRunIn(organizations, project, author)) ? author : null;
+  });
+
 export const SessionNotifierLive = Layer.effectDiscard(
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
@@ -121,6 +139,7 @@ export const SessionNotifierLive = Layer.effectDiscard(
     const projects = yield* ProjectsRepo;
     const devices = yield* PushDevicesRepo;
     const conversations = yield* AgentConversationRepo;
+    const organizations = yield* OrganizationsRepo;
 
     const lastPhase = new Map<string, Phase | null>();
     /** Per session: the open (queued/running) turn ids seen on the last event. */
@@ -128,13 +147,14 @@ export const SessionNotifierLive = Layer.effectDiscard(
 
     const send = Effect.fn("SessionNotifier.send")(function* (session: Session, body: string) {
       const turns = yield* conversations.listTurns(session.id);
-      const latestSender = turns.findLast((turn) => turn.author !== null)?.author ?? null;
+      const project = yield* projects
+        .byId(session.projectId)
+        .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
+      const latestSender =
+        project === null ? null : yield* latestSenderWhoSees(organizations, project, turns);
       const targets = yield* pushTargets(devices, session, latestSender);
       if (targets.length === 0) return;
-      const title = yield* projects.byId(session.projectId).pipe(
-        Effect.map((project) => project.name),
-        Effect.orElseSucceed(() => session.harness),
-      );
+      const title = project?.name ?? session.harness;
       const messages = targets.map((device) => ({
         to: device.token,
         title,

@@ -195,6 +195,7 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
     Effect.map(makeConnectionRegistry, (registry) => ({
       register: registry.register,
       closeForUser: registry.closeForUser,
+      closeForSession: registry.closeForSession,
     })),
   );
   const authorization = Layer.mergeAll(

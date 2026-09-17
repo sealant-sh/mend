@@ -2108,6 +2108,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         return new SessionDetail({
           session,
           control: new SessionControlView({
+            own: viewer !== null && session.ownerUserId === viewer.userId,
             steer,
             stop: steer || viewer?.role === "owner",
             toggleSharedControl:
@@ -2520,7 +2521,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("remove", ({ params }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
-        const session = yield* steering.session(params.id);
+        const session = yield* steering.owned(params.id);
         const sessions = yield* SessionsRepo;
         const projects = yield* ProjectsRepo;
         const processes = yield* SessionProcessesRepo;
@@ -2585,7 +2586,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("label", ({ params, payload }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
-        yield* steering.session(params.id);
+        yield* steering.owned(params.id);
         const sessions = yield* SessionsRepo;
         const trimmed = payload.label === null ? null : payload.label.trim();
         yield* sessions.setLabel(params.id, trimmed === "" ? null : trimmed);
@@ -2689,7 +2690,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("handoff", ({ params, payload }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
-        yield* steering.session(params.id);
+        yield* steering.owned(params.id);
         const engine = yield* SessionEngine;
         return yield* engine
           .handoff(

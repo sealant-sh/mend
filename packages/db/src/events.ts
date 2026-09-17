@@ -96,6 +96,14 @@ export const MendEvent = Schema.Union([
     facet: Schema.Literals(["accounts", "devices", "git-access", "access"]),
   }),
   Schema.Struct({
+    // The owner (or an organization owner) turned shared control off: every process closes the
+    // terminals and tunnels other accounts hold on this session.
+    type: Schema.Literals(["shared-control-off"]),
+    sessionId: Schema.String,
+    projectId: Schema.String,
+    ownerUserId: Schema.NullOr(Schema.String),
+  }),
+  Schema.Struct({
     // Membership, roles or invitations of one organization changed.
     type: Schema.Literals(["organization"]),
     organizationId: Schema.String,

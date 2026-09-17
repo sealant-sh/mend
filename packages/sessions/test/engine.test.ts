@@ -1331,7 +1331,7 @@ const sessionsLayer = (world: World) => {
     listUnsettled: () =>
       Effect.succeed([...world.sessions.values()].filter((s) => s.settledAt === null)),
     setSharedControl: () => Effect.die("not in test"),
-    disableSharedControlForOwner: () => Effect.void,
+    disableSharedControlForOwner: () => Effect.succeed([]),
     listUnsettledForOwner: () => Effect.succeed([]),
     // Owners of the world's sessions, most recent first, then any the test names on top.
     recentOwnersForProject: (projectId, since, excludeLabel) =>

@@ -120,6 +120,7 @@ const startServer = async () => {
     Effect.map(makeConnectionRegistry, (registry) => ({
       register: registry.register,
       closeForUser: registry.closeForUser,
+      closeForSession: registry.closeForSession,
     })),
   );
   const websocketRoutes = WebSocketRoutes.pipe(

@@ -160,8 +160,10 @@ export class SessionsRepo extends Context.Service<
       id: SessionId,
       enabledByUserId: string | null,
     ) => Effect.Effect<Session, SessionNotFoundError>;
-    /** Stop sharing every session of one account: what removing them does first. */
-    readonly disableSharedControlForOwner: (userId: string) => Effect.Effect<void>;
+    /** Stop sharing every session of one account: what removing them does first. Answers which. */
+    readonly disableSharedControlForOwner: (
+      userId: string,
+    ) => Effect.Effect<ReadonlyArray<SessionId>>;
     /** The auto-namer's write: fills the label only while null; true when the write landed. */
     readonly setLabelIfUnset: (id: SessionId, label: string) => Effect.Effect<boolean>;
     /** Hard delete — comments, checkpoints, follow-ups, change and tour cascade. */
@@ -618,6 +620,14 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
         if (row === undefined) return yield* new SessionNotFoundError({ sessionId: id });
         yield* notify(id);
+        if (enabledByUserId === null) {
+          yield* notifyEvent(pg, {
+            type: "shared-control-off",
+            sessionId: id,
+            projectId: row.projectId,
+            ownerUserId: row.ownerUserId,
+          });
+        }
         return toSession(row);
       });
 
@@ -636,9 +646,24 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
                 isNotNull(agentSessions.sharedControlEnabledAt),
               ),
             )
-            .returning({ id: agentSessions.id })
+            .returning({ id: agentSessions.id, projectId: agentSessions.projectId })
             .pipe(Effect.orDie);
-          yield* Effect.forEach(rows, (row) => notify(row.id), { discard: true });
+          yield* Effect.forEach(
+            rows,
+            (row) =>
+              notify(row.id).pipe(
+                Effect.andThen(
+                  notifyEvent(pg, {
+                    type: "shared-control-off",
+                    sessionId: row.id,
+                    projectId: row.projectId,
+                    ownerUserId: userId,
+                  }),
+                ),
+              ),
+            { discard: true },
+          );
+          return rows.map((row) => row.id);
         },
       );
 

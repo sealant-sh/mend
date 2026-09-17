@@ -91,10 +91,8 @@ export class SessionNotSteerable extends Schema.TaggedErrorClass<SessionNotSteer
   "SessionNotSteerable",
   {
     sessionId: SessionId,
-    message: Schema.Literals([
-      "only the session owner can steer this session; the owner can turn on shared control",
-      "only the session owner can share control of this session",
-    ]),
+    /** Why, in words a client can show as they are. */
+    message: Schema.String,
   },
   { httpApiStatus: 403 },
 ) {}

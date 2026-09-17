@@ -193,6 +193,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
               authed.value.user.id,
               write,
               auth.getSession(headers).pipe(Effect.map(Option.isSome)),
+              sessionId,
             );
 
             const iterator = attachment.output[Symbol.asyncIterator]();

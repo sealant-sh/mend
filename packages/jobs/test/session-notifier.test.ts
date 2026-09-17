@@ -1,10 +1,10 @@
-import { PushDevice, type PushDevicesRepo } from "@mend/db";
-import { SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
-import { SessionProcess } from "@mend/domain/workbench";
-import { Effect } from "effect";
+import { OrganizationsRepo, PushDevice, type PushDevicesRepo } from "@mend/db";
+import { OrganizationId, SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
+import { Organization, SessionProcess } from "@mend/domain/workbench";
+import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { phaseOf, pushTargets } from "../src/session-notifier.ts";
+import { latestSenderWhoSees, phaseOf, pushTargets } from "../src/session-notifier.ts";
 
 const agent = (patch: Partial<SessionProcess>) =>
   new SessionProcess({
@@ -92,5 +92,54 @@ describe("pushTargets", () => {
       pushTargets(devices, { ownerUserId: "alice", sharedControlEnabledAt: new Date() }, "carol"),
     );
     expect(shared.map((device) => device.token)).toEqual(["alice-phone", "carol-phone"]);
+  });
+});
+
+describe("latestSenderWhoSees", () => {
+  const acme = OrganizationId.make("org-acme");
+  const members = new Set(["alice", "carol"]);
+  const organizations = Effect.runSync(
+    Effect.gen(function* () {
+      return yield* OrganizationsRepo;
+    }).pipe(
+      Effect.provide(
+        Layer.mock(OrganizationsRepo, {
+          membershipOf: (userId) =>
+            Effect.succeed(
+              members.has(userId)
+                ? {
+                    organization: new Organization({
+                      id: acme,
+                      name: "Acme",
+                      createdByUserId: null,
+                      createdAt: new Date(),
+                      updatedAt: new Date(),
+                    }),
+                    role: "member" as const,
+                    joinedAt: new Date(),
+                  }
+                : null,
+            ),
+        }),
+      ),
+    ),
+  );
+  const turns = [{ author: "alice" }, { author: "carol" }, { author: null }];
+
+  it("names the latest sender only while they can see the project", async () => {
+    const shared = {
+      organizationId: acme,
+      visibility: "shared" as const,
+      createdByUserId: "alice",
+    };
+    expect(await Effect.runPromise(latestSenderWhoSees(organizations, shared, turns))).toBe(
+      "carol",
+    );
+    const privateToAlice = { ...shared, visibility: "private" as const };
+    expect(
+      await Effect.runPromise(latestSenderWhoSees(organizations, privateToAlice, turns)),
+    ).toBeNull();
+    members.delete("carol");
+    expect(await Effect.runPromise(latestSenderWhoSees(organizations, shared, turns))).toBeNull();
   });
 });

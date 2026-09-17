@@ -6,6 +6,7 @@ import {
   OrganizationsRepo,
   ProjectsRepo,
   PushDevicesRepo,
+  SessionControlEventsRepo,
   SessionsRepo,
   UserEvents,
   UsersRepo,
@@ -55,6 +56,7 @@ export const MemberRemovalLive: Layer.Layer<
   | OrganizationsRepo
   | ProjectsRepo
   | PushDevicesRepo
+  | SessionControlEventsRepo
   | SessionEngine
   | SessionsRepo
   | UserEvents
@@ -64,6 +66,7 @@ export const MemberRemovalLive: Layer.Layer<
   Effect.gen(function* () {
     const audit = yield* AuditEventsRepo;
     const connections = yield* ConnectionRegistry;
+    const controlEvents = yield* SessionControlEventsRepo;
     const devices = yield* DevicesRepo;
     const organizations = yield* OrganizationsRepo;
     const projects = yield* ProjectsRepo;
@@ -104,7 +107,18 @@ export const MemberRemovalLive: Layer.Layer<
       // The owner lock refuses removing the last owner before anything else moves.
       yield* organizations.removeMember(input.organizationId, input.userId);
       // Nobody keeps steering on the removed account's credentials, even before their sessions stop.
-      yield* sessions.disableSharedControlForOwner(input.userId);
+      const unshared = yield* sessions.disableSharedControlForOwner(input.userId);
+      yield* Effect.forEach(
+        unshared,
+        (sessionId) =>
+          controlEvents.record({
+            sessionId,
+            actorUserId: input.actorUserId,
+            kind: "shared-control-off",
+            refId: null,
+          }),
+        { discard: true },
+      );
       yield* users.deactivate(input.userId);
       yield* users.revokeAuthSessions(input.userId);
       yield* devices.revokeAllForUser(input.userId);

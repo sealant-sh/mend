@@ -124,6 +124,7 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
               authed.value.user.id,
               write,
               auth.getSession(headers).pipe(Effect.map(Option.isSome)),
+              owner.value.id,
             );
 
             const iterator = pipe.output[Symbol.asyncIterator]();

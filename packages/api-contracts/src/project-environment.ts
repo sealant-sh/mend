@@ -336,6 +336,8 @@ export class NewWorkbenchSession extends Schema.Class<NewWorkbenchSession>("NewW
 
 /** What the caller may do with a session (docs/adr/0003), so clients show only real controls. */
 export class SessionControlView extends Schema.Class<SessionControlView>("SessionControlView")({
+  /** Delete, rename or hand off: the owner's alone, even while control is shared. */
+  own: Schema.Boolean,
   /** Send turns, interrupt, attach, open shells, stop. */
   steer: Schema.Boolean,
   /** Stop, which an organization owner may do even without steering. */

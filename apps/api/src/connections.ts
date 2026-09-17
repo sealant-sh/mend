@@ -15,13 +15,22 @@ import { EventBus, type BusSignal } from "./events-bus.ts";
 export class ConnectionRegistry extends Context.Service<
   ConnectionRegistry,
   {
-    /** Hold `close` while the scope is open; removing the account runs it. */
+    /**
+     * Hold `close` while the scope is open; removing the account runs it. A connection that steers
+     * a session names it, so turning off shared control closes it too.
+     */
     readonly register: (
       userId: string,
       close: Effect.Effect<void>,
+      sessionId?: string,
     ) => Effect.Effect<void, never, Scope.Scope>;
     /** Close this process's open connections of one account; answers how many there were. */
     readonly closeForUser: (userId: string) => Effect.Effect<number>;
+    /** Close the connections other accounts hold on a session; its owner's stay open. */
+    readonly closeForSession: (
+      sessionId: string,
+      ownerUserId: string | null,
+    ) => Effect.Effect<number>;
   }
 >()("@mend/api/ConnectionRegistry") {}
 
@@ -30,6 +39,7 @@ const CLOSE_TIMEOUT = "5 seconds";
 
 interface Registration {
   readonly close: Effect.Effect<void>;
+  readonly sessionId: string | null;
 }
 
 /**
@@ -43,25 +53,39 @@ export const guardSocket = <E>(
   userId: string,
   write: (event: Socket.CloseEvent) => Effect.Effect<void, E>,
   stillSignedIn: Effect.Effect<boolean>,
+  /** The session this socket steers, when it steers one (terminals and tunnels). */
+  sessionId?: string,
 ) =>
   Effect.gen(function* () {
     let revoked = false;
     const close = Effect.sync(() => {
       revoked = true;
     }).pipe(Effect.andThen(write(new Socket.CloseEvent(1008, "access revoked"))), Effect.ignore);
-    yield* connections.register(userId, close);
+    yield* connections.register(userId, close, sessionId);
     if (!(yield* stillSignedIn)) yield* close;
     return { revoked: () => revoked };
+  });
+
+const closeAll = (held: ReadonlyArray<Registration>) =>
+  Effect.gen(function* () {
+    // All at once, each bounded: one socket that never finishes opening must not hold up the
+    // others, or the removal waiting on them.
+    yield* Effect.forEach(
+      held,
+      (registration) => registration.close.pipe(Effect.timeoutOption(CLOSE_TIMEOUT)),
+      { concurrency: "unbounded", discard: true },
+    );
+    return held.length;
   });
 
 /** The in-memory registry, plus the accounts that hold connections right now. */
 export const makeConnectionRegistry = Effect.sync(() => {
   const open = new Map<string, Set<Registration>>();
 
-  const register = (userId: string, close: Effect.Effect<void>) =>
+  const register = (userId: string, close: Effect.Effect<void>, sessionId?: string) =>
     Effect.acquireRelease(
       Effect.sync(() => {
-        const registration: Registration = { close };
+        const registration: Registration = { close, sessionId: sessionId ?? null };
         const held = open.get(userId) ?? new Set<Registration>();
         held.add(registration);
         open.set(userId, held);
@@ -75,20 +99,16 @@ export const makeConnectionRegistry = Effect.sync(() => {
         }),
     ).pipe(Effect.asVoid);
 
-  const closeForUser = (userId: string) =>
-    Effect.gen(function* () {
-      const held = [...(open.get(userId) ?? [])];
-      // All at once, each bounded: one socket that never finishes opening must not hold up the
-      // others, or the removal waiting on them.
-      yield* Effect.forEach(
-        held,
-        (registration) => registration.close.pipe(Effect.timeoutOption(CLOSE_TIMEOUT)),
-        { concurrency: "unbounded", discard: true },
-      );
-      return held.length;
-    });
+  const closeForUser = (userId: string) => closeAll([...(open.get(userId) ?? [])]);
 
-  return { register, closeForUser, accounts: () => [...open.keys()] };
+  const closeForSession = (sessionId: string, ownerUserId: string | null) =>
+    closeAll(
+      [...open.entries()]
+        .filter(([userId]) => userId !== ownerUserId)
+        .flatMap(([, held]) => [...held].filter((entry) => entry.sessionId === sessionId)),
+    );
+
+  return { register, closeForUser, closeForSession, accounts: () => [...open.keys()] };
 });
 
 /**
@@ -125,6 +145,9 @@ export const ConnectionRegistryLive: Layer.Layer<
           { discard: true },
         );
       }
+      if (signal.event.type === "shared-control-off") {
+        return registry.closeForSession(signal.event.sessionId, signal.event.ownerUserId);
+      }
       return signal.event.type === "user" && signal.event.facet === "access"
         ? registry.closeForUser(signal.event.userId)
         : Effect.void;
@@ -143,6 +166,10 @@ export const ConnectionRegistryLive: Layer.Layer<
       ),
       Effect.forkScoped,
     );
-    return { register: registry.register, closeForUser: registry.closeForUser };
+    return {
+      register: registry.register,
+      closeForUser: registry.closeForUser,
+      closeForSession: registry.closeForSession,
+    };
   }),
 );

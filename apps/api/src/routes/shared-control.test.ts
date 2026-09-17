@@ -47,6 +47,20 @@ describe("shared control", () => {
     expect(steered.status).not.toBe(403);
     expect(api.world.calls.length).toBeGreaterThan(0);
 
+    // Shared control lends steering, not the session: deleting, renaming and handing off stay
+    // the owner's.
+    api.world.calls.splice(0, api.world.calls.length);
+    const session = `/api/sessions/${sharedA.session}`;
+    const ownerOnly = [
+      await api.request("carol", "DELETE", session),
+      await api.request("carol", "POST", `${session}/label`, { label: "mine now" }),
+      await api.request("carol", "POST", `${session}/handoff`, { to: "pty" }),
+    ];
+    expect({
+      statuses: ownerOnly.map((response) => response.status),
+      calls: api.world.calls,
+    }).toEqual({ statuses: [403, 403, 403], calls: [] });
+
     const off = await api.request("alice", "PUT", toggle, { enabled: false });
     expect(off.status).toBe(200);
     api.world.calls.splice(0, api.world.calls.length);

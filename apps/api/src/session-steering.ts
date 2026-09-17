@@ -46,6 +46,11 @@ export class SessionSteering extends Context.Service<
       userId: string,
     ) => Effect.Effect<Session, SteeringError>;
     readonly session: (id: SessionId) => Effect.Effect<Session, SteeringError, CurrentUser>;
+    /**
+     * The owner's own acts, closed to others even while control is shared: deleting the session,
+     * renaming it, handing it off. Shared control lends steering, not the session itself.
+     */
+    readonly owned: (id: SessionId) => Effect.Effect<Session, SteeringError, CurrentUser>;
     /** Stopping is steering, and an organization owner may also stop any session they can see. */
     readonly stop: (id: SessionId) => Effect.Effect<Session, SteeringError, CurrentUser>;
     readonly process: (
@@ -109,6 +114,18 @@ export const SessionSteeringLive: Layer.Layer<
       return row;
     });
 
+    const owned = Effect.fn("SessionSteering.owned")(function* (id: SessionId) {
+      const caller = yield* CurrentUser;
+      const row = yield* access.session(id);
+      if (row.ownerUserId === null || row.ownerUserId !== caller.user.id) {
+        return yield* new SessionNotSteerable({
+          sessionId: row.id,
+          message: "only the session owner can do this, even while control is shared",
+        });
+      }
+      return row;
+    });
+
     const stop = Effect.fn("SessionSteering.stop")(function* (id: SessionId) {
       const caller = yield* CurrentUser;
       const row = yield* access.session(id);
@@ -148,6 +165,6 @@ export const SessionSteeringLive: Layer.Layer<
       return { request: row, session: yield* through(id, row.sessionId) };
     });
 
-    return { authorizeUser, session, stop, process, service, turn, agentRequest };
+    return { authorizeUser, session, owned, stop, process, service, turn, agentRequest };
   }),
 );
