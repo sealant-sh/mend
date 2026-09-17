@@ -12,6 +12,7 @@ import {
 } from "#/components/projects-index/model";
 import { AppShell } from "#/components/shell";
 import { useTRPC } from "#/lib/trpc";
+import { useViewer } from "#/lib/viewer";
 import { useWorkbenchEvents } from "#/lib/workbench-events";
 import { projectMenu } from "#/lib/workbench-menus";
 
@@ -29,6 +30,7 @@ function ProjectsPage() {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const launchContext = { queryClient, trpc };
+  const viewer = useViewer();
   const projects = useSuspenseQuery(trpc.projects.list.queryOptions()).data;
   const activeSessions = useQuery(trpc.sessions.listActive.queryOptions()).data;
   const navigate = useNavigate();
@@ -45,7 +47,7 @@ function ProjectsPage() {
       : allEntries.reduce((total, entry) => total + (entry.live ?? 0), 0);
 
   const onProjectMenu: ProjectMenuHandler = (event, project) =>
-    openMenu(event, projectMenu(project, navigate, launchContext));
+    openMenu(event, projectMenu(project, navigate, launchContext, viewer));
 
   return (
     <AppShell>

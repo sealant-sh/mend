@@ -125,6 +125,7 @@ export type InvitationPreviewDto = Outputs["organization"]["invitationPreview"];
 export type AuditEntryDto = Outputs["organization"]["audit"][number];
 export type FolderDto = Outputs["folders"]["list"][number];
 export type FolderListingDto = Outputs["folders"]["files"];
+export type ProjectFolderViewDto = Outputs["projects"]["folders"][number];
 
 export type DeviceDto = Outputs["devices"]["list"][number];
 export type PairingDto = Outputs["devices"]["createPairing"];
@@ -180,14 +181,30 @@ export const disconnectAccount = (id: string) =>
 
 // ─── Projects ───────────────────────────────────────────────────────────────
 
-export const adoptProject = (name: string, source: string, gitAuthMode?: GitAuthModeDto) =>
+export const adoptProject = (
+  name: string,
+  source: string,
+  gitAuthMode?: GitAuthModeDto,
+  visibility?: ProjectDto["visibility"],
+) =>
   orLogin(
     trpcClient.projects.adopt.mutate({
       name,
       source,
       ...(gitAuthMode === undefined ? {} : { gitAuthMode }),
+      ...(visibility === undefined ? {} : { visibility }),
     }),
   );
+export const setProjectVisibility = (id: ProjectDto["id"], visibility: ProjectDto["visibility"]) =>
+  orLogin(trpcClient.projects.setVisibility.mutate({ id, visibility }));
+export const setProjectFolders = (
+  id: ProjectDto["id"],
+  selections: ReadonlyArray<{
+    readonly folderId: FolderDto["id"];
+    readonly name: string;
+    readonly readOnly: boolean;
+  }>,
+) => orLogin(trpcClient.projects.setFolders.mutate({ id, selections }));
 export const removeProject = (id: string) => orLogin(trpcClient.projects.remove.mutate({ id }));
 export const setProjectAutomation = (
   projectId: string,
@@ -299,6 +316,8 @@ export type LaunchStartDto = Omit<LaunchRequestDto, "mode" | "argv">;
 export const launchSessionStart = (id: string, start: LaunchStartDto) =>
   orLogin(trpcClient.sessions.launch.mutate({ id, request: { ...start } }));
 export const stopSession = (id: string) => orLogin(trpcClient.sessions.stop.mutate({ id }));
+export const setSharedControl = (id: string, enabled: boolean) =>
+  orLogin(trpcClient.sessions.setSharedControl.mutate({ id, enabled }));
 /** Store a pasted image beside the session; the reply is the workspace path to paste. */
 export const pasteSessionImage = (id: string, contentsBase64: string) =>
   orLogin(trpcClient.sessions.pasteImage.mutate({ id, upload: { contentsBase64 } }));
