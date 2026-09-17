@@ -20,7 +20,6 @@ import {
 } from "@mend/api-contracts";
 import {
   DevicesRepo,
-  DevicesRepoLive,
   type CliAuthRequest,
   type CliAuthSpentError,
   type CliAuthUnknownError,
@@ -474,6 +473,4 @@ const devicePairingGroups = Effect.gen(function* () {
   return Layer.mergeAll(userDevices, pair, cliAuth);
 });
 
-export const DevicePairingLive = Layer.unwrap(devicePairingGroups).pipe(
-  Layer.provide(DevicesRepoLive),
-);
+export const DevicePairingLive = Layer.unwrap(devicePairingGroups);

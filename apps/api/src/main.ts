@@ -39,6 +39,7 @@ import {
   InstanceRolesRepoLive,
   ProjectsRepoLive,
   PushDevicesRepoLive,
+  DevicesRepoLive,
   ReferencesRepoLive,
   ReviewCommentsRepoLive,
   ReviewSlicesRepoLive,
@@ -144,6 +145,8 @@ import {
 import { Config, Effect, Layer, Option, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
+import { ProjectAccessLive } from "./access.ts";
+import { EventBusLive } from "./events-bus.ts";
 import { publicNetworkPolicy } from "./public-network-policy.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
 import { MendApiLive } from "./routes/api-live.ts";
@@ -195,6 +198,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   WorktreeChangesRepoLive,
   WorktreesRepoLive,
   PushDevicesRepoLive,
+  DevicesRepoLive,
   ChangeToursRepoLive,
   ChangePassesRepoLive,
   ReferencesRepoLive,
@@ -295,7 +299,11 @@ const ServerLive = Layer.unwrap(
         WebSocketRoutes,
         publicNetworkPolicy(network),
       ),
-    ).pipe(Layer.provide(NodeHttpServer.layer(createServer, { port })));
+    ).pipe(
+      Layer.provide(NodeHttpServer.layer(createServer, { port })),
+      // One LISTEN per process, fanned out to every SSE stream; the worker needs none.
+      Layer.provide(EventBusLive),
+    );
   }),
 );
 
@@ -569,6 +577,8 @@ const MainLive = Layer.unwrap(
     // on it, so it must be launched explicitly rather than provided.
     return Layer.merge(parts, SessionChannelNetworkLayer).pipe(
       Layer.provide(SessionSteeringLive),
+      // Who may see what (docs/adr/0003): every project-scoped route resolves through it.
+      Layer.provide(ProjectAccessLive),
       // MEND_TENANCY: refuses to build (so nothing serves) when the mode may not run here.
       Layer.provide(TenancyConfigLive),
       // Shared by the API (enqueue on comment) and the workers (one instance).

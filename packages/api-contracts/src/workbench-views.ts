@@ -104,6 +104,22 @@ export class WorktreeAnnotation extends Schema.Class<WorktreeAnnotation>("Worktr
 }) {}
 
 /** A project and its visible workbench history. */
+/** The caller's permissions on one project (docs/adr/0003-organizations-and-tenancy.md). */
+export class ProjectCapabilities extends Schema.Class<ProjectCapabilities>("ProjectCapabilities")({
+  /** Settings, launch inputs and removal. */
+  manage: Schema.Boolean,
+  /** Private or shared. */
+  changeVisibility: Schema.Boolean,
+  /** Removal: an owner, or the creator of a private project. */
+  remove: Schema.Boolean,
+}) {}
+
+export class ProjectVisibilityRequest extends Schema.Class<ProjectVisibilityRequest>(
+  "ProjectVisibilityRequest",
+)({
+  visibility: ProjectVisibility,
+}) {}
+
 export class ProjectDetail extends Schema.Class<ProjectDetail>("ProjectDetail")({
   project: Project,
   sessions: Schema.Array(Session),
@@ -117,6 +133,8 @@ export class ProjectDetail extends Schema.Class<ProjectDetail>("ProjectDetail")(
    */
   worktrees: Schema.Array(Worktree),
   worktreeAnnotations: Schema.Array(WorktreeAnnotation),
+  /** What the caller may do here, so clients hide controls instead of offering refusals. */
+  capabilities: ProjectCapabilities,
 }) {}
 
 /** The outcome of a destructive removal — what went, what would not. */

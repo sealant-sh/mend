@@ -4,7 +4,9 @@ import { OrganizationId } from "../ids.ts";
 import {
   canChangeVisibility,
   canManageProject,
+  canRemoveProject,
   canSeeProject,
+  canUseLink,
   invitationState,
   organizationNameIssue,
   type ProjectTenancy,
@@ -72,6 +74,27 @@ describe("project visibility (docs/adr/0003)", () => {
   it("an owner of another organization sees nothing here, shared or not", () => {
     expect(canSeeProject(project("shared", "bob"), outsider)).toBe(false);
     expect(canManageProject(project("shared", "bob"), outsider)).toBe(false);
+  });
+});
+
+describe("removal and links", () => {
+  const owner = viewer("olga", "owner");
+  const carol = viewer("carol", "member");
+
+  it("removal is an owner's, or the creator's for a private project only", () => {
+    expect(canRemoveProject(project("shared", "carol"), owner)).toBe(true);
+    expect(canRemoveProject(project("shared", "carol"), carol)).toBe(false);
+    expect(canRemoveProject(project("private", "carol"), carol)).toBe(true);
+    expect(canRemoveProject(project("private", "carol"), owner)).toBe(false);
+  });
+
+  it("a link is usable only inside one organization and when the owner sees both ends", () => {
+    const shared = project("shared", "olga");
+    expect(canUseLink(shared, project("shared", "mo"), carol)).toBe(true);
+    expect(canUseLink(shared, project("private", "carol"), carol)).toBe(true);
+    expect(canUseLink(shared, project("private", "olga"), carol)).toBe(false);
+    expect(canUseLink(shared, project("shared", "bob", globex), carol)).toBe(false);
+    expect(canUseLink(shared, project("shared", "mo"), null)).toBe(false);
   });
 });
 

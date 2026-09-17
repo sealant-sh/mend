@@ -2,6 +2,7 @@ import { MendSettings, WorkspaceImage } from "@mend/domain";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
+import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
 import { DotfilesRepositoryRequest, ObservationStamp } from "./workbench-views.ts";
 import {
@@ -15,22 +16,24 @@ import {
 export const settingsGroup = HttpApiGroup.make("settings")
   .add(HttpApiEndpoint.get("get", "/settings", { success: MendSettings }))
   .add(
+    // Machine settings are the operator's (docs/adr/0003); anyone else gets 404.
     HttpApiEndpoint.get("scanHostEnvironment", "/settings/environment-suggestions", {
       success: HostEnvironmentSuggestionsView,
+      error: NotFound,
     }),
   )
   .add(
     HttpApiEndpoint.put("set", "/settings", {
       payload: MendSettings,
       success: MendSettings,
-      error: SettingsFailure,
+      error: [SettingsFailure, NotFound],
     }),
   )
   .add(
     HttpApiEndpoint.put("setWorkspaceEnvironment", "/settings/workspace-environment", {
       payload: WorkspaceImage,
       success: WorkspaceEnvironmentSaveResult,
-      error: SettingsFailure,
+      error: [SettingsFailure, NotFound],
     }),
   )
   .middleware(AuthMiddleware);

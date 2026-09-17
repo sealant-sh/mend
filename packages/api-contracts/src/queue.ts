@@ -34,8 +34,14 @@ export class QueueMove extends Schema.Class<QueueMove>("QueueMove")({
 }) {}
 
 export const issuesGroup = HttpApiGroup.make("issues")
-  .add(HttpApiEndpoint.get("list", "/issues", { success: Schema.Array(Issue) }))
-  .add(HttpApiEndpoint.post("create", "/issues", { payload: NewIssue, success: Issue }))
+  .add(HttpApiEndpoint.get("list", "/issues", { success: Schema.Array(Issue), error: NotFound }))
+  .add(
+    HttpApiEndpoint.post("create", "/issues", {
+      payload: NewIssue,
+      success: Issue,
+      error: NotFound,
+    }),
+  )
   .add(
     HttpApiEndpoint.get("detail", "/issues/:id", {
       params: { id: IssueId },

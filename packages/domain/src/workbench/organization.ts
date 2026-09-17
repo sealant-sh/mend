@@ -124,6 +124,30 @@ export const canManageProject = (project: ProjectTenancy, viewer: Viewer): boole
   canSeeProject(project, viewer) &&
   (viewer.role === "owner" || project.createdByUserId === viewer.userId);
 
+/**
+ * Removing a project stops every session in it, teammates' included, so it is narrower than
+ * managing it: an owner, or the creator of a project nobody else can see.
+ */
+export const canRemoveProject = (project: ProjectTenancy, viewer: Viewer): boolean =>
+  canSeeProject(project, viewer) &&
+  (viewer.role === "owner" ||
+    (project.visibility === "private" && project.createdByUserId === viewer.userId));
+
+/**
+ * Whether a session in `project` may mount the linked project for its owner: same organization,
+ * and the owner can see the target. Checked when a link is created and again at every launch,
+ * because visibility and membership change.
+ */
+export const canUseLink = (
+  project: ProjectTenancy,
+  linked: ProjectTenancy,
+  owner: Viewer | null,
+): boolean =>
+  owner !== null &&
+  linked.organizationId === project.organizationId &&
+  canSeeProject(project, owner) &&
+  canSeeProject(linked, owner);
+
 /** Private or shared is an owner decision after adoption. */
 export const canChangeVisibility = (project: ProjectTenancy, viewer: Viewer): boolean =>
   canSeeProject(project, viewer) && viewer.role === "owner";

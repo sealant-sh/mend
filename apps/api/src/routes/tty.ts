@@ -74,14 +74,16 @@ export const TtyRoutes = HttpRouter.use((router) =>
           }
           const owner = yield* sessions.byId(process.sessionId).pipe(Effect.option);
           if (Option.isNone(owner)) {
-            return HttpServerResponse.text("unknown session", { status: 404 });
+            return HttpServerResponse.text("unknown process", { status: 404 });
           }
-          const authorized = yield* steering
-            .authorizeUser(owner.value, authed.value.user.id)
-            .pipe(Effect.option);
-          if (Option.isNone(authorized)) {
-            return HttpServerResponse.text("forbidden", { status: 403 });
-          }
+          // Visibility first: a session the caller cannot see answers exactly like a missing one.
+          const refusal = yield* steering.authorizeUser(owner.value, authed.value.user.id).pipe(
+            Effect.as(null),
+            Effect.catch((error) => Effect.succeed(error._tag)),
+          );
+          if (refusal === "NotFound")
+            return HttpServerResponse.text("unknown process", { status: 404 });
+          if (refusal !== null) return HttpServerResponse.text("forbidden", { status: 403 });
           if (process.kind === "agent-protocol") {
             return HttpServerResponse.text("protocol agents use the structured conversation API", {
               status: 409,
@@ -102,12 +104,14 @@ export const TtyRoutes = HttpRouter.use((router) =>
           if (Option.isNone(session)) {
             return HttpServerResponse.text("unknown session", { status: 404 });
           }
-          const authorized = yield* steering
-            .authorizeUser(session.value, authed.value.user.id)
-            .pipe(Effect.option);
-          if (Option.isNone(authorized)) {
-            return HttpServerResponse.text("forbidden", { status: 403 });
-          }
+          // Visibility first: a session the caller cannot see answers exactly like a missing one.
+          const refusal = yield* steering.authorizeUser(session.value, authed.value.user.id).pipe(
+            Effect.as(null),
+            Effect.catch((error) => Effect.succeed(error._tag)),
+          );
+          if (refusal === "NotFound")
+            return HttpServerResponse.text("unknown session", { status: 404 });
+          if (refusal !== null) return HttpServerResponse.text("forbidden", { status: 403 });
           const agent = currentAgentProcess(yield* processes.listForSession(session.value.id));
           if (agent?.kind === "agent-protocol") {
             return HttpServerResponse.text("protocol agents use the structured conversation API", {

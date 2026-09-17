@@ -63,14 +63,16 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
         }
         const owner = yield* sessions.byId(service.sessionId).pipe(Effect.option);
         if (Option.isNone(owner)) {
-          return HttpServerResponse.text("unknown session", { status: 404 });
+          return HttpServerResponse.text("unknown service", { status: 404 });
         }
-        const authorized = yield* steering
-          .authorizeUser(owner.value, authed.value.user.id)
-          .pipe(Effect.option);
-        if (Option.isNone(authorized)) {
-          return HttpServerResponse.text("forbidden", { status: 403 });
-        }
+        // Visibility first: a session the caller cannot see answers exactly like a missing one.
+        const refusal = yield* steering.authorizeUser(owner.value, authed.value.user.id).pipe(
+          Effect.as(null),
+          Effect.catch((error) => Effect.succeed(error._tag)),
+        );
+        if (refusal === "NotFound")
+          return HttpServerResponse.text("unknown service", { status: 404 });
+        if (refusal !== null) return HttpServerResponse.text("forbidden", { status: 403 });
         if (service.transport === "udp") {
           return HttpServerResponse.text("UDP Services have no connection to tunnel", {
             status: 409,

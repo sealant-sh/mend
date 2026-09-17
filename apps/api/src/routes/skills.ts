@@ -14,16 +14,18 @@ import {
   type SkillLimitError,
   type SkillOwner,
 } from "@mend/db";
-import type { ProjectId } from "@mend/domain";
+import type { ProjectId, SkillId } from "@mend/domain";
 import { SessionEngine } from "@mend/sessions";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
+import { ProjectAccess } from "../access.ts";
+
 /**
  * Skill libraries over `SkillsRepo`. Authorization is by scope: user skills
  * belong to the authenticated account (anyone else's read as absent — 404,
- * never 403), project skills are the instance's shared material like every
- * other project surface.
+ * never 403); project skills follow their project (docs/adr/0003): whoever
+ * can see the project reads them, whoever manages it changes them.
  */
 
 /** Repo write refusals as one readable 422; the message already says which rule bit. */
@@ -48,7 +50,10 @@ const rewarmForOwner = (owner: SkillOwner) =>
       yield* engine.reconcileHotSessions(owner.projectId);
       return;
     }
-    const all = yield* projects.listAll();
+    // A user's library feeds sessions in their own organization only.
+    const viewer = yield* (yield* ProjectAccess).viewer();
+    if (viewer === null) return;
+    const all = yield* projects.listForOrganization(viewer.organizationId);
     yield* Effect.forEach(
       all.filter((project) => project.hotSessions > 0),
       (project) => engine.reconcileHotSessions(project.id),
@@ -65,6 +70,36 @@ const resolveOwner = (
       ? Effect.fail(new SkillRejected({ message: "a project skill needs a projectId" }))
       : Effect.succeed({ scope: "project", projectId: payload.projectId });
 
+/**
+ * The skill when the caller may read it (their own user skill, or a project skill of a visible
+ * project), or may change it (`manage`: a project skill of a project they manage).
+ */
+const reachableSkill = (skillId: SkillId, manage: boolean) =>
+  Effect.gen(function* () {
+    const caller = yield* CurrentUser;
+    const repo = yield* SkillsRepo;
+    const access = yield* ProjectAccess;
+    const bundle = yield* repo
+      .byId(skillId)
+      .pipe(Effect.mapError(() => new NotFound({ id: skillId })));
+    if (bundle.skill.scope === "user") {
+      if (bundle.skill.ownerUserId !== caller.user.id) return yield* new NotFound({ id: skillId });
+      return bundle;
+    }
+    const projectId = bundle.skill.projectId;
+    if (projectId === null) return yield* new NotFound({ id: skillId });
+    yield* (manage ? access.manageProject(projectId) : access.project(projectId)).pipe(
+      Effect.mapError(() => new NotFound({ id: skillId })),
+    );
+    return bundle;
+  });
+
+/** A project library write needs to manage that project; a user library is the caller's own. */
+const authorizeOwner = (owner: SkillOwner) =>
+  Effect.gen(function* () {
+    if (owner.scope === "project") yield* (yield* ProjectAccess).manageProject(owner.projectId);
+  });
+
 export const SkillsGroupLive = HttpApiBuilder.group(MendApi, "skills", (handlers) =>
   handlers
     .handle("list", () =>
@@ -77,23 +112,13 @@ export const SkillsGroupLive = HttpApiBuilder.group(MendApi, "skills", (handlers
     .handle("forProject", ({ params }) =>
       Effect.gen(function* () {
         const repo = yield* SkillsRepo;
-        yield* (yield* ProjectsRepo)
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* (yield* ProjectAccess).project(params.id);
         return yield* repo.listForProject(params.id);
       }),
     )
     .handle("detail", ({ params }) =>
       Effect.gen(function* () {
-        const caller = yield* CurrentUser;
-        const repo = yield* SkillsRepo;
-        const bundle = yield* repo
-          .byId(params.skillId)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.skillId })));
-        if (bundle.skill.scope === "user" && bundle.skill.ownerUserId !== caller.user.id) {
-          return yield* new NotFound({ id: params.skillId });
-        }
-        return bundle;
+        return yield* reachableSkill(params.skillId, false);
       }),
     )
     .handle("create", ({ payload }) =>
@@ -101,6 +126,7 @@ export const SkillsGroupLive = HttpApiBuilder.group(MendApi, "skills", (handlers
         const caller = yield* CurrentUser;
         const repo = yield* SkillsRepo;
         const owner = yield* resolveOwner(caller, payload);
+        yield* authorizeOwner(owner);
         const bundle = yield* repo
           .create(owner, {
             name: payload.name,
@@ -125,12 +151,7 @@ export const SkillsGroupLive = HttpApiBuilder.group(MendApi, "skills", (handlers
       Effect.gen(function* () {
         const caller = yield* CurrentUser;
         const repo = yield* SkillsRepo;
-        const current = yield* repo
-          .byId(params.skillId)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.skillId })));
-        if (current.skill.scope === "user" && current.skill.ownerUserId !== caller.user.id) {
-          return yield* new NotFound({ id: params.skillId });
-        }
+        yield* reachableSkill(params.skillId, true);
         const bundle = yield* repo
           .update(params.skillId, {
             name: payload.name,
@@ -164,12 +185,7 @@ export const SkillsGroupLive = HttpApiBuilder.group(MendApi, "skills", (handlers
       Effect.gen(function* () {
         const caller = yield* CurrentUser;
         const repo = yield* SkillsRepo;
-        const current = yield* repo
-          .byId(params.skillId)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.skillId })));
-        if (current.skill.scope === "user" && current.skill.ownerUserId !== caller.user.id) {
-          return yield* new NotFound({ id: params.skillId });
-        }
+        const current = yield* reachableSkill(params.skillId, true);
         yield* repo
           .remove(params.skillId)
           .pipe(Effect.mapError(() => new NotFound({ id: params.skillId })));
@@ -185,6 +201,7 @@ export const SkillsGroupLive = HttpApiBuilder.group(MendApi, "skills", (handlers
         const caller = yield* CurrentUser;
         const repo = yield* SkillsRepo;
         const owner = yield* resolveOwner(caller, payload);
+        yield* authorizeOwner(owner);
         const report = yield* repo.sync(owner, payload.skills, { prune: payload.prune }).pipe(
           Effect.catchTag("ProjectNotFoundError", (error) =>
             Effect.fail(new NotFound({ id: error.projectId })),

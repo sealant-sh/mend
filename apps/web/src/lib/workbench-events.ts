@@ -81,6 +81,15 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
             void queryClient.invalidateQueries(trpc.git.pathFilter());
           }
           break;
+        case "organization":
+          // Membership or visibility may have moved: what this account can see is re-read.
+          void queryClient.invalidateQueries(trpc.projects.pathFilter());
+          void queryClient.invalidateQueries(trpc.sessions.pathFilter());
+          break;
+        case "resync":
+          // The server lost its event feed for a moment; anything could have changed meanwhile.
+          void queryClient.invalidateQueries();
+          break;
         default:
           break;
       }

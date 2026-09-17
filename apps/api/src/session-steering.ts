@@ -3,7 +3,6 @@ import {
   AgentConversationRepo,
   ServicesRepo,
   SessionProcessesRepo,
-  SessionsRepo,
   UserDotfilesRepo,
 } from "@mend/db";
 import {
@@ -23,13 +22,15 @@ import type {
 import { Effect, Layer, Ref } from "effect";
 import * as Context from "effect/Context";
 
+import { ProjectAccess } from "./access.ts";
+
 export interface CanSteerSessionInput {
   readonly ownerUserId: string | null;
   readonly callerUserId: string;
   readonly fallbackOwnerUserId: string | null;
 }
 
-/** Shared control and organization-owner authority will extend this one decision in later PRs. */
+/** Shared control will extend this one decision (docs/adr/0003, delivery step 6). */
 export const canSteerSession = (input: CanSteerSessionInput): boolean => {
   const effectiveOwner = input.ownerUserId ?? input.fallbackOwnerUserId;
   return effectiveOwner !== null && input.callerUserId === effectiveOwner;
@@ -37,21 +38,32 @@ export const canSteerSession = (input: CanSteerSessionInput): boolean => {
 
 type SteeringError = NotFound | SessionNotSteerable;
 
+const refuse = (session: Session) =>
+  new SessionNotSteerable({
+    sessionId: session.id,
+    message: "only the session owner can steer this session",
+  });
+
 /**
- * Resolves session ownership before a caller performs a steering operation.
+ * Resolves whether the caller may steer a session, before any steering effect
+ * (docs/adr/0003-organizations-and-tenancy.md, "Sessions and shared control").
  *
- * `SessionNotSteerable` carries the parent session ID. When project visibility lands in ADR 0003
- * delivery step 3, callers must check visibility before steering so an inaccessible resource
- * answers 404 without disclosing its parent session through a 403 response.
+ * Visibility comes first: a session whose project the caller cannot see answers `NotFound` for
+ * the id the caller supplied, exactly like a missing one. Only a visible session can answer
+ * `SessionNotSteerable`, which names its session; that disclosure is harmless once the caller
+ * can see the session anyway.
  */
 export class SessionSteering extends Context.Service<
   SessionSteering,
   {
+    /** For routes that authenticated outside the HTTP API: visibility, then ownership. */
     readonly authorizeUser: (
       session: Session,
       userId: string,
-    ) => Effect.Effect<Session, SessionNotSteerable>;
+    ) => Effect.Effect<Session, SteeringError>;
     readonly session: (id: SessionId) => Effect.Effect<Session, SteeringError, CurrentUser>;
+    /** Stopping is steering, and an organization owner may also stop any session they can see. */
+    readonly stop: (id: SessionId) => Effect.Effect<Session, SteeringError, CurrentUser>;
     readonly process: (
       id: SessionProcessId,
     ) => Effect.Effect<
@@ -86,14 +98,14 @@ export class SessionSteering extends Context.Service<
 export const SessionSteeringLive: Layer.Layer<
   SessionSteering,
   never,
-  AgentConversationRepo | ServicesRepo | SessionProcessesRepo | SessionsRepo | UserDotfilesRepo
+  AgentConversationRepo | ProjectAccess | ServicesRepo | SessionProcessesRepo | UserDotfilesRepo
 > = Layer.effect(
   SessionSteering,
   Effect.gen(function* () {
     const conversation = yield* AgentConversationRepo;
     const processes = yield* SessionProcessesRepo;
     const services = yield* ServicesRepo;
-    const sessions = yield* SessionsRepo;
+    const access = yield* ProjectAccess;
     const dotfiles = yield* UserDotfilesRepo;
     const firstUserIdRef = yield* Ref.make<string | null>(null);
 
@@ -105,60 +117,75 @@ export const SessionSteeringLive: Layer.Layer<
       return found;
     });
 
-    const authorizeUser = Effect.fn("SessionSteering.authorizeUser")(function* (
+    const ownerSteers = Effect.fn("SessionSteering.ownerSteers")(function* (
       session: Session,
       userId: string,
     ) {
       const fallbackOwnerUserId = session.ownerUserId === null ? yield* firstUserId() : null;
-      if (
-        !canSteerSession({
-          ownerUserId: session.ownerUserId,
-          callerUserId: userId,
-          fallbackOwnerUserId,
-        })
-      ) {
-        return yield* new SessionNotSteerable({
-          sessionId: session.id,
-          message: "only the session owner can steer this session",
-        });
-      }
+      return canSteerSession({
+        ownerUserId: session.ownerUserId,
+        callerUserId: userId,
+        fallbackOwnerUserId,
+      });
+    });
+
+    const authorizeUser = Effect.fn("SessionSteering.authorizeUser")(function* (
+      session: Session,
+      userId: string,
+    ) {
+      yield* access
+        .projectAs(userId, session.projectId)
+        .pipe(Effect.mapError(() => new NotFound({ id: session.id })));
+      if (!(yield* ownerSteers(session, userId))) return yield* refuse(session);
       return session;
     });
 
-    const authorize = Effect.fn("SessionSteering.authorize")(function* (session: Session) {
+    const session = Effect.fn("SessionSteering.session")(function* (id: SessionId) {
       const caller = yield* CurrentUser;
-      return yield* authorizeUser(session, caller.user.id);
+      const row = yield* access.session(id);
+      if (!(yield* ownerSteers(row, caller.user.id))) return yield* refuse(row);
+      return row;
     });
 
-    const session = Effect.fn("SessionSteering.session")(function* (id: SessionId) {
-      const row = yield* sessions.byId(id).pipe(Effect.mapError(() => new NotFound({ id })));
-      return yield* authorize(row);
+    const stop = Effect.fn("SessionSteering.stop")(function* (id: SessionId) {
+      const caller = yield* CurrentUser;
+      const row = yield* access.session(id);
+      if (yield* ownerSteers(row, caller.user.id)) return row;
+      const viewer = yield* access.viewer();
+      if (viewer !== null && viewer.role === "owner") return row;
+      return yield* refuse(row);
     });
+
+    /** A child row's session, with a hidden parent answering `NotFound` for the child's id. */
+    const through = (childId: string, sessionId: SessionId) =>
+      session(sessionId).pipe(
+        Effect.catchTag("NotFound", () => Effect.fail(new NotFound({ id: childId }))),
+      );
 
     const process = Effect.fn("SessionSteering.process")(function* (id: SessionProcessId) {
       const row = yield* processes.byId(id);
       if (row === null) return yield* new NotFound({ id });
-      return { process: row, session: yield* session(row.sessionId) };
+      return { process: row, session: yield* through(id, row.sessionId) };
     });
 
     const service = Effect.fn("SessionSteering.service")(function* (id: ServiceId) {
       const row = yield* services.byId(id);
       if (row === null) return yield* new NotFound({ id });
-      return { service: row, session: yield* session(row.sessionId) };
+      return { service: row, session: yield* through(id, row.sessionId) };
     });
 
     const turn = Effect.fn("SessionSteering.turn")(function* (id: AgentTurnId) {
       const row = yield* conversation.byTurnId(id);
       if (row === null) return yield* new NotFound({ id });
-      return { turn: row, session: yield* session(row.sessionId) };
+      return { turn: row, session: yield* through(id, row.sessionId) };
     });
 
     const agentRequest = Effect.fn("SessionSteering.agentRequest")(function* (id: AgentRequestId) {
       const row = yield* conversation.byRequestId(id);
       if (row === null) return yield* new NotFound({ id });
-      return { request: row, session: yield* session(row.sessionId) };
+      return { request: row, session: yield* through(id, row.sessionId) };
     });
 
-    return { authorizeUser, session, process, service, turn, agentRequest };
+    return { authorizeUser, session, stop, process, service, turn, agentRequest };
   }),
 );

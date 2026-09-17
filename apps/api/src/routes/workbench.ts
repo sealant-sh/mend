@@ -18,6 +18,7 @@ import {
   PastedImage,
   PastedImageRejected,
   ProjectBranch,
+  ProjectCapabilities,
   ProjectDetail,
   ProjectEnvironmentMutationResult,
   ProjectFileListing,
@@ -111,6 +112,9 @@ import {
   routeDotenvName,
   validateProjectSecretValue,
   ServiceView,
+  canChangeVisibility,
+  canManageProject,
+  canRemoveProject,
   type GitAuthMode,
   type SessionStatus,
 } from "@mend/domain/workbench";
@@ -147,6 +151,7 @@ import {
 import { Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
+import { ProjectAccess } from "../access.ts";
 import { HostEnvironment } from "../services/host-environment.ts";
 import {
   resolveWorkspaceEnvironment,
@@ -330,7 +335,10 @@ const withSignerContext = <A, E, R>(
       })
     : effect;
 
-/** One settings document; PUT replaces it (clients edit what GET returned). */
+/**
+ * One settings document; PUT replaces it (clients edit what GET returned). Machine settings are
+ * the operator's (docs/adr/0003); every member reads them.
+ */
 export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (handlers) =>
   handlers
     .handle("get", () =>
@@ -341,12 +349,14 @@ export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (hand
     )
     .handle("scanHostEnvironment", () =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).requireOperator("settings");
         const hostEnvironment = yield* HostEnvironment;
         return yield* hostEnvironment.scan();
       }),
     )
     .handle("set", ({ payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).requireOperator("settings");
         const settings = yield* SettingsRepo;
         const current = yield* settings.get();
         if (workspaceImagesEqual(current.workspaceImage, payload.workspaceImage)) {
@@ -379,10 +389,13 @@ export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (hand
       }),
     )
     .handle("setWorkspaceEnvironment", ({ payload }) =>
-      saveResolvedWorkspaceEnvironment(
-        payload,
-        (latest, workspaceImage) => new MendSettings({ ...latest, workspaceImage }),
-      ),
+      Effect.gen(function* () {
+        yield* (yield* ProjectAccess).requireOperator("settings");
+        return yield* saveResolvedWorkspaceEnvironment(
+          payload,
+          (latest, workspaceImage) => new MendSettings({ ...latest, workspaceImage }),
+        );
+      }),
     ),
 );
 
@@ -390,9 +403,8 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
   handlers
     .handle("list", () =>
       Effect.gen(function* () {
-        const projects = yield* ProjectsRepo;
-        // Unfiltered until project access lands (docs/adr/0003, delivery step 3).
-        return yield* projects.listAll();
+        const access = yield* ProjectAccess;
+        return yield* access.visibleProjects();
       }),
     )
     .handle("adopt", ({ payload }) =>
@@ -459,13 +471,12 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     )
     .handle("detail", ({ params, query }) =>
       Effect.gen(function* () {
-        const projects = yield* ProjectsRepo;
+        const access = yield* ProjectAccess;
         const sessions = yield* SessionsRepo;
         const changes = yield* WorktreeChangesRepo;
         const worktrees = yield* WorktreesRepo;
-        const project = yield* projects
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const project = yield* access.project(params.id);
+        const viewer = yield* access.viewer();
         // A settled session with no transcript cannot be resumed or handed off: hidden by
         // default, listed only on request (`mend sessions --all`). Its worktree still lists.
         const sessionVisibility = projectSessionVisibility(
@@ -517,6 +528,14 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
               ),
             });
           }),
+          capabilities:
+            viewer === null
+              ? new ProjectCapabilities({ manage: false, changeVisibility: false, remove: false })
+              : new ProjectCapabilities({
+                  manage: canManageProject(project, viewer),
+                  changeVisibility: canChangeVisibility(project, viewer),
+                  remove: canRemoveProject(project, viewer),
+                }),
         });
       }),
     )
@@ -528,9 +547,13 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const forwards = yield* ServiceForwardsRepo;
         const engine = yield* SessionEngine;
         const store = yield* Store;
-        const project = yield* projects
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        // Removal stops every session in the project, so it is narrower than managing it.
+        const access = yield* ProjectAccess;
+        const project = yield* access.manageProject(params.id);
+        const viewer = yield* access.viewer();
+        if (viewer === null || !canRemoveProject(project, viewer)) {
+          return yield* new NotFound({ id: params.id });
+        }
         // Stop every Service first. A forward-only adopted Service can retain a settled session's
         // workspace even though no session_process row is live.
         const projectSessions = yield* sessions.listForProject(params.id);
@@ -580,8 +603,18 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         return new RemovalReport({ removed: true, leftover });
       }),
     )
+    .handle("visibility", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        yield* (yield* ProjectAccess).changeVisibility(params.id);
+        return yield* projects
+          .setVisibility(params.id, payload.visibility)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+      }),
+    )
     .handle("automation", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).manageProject(params.id);
         const projects = yield* ProjectsRepo;
         return yield* projects
           .setAutomation(params.id, {
@@ -595,6 +628,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     )
     .handle("gitAuth", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).manageProject(params.id);
         const projects = yield* ProjectsRepo;
         // Resolving the env generates the key on first mend-key use, so the
         // settings card can show a public key the moment the mode lands.
@@ -611,6 +645,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     )
     .handle("workspaceImage", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).manageProject(params.id);
         const projects = yield* ProjectsRepo;
         if (payload.workspaceImage === null) {
           const project = yield* projects
@@ -643,6 +678,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     )
     .handle("applyDotfiles", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).manageProject(params.id);
         const projects = yield* ProjectsRepo;
         const engine = yield* SessionEngine;
         const project = yield* projects
@@ -655,6 +691,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     )
     .handle("inheritUserSkills", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).manageProject(params.id);
         const projects = yield* ProjectsRepo;
         const engine = yield* SessionEngine;
         const project = yield* projects
@@ -667,6 +704,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     )
     .handle("hotSessions", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).manageProject(params.id);
         const projects = yield* ProjectsRepo;
         const engine = yield* SessionEngine;
         const project = yield* projects
@@ -678,6 +716,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     )
     .handle("installCommand", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).manageProject(params.id);
         const projects = yield* ProjectsRepo;
         const jobs = yield* JobRunner;
         const project = yield* projects
@@ -697,11 +736,8 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     )
     .handle("branches", ({ params }) =>
       Effect.gen(function* () {
-        const projects = yield* ProjectsRepo;
         const store = yield* Store;
-        const project = yield* projects
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const project = yield* (yield* ProjectAccess).project(params.id);
         const branches = yield* store
           .listBranches(project.storePath)
           .pipe(Effect.mapError((error) => readableGitFailure(error, project.gitAuthMode)));
@@ -711,11 +747,8 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     )
     .handle("refresh", ({ params }) =>
       Effect.gen(function* () {
-        const projects = yield* ProjectsRepo;
         const store = yield* Store;
-        const project = yield* projects
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const project = yield* (yield* ProjectAccess).project(params.id);
         const caller = yield* CurrentUser;
         const remoteEnv = yield* remoteEnvFor(project.gitAuthMode, caller.user.id);
         yield* withSignerContext(
@@ -733,13 +766,10 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     )
     .handle("files", ({ params, query }) =>
       Effect.gen(function* () {
-        const projects = yield* ProjectsRepo;
         const sessions = yield* SessionsRepo;
         const store = yield* Store;
         const reads = yield* WorktreeReads;
-        const project = yield* projects
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const project = yield* (yield* ProjectAccess).project(params.id);
         // A worktree listing comes from wherever the authority is: beside Mend (a host path
         // the desktop can open) or the chain head's tree (no path — a capture, stamped).
         const worktreeListing = (worktreeId: WorktreeId, label: string, directory: string) =>
@@ -793,11 +823,8 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     )
     .handle("pullRequests", ({ params }) =>
       Effect.gen(function* () {
-        const projects = yield* ProjectsRepo;
         const cli = yield* Gh;
-        const project = yield* projects
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const project = yield* (yield* ProjectAccess).project(params.id);
         if (project.originUrl === null) return noPullRequests("none", "no-origin");
         const repo = parseGithubRepo(project.originUrl);
         if (repo === null) return noPullRequests("not-github", "not-github");
@@ -830,11 +857,8 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     )
     .handle("hotSessionsStatus", ({ params }) =>
       Effect.gen(function* () {
-        const projects = yield* ProjectsRepo;
         const hotWorkspaces = yield* HotWorkspacesRepo;
-        const project = yield* projects
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const project = yield* (yield* ProjectAccess).project(params.id);
         const entries = yield* hotWorkspaces.listForProject(params.id);
         const countOf = (status: string) =>
           entries.filter((entry) => entry.status === status).length;
@@ -1036,21 +1060,19 @@ export const ProjectMountsGroupLive = HttpApiBuilder.group(MendApi, "projectMoun
   handlers
     .handle("list", ({ params }) =>
       Effect.gen(function* () {
-        const projects = yield* ProjectsRepo;
         const mounts = yield* ProjectMountsRepo;
-        yield* projects
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* (yield* ProjectAccess).project(params.id);
         return yield* mounts.listForProject(params.id);
       }),
     )
     .handle("add", ({ params, payload }) =>
       Effect.gen(function* () {
-        const projects = yield* ProjectsRepo;
         const mounts = yield* ProjectMountsRepo;
-        yield* projects
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        // Host paths are the operator's to hand out (docs/adr/0003): project membership must not
+        // grant access to the machine's filesystem. Folders replace them for everyone else.
+        const access = yield* ProjectAccess;
+        yield* access.manageProject(params.id);
+        yield* access.requireOperator(params.id);
         if (!STORE_NAME.test(payload.name)) {
           return yield* new StoreFailure({
             message: `"${payload.name}" is not a usable mount name (lowercase letters, digits, ".", "_", "-").`,
@@ -1094,6 +1116,7 @@ export const ProjectMountsGroupLive = HttpApiBuilder.group(MendApi, "projectMoun
     )
     .handle("remove", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).manageProject(params.id);
         const mounts = yield* ProjectMountsRepo;
         const mount = yield* mounts
           .byId(params.mountId)
@@ -1116,29 +1139,23 @@ export const ProjectLinksGroupLive = HttpApiBuilder.group(MendApi, "projectLinks
   handlers
     .handle("list", ({ params }) =>
       Effect.gen(function* () {
-        const projects = yield* ProjectsRepo;
         const links = yield* ProjectLinksRepo;
-        yield* projects
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* (yield* ProjectAccess).project(params.id);
         return yield* links.listForProject(params.id);
       }),
     )
     .handle("add", ({ params, payload }) =>
       Effect.gen(function* () {
-        const projects = yield* ProjectsRepo;
         const links = yield* ProjectLinksRepo;
         const worktrees = yield* WorktreesRepo;
         const engine = yield* SessionEngine;
-        yield* projects
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const access = yield* ProjectAccess;
+        yield* access.manageProject(params.id);
         if (payload.linkedProjectId === params.id) {
           return yield* new StoreFailure({ message: "A project cannot link itself." });
         }
-        const linked = yield* projects
-          .byId(payload.linkedProjectId)
-          .pipe(Effect.mapError(() => new NotFound({ id: payload.linkedProjectId })));
+        // Same organization, and visible to the caller: a private target only to its creator.
+        const linked = yield* access.project(payload.linkedProjectId);
         if (!STORE_NAME.test(payload.name)) {
           return yield* new StoreFailure({
             message: `"${payload.name}" is not a usable link name (lowercase letters, digits, ".", "_", "-").`,
@@ -1194,6 +1211,7 @@ export const ProjectLinksGroupLive = HttpApiBuilder.group(MendApi, "projectLinks
     )
     .handle("remove", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).manageProject(params.id);
         const links = yield* ProjectLinksRepo;
         const link = yield* links
           .byId(params.linkId)
@@ -1249,6 +1267,7 @@ export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
     handlers
       .handle("get", ({ params }) =>
         Effect.gen(function* () {
+          yield* (yield* ProjectAccess).project(params.id);
           const environment = yield* ProjectEnvironmentRepo;
           return yield* environment.snapshot(params.id).pipe(
             Effect.catchTags({
@@ -1261,6 +1280,7 @@ export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
       )
       .handle("create", ({ params, payload }) =>
         Effect.gen(function* () {
+          yield* (yield* ProjectAccess).manageProject(params.id);
           const environment = yield* ProjectEnvironmentRepo;
           yield* refusePlaintextOfSecret(params.id, payload.name);
           const result = yield* environment
@@ -1282,6 +1302,7 @@ export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
       )
       .handle("update", ({ params, payload }) =>
         Effect.gen(function* () {
+          yield* (yield* ProjectAccess).manageProject(params.id);
           const environment = yield* ProjectEnvironmentRepo;
           yield* refusePlaintextOfSecret(params.id, payload.name);
           const result = yield* environment
@@ -1314,6 +1335,7 @@ export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
       )
       .handle("remove", ({ params, payload }) =>
         Effect.gen(function* () {
+          yield* (yield* ProjectAccess).manageProject(params.id);
           const environment = yield* ProjectEnvironmentRepo;
           const result = yield* environment
             .remove(params.id, params.variableId, payload.expectedRevision)
@@ -1338,6 +1360,7 @@ export const ProjectEnvironmentGroupLive = HttpApiBuilder.group(
       )
       .handle("load", ({ params, payload }) =>
         Effect.gen(function* () {
+          yield* (yield* ProjectAccess).manageProject(params.id);
           const environment = yield* ProjectEnvironmentRepo;
           const secrets = yield* ProjectSecretsRepo;
           const projects = yield* ProjectsRepo;
@@ -1550,6 +1573,7 @@ export const ProjectSecretsGroupLive = HttpApiBuilder.group(MendApi, "projectSec
   handlers
     .handle("get", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).project(params.id);
         const secrets = yield* ProjectSecretsRepo;
         return yield* secrets
           .snapshot(params.id)
@@ -1558,6 +1582,7 @@ export const ProjectSecretsGroupLive = HttpApiBuilder.group(MendApi, "projectSec
     )
     .handle("create", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).manageProject(params.id);
         const secrets = yield* ProjectSecretsRepo;
         yield* rejectSecretValue(payload.value);
         const sealedValue = yield* sealSecret(payload.value);
@@ -1580,6 +1605,7 @@ export const ProjectSecretsGroupLive = HttpApiBuilder.group(MendApi, "projectSec
     )
     .handle("update", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).manageProject(params.id);
         const secrets = yield* ProjectSecretsRepo;
         if (payload.value !== null) yield* rejectSecretValue(payload.value);
         const sealedValue = payload.value === null ? null : yield* sealSecret(payload.value);
@@ -1614,6 +1640,7 @@ export const ProjectSecretsGroupLive = HttpApiBuilder.group(MendApi, "projectSec
     )
     .handle("remove", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).manageProject(params.id);
         const secrets = yield* ProjectSecretsRepo;
         const result = yield* secrets
           .remove(params.id, params.secretId, payload.expectedRevision)
@@ -1647,6 +1674,7 @@ export const ProjectClusterBindingsGroupLive = HttpApiBuilder.group(
     handlers
       .handle("get", ({ params }) =>
         Effect.gen(function* () {
+          yield* (yield* ProjectAccess).project(params.id);
           const bindings = yield* ProjectClusterBindingsRepo;
           const deployment = yield* DeploymentConfig;
           const snapshot = yield* bindings
@@ -1662,6 +1690,7 @@ export const ProjectClusterBindingsGroupLive = HttpApiBuilder.group(
       )
       .handle("add", ({ params, payload }) =>
         Effect.gen(function* () {
+          yield* (yield* ProjectAccess).manageProject(params.id);
           const bindings = yield* ProjectClusterBindingsRepo;
           const result = yield* bindings
             .add(params.id, { kind: payload.kind, objectName: payload.objectName })
@@ -1686,6 +1715,7 @@ export const ProjectClusterBindingsGroupLive = HttpApiBuilder.group(
       )
       .handle("remove", ({ params }) =>
         Effect.gen(function* () {
+          yield* (yield* ProjectAccess).manageProject(params.id);
           const bindings = yield* ProjectClusterBindingsRepo;
           const result = yield* bindings.remove(params.id, params.bindingId).pipe(
             Effect.catchTags({
@@ -1699,6 +1729,7 @@ export const ProjectClusterBindingsGroupLive = HttpApiBuilder.group(
       )
       .handle("setServiceAccount", ({ params, payload }) =>
         Effect.gen(function* () {
+          yield* (yield* ProjectAccess).manageProject(params.id);
           const bindings = yield* ProjectClusterBindingsRepo;
           const result = yield* bindings.setServiceAccount(params.id, payload.serviceAccount).pipe(
             Effect.catchTags({
@@ -1720,6 +1751,7 @@ export const ProjectRecipesGroupLive = HttpApiBuilder.group(MendApi, "projectRec
   handlers
     .handle("list", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).project(params.id);
         const projects = yield* ProjectsRepo;
         const recipes = yield* ProjectServiceRecipesRepo;
         yield* projects
@@ -1730,6 +1762,7 @@ export const ProjectRecipesGroupLive = HttpApiBuilder.group(MendApi, "projectRec
     )
     .handle("add", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).manageProject(params.id);
         const projects = yield* ProjectsRepo;
         const recipes = yield* ProjectServiceRecipesRepo;
         yield* projects
@@ -1771,6 +1804,7 @@ export const ProjectRecipesGroupLive = HttpApiBuilder.group(MendApi, "projectRec
     )
     .handle("remove", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).manageProject(params.id);
         const projects = yield* ProjectsRepo;
         const recipes = yield* ProjectServiceRecipesRepo;
         yield* projects
@@ -1785,12 +1819,16 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
   handlers
     .handle("list", () =>
       Effect.gen(function* () {
+        // Instance-wide until references belong to organizations (docs/adr/0003, step 4); an
+        // account in no organization sees none.
+        if ((yield* (yield* ProjectAccess).viewer()) === null) return [];
         const references = yield* ReferencesRepo;
         return yield* references.list();
       }),
     )
     .handle("add", ({ payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).requireOwner("references");
         const references = yield* ReferencesRepo;
         const store = yield* Store;
         if (!STORE_NAME.test(payload.name)) {
@@ -1801,7 +1839,7 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
         const existing = yield* references.byName(payload.name);
         if (existing !== null) {
           return yield* new StoreFailure({
-            message: `"${payload.name}" already exists — its clone lives at ${existing.path}`,
+            message: `A reference named "${payload.name}" already exists.`,
           });
         }
         // References are a global list with no project to carry a mode — ambient.
@@ -1820,6 +1858,7 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
     )
     .handle("remove", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).requireOwner(params.id);
         const references = yield* ReferencesRepo;
         const store = yield* Store;
         const reference = yield* references
@@ -1831,6 +1870,7 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
     )
     .handle("refresh", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).requireOwner(params.id);
         const references = yield* ReferencesRepo;
         const store = yield* Store;
         const reference = yield* references
@@ -1848,6 +1888,7 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
     )
     .handle("forProject", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).project(params.id);
         const projects = yield* ProjectsRepo;
         const references = yield* ReferencesRepo;
         yield* projects
@@ -1858,6 +1899,7 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
     )
     .handle("selectForProject", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).manageProject(params.id);
         const projects = yield* ProjectsRepo;
         const references = yield* ReferencesRepo;
         yield* projects
@@ -1875,7 +1917,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("listActive", ({ query }) =>
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;
-        const active = yield* sessions.listActive();
+        const access = yield* ProjectAccess;
+        const active = yield* access.filterByProject(yield* sessions.listActive());
         if (query.retained === undefined) return active;
 
         const ids = new Set(active.map((session) => session.id));
@@ -1897,11 +1940,12 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
           if (session !== null) retained.push(session);
         }
-        return retained;
+        return yield* access.filterByProject(retained);
       }),
     )
     .handle("create", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).project(params.id);
         const engine = yield* SessionEngine;
         // Ownership is stamped at provision: launches apply the OWNER's dotfiles, and the
         // auth middleware guarantees a real account here (the CLI's static token included).
@@ -1934,12 +1978,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("detail", ({ params }) =>
       Effect.gen(function* () {
-        const sessions = yield* SessionsRepo;
         const checkpoints = yield* CheckpointsRepo;
         const changes = yield* WorktreeChangesRepo;
-        const session = yield* sessions
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const session = yield* (yield* ProjectAccess).session(params.id);
         // The chain and the change belong to the worktree: this is what makes
         // slices spanning several conversations reviewable from any of them.
         const sessionCheckpoints = yield* checkpoints.listForWorktree(session.worktreeId);
@@ -2014,21 +2055,15 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("listTurns", ({ params }) =>
       Effect.gen(function* () {
-        const sessions = yield* SessionsRepo;
         const conversation = yield* AgentConversationRepo;
-        yield* sessions
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* (yield* ProjectAccess).session(params.id);
         return yield* conversation.listTurns(params.id);
       }),
     )
     .handle("listItems", ({ params, query }) =>
       Effect.gen(function* () {
-        const sessions = yield* SessionsRepo;
         const conversation = yield* AgentConversationRepo;
-        yield* sessions
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* (yield* ProjectAccess).session(params.id);
         const rawAfter = Number(query.after ?? "0");
         const rawLimit = Number(query.limit ?? "100");
         const after = Number.isSafeInteger(rawAfter) && rawAfter >= 0 ? rawAfter : 0;
@@ -2039,11 +2074,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("listAgentRequests", ({ params, query }) =>
       Effect.gen(function* () {
-        const sessions = yield* SessionsRepo;
         const conversation = yield* AgentConversationRepo;
-        yield* sessions
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* (yield* ProjectAccess).session(params.id);
         return yield* conversation.listRequests(params.id, query.pending === "1");
       }),
     )
@@ -2068,11 +2100,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("listProcesses", ({ params }) =>
       Effect.gen(function* () {
-        const sessions = yield* SessionsRepo;
         const processes = yield* SessionProcessesRepo;
-        yield* sessions
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* (yield* ProjectAccess).session(params.id);
         return yield* processes.listForSession(params.id);
       }),
     )
@@ -2219,11 +2248,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("listRecipes", ({ params }) =>
       Effect.gen(function* () {
-        const sessions = yield* SessionsRepo;
         const projects = yield* ProjectsRepo;
-        const session = yield* sessions
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        const session = yield* (yield* ProjectAccess).session(params.id);
         const project = yield* projects
           .byId(session.projectId)
           .pipe(Effect.mapError(() => new NotFound({ id: session.projectId })));
@@ -2246,7 +2272,17 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const processes = yield* SessionProcessesRepo;
         const forwards = yield* ServiceForwardsRepo;
         const observations = yield* ServiceObservationsRepo;
-        const rows = yield* services.listAll();
+        const access = yield* ProjectAccess;
+        // Drop what the caller cannot see before any forward or observation is read.
+        const visible = new Set<string>((yield* access.visibleProjects()).map((row) => row.id));
+        const all = yield* services.listAll();
+        const rows: Array<(typeof all)[number]> = [];
+        for (const service of all) {
+          const owner = yield* sessions
+            .byId(service.sessionId)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          if (owner !== null && visible.has(owner.projectId)) rows.push(service);
+        }
         const views = yield* Effect.forEach(rows, (service) =>
           Effect.gen(function* () {
             const attempts = yield* processes.listForService(service.id);
@@ -2286,10 +2322,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("processLogs", ({ params, query }) =>
       Effect.gen(function* () {
-        const processes = yield* SessionProcessesRepo;
         const sealant = yield* SealantClient;
-        const row = yield* processes.byId(params.id);
-        if (row === null) return yield* new NotFound({ id: params.id });
+        const { process: row } = yield* (yield* ProjectAccess).process(params.id);
         if (row.sealantSessionId === null) {
           return yield* new StoreFailure({
             message:
@@ -2435,7 +2469,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("stop", ({ params }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
-        yield* steering.session(params.id);
+        yield* steering.stop(params.id);
         const engine = yield* SessionEngine;
         const sessions = yield* SessionsRepo;
         yield* engine.stop(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
@@ -2446,6 +2480,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("checkpoint", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).session(params.id);
         const engine = yield* SessionEngine;
         return yield* engine.checkpointNow(params.id, payload.trigger).pipe(
           Effect.catchTag("SessionNotFoundError", () =>
@@ -2462,6 +2497,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("transcript", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).session(params.id);
         const engine = yield* SessionEngine;
         const result = yield* engine
           .transcript(params.id)
@@ -2694,6 +2730,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("followUpPending", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).session(params.id);
         const followUps = yield* FollowUpsRepo;
         return yield* followUps.activeForSession(params.id);
       }),
@@ -2784,6 +2821,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
   handlers
     .handle("openReview", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).change(params.id);
         const slices = yield* ReviewSlicesRepo;
         return yield* slices.withChangeLock(
           params.id,
@@ -2898,6 +2936,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     )
     .handle("reviewDiff", ({ params, query }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).change(params.id);
         const context = yield* loadReviewContext(params.id, params.sliceId);
         const reads = yield* WorktreeReads;
         const { project, worktreeRow } = context;
@@ -2977,6 +3016,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     )
     .handle("sliceComment", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).change(params.id);
         const context = yield* loadReviewContext(params.id, params.sliceId);
         const comments = yield* ReviewCommentsRepo;
         const reads = yield* WorktreeReads;
@@ -3068,6 +3108,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     )
     .handle("diff", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).change(params.id);
         const changes = yield* WorktreeChangesRepo;
         const projects = yield* ProjectsRepo;
         const reads = yield* WorktreeReads;
@@ -3140,6 +3181,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     )
     .handle("read", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).change(params.id);
         const changes = yield* WorktreeChangesRepo;
         const jobs = yield* JobRunner;
         yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
@@ -3157,6 +3199,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     )
     .handle("tour", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).change(params.id);
         const changes = yield* WorktreeChangesRepo;
         const tours = yield* ChangeToursRepo;
         yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
@@ -3165,6 +3208,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     )
     .handle("composeTour", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).change(params.id);
         const changes = yield* WorktreeChangesRepo;
         const jobs = yield* JobRunner;
         yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
@@ -3180,6 +3224,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     )
     .handle("suggest", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).change(params.id);
         const changes = yield* WorktreeChangesRepo;
         const jobs = yield* JobRunner;
         yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
@@ -3196,6 +3241,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     )
     .handle("passes", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).change(params.id);
         const changes = yield* WorktreeChangesRepo;
         const passes = yield* ChangePassesRepo;
         yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
@@ -3204,6 +3250,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     )
     .handle("stats", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).change(params.id);
         const changes = yield* WorktreeChangesRepo;
         const projects = yield* ProjectsRepo;
         const change = yield* changes
@@ -3230,12 +3277,14 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
     )
     .handle("comments", ({ params }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).change(params.id);
         const comments = yield* ReviewCommentsRepo;
         return yield* comments.listForChange(params.id);
       }),
     )
     .handle("commentState", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess).change(params.id);
         const comments = yield* ReviewCommentsRepo;
         const existing = yield* comments
           .byId(params.commentId)
