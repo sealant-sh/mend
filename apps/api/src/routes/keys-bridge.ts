@@ -42,7 +42,8 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
             // The bridge speaks through a plain callback; each frame rides
             // its own forked fiber (writes are tiny and ordered enough — the
             // agent protocol above serializes at one in-flight request).
-            const handle = yield* bridge.attach({
+            // The share serves this account's own bridge; it never signs for anyone else.
+            const handle = yield* bridge.attach(authed.value.user.id, {
               name: clientName,
               send: (frame) => {
                 Effect.runFork(write(frame).pipe(Effect.ignore));

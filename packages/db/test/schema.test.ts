@@ -363,6 +363,8 @@ describe("Mend Drizzle schema", () => {
     expect(referenceConfig.columns.map((column) => column.name)).toEqual([
       "id",
       "name",
+      "organization_id",
+      "created_by_user_id",
       "origin_url",
       "path",
       "pinned_ref",
@@ -371,8 +373,12 @@ describe("Mend Drizzle schema", () => {
       "created_at",
       "updated_at",
     ]);
-    expect(referenceConfig.columns[1]?.isUnique).toBe(true);
-    expect(referenceConfig.columns[3]?.isUnique).toBe(true);
+    // Names are unique within an organization (docs/adr/0003); clone paths across the instance.
+    expect(referenceConfig.columns[1]?.isUnique).toBe(false);
+    expect(referenceConfig.uniqueConstraints.map((constraint) => constraint.name)).toEqual([
+      "reference_repos_organization_name_key",
+    ]);
+    expect(referenceConfig.columns[5]?.isUnique).toBe(true);
 
     const selectionConfig = getTableConfig(projectReferences);
     expect(selectionConfig.name).toBe("project_references");
@@ -464,6 +470,7 @@ describe("Mend Drizzle schema", () => {
     expect(config.columns.map((column) => column.name)).toEqual([
       "token",
       "platform",
+      "user_id",
       "created_at",
       "last_seen_at",
     ]);

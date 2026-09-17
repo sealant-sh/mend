@@ -9,6 +9,7 @@ import { migrations } from "../src/migrations.ts";
 import { InstanceRolesRepo, InstanceRolesRepoLive } from "../src/repos/instance-roles.ts";
 import { OrganizationsRepo, OrganizationsRepoLive } from "../src/repos/organizations.ts";
 import { ProjectsRepo, ProjectsRepoLive } from "../src/repos/projects.ts";
+import { PushDevicesRepo, PushDevicesRepoLive } from "../src/repos/push-devices.ts";
 
 /**
  * Organizations against the dev Postgres (`compose.dev.yaml`, :5434) in a throwaway database.
@@ -34,12 +35,14 @@ const reposLayer = Layer.mergeAll(
   OrganizationsRepoLive,
   InstanceRolesRepoLive,
   ProjectsRepoLive,
+  PushDevicesRepoLive,
 ).pipe(Layer.provideMerge(scratchDatabaseLayer));
 
 type Services =
   | OrganizationsRepo
   | InstanceRolesRepo
   | ProjectsRepo
+  | PushDevicesRepo
   | SqlClient.SqlClient
   | PgClient.PgClient;
 
@@ -414,5 +417,26 @@ describe.skipIf(!reachable)("organizations", () => {
     );
     expect(result.last).toBe("LastOperatorError");
     expect(result.operators).toEqual(["carol"]);
+  });
+
+  it("push devices belong to an account: listing is per account and unregistering touches only your own", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const devices = yield* PushDevicesRepo;
+        yield* devices.register("bob", "tok-bob", "ios");
+        yield* devices.register("carol", "tok-carol", "android");
+        yield* devices.removeOwned("carol", "tok-bob");
+        const afterForeignRemove = yield* devices.listForUsers(["bob"]);
+        // The phone signs in as someone else: it moves to whoever registered it last.
+        yield* devices.register("alice", "tok-carol", "android");
+        return {
+          bob: afterForeignRemove.map((device) => device.token),
+          alice: (yield* devices.listForUsers(["alice"])).map((device) => device.token),
+          carol: (yield* devices.listForUsers(["carol"])).map((device) => device.token),
+          nobody: yield* devices.listForUsers([]),
+        };
+      }),
+    );
+    expect(result).toEqual({ bob: ["tok-bob"], alice: ["tok-carol"], carol: [], nobody: [] });
   });
 });

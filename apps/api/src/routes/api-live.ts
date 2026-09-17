@@ -576,14 +576,16 @@ export const DevicesGroupLive = HttpApiBuilder.group(MendApi, "devices", (handle
     .handle("register", ({ payload }) =>
       Effect.gen(function* () {
         const devices = yield* PushDevicesRepo;
-        const device = yield* devices.register(payload.token, payload.platform);
+        const caller = yield* CurrentUser;
+        const device = yield* devices.register(caller.user.id, payload.token, payload.platform);
         return new RegisteredDevice({ token: device.token, platform: device.platform });
       }),
     )
     .handle("unregister", ({ params }) =>
       Effect.gen(function* () {
         const devices = yield* PushDevicesRepo;
-        yield* devices.remove(params.token);
+        const caller = yield* CurrentUser;
+        yield* devices.removeOwned(caller.user.id, params.token);
       }),
     ),
 );

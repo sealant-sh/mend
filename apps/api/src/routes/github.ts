@@ -5,6 +5,8 @@ import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
+import { GithubIdentity } from "../github-identity.ts";
+
 /**
  * Adoption discovery through the host's own GitHub CLI (plan §17, decided
  * 2026-08-02). The credentials are gh's, not Mend's: whatever `gh auth login`
@@ -316,12 +318,23 @@ export const GithubGroupLive = HttpApiBuilder.group(MendApi, "github", (handlers
   handlers
     .handle("status", () =>
       Effect.gen(function* () {
+        const authority = yield* (yield* GithubIdentity).forCaller();
+        if (authority.kind === "none") {
+          return new GhStatusView({
+            available: false,
+            authenticated: false,
+            login: null,
+            detail: authority.detail,
+          });
+        }
         const cli = yield* Gh;
         return yield* cli.status();
       }),
     )
     .handle("repos", ({ query }) =>
       Effect.gen(function* () {
+        const authority = yield* (yield* GithubIdentity).forCaller();
+        if (authority.kind === "none") return yield* new GhFailure({ message: authority.detail });
         const cli = yield* Gh;
         return yield* cli
           .repos(query.query ?? "")

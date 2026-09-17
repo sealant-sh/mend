@@ -121,7 +121,7 @@ describe("Store", () => {
         const trace = path.join(tmp, "clone.trace");
         const env = { GIT_TERMINAL_PROMPT: "0", GIT_TRACE: trace };
         const adopted = yield* store.adopt("args", source, env);
-        const reference = yield* store.cloneReference("args", source, "main", env);
+        const reference = yield* store.cloneReference("_references/args", source, "main", env);
         expect(reference.headSha).toBe(adopted.headSha);
         expect(fs.readFileSync(path.join(reference.path, "README.md"), "utf8")).toBe("# fixture\n");
         const commands = fs.readFileSync(trace, "utf8");
@@ -157,7 +157,7 @@ describe("Store", () => {
         expect(fs.existsSync(path.join(tmp, "store/missing/repo.git"))).toBe(false);
 
         const reference = yield* store
-          .cloneReference("missing", missing, null, {})
+          .cloneReference("_references/missing", missing, null, {})
           .pipe(Effect.result);
         expect(Result.isFailure(reference)).toBe(true);
         if (Result.isFailure(reference)) {
@@ -187,7 +187,7 @@ describe("Store", () => {
         // be a positional source; disabling transports keeps the test offline.
         const source = "--upload-pack=foo@host:repo";
         const result = yield* store
-          .cloneReference("option", source, null, {
+          .cloneReference("_references/option", source, null, {
             GIT_ALLOW_PROTOCOL: "",
             GIT_TERMINAL_PROMPT: "0",
           })

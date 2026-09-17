@@ -465,6 +465,7 @@ export type PullRequestAvailability =
   | "not-github"
   | "gh-missing"
   | "gh-signed-out"
+  | "no-identity"
   | "rate-limited"
   | "error";
 

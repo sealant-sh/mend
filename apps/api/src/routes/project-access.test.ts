@@ -9,6 +9,8 @@ import {
   CAROL_SESSION_IN_SHARED_A,
   CAROL_USER_SKILL,
   CAROL_WORKTREE_IN_SHARED_A,
+  REFERENCE_A,
+  REFERENCE_B,
   ids,
   type HarnessProject,
   type HarnessUser,
@@ -50,7 +52,9 @@ type Rule =
   /** Operator only. */
   | "operator"
   /** Owners of an organization. */
-  | "owner";
+  | "owner"
+  /** Owners of the organization the resource belongs to (an owner elsewhere is refused). */
+  | "other-owner";
 
 interface AccessCase {
   readonly endpoint: string;
@@ -215,8 +219,18 @@ const CASES: ReadonlyArray<AccessCase> = [
     source: "https://example.invalid/ref.git",
     ref: "main",
   })("references.add"),
-  fixed("owner", "DELETE", "/api/references/ref-1", "ref-1")("references.remove"),
-  fixed("owner", "POST", "/api/references/ref-1/refresh", "ref-1")("references.refresh"),
+  fixed(
+    "other-owner",
+    "DELETE",
+    `/api/references/${REFERENCE_A}`,
+    REFERENCE_A,
+  )("references.remove"),
+  fixed(
+    "other-owner",
+    "POST",
+    `/api/references/${REFERENCE_A}/refresh`,
+    REFERENCE_A,
+  )("references.refresh"),
   project("project-read", "GET", "/references")("references.forProject"),
   project("project-manage", "PUT", "/references", { referenceIds: [] })(
     "references.selectForProject",
@@ -492,6 +506,11 @@ const MATRIX: Readonly<Record<Rule, ReadonlyArray<readonly [HarnessUser, Target,
     ["dave", "shared-a", "refused"],
     ["alice", "shared-a", "admitted"],
   ],
+  "other-owner": [
+    ["bob", "shared-b", "refused"],
+    ["carol", "shared-a", "refused"],
+    ["alice", "shared-a", "admitted"],
+  ],
 };
 
 let api: TenancyApi;
@@ -594,6 +613,22 @@ describe("worktree removal by a member", () => {
       id: ids("shared-a").worktree,
     });
     expect({ status: shared.status, calls: api.world.calls }).toEqual({ status: 404, calls: [] });
+  });
+});
+
+describe("references belong to their organization", () => {
+  it("a project selects only its own organization's references, before any write", async () => {
+    const response = await send("alice", {
+      method: "PUT",
+      path: `/api/projects/${ids("shared-a").project}/references`,
+      id: REFERENCE_B,
+      body: { referenceIds: [REFERENCE_A, REFERENCE_B] },
+    });
+    expect({ status: response.status, id: idOf(response.body), calls: api.world.calls }).toEqual({
+      status: 404,
+      id: REFERENCE_B,
+      calls: [],
+    });
   });
 });
 

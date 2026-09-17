@@ -161,7 +161,8 @@ const startServer = async () => {
     baseUrl,
     upgrade,
     key: () => runtime.runPromise(Effect.flatMap(MendKeys, (keys) => keys.read(session.user.id))),
-    bridge: () => runtime.runPromise(Effect.flatMap(AgentBridge, (bridge) => bridge.status())),
+    bridge: () =>
+      runtime.runPromise(Effect.flatMap(AgentBridge, (bridge) => bridge.status(session.user.id))),
     close: async () => {
       for (const socket of sockets) socket.destroy();
       await runtime.dispose();

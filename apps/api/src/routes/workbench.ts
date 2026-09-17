@@ -94,6 +94,7 @@ import {
   workspaceImagesEqual,
   type ChangeId,
   ProjectId,
+  ReferenceId,
   type ReviewSliceId,
   type WorktreeId,
 } from "@mend/domain";
@@ -143,6 +144,7 @@ import {
   ChangeSummary,
   describeGitRemoteFailure,
   harnessHomePathOf,
+  referenceDirectory,
   resolveRemoteEnv,
   worktreePathOf,
   type DiffFileFact,
@@ -152,12 +154,14 @@ import { Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
+import { GithubIdentity } from "../github-identity.ts";
 import { HostEnvironment } from "../services/host-environment.ts";
 import {
   resolveWorkspaceEnvironment,
   saveResolvedWorkspaceEnvironment,
 } from "../services/workspace-environment.ts";
 import { SessionSteering } from "../session-steering.ts";
+import { TenancyConfig } from "../tenancy.ts";
 import { classifyGhError, Gh, parseGithubRepo } from "./github.ts";
 import { digestReviewPatch, lineAnchorExists, parseReviewDiff } from "./review-diff.ts";
 
@@ -319,18 +323,20 @@ const remoteEnvFor = (mode: GitAuthMode, userId: string | null) =>
   );
 
 /**
- * Attribute a bridge-signed op while it runs, so the share CLI can print
- * what asked for the signature. Non-bridge modes pass through untouched.
+ * Attribute a bridge-signed op while it runs, so the share CLI of `userId`'s
+ * bridge can print what asked for the signature. Non-bridge modes pass through
+ * untouched.
  */
 const withSignerContext = <A, E, R>(
   mode: GitAuthMode,
+  userId: string,
   description: string,
   effect: Effect.Effect<A, E, R>,
 ): Effect.Effect<A, E, R | AgentBridge> =>
   mode === "bridge"
     ? Effect.gen(function* () {
         const bridge = yield* AgentBridge;
-        const end = yield* bridge.begin(description);
+        const end = yield* bridge.begin(userId, description);
         return yield* effect.pipe(Effect.ensuring(Effect.sync(() => end())));
       })
     : effect;
@@ -439,6 +445,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const id = ProjectId.make(crypto.randomUUID());
         const adopted = yield* withSignerContext(
           mode,
+          caller.user.id,
           `adopt ${payload.name} → ${payload.source}`,
           store
             .adopt(id, payload.source, remoteEnv)
@@ -717,6 +724,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     .handle("installCommand", ({ params, payload }) =>
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).manageProject(params.id);
+        const caller = yield* CurrentUser;
         const projects = yield* ProjectsRepo;
         const jobs = yield* JobRunner;
         const project = yield* projects
@@ -727,7 +735,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         yield* jobs
           .enqueue({
             name: "dependency-install",
-            payload: { projectId: project.id },
+            payload: { projectId: project.id, requestedByUserId: caller.user.id },
             idempotencyKey: `dependency-install:${project.id}:${project.updatedAt.toISOString()}`,
           })
           .pipe(Effect.ignore);
@@ -753,6 +761,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const remoteEnv = yield* remoteEnvFor(project.gitAuthMode, caller.user.id);
         yield* withSignerContext(
           project.gitAuthMode,
+          caller.user.id,
           `refresh ${project.name} → origin`,
           store
             .refreshFromOrigin(project.storePath, remoteEnv)
@@ -828,6 +837,17 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         if (project.originUrl === null) return noPullRequests("none", "no-origin");
         const repo = parseGithubRepo(project.originUrl);
         if (repo === null) return noPullRequests("not-github", "not-github");
+        const authority = yield* (yield* GithubIdentity).forCaller();
+        if (authority.kind === "none") {
+          return new ProjectPullRequests({
+            origin: "github",
+            repo,
+            availability: "no-identity",
+            detail: authority.detail,
+            pullRequests: [],
+            fetchedAt: null,
+          });
+        }
         return yield* cli.pullRequests(repo).pipe(
           Effect.map(
             (pullRequests) =>
@@ -989,7 +1009,8 @@ export const GitKeysGroupLive = HttpApiBuilder.group(MendApi, "gitKeys", (handle
     .handle("bridgeStatus", () =>
       Effect.gen(function* () {
         const bridge = yield* AgentBridge;
-        const bridgeStatus = yield* bridge.status();
+        const caller = yield* CurrentUser;
+        const bridgeStatus = yield* bridge.status(caller.user.id);
         return new GitBridgeStatusView(bridgeStatus);
       }),
     )
@@ -1033,7 +1054,7 @@ const gitAccessView = () =>
     const bridge = yield* AgentBridge;
     const mode = (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
     const key = yield* keys.read(caller.user.id, caller.user.email).pipe(Effect.orDie);
-    const bridgeStatus = yield* bridge.status();
+    const bridgeStatus = yield* bridge.status(caller.user.id);
     return new GitAccessView({
       mode,
       key:
@@ -1068,11 +1089,15 @@ export const ProjectMountsGroupLive = HttpApiBuilder.group(MendApi, "projectMoun
     .handle("add", ({ params, payload }) =>
       Effect.gen(function* () {
         const mounts = yield* ProjectMountsRepo;
-        // Host paths are the operator's to hand out (docs/adr/0003): project membership must not
-        // grant access to the machine's filesystem. Folders replace them for everyone else.
+        // Host paths are the operator's to hand out, on a single-organization install only
+        // (docs/adr/0003): project membership must not grant access to the machine's filesystem.
+        // Folders replace them for everyone else.
         const access = yield* ProjectAccess;
         yield* access.manageProject(params.id);
         yield* access.requireOperator(params.id);
+        if ((yield* TenancyConfig).mode !== "single") {
+          return yield* new NotFound({ id: params.id });
+        }
         if (!STORE_NAME.test(payload.name)) {
           return yield* new StoreFailure({
             message: `"${payload.name}" is not a usable mount name (lowercase letters, digits, ".", "_", "-").`,
@@ -1815,20 +1840,42 @@ export const ProjectRecipesGroupLive = HttpApiBuilder.group(MendApi, "projectRec
     ),
 );
 
+/** The caller's own git access: how references they add or refresh are fetched. */
+const callerGitMode = Effect.gen(function* () {
+  const caller = yield* CurrentUser;
+  const gitAccess = yield* UserGitAccessRepo;
+  const mode = (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
+  return { userId: caller.user.id, mode };
+});
+
+/** A reference of the caller's organization that the caller owns; `NotFound` otherwise. */
+const ownedReference = (id: ReferenceId) =>
+  Effect.gen(function* () {
+    const viewer = yield* (yield* ProjectAccess).requireOwner(id);
+    const references = yield* ReferencesRepo;
+    const reference = yield* references.byId(id).pipe(Effect.mapError(() => new NotFound({ id })));
+    if (reference.organizationId !== viewer.organizationId) return yield* new NotFound({ id });
+    return reference;
+  });
+
+/**
+ * Reference repositories belong to an organization (docs/adr/0003-organizations-and-tenancy.md):
+ * members list them and projects select from them; owners add, refresh and remove them, fetching
+ * with their own git access, never the host's.
+ */
 export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (handlers) =>
   handlers
     .handle("list", () =>
       Effect.gen(function* () {
-        // Instance-wide until references belong to organizations (docs/adr/0003, step 4); an
-        // account in no organization sees none.
-        if ((yield* (yield* ProjectAccess).viewer()) === null) return [];
+        const viewer = yield* (yield* ProjectAccess).viewer();
+        if (viewer === null) return [];
         const references = yield* ReferencesRepo;
-        return yield* references.list();
+        return yield* references.listForOrganization(viewer.organizationId);
       }),
     )
     .handle("add", ({ payload }) =>
       Effect.gen(function* () {
-        yield* (yield* ProjectAccess).requireOwner("references");
+        const viewer = yield* (yield* ProjectAccess).requireOwner("references");
         const references = yield* ReferencesRepo;
         const store = yield* Store;
         if (!STORE_NAME.test(payload.name)) {
@@ -1836,18 +1883,31 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
             message: `"${payload.name}" is not a usable reference name (lowercase letters, digits, ".", "_", "-").`,
           });
         }
-        const existing = yield* references.byName(payload.name);
-        if (existing !== null) {
+        if ((yield* references.byName(viewer.organizationId, payload.name)) !== null) {
           return yield* new StoreFailure({
             message: `A reference named "${payload.name}" already exists.`,
           });
         }
-        // References are a global list with no project to carry a mode — ambient.
-        const remoteEnv = yield* remoteEnvFor("ambient", null);
-        const cloned = yield* store
-          .cloneReference(payload.name, payload.source, payload.ref, remoteEnv)
-          .pipe(Effect.mapError((error) => readableGitFailure(error.cause, "ambient")));
+        const { userId, mode } = yield* callerGitMode;
+        const remoteEnv = yield* remoteEnvFor(mode, userId);
+        const id = ReferenceId.make(crypto.randomUUID());
+        const cloned = yield* withSignerContext(
+          mode,
+          userId,
+          `reference ${payload.name} → ${payload.source}`,
+          store
+            .cloneReference(
+              referenceDirectory(viewer.organizationId, id),
+              payload.source,
+              payload.ref,
+              remoteEnv,
+            )
+            .pipe(Effect.mapError((error) => readableGitFailure(error.cause, mode))),
+        );
         return yield* references.create({
+          id,
+          organizationId: viewer.organizationId,
+          createdByUserId: userId,
           name: payload.name,
           originUrl: payload.source,
           path: cloned.path,
@@ -1858,28 +1918,28 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
     )
     .handle("remove", ({ params }) =>
       Effect.gen(function* () {
-        yield* (yield* ProjectAccess).requireOwner(params.id);
+        const reference = yield* ownedReference(params.id);
         const references = yield* ReferencesRepo;
         const store = yield* Store;
-        const reference = yield* references
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         yield* store.removeReference(reference.path);
         yield* references.remove(params.id);
       }),
     )
     .handle("refresh", ({ params }) =>
       Effect.gen(function* () {
-        yield* (yield* ProjectAccess).requireOwner(params.id);
+        const reference = yield* ownedReference(params.id);
         const references = yield* ReferencesRepo;
         const store = yield* Store;
-        const reference = yield* references
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        const remoteEnv = yield* remoteEnvFor("ambient", null);
-        const refreshed = yield* store
-          .refreshReference(reference.path, reference.pinnedRef, remoteEnv)
-          .pipe(Effect.mapError((error) => readableGitFailure(error, "ambient")));
+        const { userId, mode } = yield* callerGitMode;
+        const remoteEnv = yield* remoteEnvFor(mode, userId);
+        const refreshed = yield* withSignerContext(
+          mode,
+          userId,
+          `reference ${reference.name} → origin`,
+          store
+            .refreshReference(reference.path, reference.pinnedRef, remoteEnv)
+            .pipe(Effect.mapError((error) => readableGitFailure(error, mode))),
+        );
         yield* references.setHead(params.id, refreshed.headSha);
         return yield* references
           .byId(params.id)
@@ -1889,22 +1949,22 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
     .handle("forProject", ({ params }) =>
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).project(params.id);
-        const projects = yield* ProjectsRepo;
         const references = yield* ReferencesRepo;
-        yield* projects
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         return yield* references.listForProject(params.id);
       }),
     )
     .handle("selectForProject", ({ params, payload }) =>
       Effect.gen(function* () {
-        yield* (yield* ProjectAccess).manageProject(params.id);
-        const projects = yield* ProjectsRepo;
+        const project = yield* (yield* ProjectAccess).manageProject(params.id);
         const references = yield* ReferencesRepo;
-        yield* projects
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        // Only the project's own organization's references; any other id is not found.
+        const found = new Set<string>(
+          (yield* references.byIdsInOrganization(project.organizationId, payload.referenceIds)).map(
+            (reference) => reference.id,
+          ),
+        );
+        const missing = payload.referenceIds.find((id) => !found.has(id));
+        if (missing !== undefined) return yield* new NotFound({ id: missing });
         yield* references.setForProject(params.id, payload.referenceIds);
         yield* rewarmHotSessions(params.id);
         return yield* references.listForProject(params.id);

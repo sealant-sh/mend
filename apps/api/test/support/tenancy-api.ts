@@ -15,8 +15,8 @@ import {
   ProjectMountsRepo,
   ProjectSecretsRepo,
   ProjectServiceRecipesRepo,
+  PushDevice,
   PushDevicesRepo,
-  ReferencesRepo,
   ReviewCommentsRepo,
   ReviewSlicesRepo,
   RunsRepo,
@@ -46,6 +46,7 @@ import { HttpRouter, HttpServer } from "effect/unstable/http";
 
 import { ProjectAccessLive } from "../../src/access.ts";
 import { EventBus, makeEventBus } from "../../src/events-bus.ts";
+import { GithubIdentityLive } from "../../src/github-identity.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
 import { EventsRoutes } from "../../src/routes/events.ts";
 import { Gh } from "../../src/routes/github.ts";
@@ -76,6 +77,8 @@ export interface TenancyApi {
   }>;
   /** Send a raw (WebSocket upgrade) route request: `/api/tty` and `/api/service-tunnel`. */
   readonly rawRequest: (user: HarnessUser, path: string) => Promise<Response>;
+  /** Push-device writes as `method:userId:token`, to prove the caller's id reaches the repo. */
+  readonly deviceWrites: ReadonlyArray<string>;
   readonly dispose: () => Promise<void>;
 }
 
@@ -92,6 +95,7 @@ const network = makePublicNetwork(
 export const createTenancyApi = async (): Promise<TenancyApi> => {
   const world = await createTenancyWorld();
   const calls = world.calls;
+  const deviceWrites: Array<string> = [];
   const effects = Layer.mergeAll(
     Layer.mergeAll(
       recording(BriefCommentsRepo, "briefComments", {}, calls),
@@ -110,8 +114,22 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
       recording(ProjectMountsRepo, "mounts", {}, calls),
       recording(ProjectSecretsRepo, "secrets", {}, calls),
       recording(ProjectServiceRecipesRepo, "recipes", {}, calls),
-      recording(PushDevicesRepo, "pushDevices", {}, calls),
-      recording(ReferencesRepo, "references", {}, calls),
+      recording(
+        PushDevicesRepo,
+        "pushDevices",
+        {
+          register: (userId, token, platform) =>
+            Effect.sync(() => {
+              deviceWrites.push(`register:${userId}:${token}`);
+              return new PushDevice({ token, platform, userId });
+            }),
+          removeOwned: (userId, token) =>
+            Effect.sync(() => {
+              deviceWrites.push(`removeOwned:${userId}:${token}`);
+            }),
+        },
+        calls,
+      ),
       recording(ReviewCommentsRepo, "comments", {}, calls),
     ),
     Layer.mergeAll(
@@ -162,10 +180,11 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
     ),
   );
   const dependencies = Layer.mergeAll(world.authLayer, world.accessLayers, effects);
-  const authorization = Layer.merge(ProjectAccessLive, SessionSteeringLive).pipe(
-    Layer.provideMerge(ProjectAccessLive),
-    Layer.provideMerge(dependencies),
-  );
+  const authorization = Layer.mergeAll(
+    ProjectAccessLive,
+    SessionSteeringLive,
+    GithubIdentityLive,
+  ).pipe(Layer.provideMerge(ProjectAccessLive), Layer.provideMerge(dependencies));
   const apiLayer = MendApiLive.pipe(
     Layer.provide(authorization),
     Layer.provide(HttpServer.layerServices),
@@ -250,6 +269,7 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
         },
       };
     },
+    deviceWrites,
     rawRequest: (user, path) =>
       raw.handler(
         new Request(`http://api.internal${path}`, {

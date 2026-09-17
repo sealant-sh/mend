@@ -13,8 +13,10 @@ export class NoSignerError extends Schema.TaggedErrorClass<NoSignerError>()("NoS
  * The one resolution of `mode` → env for a host-side remote git op, shared by
  * the API routes and the session engine (docs/GIT-ACCESS.md). `userId` is
  * whose Mend key signs in mend-key mode (generated on first use; null means
- * the only user on a single-user install); bridge mode requires a connected
- * signer and fails fast with the readable line when there is none.
+ * the only user on a single-user install) and whose shared agent signs in
+ * bridge mode. Bridge mode requires that account's connected signer and fails
+ * fast with the readable line when there is none; it never falls back to
+ * another account's signer (docs/adr/0003-organizations-and-tenancy.md).
  */
 export const resolveRemoteEnv = (
   mode: GitAuthMode,
@@ -23,12 +25,17 @@ export const resolveRemoteEnv = (
   Effect.gen(function* () {
     if (mode === "ambient") return remoteGitEnv(sshCommandFor("ambient", null));
     if (mode === "bridge") {
+      if (userId === null) {
+        return yield* new NoSignerError({
+          message: "this operation has no owner, so no signer can be chosen",
+        });
+      }
       const bridge = yield* AgentBridge;
-      const bridgeStatus = yield* bridge.status();
+      const bridgeStatus = yield* bridge.status(userId);
       if (!bridgeStatus.connected) {
         return yield* new NoSignerError({ message: NO_SIGNER_MESSAGE });
       }
-      return remoteGitEnv(sshCommandFor("bridge", null), bridge.socketPath());
+      return remoteGitEnv(sshCommandFor("bridge", null), bridge.socketPath(userId));
     }
     const keys = yield* MendKeys;
     const key = yield* keys.ensure(userId);

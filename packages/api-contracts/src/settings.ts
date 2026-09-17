@@ -121,6 +121,8 @@ export class ProjectPullRequests extends Schema.Class<ProjectPullRequests>("Proj
     "gh-missing",
     "gh-signed-out",
     "rate-limited",
+    // No GitHub identity for this account (docs/adr/0003); `detail` says why.
+    "no-identity",
     "error",
   ]),
   detail: Schema.NullOr(Schema.String),

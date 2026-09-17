@@ -1672,6 +1672,41 @@ const organizationsMigration = Effect.gen(function* () {
     WHERE owner_user_id IS NULL`;
 });
 
+/**
+ * docs/adr/0003-organizations-and-tenancy.md: resources that belonged to the whole instance now
+ * belong to an account or an organization. Push devices get the account whose notifications they
+ * receive (existing ones: the oldest account, which is who registered them on a one-person
+ * install); reference repositories get the organization (the only one existing) and their name is
+ * unique within it.
+ */
+const perAccountResourcesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE push_devices
+    ADD COLUMN user_id text REFERENCES "user" (id) ON DELETE RESTRICT`;
+  yield* sql`
+    UPDATE push_devices
+    SET user_id = (SELECT id FROM "user" ORDER BY "createdAt" ASC, id ASC LIMIT 1)`;
+  // No account to own them: an unclaimed instance's devices notify nobody, so they go.
+  yield* sql`DELETE FROM push_devices WHERE user_id IS NULL`;
+  yield* sql`ALTER TABLE push_devices ALTER COLUMN user_id SET NOT NULL`;
+  yield* sql`CREATE INDEX push_devices_user_idx ON push_devices (user_id)`;
+
+  yield* sql`
+    ALTER TABLE reference_repos
+      ADD COLUMN organization_id text REFERENCES organizations (id) ON DELETE RESTRICT,
+      ADD COLUMN created_by_user_id text REFERENCES "user" (id) ON DELETE RESTRICT`;
+  yield* sql`
+    UPDATE reference_repos SET
+      organization_id = (SELECT id FROM organizations ORDER BY created_at, id LIMIT 1),
+      created_by_user_id = (SELECT id FROM "user" ORDER BY "createdAt" ASC, id ASC LIMIT 1)`;
+  yield* sql`ALTER TABLE reference_repos ALTER COLUMN organization_id SET NOT NULL`;
+  yield* sql`
+    ALTER TABLE reference_repos
+      DROP CONSTRAINT reference_repos_name_key,
+      ADD CONSTRAINT reference_repos_organization_name_key UNIQUE (organization_id, name)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1729,4 +1764,5 @@ export const migrations = {
   "0053_capture_store": captureStoreMigration,
   "0054_project_install_command": projectInstallCommandMigration,
   "0055_organizations": organizationsMigration,
+  "0056_per_account_resources": perAccountResourcesMigration,
 };

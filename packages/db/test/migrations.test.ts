@@ -808,3 +808,87 @@ describe.skipIf(!reachable)("0055 organizations", () => {
     });
   });
 });
+
+describe.skipIf(!reachable)("0056 per-account resources", () => {
+  const RESOURCES_DB = `${SCRATCH_DB}_resources`;
+  const resourcesLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${RESOURCES_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withResourcesDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(resourcesLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${RESOURCES_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${RESOURCES_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("gives devices to the oldest account and references to the organization", async () => {
+    const result = await withResourcesDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0055_organizations");
+        yield* sql`
+          INSERT INTO "user" ("id", "name", "email", "createdAt") VALUES
+            ('u-new', 'New', 'new@example.com', '2026-02-01T00:00:00Z'),
+            ('u-old', 'Old', 'old@example.com', '2026-01-01T00:00:00Z')`;
+        yield* sql`
+          INSERT INTO push_devices (token, platform) VALUES ('tok-1', 'ios'), ('tok-2', 'android')`;
+        yield* sql`
+          INSERT INTO reference_repos (id, name, origin_url, path)
+          VALUES ('ref-1', 'effect', 'https://example.invalid/effect.git', '/store/_references/effect')`;
+        yield* migrations["0056_per_account_resources"];
+        const devices = yield* sql<{
+          readonly token: string;
+          readonly user_id: string;
+        }>`SELECT token, user_id FROM push_devices ORDER BY token`;
+        const references = yield* sql<{
+          readonly organization_id: string;
+          readonly created_by_user_id: string;
+        }>`SELECT organization_id, created_by_user_id FROM reference_repos`;
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        yield* sql`INSERT INTO organizations (id, name) VALUES ('org-2', 'Second')`;
+        const sameNameElsewhere = yield* attempt(sql`
+          INSERT INTO reference_repos (id, name, organization_id, origin_url, path)
+          VALUES ('ref-2', 'effect', 'org-2', 'https://example.invalid/effect.git', '/store/r2')`);
+        const sameNameSameOrganization = yield* attempt(sql`
+          INSERT INTO reference_repos (id, name, organization_id, origin_url, path)
+          VALUES ('ref-3', 'effect', ${organization?.id ?? ""}, 'https://example.invalid/e.git', '/store/r3')`);
+        const deviceWithoutAccount = yield* attempt(
+          sql`INSERT INTO push_devices (token, platform) VALUES ('tok-3', 'ios')`,
+        );
+        return {
+          devices,
+          references,
+          organizationId: organization?.id,
+          sameNameElsewhere,
+          sameNameSameOrganization,
+          deviceWithoutAccount,
+        };
+      }),
+    );
+    expect(result.devices).toEqual([
+      { token: "tok-1", user_id: "u-old" },
+      { token: "tok-2", user_id: "u-old" },
+    ]);
+    expect(result.references).toEqual([
+      { organization_id: result.organizationId, created_by_user_id: "u-old" },
+    ]);
+    expect(result.sameNameElsewhere).toBe("inserted");
+    expect(result.sameNameSameOrganization).toBe("refused");
+    expect(result.deviceWithoutAccount).toBe("refused");
+  });
+});

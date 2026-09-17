@@ -29,13 +29,13 @@ table below is what it mounted, kept for an install that has not moved — and l
 start. The chart does not render it: `captureStore.sessionStore` accepts only `captured`, and an
 install that has not moved stays on chart 0.1.x until it follows "Upgrade" below.
 
-| In the workspace Pod                     | On the claim (`subPath`)              | Mode  |
-| ---------------------------------------- | ------------------------------------- | ----- |
-| `/workspace/repo`                        | `<project>/worktrees/session-<id>`    | rw    |
-| `/var/lib/mend/store/<project>/repo.git` | `<project>/repo.git` (path-identical) | rw    |
-| `/workspace/ref/<name>`                  | `_references/<name>`                  | ro    |
-| `/workspace/home/<name>`                 | project folders as configured         | ro/rw |
-| `/run/mend`                              | `_run/sessions/<id>` (helper scripts) | ro    |
+| In the workspace Pod                     | On the claim (`subPath`)               | Mode  |
+| ---------------------------------------- | -------------------------------------- | ----- |
+| `/workspace/repo`                        | `<project>/worktrees/session-<id>`     | rw    |
+| `/var/lib/mend/store/<project>/repo.git` | `<project>/repo.git` (path-identical)  | rw    |
+| `/workspace/ref/<name>`                  | `_organizations/<org>/references/<id>` | ro    |
+| `/workspace/home/<name>`                 | project folders as configured          | ro/rw |
+| `/run/mend`                              | `_run/sessions/<id>` (helper scripts)  | ro    |
 
 ## What changes in `kubernetes` mode
 

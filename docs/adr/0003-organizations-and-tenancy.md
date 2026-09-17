@@ -51,7 +51,7 @@ still missing. Required:
 3. Mend-managed folders in place of host paths for tenants (MEND-07, B3).
 4. Local Git sources and private or loopback destinations refused for tenants (MEND-06, MEND-07).
 5. Upload signatures bound to exact content length, with stored-size verification (MEND-04).
-6. Raw service port exposure off.
+6. Raw service ports bound to loopback only.
 
 Not required to open a private beta, and tracked as later work: per-organization and per-user
 budgets (concurrent live sessions, captured bytes, hot pool size, inference spend, request rate,
@@ -169,16 +169,16 @@ which is measured rather than assumed.
 
 ### Resources that were instance-global
 
-| Resource               | Decision                                                                                                                                                                                                   |
-| ---------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Host mounts            | Replaced by **folders**: Mend-managed directories owned by an organization and stored under it, created by owners and selected per project. Arbitrary host paths remain only for the operator in `single`. |
-| Reference repositories | Owned by the organization, managed by owners, refreshed with the requesting owner's Git access. Never the host's ambient identity.                                                                         |
-| GitHub actions         | Run with the caller's own Git access (existing per-user `user_git_access`). The host's `gh` login is used only by the operator in `single`.                                                                |
-| Push devices           | Belong to a user.                                                                                                                                                                                          |
-| Notifications          | Go to the session owner, and in shared-control sessions also to the account that sent the latest turn.                                                                                                     |
-| SSH-agent signer       | One per user; resolution never falls back to another user's signer.                                                                                                                                        |
-| Raw service ports      | Off in `multi`. Service access goes through the authenticated tunnel.                                                                                                                                      |
-| Machine settings       | Operator only.                                                                                                                                                                                             |
+| Resource               | Decision                                                                                                                                                                                                                                                                        |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Host mounts            | Replaced by **folders**: Mend-managed directories owned by an organization and stored under it, created by owners and selected per project. Arbitrary host paths remain only for the operator in `single`.                                                                      |
+| Reference repositories | Owned by the organization, managed by owners, refreshed with the requesting owner's Git access. Never the host's ambient identity.                                                                                                                                              |
+| GitHub actions         | Git over SSH runs with the caller's own access (`user_git_access`). Calls to the GitHub API have no per-account credential yet: only the operator in `single` may use the host's `gh` login, and everyone else is told there is no identity. A per-account token is later work. |
+| Push devices           | Belong to a user.                                                                                                                                                                                                                                                               |
+| Notifications          | Go to the session owner, and in shared-control sessions also to the account that sent the latest turn.                                                                                                                                                                          |
+| SSH-agent signer       | One per user; resolution never falls back to another user's signer.                                                                                                                                                                                                             |
+| Raw service ports      | Loopback only in `multi`. Service access goes through the authenticated tunnel.                                                                                                                                                                                                 |
+| Machine settings       | Operator only.                                                                                                                                                                                                                                                                  |
 
 ### Hot pools
 

@@ -26,6 +26,10 @@ export class StoreConfig extends Context.Service<
   static readonly layerFor = (root: string) => Layer.succeed(StoreConfig, { root });
 }
 
+/** Where an organization's reference clone lives, relative to the store root. */
+export const referenceDirectory = (organizationId: string, referenceId: string): string =>
+  path.join("_organizations", organizationId, "references", referenceId);
+
 export class AdoptError extends Schema.TaggedErrorClass<AdoptError>()("AdoptError", {
   directory: Schema.String,
   source: RepositoryCloneUrl,
@@ -43,7 +47,7 @@ export class ReferenceCloneError extends Schema.TaggedErrorClass<ReferenceCloneE
 ) {}
 
 export interface ReferenceClone {
-  /** Absolute path of the working clone: `<root>/_references/<name>`. */
+  /** Absolute path of the working clone: `<root>/_organizations/<org>/references/<id>`. */
   readonly path: string;
   readonly headSha: Sha;
 }
@@ -440,13 +444,14 @@ export class Store extends Context.Service<
       limit: number,
     ) => Effect.Effect<FileListing, GitError>;
     /**
-     * Clone `source` shallow into `_references/<name>` as read-only source
-     * material (plan §17, decided 2026-08-01). `ref` pins a branch or tag;
-     * null follows the remote's default branch. A working clone, not bare —
-     * the point is an agent reading files.
+     * Clone `source` shallow into `directory` (relative to the store root) as read-only source
+     * material (plan §17, decided 2026-08-01). References belong to an organization, so callers
+     * pass `referenceDirectory(organizationId, referenceId)`. `ref` pins a branch or tag; null
+     * follows the remote's default branch. A working clone, not bare — the point is an agent
+     * reading files.
      */
     readonly cloneReference: (
-      name: string,
+      directory: string,
       source: string,
       ref: string | null,
       remoteEnv: Record<string, string>,
@@ -925,16 +930,17 @@ export class Store extends Context.Service<
         return sha(head);
       });
 
-      // `_references/` cannot collide with a project dir: adopted names go
-      // through the API's name check, which rejects a leading underscore.
+      // `_organizations/` cannot collide with a project dir: project stores are ids or names
+      // that went through the API's name check, which rejects a leading underscore.
       const cloneReference = Effect.fn("Store.cloneReference")(function* (
-        name: string,
+        directory: string,
         source: string,
         ref: string | null,
         remoteEnv: Record<string, string>,
       ) {
-        const referencesRoot = path.join(config.root, "_references");
-        const clonePath = path.join(referencesRoot, name);
+        const clonePath = path.join(config.root, directory);
+        const referencesRoot = path.dirname(clonePath);
+        const name = path.basename(clonePath);
         const attempt = Effect.gen(function* () {
           yield* Effect.sync(() => fs.mkdirSync(referencesRoot, { recursive: true }));
           yield* git(

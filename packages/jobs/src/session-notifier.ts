@@ -18,6 +18,8 @@ import {
 } from "@mend/domain/workbench";
 import { Effect, Layer, Schema, Stream } from "effect";
 
+import { notificationRecipients } from "./notification-recipients.ts";
+
 /**
  * Pushes a notification to registered phones when a session needs the user:
  * it settled (completed · failed), is waiting for input, or a protocol turn
@@ -92,6 +94,24 @@ interface ExpoPushTicket {
 
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(MendEvent));
 
+/**
+ * The phones a session's notification goes to (docs/adr/0003): its owner's, and none for a
+ * session with no owner. Shared control will add the latest turn's sender.
+ */
+export const pushTargets = (
+  devices: PushDevicesRepo["Service"],
+  session: Pick<Session, "ownerUserId">,
+) =>
+  Effect.gen(function* () {
+    const recipients = notificationRecipients({
+      ownerUserId: session.ownerUserId,
+      sharedControl: false,
+      latestTurnSenderUserId: null,
+    });
+    if (recipients.size === 0) return [];
+    return yield* devices.listForUsers([...recipients]);
+  });
+
 export const SessionNotifierLive = Layer.effectDiscard(
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
@@ -106,7 +126,7 @@ export const SessionNotifierLive = Layer.effectDiscard(
     const watchedTurns = new Map<string, ReadonlySet<string>>();
 
     const send = Effect.fn("SessionNotifier.send")(function* (session: Session, body: string) {
-      const targets = yield* devices.list();
+      const targets = yield* pushTargets(devices, session);
       if (targets.length === 0) return;
       const title = yield* projects.byId(session.projectId).pipe(
         Effect.map((project) => project.name),
