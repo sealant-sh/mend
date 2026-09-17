@@ -51,7 +51,7 @@ still missing. Required:
 3. Mend-managed folders in place of host paths for tenants (MEND-07, B3).
 4. Local Git sources and private or loopback destinations refused for tenants (MEND-06, MEND-07).
 5. Upload signatures bound to exact content length, with stored-size verification (MEND-04).
-6. Raw service port exposure off.
+6. Raw service ports bound to loopback only.
 
 Not required to open a private beta, and tracked as later work: per-organization and per-user
 budgets (concurrent live sessions, captured bytes, hot pool size, inference spend, request rate,
@@ -177,7 +177,7 @@ which is measured rather than assumed.
 | Push devices           | Belong to a user.                                                                                                                                                                                                                                                               |
 | Notifications          | Go to the session owner, and in shared-control sessions also to the account that sent the latest turn.                                                                                                                                                                          |
 | SSH-agent signer       | One per user; resolution never falls back to another user's signer.                                                                                                                                                                                                             |
-| Raw service ports      | Off in `multi`. Service access goes through the authenticated tunnel.                                                                                                                                                                                                           |
+| Raw service ports      | Loopback only in `multi`. Service access goes through the authenticated tunnel.                                                                                                                                                                                                 |
 | Machine settings       | Operator only.                                                                                                                                                                                                                                                                  |
 
 ### Hot pools

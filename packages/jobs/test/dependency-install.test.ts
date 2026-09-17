@@ -83,20 +83,24 @@ describe("dependency-install", () => {
     const outcome = await Effect.runPromise(
       Effect.gen(function* () {
         const installer = yield* DependencyInstaller;
-        return yield* installer.install({ projectId: world.project.id });
+        return yield* installer.install({
+          projectId: world.project.id,
+          requestedByUserId: "user-requester",
+        });
       }).pipe(
         Effect.provide(
           installerWith({
-            run: (projectId) =>
+            run: (projectId, ownerUserId) =>
               Effect.sync(() => {
-                ran.push(projectId);
+                ran.push(`${projectId}:${ownerUserId}`);
                 return { worktreeId: installWorktree };
               }),
           }),
         ),
       ),
     );
-    expect(ran).toEqual([world.project.id]);
+    // The install session signs as the account that asked for it, never as nobody.
+    expect(ran).toEqual([`${world.project.id}:user-requester`]);
     expect(outcome).toEqual({ outcome: "promoted", platform: PLATFORM, captureId: installCapture });
     const cache = await Effect.runPromise(
       readDependencyCache(world.project.id, PLATFORM).pipe(Effect.provide(world.layer)),

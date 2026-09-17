@@ -47,7 +47,7 @@ export class ReferenceCloneError extends Schema.TaggedErrorClass<ReferenceCloneE
 ) {}
 
 export interface ReferenceClone {
-  /** Absolute path of the working clone: `<root>/_references/<name>`. */
+  /** Absolute path of the working clone: `<root>/_organizations/<org>/references/<id>`. */
   readonly path: string;
   readonly headSha: Sha;
 }

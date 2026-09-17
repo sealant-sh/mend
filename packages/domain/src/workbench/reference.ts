@@ -16,7 +16,10 @@ export class Reference extends Schema.Class<Reference>("Reference")({
   name: Schema.String,
   /** The organization that owns the reference (docs/adr/0003-organizations-and-tenancy.md). */
   organizationId: OrganizationId,
-  /** The account that added it; null for references added before organizations. */
+  /**
+   * The account that added it. References added before organizations are credited to the oldest
+   * account; null only on an instance that had no account yet.
+   */
   createdByUserId: Schema.NullOr(Schema.String),
   /** Where the clone comes from — a remote URL or a local path. */
   originUrl: Schema.String,

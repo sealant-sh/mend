@@ -724,6 +724,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
     .handle("installCommand", ({ params, payload }) =>
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).manageProject(params.id);
+        const caller = yield* CurrentUser;
         const projects = yield* ProjectsRepo;
         const jobs = yield* JobRunner;
         const project = yield* projects
@@ -734,7 +735,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         yield* jobs
           .enqueue({
             name: "dependency-install",
-            payload: { projectId: project.id },
+            payload: { projectId: project.id, requestedByUserId: caller.user.id },
             idempotencyKey: `dependency-install:${project.id}:${project.updatedAt.toISOString()}`,
           })
           .pipe(Effect.ignore);

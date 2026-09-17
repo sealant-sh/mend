@@ -1,8 +1,10 @@
+import { PushDevice, type PushDevicesRepo } from "@mend/db";
 import { SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
 import { SessionProcess } from "@mend/domain/workbench";
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { phaseOf } from "../src/session-notifier.ts";
+import { phaseOf, pushTargets } from "../src/session-notifier.ts";
 
 const agent = (patch: Partial<SessionProcess>) =>
   new SessionProcess({
@@ -52,5 +54,31 @@ describe("phaseOf", () => {
     expect(phaseOf("failed", null)).toBe("failed");
     expect(phaseOf("running", null)).toBeNull();
     expect(phaseOf("stopped", null)).toBeNull();
+  });
+});
+
+describe("pushTargets", () => {
+  const registered = [
+    new PushDevice({ token: "alice-phone", platform: "ios", userId: "alice" }),
+    new PushDevice({ token: "carol-phone", platform: "ios", userId: "carol" }),
+  ];
+  const asked: Array<ReadonlyArray<string>> = [];
+  const devices: PushDevicesRepo["Service"] = {
+    register: () => Effect.die("unused"),
+    listForUsers: (userIds) =>
+      Effect.sync(() => {
+        asked.push(userIds);
+        return registered.filter((device) => userIds.includes(device.userId));
+      }),
+    remove: () => Effect.void,
+    removeOwned: () => Effect.void,
+  };
+
+  it("rings the owner's phones only, and nobody's for a session with no owner", async () => {
+    const owned = await Effect.runPromise(pushTargets(devices, { ownerUserId: "alice" }));
+    expect(owned.map((device) => device.token)).toEqual(["alice-phone"]);
+    const unowned = await Effect.runPromise(pushTargets(devices, { ownerUserId: null }));
+    expect(unowned).toEqual([]);
+    expect(asked).toEqual([["alice"]]);
   });
 });

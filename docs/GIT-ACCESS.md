@@ -95,7 +95,9 @@ overlay.
 Since organizations (`docs/adr/0003-organizations-and-tenancy.md`), every signer belongs to one
 account. `mend keys share` serves the bridge of the account it signed in as, at its own socket under
 `_bridge/`; a session signs with its owner's Mend key or its owner's bridge, and never falls back to
-another account's. Reference repositories belong to an organization and are fetched with the git
+another account's. Two exceptions remain until the hot pool is partitioned per owner: a session
+created before organizations (no owner) and a hot workspace warmed for the pool both use the first
+account's signer. Reference repositories belong to an organization and are fetched with the git
 access of the owner who adds or refreshes them, never the host's ambient identity.
 
 Calls to the GitHub API (repository discovery, pull request lists) have no per-account credential

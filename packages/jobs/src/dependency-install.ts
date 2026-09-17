@@ -20,6 +20,12 @@ export class DependencyInstallJob extends Schema.Class<DependencyInstallJob>(
   "DependencyInstallJob",
 )({
   projectId: ProjectId,
+  /**
+   * Whose signer and credentials the install session uses: the account that changed the install
+   * command. Absent on jobs queued before accounts carried their own signer; the project's
+   * creator stands in.
+   */
+  requestedByUserId: Schema.optionalKey(Schema.NullOr(Schema.String)),
 }) {}
 
 export class InstallRunError extends Schema.TaggedErrorClass<InstallRunError>()("InstallRunError", {
@@ -36,6 +42,7 @@ export class InstallRunner extends Context.Service<
   {
     readonly run: (
       projectId: ProjectId,
+      ownerUserId: string | null,
     ) => Effect.Effect<{ readonly worktreeId: WorktreeId }, InstallRunError>;
   }
 >()("@mend/jobs/InstallRunner") {}
@@ -73,7 +80,8 @@ export const DependencyInstallerLive: Layer.Layer<
         .byId(job.projectId)
         .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
       if (project === null) return { outcome: "skipped", reason: "the project is gone" } as const;
-      const ran = yield* runner.run(job.projectId).pipe(Effect.option);
+      const ownerUserId = job.requestedByUserId ?? project.createdByUserId;
+      const ran = yield* runner.run(job.projectId, ownerUserId).pipe(Effect.option);
       if (ran._tag === "None") {
         return { outcome: "skipped", reason: "the install session did not run" } as const;
       }
@@ -137,7 +145,10 @@ export const InstallRunnerEngineLive: Layer.Layer<
         .byId(sessionId)
         .pipe(Effect.map((session) => session.settledAt !== null))
         .pipe(Effect.catch(() => Effect.succeed(true)));
-    const run = Effect.fn("InstallRunner.run")(function* (projectId: ProjectId) {
+    const run = Effect.fn("InstallRunner.run")(function* (
+      projectId: ProjectId,
+      ownerUserId: string | null,
+    ) {
       const failure = (message: string) => new InstallRunError({ projectId, message });
       const session = yield* engine
         .provision({
@@ -146,7 +157,7 @@ export const InstallRunnerEngineLive: Layer.Layer<
           label: INSTALL_SESSION_LABEL,
           name: null,
           base: null,
-          ownerUserId: null,
+          ownerUserId,
         })
         .pipe(Effect.mapError((error) => failure(`provision: ${error._tag}`)));
       yield* engine

@@ -292,6 +292,8 @@ export const AgentBridgeLive: Layer.Layer<AgentBridge, never, MendKeysConfig> = 
   Effect.gen(function* () {
     const config = yield* MendKeysConfig;
     const bridgesRoot = path.join(config.root, "_bridge");
+    // The one shared socket from before per-account bridges; nothing serves it any more.
+    yield* Effect.sync(() => fs.rmSync(path.join(bridgesRoot, "agent.sock"), { force: true }));
     const bridges = new Map<string, ReturnType<typeof makeUserBridge>>();
 
     const socketPath = (userId: string): string => path.join(bridgesRoot, bridgeSocketName(userId));

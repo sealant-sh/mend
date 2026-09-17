@@ -163,6 +163,8 @@ const availabilityNote = (answer: ProjectPullRequestsDto, project: ProjectDto): 
       return "gh was not found on this machine — install the GitHub CLI and sign in to read pull requests";
     case "gh-signed-out":
       return "gh is signed out — run gh auth login on this machine";
+    case "no-identity":
+      return answer.detail ?? "your account has no GitHub identity on this machine yet";
     case "rate-limited":
       return "GitHub rate-limited gh — the list resumes when the window resets";
     case "error":
