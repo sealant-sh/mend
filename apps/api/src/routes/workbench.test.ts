@@ -25,7 +25,7 @@ import {
 import { JobRunner } from "@mend/jobs";
 import { SealantClient } from "@mend/sealant";
 import { SessionEngine, WorktreeReads } from "@mend/sessions";
-import { AgentBridge, MendKeys, Store } from "@mend/store";
+import { AgentBridge, DeploymentConfig, MendKeys, Store } from "@mend/store";
 import { Effect, Layer, ManagedRuntime, Option, Schema } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
@@ -33,6 +33,7 @@ import { describe, expect, it } from "vitest";
 
 import { ProjectAccess, ProjectAccessLive } from "../access.ts";
 import { GithubIdentity } from "../github-identity.ts";
+import { TenancyConfig } from "../tenancy.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
 import { Gh } from "./github.ts";
 import { ProjectsGroupLive } from "./workbench.ts";
@@ -225,7 +226,9 @@ type ProjectRouteServices =
   | OrganizationsRepo
   | InstanceRolesRepo
   | ProjectAccess
-  | GithubIdentity;
+  | GithubIdentity
+  | DeploymentConfig
+  | TenancyConfig;
 
 type UnusedProjectRouteServices = Exclude<
   ProjectRouteServices,
@@ -250,8 +253,14 @@ const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.
   Layer.mock(JobRunner, {}),
   Layer.mock(WorktreeReads, {}),
   Layer.mock(Gh, {}),
-  Layer.mock(InstanceRolesRepo, {}),
+  Layer.mock(InstanceRolesRepo, { isOperator: () => Effect.succeed(false) }),
   Layer.mock(GithubIdentity, {}),
+  Layer.succeed(DeploymentConfig, {
+    mode: "local",
+    sessionEndpoint: undefined,
+    sessionStore: "captured",
+  }),
+  Layer.succeed(TenancyConfig, { mode: "single" }),
   Layer.mock(OrganizationsRepo, {
     membershipOf: () =>
       Effect.succeed({

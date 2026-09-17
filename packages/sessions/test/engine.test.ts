@@ -19,6 +19,7 @@ import {
   ProjectMountsRepo,
   ProjectLinksRepo,
   OrganizationsRepo,
+  FoldersRepo,
   ProjectLinkNotFoundError,
   ProjectSecretsRepo,
   ProjectServiceRecipesRepo,
@@ -1081,6 +1082,9 @@ const organizationsEmptyLayer = Layer.mock(OrganizationsRepo, {
   membershipOf: () => Effect.succeed(null),
 });
 
+/** No organization folders selected in these worlds. */
+const foldersEmptyLayer = Layer.mock(FoldersRepo, { listForProject: () => Effect.succeed([]) });
+
 const projectLinksEmptyLayer = Layer.succeed(ProjectLinksRepo, {
   create: () => Effect.die("not in test"),
   byId: (id) => Effect.fail(new ProjectLinkNotFoundError({ linkId: id })),
@@ -1820,6 +1824,7 @@ const withEngine = <A, E>(
         projectMountsEmptyLayer,
         projectLinksEmptyLayer,
         organizationsEmptyLayer,
+        foldersEmptyLayer,
         projectRecipesEmptyLayer,
         options.hotWorkspacesLayer ?? hotWorkspacesEmptyLayer,
       ),
@@ -4541,6 +4546,7 @@ describe("SessionEngine", () => {
           projectMountsEmptyLayer,
           projectLinksEmptyLayer,
           organizationsEmptyLayer,
+          foldersEmptyLayer,
           projectRecipesEmptyLayer,
           hotWorkspacesEmptyLayer,
         ),

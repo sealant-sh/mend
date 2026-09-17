@@ -535,14 +535,17 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
               ),
             });
           }),
-          capabilities:
-            viewer === null
-              ? new ProjectCapabilities({ manage: false, changeVisibility: false, remove: false })
-              : new ProjectCapabilities({
-                  manage: canManageProject(project, viewer),
-                  changeVisibility: canChangeVisibility(project, viewer),
-                  remove: canRemoveProject(project, viewer),
-                }),
+          capabilities: new ProjectCapabilities({
+            manage: viewer !== null && canManageProject(project, viewer),
+            changeVisibility: viewer !== null && canChangeVisibility(project, viewer),
+            remove: viewer !== null && canRemoveProject(project, viewer),
+            hostMounts:
+              viewer !== null &&
+              canManageProject(project, viewer) &&
+              (yield* TenancyConfig).mode === "single" &&
+              (yield* (yield* ProjectAccess).isOperator(viewer.userId)),
+          }),
+          mountDelivery: (yield* DeploymentConfig).sessionStore === "captured" ? "none" : "bind",
         });
       }),
     )

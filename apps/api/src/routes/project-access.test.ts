@@ -9,6 +9,8 @@ import {
   CAROL_SESSION_IN_SHARED_A,
   CAROL_USER_SKILL,
   CAROL_WORKTREE_IN_SHARED_A,
+  FOLDER_A,
+  FOLDER_B,
   REFERENCE_A,
   REFERENCE_B,
   ids,
@@ -53,6 +55,8 @@ type Rule =
   | "operator"
   /** Owners of an organization. */
   | "owner"
+  /** Members of the organization the resource belongs to. */
+  | "member"
   /** Owners of the organization the resource belongs to (an owner elsewhere is refused). */
   | "other-owner";
 
@@ -109,6 +113,7 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "sessions.listActive",
   "sessions.listServices",
   "references.list",
+  "folders.list",
   "skills.detail",
   "skills.create",
   "skills.update",
@@ -235,6 +240,30 @@ const CASES: ReadonlyArray<AccessCase> = [
   project("project-manage", "PUT", "/references", { referenceIds: [] })(
     "references.selectForProject",
   ),
+
+  // ── Folders: members read, owners change, managers select ──
+  fixed("owner", "POST", "/api/organization/folders", "folders", { name: "notes" })(
+    "folders.create",
+  ),
+  fixed(
+    "other-owner",
+    "DELETE",
+    `/api/organization/folders/${FOLDER_A}`,
+    FOLDER_A,
+  )("folders.remove"),
+  fixed("member", "GET", `/api/organization/folders/${FOLDER_A}/files`, FOLDER_A)("folders.files"),
+  fixed("other-owner", "POST", `/api/organization/folders/${FOLDER_A}/files`, FOLDER_A, {
+    files: [],
+    merge: true,
+  })("folders.upload"),
+  fixed(
+    "other-owner",
+    "DELETE",
+    `/api/organization/folders/${FOLDER_A}/files?path=a.md`,
+    FOLDER_A,
+  )("folders.deleteFile"),
+  project("project-read", "GET", "/folders")("folders.forProject"),
+  project("project-manage", "PUT", "/folders", { selections: [] })("folders.selectForProject"),
 
   // ── Projects ──
   project("project-read", "GET", "")("projects.detail"),
@@ -506,6 +535,12 @@ const MATRIX: Readonly<Record<Rule, ReadonlyArray<readonly [HarnessUser, Target,
     ["dave", "shared-a", "refused"],
     ["alice", "shared-a", "admitted"],
   ],
+  member: [
+    ["bob", "shared-b", "refused"],
+    ["dave", "shared-a", "refused"],
+    ["carol", "shared-a", "admitted"],
+    ["alice", "shared-a", "admitted"],
+  ],
   "other-owner": [
     ["bob", "shared-b", "refused"],
     ["carol", "shared-a", "refused"],
@@ -627,6 +662,22 @@ describe("references belong to their organization", () => {
     expect({ status: response.status, id: idOf(response.body), calls: api.world.calls }).toEqual({
       status: 404,
       id: REFERENCE_B,
+      calls: [],
+    });
+  });
+});
+
+describe("folders belong to their organization", () => {
+  it("a project selects only its own organization's folders, before any write", async () => {
+    const response = await send("alice", {
+      method: "PUT",
+      path: `/api/projects/${ids("shared-a").project}/folders`,
+      id: FOLDER_B,
+      body: { selections: [{ folderId: FOLDER_B, name: "docs", readOnly: true }] },
+    });
+    expect({ status: response.status, id: idOf(response.body), calls: api.world.calls }).toEqual({
+      status: 404,
+      id: FOLDER_B,
       calls: [],
     });
   });

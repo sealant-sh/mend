@@ -7,6 +7,17 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-17 · 0.33.0 · Read-only extra sources for capture-mode workspaces
+
+- **Needed:** organization folders and reference repositories (docs/adr/0003) mounted read-only
+  beside the worktree in every workspace, as they are on a co-located install.
+- **Today:** a capture-source workspace mounts nothing from the host: the executor materialises the
+  worktree's head capture on its own disk, so folders, references and linked projects stay on the
+  Mend machine. Mend reports this as `mountDelivery: "none"` instead of silently dropping them.
+- **Suggested:** let a capture-source create request carry extra read-only sources, shipped as packs
+  at launch and refreshed by content hash, the way the dependency cache already travels. A host path
+  is meaningless on a MicroVM; only content that travels can reach it.
+
 ## 2026-09-16 · 0.32.0 · Docker service missing from AWS MicroVM workspaces
 
 **Shipped in Sealant 0.33.0 and enabled on the private AWS deployment with Mend 0.28.0.** Mend sends

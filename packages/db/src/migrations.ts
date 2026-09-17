@@ -1707,6 +1707,36 @@ const perAccountResourcesMigration = Effect.gen(function* () {
       ADD CONSTRAINT reference_repos_organization_name_key UNIQUE (organization_id, name)`;
 });
 
+/**
+ * docs/adr/0003-organizations-and-tenancy.md: folders, the Mend-managed directories that replace
+ * host mounts. A folder in use by a project cannot be deleted (RESTRICT); removing a project drops
+ * its selections.
+ */
+const foldersMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE folders (
+      id text PRIMARY KEY,
+      organization_id text NOT NULL REFERENCES organizations (id) ON DELETE RESTRICT,
+      name text NOT NULL,
+      path text NOT NULL UNIQUE,
+      created_by_user_id text REFERENCES "user" (id) ON DELETE RESTRICT,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT folders_organization_name_key UNIQUE (organization_id, name)
+    )`;
+  yield* sql`
+    CREATE TABLE project_folders (
+      project_id text NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+      folder_id text NOT NULL REFERENCES folders (id) ON DELETE RESTRICT,
+      name text NOT NULL,
+      read_only boolean NOT NULL DEFAULT true,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (project_id, folder_id),
+      CONSTRAINT project_folders_project_name_key UNIQUE (project_id, name)
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1765,4 +1795,5 @@ export const migrations = {
   "0054_project_install_command": projectInstallCommandMigration,
   "0055_organizations": organizationsMigration,
   "0056_per_account_resources": perAccountResourcesMigration,
+  "0057_folders": foldersMigration,
 };
