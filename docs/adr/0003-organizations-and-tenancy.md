@@ -49,7 +49,10 @@ still missing. Required:
 2. Per-user SSH-agent signer, push devices, notifications and GitHub identity (MEND-02, MEND-03,
    MEND-09).
 3. Mend-managed folders in place of host paths for tenants (MEND-07, B3).
-4. Local Git sources and private or loopback destinations refused for tenants (MEND-06, MEND-07).
+4. Local Git sources and private or loopback destinations refused for tenants (MEND-06, MEND-07):
+   `MEND_SOURCE_POLICY=tenant` checks every clone and fetch Mend itself runs, and a workspace's git
+   transport signs only against its project's own remote. Resolved addresses must also be pinned for
+   the git that dials them, so a name cannot answer differently after the check.
 5. Upload signatures bound to exact content length, with stored-size verification (MEND-04).
 6. Raw service ports bound to loopback only.
 

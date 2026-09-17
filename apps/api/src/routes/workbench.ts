@@ -169,6 +169,7 @@ import {
   saveResolvedWorkspaceEnvironment,
 } from "../services/workspace-environment.ts";
 import { SessionSteering } from "../session-steering.ts";
+import { SourcePolicy } from "../source-policy.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { classifyGhError, Gh, parseGithubRepo } from "./github.ts";
 import { digestReviewPatch, lineAnchorExists, parseReviewDiff } from "./review-diff.ts";
@@ -244,6 +245,19 @@ const reviewDiffViews = (patch: string, facts: ReadonlyArray<DiffFileFact>) =>
   );
 
 /** Live session states — removal refuses these; project removal stops them. */
+/**
+ * Refuse a git remote Mend may not reach for this caller (docs/adr/0003, "Multi mode gate"), before
+ * any clone or fetch. The message names the rule, never the addresses a host resolved to.
+ */
+const reachableSource = <E>(source: string, toError: (message: string) => E) =>
+  Effect.gen(function* () {
+    const caller = yield* CurrentUser;
+    const isOperator = yield* (yield* ProjectAccess).isOperator(caller.user.id);
+    yield* (yield* SourcePolicy)
+      .check(source, { isOperator })
+      .pipe(Effect.mapError((refused) => toError(refused.message)));
+  });
+
 export const LIVE_STATES: ReadonlySet<SessionStatus> = new Set([
   "starting",
   "running",
@@ -445,6 +459,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         if ((yield* projects.byName(organizationId, payload.name)) !== null) {
           return yield* nameTaken;
         }
+        yield* reachableSource(payload.source, (message) => new StoreFailure({ message }));
         // The user's git access default decides a new project's mode unless the request says.
         const gitAccess = yield* UserGitAccessRepo;
         const mode = payload.gitAuthMode ?? (yield* gitAccess.mode(caller.user.id)) ?? "mend-key";
@@ -780,6 +795,10 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         const store = yield* Store;
         const project = yield* (yield* ProjectAccess).project(params.id);
         const caller = yield* CurrentUser;
+        // Checked on use too: the policy may have tightened, or the name moved, since adoption.
+        if (project.originUrl !== null) {
+          yield* reachableSource(project.originUrl, (message) => new StoreFailure({ message }));
+        }
         const remoteEnv = yield* remoteEnvFor(project.gitAuthMode, caller.user.id);
         yield* withSignerContext(
           project.gitAuthMode,
@@ -964,6 +983,12 @@ export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (hand
       Effect.gen(function* () {
         const caller = yield* CurrentUser;
         const userDotfiles = yield* UserDotfilesRepo;
+        if (payload.repository !== null) {
+          yield* reachableSource(
+            payload.repository.url,
+            (message) => new SettingsFailure({ message }),
+          );
+        }
         yield* userDotfiles.setRepository(caller.user.id, payload.repository);
         yield* rewarmAllHotSessions;
         return yield* dotfilesView(caller.user.id);
@@ -1910,6 +1935,7 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
             message: `"${payload.name}" is not a usable reference name (lowercase letters, digits, ".", "_", "-").`,
           });
         }
+        yield* reachableSource(payload.source, (message) => new StoreFailure({ message }));
         if ((yield* references.byName(viewer.organizationId, payload.name)) !== null) {
           return yield* new StoreFailure({
             message: `A reference named "${payload.name}" already exists.`,
@@ -1974,6 +2000,7 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
         const reference = yield* ownedReference(params.id);
         const references = yield* ReferencesRepo;
         const store = yield* Store;
+        yield* reachableSource(reference.originUrl, (message) => new StoreFailure({ message }));
         const { userId, mode } = yield* callerGitMode;
         const remoteEnv = yield* remoteEnvFor(mode, userId);
         const refreshed = yield* withSignerContext(

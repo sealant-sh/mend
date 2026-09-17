@@ -90,6 +90,20 @@ agent rewrites a ref, the user later publishes it host-side. Review-before-landi
 today. Candidate fix, own timeline: read-only common dir + per-session writable admin/objects
 overlay.
 
+## Which remotes Mend's git reaches
+
+Mend clones and fetches on its own behalf for adoption, reference repositories, dotfiles and project
+refreshes. `MEND_SOURCE_POLICY` decides where those may go. `operator` (the default) allows private
+networks, refuses the cloud metadata service, and reaches this machine only for the operator.
+`tenant` also refuses private, reserved and local addresses and `git://`, unless
+`MEND_SOURCE_ALLOWED_HOSTS` names the host or its range; loopback and the metadata service can never
+be allowed. A refusal names the rule, never the addresses a host resolved to.
+
+A workspace's git transport signs with its owner's key, so it only reaches the project's own remote:
+the origin's host, and its port for ssh. Pushing a mirror or a fork elsewhere from inside a
+workspace runs without Mend's signer. An operator who alone uses the machine may set
+`MEND_GIT_TRANSPORT_BIND_ORIGIN=false`; `multi` tenancy refuses to start with it.
+
 ## Accounts and organizations
 
 Since organizations (`docs/adr/0003-organizations-and-tenancy.md`), every signer belongs to one

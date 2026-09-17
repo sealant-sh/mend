@@ -37,7 +37,14 @@ describe("MEND_TENANCY (docs/adr/0003)", () => {
     const result = await build({ MEND_TENANCY: "multi" }, 1);
     expect(Result.isFailure(result)).toBe(true);
     expect(String(result)).toContain("MEND_TENANCY=multi is refused");
-    expect(tenancyRefusal("multi", 1)).toContain("egress and local-source policy");
+    expect(tenancyRefusal("multi", 1)).toContain("pinned against DNS rebinding");
+    expect(tenancyRefusal("multi", 1)).toContain("set MEND_SOURCE_POLICY=tenant");
+    expect(tenancyRefusal("multi", 1, { sourcePolicy: "tenant" })).not.toContain(
+      "MEND_SOURCE_POLICY",
+    );
+    expect(tenancyRefusal("multi", 1, { transportBoundToOrigin: false })).toContain(
+      "unset MEND_GIT_TRANSPORT_BIND_ORIGIN",
+    );
     expect(tenancyRefusal("multi", 1)).not.toContain("raw service listeners");
   });
 
@@ -50,7 +57,7 @@ describe("MEND_TENANCY (docs/adr/0003)", () => {
   it("names raw service listeners off loopback among what multi is missing", () => {
     expect(exposedServiceHosts("127.0.0.1, ::1,localhost")).toEqual([]);
     expect(exposedServiceHosts("127.0.0.1,0.0.0.0")).toEqual(["0.0.0.0"]);
-    expect(tenancyRefusal("multi", 1, "0.0.0.0")).toContain(
+    expect(tenancyRefusal("multi", 1, { serviceHosts: "0.0.0.0" })).toContain(
       "raw service listeners on 0.0.0.0 (unset MEND_SERVICE_HOSTS)",
     );
   });

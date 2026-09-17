@@ -63,6 +63,8 @@ import type {
   Worktree,
 } from "@mend/domain/workbench";
 import {
+  gitRemoteLocation,
+  isSameGitRemote,
   type ProjectLink,
   AGENT_PROCESS_KINDS,
   type AgentApprovalDecision,
@@ -117,7 +119,7 @@ import type {
   WorkspaceCredentialsOptions,
 } from "@sealant/sdk";
 import { claudeCode, codex, opencode } from "@sealant/sdk";
-import { Duration, Effect, Layer, Option, Result, Schedule, Schema, Stream } from "effect";
+import { Config, Duration, Effect, Layer, Option, Result, Schedule, Schema, Stream } from "effect";
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
@@ -1528,6 +1530,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const projectLinks = yield* ProjectLinksRepo;
       const organizations = yield* OrganizationsRepo;
       const foldersRepo = yield* FoldersRepo;
+      // A workspace's git transport signs with its owner's key, so by default it only reaches the
+      // project's own remote (docs/adr/0003, "Multi mode gate"). An operator may turn that off on
+      // a machine they alone use, for mirrors and forks.
+      const bindTransportToOrigin = yield* Config.boolean("MEND_GIT_TRANSPORT_BIND_ORIGIN").pipe(
+        Config.withDefault(true),
+        Effect.orElseSucceed(() => true),
+      );
       const projectEnvironment = yield* ProjectEnvironmentRepo;
       const projectSecrets = yield* ProjectSecretsRepo;
       const projectClusterBindings = yield* ProjectClusterBindingsRepo;
@@ -6255,6 +6264,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               if (host.startsWith("-")) {
                 return yield* Effect.fail(
                   new Error(`refusing ssh target "${host}" — it reads as an option`),
+                );
+              }
+              const origin =
+                project.originUrl === null ? null : gitRemoteLocation(project.originUrl);
+              if (
+                bindTransportToOrigin &&
+                origin !== null &&
+                !isSameGitRemote(origin, { host, port })
+              ) {
+                return yield* Effect.fail(
+                  new Error(
+                    `this session's Git access is bound to ${origin.host}; pushes and fetches to ${host} run without Mend's signer`,
+                  ),
                 );
               }
               const mode = project.gitAuthMode;
