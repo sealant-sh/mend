@@ -28,18 +28,21 @@ beforeEach(() => {
 describe("legacy sessions without an owner", () => {
   const turns = `/api/sessions/${NULL_OWNER_SESSION}/turns`;
 
-  it("the first account steers them", async () => {
-    const response = await api.request("alice", "POST", turns, { input: "Continue" });
+  it.each(["alice", "carol"] as const)(
+    "%s is refused before any effect: no account stands in for a missing owner",
+    async (user) => {
+      const response = await api.request(user, "POST", turns, { input: "Continue" });
+      expect({ status: response.status, calls: api.world.calls }).toEqual({
+        status: 403,
+        calls: [],
+      });
+    },
+  );
+
+  it("an organization owner can still stop them", async () => {
+    const response = await api.request("alice", "POST", `/api/sessions/${NULL_OWNER_SESSION}/stop`);
     expect(response.status).not.toBe(403);
     expect(response.status).not.toBe(404);
-  });
-
-  it("anyone else who can see them is refused before any effect", async () => {
-    const response = await api.request("carol", "POST", turns, { input: "Continue" });
-    expect({ status: response.status, calls: api.world.calls }).toEqual({
-      status: 403,
-      calls: [],
-    });
   });
 });
 

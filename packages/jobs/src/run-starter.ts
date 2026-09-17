@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import { ChangesRepo, IssuesRepo, notifyEvent, RunsRepo } from "@mend/db";
+import { ChangesRepo, InstanceRolesRepo, IssuesRepo, notifyEvent, RunsRepo } from "@mend/db";
 import {
   Sha,
   SealantRunId,
@@ -9,7 +9,7 @@ import {
   type IssueId,
   type Run,
 } from "@mend/domain";
-import { asFirstSealantUser, SealantClient } from "@mend/sealant";
+import { asSealantUser, SealantClient } from "@mend/sealant";
 import type { Run as SdkRun } from "@sealant/sdk";
 import { opencode } from "@sealant/sdk";
 import { Effect, Layer, Option, Stream } from "effect";
@@ -93,10 +93,21 @@ ${instruction}`;
  * are forked into the layer's scope so they live as long as the process —
  * crash/restart re-attaches from the stored sequence instead of re-running.
  */
+/**
+ * The retired queue's runs belong to the operator (docs/adr/0003-organizations-and-tenancy.md):
+ * the longest-standing one, resolved per call. With no operator the platform refuses the call.
+ */
+const asOperator = <A, E, R>(roles: InstanceRolesRepo["Service"], effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const [operator] = yield* roles.operators();
+    return yield* effect.pipe(asSealantUser(operator ?? null));
+  });
+
 export const runStarterLayer = Layer.effect(
   RunStarter,
   Effect.gen(function* () {
     const sealant = yield* SealantClient;
+    const roles = yield* InstanceRolesRepo;
     const runs = yield* RunsRepo;
     const issues = yield* IssuesRepo;
     const changes = yield* ChangesRepo;
@@ -469,11 +480,14 @@ export const runStarterLayer = Layer.effect(
       return run.id;
     });
 
-    // The retired queue's runs belong to the operator (docs/SEALANT-IDENTITY.md).
     return {
-      start: (issue: Issue) => asFirstSealantUser(start(issue)),
+      start: (issue: Issue) => asOperator(roles, start(issue)),
       startOnChange: (change: ChangeId, instruction: string, kind: "follow-up" | "verification") =>
-        asFirstSealantUser(startOnChange(change, instruction, kind)),
+        asOperator(roles, startOnChange(change, instruction, kind)),
     };
-  }).pipe(asFirstSealantUser),
+  }).pipe((build) =>
+    Effect.gen(function* () {
+      return yield* asOperator(yield* InstanceRolesRepo, build);
+    }),
+  ),
 );

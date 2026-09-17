@@ -435,7 +435,8 @@ export const hotWorkspaces = pgTable(
     worktreeId: text()
       .$type<WorktreeId>()
       .references(() => worktrees.id, { onDelete: "set null" }),
-    ownerUserId: text(),
+    /** The account the workspace runs as; only that account's sessions claim it. */
+    ownerUserId: text().notNull(),
     status: text().$type<HotWorkspaceStatus>().notNull().default("warming"),
     error: text(),
     fingerprint: text().notNull(),
@@ -880,6 +881,11 @@ export const agentSessions = pgTable(
     index("agent_sessions_project_idx").on(table.projectId, table.createdAt),
     index("agent_sessions_status_idx").on(table.status),
     index("agent_sessions_worktree_idx").on(table.worktreeId, table.createdAt),
+    index("agent_sessions_project_owner_idx").on(
+      table.projectId,
+      table.ownerUserId,
+      table.createdAt.desc(),
+    ),
   ],
 );
 

@@ -1,12 +1,14 @@
 import { PgClient } from "@effect/sql-pg";
-import { FolderId, OrganizationId, ProjectId } from "@mend/domain";
+import { FolderId, OrganizationId, ProjectId, SessionId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
+import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
 import { FoldersRepo, FoldersRepoLive } from "../src/repos/folders.ts";
+import { HotWorkspacesRepo, HotWorkspacesRepoLive } from "../src/repos/hot-workspaces.ts";
 import { InstanceRolesRepo, InstanceRolesRepoLive } from "../src/repos/instance-roles.ts";
 import { OrganizationsRepo, OrganizationsRepoLive } from "../src/repos/organizations.ts";
 import { ProjectsRepo, ProjectsRepoLive } from "../src/repos/projects.ts";
@@ -38,6 +40,8 @@ const reposLayer = Layer.mergeAll(
   ProjectsRepoLive,
   PushDevicesRepoLive,
   FoldersRepoLive,
+  SessionsRepoLive,
+  HotWorkspacesRepoLive,
 ).pipe(Layer.provideMerge(scratchDatabaseLayer));
 
 type Services =
@@ -46,6 +50,8 @@ type Services =
   | ProjectsRepo
   | PushDevicesRepo
   | FoldersRepo
+  | SessionsRepo
+  | HotWorkspacesRepo
   | SqlClient.SqlClient
   | PgClient.PgClient;
 
@@ -492,6 +498,62 @@ describe.skipIf(!reachable)("organizations", () => {
       gone: "FolderNotFoundError",
       listed: 0,
       selections: 0,
+    });
+  });
+
+  it("hot pools: claims match the owner, and recent owners exclude Mend's own sessions", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const sessions = yield* SessionsRepo;
+        const hot = yield* HotWorkspacesRepo;
+        const project = ProjectId.make("p-acme-api");
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-hot', ${project}, 'wt-hot', 'wt-hot', 'mend/wt/hot', ${"a".repeat(40)})`;
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, status, owner_user_id, label, created_at)
+          VALUES
+            ('s-old', ${project}, 'wt-hot', 'claude', 'w1', 'b1', 'abc', 'completed', 'bob', NULL, now() - interval '30 days'),
+            ('s-carol', ${project}, 'wt-hot', 'claude', 'w2', 'b2', 'abc', 'completed', 'carol', NULL, now() - interval '2 days'),
+            ('s-alice', ${project}, 'wt-hot', 'codex', 'w3', 'b3', 'abc', 'completed', 'alice', NULL, now() - interval '1 day'),
+            ('s-alice-2', ${project}, 'wt-hot', 'codex', 'w4', 'b4', 'abc', 'completed', 'alice', NULL, now() - interval '3 days'),
+            ('s-install', ${project}, 'wt-hot', 'shell', 'w5', 'b5', 'abc', 'completed', 'dave', 'install · mend', now())`;
+        const owners = yield* sessions.recentOwnersForProject(
+          project,
+          new Date(Date.now() - 7 * 24 * 60 * 60 * 1000),
+          "install · mend",
+        );
+        for (const owner of ["alice", "carol"]) {
+          yield* hot.create({
+            id: SessionId.make(`hot-${owner}`),
+            projectId: project,
+            worktreeId: null,
+            ownerUserId: owner,
+            fingerprint: "fp",
+            worktree: null,
+            branch: null,
+            baseSha: null,
+          });
+          yield* sql`UPDATE hot_workspaces SET status = 'ready' WHERE id = ${`hot-${owner}`}`;
+        }
+        const bobClaim = yield* hot.claim(project, "fp", "bob");
+        const carolClaim = yield* hot.claim(project, "fp", "carol");
+        const carolAgain = yield* hot.claim(project, "fp", "carol");
+        return {
+          owners,
+          bob: bobClaim?.id ?? null,
+          carol: carolClaim?.id ?? null,
+          carolAgain: carolAgain?.id ?? null,
+        };
+      }),
+    );
+    expect(result).toEqual({
+      owners: ["alice", "carol"],
+      bob: null,
+      carol: "hot-carol",
+      carolAgain: null,
     });
   });
 });

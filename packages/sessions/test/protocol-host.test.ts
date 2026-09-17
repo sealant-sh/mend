@@ -148,6 +148,7 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
   listForWorktree: () => Effect.succeed([]),
   listActive: () => Effect.succeed([]),
   listUnsettled: () => Effect.succeed([]),
+  recentOwnersForProject: () => Effect.succeed([]),
   listRecentlySettled: () => Effect.succeed([]),
   setSealantIds: () => Effect.die("not in test"),
   recordWorkspaceTtlRenewal: () => Effect.void,

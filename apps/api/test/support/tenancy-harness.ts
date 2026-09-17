@@ -20,7 +20,6 @@ import {
   SessionsRepo,
   SkillNotFoundError,
   SkillsRepo,
-  UserDotfilesRepo,
   WorktreeChangesRepo,
   WorktreeNotFoundError,
   WorktreesRepo,
@@ -126,7 +125,7 @@ export const ids = (project: HarnessProject) => ({
 /** Carol's own session inside alice's shared project, alone in its own worktree. */
 export const CAROL_SESSION_IN_SHARED_A = SessionId.make("session-shared-a-carol");
 export const CAROL_WORKTREE_IN_SHARED_A = WorktreeId.make("worktree-shared-a-carol");
-/** A pre-organizations session with no owner in `shared-a`; it runs as the first account. */
+/** A pre-organizations session with no owner in `shared-a`; nobody steers it. */
 export const NULL_OWNER_SESSION = SessionId.make("session-shared-a-null-owner");
 /** An agent-protocol process and a UDP Service on alice's session in `shared-a`. */
 export const PROTOCOL_PROCESS = SessionProcessId.make("process-shared-a-protocol");
@@ -160,8 +159,6 @@ export const AUTHORIZATION_READS: ReadonlySet<string> = new Set([
   "services.byId",
   "conversation.byTurnId",
   "conversation.byRequestId",
-  // The owner a pre-organizations session runs as.
-  "userDotfiles.firstUserId",
   // A skill's scope decides whose access applies, so it is read first.
   "skills.byId",
   // A reference's organization decides whether an owner may manage or select it.
@@ -235,7 +232,6 @@ export interface TenancyWorld {
     | SessionProcessesRepo
     | ServicesRepo
     | AgentConversationRepo
-    | UserDotfilesRepo
     | SkillsRepo
     | ReferencesRepo
     | FoldersRepo
@@ -698,14 +694,6 @@ export const createTenancyWorld = async (): Promise<TenancyWorld> => {
       {
         byTurnId: (id) => Effect.succeed(turns.get(id) ?? null),
         byRequestId: (id) => Effect.succeed(requests.get(id) ?? null),
-      },
-      calls,
-    ),
-    recording(
-      UserDotfilesRepo,
-      "userDotfiles",
-      {
-        firstUserId: () => Effect.succeed("alice"),
       },
       calls,
     ),

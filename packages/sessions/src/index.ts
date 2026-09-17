@@ -17,3 +17,4 @@ export * from "./recipes.ts";
 export * from "./session-socket.ts";
 export * from "./session-channel.ts";
 export { SCRIPT_TRANSPORT_PRELUDE } from "./script-transport.ts";
+export * from "./run-eligibility.ts";

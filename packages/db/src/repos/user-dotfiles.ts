@@ -1,4 +1,3 @@
-import { PgClient } from "@effect/sql-pg";
 import { DotfilesRepository } from "@mend/domain";
 import { eq } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
@@ -21,25 +20,15 @@ export class UserDotfilesRepo extends Context.Service<
       userId: string,
       repository: DotfilesRepository | null,
     ) => Effect.Effect<DotfilesRepository | null>;
-    /**
-     * The instance's first account, by creation time — the owner fallback for sessions from
-     * before ownership was stamped (matching the static-token semantics in @mend/auth).
-     */
-    readonly firstUserId: () => Effect.Effect<string | null>;
   }
 >()("@mend/db/UserDotfilesRepo") {}
 
 const decodeRepository = Schema.decodeUnknownSync(DotfilesRepository);
 
-export const UserDotfilesRepoLive: Layer.Layer<
-  UserDotfilesRepo,
-  never,
-  MendDB | PgClient.PgClient
-> = Layer.effect(
+export const UserDotfilesRepoLive: Layer.Layer<UserDotfilesRepo, never, MendDB> = Layer.effect(
   UserDotfilesRepo,
   Effect.gen(function* () {
     const db = yield* MendDB;
-    const sql = yield* PgClient.PgClient;
 
     const repository = Effect.fn("UserDotfilesRepo.repository")(function* (userId: string) {
       const [row] = yield* db
@@ -67,13 +56,6 @@ export const UserDotfilesRepoLive: Layer.Layer<
       return value;
     });
 
-    const firstUserId = Effect.fn("UserDotfilesRepo.firstUserId")(function* () {
-      const rows = yield* sql`
-        SELECT id FROM "user" ORDER BY "createdAt" ASC LIMIT 1`.pipe(Effect.orDie);
-      const first = rows[0] as { readonly id: string } | undefined;
-      return first?.id ?? null;
-    });
-
-    return { repository, setRepository, firstUserId };
+    return { repository, setRepository };
   }),
 );

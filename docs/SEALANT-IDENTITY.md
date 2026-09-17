@@ -72,10 +72,12 @@ Sealant under the user's own Sealant id and never stores it.
 5. Surfaces: Settings → "Connected accounts" on web and desktop; `mend connect claude|codex|github`
    (reads the file the provider's CLI wrote at login, or `--from-stdin`) + `mend accounts`.
 6. Hot-pool skeletons are provisioned as their owner and claimed only by that owner's sessions — a
-   warmed workspace carries the owner's connected accounts. The pool still warms for the operator
-   only; per-user warming is a follow-up.
-7. Sessions without an owner (pre-migration rows) resolve to the first Mend user, as the dotfiles
-   path already does; new sessions always carry their creator.
+   warmed workspace carries the owner's connected accounts. Since organizations
+   (docs/adr/0003-organizations-and-tenancy.md) the pool warms for each account that ran a session
+   in the project in the last seven days and may still run there, up to four, and drains an owner's
+   skeletons once they lose access.
+7. There is no stand-in account. A session without an owner (a row from an instance that had no
+   account at upgrade) cannot launch or be steered; the retired queue's runs act as the operator.
 
 ## Consequences
 
@@ -90,5 +92,5 @@ Sealant under the user's own Sealant id and never stores it.
   `@sealant/sdk` / `@sealant/api-contracts` dist into `node_modules`; the catalog bump follows the
   release.
 - Open: revoking a Sealant user when a Mend user is deleted (archive connected accounts, expire
-  workspaces); per-user hot-pool warming; surfacing "launched without a <provider> account" on the
-  session status line — tracked, not in this change.
+  workspaces); surfacing "launched without a <provider> account" on the session status line —
+  tracked, not in this change.

@@ -445,6 +445,7 @@ const testLayer = (world: TestWorld) => {
     listForWorktree: () => Effect.die("not in test"),
     listActive: () => Effect.die("not in test"),
     listUnsettled: () => Effect.die("not in test"),
+    recentOwnersForProject: () => Effect.succeed([]),
     listRecentlySettled: () => Effect.die("not in test"),
     setSealantIds: () => Effect.die("not in test"),
     recordWorkspaceTtlRenewal: () => Effect.die("not in test"),

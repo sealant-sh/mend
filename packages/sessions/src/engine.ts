@@ -169,6 +169,12 @@ import {
   type ProtocolHostNotLiveError,
 } from "./protocol-host.ts";
 import { mergeRecipes, readServiceRecipes } from "./recipes.ts";
+import {
+  HOT_POOL_MAX_OWNERS,
+  HOT_POOL_RECENT_OWNER_WINDOW,
+  INSTALL_SESSION_LABEL,
+  mayRunIn,
+} from "./run-eligibility.ts";
 import { ServiceBindError, ServiceHost, validateServiceBindAddresses } from "./service-host.ts";
 import { SessionRepository, type SessionRepositoryError } from "./session-repository.ts";
 import {
@@ -1825,6 +1831,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
             return;
           }
+          // A session with no owner has nobody to read its run as; retrying would never succeed.
+          if (current.ownerUserId === null) {
+            return yield* failRun(
+              sessionId,
+              sealantRunId,
+              "this session has no owner to run as; start a new session",
+            );
+          }
           yield* Effect.gen(function* () {
             const sdkRun = yield* sealant.getRun(sealantRunId);
             yield* supervise(current, sessionRun, sdkRun);
@@ -2004,6 +2018,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
           if (claimed !== null) return claimed;
+          // Nothing of this owner's was ready. Their new session makes them a recent owner, so
+          // the pool starts warming for them now instead of at the next heartbeat.
+          const session = yield* provisionSessionIn(project, worktree, input);
+          yield* requestHotReconcile(project.id);
+          return session;
         }
         return yield* provisionSessionIn(project, worktree, input);
       });
@@ -3806,7 +3825,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           .listForProject(project.id)
           .pipe(Effect.orElseSucceed(() => []));
         if (links.length === 0) return [];
-        const owner = ownerUserId ?? (yield* userDotfilesRepo.firstUserId());
+        const owner = ownerUserId;
         const membership = owner === null ? null : yield* organizations.membershipOf(owner);
         const resolved: Array<{ readonly link: ProjectLink; readonly linked: Project }> = [];
         for (const link of links) {
@@ -4216,10 +4235,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 .pipe(Effect.ignore),
             ),
           );
-        // Dotfiles are the OWNER's: the account stamped at provision; sessions from before
-        // ownership existed fall back to the instance's first account (the static-token
-        // semantics).
-        const ownerUserId = session.ownerUserId ?? (yield* userDotfilesRepo.firstUserId());
+        // Everything runs as the OWNER: the account stamped at provision. A session with no owner
+        // has nobody to act as and never borrows another account (docs/adr/0003).
+        const ownerUserId = session.ownerUserId;
+        if (ownerUserId === null) {
+          return yield* settleOnFailure(
+            Effect.fail(
+              new SealantPlatformError({
+                code: "NO_PRINCIPAL",
+                status: null,
+                message: "this session has no owner to run as; start a new session",
+                cause: null,
+              }),
+            ),
+          );
+        }
         // A brand-new session may have claimed a hot workspace at provision — the
         // pre-provisioned skeleton whose id this session adopted. Adopt its live workspace and
         // skip the create entirely; a dead or half-stamped entry drains (keeping the worktree,
@@ -6449,7 +6479,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /** Provision one skeleton: worktree → row → socket → workspace → prewarm note → ready. */
       const provisionHotWorkspace = Effect.fn("SessionEngine.provisionHotWorkspace")(function* (
         project: Project,
-        ownerUserId: string | null,
+        ownerUserId: string,
         fingerprint: string,
       ) {
         const sessionId = SessionId.make(crypto.randomUUID());
@@ -6541,6 +6571,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
+      /**
+       * The accounts a project's pool warms for (docs/adr/0003): owners of its recent sessions,
+       * most recent first, who may still run in it. Nobody else's credentials warm a workspace.
+       */
+      const hotPoolOwners = Effect.fn("SessionEngine.hotPoolOwners")(function* (project: Project) {
+        const since = new Date(Date.now() - Duration.toMillis(HOT_POOL_RECENT_OWNER_WINDOW));
+        const recent = yield* sessions.recentOwnersForProject(
+          project.id,
+          since,
+          INSTALL_SESSION_LABEL,
+        );
+        const eligible: Array<string> = [];
+        for (const owner of recent) {
+          if (eligible.length === HOT_POOL_MAX_OWNERS) break;
+          if (yield* mayRunIn(organizations, project, owner)) eligible.push(owner);
+        }
+        return eligible;
+      });
+
       /** One reconcile pass; callers serialize through `requestHotReconcile`. */
       const reconcileHotPoolOnce = Effect.fn("SessionEngine.reconcileHotPoolOnce")(function* (
         projectId: ProjectId,
@@ -6553,17 +6602,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           for (const entry of entries) yield* drainHotWorkspace(entry);
           return;
         }
-        const ownerUserId = yield* userDotfilesRepo.firstUserId();
-        const inputs = yield* hotInputsFor(project, ownerUserId).pipe(
-          Effect.catch((error) =>
-            Effect.logWarning("session engine: hot pool inputs unreadable").pipe(
-              Effect.annotateLogs({ projectId, error: String(error) }),
-              Effect.as(null),
-            ),
-          ),
-        );
-        if (inputs === null) return;
-        const fingerprint = hotFingerprint(inputs);
         // Cluster bindings only resolve on a Kubernetes workspace runtime: warming here would
         // loop on the platform's create-time refusal. Skip with an observed line instead — a
         // subsequent cold start still refuses readably, naming the bindings.
@@ -6579,55 +6617,80 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ).pipe(Effect.annotateLogs({ projectId }));
         }
         const target = warmSkipped ? 0 : Math.max(0, project.hotSessions);
-        const survivors: Array<HotWorkspace> = [];
+        // A hot workspace runs as one account and only that account claims it (docs/adr/0003),
+        // so the pool is kept per owner: the recent owners who may still run here, each with the
+        // fingerprint the project resolves to for them.
+        const owners = target === 0 ? [] : yield* hotPoolOwners(project);
+        const fingerprints = new Map<string, string>();
+        const unreadable = new Set<string>();
+        for (const owner of owners) {
+          const inputs = yield* hotInputsFor(project, owner).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: hot pool inputs unreadable").pipe(
+                Effect.annotateLogs({ projectId, error: String(error) }),
+                Effect.as(null),
+              ),
+            ),
+          );
+          if (inputs === null) unreadable.add(owner);
+          else fingerprints.set(owner, hotFingerprint(inputs));
+        }
+        const survivors = new Map<string, Array<HotWorkspace>>();
         for (const entry of entries) {
           // Claimed entries belong to a launch in flight; the boot sweep reaps abandoned ones.
           if (entry.status === "claimed") continue;
+          // Unreadable inputs decide nothing: this owner's entries wait for the next pass.
+          if (unreadable.has(entry.ownerUserId)) continue;
+          const kept = survivors.get(entry.ownerUserId) ?? [];
           if (
             entry.status === "ready" &&
-            entry.fingerprint === fingerprint &&
-            survivors.length < target
+            entry.fingerprint === fingerprints.get(entry.ownerUserId) &&
+            kept.length < target
           ) {
-            survivors.push(entry);
+            kept.push(entry);
+            survivors.set(entry.ownerUserId, kept);
             continue;
           }
           // warming = a crashed provision (this pass is the only live one), failed = retry by
-          // rebuild, stale fingerprint or over-target = drain.
+          // rebuild, stale fingerprint, an owner the pool no longer serves, or over-target = drain.
           yield* drainHotWorkspace(entry);
         }
-        // Probe survivors and keep the platform reaper away; a dead one drains instead.
-        let count = 0;
-        for (const entry of survivors) {
-          const workspaceId = entry.sealantWorkspaceId;
-          const alive =
-            workspaceId === null
-              ? false
-              : yield* sealant.getWorkspace(workspaceId).pipe(
-                  Effect.flatMap((workspace) =>
-                    Effect.promise(() => workspace.status()).pipe(
-                      Effect.tap((status) =>
-                        workspaceIsLive(status)
-                          ? sealant
-                              .expireWorkspace(workspace.id, WORKSPACE_TTL_SECONDS)
-                              .pipe(Effect.ignore)
-                          : Effect.void,
+        for (const [owner, fingerprint] of fingerprints) {
+          // Probe survivors and keep the platform reaper away; a dead one drains instead.
+          let count = 0;
+          for (const entry of survivors.get(owner) ?? []) {
+            const workspaceId = entry.sealantWorkspaceId;
+            const alive =
+              workspaceId === null
+                ? false
+                : yield* sealant.getWorkspace(workspaceId).pipe(
+                    Effect.flatMap((workspace) =>
+                      Effect.promise(() => workspace.status()).pipe(
+                        Effect.tap((status) =>
+                          workspaceIsLive(status)
+                            ? sealant
+                                .expireWorkspace(workspace.id, WORKSPACE_TTL_SECONDS)
+                                .pipe(Effect.ignore)
+                            : Effect.void,
+                        ),
+                        Effect.map(workspaceIsLive),
                       ),
-                      Effect.map(workspaceIsLive),
                     ),
-                  ),
-                  Effect.catch(() => Effect.succeed(false)),
-                  Effect.catchDefect(() => Effect.succeed(false)),
-                );
-          if (alive) count += 1;
-          else yield* drainHotWorkspace(entry);
-        }
-        while (count < target) {
-          const provisioned = yield* provisionHotWorkspace(project, ownerUserId, fingerprint).pipe(
-            asSealantUser(ownerUserId),
-          );
-          // A failure leaves its row `failed` for the setup page; the next trigger retries.
-          if (!provisioned) break;
-          count += 1;
+                    Effect.catch(() => Effect.succeed(false)),
+                    Effect.catchDefect(() => Effect.succeed(false)),
+                    asSealantUser(owner),
+                  );
+            if (alive) count += 1;
+            else yield* drainHotWorkspace(entry);
+          }
+          while (count < target) {
+            const provisioned = yield* provisionHotWorkspace(project, owner, fingerprint).pipe(
+              asSealantUser(owner),
+            );
+            // A failure leaves its row `failed` for the setup page; the next trigger retries.
+            if (!provisioned) break;
+            count += 1;
+          }
         }
       });
 
@@ -6696,7 +6759,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return null;
           }
         }
-        const ownerUserId = input.ownerUserId ?? (yield* userDotfilesRepo.firstUserId());
+        // Only the owner's own standby serves the session, and only while they may run here.
+        const ownerUserId = input.ownerUserId;
+        if (ownerUserId === null) return null;
+        if (!(yield* mayRunIn(organizations, project, ownerUserId))) return null;
         const inputs = yield* hotInputsFor(project, ownerUserId);
         const entry = yield* hotWorkspaces.claim(project.id, hotFingerprint(inputs), ownerUserId);
         if (entry === null) return null;

@@ -892,3 +892,66 @@ describe.skipIf(!reachable)("0056 per-account resources", () => {
     expect(result.deviceWithoutAccount).toBe("refused");
   });
 });
+
+describe.skipIf(!reachable)("0058 hot pool owners", () => {
+  const HOT_DB = `${SCRATCH_DB}_hot`;
+  const hotLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${HOT_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withHotDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(hotLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${HOT_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${HOT_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("credits ownerless entries to the first account they ran as, and refuses new ones", async () => {
+    const result = await withHotDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0057_folders");
+        yield* sql`
+          INSERT INTO "user" ("id", "name", "email", "createdAt") VALUES
+            ('u-new', 'New', 'new@example.com', '2026-02-01T00:00:00Z'),
+            ('u-old', 'Old', 'old@example.com', '2026-01-01T00:00:00Z')`;
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        yield* sql`
+          INSERT INTO projects (id, name, origin_url, store_path, default_branch, organization_id)
+          VALUES ('proj-1', 'fixture', NULL, '/store/proj-1/repo.git', 'main', ${organization?.id ?? ""})`;
+        yield* sql`
+          INSERT INTO hot_workspaces (id, project_id, fingerprint, owner_user_id, status)
+          VALUES ('hot-legacy', 'proj-1', 'fp', NULL, 'ready'), ('hot-new', 'proj-1', 'fp', 'u-new', 'ready')`;
+        yield* migrations["0058_hot_pool_owners"];
+        const owners = yield* sql<{
+          readonly id: string;
+          readonly owner_user_id: string;
+        }>`SELECT id, owner_user_id FROM hot_workspaces ORDER BY id`;
+        const ownerless = yield* attempt(sql`
+          INSERT INTO hot_workspaces (id, project_id, fingerprint) VALUES ('hot-3', 'proj-1', 'fp')`);
+        return { owners, ownerless };
+      }),
+    );
+    expect(result).toEqual({
+      owners: [
+        { id: "hot-legacy", owner_user_id: "u-old" },
+        { id: "hot-new", owner_user_id: "u-new" },
+      ],
+      ownerless: "refused",
+    });
+  });
+});

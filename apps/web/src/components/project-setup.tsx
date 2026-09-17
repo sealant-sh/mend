@@ -267,8 +267,9 @@ export function HotSessionsSection({ project }: { readonly project: ProjectDto }
     <section id="hot-sessions" className="project-setup-card">
       <h2 className="font-sans text-sm font-semibold">Hot sessions</h2>
       <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
-        Workspaces kept ready for new sessions — a new session claims one and attaches immediately.
-        Each ready workspace is a live container on this machine; the pool rebuilds when the image,
+        Workspaces kept ready for each person who started a session here in the last week — their
+        next session claims one and attaches immediately. Each ready workspace is a live container
+        on this machine, so the count applies per person; the pool rebuilds when the image,
         variables, secrets, references, mounts, or dotfiles change.
       </p>
       <div className="mt-3 flex items-center justify-between gap-3">

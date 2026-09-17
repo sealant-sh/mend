@@ -1,6 +1,12 @@
-import { ProjectsRepo, SessionsRepo } from "@mend/db";
+import { OrganizationsRepo, ProjectsRepo, SessionsRepo } from "@mend/db";
 import { ProjectId, type SessionId, type WorktreeId } from "@mend/domain";
-import { CaptureRuntime, promoteBulkToCache, SessionEngine } from "@mend/sessions";
+import {
+  CaptureRuntime,
+  INSTALL_SESSION_LABEL,
+  mayRunIn,
+  promoteBulkToCache,
+  SessionEngine,
+} from "@mend/sessions";
 import { BlobStore, decodeManifest } from "@mend/store";
 import { Duration, Effect, Layer, Schedule, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -42,7 +48,7 @@ export class InstallRunner extends Context.Service<
   {
     readonly run: (
       projectId: ProjectId,
-      ownerUserId: string | null,
+      ownerUserId: string,
     ) => Effect.Effect<{ readonly worktreeId: WorktreeId }, InstallRunError>;
   }
 >()("@mend/jobs/InstallRunner") {}
@@ -64,12 +70,13 @@ export const INSTALL_SESSION_DEADLINE = Duration.minutes(30);
 export const DependencyInstallerLive: Layer.Layer<
   DependencyInstaller,
   never,
-  CaptureRuntime | InstallRunner | ProjectsRepo
+  CaptureRuntime | InstallRunner | OrganizationsRepo | ProjectsRepo
 > = Layer.effect(
   DependencyInstaller,
   Effect.gen(function* () {
     const capture = yield* CaptureRuntime;
     const runner = yield* InstallRunner;
+    const organizations = yield* OrganizationsRepo;
     const projects = yield* ProjectsRepo;
 
     const install = Effect.fn("DependencyInstaller.install")(function* (job: DependencyInstallJob) {
@@ -80,7 +87,18 @@ export const DependencyInstallerLive: Layer.Layer<
         .byId(job.projectId)
         .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
       if (project === null) return { outcome: "skipped", reason: "the project is gone" } as const;
-      const ownerUserId = job.requestedByUserId ?? project.createdByUserId;
+      // The session runs as an account that may still run here (docs/adr/0003): whoever asked,
+      // else the project's creator. Nobody else's credentials stand in.
+      let ownerUserId: string | null = null;
+      for (const candidate of [job.requestedByUserId ?? null, project.createdByUserId]) {
+        if (candidate !== null && (yield* mayRunIn(organizations, project, candidate))) {
+          ownerUserId = candidate;
+          break;
+        }
+      }
+      if (ownerUserId === null) {
+        return { outcome: "skipped", reason: "no account may run the install" } as const;
+      }
       const ran = yield* runner.run(job.projectId, ownerUserId).pipe(Effect.option);
       if (ran._tag === "None") {
         return { outcome: "skipped", reason: "the install session did not run" } as const;
@@ -123,7 +141,7 @@ export const DependencyInstallerLive: Layer.Layer<
 
 /** The install session's harness argv: the engine's launch installs; the shell then exits. */
 export const INSTALL_SESSION_ARGV: ReadonlyArray<string> = ["sh", "-lc", "true"];
-export const INSTALL_SESSION_LABEL = "install · mend";
+export { INSTALL_SESSION_LABEL };
 
 /**
  * The live runner: a session Mend owns, in a fresh anonymous worktree of the project, launched
@@ -147,7 +165,7 @@ export const InstallRunnerEngineLive: Layer.Layer<
         .pipe(Effect.catch(() => Effect.succeed(true)));
     const run = Effect.fn("InstallRunner.run")(function* (
       projectId: ProjectId,
-      ownerUserId: string | null,
+      ownerUserId: string,
     ) {
       const failure = (message: string) => new InstallRunError({ projectId, message });
       const session = yield* engine

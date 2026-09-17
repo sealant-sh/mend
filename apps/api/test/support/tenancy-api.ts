@@ -23,6 +23,7 @@ import {
   ServiceForwardsRepo,
   ServiceObservationsRepo,
   SettingsRepo,
+  UserDotfilesRepo,
   UserEvents,
   UserGitAccessRepo,
   UsersRepo,
@@ -132,6 +133,7 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
         calls,
       ),
       recording(ReviewCommentsRepo, "comments", {}, calls),
+      recording(UserDotfilesRepo, "userDotfiles", {}, calls),
     ),
     Layer.mergeAll(
       recording(ReviewSlicesRepo, "slices", {}, calls),

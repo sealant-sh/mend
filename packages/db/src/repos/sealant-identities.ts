@@ -21,13 +21,6 @@ export const SealantIdentityStoreLive: Layer.Layer<SealantIdentityStore, never, 
         return row === undefined ? null : { id: row.id, email: row.email, name: row.name };
       });
 
-      const firstUser = Effect.fn("SealantIdentityStore.firstUser")(function* () {
-        const rows = yield* sql`
-        SELECT id, email, name FROM "user" ORDER BY "createdAt" ASC LIMIT 1`.pipe(Effect.orDie);
-        const row = rows[0] as MendUserRecord | undefined;
-        return row === undefined ? null : { id: row.id, email: row.email, name: row.name };
-      });
-
       const sealantUserId = Effect.fn("SealantIdentityStore.sealantUserId")(function* (
         userId: string,
       ) {
@@ -51,6 +44,6 @@ export const SealantIdentityStoreLive: Layer.Layer<SealantIdentityStore, never, 
         );
       });
 
-      return { user, firstUser, sealantUserId, record };
+      return { user, sealantUserId, record };
     }),
   );
