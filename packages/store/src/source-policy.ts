@@ -223,11 +223,14 @@ export const makeSourcePolicy = (options: SourcePolicyOptions): SourcePolicy["Se
       const port = clearance.port ?? (clearance.scheme === "https" ? 443 : 80);
       const existing = Number(env["GIT_CONFIG_COUNT"] ?? "0");
       const index = Number.isInteger(existing) && existing > 0 ? existing : 0;
+      // A redirect would hand git a host the policy never checked, so it is not followed.
       return {
         ...env,
-        GIT_CONFIG_COUNT: String(index + 1),
+        GIT_CONFIG_COUNT: String(index + 2),
         [`GIT_CONFIG_KEY_${index}`]: "http.curloptResolve",
         [`GIT_CONFIG_VALUE_${index}`]: `${clearance.host}:${port}:${isIP(address) === 6 ? `[${address}]` : address}`,
+        [`GIT_CONFIG_KEY_${index + 1}`]: "http.followRedirects",
+        [`GIT_CONFIG_VALUE_${index + 1}`]: "false",
       };
     }
     return { ...env };

