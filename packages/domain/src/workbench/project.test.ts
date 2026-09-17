@@ -25,6 +25,10 @@ describe("gitRemoteLocation", () => {
       port: null,
     });
     expect(gitRemoteLocation("/tmp/repo")).toBeNull();
+    // Shell metacharacters never make it into a host.
+    expect(gitRemoteLocation("ssh://a$(id).evil.com/acme/api.git")).toBeNull();
+    expect(gitRemoteLocation("ssh://a`hostname`.evil.com/acme/api.git")).toBeNull();
+    expect(gitRemoteLocation("ssh://a;id.evil.com/acme/api.git")).toBeNull();
     expect(gitRemoteLocation("file:///tmp/repo")).toBeNull();
   });
 });

@@ -76,7 +76,11 @@ export const repositoryCloneUrlIssue = (value: string): string | null => {
       url.protocol !== "git:") ||
     url.hostname === "" ||
     url.pathname === "" ||
-    url.pathname === "/"
+    url.pathname === "/" ||
+    // A host is a DNS name or an IP literal. `ssh:` is not a special scheme, so URL keeps any
+    // code point in its host; a `$`, backtick or `;` there would reach a shell through
+    // GIT_SSH_COMMAND.
+    !/^(?:[a-z0-9_-]+(?:\.[a-z0-9_-]+)*\.?|\[[0-9a-f:.]+\])$/i.test(url.hostname)
   ) {
     return REPOSITORY_CLONE_URL_GUIDANCE;
   }
