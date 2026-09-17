@@ -9,6 +9,8 @@ import {
   OrganizationsRepo,
   ProjectNotFoundError,
   ProjectsRepo,
+  ReferenceNotFoundError,
+  ReferencesRepo,
   ServicesRepo,
   SessionChangeNotFoundError,
   SessionNotFoundError,
@@ -27,6 +29,7 @@ import {
   ChangeId,
   OrganizationId,
   ProjectId,
+  ReferenceId,
   SealantWorkspaceId,
   ServiceId,
   SessionId,
@@ -41,6 +44,7 @@ import {
   Change,
   Organization,
   Project,
+  Reference,
   Service,
   Session,
   SessionProcess,
@@ -124,6 +128,9 @@ export const NULL_OWNER_SESSION = SessionId.make("session-shared-a-null-owner");
 export const PROTOCOL_PROCESS = SessionProcessId.make("process-shared-a-protocol");
 export const UDP_SERVICE = ServiceId.make("service-shared-a-udp");
 export const CAROL_USER_SKILL = SkillId.make("skill-user-carol");
+/** One reference repository in each organization. */
+export const REFERENCE_A = ReferenceId.make("reference-org-A");
+export const REFERENCE_B = ReferenceId.make("reference-org-B");
 
 const organizationIdOf = (key: "A" | "B") => OrganizationId.make(`org-${key}`);
 
@@ -150,6 +157,9 @@ export const AUTHORIZATION_READS: ReadonlySet<string> = new Set([
   "userDotfiles.firstUserId",
   // A skill's scope decides whose access applies, so it is read first.
   "skills.byId",
+  // A reference's organization decides whether an owner may manage or select it.
+  "references.byId",
+  "references.byIdsInOrganization",
 ]);
 
 /**
@@ -218,6 +228,7 @@ export interface TenancyWorld {
     | AgentConversationRepo
     | UserDotfilesRepo
     | SkillsRepo
+    | ReferencesRepo
   >;
   readonly dispose: () => Promise<void>;
 }
@@ -521,6 +532,28 @@ export const createTenancyWorld = async (): Promise<TenancyWorld> => {
     }),
   );
 
+  const references = new Map<ReferenceId, Reference>(
+    (["A", "B"] as const).map((key) => {
+      const id = key === "A" ? REFERENCE_A : REFERENCE_B;
+      return [
+        id,
+        new Reference({
+          id,
+          name: `effect-${key}`,
+          organizationId: organizationIdOf(key),
+          createdByUserId: null,
+          originUrl: "https://example.invalid/effect.git",
+          path: join(root, "_organizations", key, "references", id),
+          pinnedRef: null,
+          headSha: null,
+          refreshedAt: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      ];
+    }),
+  );
+
   const authLayer = Layer.succeed(Auth, {
     handler: () => Effect.succeed(new Response(null, { status: 404 })),
     getSession: (headers: Headers) => {
@@ -645,6 +678,20 @@ export const createTenancyWorld = async (): Promise<TenancyWorld> => {
       "userDotfiles",
       {
         firstUserId: () => Effect.succeed("alice"),
+      },
+      calls,
+    ),
+    recording(
+      ReferencesRepo,
+      "references",
+      {
+        byId: (id) => found(references, id, () => new ReferenceNotFoundError({ referenceId: id })),
+        byIdsInOrganization: (organizationId, requested) =>
+          Effect.succeed(
+            [...references.values()].filter(
+              (row) => row.organizationId === organizationId && requested.includes(row.id),
+            ),
+          ),
       },
       calls,
     ),

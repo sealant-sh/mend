@@ -2,7 +2,12 @@ import { OrganizationsRepo } from "@mend/db";
 import { ConfigProvider, Effect, Layer, Result } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { TenancyConfig, TenancyConfigLive, tenancyRefusal } from "./tenancy.ts";
+import {
+  exposedServiceHosts,
+  TenancyConfig,
+  TenancyConfigLive,
+  tenancyRefusal,
+} from "./tenancy.ts";
 
 const build = (env: Record<string, string>, organizationCount: number) =>
   Effect.runPromise(
@@ -33,12 +38,21 @@ describe("MEND_TENANCY (docs/adr/0003)", () => {
     expect(Result.isFailure(result)).toBe(true);
     expect(String(result)).toContain("MEND_TENANCY=multi is refused");
     expect(tenancyRefusal("multi", 1)).toContain("egress and local-source policy");
+    expect(tenancyRefusal("multi", 1)).not.toContain("raw service listeners");
   });
 
   it("refuses single when several organizations exist", async () => {
     const result = await build({ MEND_TENANCY: "single" }, 2);
     expect(Result.isFailure(result)).toBe(true);
     expect(String(result)).toContain("2 organizations exist");
+  });
+
+  it("names raw service listeners off loopback among what multi is missing", () => {
+    expect(exposedServiceHosts("127.0.0.1, ::1,localhost")).toEqual([]);
+    expect(exposedServiceHosts("127.0.0.1,0.0.0.0")).toEqual(["0.0.0.0"]);
+    expect(tenancyRefusal("multi", 1, "0.0.0.0")).toContain(
+      "raw service listeners on 0.0.0.0 (unset MEND_SERVICE_HOSTS)",
+    );
   });
 
   it("refuses an unknown mode", async () => {

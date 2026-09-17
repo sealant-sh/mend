@@ -32,6 +32,7 @@ import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { describe, expect, it } from "vitest";
 
 import { ProjectAccess, ProjectAccessLive } from "../access.ts";
+import { GithubIdentity } from "../github-identity.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
 import { Gh } from "./github.ts";
 import { ProjectsGroupLive } from "./workbench.ts";
@@ -223,7 +224,8 @@ type ProjectRouteServices =
   | Gh
   | OrganizationsRepo
   | InstanceRolesRepo
-  | ProjectAccess;
+  | ProjectAccess
+  | GithubIdentity;
 
 type UnusedProjectRouteServices = Exclude<
   ProjectRouteServices,
@@ -249,6 +251,7 @@ const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.
   Layer.mock(WorktreeReads, {}),
   Layer.mock(Gh, {}),
   Layer.mock(InstanceRolesRepo, {}),
+  Layer.mock(GithubIdentity, {}),
   Layer.mock(OrganizationsRepo, {
     membershipOf: () =>
       Effect.succeed({

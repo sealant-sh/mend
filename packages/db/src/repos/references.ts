@@ -1,6 +1,6 @@
-import { ReferenceId, type ProjectId, type Sha } from "@mend/domain";
+import { ReferenceId, type OrganizationId, type ProjectId, type Sha } from "@mend/domain";
 import { Reference } from "@mend/domain/workbench";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -15,6 +15,10 @@ export class ReferenceNotFoundError extends Schema.TaggedErrorClass<ReferenceNot
 ) {}
 
 export interface NewReference {
+  /** Minted by the caller: the clone directory is keyed by it. */
+  readonly id: ReferenceId;
+  readonly organizationId: OrganizationId;
+  readonly createdByUserId: string;
   readonly name: string;
   readonly originUrl: string;
   readonly path: string;
@@ -24,16 +28,27 @@ export interface NewReference {
 
 /**
  * The index of reference clones (plan §17, decided 2026-08-01) — table
- * `reference_repos` (`references` is reserved SQL). The clones themselves are
- * git on disk under the store's `_references/`; selection is per project.
+ * `reference_repos` (`references` is reserved SQL). Each belongs to an organization
+ * (docs/adr/0003-organizations-and-tenancy.md); the clones themselves are git on disk under the
+ * store's `_organizations/<id>/references/`; selection is per project.
  */
 export class ReferencesRepo extends Context.Service<
   ReferencesRepo,
   {
     readonly create: (reference: NewReference) => Effect.Effect<Reference>;
     readonly byId: (id: ReferenceId) => Effect.Effect<Reference, ReferenceNotFoundError>;
-    readonly byName: (name: string) => Effect.Effect<Reference | null>;
-    readonly list: () => Effect.Effect<ReadonlyArray<Reference>>;
+    readonly byName: (
+      organizationId: OrganizationId,
+      name: string,
+    ) => Effect.Effect<Reference | null>;
+    readonly listForOrganization: (
+      organizationId: OrganizationId,
+    ) => Effect.Effect<ReadonlyArray<Reference>>;
+    /** The requested references that belong to the organization; others are left out. */
+    readonly byIdsInOrganization: (
+      organizationId: OrganizationId,
+      ids: ReadonlyArray<ReferenceId>,
+    ) => Effect.Effect<ReadonlyArray<Reference>>;
     readonly remove: (id: ReferenceId) => Effect.Effect<void>;
     /** After a refresh: the clone's HEAD as just observed. */
     readonly setHead: (id: ReferenceId, headSha: Sha) => Effect.Effect<void>;
@@ -57,11 +72,7 @@ export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = La
     const create = Effect.fn("ReferencesRepo.create")(function* (reference: NewReference) {
       const [row] = yield* db
         .insert(referenceRepos)
-        .values({
-          id: ReferenceId.make(crypto.randomUUID()),
-          ...reference,
-          refreshedAt: new Date(),
-        })
+        .values({ ...reference, refreshedAt: new Date() })
         .returning()
         .pipe(Effect.orDie);
       if (row === undefined) return yield* Effect.die("reference insert returned no row");
@@ -79,21 +90,47 @@ export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = La
       return toReference(row);
     });
 
-    const byName = Effect.fn("ReferencesRepo.byName")(function* (name: string) {
+    const byName = Effect.fn("ReferencesRepo.byName")(function* (
+      organizationId: OrganizationId,
+      name: string,
+    ) {
       const [row] = yield* db
         .select()
         .from(referenceRepos)
-        .where(eq(referenceRepos.name, name))
+        .where(
+          and(eq(referenceRepos.organizationId, organizationId), eq(referenceRepos.name, name)),
+        )
         .limit(1)
         .pipe(Effect.orDie);
       return row === undefined ? null : toReference(row);
     });
 
-    const list = Effect.fn("ReferencesRepo.list")(function* () {
+    const listForOrganization = Effect.fn("ReferencesRepo.listForOrganization")(function* (
+      organizationId: OrganizationId,
+    ) {
       const rows = yield* db
         .select()
         .from(referenceRepos)
+        .where(eq(referenceRepos.organizationId, organizationId))
         .orderBy(asc(referenceRepos.name))
+        .pipe(Effect.orDie);
+      return rows.map(toReference);
+    });
+
+    const byIdsInOrganization = Effect.fn("ReferencesRepo.byIdsInOrganization")(function* (
+      organizationId: OrganizationId,
+      ids: ReadonlyArray<ReferenceId>,
+    ) {
+      if (ids.length === 0) return [];
+      const rows = yield* db
+        .select()
+        .from(referenceRepos)
+        .where(
+          and(
+            eq(referenceRepos.organizationId, organizationId),
+            inArray(referenceRepos.id, [...ids]),
+          ),
+        )
         .pipe(Effect.orDie);
       return rows.map(toReference);
     });
@@ -140,6 +177,16 @@ export const ReferencesRepoLive: Layer.Layer<ReferencesRepo, never, MendDB> = La
         .pipe(Effect.orDie);
     });
 
-    return { create, byId, byName, list, remove, setHead, listForProject, setForProject };
+    return {
+      create,
+      byId,
+      byName,
+      listForOrganization,
+      byIdsInOrganization,
+      remove,
+      setHead,
+      listForProject,
+      setForProject,
+    };
   }),
 );

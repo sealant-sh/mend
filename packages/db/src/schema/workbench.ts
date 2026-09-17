@@ -629,17 +629,27 @@ export const projectClusterBindings = pgTable(
   ],
 );
 
-export const referenceRepos = pgTable("reference_repos", {
-  id: text().$type<ReferenceId>().primaryKey(),
-  name: text().notNull().unique(),
-  originUrl: text().notNull(),
-  path: text().notNull().unique(),
-  pinnedRef: text(),
-  headSha: text().$type<Sha>(),
-  refreshedAt: timestamp({ mode: "date", withTimezone: true }),
-  createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
-  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
-});
+export const referenceRepos = pgTable(
+  "reference_repos",
+  {
+    id: text().$type<ReferenceId>().primaryKey(),
+    name: text().notNull(),
+    organizationId: text()
+      .$type<OrganizationId>()
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    // FK to "user"(id) ON DELETE RESTRICT, declared in the migration.
+    createdByUserId: text(),
+    originUrl: text().notNull(),
+    path: text().notNull().unique(),
+    pinnedRef: text(),
+    headSha: text().$type<Sha>(),
+    refreshedAt: timestamp({ mode: "date", withTimezone: true }),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique("reference_repos_organization_name_key").on(table.organizationId, table.name)],
+);
 
 export const projectReferences = pgTable(
   "project_references",
@@ -675,6 +685,8 @@ export const inferenceCalls = pgTable("inference_calls", {
 export const pushDevices = pgTable("push_devices", {
   token: text().primaryKey(),
   platform: text().notNull(),
+  // FK to "user"(id) ON DELETE RESTRICT, declared in the migration: whose notifications it gets.
+  userId: text().notNull(),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   lastSeenAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });

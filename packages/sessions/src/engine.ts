@@ -6216,13 +6216,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               // Bridge mode signs on another machine: require the signer NOW —
               // an honest fast refusal in the workspace terminal beats an ssh
               // that hangs against an agent socket nobody serves.
+              // The owner's own signer, never another account's (docs/adr/0003).
               let env: Record<string, string> | undefined;
               if (mode === "bridge") {
-                const bridgeStatus = yield* agentBridge.status();
+                if (owner === null) {
+                  return yield* Effect.fail(
+                    new Error("this session has no owner, so no signer can be chosen"),
+                  );
+                }
+                const bridgeStatus = yield* agentBridge.status(owner);
                 if (!bridgeStatus.connected) {
                   return yield* Effect.fail(new Error(NO_SIGNER_MESSAGE));
                 }
-                env = { SSH_AUTH_SOCK: agentBridge.socketPath() };
+                env = { SSH_AUTH_SOCK: agentBridge.socketPath(owner) };
               }
               const op = yield* gitOps.record({
                 sessionId,
@@ -6234,8 +6240,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 authMode: mode,
               });
               // Attribution for the share CLI: ended in gitTransportDone.
-              if (mode === "bridge") {
+              if (mode === "bridge" && owner !== null) {
                 const end = yield* agentBridge.begin(
+                  owner,
                   `project ${project.name} → ${host} (${parsed.kind})`,
                 );
                 bridgeContexts.set(op.id, end);

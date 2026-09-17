@@ -147,6 +147,7 @@ import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstab
 
 import { ProjectAccessLive } from "./access.ts";
 import { EventBusLive } from "./events-bus.ts";
+import { GithubIdentityLive } from "./github-identity.ts";
 import { publicNetworkPolicy } from "./public-network-policy.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
 import { MendApiLive } from "./routes/api-live.ts";
@@ -577,8 +578,8 @@ const MainLive = Layer.unwrap(
     // on it, so it must be launched explicitly rather than provided.
     return Layer.merge(parts, SessionChannelNetworkLayer).pipe(
       Layer.provide(SessionSteeringLive),
-      // Who may see what (docs/adr/0003): every project-scoped route resolves through it.
-      Layer.provide(ProjectAccessLive),
+      // Who may see what (docs/adr/0003), and whose GitHub identity calls to GitHub may use.
+      Layer.provide(Layer.merge(ProjectAccessLive, GithubIdentityLive)),
       // MEND_TENANCY: refuses to build (so nothing serves) when the mode may not run here.
       Layer.provide(TenancyConfigLive),
       // Shared by the API (enqueue on comment) and the workers (one instance).

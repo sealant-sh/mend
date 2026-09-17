@@ -89,3 +89,16 @@ shared project store directly — including refs other sessions hang off. Confus
 agent rewrites a ref, the user later publishes it host-side. Review-before-landing is the mitigation
 today. Candidate fix, own timeline: read-only common dir + per-session writable admin/objects
 overlay.
+
+## Accounts and organizations
+
+Since organizations (`docs/adr/0003-organizations-and-tenancy.md`), every signer belongs to one
+account. `mend keys share` serves the bridge of the account it signed in as, at its own socket under
+`_bridge/`; a session signs with its owner's Mend key or its owner's bridge, and never falls back to
+another account's. Reference repositories belong to an organization and are fetched with the git
+access of the owner who adds or refreshes them, never the host's ambient identity.
+
+Calls to the GitHub API (repository discovery, pull request lists) have no per-account credential
+yet. On a single-organization install the operator may use the host's `gh` login; everyone else sees
+"no identity" with the reason. A per-account GitHub token, sealed like other credentials, is the
+planned follow-up.

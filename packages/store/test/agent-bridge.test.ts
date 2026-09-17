@@ -51,13 +51,13 @@ describe("AgentBridge", () => {
     await withBridge(
       Effect.gen(function* () {
         const bridge = yield* AgentBridge;
-        expect((yield* bridge.status()).connected).toBe(false);
+        expect((yield* bridge.status("u1")).connected).toBe(false);
 
         const seenContexts: string[] = [];
         // A fake share client that behaves like an agent: answers every
         // request with a canned "identities" response, echoing the id.
         const handleRef: { current: ((frame: string) => void) | null } = { current: null };
-        const handle = yield* bridge.attach({
+        const handle = yield* bridge.attach("u1", {
           name: "test-laptop",
           send: (frame) => {
             const parsed = JSON.parse(frame) as {
@@ -74,14 +74,14 @@ describe("AgentBridge", () => {
         });
         handleRef.current = handle.feed;
 
-        const bridgeStatus = yield* bridge.status();
+        const bridgeStatus = yield* bridge.status("u1");
         expect(bridgeStatus.connected).toBe(true);
         expect(bridgeStatus.clientName).toBe("test-laptop");
 
         // An op in flight names itself; the request carries the attribution.
-        const end = yield* bridge.begin("adopt shimtest → ssh://localhost/repo");
+        const end = yield* bridge.begin("u1", "adopt shimtest → ssh://localhost/repo");
         const answer = yield* Effect.promise(
-          () => askAgent(bridge.socketPath(), agentMessage(11)), // SSH_AGENTC_REQUEST_IDENTITIES
+          () => askAgent(bridge.socketPath("u1"), agentMessage(11)), // SSH_AGENTC_REQUEST_IDENTITIES
         );
         end();
         expect([...answer.subarray(4)]).toEqual([12, 0, 0, 0, 0]);
@@ -89,8 +89,8 @@ describe("AgentBridge", () => {
 
         // Detach tears the socket down; presence reads false again.
         handle.detach();
-        expect((yield* bridge.status()).connected).toBe(false);
-        expect(fs.existsSync(bridge.socketPath())).toBe(false);
+        expect((yield* bridge.status("u1")).connected).toBe(false);
+        expect(fs.existsSync(bridge.socketPath("u1"))).toBe(false);
       }),
     );
   });
@@ -100,7 +100,7 @@ describe("AgentBridge", () => {
       Effect.gen(function* () {
         const bridge = yield* AgentBridge;
         const handleRef: { current: ((frame: string) => void) | null } = { current: null };
-        const handle = yield* bridge.attach({
+        const handle = yield* bridge.attach("u1", {
           name: "flaky-laptop",
           send: (frame) => {
             const parsed = JSON.parse(frame) as { id: number };
@@ -112,7 +112,7 @@ describe("AgentBridge", () => {
         handleRef.current = handle.feed;
 
         const answer = yield* Effect.promise(() =>
-          askAgent(bridge.socketPath(), agentMessage(13, 1, 2, 3)),
+          askAgent(bridge.socketPath("u1"), agentMessage(13, 1, 2, 3)),
         );
         // [len=1][SSH_AGENT_FAILURE]
         expect([...answer]).toEqual([0, 0, 0, 1, 5]);
@@ -125,14 +125,14 @@ describe("AgentBridge", () => {
     await withBridge(
       Effect.gen(function* () {
         const bridge = yield* AgentBridge;
-        const first = yield* bridge.attach({ name: "first", send: () => {} });
-        const second = yield* bridge.attach({ name: "second", send: () => {} });
+        const first = yield* bridge.attach("u1", { name: "first", send: () => {} });
+        const second = yield* bridge.attach("u1", { name: "second", send: () => {} });
         first.detach(); // the ghost closes late
-        const bridgeStatus = yield* bridge.status();
+        const bridgeStatus = yield* bridge.status("u1");
         expect(bridgeStatus.connected).toBe(true);
         expect(bridgeStatus.clientName).toBe("second");
         second.detach();
-        expect((yield* bridge.status()).connected).toBe(false);
+        expect((yield* bridge.status("u1")).connected).toBe(false);
       }),
     );
   });
@@ -144,13 +144,69 @@ describe("AgentBridge", () => {
       Effect.gen(function* () {
         const bridge = yield* AgentBridge;
         yield* Effect.sync(() => {
-          fs.mkdirSync(path.dirname(bridge.socketPath()), { recursive: true, mode: 0o700 });
-          fs.writeFileSync(bridge.socketPath(), "");
+          fs.mkdirSync(path.dirname(bridge.socketPath("u1")), { recursive: true, mode: 0o700 });
+          fs.writeFileSync(bridge.socketPath("u1"), "");
         });
-        const handle = yield* bridge.attach({ name: "after-restart", send: () => {} });
-        expect((yield* bridge.status()).connected).toBe(true);
-        expect(fs.statSync(bridge.socketPath()).isSocket()).toBe(true);
+        const handle = yield* bridge.attach("u1", { name: "after-restart", send: () => {} });
+        expect((yield* bridge.status("u1")).connected).toBe(true);
+        expect(fs.statSync(bridge.socketPath("u1")).isSocket()).toBe(true);
         handle.detach();
+      }),
+    );
+  });
+
+  it("gives each account its own signer: one share neither answers for nor replaces another", async () => {
+    await withBridge(
+      Effect.gen(function* () {
+        const bridge = yield* AgentBridge;
+        const aliceAsked: Array<string> = [];
+        const aliceRef: { current: ((frame: string) => void) | null } = { current: null };
+        const alice = yield* bridge.attach("alice", {
+          name: "alice-laptop",
+          send: (frame) => {
+            const parsed = JSON.parse(frame) as { id: number; context: string };
+            aliceAsked.push(parsed.context);
+            aliceRef.current?.(
+              JSON.stringify({
+                t: "res",
+                id: parsed.id,
+                payload: agentMessage(12, 0, 0, 0, 0).toString("base64"),
+              }),
+            );
+          },
+        });
+        aliceRef.current = alice.feed;
+
+        expect(bridge.socketPath("alice")).not.toBe(bridge.socketPath("bob"));
+        expect((yield* bridge.status("bob")).connected).toBe(false);
+        expect(fs.existsSync(bridge.socketPath("bob"))).toBe(false);
+
+        const bob = yield* bridge.attach("bob", { name: "bob-laptop", send: () => {} });
+        expect((yield* bridge.status("alice")).clientName).toBe("alice-laptop");
+        bob.detach();
+        expect((yield* bridge.status("alice")).connected).toBe(true);
+
+        const end = yield* bridge.begin("alice", "refresh api → origin");
+        const answer = yield* Effect.promise(() =>
+          askAgent(bridge.socketPath("alice"), agentMessage(11)),
+        );
+        end();
+        expect([...answer.subarray(4)]).toEqual([12, 0, 0, 0, 0]);
+        expect(aliceAsked).toEqual(["refresh api → origin"]);
+        alice.detach();
+      }),
+    );
+  });
+
+  it("keeps socket paths short and distinct whatever the account id looks like", async () => {
+    await withBridge(
+      Effect.gen(function* () {
+        const bridge = yield* AgentBridge;
+        const long = bridge.socketPath("a".repeat(500));
+        const escaping = bridge.socketPath("../../escape");
+        expect(path.basename(long)).toMatch(/^[0-9a-f]{16}\.sock$/);
+        expect(path.dirname(escaping)).toBe(path.dirname(long));
+        expect(long).not.toBe(escaping);
       }),
     );
   });

@@ -18,21 +18,42 @@ export class TenancyRefused extends Schema.TaggedErrorClass<TenancyRefused>()("T
  * remove entries as they land; the final step replaces this list with computed checks.
  */
 export const MULTI_MODE_MISSING: ReadonlyArray<string> = [
-  "cross-organization authorization on every route",
-  "per-user signer, devices, notifications and GitHub identity",
   "Mend-managed folders in place of host paths",
   "egress and local-source policy",
   "upload length binding",
-  "raw service ports off",
 ];
 
+const LOOPBACK = new Set(["127.0.0.1", "::1", "localhost"]);
+
+/**
+ * Raw service listeners have no Mend authorization: whoever reaches the port reaches the Service
+ * (docs/adr/0003, "Raw service ports"). In `multi` they must stay on loopback, and Services are
+ * reached through the authenticated tunnel. Returns the offending addresses.
+ */
+export const exposedServiceHosts = (serviceHosts: string | undefined): ReadonlyArray<string> =>
+  (serviceHosts ?? "127.0.0.1")
+    .split(",")
+    .map((address) => address.trim())
+    .filter((address) => address !== "" && !LOOPBACK.has(address));
+
 /** Why this combination must not start, or null when it may. */
-export const tenancyRefusal = (mode: TenancyMode, organizationCount: number): string | null => {
+export const tenancyRefusal = (
+  mode: TenancyMode,
+  organizationCount: number,
+  serviceHosts?: string,
+): string | null => {
   if (mode === "multi") {
+    const exposed = exposedServiceHosts(serviceHosts);
+    const missing = [
+      ...MULTI_MODE_MISSING,
+      ...(exposed.length === 0
+        ? []
+        : [`raw service listeners on ${exposed.join(", ")} (unset MEND_SERVICE_HOSTS)`]),
+    ];
     return [
       "MEND_TENANCY=multi is refused: the multi mode gate",
       "(docs/adr/0003-organizations-and-tenancy.md, 'Multi mode gate') is not complete.",
-      `Missing: ${MULTI_MODE_MISSING.join("; ")}.`,
+      `Missing: ${missing.join("; ")}.`,
       "Start with MEND_TENANCY=single (the default).",
     ].join(" ");
   }
@@ -56,8 +77,11 @@ export const TenancyConfigLive: Layer.Layer<
     const mode = yield* Config.schema(TenancyMode, "MEND_TENANCY").pipe(
       Config.withDefault("single"),
     );
+    const serviceHosts = yield* Config.string("MEND_SERVICE_HOSTS").pipe(
+      Config.withDefault("127.0.0.1"),
+    );
     const organizations = yield* OrganizationsRepo;
-    const refusal = tenancyRefusal(mode, yield* organizations.count());
+    const refusal = tenancyRefusal(mode, yield* organizations.count(), serviceHosts);
     if (refusal !== null) return yield* new TenancyRefused({ message: refusal });
     yield* Effect.logInfo("tenancy").pipe(Effect.annotateLogs({ mode }));
     return { mode };

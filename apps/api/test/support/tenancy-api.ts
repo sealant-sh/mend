@@ -16,7 +16,6 @@ import {
   ProjectSecretsRepo,
   ProjectServiceRecipesRepo,
   PushDevicesRepo,
-  ReferencesRepo,
   ReviewCommentsRepo,
   ReviewSlicesRepo,
   RunsRepo,
@@ -46,6 +45,7 @@ import { HttpRouter, HttpServer } from "effect/unstable/http";
 
 import { ProjectAccessLive } from "../../src/access.ts";
 import { EventBus, makeEventBus } from "../../src/events-bus.ts";
+import { GithubIdentityLive } from "../../src/github-identity.ts";
 import { MendApiLive } from "../../src/routes/api-live.ts";
 import { EventsRoutes } from "../../src/routes/events.ts";
 import { Gh } from "../../src/routes/github.ts";
@@ -111,7 +111,6 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
       recording(ProjectSecretsRepo, "secrets", {}, calls),
       recording(ProjectServiceRecipesRepo, "recipes", {}, calls),
       recording(PushDevicesRepo, "pushDevices", {}, calls),
-      recording(ReferencesRepo, "references", {}, calls),
       recording(ReviewCommentsRepo, "comments", {}, calls),
     ),
     Layer.mergeAll(
@@ -162,10 +161,11 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
     ),
   );
   const dependencies = Layer.mergeAll(world.authLayer, world.accessLayers, effects);
-  const authorization = Layer.merge(ProjectAccessLive, SessionSteeringLive).pipe(
-    Layer.provideMerge(ProjectAccessLive),
-    Layer.provideMerge(dependencies),
-  );
+  const authorization = Layer.mergeAll(
+    ProjectAccessLive,
+    SessionSteeringLive,
+    GithubIdentityLive,
+  ).pipe(Layer.provideMerge(ProjectAccessLive), Layer.provideMerge(dependencies));
   const apiLayer = MendApiLive.pipe(
     Layer.provide(authorization),
     Layer.provide(HttpServer.layerServices),

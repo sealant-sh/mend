@@ -18,6 +18,8 @@ import {
 } from "@mend/domain/workbench";
 import { Effect, Layer, Schema, Stream } from "effect";
 
+import { notificationRecipients } from "./notification-recipients.ts";
+
 /**
  * Pushes a notification to registered phones when a session needs the user:
  * it settled (completed · failed), is waiting for input, or a protocol turn
@@ -106,7 +108,13 @@ export const SessionNotifierLive = Layer.effectDiscard(
     const watchedTurns = new Map<string, ReadonlySet<string>>();
 
     const send = Effect.fn("SessionNotifier.send")(function* (session: Session, body: string) {
-      const targets = yield* devices.list();
+      // The owner's phones only (docs/adr/0003); shared control will add the latest sender.
+      const recipients = notificationRecipients({
+        ownerUserId: session.ownerUserId,
+        sharedControl: false,
+        latestTurnSenderUserId: null,
+      });
+      const targets = yield* devices.listForUsers([...recipients]);
       if (targets.length === 0) return;
       const title = yield* projects.byId(session.projectId).pipe(
         Effect.map((project) => project.name),
