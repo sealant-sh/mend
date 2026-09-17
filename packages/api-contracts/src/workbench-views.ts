@@ -61,7 +61,7 @@ export class AdoptProject extends Schema.Class<AdoptProject>("AdoptProject")({
   name: Schema.String,
   source: RepositoryCloneUrl,
   gitAuthMode: Schema.optional(GitAuthMode),
-  /** `shared` unless the request says `private` (only the adopter sees it). */
+  /** `private` (only the adopter sees it) unless the request says `shared`. */
   visibility: Schema.optional(ProjectVisibility),
 }) {}
 

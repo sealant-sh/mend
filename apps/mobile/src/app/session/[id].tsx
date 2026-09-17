@@ -371,6 +371,12 @@ export default function SessionScreen() {
   const change = detail.data?.change ?? null;
   const currentAgent = detail.data?.currentAgent ?? null;
   const agentActive = agentIsActive(session, currentAgent);
+  // Only the owner steers unless they share control (docs/adr/0003). A server from before
+  // organizations sends no control view; everything stays available there.
+  const steer = detail.data?.control?.steer ?? true;
+  const canStop = detail.data?.control?.stop ?? true;
+  // Handing a session off is the owner's even while control is shared.
+  const own = detail.data?.control?.own ?? true;
   const canOpenShell =
     session !== undefined && ["running", "waiting", "idle"].includes(session.status);
   const protocol =
@@ -380,7 +386,7 @@ export default function SessionScreen() {
   const [shellError, setShellError] = useState<string | null>(null);
   // Cross-mode pickup: claude and codex sessions continue here in structured
   // mode; other harnesses keep the raw terminal composer.
-  const canPickUp = session?.harness === "claude" || session?.harness === "codex";
+  const canPickUp = own && (session?.harness === "claude" || session?.harness === "codex");
 
   const openTerminal = () => {
     if (session === undefined) {
@@ -414,7 +420,7 @@ export default function SessionScreen() {
     conversation = protocol ? (
       <ProtocolConversation
         sessionId={session.id}
-        active={agentActive}
+        active={agentActive && steer}
         starting={session.status === "starting"}
         summary={session.summary}
       />
@@ -489,7 +495,7 @@ export default function SessionScreen() {
                   onPress={() => router.push({ pathname: "/diff/[id]", params: { id: change.id } })}
                 />
               )}
-              {!agentActive && followUp !== null && canDeliverFollowUp(followUp) && (
+              {steer && !agentActive && followUp !== null && canDeliverFollowUp(followUp) && (
                 <EvButton
                   size="sm"
                   label={deliverFollowUp.isPending ? "delivering…" : "Deliver follow-up"}
@@ -497,7 +503,7 @@ export default function SessionScreen() {
                   onPress={() => deliverFollowUp.mutate(followUp)}
                 />
               )}
-              {!agentActive && (
+              {steer && !agentActive && (
                 <EvButton
                   size="sm"
                   variant={change === null && followUp === null ? "primary" : "outline"}
@@ -505,7 +511,7 @@ export default function SessionScreen() {
                   onPress={() => resume.mutate({ sessionId: session.id, harness: null })}
                 />
               )}
-              {canOpenShell && (
+              {steer && canOpenShell && (
                 <EvButton
                   size="sm"
                   variant="outline"
@@ -515,7 +521,7 @@ export default function SessionScreen() {
                 />
               )}
               <View style={{ flex: 1 }} />
-              {agentActive && (
+              {agentActive && canStop && (
                 <EvButton
                   size="sm"
                   variant="ghost"
@@ -524,6 +530,11 @@ export default function SessionScreen() {
                 />
               )}
             </View>
+          )}
+          {steer ? null : (
+            <MonoText tone="faint" size={11} numberOfLines={2}>
+              only the owner steers this session · you can read it and review the change
+            </MonoText>
           )}
           {shellError === null ? null : (
             <MonoText tone="danger" size={11} numberOfLines={2}>

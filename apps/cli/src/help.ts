@@ -6,13 +6,20 @@
  * here once, so a flag added to a command shows up everywhere or nowhere.
  */
 
-export type Section = "start" | "sessions" | "services" | "project setup" | "this machine";
+export type Section =
+  | "start"
+  | "sessions"
+  | "services"
+  | "project setup"
+  | "organization"
+  | "this machine";
 
 export const SECTIONS: ReadonlyArray<Section> = [
   "start",
   "sessions",
   "services",
   "project setup",
+  "organization",
   "this machine",
 ];
 
@@ -97,7 +104,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "adopt",
     section: "start",
     summary: "adopt a repository into the store",
-    synopsis: ["[git-url] [--name <name>] [--auth ambient|mend-key|bridge]"],
+    synopsis: ["[git-url] [--name <name>] [--auth ambient|mend-key|bridge] [--private|--shared]"],
     description: [
       "Clones a network Git repository into Mend's store. Every session then gets its own worktree of it. With no argument, Mend uses the current checkout's origin URL. HTTP(S), SSH, git://, and SCP-style URLs work; local paths and file:// URLs do not.",
       "--auth says how the store fetches from the remote. Default: your mode from mend keys mode. mend-key signs with your Mend key on the server (see mend keys). bridge relays this machine's ssh-agent while a mend command runs here, so hardware keys stay on your desk. ambient uses the server's own credentials.",
@@ -105,6 +112,11 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     options: [
       { flag: "--name <name>", text: "the project's name in Mend. Default: the repository's" },
       { flag: "--auth <mode>", text: "mend-key, bridge, or ambient. Default: mend keys mode" },
+      { flag: "--private", text: "only you see the project. Default" },
+      {
+        flag: "--shared",
+        text: "everyone in your organization sees it and can start sessions in it",
+      },
     ],
     examples: [
       { command: "mend adopt", text: "the current repository's origin URL" },
@@ -550,6 +562,87 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "When your mode is bridge (mend keys mode), every attaching mend command and the dashboard do this on their own for as long as they run, so this command is for a machine that is not running one. The server takes one signer at a time; a newer share replaces the older one.",
     ],
     see: ["keys mode", "adopt"],
+  },
+
+  // ── organization ───────────────────────────────────────────────────────
+  {
+    name: "members",
+    section: "organization",
+    summary: "who belongs to your organization, and their roles",
+    synopsis: [],
+    description: [
+      "Prints the organization's name and one row per member: name, email, role and the day they joined. The row marked with an arrow is you. Owners change roles and remove members in Settings on the web.",
+    ],
+    see: ["invite"],
+  },
+  {
+    name: "invite",
+    section: "organization",
+    summary: "print a one-time link that adds someone to your organization",
+    synopsis: ["[--role member|owner] [--email <address>] [--days <n>]"],
+    description: [
+      "Owners only. Prints a link that works once. Whoever opens it creates an account and joins with the role you pick. Mend sends no email: you share the link yourself. Bind it to an email when it must not be forwarded.",
+    ],
+    options: [
+      { flag: "--role <role>", text: "member or owner. Default: member" },
+      { flag: "--email <address>", text: "only an account with this email may accept it" },
+      { flag: "--days <n>", text: "days until the link expires. Default: 7, at most 30" },
+    ],
+    examples: [{ command: "mend invite --email sam@acme.dev", text: "a member link for Sam only" }],
+    see: ["members"],
+  },
+  {
+    name: "folder list",
+    section: "organization",
+    summary: "list your organization's folders",
+    synopsis: [],
+    description: [
+      "Folders are directories Mend keeps for the organization. A project mounts the ones it selects at /workspace/home/<name>, read-only unless chosen otherwise, for its next sessions.",
+    ],
+    see: ["folder create", "folder push"],
+  },
+  {
+    name: "folder create",
+    section: "organization",
+    summary: "create an organization folder",
+    synopsis: ["<name>"],
+    description: [
+      "Owners only. Names use lowercase letters, digits, dots, underscores and dashes. A project picks the folder in its setup on the web.",
+    ],
+    see: ["folder push", "folder list"],
+  },
+  {
+    name: "folder push",
+    section: "organization",
+    summary: "upload a local directory into a folder",
+    synopsis: ["<name> <dir> [--replace]"],
+    description: [
+      "Owners only. Sends every file under <dir>, keeping paths relative to it. .git and node_modules directories, symlinks and files over 1 MiB are skipped and counted. Without --replace the files are added beside what the folder holds.",
+    ],
+    options: [{ flag: "--replace", text: "empty the folder first, so it holds exactly <dir>" }],
+    examples: [{ command: "mend folder push fixtures ./test/fixtures --replace", text: "" }],
+    see: ["folder create", "folder rm"],
+  },
+  {
+    name: "folder rm",
+    section: "organization",
+    summary: "remove an organization folder",
+    synopsis: ["<name>"],
+    description: [
+      "Owners only. A folder a project still mounts is refused: deselect it in that project's setup first.",
+    ],
+    see: ["folder list"],
+  },
+  {
+    name: "session share",
+    section: "organization",
+    summary: "let everyone who can see a session steer it, or stop",
+    synopsis: ["<session> on|off"],
+    description: [
+      "The session's owner turns shared control on or off; an organization owner may turn it off. While it is on, anyone who can see the project sends turns, answers approvals, interrupts and types in the terminal, using your provider logins and Git access. Every act is recorded with who did it. A prefix of the session id is enough.",
+    ],
+    examples: [{ command: "mend session share 3f2a on", text: "" }],
+    see: ["sessions"],
   },
 
   // ── this machine ───────────────────────────────────────────────────────

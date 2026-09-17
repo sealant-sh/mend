@@ -463,9 +463,9 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           .create({
             id,
             organizationId,
-            // Shared until the adopt surfaces offer the choice (docs/adr/0003, delivery step 6), so
-            // nothing adopted meanwhile disappears from teammates once visibility is enforced.
-            visibility: payload.visibility ?? "shared",
+            // Private unless the request says otherwise (docs/adr/0003): only the adopter sees a
+            // new project until they or an owner share it. Every adopt surface offers the choice.
+            visibility: payload.visibility ?? "private",
             createdByUserId: caller.user.id,
             name: payload.name,
             originUrl: payload.source,

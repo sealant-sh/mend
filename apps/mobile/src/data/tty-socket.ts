@@ -125,10 +125,17 @@ export function useTtySocket({
         }
         onBinaryRef.current?.(event.data as ArrayBuffer, generation);
       });
-      socket.addEventListener("close", () => {
+      socket.addEventListener("close", (event) => {
         if (disposed || socket !== ws) return;
         ws = null;
         wsRef.current = null;
+        // 1008: this account's access was revoked (docs/adr/0003). Retrying cannot succeed.
+        if (event.code === 1008) {
+          ended = true;
+          setPhase("ended");
+          onEndRef.current?.();
+          return;
+        }
         if (ended) return;
         if (connectedAt !== null && Date.now() - connectedAt >= STABLE_AFTER_MS) attempt = 0;
         connectedAt = null;
