@@ -1737,6 +1737,24 @@ const foldersMigration = Effect.gen(function* () {
     )`;
 });
 
+/**
+ * docs/adr/0003-organizations-and-tenancy.md: a hot workspace always runs as one account. Entries
+ * warmed before this ran as the first account, so that is who owns them now; the reconcile drains
+ * any whose owner is no longer one the pool serves.
+ */
+const hotPoolOwnersMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    UPDATE hot_workspaces
+    SET owner_user_id = (SELECT id FROM "user" ORDER BY "createdAt" ASC, id ASC LIMIT 1)
+    WHERE owner_user_id IS NULL`;
+  yield* sql`DELETE FROM hot_workspaces WHERE owner_user_id IS NULL`;
+  yield* sql`ALTER TABLE hot_workspaces ALTER COLUMN owner_user_id SET NOT NULL`;
+  yield* sql`
+    CREATE INDEX agent_sessions_project_owner_idx
+    ON agent_sessions (project_id, owner_user_id, created_at DESC)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1796,4 +1814,5 @@ export const migrations = {
   "0055_organizations": organizationsMigration,
   "0056_per_account_resources": perAccountResourcesMigration,
   "0057_folders": foldersMigration,
+  "0058_hot_pool_owners": hotPoolOwnersMigration,
 };

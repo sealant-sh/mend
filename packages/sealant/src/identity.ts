@@ -18,8 +18,6 @@ export class SealantIdentityStore extends Context.Service<
   {
     /** The Mend account, or null when the id no longer exists. */
     readonly user: (userId: string) => Effect.Effect<MendUserRecord | null>;
-    /** The operator: the first account on this Mend, or null before any sign-up. */
-    readonly firstUser: () => Effect.Effect<MendUserRecord | null>;
     /** The recorded Sealant user id for a Mend user, or null before first use. */
     readonly sealantUserId: (userId: string) => Effect.Effect<string | null>;
     /** Record the mapping once Sealant has provisioned the user (idempotent). */

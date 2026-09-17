@@ -52,8 +52,11 @@ export class HotWorkspace extends Schema.Class<HotWorkspace>("HotWorkspace")({
    * launch. Rows from before still carry the pre-created worktree the drain must remove.
    */
   worktreeId: Schema.NullOr(WorktreeId),
-  /** Whose dotfiles were resolved at prewarm. Null when no user has dotfiles configured. */
-  ownerUserId: Schema.NullOr(Schema.String),
+  /**
+   * The account the workspace was provisioned as: its connected accounts, dotfiles and signer.
+   * Only that account's sessions claim it (docs/adr/0003-organizations-and-tenancy.md).
+   */
+  ownerUserId: Schema.String,
   status: HotWorkspaceStatus,
   /** Why provisioning failed, when it did — surfaced on the project setup page. */
   error: Schema.NullOr(Schema.String),

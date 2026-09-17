@@ -74,6 +74,7 @@ import {
   Change,
   Checkpoint,
   HotWorkspace,
+  Organization,
   Project,
   ProjectClusterBinding,
   ProjectClusterBindingsSnapshot,
@@ -592,7 +593,6 @@ const sessionSocketStubLayer = Layer.succeed(SessionSocketHost, {
 const userDotfilesStubLayer = Layer.succeed(UserDotfilesRepo, {
   repository: () => Effect.succeed(null),
   setRepository: (_userId: string, value: DotfilesRepository | null) => Effect.succeed(value),
-  firstUserId: () => Effect.succeed<string | null>("user-fixture"),
 });
 const dotfilesStoreStubLayer = Layer.succeed(DotfilesStore, {
   snapshot: () => Effect.die("not in test"),
@@ -699,6 +699,10 @@ interface World {
   readonly checkpointConflicts: { count: number };
   /** Keyed by worktree id. */
   readonly worktrees: Map<string, Worktree>;
+  /** Members of the fixture organization (`org-test`), by account. */
+  readonly members: Map<string, "owner" | "member">;
+  /** What `SessionsRepo.recentOwnersForProject` answers: the accounts the hot pool may warm for. */
+  recentOwners: ReadonlyArray<string>;
 }
 
 const makeWorld = (): World => ({
@@ -714,6 +718,8 @@ const makeWorld = (): World => ({
   checkpointCaptureIds: new Map(),
   checkpointConflicts: { count: 0 },
   worktrees: new Map(),
+  members: new Map([["user-fixture", "member"]]),
+  recentOwners: ["user-fixture"],
 });
 
 const sessionProcessesLayer = (world: World) => {
@@ -1076,11 +1082,27 @@ const serviceStateLayer = (world: World) =>
     serviceObservationsLayer(world),
   );
 
-/** No linked projects in these worlds. */
-/** No memberships: a project with links would skip them all, and these tests declare none. */
-const organizationsEmptyLayer = Layer.mock(OrganizationsRepo, {
-  membershipOf: () => Effect.succeed(null),
-});
+/** One organization, `org-test`, whose members the world names. */
+const organizationsLayer = (world: World) =>
+  Layer.mock(OrganizationsRepo, {
+    membershipOf: (userId) =>
+      Effect.sync(() => {
+        const role = world.members.get(userId);
+        return role === undefined
+          ? null
+          : {
+              organization: new Organization({
+                id: OrganizationId.make("org-test"),
+                name: "Test",
+                createdByUserId: null,
+                createdAt: now(),
+                updatedAt: now(),
+              }),
+              role,
+              joinedAt: now(),
+            };
+      }),
+  });
 
 /** No organization folders selected in these worlds. */
 const foldersEmptyLayer = Layer.mock(FoldersRepo, { listForProject: () => Effect.succeed([]) });
@@ -1307,6 +1329,7 @@ const sessionsLayer = (world: World) => {
     listActive: () => Effect.succeed([]),
     listUnsettled: () =>
       Effect.succeed([...world.sessions.values()].filter((s) => s.settledAt === null)),
+    recentOwnersForProject: () => Effect.sync(() => world.recentOwners),
     listRecentlySettled: () =>
       Effect.succeed(
         [...world.sessions.values()].filter(
@@ -1823,7 +1846,7 @@ const withEngine = <A, E>(
         referencesEmptyLayer,
         projectMountsEmptyLayer,
         projectLinksEmptyLayer,
-        organizationsEmptyLayer,
+        organizationsLayer(world),
         foldersEmptyLayer,
         projectRecipesEmptyLayer,
         options.hotWorkspacesLayer ?? hotWorkspacesEmptyLayer,
@@ -1868,7 +1891,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
 
@@ -1909,7 +1932,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
 
@@ -2075,7 +2098,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
 
@@ -2150,7 +2173,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launchProtocol(
@@ -2204,7 +2227,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launchProtocol(
@@ -2253,7 +2276,7 @@ describe("SessionEngine", () => {
             harness: "claude",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launchProtocol(
@@ -2338,7 +2361,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launchProtocol(
@@ -2385,7 +2408,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           const launch = yield* engine
@@ -2428,7 +2451,7 @@ describe("SessionEngine", () => {
             harness: "claude",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
 
@@ -2481,7 +2504,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
 
@@ -2515,7 +2538,7 @@ describe("SessionEngine", () => {
             harness: "shell",
             label: "bench",
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
 
@@ -2540,7 +2563,7 @@ describe("SessionEngine", () => {
             harness: "shell",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
 
@@ -2575,7 +2598,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
 
@@ -2608,7 +2631,7 @@ describe("SessionEngine", () => {
             harness: "shell",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
 
@@ -2647,7 +2670,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -2743,7 +2766,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -2793,7 +2816,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -2843,7 +2866,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -2910,7 +2933,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -2979,7 +3002,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -3019,7 +3042,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -3051,7 +3074,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -3086,7 +3109,7 @@ describe("SessionEngine", () => {
         const engine = yield* SessionEngine;
         const session = yield* engine.provision({
           name: null,
-          ownerUserId: null,
+          ownerUserId: "user-fixture",
           projectId: project.id,
           harness: "codex",
           label: null,
@@ -3113,7 +3136,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
 
@@ -3157,7 +3180,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -3252,7 +3275,7 @@ describe("SessionEngine", () => {
               workspaceTtlRenewalError: null,
               workspaceImage: null,
               dotfiles: null,
-              ownerUserId: null,
+              ownerUserId: "user-fixture",
               hasTranscript: null,
               status: "completed",
               summary: null,
@@ -3321,7 +3344,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -3380,7 +3403,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -3425,7 +3448,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -3485,7 +3508,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -3517,7 +3540,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -3550,7 +3573,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -3589,7 +3612,7 @@ describe("SessionEngine", () => {
             harness: "claude",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           expect(session.status).toBe("starting");
@@ -3615,7 +3638,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -3649,7 +3672,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -3695,7 +3718,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -3740,7 +3763,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           const failure = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
@@ -3798,7 +3821,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -3834,7 +3857,7 @@ describe("SessionEngine", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -3885,7 +3908,7 @@ describe("SessionEngine", () => {
           const engine = yield* SessionEngine;
           const session = yield* engine.provision({
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             projectId: project.id,
             harness: "codex",
             label: null,
@@ -3923,7 +3946,7 @@ describe("SessionEngine", () => {
 
         const session = yield* engine.provision({
           name: null,
-          ownerUserId: null,
+          ownerUserId: "user-fixture",
           projectId: project.id,
           harness: "codex",
           label: "fix the answer",
@@ -3964,7 +3987,7 @@ describe("SessionEngine", () => {
 
         const first = yield* engine.provision({
           name: "fix-auth",
-          ownerUserId: null,
+          ownerUserId: "user-fixture",
           projectId: project.id,
           harness: "codex",
           label: null,
@@ -3975,7 +3998,7 @@ describe("SessionEngine", () => {
 
         const second = yield* engine.provision({
           name: "fix-auth",
-          ownerUserId: null,
+          ownerUserId: "user-fixture",
           projectId: project.id,
           harness: "claude",
           label: "second opinion",
@@ -4000,7 +4023,7 @@ describe("SessionEngine", () => {
         const conflict = yield* engine
           .provision({
             name: "fix-auth",
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             projectId: project.id,
             harness: "codex",
             label: null,
@@ -4033,7 +4056,7 @@ describe("SessionEngine", () => {
         const session = yield* engine.provisionSessionIn(worktree.id, {
           harness: "codex",
           label: null,
-          ownerUserId: null,
+          ownerUserId: "user-fixture",
         });
         expect(session.worktreeId).toBe(worktree.id);
         expect(session.branch).toBe("mend/durable-place");
@@ -4057,7 +4080,7 @@ describe("SessionEngine", () => {
         const engine = yield* SessionEngine;
         const session = yield* engine.provision({
           name: null,
-          ownerUserId: null,
+          ownerUserId: "user-fixture",
           projectId: project.id,
           harness: "codex",
           label: null,
@@ -4121,7 +4144,7 @@ describe("SessionEngine", () => {
         const engine = yield* SessionEngine;
         const session = yield* engine.provision({
           name: null,
-          ownerUserId: null,
+          ownerUserId: "user-fixture",
           projectId: project.id,
           harness: "codex",
           label: null,
@@ -4157,7 +4180,7 @@ describe("SessionEngine", () => {
         const engine = yield* SessionEngine;
         const session = yield* engine.provision({
           name: null,
-          ownerUserId: null,
+          ownerUserId: "user-fixture",
           projectId: project.id,
           harness: "custom",
           label: null,
@@ -4184,7 +4207,7 @@ describe("SessionEngine", () => {
         const engine = yield* SessionEngine;
         const session = yield* engine.provision({
           name: null,
-          ownerUserId: null,
+          ownerUserId: "user-fixture",
           projectId: project.id,
           harness: "codex",
           label: null,
@@ -4217,7 +4240,7 @@ describe("SessionEngine", () => {
           const engine = yield* SessionEngine;
           const session = yield* engine.provision({
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             projectId: project.id,
             harness: "codex",
             label: null,
@@ -4313,7 +4336,7 @@ describe("SessionEngine", () => {
           const engine = yield* SessionEngine;
           const session = yield* engine.provision({
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             projectId: project.id,
             harness: "claude",
             label: null,
@@ -4383,7 +4406,7 @@ describe("SessionEngine", () => {
           const engine = yield* SessionEngine;
           const session = yield* engine.provision({
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             projectId: project.id,
             harness: "claude",
             label: null,
@@ -4443,7 +4466,7 @@ describe("SessionEngine", () => {
           const engine = yield* SessionEngine;
           const session = yield* engine.provision({
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             projectId: project.id,
             harness: "claude",
             label: null,
@@ -4496,7 +4519,7 @@ describe("SessionEngine", () => {
       workspaceTtlRenewalError: null,
       workspaceImage: null,
       dotfiles: null,
-      ownerUserId: null,
+      ownerUserId: "user-fixture",
       hasTranscript: null,
       status: "running",
       summary: null,
@@ -4545,7 +4568,7 @@ describe("SessionEngine", () => {
           referencesEmptyLayer,
           projectMountsEmptyLayer,
           projectLinksEmptyLayer,
-          organizationsEmptyLayer,
+          organizationsLayer(world),
           foldersEmptyLayer,
           projectRecipesEmptyLayer,
           hotWorkspacesEmptyLayer,
@@ -5008,7 +5031,7 @@ const verifyDeferredFinalHarvest = async (pathKind: "stop" | "handoff" | "sweep"
           harness: "codex",
           label: null,
           name: null,
-          ownerUserId: null,
+          ownerUserId: "user-fixture",
           base: null,
         });
         yield* engine.launch(session.id, ["codex"]);
@@ -5193,7 +5216,7 @@ describe("SessionEngine capture mode", () => {
               harness: "codex",
               label: null,
               name: null,
-              ownerUserId: null,
+              ownerUserId: "user-fixture",
               base: null,
             });
             yield* engine.launch(session.id, ["codex"]);
@@ -5408,7 +5431,7 @@ describe("SessionEngine capture mode", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           // No directory was made: the authority is the chain, head at capture 0 from the base.
@@ -5500,7 +5523,7 @@ describe("SessionEngine capture mode", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -5588,7 +5611,7 @@ describe("SessionEngine capture mode", () => {
                 workspaceTtlRenewalError: null,
                 workspaceImage: null,
                 dotfiles: null,
-                ownerUserId: null,
+                ownerUserId: "user-fixture",
                 hasTranscript: null,
                 status: "completed",
                 summary: null,
@@ -5784,7 +5807,7 @@ describe("SessionEngine capture mode", () => {
                 harness: "codex",
                 label: null,
                 name: null,
-                ownerUserId: null,
+                ownerUserId: "user-fixture",
                 base: null,
               });
               yield* engine.launch(session.id, ["codex"]);
@@ -5958,7 +5981,7 @@ describe("SessionEngine capture mode", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* replaceHeadWithRootlessWorkspace(tmp, memory, session.worktreeId);
@@ -6039,7 +6062,7 @@ describe("SessionEngine capture mode", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -6159,7 +6182,7 @@ describe("SessionEngine capture mode", () => {
           const session = yield* engine.provisionSessionIn(worktree.id, {
             harness: "codex",
             label: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
           });
           expect(memory.chains.get(worktreeId)?.headCapture ?? null).toBeNull();
 
@@ -6205,7 +6228,7 @@ describe("SessionEngine capture mode", () => {
               harness: "codex",
               label: null,
               name: "shared",
-              ownerUserId: null,
+              ownerUserId: "user-fixture",
               base: null,
             });
             yield* engine.launch(first.id, ["codex"]);
@@ -6214,7 +6237,7 @@ describe("SessionEngine capture mode", () => {
             const second = yield* engine.provisionSessionIn(first.worktreeId, {
               harness: "claude",
               label: null,
-              ownerUserId: null,
+              ownerUserId: "user-fixture",
             });
             yield* engine.launch(second.id, ["claude"]);
             // One executor per worktree: the join is one more process in the holder's workspace.
@@ -6234,7 +6257,7 @@ describe("SessionEngine capture mode", () => {
             const third = yield* engine.provisionSessionIn(first.worktreeId, {
               harness: "codex",
               label: null,
-              ownerUserId: null,
+              ownerUserId: "user-fixture",
             });
             const refused = yield* engine.launch(third.id, ["codex"]).pipe(Effect.flip);
             expect(refused._tag).toBe("SealantPlatformError");
@@ -6273,7 +6296,7 @@ describe("SessionEngine capture mode", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -6353,7 +6376,7 @@ describe("SessionEngine capture mode", () => {
             harness: "codex",
             label: null,
             name: null,
-            ownerUserId: null,
+            ownerUserId: "user-fixture",
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
@@ -6475,13 +6498,14 @@ describe("SessionEngine capture mode", () => {
       setReady: (id, stamps) => update(id, { ...stamps, status: "ready", error: null }),
       setBaseSha: (id, baseSha) => update(id, { baseSha }),
       setFailed: (id, error) => update(id, { status: "failed", error }),
-      claim: (projectId, fingerprint) =>
+      claim: (projectId, fingerprint, ownerUserId) =>
         Effect.sync(() => {
           const index = entries.findIndex(
             (entry) =>
               entry.projectId === projectId &&
               entry.status === "ready" &&
-              entry.fingerprint === fingerprint,
+              entry.fingerprint === fingerprint &&
+              entry.ownerUserId === ownerUserId,
           );
           const entry = entries[index];
           if (entry === undefined) return null;
@@ -6552,6 +6576,86 @@ describe("SessionEngine capture mode", () => {
         sealantLayer: sealantLaunchLayer(created),
         hotWorkspacesLayer: pool.layer,
       },
+    );
+  });
+
+  it("keeps the pool per owner: one standby for each recent owner who may run here, never for anyone else, and another owner's session goes cold", async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          world.members.set("user-teammate", "member");
+          world.members.set("user-late", "member");
+          // user-gone ran sessions here but is no longer a member of the organization.
+          world.recentOwners = ["user-teammate", "user-gone", "user-fixture"];
+          const engine = yield* SessionEngine;
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(
+            () => pool.entries.filter((entry) => entry.status === "ready").length === 2,
+            "a standby per eligible owner",
+          );
+          expect(pool.entries.map((entry) => entry.ownerUserId).toSorted()).toEqual([
+            "user-fixture",
+            "user-teammate",
+          ]);
+          expect(created).toHaveLength(2);
+
+          // An owner with no standby of their own is served cold; nobody else's is spent.
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-late",
+            base: null,
+          });
+          expect(pool.entries.map((entry) => entry.id)).not.toContain(session.id);
+          expect(pool.entries.every((entry) => entry.status === "ready")).toBe(true);
+
+          // Losing access drains that owner's standby on the next pass.
+          world.members.delete("user-teammate");
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(
+            () => pool.entries.every((entry) => entry.ownerUserId !== "user-teammate"),
+            "the former member's standby to drain",
+          );
+          expect(pool.entries.map((entry) => entry.ownerUserId)).toEqual(["user-fixture"]);
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(created),
+        hotWorkspacesLayer: pool.layer,
+      },
+    );
+  });
+
+  it("a session with no owner launches as nobody: it settles failed before any platform call", async () => {
+    const created: Array<CreateOptions> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: null,
+            base: null,
+          });
+          const failure = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+          expect(failure._tag === "SealantPlatformError" ? failure.code : failure._tag).toBe(
+            "NO_PRINCIPAL",
+          );
+          expect(created).toHaveLength(0);
+          expect(world.sessions.get(session.id)?.status).toBe("failed");
+        }),
+      { sealantLayer: sealantLaunchLayer(created) },
     );
   });
 
@@ -6773,7 +6877,7 @@ describe("SessionEngine capture mode", () => {
               harness: "codex",
               label: null,
               name: null,
-              ownerUserId: null,
+              ownerUserId: "user-fixture",
               base: null,
             });
             yield* engine.launch(session.id, ["codex"]);

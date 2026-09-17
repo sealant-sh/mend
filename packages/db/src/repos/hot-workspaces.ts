@@ -13,7 +13,7 @@ import {
   type SessionExtraMount,
   type SessionReferenceMount,
 } from "@mend/domain/workbench";
-import { and, asc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -25,7 +25,7 @@ export interface NewHotWorkspace {
   readonly projectId: ProjectId;
   /** Always null since standby workspaces (ADR-0001): the claiming session brings its own worktree. */
   readonly worktreeId: WorktreeId | null;
-  readonly ownerUserId: string | null;
+  readonly ownerUserId: string;
   readonly fingerprint: string;
   readonly worktree: string | null;
   readonly branch: string | null;
@@ -56,14 +56,14 @@ export class HotWorkspacesRepo extends Context.Service<
     readonly setBaseSha: (id: SessionId, baseSha: Sha) => Effect.Effect<void>;
     readonly setFailed: (id: SessionId, error: string) => Effect.Effect<void>;
     /**
-     * Atomically pop the oldest `ready` entry matching the project's CURRENT fingerprint —
-     * `FOR UPDATE SKIP LOCKED` inside one statement, so concurrent provisions never double-claim.
-     * Null when nothing matches (the cold path).
+     * Atomically pop the oldest `ready` entry of this owner matching the project's CURRENT
+     * fingerprint for them — `FOR UPDATE SKIP LOCKED` inside one statement, so concurrent
+     * provisions never double-claim. Null when nothing matches (the cold path).
      */
     readonly claim: (
       projectId: ProjectId,
       fingerprint: string,
-      ownerUserId: string | null,
+      ownerUserId: string,
     ) => Effect.Effect<HotWorkspace | null>;
     readonly remove: (id: SessionId) => Effect.Effect<void>;
   }
@@ -159,7 +159,7 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
     const claim = Effect.fn("HotWorkspacesRepo.claim")(function* (
       projectId: ProjectId,
       fingerprint: string,
-      ownerUserId: string | null,
+      ownerUserId: string,
     ) {
       // A skeleton was provisioned AS its owner (its workspace carries that user's connected
       // accounts), so only that owner's sessions may claim it (docs/SEALANT-IDENTITY.md).
@@ -171,9 +171,7 @@ export const HotWorkspacesRepoLive: Layer.Layer<HotWorkspacesRepo, never, MendDB
             eq(hotWorkspaces.projectId, projectId),
             eq(hotWorkspaces.status, "ready"),
             eq(hotWorkspaces.fingerprint, fingerprint),
-            ownerUserId === null
-              ? isNull(hotWorkspaces.ownerUserId)
-              : eq(hotWorkspaces.ownerUserId, ownerUserId),
+            eq(hotWorkspaces.ownerUserId, ownerUserId),
           ),
         )
         .orderBy(asc(hotWorkspaces.createdAt))

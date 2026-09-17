@@ -1,10 +1,5 @@
 import { CurrentUser, NotFound, SessionNotSteerable } from "@mend/api-contracts";
-import {
-  AgentConversationRepo,
-  ServicesRepo,
-  SessionProcessesRepo,
-  UserDotfilesRepo,
-} from "@mend/db";
+import { AgentConversationRepo, ServicesRepo, SessionProcessesRepo } from "@mend/db";
 import {
   type AgentRequestId,
   type AgentTurnId,
@@ -19,7 +14,7 @@ import type {
   Session,
   SessionProcess,
 } from "@mend/domain/workbench";
-import { Effect, Layer, Ref } from "effect";
+import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { ProjectAccess } from "./access.ts";
@@ -27,14 +22,14 @@ import { ProjectAccess } from "./access.ts";
 export interface CanSteerSessionInput {
   readonly ownerUserId: string | null;
   readonly callerUserId: string;
-  readonly fallbackOwnerUserId: string | null;
 }
 
-/** Shared control will extend this one decision (docs/adr/0003, delivery step 6). */
-export const canSteerSession = (input: CanSteerSessionInput): boolean => {
-  const effectiveOwner = input.ownerUserId ?? input.fallbackOwnerUserId;
-  return effectiveOwner !== null && input.callerUserId === effectiveOwner;
-};
+/**
+ * Only the owner steers (docs/adr/0003); shared control will extend this one decision. A session
+ * with no owner is steered by nobody, never by a stand-in account.
+ */
+export const canSteerSession = (input: CanSteerSessionInput): boolean =>
+  input.ownerUserId !== null && input.callerUserId === input.ownerUserId;
 
 type SteeringError = NotFound | SessionNotSteerable;
 
@@ -98,7 +93,7 @@ export class SessionSteering extends Context.Service<
 export const SessionSteeringLive: Layer.Layer<
   SessionSteering,
   never,
-  AgentConversationRepo | ProjectAccess | ServicesRepo | SessionProcessesRepo | UserDotfilesRepo
+  AgentConversationRepo | ProjectAccess | ServicesRepo | SessionProcessesRepo
 > = Layer.effect(
   SessionSteering,
   Effect.gen(function* () {
@@ -106,28 +101,9 @@ export const SessionSteeringLive: Layer.Layer<
     const processes = yield* SessionProcessesRepo;
     const services = yield* ServicesRepo;
     const access = yield* ProjectAccess;
-    const dotfiles = yield* UserDotfilesRepo;
-    const firstUserIdRef = yield* Ref.make<string | null>(null);
 
-    const firstUserId = Effect.fn("SessionSteering.firstUserId")(function* () {
-      const cached = yield* Ref.get(firstUserIdRef);
-      if (cached !== null) return cached;
-      const found = yield* dotfiles.firstUserId();
-      if (found !== null) yield* Ref.set(firstUserIdRef, found);
-      return found;
-    });
-
-    const ownerSteers = Effect.fn("SessionSteering.ownerSteers")(function* (
-      session: Session,
-      userId: string,
-    ) {
-      const fallbackOwnerUserId = session.ownerUserId === null ? yield* firstUserId() : null;
-      return canSteerSession({
-        ownerUserId: session.ownerUserId,
-        callerUserId: userId,
-        fallbackOwnerUserId,
-      });
-    });
+    const ownerSteers = (session: Session, userId: string) =>
+      canSteerSession({ ownerUserId: session.ownerUserId, callerUserId: userId });
 
     const authorizeUser = Effect.fn("SessionSteering.authorizeUser")(function* (
       session: Session,
@@ -136,21 +112,21 @@ export const SessionSteeringLive: Layer.Layer<
       yield* access
         .projectAs(userId, session.projectId)
         .pipe(Effect.mapError(() => new NotFound({ id: session.id })));
-      if (!(yield* ownerSteers(session, userId))) return yield* refuse(session);
+      if (!ownerSteers(session, userId)) return yield* refuse(session);
       return session;
     });
 
     const session = Effect.fn("SessionSteering.session")(function* (id: SessionId) {
       const caller = yield* CurrentUser;
       const row = yield* access.session(id);
-      if (!(yield* ownerSteers(row, caller.user.id))) return yield* refuse(row);
+      if (!ownerSteers(row, caller.user.id)) return yield* refuse(row);
       return row;
     });
 
     const stop = Effect.fn("SessionSteering.stop")(function* (id: SessionId) {
       const caller = yield* CurrentUser;
       const row = yield* access.session(id);
-      if (yield* ownerSteers(row, caller.user.id)) return row;
+      if (ownerSteers(row, caller.user.id)) return row;
       const viewer = yield* access.viewer();
       if (viewer !== null && viewer.role === "owner") return row;
       return yield* refuse(row);

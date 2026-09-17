@@ -76,6 +76,15 @@ export class SessionsRepo extends Context.Service<
     readonly listUnsettled: () => Effect.Effect<ReadonlyArray<Session>>;
     /** Recently settled sessions — the boot sweep reaps any workspace that outlived them. */
     readonly listRecentlySettled: () => Effect.Effect<ReadonlyArray<Session>>;
+    /**
+     * The accounts that started sessions in this project since `since`, most recent first. The
+     * hot pool warms for them; sessions labelled `excludeLabel` (Mend's own) do not count.
+     */
+    readonly recentOwnersForProject: (
+      projectId: ProjectId,
+      since: Date,
+      excludeLabel: string,
+    ) => Effect.Effect<ReadonlyArray<string>>;
     readonly setSealantIds: (
       id: SessionId,
       sealantRunId: SealantRunId,
@@ -270,6 +279,29 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .orderBy(asc(agentSessions.createdAt))
           .pipe(Effect.orDie);
         return rows.map(toSession);
+      });
+
+      const recentOwnersForProject = Effect.fn("SessionsRepo.recentOwnersForProject")(function* (
+        projectId: ProjectId,
+        since: Date,
+        excludeLabel: string,
+      ) {
+        const latest = sql<Date>`max(${agentSessions.createdAt})`;
+        const rows = yield* db
+          .select({ ownerUserId: agentSessions.ownerUserId, latest })
+          .from(agentSessions)
+          .where(
+            and(
+              eq(agentSessions.projectId, projectId),
+              isNotNull(agentSessions.ownerUserId),
+              gt(agentSessions.createdAt, since),
+              sql`${agentSessions.label} IS DISTINCT FROM ${excludeLabel}`,
+            ),
+          )
+          .groupBy(agentSessions.ownerUserId)
+          .orderBy(desc(latest))
+          .pipe(Effect.orDie);
+        return rows.flatMap((row) => (row.ownerUserId === null ? [] : [row.ownerUserId]));
       });
 
       const listRecentlySettled = Effect.fn("SessionsRepo.listRecentlySettled")(function* () {
@@ -608,6 +640,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         create,
         byId,
         listForProject,
+        recentOwnersForProject,
         listForWorktree,
         listActive,
         listUnsettled,

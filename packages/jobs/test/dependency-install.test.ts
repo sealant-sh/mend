@@ -1,7 +1,8 @@
 import * as fs from "node:fs";
 
-import { CaptureStoreRepo } from "@mend/db";
-import { WorktreeId } from "@mend/domain";
+import { CaptureStoreRepo, OrganizationsRepo } from "@mend/db";
+import { OrganizationId, WorktreeId } from "@mend/domain";
+import { Organization } from "@mend/domain/workbench";
 import { CaptureRuntimeLive, dependencyCachePrefix, readDependencyCache } from "@mend/sessions";
 import { makeCaptureWorld, newWorktreeId } from "@mend/sessions/testing";
 import { BlobStore, captureKeys } from "@mend/store";
@@ -65,10 +66,32 @@ describe("dependency-install", () => {
       return built.id;
     }).pipe(Effect.provide(world.layer));
 
+  /** Members of the capture world's organization; everyone else may not run there. */
+  const members = new Set(["user-requester"]);
+  const organizations = Layer.mock(OrganizationsRepo, {
+    membershipOf: (userId) =>
+      Effect.succeed(
+        members.has(userId)
+          ? {
+              organization: new Organization({
+                id: OrganizationId.make("org-capture"),
+                name: "Capture",
+                createdByUserId: null,
+                createdAt: new Date(),
+                updatedAt: new Date(),
+              }),
+              role: "member" as const,
+              joinedAt: new Date(),
+            }
+          : null,
+      ),
+  });
+
   const installerWith = (runner: InstallRunner["Service"]) =>
     DependencyInstallerLive.pipe(
       Layer.provide(runtime),
       Layer.provide(Layer.succeed(InstallRunner, runner)),
+      Layer.provide(organizations),
       Layer.provide(world.layer),
     );
 
@@ -129,12 +152,40 @@ describe("dependency-install", () => {
     );
   });
 
+  it("runs as nobody else when the requester may no longer run here and there is no creator", async () => {
+    const ran: Array<string> = [];
+    const outcome = await Effect.runPromise(
+      Effect.gen(function* () {
+        const installer = yield* DependencyInstaller;
+        return yield* installer.install({
+          projectId: world.project.id,
+          requestedByUserId: "user-removed",
+        });
+      }).pipe(
+        Effect.provide(
+          installerWith({
+            run: (projectId, ownerUserId) =>
+              Effect.sync(() => {
+                ran.push(`${projectId}:${ownerUserId}`);
+                return { worktreeId: newWorktreeId() };
+              }),
+          }),
+        ),
+      ),
+    );
+    expect(outcome).toEqual({ outcome: "skipped", reason: "no account may run the install" });
+    expect(ran).toEqual([]);
+  });
+
   it("an install session that did not run or captured no tree promotes nothing", async () => {
     const bare = newWorktreeId();
     const outcomes = await Effect.runPromise(
       Effect.gen(function* () {
         const installer = yield* DependencyInstaller;
-        return yield* installer.install({ projectId: world.project.id });
+        return yield* installer.install({
+          projectId: world.project.id,
+          requestedByUserId: "user-requester",
+        });
       }).pipe(
         Effect.provide(
           installerWith({
@@ -148,7 +199,10 @@ describe("dependency-install", () => {
     const noTree = await Effect.runPromise(
       Effect.gen(function* () {
         const installer = yield* DependencyInstaller;
-        return yield* installer.install({ projectId: world.project.id });
+        return yield* installer.install({
+          projectId: world.project.id,
+          requestedByUserId: "user-requester",
+        });
       }).pipe(Effect.provide(installerWith({ run: () => Effect.succeed({ worktreeId: bare }) }))),
     );
     expect(noTree).toEqual({

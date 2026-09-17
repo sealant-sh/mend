@@ -617,9 +617,12 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
       Effect.gen(function* () {
         const projects = yield* ProjectsRepo;
         yield* (yield* ProjectAccess).changeVisibility(params.id);
-        return yield* projects
+        const project = yield* projects
           .setVisibility(params.id, payload.visibility)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        // Who may run here changed: standbys warmed for accounts that lost access drain.
+        yield* (yield* SessionEngine).reconcileHotSessions(params.id);
+        return project;
       }),
     )
     .handle("automation", ({ params, payload }) =>

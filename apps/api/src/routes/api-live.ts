@@ -36,7 +36,7 @@ import {
 import type { RunId } from "@mend/domain";
 import { JobRunner } from "@mend/jobs";
 import {
-  asFirstSealantUser,
+  asSealantUser,
   SealantClient,
   SealantClients,
   SealantIdentity,
@@ -392,10 +392,20 @@ const openRecord = (id: RunId) =>
     return { run, sdkRun };
   });
 
+/**
+ * The retired queue's runs are read as the operator making the request (docs/adr/0003): no
+ * stand-in account, and every handler checks the operator role before touching the platform.
+ */
+const asCaller = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const caller = yield* CurrentUser;
+    return yield* effect.pipe(asSealantUser(caller.user.id));
+  });
+
 export const RunsGroupLive = HttpApiBuilder.group(MendApi, "runs", (handlers) =>
   handlers
     .handle("detail", ({ params }) =>
-      asFirstSealantUser(
+      asCaller(
         Effect.gen(function* () {
           // The retired queue has no project to authorize against (docs/adr/0003): operator only.
           yield* (yield* ProjectAccess).requireOperator("queue");
@@ -472,7 +482,7 @@ export const RunsGroupLive = HttpApiBuilder.group(MendApi, "runs", (handlers) =>
       ),
     )
     .handle("trace", ({ params, query }) =>
-      asFirstSealantUser(
+      asCaller(
         Effect.gen(function* () {
           // The retired queue has no project to authorize against (docs/adr/0003): operator only.
           yield* (yield* ProjectAccess).requireOperator("queue");
@@ -506,7 +516,7 @@ export const RunsGroupLive = HttpApiBuilder.group(MendApi, "runs", (handlers) =>
       ),
     )
     .handle("sources", ({ params }) =>
-      asFirstSealantUser(
+      asCaller(
         Effect.gen(function* () {
           // The retired queue has no project to authorize against (docs/adr/0003): operator only.
           yield* (yield* ProjectAccess).requireOperator("queue");

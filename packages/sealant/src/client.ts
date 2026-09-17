@@ -751,13 +751,6 @@ export const SealantClientsLive: Layer.Layer<
       switch (principal.kind) {
         case "user":
           return yield* forUser(principal.userId);
-        case "first-user": {
-          const first = yield* identities.firstUser();
-          if (first === null) {
-            return yield* platformFailure("NO_PRINCIPAL", "no Mend account exists yet to act as");
-          }
-          return yield* forUser(first.id);
-        }
         case "none":
           return yield* platformFailure(
             "NO_PRINCIPAL",
