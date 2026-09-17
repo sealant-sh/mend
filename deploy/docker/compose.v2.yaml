@@ -1,5 +1,5 @@
 # Mend bundle deployment contract v2. The long-running containers are Mend, official Postgres and
-# Garage. The Mend image supervises its web/API processes plus the Sealant 0.33.0 API, worker
+# Garage. The Mend image supervises its web/API processes plus the Sealant 0.33.1 API, worker
 # and SSH gateway. Sealant's job queue lives in Postgres and workspace images live in the host
 # Docker Engine. Garage is the capture store's bucket (docs/adr/0002-session-capture-store.md):
 # every session's work product ships there and the executor is disposable. Generate and persist
