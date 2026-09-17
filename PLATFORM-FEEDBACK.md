@@ -7,6 +7,18 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-17 · 0.33.0 · The capture executor declares every upload's size
+
+- **Needed:** an exact size for every key sealantd asks `upload.urls` for, so Mend signs each PUT
+  for exactly those bytes and verifies what landed (docs/adr/0003, multi mode gate: upload length
+  binding).
+- **Today:** the daemon sends `sizes` only for the keys it would upload as multipart; single-PUT
+  keys go unsized, and an unsized presigned PUT accepts any length. With
+  `MEND_CAPTURE_REQUIRE_SIZES=true` Mend refuses unsized keys, so today's daemons cannot capture
+  against it.
+- **Suggested:** include every key's byte count in `upload.urls` `sizes`. The daemon knows it: the
+  object is sealed and content-addressed before it asks.
+
 ## 2026-09-17 · 0.33.0 · Read-only extra sources for capture-mode workspaces
 
 - **Needed:** organization folders and reference repositories (docs/adr/0003) mounted read-only

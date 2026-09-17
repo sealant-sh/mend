@@ -45,6 +45,10 @@ describe("MEND_TENANCY (docs/adr/0003)", () => {
     expect(tenancyRefusal("multi", 1, { transportBoundToOrigin: false })).toContain(
       "unset MEND_GIT_TRANSPORT_BIND_ORIGIN",
     );
+    expect(tenancyRefusal("multi", 1)).toContain("set MEND_CAPTURE_REQUIRE_SIZES=true");
+    expect(
+      tenancyRefusal("multi", 1, { captureRequireSizes: true, blobStore: "s3://captures" }),
+    ).not.toMatch(/MEND_CAPTURE_REQUIRE_SIZES|MEND_BLOB_STORE/);
     expect(tenancyRefusal("multi", 1)).not.toContain("raw service listeners");
   });
 

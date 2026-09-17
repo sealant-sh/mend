@@ -114,6 +114,11 @@ export class BlobStore extends Context.Service<
       key: string,
       method: PresignMethod,
       ttlSeconds: number,
+      /**
+       * A PUT's exact byte count. S3 signs it into the URL (`X-Amz-SignedHeaders` includes
+       * `content-length`), so the bucket refuses any other size; the directory store cannot bind.
+       */
+      contentLength?: number,
     ) => Effect.Effect<string, BlobStoreError>;
     /** Server-side copy — promotion into `projects/<project>/…` never round-trips bytes. */
     readonly copy: (
@@ -136,6 +141,8 @@ export class BlobStore extends Context.Service<
       uploadId: string,
       partNumber: number,
       ttlSeconds: number,
+      /** The part's exact byte count, signed like `presign`'s. */
+      contentLength?: number,
     ) => Effect.Effect<string, BlobStoreError>;
     /**
      * Assemble the parts into `key` with `If-None-Match: *`: `written` is false when the key
@@ -675,6 +682,9 @@ const bodyOf = (body: Uint8Array | BlobBody) =>
     : { Body: body.stream, ContentLength: body.length };
 
 /** Build the S3-backed service value over any S3-compatible endpoint. */
+/** Signing `content-length` makes a presigned upload good for exactly the declared size. */
+const signedLength = (): Set<string> => new Set(["content-length"]);
+
 export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.Service => {
   const clientOptions = {
     region: options.region,
@@ -814,14 +824,23 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
     key: string,
     method: PresignMethod,
     ttlSeconds: number,
+    contentLength?: number,
   ) {
     yield* checkKey("presign", key);
+    const bound = method === "PUT" && contentLength !== undefined;
     const command =
       method === "PUT"
-        ? new PutObjectCommand({ Bucket: bucket, Key: key })
+        ? new PutObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            ...(bound ? { ContentLength: contentLength } : {}),
+          })
         : new GetObjectCommand({ Bucket: bucket, Key: key });
     return yield* call("presign", key, () =>
-      getSignedUrl(publicClient, command, { expiresIn: ttlSeconds }),
+      getSignedUrl(publicClient, command, {
+        expiresIn: ttlSeconds,
+        ...(bound ? { signableHeaders: signedLength() } : {}),
+      }),
     );
   });
 
@@ -876,6 +895,7 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
     uploadId: string,
     partNumber: number,
     ttlSeconds: number,
+    contentLength?: number,
   ) {
     yield* checkKey("presignPart", key);
     yield* checkUploadId("presignPart", key, uploadId);
@@ -888,8 +908,12 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
           Key: key,
           UploadId: uploadId,
           PartNumber: partNumber,
+          ...(contentLength === undefined ? {} : { ContentLength: contentLength }),
         }),
-        { expiresIn: ttlSeconds },
+        {
+          expiresIn: ttlSeconds,
+          ...(contentLength === undefined ? {} : { signableHeaders: signedLength() }),
+        },
       ),
     );
   });

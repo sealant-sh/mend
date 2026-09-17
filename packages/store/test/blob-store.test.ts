@@ -13,6 +13,7 @@ import {
   BlobStoreFsLive,
   BlobStoreS3Live,
   isValidBlobKey,
+  makeS3BlobStore,
   resolveBlobStoreConfig,
 } from "../src/blob-store.ts";
 
@@ -476,5 +477,32 @@ describe("isValidBlobKey", () => {
     expect(isValidBlobKey("a/../b")).toBe(false);
     expect(isValidBlobKey("/a")).toBe(false);
     expect(isValidBlobKey(".hidden")).toBe(false);
+  });
+});
+
+/** The headers a presigned URL was signed over. */
+const signedHeadersOf = (url: string) =>
+  (new URL(url).searchParams.get("X-Amz-SignedHeaders") ?? "").split(";");
+
+describe("upload length binding (docs/adr/0003, multi mode gate)", () => {
+  const store = makeS3BlobStore({
+    bucket: "captures",
+    endpoint: "https://s3.example.invalid",
+    region: "us-east-1",
+    forcePathStyle: true,
+    credentials: { accessKeyId: "AKIDEXAMPLE", secretAccessKey: "secret" },
+  });
+
+  it("signs a declared size into PUT and part URLs, and leaves others unbound", async () => {
+    const [bound, unbound, part] = await Effect.runPromise(
+      Effect.all([
+        store.presign("captures/w/1/packs/a", "PUT", 60, 1234),
+        store.presign("captures/w/1/packs/b", "PUT", 60),
+        store.presignPart("captures/w/1/packs/c", "upload-1", 2, 60, 5_242_880),
+      ]),
+    );
+    expect(signedHeadersOf(bound)).toContain("content-length");
+    expect(signedHeadersOf(unbound)).not.toContain("content-length");
+    expect(signedHeadersOf(part)).toContain("content-length");
   });
 });
