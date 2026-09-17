@@ -56,6 +56,12 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
 
 - Submit pull requests as ready for review, never as drafts. With `gh stack`, use
   `gh stack submit --auto --open`.
+- A `--base` is not a stack. `gh pr create --base <branch-below>` only sets one PR's merge target;
+  the PRs are still unrelated on GitHub. Dependent PRs need the stack registered as well — run
+  `gh stack link <bottom> <top> …` when the branches or PRs already exist (numbers work:
+  `gh stack link 82 83`), or `gh stack init`/`gh stack add` + `gh stack submit --auto --open` for
+  new work. Only then do they show as one stack, retarget themselves as each lands, and merge with
+  `gh stack merge --yes`. Never hand-rebase a branch and `gh pr edit --base` instead.
 - Never open a PR (or push a branch for one) without first running
   `pnpm exec turbo typecheck --force` and `pnpm exec turbo lint --force` and seeing both pass —
   forced, so a warm cache can't lie.
