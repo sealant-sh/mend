@@ -51,6 +51,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { ProjectAccess } from "../access.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { DevicePairingLive } from "./devices.ts";
+import { FoldersGroupLive } from "./folders.ts";
 import { GithubGroupLive } from "./github.ts";
 import { MachineGroupLive } from "./machine.ts";
 import { InvitationsGroupLive, OrganizationGroupLive } from "./organization.ts";
@@ -603,6 +604,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
       WorkspaceSshGroupLive,
       OrganizationGroupLive,
       InvitationsGroupLive,
+      FoldersGroupLive,
     ),
   ),
   Layer.provide(SettingsGroupLive),

@@ -114,3 +114,6 @@ export type OrganizationId = typeof OrganizationId.Type;
 
 export const InvitationId = Schema.String.pipe(Schema.brand("InvitationId"));
 export type InvitationId = typeof InvitationId.Type;
+
+export const FolderId = Schema.String.pipe(Schema.brand("FolderId"));
+export type FolderId = typeof FolderId.Type;

@@ -35,6 +35,7 @@ import {
   ProjectLinksRepoLive,
   ProjectSecretsRepoLive,
   ProjectServiceRecipesRepoLive,
+  FoldersRepoLive,
   OrganizationsRepoLive,
   InstanceRolesRepoLive,
   ProjectsRepoLive,
@@ -130,6 +131,8 @@ import {
   DeploymentConfig,
   type DotfilesStore,
   DotfilesStoreLive,
+  FolderStore,
+  FolderStoreLive,
   type MendKeys,
   MendKeysConfigLive,
   MendKeysLive,
@@ -181,6 +184,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   ServiceObservationsRepoLive,
   SessionRunsRepoLive,
   CheckpointsRepoLive,
+  FoldersRepoLive,
   OrganizationsRepoLive,
   InstanceRolesRepoLive,
   ProjectsRepoLive,
@@ -222,6 +226,10 @@ const DatabaseLive = DrizzleRepositoriesLive.pipe(
 const StoreLive = Store.layer.pipe(Layer.provide(StoreConfig.layer));
 // The per-user dotfiles store shares the same root (bare git repos under _dotfiles/).
 const DotfilesStoreLayer: Layer.Layer<DotfilesStore> = DotfilesStoreLive.pipe(
+  Layer.provide(StoreConfig.layer),
+);
+// Organization folders share it too (_organizations/<id>/folders/).
+const FolderStoreLayer: Layer.Layer<FolderStore> = FolderStoreLive.pipe(
   Layer.provide(StoreConfig.layer),
 );
 const KeysLive: Layer.Layer<MendKeys> = MendKeysLive.pipe(Layer.provide(MendKeysConfigLive));
@@ -593,8 +601,8 @@ const MainLive = Layer.unwrap(
       Layer.provide(StoreLive),
       Layer.provide(StoreConfig.layer),
       Layer.provide(DeploymentConfigLive),
-      // The per-user dotfiles store — the dotfiles API group reads/writes it directly.
-      Layer.provide(DotfilesStoreLayer),
+      // The per-user dotfiles store and the organization folders, read and written directly.
+      Layer.provide(Layer.merge(DotfilesStoreLayer, FolderStoreLayer)),
       // The machine's Mend git key (docs/GIT-ACCESS.md — the mend-key auth mode).
       Layer.provide(KeysLive),
       Layer.provide(SecretCipherLayer),

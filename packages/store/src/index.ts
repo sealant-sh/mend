@@ -3,6 +3,7 @@ export * from "./blob-store.ts";
 export * from "./captures.ts";
 export * from "./deployment.ts";
 export * from "./dotfiles-store.ts";
+export * from "./folder-store.ts";
 export * from "./git.ts";
 export * from "./paths.ts";
 export * from "./git-auth.ts";

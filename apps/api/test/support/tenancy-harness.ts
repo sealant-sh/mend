@@ -5,6 +5,8 @@ import { join } from "node:path";
 import { Auth } from "@mend/auth";
 import {
   AgentConversationRepo,
+  FolderNotFoundError,
+  FoldersRepo,
   InstanceRolesRepo,
   OrganizationsRepo,
   ProjectNotFoundError,
@@ -27,6 +29,7 @@ import {
   AgentRequestId,
   AgentTurnId,
   ChangeId,
+  FolderId,
   OrganizationId,
   ProjectId,
   ReferenceId,
@@ -42,6 +45,7 @@ import {
   AgentRequest,
   AgentTurn,
   Change,
+  Folder,
   Organization,
   Project,
   Reference,
@@ -128,6 +132,9 @@ export const NULL_OWNER_SESSION = SessionId.make("session-shared-a-null-owner");
 export const PROTOCOL_PROCESS = SessionProcessId.make("process-shared-a-protocol");
 export const UDP_SERVICE = ServiceId.make("service-shared-a-udp");
 export const CAROL_USER_SKILL = SkillId.make("skill-user-carol");
+/** One folder in each organization. */
+export const FOLDER_A = FolderId.make("folder-org-A");
+export const FOLDER_B = FolderId.make("folder-org-B");
 /** One reference repository in each organization. */
 export const REFERENCE_A = ReferenceId.make("reference-org-A");
 export const REFERENCE_B = ReferenceId.make("reference-org-B");
@@ -160,6 +167,8 @@ export const AUTHORIZATION_READS: ReadonlySet<string> = new Set([
   // A reference's organization decides whether an owner may manage or select it.
   "references.byId",
   "references.byIdsInOrganization",
+  // A folder's organization decides whether the caller may read, change or select it.
+  "folders.byId",
 ]);
 
 /**
@@ -229,6 +238,7 @@ export interface TenancyWorld {
     | UserDotfilesRepo
     | SkillsRepo
     | ReferencesRepo
+    | FoldersRepo
   >;
   readonly dispose: () => Promise<void>;
 }
@@ -554,6 +564,24 @@ export const createTenancyWorld = async (): Promise<TenancyWorld> => {
     }),
   );
 
+  const folderRows = new Map<FolderId, Folder>(
+    (["A", "B"] as const).map((key) => {
+      const id = key === "A" ? FOLDER_A : FOLDER_B;
+      return [
+        id,
+        new Folder({
+          id,
+          organizationId: organizationIdOf(key),
+          name: `docs-${key.toLowerCase()}`,
+          path: join(root, "_organizations", key, "folders", id),
+          createdByUserId: null,
+          createdAt: NOW,
+          updatedAt: NOW,
+        }),
+      ];
+    }),
+  );
+
   const authLayer = Layer.succeed(Auth, {
     handler: () => Effect.succeed(new Response(null, { status: 404 })),
     getSession: (headers: Headers) => {
@@ -679,6 +707,12 @@ export const createTenancyWorld = async (): Promise<TenancyWorld> => {
       {
         firstUserId: () => Effect.succeed("alice"),
       },
+      calls,
+    ),
+    recording(
+      FoldersRepo,
+      "folders",
+      { byId: (id) => found(folderRows, id, () => new FolderNotFoundError({ folderId: id })) },
       calls,
     ),
     recording(

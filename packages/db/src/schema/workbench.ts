@@ -29,6 +29,7 @@ import type {
   InferenceToolName,
   IssueSource,
   IssueStage,
+  FolderId,
   InvitationId,
   OrganizationId,
   ProjectClusterBindingId,
@@ -649,6 +650,50 @@ export const referenceRepos = pgTable(
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [unique("reference_repos_organization_name_key").on(table.organizationId, table.name)],
+);
+
+/**
+ * A Mend-managed directory owned by an organization (docs/adr/0003-organizations-and-tenancy.md),
+ * replacing host mounts for everyone but the operator. Names are unique within the organization.
+ */
+export const folders = pgTable(
+  "folders",
+  {
+    id: text().$type<FolderId>().primaryKey(),
+    organizationId: text()
+      .$type<OrganizationId>()
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    name: text().notNull(),
+    path: text().notNull().unique(),
+    // FK to "user"(id) ON DELETE RESTRICT, declared in the migration.
+    createdByUserId: text(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [unique("folders_organization_name_key").on(table.organizationId, table.name)],
+);
+
+/** A project's selection of an organization folder, with its mount name and write mode. */
+export const projectFolders = pgTable(
+  "project_folders",
+  {
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    folderId: text()
+      .$type<FolderId>()
+      .notNull()
+      .references(() => folders.id, { onDelete: "restrict" }),
+    name: text().notNull(),
+    readOnly: boolean().notNull().default(true),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.projectId, table.folderId] }),
+    unique("project_folders_project_name_key").on(table.projectId, table.name),
+  ],
 );
 
 export const projectReferences = pgTable(

@@ -15,6 +15,7 @@ import {
   ProjectMountsRepo,
   ProjectLinksRepo,
   OrganizationsRepo,
+  FoldersRepo,
   type ProjectNotFoundError,
   ProjectSecretsRepo,
   ProjectsRepo,
@@ -819,6 +820,7 @@ type SessionEngineRequirements =
   | ProjectMountsRepo
   | ProjectLinksRepo
   | OrganizationsRepo
+  | FoldersRepo
   | ProjectClusterBindingsRepo
   | ProjectEnvironmentRepo
   | ProjectSecretsRepo
@@ -1519,6 +1521,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const projectMounts = yield* ProjectMountsRepo;
       const projectLinks = yield* ProjectLinksRepo;
       const organizations = yield* OrganizationsRepo;
+      const foldersRepo = yield* FoldersRepo;
       const projectEnvironment = yield* ProjectEnvironmentRepo;
       const projectSecrets = yield* ProjectSecretsRepo;
       const projectClusterBindings = yield* ProjectClusterBindingsRepo;
@@ -3400,9 +3403,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const selectedReferences = yield* references
           .listForProject(project.id)
           .pipe(Effect.orElseSucceed(() => []));
-        const declaredMounts = yield* projectMounts
-          .listForProject(project.id)
-          .pipe(Effect.orElseSucceed(() => []));
+        const declaredMounts = yield* declaredMountsOf(project);
         const linkedProjects = yield* resolveLinkedProjects(project, ownerUserId);
         // The durable harness home (harness-state.ts): a store-backed directory mounted
         // read-write into the workspace; boot symlinks each harness's `$HOME` state dirs into
@@ -3763,6 +3764,34 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * What mounts at `/workspace/home/<name>`: the operator's host mounts, then the organization
+       * folders the project selected (docs/adr/0003-organizations-and-tenancy.md). Both share one
+       * shape; a folder's host path is its directory in the store.
+       */
+      const declaredMountsOf = Effect.fn("SessionEngine.declaredMountsOf")(function* (
+        project: Project,
+      ) {
+        const hostMounts = yield* projectMounts
+          .listForProject(project.id)
+          .pipe(Effect.orElseSucceed(() => []));
+        const selectedFolders = yield* foldersRepo
+          .listForProject(project.id)
+          .pipe(Effect.orElseSucceed(() => []));
+        return [
+          ...hostMounts.map((mount) => ({
+            name: mount.name,
+            hostPath: mount.hostPath,
+            readOnly: mount.readOnly,
+          })),
+          ...selectedFolders.map(({ folder, selection }) => ({
+            name: selection.name,
+            hostPath: folder.path,
+            readOnly: selection.readOnly,
+          })),
+        ];
+      });
+
+      /**
        * The project's links with their projects, as the session owner may use them
        * (docs/adr/0003): a link to a vanished project, a project in another organization, or one
        * the owner cannot see (a teammate's private project, say) is skipped with a warning, and
@@ -3877,13 +3906,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const foldersSection =
           folderMounts.length === 0
             ? ""
-            : `Project folders from the user's machine:\n\n` +
+            : `Project folders beside the repository:\n\n` +
               folderMounts
                 .map((mount) =>
                   mount.readOnly
                     ? `- ${mount.mountPath} (read-only)`
-                    : `- ${mount.mountPath} (read-write — writes land on the ` +
-                      `user's folder directly and are not part of the reviewed change)`,
+                    : `- ${mount.mountPath} (read-write — writes land in the ` +
+                      `folder directly and are not part of the reviewed change)`,
                 )
                 .join("\n") +
               `\n\n`;
@@ -6349,9 +6378,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const selectedReferences = yield* references
           .listForProject(project.id)
           .pipe(Effect.orElseSucceed(() => []));
-        const declaredMounts = yield* projectMounts
-          .listForProject(project.id)
-          .pipe(Effect.orElseSucceed(() => []));
+        const declaredMounts = yield* declaredMountsOf(project);
         const skillLibraries = yield* skillsRepo.forLaunch(ownerUserId, project.id);
         const resolvedSkills = mergeSkillLibraries(skillLibraries, {
           inheritUserSkills: project.inheritUserSkills,

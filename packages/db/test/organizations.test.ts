@@ -1,11 +1,12 @@
 import { PgClient } from "@effect/sql-pg";
-import { OrganizationId, ProjectId } from "@mend/domain";
+import { FolderId, OrganizationId, ProjectId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
+import { FoldersRepo, FoldersRepoLive } from "../src/repos/folders.ts";
 import { InstanceRolesRepo, InstanceRolesRepoLive } from "../src/repos/instance-roles.ts";
 import { OrganizationsRepo, OrganizationsRepoLive } from "../src/repos/organizations.ts";
 import { ProjectsRepo, ProjectsRepoLive } from "../src/repos/projects.ts";
@@ -36,6 +37,7 @@ const reposLayer = Layer.mergeAll(
   InstanceRolesRepoLive,
   ProjectsRepoLive,
   PushDevicesRepoLive,
+  FoldersRepoLive,
 ).pipe(Layer.provideMerge(scratchDatabaseLayer));
 
 type Services =
@@ -43,6 +45,7 @@ type Services =
   | InstanceRolesRepo
   | ProjectsRepo
   | PushDevicesRepo
+  | FoldersRepo
   | SqlClient.SqlClient
   | PgClient.PgClient;
 
@@ -438,5 +441,57 @@ describe.skipIf(!reachable)("organizations", () => {
       }),
     );
     expect(result).toEqual({ bob: ["tok-bob"], alice: ["tok-carol"], carol: [], nobody: [] });
+  });
+
+  it("folders: unique per organization, selected per project, kept while in use", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const folders = yield* FoldersRepo;
+        const docs = yield* folders.create({
+          id: FolderId.make("folder-docs"),
+          organizationId: acme,
+          name: "docs",
+          path: "/store/_organizations/acme/folders/folder-docs",
+          createdByUserId: "alice",
+        });
+        const clash = yield* folders
+          .create({
+            id: FolderId.make("folder-docs-2"),
+            organizationId: acme,
+            name: "docs",
+            path: "/store/_organizations/acme/folders/folder-docs-2",
+            createdByUserId: "alice",
+          })
+          .pipe(Effect.flip);
+        yield* folders.setForProject(ProjectId.make("p-acme-api"), [
+          { folderId: docs.id, name: "docs", readOnly: true },
+        ]);
+        const selected = yield* folders.listForProject(ProjectId.make("p-acme-api"));
+        const inUse = yield* folders.remove(docs.id).pipe(Effect.flip);
+        yield* folders.setForProject(ProjectId.make("p-acme-api"), []);
+        yield* folders.remove(docs.id);
+        const gone = yield* folders.byId(docs.id).pipe(Effect.flip);
+        const listed = yield* folders.listForOrganization(acme);
+        const [row] = yield* sql<{ readonly count: number }>`
+          SELECT count(*)::int AS count FROM project_folders`;
+        return {
+          clash: clash._tag,
+          selected: selected.map((entry) => [entry.folder.name, entry.selection.readOnly]),
+          inUse: inUse._tag === "FolderInUseError" ? inUse.projects : null,
+          gone: gone._tag,
+          listed: listed.length,
+          selections: row?.count,
+        };
+      }),
+    );
+    expect(result).toEqual({
+      clash: "FolderNameTakenError",
+      selected: [["docs", true]],
+      inUse: 1,
+      gone: "FolderNotFoundError",
+      listed: 0,
+      selections: 0,
+    });
   });
 });

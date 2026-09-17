@@ -112,6 +112,8 @@ export class ProjectCapabilities extends Schema.Class<ProjectCapabilities>("Proj
   changeVisibility: Schema.Boolean,
   /** Removal: an owner, or the creator of a private project. */
   remove: Schema.Boolean,
+  /** Declaring host-path mounts: the operator of a single-organization install only. */
+  hostMounts: Schema.Boolean,
 }) {}
 
 export class ProjectVisibilityRequest extends Schema.Class<ProjectVisibilityRequest>(
@@ -135,6 +137,11 @@ export class ProjectDetail extends Schema.Class<ProjectDetail>("ProjectDetail")(
   worktreeAnnotations: Schema.Array(WorktreeAnnotation),
   /** What the caller may do here, so clients hide controls instead of offering refusals. */
   capabilities: ProjectCapabilities,
+  /**
+   * Whether this deployment mounts folders, references and linked projects into workspaces:
+   * `bind` beside the store, `none` in capture mode, where executors mount nothing yet.
+   */
+  mountDelivery: Schema.Literals(["bind", "none"]),
 }) {}
 
 /** The outcome of a destructive removal — what went, what would not. */
