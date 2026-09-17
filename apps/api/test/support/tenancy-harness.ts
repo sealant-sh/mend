@@ -665,6 +665,21 @@ export const createTenancyWorld = async (): Promise<TenancyWorld> => {
         listForWorktree: (worktreeId) =>
           Effect.succeed([...sessions.values()].filter((row) => row.worktreeId === worktreeId)),
         listActive: () => Effect.succeed([...sessions.values()]),
+        setSharedControl: (id, enabledByUserId) =>
+          Effect.gen(function* () {
+            const row = yield* found(
+              sessions,
+              id,
+              () => new SessionNotFoundError({ sessionId: id }),
+            );
+            const updated = new Session({
+              ...row,
+              sharedControlEnabledByUserId: enabledByUserId,
+              sharedControlEnabledAt: enabledByUserId === null ? null : NOW,
+            });
+            sessions.set(id, updated);
+            return updated;
+          }),
       },
       calls,
     ),

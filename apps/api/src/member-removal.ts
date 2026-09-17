@@ -103,6 +103,8 @@ export const MemberRemovalLive: Layer.Layer<
     const remove = Effect.fn("MemberRemoval.remove")(function* (input: RemoveMemberInput) {
       // The owner lock refuses removing the last owner before anything else moves.
       yield* organizations.removeMember(input.organizationId, input.userId);
+      // Nobody keeps steering on the removed account's credentials, even before their sessions stop.
+      yield* sessions.disableSharedControlForOwner(input.userId);
       yield* users.deactivate(input.userId);
       yield* users.revokeAuthSessions(input.userId);
       yield* devices.revokeAllForUser(input.userId);

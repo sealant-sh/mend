@@ -76,10 +76,21 @@ describe("pushTargets", () => {
   };
 
   it("rings the owner's phones only, and nobody's for a session with no owner", async () => {
-    const owned = await Effect.runPromise(pushTargets(devices, { ownerUserId: "alice" }));
+    const owned = await Effect.runPromise(
+      pushTargets(devices, { ownerUserId: "alice", sharedControlEnabledAt: null }, "carol"),
+    );
     expect(owned.map((device) => device.token)).toEqual(["alice-phone"]);
-    const unowned = await Effect.runPromise(pushTargets(devices, { ownerUserId: null }));
+    const unowned = await Effect.runPromise(
+      pushTargets(devices, { ownerUserId: null, sharedControlEnabledAt: new Date() }, "carol"),
+    );
     expect(unowned).toEqual([]);
     expect(asked).toEqual([["alice"]]);
+  });
+
+  it("while control is shared, also rings whoever sent the latest turn", async () => {
+    const shared = await Effect.runPromise(
+      pushTargets(devices, { ownerUserId: "alice", sharedControlEnabledAt: new Date() }, "carol"),
+    );
+    expect(shared.map((device) => device.token)).toEqual(["alice-phone", "carol-phone"]);
   });
 });

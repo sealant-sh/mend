@@ -20,6 +20,8 @@ export const AuditAction = Schema.Literals([
   "folder.removed",
   "reference.added",
   "reference.removed",
+  "session.shared_control_on",
+  "session.shared_control_off",
 ]);
 export type AuditAction = typeof AuditAction.Type;
 
@@ -37,7 +39,7 @@ export class AuditEvent extends Schema.Class<AuditEvent>("AuditEvent")({
   /** The account that acted. */
   actorUserId: Schema.String,
   action: AuditAction,
-  /** What the action touched: `member`, `invitation`, `project`, `folder` or `reference`. */
+  /** What the action touched: `member`, `invitation`, `project`, `session`, `folder` or `reference`. */
   subjectType: Schema.String,
   subjectId: Schema.String,
   data: AuditData,

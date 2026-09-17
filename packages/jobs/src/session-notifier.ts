@@ -95,18 +95,19 @@ interface ExpoPushTicket {
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(MendEvent));
 
 /**
- * The phones a session's notification goes to (docs/adr/0003): its owner's, and none for a
- * session with no owner. Shared control will add the latest turn's sender.
+ * The phones a session's notification goes to (docs/adr/0003): its owner's, plus whoever sent the
+ * latest turn while control is shared, and none for a session with no owner.
  */
 export const pushTargets = (
   devices: PushDevicesRepo["Service"],
-  session: Pick<Session, "ownerUserId">,
+  session: Pick<Session, "ownerUserId" | "sharedControlEnabledAt">,
+  latestTurnSenderUserId: string | null,
 ) =>
   Effect.gen(function* () {
     const recipients = notificationRecipients({
       ownerUserId: session.ownerUserId,
-      sharedControl: false,
-      latestTurnSenderUserId: null,
+      sharedControl: session.sharedControlEnabledAt !== null,
+      latestTurnSenderUserId,
     });
     if (recipients.size === 0) return [];
     return yield* devices.listForUsers([...recipients]);
@@ -126,7 +127,9 @@ export const SessionNotifierLive = Layer.effectDiscard(
     const watchedTurns = new Map<string, ReadonlySet<string>>();
 
     const send = Effect.fn("SessionNotifier.send")(function* (session: Session, body: string) {
-      const targets = yield* pushTargets(devices, session);
+      const turns = yield* conversations.listTurns(session.id);
+      const latestSender = turns.findLast((turn) => turn.author !== null)?.author ?? null;
+      const targets = yield* pushTargets(devices, session, latestSender);
       if (targets.length === 0) return;
       const title = yield* projects.byId(session.projectId).pipe(
         Effect.map((project) => project.name),

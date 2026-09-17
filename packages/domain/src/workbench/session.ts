@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import {
   ContextSnapshotId,
@@ -115,6 +115,16 @@ export class Session extends Schema.Class<Session>("Session")({
   dotfiles: Schema.NullOr(SessionDotfiles),
   /** Who provisioned the session — whose dotfiles apply. Null for pre-column rows. */
   ownerUserId: Schema.NullOr(Schema.String),
+  /**
+   * Shared control (docs/adr/0003-organizations-and-tenancy.md): when set, anyone who can see the
+   * session may steer it, still on the owner's credentials. Who turned it on, and when.
+   */
+  sharedControlEnabledByUserId: Schema.NullOr(Schema.String).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  sharedControlEnabledAt: Schema.NullOr(Timestamp).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
   /**
    * Whether the harness left a conversation behind — a transcript Mend captured at settle or
    * found in the live harness home. False is a dead end: nothing to resume, nothing to hand

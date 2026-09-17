@@ -7,36 +7,25 @@ import {
   type SessionId,
   type SessionProcessId,
 } from "@mend/domain";
-import type {
-  AgentRequest,
-  AgentTurn,
-  Service,
-  Session,
-  SessionProcess,
+import {
+  canSteerSession,
+  type AgentRequest,
+  type AgentTurn,
+  type Service,
+  type Session,
+  type SessionProcess,
 } from "@mend/domain/workbench";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { ProjectAccess } from "./access.ts";
 
-export interface CanSteerSessionInput {
-  readonly ownerUserId: string | null;
-  readonly callerUserId: string;
-}
-
-/**
- * Only the owner steers (docs/adr/0003); shared control will extend this one decision. A session
- * with no owner is steered by nobody, never by a stand-in account.
- */
-export const canSteerSession = (input: CanSteerSessionInput): boolean =>
-  input.ownerUserId !== null && input.callerUserId === input.ownerUserId;
-
 type SteeringError = NotFound | SessionNotSteerable;
 
 const refuse = (session: Session) =>
   new SessionNotSteerable({
     sessionId: session.id,
-    message: "only the session owner can steer this session",
+    message: "only the session owner can steer this session; the owner can turn on shared control",
   });
 
 /**
@@ -102,9 +91,6 @@ export const SessionSteeringLive: Layer.Layer<
     const services = yield* ServicesRepo;
     const access = yield* ProjectAccess;
 
-    const ownerSteers = (session: Session, userId: string) =>
-      canSteerSession({ ownerUserId: session.ownerUserId, callerUserId: userId });
-
     const authorizeUser = Effect.fn("SessionSteering.authorizeUser")(function* (
       session: Session,
       userId: string,
@@ -112,21 +98,21 @@ export const SessionSteeringLive: Layer.Layer<
       yield* access
         .projectAs(userId, session.projectId)
         .pipe(Effect.mapError(() => new NotFound({ id: session.id })));
-      if (!ownerSteers(session, userId)) return yield* refuse(session);
+      if (!canSteerSession(session, userId)) return yield* refuse(session);
       return session;
     });
 
     const session = Effect.fn("SessionSteering.session")(function* (id: SessionId) {
       const caller = yield* CurrentUser;
       const row = yield* access.session(id);
-      if (!ownerSteers(row, caller.user.id)) return yield* refuse(row);
+      if (!canSteerSession(row, caller.user.id)) return yield* refuse(row);
       return row;
     });
 
     const stop = Effect.fn("SessionSteering.stop")(function* (id: SessionId) {
       const caller = yield* CurrentUser;
       const row = yield* access.session(id);
-      if (ownerSteers(row, caller.user.id)) return row;
+      if (canSteerSession(row, caller.user.id)) return row;
       const viewer = yield* access.viewer();
       if (viewer !== null && viewer.role === "owner") return row;
       return yield* refuse(row);

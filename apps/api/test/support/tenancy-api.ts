@@ -23,6 +23,7 @@ import {
   RunsRepo,
   ServiceForwardsRepo,
   ServiceObservationsRepo,
+  SessionControlEventsRepo,
   SettingsRepo,
   UserDotfilesRepo,
   UserEvents,
@@ -103,7 +104,7 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
   const deviceWrites: Array<string> = [];
   const effects = Layer.mergeAll(
     Layer.mergeAll(
-      recording(AuditEventsRepo, "audit", {}, calls),
+      recording(AuditEventsRepo, "audit", { record: () => Effect.void }, calls),
       recording(BriefCommentsRepo, "briefComments", {}, calls),
       recording(BriefsRepo, "briefs", {}, calls),
       recording(ChangePassesRepo, "changePasses", {}, calls),
@@ -141,6 +142,7 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
     ),
     Layer.mergeAll(
       recording(ReviewSlicesRepo, "slices", {}, calls),
+      recording(SessionControlEventsRepo, "controlEvents", { record: () => Effect.void }, calls),
       recording(RunsRepo, "runs", {}, calls),
       recording(ServiceForwardsRepo, "forwards", {}, calls),
       recording(ServiceObservationsRepo, "observations", {}, calls),

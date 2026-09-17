@@ -334,8 +334,19 @@ export class NewWorkbenchSession extends Schema.Class<NewWorkbenchSession>("NewW
   base: Schema.NullOr(Schema.String),
 }) {}
 
+/** What the caller may do with a session (docs/adr/0003), so clients show only real controls. */
+export class SessionControlView extends Schema.Class<SessionControlView>("SessionControlView")({
+  /** Send turns, interrupt, attach, open shells, stop. */
+  steer: Schema.Boolean,
+  /** Stop, which an organization owner may do even without steering. */
+  stop: Schema.Boolean,
+  /** Turn shared control on (owner only) or off (owner or organization owner), as it stands. */
+  toggleSharedControl: Schema.Boolean,
+}) {}
+
 export class SessionDetail extends Schema.Class<SessionDetail>("SessionDetail")({
   session: Session,
+  control: SessionControlView,
   /** The WORKTREE's chain and change, denormalized here for pre-worktree clients. */
   checkpoints: Schema.Array(Checkpoint),
   change: Schema.NullOr(SessionChange),

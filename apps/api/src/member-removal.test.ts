@@ -65,6 +65,8 @@ const removalWorld = (options: { readonly lastOwner?: boolean } = {}) => {
           closeForUser: (userId) => note(`connections.closeForUser:${userId}`).pipe(Effect.as(0)),
         }),
         Layer.mock(SessionsRepo, {
+          disableSharedControlForOwner: (userId) =>
+            note(`sessions.disableSharedControlForOwner:${userId}`),
           listUnsettledForOwner: (userId) =>
             Effect.succeed([
               makeSession(
@@ -120,6 +122,7 @@ describe("member removal (docs/adr/0003)", () => {
     expect(Exit.isSuccess(exit)).toBe(true);
     expect(world.effects).toEqual([
       "organizations.removeMember:carol",
+      "sessions.disableSharedControlForOwner:carol",
       "users.deactivate:carol",
       "users.revokeAuthSessions:carol",
       "devices.revokeAllForUser:carol",

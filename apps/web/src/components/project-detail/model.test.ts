@@ -48,6 +48,8 @@ const session = (
   workspaceImage: null,
   dotfiles: null,
   ownerUserId: null,
+  sharedControlEnabledByUserId: null,
+  sharedControlEnabledAt: null,
   hasTranscript: null,
   status,
   summary: null,

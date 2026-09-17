@@ -19,6 +19,7 @@ import {
   ServiceRecipe,
   ServiceView,
   Session,
+  SessionControlEvent,
   SessionProcess,
 } from "@mend/domain/workbench";
 import { Change as SessionChange } from "@mend/domain/workbench";
@@ -90,10 +91,19 @@ export class SessionNotSteerable extends Schema.TaggedErrorClass<SessionNotSteer
   "SessionNotSteerable",
   {
     sessionId: SessionId,
-    message: Schema.Literal("only the session owner can steer this session"),
+    message: Schema.Literals([
+      "only the session owner can steer this session; the owner can turn on shared control",
+      "only the session owner can share control of this session",
+    ]),
   },
   { httpApiStatus: 403 },
 ) {}
+
+export class SharedControlRequest extends Schema.Class<SharedControlRequest>(
+  "SharedControlRequest",
+)({
+  enabled: Schema.Boolean,
+}) {}
 
 export const sessionsGroup = HttpApiGroup.make("sessions")
   .add(
@@ -313,6 +323,24 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       success: Session,
       error: [NotFound, SessionNotSteerable],
+    }),
+  )
+  .add(
+    // docs/adr/0003: the owner turns shared control on or off; an organization owner may turn it
+    // off. Everyone who can see the session then steers it on the owner's credentials.
+    HttpApiEndpoint.put("sharedControl", "/sessions/:id/shared-control", {
+      params: { id: SessionId },
+      payload: SharedControlRequest,
+      success: Session,
+      error: [NotFound, SessionNotSteerable],
+    }),
+  )
+  .add(
+    // Who interrupted, attached, opened a shell, stopped or shared control; oldest first.
+    HttpApiEndpoint.get("controlEvents", "/sessions/:id/control-events", {
+      params: { id: SessionId },
+      success: Schema.Array(SessionControlEvent),
+      error: NotFound,
     }),
   )
   .add(

@@ -47,7 +47,9 @@ import {
   SessionActive,
   SessionAnnotation,
   WorktreeAnnotation,
+  SessionControlView,
   SessionDetail,
+  SessionNotSteerable,
   SessionNotLive,
   SettingsFailure,
   StoreFailure,
@@ -59,6 +61,7 @@ import {
   ProjectLinksRepo,
   AgentConversationRepo,
   AuditEventsRepo,
+  SessionControlEventsRepo,
   ChangePassesRepo,
   ChangeToursRepo,
   CheckpointsRepo,
@@ -97,6 +100,7 @@ import {
   ProjectId,
   ReferenceId,
   type ReviewSliceId,
+  type SessionId,
   type WorktreeId,
 } from "@mend/domain";
 import {
@@ -116,6 +120,9 @@ import {
   ServiceView,
   canChangeVisibility,
   canManageProject,
+  canSteerSession,
+  canToggleSharedControl,
+  type SessionControlKind,
   canRemoveProject,
   type GitAuthMode,
   type SessionStatus,
@@ -2009,6 +2016,18 @@ export const ReferencesGroupLive = HttpApiBuilder.group(MendApi, "references", (
     ),
 );
 
+/** Record who steered a session, after the act succeeded (docs/adr/0003). */
+const recordControl = (sessionId: SessionId, kind: SessionControlKind, refId: string | null) =>
+  Effect.gen(function* () {
+    const caller = yield* CurrentUser;
+    yield* (yield* SessionControlEventsRepo).record({
+      sessionId,
+      actorUserId: caller.user.id,
+      kind,
+      refId,
+    });
+  });
+
 export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (handlers) =>
   handlers
     .handle("listActive", ({ query }) =>
@@ -2084,8 +2103,17 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const change = yield* changes.byWorktree(session.worktreeId);
         const processes = yield* SessionProcessesRepo;
         const rows = yield* processes.listForSession(params.id);
+        const viewer = yield* (yield* ProjectAccess).viewer();
+        const steer = viewer !== null && canSteerSession(session, viewer.userId);
         return new SessionDetail({
           session,
+          control: new SessionControlView({
+            steer,
+            stop: steer || viewer?.role === "owner",
+            toggleSharedControl:
+              viewer !== null &&
+              canToggleSharedControl(session, viewer, session.sharedControlEnabledAt === null),
+          }),
           checkpoints: sessionCheckpoints,
           change,
           processes: rows,
@@ -2139,7 +2167,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     .handle("interruptTurn", ({ params }) =>
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
-        yield* steering.turn(params.id);
+        const { session } = yield* steering.turn(params.id);
         const engine = yield* SessionEngine;
         yield* engine
           .interruptTurn(params.id)
@@ -2148,6 +2176,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
               Effect.fail(new ProtocolSessionNotLive({ processId: error.processId })),
             ),
           );
+        yield* recordControl(session.id, "interrupt", params.id);
       }),
     )
     .handle("listTurns", ({ params }) =>
@@ -2207,7 +2236,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const steering = yield* SessionSteering;
         yield* steering.session(params.id);
         const engine = yield* SessionEngine;
-        return yield* engine.openShell(params.id).pipe(
+        const shell = yield* engine.openShell(params.id).pipe(
           Effect.catchTag("SessionNotFoundError", () =>
             Effect.fail(new NotFound({ id: params.id })),
           ),
@@ -2221,6 +2250,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             Effect.fail(new StoreFailure({ message: error.message })),
           ),
         );
+        yield* recordControl(params.id, "shell-open", shell.id);
+        return shell;
       }),
     )
     .handle("stopShell", ({ params }) =>
@@ -2570,9 +2601,46 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const engine = yield* SessionEngine;
         const sessions = yield* SessionsRepo;
         yield* engine.stop(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* recordControl(params.id, "stop", null);
         return yield* sessions
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+      }),
+    )
+    .handle("sharedControl", ({ params, payload }) =>
+      Effect.gen(function* () {
+        const access = yield* ProjectAccess;
+        const session = yield* access.session(params.id);
+        const viewer = yield* access.viewer();
+        if (viewer === null || !canToggleSharedControl(session, viewer, payload.enabled)) {
+          return yield* new SessionNotSteerable({
+            sessionId: session.id,
+            message: "only the session owner can share control of this session",
+          });
+        }
+        const sessions = yield* SessionsRepo;
+        const updated = yield* sessions
+          .setSharedControl(params.id, payload.enabled ? viewer.userId : null)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* recordControl(
+          params.id,
+          payload.enabled ? "shared-control-on" : "shared-control-off",
+          null,
+        );
+        yield* (yield* AuditEventsRepo).record({
+          organizationId: viewer.organizationId,
+          actorUserId: viewer.userId,
+          action: payload.enabled ? "session.shared_control_on" : "session.shared_control_off",
+          subjectType: "session",
+          subjectId: params.id,
+        });
+        return updated;
+      }),
+    )
+    .handle("controlEvents", ({ params }) =>
+      Effect.gen(function* () {
+        yield* (yield* ProjectAccess).session(params.id);
+        return yield* (yield* SessionControlEventsRepo).listForSession(params.id);
       }),
     )
     .handle("checkpoint", ({ params, payload }) =>
