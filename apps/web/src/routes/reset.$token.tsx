@@ -37,7 +37,11 @@ function ResetPage() {
     const result = await authClient.resetPassword({ newPassword: password, token });
     setPending(false);
     if (result.error) {
-      setError("This link is spent or expired. Ask an owner or the operator for a new one.");
+      setError(
+        result.error.code === "INVALID_TOKEN" || result.error.message === undefined
+          ? "This link is spent or expired. Ask an owner or the operator for a new one."
+          : result.error.message,
+      );
       return;
     }
     void navigate({ to: "/login", search: { reason: "reset" } });

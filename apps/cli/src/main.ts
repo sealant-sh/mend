@@ -3690,7 +3690,12 @@ const main = async () => {
     case "folder":
       return folderCommand(boundApi(config), rest);
     case "operator":
-      return operatorCommand(boundApi(config), config.url, rest);
+      return operatorCommand(
+        boundApi(config),
+        (method, route, body) => request(config, method, route, body),
+        config.url,
+        rest,
+      );
     case "session":
       if (rest[0] === "share") return sessionShareCommand(boundApi(config), rest.slice(1));
       return fail(`unknown session command "${rest[0] ?? ""}" · mend help session share`);

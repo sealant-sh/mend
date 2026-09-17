@@ -179,6 +179,11 @@ describe("operator recovery (docs/adr/0003)", () => {
       email: "nobody@example.invalid",
     });
     expect(unknown.status).toBe(422);
+    // An account that exists but belongs to no organization (removed, or never joined).
+    const outside = await call("alice", "POST", "/operator/password-resets", {
+      email: "alice@example.invalid",
+    });
+    expect(outside.status).toBe(422);
     expect(writes).toEqual([]);
     const issued = await call("alice", "POST", "/operator/password-resets", {
       email: "sam@example.invalid",

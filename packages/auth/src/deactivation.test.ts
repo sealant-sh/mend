@@ -194,14 +194,24 @@ describe.skipIf(!reachable)("deactivated accounts", () => {
         return yield* auth.issuePasswordReset(userId);
       }).pipe(Effect.provide(authLayer), Effect.scoped),
     );
-    expect(await reset(issued.token)).toBe(200);
+    const newer = await Effect.runPromise(
+      Effect.gen(function* () {
+        const auth = yield* Auth;
+        return yield* auth.issuePasswordReset(userId);
+      }).pipe(Effect.provide(authLayer), Effect.scoped),
+    );
+    // Only the newest link works.
+    expect(await reset(issued.token)).toBe(400);
+    const replaced = issued;
+    expect(await reset(newer.token)).toBe(200);
     // The old session is gone, and the link does not work twice.
     const sessions = await (scratch ?? admin).query<{ count: string }>(
       `SELECT count(*) AS count FROM "session" WHERE "userId" = $1`,
       [userId],
     );
     expect(sessions.rows[0]?.count).toBe("0");
-    expect(await reset(issued.token)).toBe(400);
+    expect(await reset(newer.token)).toBe(400);
+    expect(replaced.token).not.toBe(newer.token);
   });
 });
 

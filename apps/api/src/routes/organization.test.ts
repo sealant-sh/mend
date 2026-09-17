@@ -46,6 +46,8 @@ const acme = new Organization({
 const roles: Record<string, OrganizationMembership["role"] | undefined> = {
   alice: "owner",
   carol: "member",
+  // The operator, demoted to member by an owner: still never theirs to reset.
+  olivia: "member",
 };
 const writes: Array<string> = [];
 const audited: Array<NewAuditEvent> = [];
@@ -169,7 +171,9 @@ const projectOf = (id: string): Project | null => {
 const dependencies = Layer.mergeAll(
   authLayer,
   organizationsLayer,
-  Layer.mock(InstanceRolesRepo, { isOperator: (userId) => Effect.succeed(userId === "alice") }),
+  Layer.mock(InstanceRolesRepo, {
+    isOperator: (userId) => Effect.succeed(userId === "alice" || userId === "olivia"),
+  }),
   Layer.mock(AuditEventsRepo, {
     record: (event) => Effect.sync(() => void audited.push(event)),
     listForOrganization: () => Effect.sync(() => (writes.push("audit"), [])),
@@ -399,7 +403,10 @@ describe("removing members, roles and departed members' projects (docs/adr/0003)
     const forOwner = await call("alice", "/api/organization/members/alice/password-reset", {
       method: "POST",
     });
-    expect([byMember.status, forOwner.status]).toEqual([404, 422]);
+    const forOperator = await call("alice", "/api/organization/members/olivia/password-reset", {
+      method: "POST",
+    });
+    expect([byMember.status, forOwner.status, forOperator.status]).toEqual([404, 422, 422]);
     expect(resets).toEqual([]);
 
     const issued = await call("alice", "/api/organization/members/carol/password-reset", {

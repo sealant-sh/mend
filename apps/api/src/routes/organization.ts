@@ -238,9 +238,12 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
       Effect.gen(function* () {
         const found = yield* ownership(params.userId);
         const role = yield* memberOf(found, params.userId);
-        if (role === "owner") {
+        // An owner resets a member's password, never an owner's and never the operator's: a
+        // demoted operator reset by an owner would hand that owner the whole instance.
+        if (role === "owner" || (yield* (yield* InstanceRolesRepo).isOperator(params.userId))) {
           return yield* new OrganizationRejected({
-            message: "Owners reset their passwords through the operator of this Mend.",
+            message:
+              "Owners and the operator reset their passwords through the operator of this Mend.",
           });
         }
         const caller = yield* CurrentUser;

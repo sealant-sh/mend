@@ -249,8 +249,10 @@ describe("operator", () => {
   it("prints a reset link for the operator and refuses anyone else before asking for one", async () => {
     let operator = true;
     const fake = await startFakeMend((request) =>
-      request.url === "/api/organization"
-        ? { status: 200, body: organization("owner", operator) }
+      request.url === "/api/operator/organizations"
+        ? operator
+          ? { status: 200, body: [] }
+          : { status: 404, body: { _tag: "NotFound", id: "operator" } }
         : { status: 200, body: { path: "/reset/tok", expiresAt: "2026-09-18T10:00:00Z" } },
     );
     try {
@@ -268,7 +270,9 @@ describe("operator", () => {
       const refused = await runCli(fake.url, ["operator", "reset-link", "sam@acme.dev"]);
       expect(refused.code).toBe(1);
       expect(refused.stderr).toContain("not the operator");
-      expect(fake.recorded.slice(before).map((entry) => entry.url)).toEqual(["/api/organization"]);
+      expect(fake.recorded.slice(before).map((entry) => entry.url)).toEqual([
+        "/api/operator/organizations",
+      ]);
     } finally {
       await fake.close();
     }

@@ -312,13 +312,22 @@ const printLink = (baseUrl: string, link: OneTimeLinkDto, what: string) => {
  */
 export const operatorCommand = async (
   api: ApiCall,
+  /** The same call, throwing instead of exiting, so a refusal can be read. */
+  tryApi: ApiCall,
   baseUrl: string,
   args: ReadonlyArray<string>,
 ) => {
   const words = args.filter((arg, index) => !arg.startsWith("--") && args[index - 1] !== "--email");
-  const view = await organizationOf(api).catch(() => null);
-  if (view === null || !view.operator) {
-    return fail("this account is not the operator of this Mend");
+  // Ask an operator route itself: an operator may belong to no organization (removed from one,
+  // or before the first exists), and only the server knows the role.
+  const refused = await tryApi("GET", "/operator/organizations").then(
+    () => null,
+    (error: unknown) => (error instanceof Error ? error.message : String(error)),
+  );
+  if (refused !== null) {
+    return fail(
+      refused.endsWith("→ 404") ? "this account is not the operator of this Mend" : refused,
+    );
   }
   const organizationNamed = async (name: string | undefined) => {
     if (name === undefined)

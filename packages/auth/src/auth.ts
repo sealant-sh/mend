@@ -294,6 +294,14 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
       const issuePasswordReset = Effect.fn("Auth.issuePasswordReset")(function* (userId: string) {
         const token = randomBytes(32).toString("base64url");
         const expiresAt = new Date(Date.now() + PASSWORD_RESET_TTL_MS);
+        // Only the newest link works: an earlier one for the same account is spent now, so the
+        // audit log's latest issue is the one that can set the password.
+        yield* Effect.promise(() =>
+          pool.query(
+            `DELETE FROM "verification" WHERE "value" = $1 AND "identifier" LIKE 'reset-password:%'`,
+            [userId],
+          ),
+        );
         const context = yield* Effect.promise(() => auth.$context);
         yield* Effect.promise(() =>
           context.internalAdapter.createVerificationValue({
