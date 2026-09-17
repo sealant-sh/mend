@@ -1,0 +1,94 @@
+import { AuditEventId, OrganizationId } from "@mend/domain";
+import { AuditEvent } from "@mend/domain/workbench";
+import { describe, expect, it } from "vitest";
+
+import {
+  describeAudit,
+  formatBytes,
+  joinState,
+  planUpload,
+  stagedPath,
+  toBase64,
+} from "./organization.ts";
+
+const event = (action: AuditEvent["action"], data: AuditEvent["data"] = {}) => ({
+  event: new AuditEvent({
+    id: AuditEventId.make("audit-1"),
+    organizationId: OrganizationId.make("org-1"),
+    actorUserId: "alice",
+    action,
+    subjectType: "member",
+    subjectId: "carol",
+    data,
+    createdAt: new Date("2026-09-17T10:00:00Z"),
+  }),
+});
+
+describe("describeAudit", () => {
+  it("says what happened in plain words", () => {
+    expect(describeAudit(event("member.role_changed", { role: "owner" }))).toBe(
+      "made carol an owner",
+    );
+    expect(describeAudit(event("member.removed"), new Map([["carol", "Carol Chen"]]))).toBe(
+      "removed Carol Chen",
+    );
+    expect(describeAudit(event("folder.created", { name: "fixtures" }))).toBe(
+      "created folder fixtures",
+    );
+    expect(describeAudit(event("invitation.accepted", { role: "member" }))).toBe(
+      "joined as member",
+    );
+  });
+});
+
+describe("joinState", () => {
+  const open = { state: "open" as const, organizationName: "Acme" };
+
+  it("tells a spent link apart by what spent it", () => {
+    expect(joinState({ ...open, state: "revoked" }, false, null)).toEqual({
+      kind: "spent",
+      message: "This invitation was revoked by an owner. Ask an owner for a new link.",
+    });
+  });
+
+  it("registers a visitor, and never moves a signed-in account between organizations", () => {
+    expect(joinState(open, false, null)).toEqual({ kind: "register" });
+    expect(joinState(open, true, "Acme")).toEqual({ kind: "already-member" });
+    expect(joinState(open, true, "Globex")).toEqual({
+      kind: "other-organization",
+      current: "Globex",
+    });
+  });
+});
+
+const file = (path: string, size: number) => ({ path, bytes: new Uint8Array(size) });
+
+describe("planUpload", () => {
+  it("packs files into requests under the cap and names what it left out", () => {
+    const plan = planUpload(
+      [file("a.txt", 4), file("b.txt", 4), file(".git/HEAD", 1), file("big.bin", 20), file("c", 3)],
+      { file: 10, request: 8 },
+    );
+    expect(plan.batches.map((batch) => batch.map((staged) => staged.path))).toEqual([
+      ["a.txt", "b.txt"],
+      ["c"],
+    ]);
+    expect(plan.rejected).toEqual([
+      { path: ".git/HEAD", reason: "skipped" },
+      { path: "big.bin", reason: "over 1 MiB" },
+    ]);
+  });
+
+  it("places a picked directory's files relative to it", () => {
+    expect(stagedPath({ name: "x.md", webkitRelativePath: "" })).toBe("x.md");
+    expect(stagedPath({ name: "x.md", webkitRelativePath: "docs/guides/x.md" })).toBe(
+      "guides/x.md",
+    );
+  });
+
+  it("encodes and sizes bytes", () => {
+    expect(toBase64(new TextEncoder().encode("hello"))).toBe("aGVsbG8=");
+    expect(formatBytes(512)).toBe("512 B");
+    expect(formatBytes(1536)).toBe("1.5 KiB");
+  });
+});

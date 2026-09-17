@@ -116,6 +116,16 @@ export type ServiceEndpointDto = ServiceViewDto["endpoints"][number];
 export type SessionTranscriptDto = Outputs["sessions"]["transcript"];
 export type TranscriptEventDto = SessionTranscriptDto["events"][number];
 
+export type OrganizationViewDto = Outputs["organization"]["current"];
+export type OrganizationRoleDto = OrganizationViewDto["role"];
+export type OrganizationMemberDto = Outputs["organization"]["members"][number];
+export type InvitationDto = Outputs["organization"]["invitations"][number];
+export type InvitationCreatedDto = Outputs["organization"]["createInvitation"];
+export type InvitationPreviewDto = Outputs["organization"]["invitationPreview"];
+export type AuditEntryDto = Outputs["organization"]["audit"][number];
+export type FolderDto = Outputs["folders"]["list"][number];
+export type FolderListingDto = Outputs["folders"]["files"];
+
 export type DeviceDto = Outputs["devices"]["list"][number];
 export type PairingDto = Outputs["devices"]["createPairing"];
 
@@ -141,7 +151,7 @@ export interface WorkbenchEventDto {
   readonly changeId?: string;
   readonly sequence?: string;
   readonly line?: string;
-  /** `user` events: whose facts moved, and which facet (accounts · devices · git-access). */
+  /** `user` events: whose facts moved, and which facet (accounts · devices · git-access · access). */
   readonly userId?: string;
   readonly facet?: string;
 }
@@ -432,6 +442,30 @@ export const updateSkill = (
 ) => orLogin(trpcClient.skills.update.mutate({ skillId, request }));
 export const removeSkill = (skillId: string) =>
   orLogin(trpcClient.skills.remove.mutate({ skillId }));
+
+export const createInvitation = (request: {
+  readonly role: OrganizationRoleDto;
+  readonly email?: string;
+}) => orLogin(trpcClient.organization.createInvitation.mutate(request));
+export const revokeInvitation = (id: InvitationDto["id"]) =>
+  orLogin(trpcClient.organization.revokeInvitation.mutate({ id }));
+export const setMemberRole = (userId: string, role: OrganizationRoleDto) =>
+  orLogin(trpcClient.organization.setMemberRole.mutate({ userId, role }));
+export const removeMember = (userId: string) =>
+  orLogin(trpcClient.organization.removeMember.mutate({ userId }));
+export const takeOverProject = (id: ProjectDto["id"]) =>
+  orLogin(trpcClient.organization.takeOverProject.mutate({ id }));
+
+export const createFolder = (name: string) => orLogin(trpcClient.folders.create.mutate({ name }));
+export const removeFolder = (id: FolderDto["id"]) =>
+  orLogin(trpcClient.folders.remove.mutate({ id }));
+export const uploadFolderFiles = (
+  id: FolderDto["id"],
+  files: ReadonlyArray<{ readonly path: string; readonly contentsBase64: string }>,
+  merge: boolean,
+) => orLogin(trpcClient.folders.upload.mutate({ id, files, merge }));
+export const deleteFolderFile = (id: FolderDto["id"], path: string) =>
+  orLogin(trpcClient.folders.deleteFile.mutate({ id, path }));
 
 export const createPairing = () => orLogin(trpcClient.devices.createPairing.mutate());
 export const revokeDevice = (id: string) => orLogin(trpcClient.devices.revoke.mutate({ id }));

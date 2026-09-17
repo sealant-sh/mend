@@ -36,9 +36,21 @@ export class InvitationSpent extends Schema.TaggedErrorClass<InvitationSpent>()(
 /** The caller's organization, their role in it, and whether they also operate the instance. */
 export class OrganizationView extends Schema.Class<OrganizationView>("OrganizationView")({
   organization: Organization,
+  /** The signed-in account, so a roster can mark "you". */
+  userId: Schema.String,
   role: OrganizationRole,
   memberCount: Schema.Int,
   operator: Schema.Boolean,
+  /** `single`: the organization stays out of the way. `multi`: its name is shown. */
+  tenancy: Schema.Literals(["single", "multi"]),
+  /** `none`: selected folders are recorded but not mounted into captured workspaces yet. */
+  mountDelivery: Schema.Literals(["bind", "none"]),
+}) {}
+
+/** One audit event with the name of the account that acted, departed members included. */
+export class AuditEntry extends Schema.Class<AuditEntry>("AuditEntry")({
+  event: AuditEvent,
+  actorName: Schema.String,
 }) {}
 
 export class CreateInvitationRequest extends Schema.Class<CreateInvitationRequest>(
@@ -143,7 +155,7 @@ export const organizationGroup = HttpApiGroup.make("organization")
     // Owners only; newest first. `before` is the id of the previous page's last event.
     HttpApiEndpoint.get("audit", "/organization/audit", {
       query: { before: Schema.optional(Schema.String), limit: Schema.optional(Schema.String) },
-      success: Schema.Array(AuditEvent),
+      success: Schema.Array(AuditEntry),
       error: NotFound,
     }),
   )

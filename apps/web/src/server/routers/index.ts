@@ -1,7 +1,9 @@
 import { changesRouter } from "./changes.ts";
 import { devicesRouter } from "./devices.ts";
 import { environmentRouter } from "./environment.ts";
+import { foldersRouter } from "./folders.ts";
 import { gitRouter } from "./git.ts";
+import { organizationRouter } from "./organization.ts";
 import { platformRouter } from "./platform.ts";
 import { projectsRouter } from "./projects.ts";
 import { queueRouter } from "./queue.ts";
@@ -27,7 +29,9 @@ export const appRouter = router({
   changes: changesRouter,
   devices: devicesRouter,
   environment: environmentRouter,
+  folders: foldersRouter,
   git: gitRouter,
+  organization: organizationRouter,
   platform: platformRouter,
   projects: projectsRouter,
   queue: queueRouter,
