@@ -48,6 +48,7 @@ import { Config, Effect, Layer, Option, Stream } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
+import { ProjectAccess } from "../access.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { DevicePairingLive } from "./devices.ts";
 import { GithubGroupLive } from "./github.ts";
@@ -256,18 +257,24 @@ export const IssuesGroupLive = HttpApiBuilder.group(MendApi, "issues", (handlers
   handlers
     .handle("list", () =>
       Effect.gen(function* () {
+        // The retired queue has no project to authorize against (docs/adr/0003): operator only.
+        yield* (yield* ProjectAccess).requireOperator("queue");
         const issues = yield* IssuesRepo;
         return yield* issues.list();
       }),
     )
     .handle("create", ({ payload }) =>
       Effect.gen(function* () {
+        // The retired queue has no project to authorize against (docs/adr/0003): operator only.
+        yield* (yield* ProjectAccess).requireOperator("queue");
         const issues = yield* IssuesRepo;
         return yield* issues.create(payload);
       }),
     )
     .handle("detail", ({ params }) =>
       Effect.gen(function* () {
+        // The retired queue has no project to authorize against (docs/adr/0003): operator only.
+        yield* (yield* ProjectAccess).requireOperator("queue");
         const issues = yield* IssuesRepo;
         const runs = yield* RunsRepo;
         const issue = yield* issues
@@ -279,6 +286,8 @@ export const IssuesGroupLive = HttpApiBuilder.group(MendApi, "issues", (handlers
     )
     .handle("move", ({ params, payload }) =>
       Effect.gen(function* () {
+        // The retired queue has no project to authorize against (docs/adr/0003): operator only.
+        yield* (yield* ProjectAccess).requireOperator("queue");
         const issues = yield* IssuesRepo;
         return yield* issues
           .move(params.id, payload)
@@ -303,12 +312,16 @@ export const BriefsGroupLive = HttpApiBuilder.group(MendApi, "briefs", (handlers
   handlers
     .handle("byIssue", ({ params }) =>
       Effect.gen(function* () {
+        // The retired queue has no project to authorize against (docs/adr/0003): operator only.
+        yield* (yield* ProjectAccess).requireOperator("queue");
         const { brief, change } = yield* briefOfIssue(params.id);
         return new BriefDetail({ brief, change });
       }),
     )
     .handle("comments", ({ params }) =>
       Effect.gen(function* () {
+        // The retired queue has no project to authorize against (docs/adr/0003): operator only.
+        yield* (yield* ProjectAccess).requireOperator("queue");
         const comments = yield* BriefCommentsRepo;
         const { brief } = yield* briefOfIssue(params.id);
         return yield* comments.listForBrief(brief.id);
@@ -316,6 +329,8 @@ export const BriefsGroupLive = HttpApiBuilder.group(MendApi, "briefs", (handlers
     )
     .handle("comment", ({ params, payload }) =>
       Effect.gen(function* () {
+        // The retired queue has no project to authorize against (docs/adr/0003): operator only.
+        yield* (yield* ProjectAccess).requireOperator("queue");
         const comments = yield* BriefCommentsRepo;
         const jobs = yield* JobRunner;
         const session = yield* CurrentUser;
@@ -344,6 +359,8 @@ export const BriefsGroupLive = HttpApiBuilder.group(MendApi, "briefs", (handlers
     )
     .handle("versions", ({ params }) =>
       Effect.gen(function* () {
+        // The retired queue has no project to authorize against (docs/adr/0003): operator only.
+        yield* (yield* ProjectAccess).requireOperator("queue");
         const briefs = yield* BriefsRepo;
         const { change } = yield* briefOfIssue(params.id);
         return yield* briefs.versions(change.id);
@@ -379,6 +396,8 @@ export const RunsGroupLive = HttpApiBuilder.group(MendApi, "runs", (handlers) =>
     .handle("detail", ({ params }) =>
       asFirstSealantUser(
         Effect.gen(function* () {
+          // The retired queue has no project to authorize against (docs/adr/0003): operator only.
+          yield* (yield* ProjectAccess).requireOperator("queue");
           const runs = yield* RunsRepo;
           const sealant = yield* SealantClient;
           const run = yield* runs
@@ -454,6 +473,8 @@ export const RunsGroupLive = HttpApiBuilder.group(MendApi, "runs", (handlers) =>
     .handle("trace", ({ params, query }) =>
       asFirstSealantUser(
         Effect.gen(function* () {
+          // The retired queue has no project to authorize against (docs/adr/0003): operator only.
+          yield* (yield* ProjectAccess).requireOperator("queue");
           const sealant = yield* SealantClient;
           const { sdkRun } = yield* openRecord(params.id);
           if (sdkRun === null) return new TracePage({ entries: [], nextFrom: null });
@@ -486,6 +507,8 @@ export const RunsGroupLive = HttpApiBuilder.group(MendApi, "runs", (handlers) =>
     .handle("sources", ({ params }) =>
       asFirstSealantUser(
         Effect.gen(function* () {
+          // The retired queue has no project to authorize against (docs/adr/0003): operator only.
+          yield* (yield* ProjectAccess).requireOperator("queue");
           const sealant = yield* SealantClient;
           const { sdkRun } = yield* openRecord(params.id);
           if (sdkRun === null) return [];

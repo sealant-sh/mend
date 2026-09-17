@@ -18,6 +18,7 @@ import {
   ProjectClusterBindingsRepo,
   ProjectMountsRepo,
   ProjectLinksRepo,
+  OrganizationsRepo,
   ProjectLinkNotFoundError,
   ProjectSecretsRepo,
   ProjectServiceRecipesRepo,
@@ -1075,6 +1076,11 @@ const serviceStateLayer = (world: World) =>
   );
 
 /** No linked projects in these worlds. */
+/** No memberships: a project with links would skip them all, and these tests declare none. */
+const organizationsEmptyLayer = Layer.mock(OrganizationsRepo, {
+  membershipOf: () => Effect.succeed(null),
+});
+
 const projectLinksEmptyLayer = Layer.succeed(ProjectLinksRepo, {
   create: () => Effect.die("not in test"),
   byId: (id) => Effect.fail(new ProjectLinkNotFoundError({ linkId: id })),
@@ -1812,6 +1818,7 @@ const withEngine = <A, E>(
         referencesEmptyLayer,
         projectMountsEmptyLayer,
         projectLinksEmptyLayer,
+        organizationsEmptyLayer,
         projectRecipesEmptyLayer,
         options.hotWorkspacesLayer ?? hotWorkspacesEmptyLayer,
       ),
@@ -4532,6 +4539,7 @@ describe("SessionEngine", () => {
           referencesEmptyLayer,
           projectMountsEmptyLayer,
           projectLinksEmptyLayer,
+          organizationsEmptyLayer,
           projectRecipesEmptyLayer,
           hotWorkspacesEmptyLayer,
         ),

@@ -2,6 +2,7 @@ import { projectsGroup, ProjectDetail } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
 import {
   HotWorkspacesRepo,
+  InstanceRolesRepo,
   OrganizationsRepo,
   ProjectNotFoundError,
   ProjectsRepo,
@@ -30,6 +31,7 @@ import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { describe, expect, it } from "vitest";
 
+import { ProjectAccess, ProjectAccessLive } from "../access.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
 import { Gh } from "./github.ts";
 import { ProjectsGroupLive } from "./workbench.ts";
@@ -219,11 +221,18 @@ type ProjectRouteServices =
   | JobRunner
   | WorktreeReads
   | Gh
-  | OrganizationsRepo;
+  | OrganizationsRepo
+  | InstanceRolesRepo
+  | ProjectAccess;
 
 type UnusedProjectRouteServices = Exclude<
   ProjectRouteServices,
-  ProjectsRepo | SessionsRepo | WorktreeChangesRepo | SessionProcessesRepo | WorktreesRepo
+  | ProjectsRepo
+  | SessionsRepo
+  | WorktreeChangesRepo
+  | SessionProcessesRepo
+  | WorktreesRepo
+  | ProjectAccess
 >;
 
 const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.mergeAll(
@@ -239,6 +248,7 @@ const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.
   Layer.mock(JobRunner, {}),
   Layer.mock(WorktreeReads, {}),
   Layer.mock(Gh, {}),
+  Layer.mock(InstanceRolesRepo, {}),
   Layer.mock(OrganizationsRepo, {
     membershipOf: () =>
       Effect.succeed({
@@ -282,13 +292,17 @@ const requestProject = async (
   authorization: string | null = AUTHORIZATION,
   init: RequestInit = {},
 ): Promise<{ readonly response: Response; readonly detail: ProjectDetail | null }> => {
-  const projectRouteDependencies = Layer.mergeAll(
-    projectsLayer(world),
-    sessionsLayer(world),
-    worktreesLayer(world),
-    changesLayer,
-    processesLayer,
-    unusedProjectRouteLayers,
+  const projectRouteDependencies = ProjectAccessLive.pipe(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        projectsLayer(world),
+        sessionsLayer(world),
+        worktreesLayer(world),
+        changesLayer,
+        processesLayer,
+        unusedProjectRouteLayers,
+      ),
+    ),
   );
   const authMiddlewareLayer = AuthMiddlewareLive.pipe(Layer.provide(authLayer));
   const apiLayer = HttpApiBuilder.layer(ProjectsApi).pipe(

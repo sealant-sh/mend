@@ -28,6 +28,7 @@ import { Store } from "@mend/store";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
+import { ProjectAccess } from "../access.ts";
 import { LIVE_STATES } from "./workbench.ts";
 
 /**
@@ -41,9 +42,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
       Effect.gen(function* () {
         const worktrees = yield* WorktreesRepo;
         const engine = yield* SessionEngine;
-        yield* (yield* ProjectsRepo)
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* (yield* ProjectAccess).project(params.id);
         // This verb PROVISIONS; joining an existing name is the sessions verb.
         if (payload.name !== null) {
           const existing = yield* worktrees.byName(params.id, payload.name);
@@ -74,9 +73,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         const sessions = yield* SessionsRepo;
         const changes = yield* WorktreeChangesRepo;
         const processes = yield* SessionProcessesRepo;
-        yield* (yield* ProjectsRepo)
-          .byId(params.id)
-          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* (yield* ProjectAccess).project(params.id);
         const rows = yield* worktrees.listForProject(params.id);
         const projectSessions = yield* sessions.listForProject(params.id);
         const annotations = yield* changes.annotationsForProject(params.id);
@@ -110,13 +107,12 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
     )
     .handle("detail", ({ params }) =>
       Effect.gen(function* () {
-        const worktrees = yield* WorktreesRepo;
         const sessions = yield* SessionsRepo;
         const changes = yield* WorktreeChangesRepo;
         const checkpoints = yield* CheckpointsRepo;
         const processes = yield* SessionProcessesRepo;
-        const worktree = yield* worktrees
-          .byId(params.id)
+        const worktree = yield* (yield* ProjectAccess)
+          .worktree(params.id)
           .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
         const members = yield* sessions.listForWorktree(worktree.id);
         const change = yield* changes.byWorktree(worktree.id);
@@ -156,10 +152,20 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         const services = yield* ServicesRepo;
         const forwards = yield* ServiceForwardsRepo;
         const store = yield* Store;
-        const worktree = yield* worktrees
-          .byId(params.id)
+        const worktree = yield* (yield* ProjectAccess)
+          .worktree(params.id)
           .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
+        // Removal discards every conversation's record here: whoever manages the project, or a
+        // caller who owns every session in the worktree.
+        const caller = yield* CurrentUser;
+        const manages = yield* (yield* ProjectAccess).manageProject(worktree.projectId).pipe(
+          Effect.as(true),
+          Effect.catchTag("NotFound", () => Effect.succeed(false)),
+        );
         const members = yield* sessions.listForWorktree(worktree.id);
+        if (!manages && members.some((member) => member.ownerUserId !== caller.user.id)) {
+          return yield* new WorktreeNotFound({ id: params.id });
+        }
         // Refuse while anything lives here — a live conversation, a process
         // holding the workspace, or an open Service forward. Never silently stop.
         const liveSessions = members.filter((session) => LIVE_STATES.has(session.status));
@@ -215,6 +221,9 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
     )
     .handle("createSession", ({ params, payload }) =>
       Effect.gen(function* () {
+        yield* (yield* ProjectAccess)
+          .worktree(params.id)
+          .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
         const engine = yield* SessionEngine;
         const caller = yield* CurrentUser;
         return yield* engine
@@ -238,8 +247,8 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         const worktrees = yield* WorktreesRepo;
         const changes = yield* WorktreeChangesRepo;
         const engine = yield* SessionEngine;
-        const worktree = yield* worktrees
-          .byId(params.id)
+        const worktree = yield* (yield* ProjectAccess)
+          .worktree(params.id)
           .pipe(Effect.mapError(() => new WorktreeNotFound({ id: params.id })));
         // Snapshot through a conversation: newest live wins, else the change's
         // last contributor — provenance stays honest either way.

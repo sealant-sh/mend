@@ -26,6 +26,7 @@ import { HttpRouter } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
+import { ProjectAccess } from "./access.ts";
 import { publicNetworkPolicy } from "./public-network-policy.ts";
 import { AuthMiddlewareLive } from "./routes/api-live.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
@@ -110,7 +111,10 @@ const startServer = async () => {
     Layer.provide(GitKeysGroupLive),
     Layer.provide(AuthMiddlewareLive),
   );
-  const websocketRoutes = WebSocketRoutes.pipe(Layer.provide(SessionSteeringLive));
+  const websocketRoutes = WebSocketRoutes.pipe(
+    Layer.provide(SessionSteeringLive),
+    Layer.provide(Layer.mock(ProjectAccess, {})),
+  );
   const server = createServer();
   const runtime = ManagedRuntime.make(
     HttpRouter.serve(Layer.mergeAll(api, websocketRoutes, publicNetworkPolicy(network)), {

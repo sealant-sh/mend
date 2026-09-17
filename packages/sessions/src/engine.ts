@@ -14,6 +14,7 @@ import {
   ProjectEnvironmentRepo,
   ProjectMountsRepo,
   ProjectLinksRepo,
+  OrganizationsRepo,
   type ProjectNotFoundError,
   ProjectSecretsRepo,
   ProjectsRepo,
@@ -83,6 +84,7 @@ import {
   ServiceView,
   SessionExtraMount,
   SessionReferenceMount,
+  canUseLink,
 } from "@mend/domain/workbench";
 import { asSealantUser, SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
@@ -816,6 +818,7 @@ type SessionEngineRequirements =
   | ReferencesRepo
   | ProjectMountsRepo
   | ProjectLinksRepo
+  | OrganizationsRepo
   | ProjectClusterBindingsRepo
   | ProjectEnvironmentRepo
   | ProjectSecretsRepo
@@ -1515,6 +1518,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const references = yield* ReferencesRepo;
       const projectMounts = yield* ProjectMountsRepo;
       const projectLinks = yield* ProjectLinksRepo;
+      const organizations = yield* OrganizationsRepo;
       const projectEnvironment = yield* ProjectEnvironmentRepo;
       const projectSecrets = yield* ProjectSecretsRepo;
       const projectClusterBindings = yield* ProjectClusterBindingsRepo;
@@ -3399,7 +3403,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const declaredMounts = yield* projectMounts
           .listForProject(project.id)
           .pipe(Effect.orElseSucceed(() => []));
-        const linkedProjects = yield* resolveLinkedProjects(project);
+        const linkedProjects = yield* resolveLinkedProjects(project, ownerUserId);
         // The durable harness home (harness-state.ts): a store-backed directory mounted
         // read-write into the workspace; boot symlinks each harness's `$HOME` state dirs into
         // it, so conversation state survives any workspace death. A failed mkdir costs
@@ -3758,19 +3762,47 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
       });
 
-      /** The project's links with their projects; a link to a vanished project is skipped. */
+      /**
+       * The project's links with their projects, as the session owner may use them
+       * (docs/adr/0003): a link to a vanished project, a project in another organization, or one
+       * the owner cannot see (a teammate's private project, say) is skipped with a warning, and
+       * the session runs without that mount. Checked at every provision, claim and restore, so
+       * access that changed after the link was made is honored.
+       */
       const resolveLinkedProjects = Effect.fn("SessionEngine.resolveLinkedProjects")(function* (
         project: Project,
+        ownerUserId: string | null,
       ) {
         const links = yield* projectLinks
           .listForProject(project.id)
           .pipe(Effect.orElseSucceed(() => []));
+        if (links.length === 0) return [];
+        const owner = ownerUserId ?? (yield* userDotfilesRepo.firstUserId());
+        const membership = owner === null ? null : yield* organizations.membershipOf(owner);
         const resolved: Array<{ readonly link: ProjectLink; readonly linked: Project }> = [];
         for (const link of links) {
           const linked = yield* projects
             .byId(link.linkedProjectId)
             .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
-          if (linked !== null) resolved.push({ link, linked });
+          if (linked === null) continue;
+          const usable = canUseLink(
+            project,
+            linked,
+            owner === null || membership === null
+              ? null
+              : {
+                  userId: owner,
+                  organizationId: membership.organization.id,
+                  role: membership.role,
+                },
+          );
+          if (usable) {
+            resolved.push({ link, linked });
+          } else {
+            yield* Effect.logWarning(
+              "session engine: linked project skipped · the session owner cannot see it",
+            ).pipe(Effect.annotateLogs({ projectId: project.id, link: link.name }));
+          }
         }
         return resolved;
       });
@@ -3783,8 +3815,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const bindLinkedProjects = Effect.fn("SessionEngine.bindLinkedProjects")(function* (
         workspace: Workspace,
         project: Project,
+        ownerUserId: string | null,
       ) {
-        for (const { link, linked } of yield* resolveLinkedProjects(project)) {
+        for (const { link, linked } of yield* resolveLinkedProjects(project, ownerUserId)) {
           const worktree = yield* worktreesRepo.byName(linked.id, link.worktreeName);
           const outcome: Effect.Effect<unknown, Error | SealantPlatformError> =
             worktree === null
@@ -4291,7 +4324,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   .pipe(Effect.ignore),
               ),
             );
-          yield* bindLinkedProjects(workspace, project);
+          yield* bindLinkedProjects(workspace, project, ownerUserId);
         }
         yield* sessions.setWorkspaceImage(sessionId, workspaceImage);
         // Stamped alongside the image: what this session ACTUALLY launched with — the repo
@@ -6338,7 +6371,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             hostPath: m.hostPath,
             readOnly: m.readOnly,
           })),
-          links: (yield* resolveLinkedProjects(project)).map(({ link, linked }) => ({
+          links: (yield* resolveLinkedProjects(project, ownerUserId)).map(({ link, linked }) => ({
             name: link.name,
             rootPath: worktreesRootOf(linked.storePath),
           })),

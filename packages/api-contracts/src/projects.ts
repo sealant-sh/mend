@@ -28,6 +28,7 @@ import {
   ProjectApplyDotfilesRequest,
   ProjectAutomationRequest,
   ProjectDetail,
+  ProjectVisibilityRequest,
   ProjectGitAuthRequest,
   ProjectHotSessionsRequest,
   ProjectInstallCommandRequest,
@@ -77,6 +78,15 @@ export const projectsGroup = HttpApiGroup.make("projects")
       params: { id: ProjectId },
       success: RemovalReport,
       error: [NotFound, StoreFailure],
+    }),
+  )
+  .add(
+    // Owners only (docs/adr/0003); anyone else gets the same 404 as a missing project.
+    HttpApiEndpoint.put("visibility", "/projects/:id/visibility", {
+      params: { id: ProjectId },
+      payload: ProjectVisibilityRequest,
+      success: Project,
+      error: NotFound,
     }),
   )
   .add(
@@ -229,7 +239,7 @@ export const referencesGroup = HttpApiGroup.make("references")
     HttpApiEndpoint.post("add", "/references", {
       payload: AddReference,
       success: Reference,
-      error: StoreFailure,
+      error: [StoreFailure, NotFound],
     }),
   )
   .add(
