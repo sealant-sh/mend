@@ -79,10 +79,20 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
             void queryClient.invalidateQueries(trpc.devices.pathFilter());
           } else if (event.facet === "git-access") {
             void queryClient.invalidateQueries(trpc.git.pathFilter());
+          } else if (event.facet === "access") {
+            // This account was removed from its organization (docs/adr/0003): nothing cached may
+            // outlive that, and the next request would be refused anyway.
+            disposed = true;
+            source?.close();
+            queryClient.clear();
+            window.location.assign("/login?reason=access");
           }
           break;
         case "organization":
-          // Membership or visibility may have moved: what this account can see is re-read.
+          // Membership, roles, invitations, folders or references moved: re-read what they feed.
+          void queryClient.invalidateQueries(trpc.organization.pathFilter());
+          void queryClient.invalidateQueries(trpc.folders.pathFilter());
+          void queryClient.invalidateQueries(trpc.git.references.pathFilter());
           void queryClient.invalidateQueries(trpc.projects.pathFilter());
           void queryClient.invalidateQueries(trpc.sessions.pathFilter());
           break;

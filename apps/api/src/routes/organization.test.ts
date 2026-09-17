@@ -8,12 +8,15 @@ import {
   OrganizationsRepo,
   ProjectNotFoundError,
   ProjectsRepo,
+  UserFacts,
+  UsersRepo,
   type NewAuditEvent,
   type OrganizationMembership,
 } from "@mend/db";
 import { InvitationId, OrganizationId, ProjectId } from "@mend/domain";
 import { Invitation, Organization, OrganizationMember, type Project } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
+import { DeploymentConfig } from "@mend/store";
 import { Effect, Layer, ManagedRuntime, Option } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
@@ -21,6 +24,7 @@ import { afterAll, beforeEach, describe, expect, it } from "vitest";
 
 import { makeProject } from "../../test/support/tenancy-harness.ts";
 import { MemberRemoval, type RemoveMemberInput } from "../member-removal.ts";
+import { TenancyConfig } from "../tenancy.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
 import {
   InvitationsGroupLive,
@@ -191,6 +195,20 @@ const dependencies = Layer.mergeAll(
       }),
   }),
   Layer.mock(SessionEngine, { reconcileHotSessions: () => Effect.void }),
+  Layer.mock(UsersRepo, {
+    byId: (id) =>
+      Effect.succeed(
+        roles[id] === undefined && id !== "bob"
+          ? null
+          : new UserFacts({ id, name: id === "bob" ? "Bob" : id, email: `${id}@example.invalid` }),
+      ),
+  }),
+  Layer.succeed(TenancyConfig, { mode: "single" }),
+  Layer.succeed(DeploymentConfig, {
+    mode: "local",
+    sessionEndpoint: undefined,
+    sessionStore: "captured",
+  }),
 );
 const api = HttpApi.make("mend").add(organizationGroup).add(invitationsGroup).prefix("/api");
 const apiLayer = HttpApiBuilder.layer(api).pipe(
@@ -230,6 +248,9 @@ describe("organization routes (docs/adr/0003)", () => {
       role: "member",
       memberCount: 2,
       operator: false,
+      userId: "carol",
+      tenancy: "single",
+      mountDelivery: "none",
     });
   });
 

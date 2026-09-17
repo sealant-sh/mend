@@ -1,11 +1,9 @@
 import { Button } from "@mend/ui/components/ui/button";
-import { Input } from "@mend/ui/components/ui/input";
-import { Label } from "@mend/ui/components/ui/label";
 import { useQuery } from "@tanstack/react-query";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { Eye, EyeOff } from "lucide-react";
 import { useState } from "react";
 
+import { Field, PasswordField } from "#/components/auth-fields";
 import { SetupFrame } from "#/components/setup-frame";
 import { authClient } from "#/lib/auth-client";
 import { defaultLoginMode, passwordProblem, safeNextPath, type LoginMode } from "#/lib/onboarding";
@@ -17,9 +15,14 @@ export const Route = createFileRoute("/login")({
   ssr: false,
   // `next` stays optional so every existing `navigate({ to: "/login" })` keeps
   // compiling; absent means the workbench root.
-  validateSearch: (search: Record<string, unknown>): { readonly next?: string } => {
+  validateSearch: (
+    search: Record<string, unknown>,
+  ): { readonly next?: string; readonly reason?: "access" } => {
     const next = safeNextPath(search["next"]);
-    return next === "/" ? {} : { next };
+    return {
+      ...(next === "/" ? {} : { next }),
+      ...(search["reason"] === "access" ? { reason: "access" as const } : {}),
+    };
   },
   component: LoginPage,
 });
@@ -33,7 +36,8 @@ export const Route = createFileRoute("/login")({
  */
 function LoginPage() {
   const navigate = useNavigate();
-  const next = Route.useSearch().next ?? "/";
+  const search = Route.useSearch();
+  const next = search.next ?? "/";
   const trpc = useTRPC();
   const instance = useQuery(trpc.platform.instance.queryOptions(undefined, { retry: false }));
   const [chosen, setChosen] = useState<LoginMode | null>(null);
@@ -109,6 +113,15 @@ function LoginPage() {
             ? "This Mend has no accounts yet. Yours comes first; the next step picks how it reaches your repositories."
             : "One account per person: sessions, keys and devices are yours alone."}
       </p>
+      {search.reason === "access" ? (
+        <p
+          role="status"
+          className="mt-5 border-l-2 border-[var(--sw-accent)] pl-3 text-[13px] leading-relaxed text-ink-2"
+        >
+          This account no longer belongs to an organization on this Mend. Its sessions are being
+          stopped; their work so far is kept.
+        </p>
+      ) : null}
       <form
         className="mt-6 space-y-4"
         onSubmit={(event) => {
@@ -117,9 +130,17 @@ function LoginPage() {
         }}
       >
         {mode === "sign-up" ? (
-          <Field label="Name" type="text" value={name} onChange={setName} autoComplete="name" />
+          <Field
+            id="login-name"
+            label="Name"
+            type="text"
+            value={name}
+            onChange={setName}
+            autoComplete="name"
+          />
         ) : null}
         <Field
+          id="login-email"
           label="Email"
           type="email"
           value={email}
@@ -186,99 +207,5 @@ function LoginPage() {
         </Button>
       )}
     </SetupFrame>
-  );
-}
-
-function Field({
-  label,
-  type,
-  value,
-  onChange,
-  autoComplete,
-  required,
-}: {
-  readonly label: string;
-  readonly type: string;
-  readonly value: string;
-  readonly onChange: (value: string) => void;
-  readonly autoComplete: string;
-  readonly required?: boolean;
-}) {
-  const id = `login-${label.toLowerCase()}`;
-  return (
-    <div>
-      <Label htmlFor={id} className="mb-1.5 block">
-        {label}
-      </Label>
-      <Input
-        id={id}
-        className="h-10 bg-background"
-        type={type}
-        value={value}
-        onChange={(event) => onChange(event.target.value)}
-        autoComplete={autoComplete}
-        {...(required === true ? { required: true } : {})}
-      />
-    </div>
-  );
-}
-
-/**
- * A password input with its own reveal. Both password fields of the
- * registration share one `shown`, so revealing shows the pair being compared.
- */
-function PasswordField({
-  id,
-  label,
-  value,
-  onChange,
-  autoComplete,
-  shown,
-  onToggle,
-  hint = null,
-}: {
-  readonly id: string;
-  readonly label: string;
-  readonly value: string;
-  readonly onChange: (value: string) => void;
-  readonly autoComplete: string;
-  readonly shown: boolean;
-  readonly onToggle: () => void;
-  /** A live, quiet statement under the field (the pair differs); null for none. */
-  readonly hint?: string | null;
-}) {
-  return (
-    <div>
-      <Label htmlFor={id} className="mb-1.5 block">
-        {label}
-      </Label>
-      <div className="relative">
-        <Input
-          id={id}
-          className="h-10 bg-background pr-10"
-          type={shown ? "text" : "password"}
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          autoComplete={autoComplete}
-          required
-        />
-        <button
-          type="button"
-          onClick={onToggle}
-          aria-label={shown ? "Hide password" : "Show password"}
-          aria-pressed={shown}
-          className="absolute inset-y-0 right-0 flex w-10 items-center justify-center text-muted-foreground transition-colors hover:text-foreground"
-        >
-          {shown ? (
-            <EyeOff className="size-4" aria-hidden="true" />
-          ) : (
-            <Eye className="size-4" aria-hidden="true" />
-          )}
-        </button>
-      </div>
-      {hint === null ? null : (
-        <p className="mt-1.5 text-[12px] leading-relaxed text-muted-foreground">{hint}</p>
-      )}
-    </div>
   );
 }

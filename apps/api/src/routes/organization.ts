@@ -1,4 +1,5 @@
 import {
+  AuditEntry,
   CurrentUser,
   InvitationCreated,
   InvitationPreview,
@@ -10,6 +11,7 @@ import {
 } from "@mend/api-contracts";
 import {
   AuditEventsRepo,
+  UsersRepo,
   InstanceRolesRepo,
   OrganizationsRepo,
   ProjectsRepo,
@@ -21,10 +23,12 @@ import {
   INVITATION_MAX_DAYS,
 } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
+import { DeploymentConfig } from "@mend/store";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { MemberRemoval } from "../member-removal.ts";
+import { TenancyConfig } from "../tenancy.ts";
 
 /** The path a browser opens to accept an invitation; the web app owns the route. */
 export const invitationJoinPath = (token: string) => `/join/${token}`;
@@ -104,9 +108,12 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
         const roles = yield* InstanceRolesRepo;
         return new OrganizationView({
           organization: found.organization,
+          userId: caller.user.id,
           role: found.role,
           memberCount: yield* organizations.memberCount(found.organization.id),
           operator: yield* roles.isOperator(caller.user.id),
+          tenancy: (yield* TenancyConfig).mode,
+          mountDelivery: (yield* DeploymentConfig).sessionStore === "captured" ? "none" : "bind",
         });
       }),
     )
@@ -277,9 +284,31 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
     .handle("audit", ({ query }) =>
       Effect.gen(function* () {
         const found = yield* ownership(ORGANIZATION);
-        return yield* (yield* AuditEventsRepo).listForOrganization(
+        const events = yield* (yield* AuditEventsRepo).listForOrganization(
           found.organization.id,
           auditPage(query.before, query.limit),
+        );
+        // Accounts are deactivated, never deleted, so a departed member still has a name.
+        const users = yield* UsersRepo;
+        const names = new Map<string, string>();
+        const accounts = new Set(
+          events.flatMap((event) =>
+            event.subjectType === "member"
+              ? [event.actorUserId, event.subjectId]
+              : [event.actorUserId],
+          ),
+        );
+        for (const account of accounts) {
+          names.set(account, (yield* users.byId(account))?.name ?? "a removed account");
+        }
+        return events.map(
+          (event) =>
+            new AuditEntry({
+              event,
+              actorName: names.get(event.actorUserId) ?? "",
+              subjectName:
+                event.subjectType === "member" ? (names.get(event.subjectId) ?? null) : null,
+            }),
         );
       }),
     ),
@@ -294,6 +323,7 @@ export const InvitationsGroupLive = HttpApiBuilder.group(MendApi, "invitations",
         .invitationByToken(payload.token)
         .pipe(Effect.catchTag("InvitationUnknownError", () => new NotFound({ id: "invitation" })));
       return new InvitationPreview({
+        organizationId: resolved.organization.id,
         organizationName: resolved.organization.name,
         role: resolved.invitation.role,
         state: resolved.state,

@@ -4,6 +4,7 @@ import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useReducer, useState } from "react";
 
 import { GitAccessPanel } from "#/components/git-access-panel";
+import { OrganizationSettings } from "#/components/organization-settings";
 import {
   PairingQr,
   formatDay,
@@ -83,6 +84,7 @@ function SettingsPage() {
         <ReviewAutomationPanel />
         <ConnectedAccountsPanel />
         <DevicesPanel />
+        <OrganizationSettings />
         <SealantConnectionPanel connection={connection} />
       </div>
     </AppShell>
