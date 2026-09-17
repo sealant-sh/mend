@@ -1831,6 +1831,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
             return;
           }
+          // A session with no owner has nobody to read its run as; retrying would never succeed.
+          if (current.ownerUserId === null) {
+            return yield* failRun(
+              sessionId,
+              sealantRunId,
+              "this session has no owner to run as; start a new session",
+            );
+          }
           yield* Effect.gen(function* () {
             const sdkRun = yield* sealant.getRun(sealantRunId);
             yield* supervise(current, sessionRun, sdkRun);
@@ -2010,6 +2018,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
           if (claimed !== null) return claimed;
+          // Nothing of this owner's was ready. Their new session makes them a recent owner, so
+          // the pool starts warming for them now instead of at the next heartbeat.
+          const session = yield* provisionSessionIn(project, worktree, input);
+          yield* requestHotReconcile(project.id);
+          return session;
         }
         return yield* provisionSessionIn(project, worktree, input);
       });

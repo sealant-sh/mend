@@ -701,7 +701,7 @@ interface World {
   readonly worktrees: Map<string, Worktree>;
   /** Members of the fixture organization (`org-test`), by account. */
   readonly members: Map<string, "owner" | "member">;
-  /** What `SessionsRepo.recentOwnersForProject` answers: the accounts the hot pool may warm for. */
+  /** Recent owners beyond the world's own sessions, as `recentOwnersForProject` adds them. */
   recentOwners: ReadonlyArray<string>;
 }
 
@@ -1329,7 +1329,20 @@ const sessionsLayer = (world: World) => {
     listActive: () => Effect.succeed([]),
     listUnsettled: () =>
       Effect.succeed([...world.sessions.values()].filter((s) => s.settledAt === null)),
-    recentOwnersForProject: () => Effect.sync(() => world.recentOwners),
+    // Owners of the world's sessions, most recent first, then any the test names on top.
+    recentOwnersForProject: (projectId, since, excludeLabel) =>
+      Effect.sync(() => {
+        const fromSessions = [...world.sessions.values()]
+          .filter(
+            (session) =>
+              session.projectId === projectId &&
+              session.label !== excludeLabel &&
+              session.createdAt > since,
+          )
+          .toSorted((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+          .flatMap((session) => (session.ownerUserId === null ? [] : [session.ownerUserId]));
+        return [...new Set([...fromSessions, ...world.recentOwners])];
+      }),
     listRecentlySettled: () =>
       Effect.succeed(
         [...world.sessions.values()].filter(
@@ -6614,16 +6627,112 @@ describe("SessionEngine capture mode", () => {
             base: null,
           });
           expect(pool.entries.map((entry) => entry.id)).not.toContain(session.id);
-          expect(pool.entries.every((entry) => entry.status === "ready")).toBe(true);
+          expect(
+            pool.entries
+              .filter((entry) => entry.ownerUserId !== "user-late")
+              .every((entry) => entry.status === "ready"),
+          ).toBe(true);
 
           // Losing access drains that owner's standby on the next pass.
           world.members.delete("user-teammate");
           yield* engine.reconcileHotSessions(project.id);
           yield* until(
-            () => pool.entries.every((entry) => entry.ownerUserId !== "user-teammate"),
-            "the former member's standby to drain",
+            () =>
+              pool.entries.every((entry) => entry.ownerUserId !== "user-teammate") &&
+              pool.entries.some(
+                (entry) => entry.ownerUserId === "user-late" && entry.status === "ready",
+              ),
+            "the former member's standby to drain and user-late's to warm",
           );
-          expect(pool.entries.map((entry) => entry.ownerUserId)).toEqual(["user-fixture"]);
+          // user-late's cold session made them a recent owner; the pool now serves them too.
+          expect(pool.entries.map((entry) => entry.ownerUserId).toSorted()).toEqual([
+            "user-fixture",
+            "user-late",
+          ]);
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(created),
+        hotWorkspacesLayer: pool.layer,
+      },
+    );
+  });
+
+  it("a person's first session goes cold and starts warming for them; at most four people are warmed for", async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          world.recentOwners = [];
+          const engine = yield* SessionEngine;
+          yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* until(
+            () =>
+              pool.entries.some(
+                (entry) => entry.ownerUserId === "user-fixture" && entry.status === "ready",
+              ),
+            "a standby for the new owner",
+          );
+
+          for (const name of ["a", "b", "c", "d"]) world.members.set(`user-${name}`, "member");
+          world.recentOwners = ["user-a", "user-b", "user-c", "user-d"];
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(
+            () => pool.entries.filter((entry) => entry.status === "ready").length === 4,
+            "four owners warmed",
+          );
+          yield* Effect.sleep("50 millis");
+          // user-fixture's session is the most recent; user-d is fifth and gets nothing.
+          expect(pool.entries.map((entry) => entry.ownerUserId).toSorted()).toEqual([
+            "user-a",
+            "user-b",
+            "user-c",
+            "user-fixture",
+          ]);
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(created),
+        hotWorkspacesLayer: pool.layer,
+      },
+    );
+  });
+
+  it("a claim rechecks the owner: a standby of someone who lost access is not handed to them", async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(() => pool.entries.some((entry) => entry.status === "ready"), "a standby");
+          const standby = pool.entries[0];
+          if (standby === undefined) throw new Error("no standby");
+          world.members.delete("user-fixture");
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          expect(session.id).not.toBe(standby.id);
         }),
       {
         captured: memory,

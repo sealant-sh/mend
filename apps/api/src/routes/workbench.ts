@@ -885,7 +885,12 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
       Effect.gen(function* () {
         const hotWorkspaces = yield* HotWorkspacesRepo;
         const project = yield* (yield* ProjectAccess).project(params.id);
-        const entries = yield* hotWorkspaces.listForProject(params.id);
+        const caller = yield* CurrentUser;
+        // The pool is kept per person (docs/adr/0003): the caller's own standbys, and never
+        // another account's failure text.
+        const entries = (yield* hotWorkspaces.listForProject(params.id)).filter(
+          (entry) => entry.ownerUserId === caller.user.id,
+        );
         const countOf = (status: string) =>
           entries.filter((entry) => entry.status === status).length;
         // The latest failure, when one exists — the setup page shows it verbatim.

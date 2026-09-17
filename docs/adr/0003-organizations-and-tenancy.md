@@ -186,7 +186,9 @@ Pool entries are keyed by organization, project, owner and a fingerprint of the 
 Warming runs as that owner, and authorization is checked before provisioning and again before a
 claim. Entries are drained when access changes. Nothing warms as the first account any more, and a
 credential-bearing workspace is never handed to another user. Pools warm only for owners who
-recently ran a session in the project, so they do not multiply with the member count (B4).
+recently ran a session in the project, so they do not multiply with the member count (B4): the four
+most recent within a week, each warmed to the project's hot session count. A person's first session
+is cold and starts warming for them. The setup page counts the viewer's own standbys.
 
 ### Audit log
 
