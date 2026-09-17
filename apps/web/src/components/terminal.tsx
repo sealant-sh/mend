@@ -62,6 +62,70 @@ const base64Of = (file: File): Promise<string> =>
 const LADDER_MS = [3_000, 4_000, 8_000, 16_000] as const;
 const STABLE_AFTER_MS = 30_000;
 
+/** The exchange refused the ticket this page holds: only the app that embedded it can mint another. */
+export class EmbedTicketRefused extends Error {
+  constructor(status: number) {
+    super(`the terminal ticket was refused (${status})`);
+    this.name = "EmbedTicketRefused";
+  }
+}
+
+/** What the page posts to the app that embeds it when its ticket is refused. */
+export const EMBED_EXPIRED_MESSAGE = "mend:embed-expired";
+
+/**
+ * Tell the embedding app (a React Native WebView, or a parent frame) that this page can no longer
+ * reconnect, so it loads the embed again with a fresh ticket. A page with no such host just keeps
+ * its reconnect ladder.
+ */
+const notifyEmbedExpired = () => {
+  const host: unknown = Reflect.get(window, "ReactNativeWebView");
+  if (typeof host === "object" && host !== null && "postMessage" in host) {
+    const { postMessage } = host;
+    if (typeof postMessage === "function") postMessage.call(host, EMBED_EXPIRED_MESSAGE);
+  }
+  if (window.parent !== window) window.parent.postMessage(EMBED_EXPIRED_MESSAGE, "*");
+};
+
+/**
+ * The embed page's credential chain (docs/adr/0004, "Upgrade tickets"). The first trade spends the
+ * ticket from the page's URL and answers a socket ticket and a renewal ticket; later trades show
+ * that renewal, which is kept, so a reply lost on the way back strands nobody. The renewal ticket
+ * lives here, in memory, and travels only in a request body. It ends twelve hours after the app
+ * minted the URL, or with the sign-in or device that minted it.
+ */
+export const makeEmbedExchange = (
+  embedTicket: string,
+  address: { readonly session: string } | { readonly process: string },
+  send: typeof fetch = fetch,
+) => {
+  let current = embedTicket;
+  return {
+    next: async (): Promise<string> => {
+      const response = await send("/api/upgrade-tickets/exchange", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ ticket: current, ...address }),
+      });
+      if (response.status === 401) throw new EmbedTicketRefused(response.status);
+      if (!response.ok) throw new Error(`the terminal ticket trade failed (${response.status})`);
+      const traded: unknown = await response.json();
+      if (
+        typeof traded !== "object" ||
+        traded === null ||
+        !("ticket" in traded) ||
+        !("renew" in traded) ||
+        typeof traded.ticket !== "string" ||
+        typeof traded.renew !== "string"
+      ) {
+        throw new Error("the terminal ticket answer was malformed");
+      }
+      current = traded.renew;
+      return traded.ticket;
+    },
+  };
+};
+
 /** Resolve a CSS custom property so xterm's JS theme follows the app theme. */
 const cssVar = (name: string, fallback: string): string => {
   const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -71,12 +135,19 @@ const cssVar = (name: string, fallback: string): string => {
 export function SessionTerminal({
   sessionId,
   processId,
+  embedTicket,
   token,
 }: {
   readonly sessionId: string;
   /** A supporting shell process. Omitted for the session's agent PTY. */
   readonly processId?: string;
-  /** Bearer for clients that cannot ride the cookie (the mobile WebView). */
+  /**
+   * For a page that cannot ride the cookie (the mobile WebView): the upgrade ticket from its own
+   * URL. The page trades it for the socket's ticket and a renewal ticket it keeps in memory
+   * (docs/adr/0004, "Upgrade tickets"), so no bearer reaches a URL.
+   */
+  readonly embedTicket?: string;
+  /** A bearer in the URL, from an app build older than tickets. Read only when there is no ticket. */
   readonly token?: string;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
@@ -121,6 +192,15 @@ export function SessionTerminal({
       let connectedAt: number | null = null;
       let settled = false;
       let disposed = false;
+      /** Bumped per connect, so a ticket that arrives after a newer connect opens nothing. */
+      let connectSeq = 0;
+      const exchange =
+        embedTicket === undefined || embedTicket === ""
+          ? null
+          : makeEmbedExchange(
+              embedTicket,
+              processId === undefined ? { session: sessionId } : { process: processId },
+            );
 
       const sendResize = () => {
         if (ws !== null && ws.readyState === WebSocket.OPEN) {
@@ -138,7 +218,41 @@ export function SessionTerminal({
           processId ?? sessionId,
         );
         url.searchParams.set("from", "0");
-        if (token !== undefined && token !== "") url.searchParams.set("token", token);
+        if (exchange === null) {
+          if (token !== undefined && token !== "") url.searchParams.set("token", token);
+          open(url);
+          return;
+        }
+        // Tickets are single use, so every connect and reconnect trades for a fresh one.
+        connectSeq += 1;
+        const seq = connectSeq;
+        void exchange.next().then(
+          (ticket) => {
+            if (disposed || settled || seq !== connectSeq) return null;
+            url.searchParams.set("ticket", ticket);
+            open(url);
+            return null;
+          },
+          (error: unknown) => {
+            if (disposed || settled || seq !== connectSeq) return;
+            // A refused ticket will be refused again: the app that embedded this page is asked
+            // for a fresh one. The ladder carries on for a host that does not answer.
+            if (error instanceof EmbedTicketRefused) notifyEmbedExpired();
+            retryLater();
+          },
+        );
+      };
+
+      const retryLater = () => {
+        if (connectedAt !== null && Date.now() - connectedAt >= STABLE_AFTER_MS) attempt = 0;
+        connectedAt = null;
+        const delay = LADDER_MS[Math.min(attempt, LADDER_MS.length - 1)];
+        attempt += 1;
+        setState("reconnecting");
+        timer = window.setTimeout(connect, delay);
+      };
+
+      const open = (url: URL) => {
         const socket = new WebSocket(url);
         socket.binaryType = "arraybuffer";
         ws = socket;
@@ -175,12 +289,7 @@ export function SessionTerminal({
             setState("settled");
             return;
           }
-          if (connectedAt !== null && Date.now() - connectedAt >= STABLE_AFTER_MS) attempt = 0;
-          connectedAt = null;
-          const delay = LADDER_MS[Math.min(attempt, LADDER_MS.length - 1)];
-          attempt += 1;
-          setState("reconnecting");
-          timer = window.setTimeout(connect, delay);
+          retryLater();
         });
       };
 
@@ -273,7 +382,7 @@ export function SessionTerminal({
       cancelled = true;
       teardown?.();
     };
-  }, [sessionId, processId, token]);
+  }, [sessionId, processId, embedTicket, token]);
 
   return (
     <div>

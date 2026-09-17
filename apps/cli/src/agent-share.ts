@@ -24,23 +24,17 @@ export type ShareEvent =
 export type ShareState = "connecting" | "connected";
 
 export interface ShareOptions {
-  /** The bridge websocket, token included — see `bridgeUrlOf`. */
-  readonly url: URL;
+  /**
+   * The bridge websocket for the next connection. Asked before every connect and reconnect: the
+   * credential in it is a single-use upgrade ticket (`upgrade-url.ts`).
+   */
+  readonly url: () => Promise<URL>;
   /** The local agent's socket (SSH_AUTH_SOCK). */
   readonly agentSock: string;
   /** Aborting closes the socket and ends the loop. */
   readonly signal: AbortSignal;
   readonly onEvent: (event: ShareEvent) => void;
 }
-
-/** The bridge endpoint for a server url: ws(s), this machine named, the token as a query. */
-export const bridgeUrlOf = (serverUrl: string, token: string | null, host: string): URL => {
-  const url = new URL(`${serverUrl}/api/keys/bridge/ws`);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-  url.searchParams.set("host", host);
-  if (token !== null) url.searchParams.set("token", token);
-  return url;
-};
 
 /** Reconnect backoff: 1s, 2s, … capped at 30s. */
 export const retryDelayMs = (attempt: number): number =>
@@ -92,7 +86,18 @@ export const shareAgent = async (options: ShareOptions): Promise<void> => {
   let chain: Promise<unknown> = Promise.resolve();
   let attempt = 0;
   while (!signal.aborted) {
-    const ws = new WebSocket(url);
+    let target: URL;
+    try {
+      target = await url();
+    } catch {
+      // The server is unreachable or refused the ticket; the backoff below applies either way.
+      attempt += 1;
+      const retryMs = retryDelayMs(attempt);
+      onEvent({ kind: "disconnected", retryMs });
+      await sleep(retryMs, signal);
+      continue;
+    }
+    const ws = new WebSocket(target);
     const onAbort = () => ws.close();
     signal.addEventListener("abort", onAbort, { once: true });
     const closed = new Promise<void>((resolve) => {

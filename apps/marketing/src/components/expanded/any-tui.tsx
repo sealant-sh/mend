@@ -255,7 +255,7 @@ export function ExpandedAnyTui() {
         <div className="space-y-1.5 font-mono text-[10.5px] leading-relaxed text-muted-foreground">
           <p className="text-ink-2">GET /api/tty?session=&lt;id&gt;&amp;from=&lt;seq&gt;</p>
           <p className="text-faint">
-            cookie (browser) · ?token= → authorization: Bearer (CLI, phone)
+            cookie (browser) · ?ticket= single use, 30 s, this terminal only (CLI, phone)
           </p>
           <p className="pt-1.5">↓ binary — PTY output · replay from seq, then live</p>
           <p>↓ text — {'{"t":"end"}'}, then close 1000 "session settled"</p>

@@ -13,6 +13,7 @@ export * from "./repos/changes.ts";
 export * from "./repos/checkpoints.ts";
 export * from "./repos/devices.ts";
 export * from "./repos/session-channel-tokens.ts";
+export * from "./repos/upgrade-tickets.ts";
 export * from "./repos/session-control-events.ts";
 export * from "./repos/audit-events.ts";
 export * from "./repos/folders.ts";

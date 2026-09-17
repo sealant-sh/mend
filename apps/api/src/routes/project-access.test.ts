@@ -90,6 +90,10 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "organization.audit",
   "organization.issuePasswordReset",
   "invitations.preview",
+  // Minting authorizes nothing: the socket route authorizes the ticket's account against the
+  // session or service when the ticket is spent (upgrade-tickets.test.ts).
+  "upgradeTickets.mint",
+  "upgradeTicketExchange.exchange",
   "settings.get",
   "dotfiles.get",
   "dotfiles.repository",

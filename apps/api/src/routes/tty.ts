@@ -1,5 +1,11 @@
 import { Auth } from "@mend/auth";
-import { SessionControlEventsRepo, SessionProcessesRepo, SessionsRepo } from "@mend/db";
+import {
+  OrganizationsRepo,
+  SessionControlEventsRepo,
+  SessionProcessesRepo,
+  SessionsRepo,
+  UpgradeTicketsRepo,
+} from "@mend/db";
 import { SessionId, SessionProcessId, type SealantWorkspaceId } from "@mend/domain";
 import { currentAgentProcess } from "@mend/domain/workbench";
 import { asSealantUser, SealantClient } from "@mend/sealant";
@@ -11,6 +17,7 @@ import { Budgets } from "../budgets.ts";
 import { ConnectionRegistry, guardSocket } from "../connections.ts";
 import { SessionSteering } from "../session-steering.ts";
 import { connectionRefusal, makeFrameGuard } from "../socket-budgets.ts";
+import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tickets.ts";
 
 /**
  * The terminal proxy (plan §8.1.F) as a DATA PLANE: one WebSocket per attach.
@@ -28,8 +35,10 @@ import { connectionRefusal, makeFrameGuard } from "../socket-budgets.ts";
  *   client → server   binary = PTY input bytes
  *   client → server   text   = `{"t":"resize","cols":n,"rows":n}`
  *
- * Auth: session cookie (browser) or `?token=` (CLI; WebSocket cannot set
- * headers). Addressing stays query-param: `?process=<id>` reaches any
+ * Auth: the session cookie (browser), an `Authorization` header, or `?ticket=`: an upgrade
+ * ticket, single use, thirty seconds, minted for exactly this terminal (docs/adr/0004, "Upgrade
+ * tickets"), because a WebSocket opened by a browser or the CLI cannot set a header. A bearer as
+ * `?token=` is read only while `MEND_URL_BEARERS=accept`. Addressing stays query-param: `?process=<id>` reaches any
  * workspace process by its plural record (docs/SESSION-SERVICES.md);
  * `?session=<id>` (legacy) resolves to the session's CURRENT agent process
  * — the newest live one, else the newest ever — falling back to the row's
@@ -40,6 +49,9 @@ export const TtyRoutes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const auth = yield* Auth;
     const connections = yield* ConnectionRegistry;
+    const tickets = yield* UpgradeTicketsRepo;
+    const organizations = yield* OrganizationsRepo;
+    const urlBearers = yield* UrlBearers;
     const budgets = yield* Budgets;
     const sessions = yield* SessionsRepo;
     const processes = yield* SessionProcessesRepo;
@@ -51,24 +63,28 @@ export const TtyRoutes = HttpRouter.use((router) =>
       Effect.gen(function* () {
         const url = new URL(request.url, "http://mend.local");
 
-        // Authenticate once, before upgrading. Browser clients carry the
-        // cookie; the CLI passes its bearer as ?token= and it is folded into
-        // the header shape better-auth expects.
+        // Authenticate once, before upgrading.
         const headers = new Headers(
           Object.entries(request.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(",") : v]),
         );
-        const token = url.searchParams.get("token");
-        if (!headers.has("authorization") && token !== null) {
-          headers.set("authorization", `Bearer ${token}`);
-        }
-        const authed = yield* auth.getSession(headers);
-        if (Option.isNone(authed)) return HttpServerResponse.empty({ status: 401 });
+        // A ticket, a header or the cookie; a bearer in the URL only while MEND_URL_BEARERS allows it
+        // (docs/adr/0004, "Upgrade tickets").
+        const caller = yield* resolveUpgradeCaller({
+          auth,
+          tickets,
+          organizations,
+          urlBearers,
+          headers,
+          url,
+          target: "tty",
+        });
+        if (!isUpgradeCaller(caller)) return caller;
 
         // Before anything is resolved, dialled or upgraded (docs/adr/0004, "Budgets").
         const overBudget = yield* connectionRefusal(
           budgets,
           connections,
-          authed.value.user.id,
+          caller.userId,
           "terminal",
         );
         if (overBudget !== null) return overBudget;
@@ -95,7 +111,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
             return HttpServerResponse.text("unknown process", { status: 404 });
           }
           // Visibility first: a session the caller cannot see answers exactly like a missing one.
-          const refusal = yield* steering.authorizeUser(owner.value, authed.value.user.id).pipe(
+          const refusal = yield* steering.authorizeUser(owner.value, caller.userId).pipe(
             Effect.as(null),
             Effect.catch((error) => Effect.succeed(error._tag)),
           );
@@ -125,7 +141,7 @@ export const TtyRoutes = HttpRouter.use((router) =>
             return HttpServerResponse.text("unknown session", { status: 404 });
           }
           // Visibility first: a session the caller cannot see answers exactly like a missing one.
-          const refusal = yield* steering.authorizeUser(session.value, authed.value.user.id).pipe(
+          const refusal = yield* steering.authorizeUser(session.value, caller.userId).pipe(
             Effect.as(null),
             Effect.catch((error) => Effect.succeed(error._tag)),
           );
@@ -195,16 +211,16 @@ export const TtyRoutes = HttpRouter.use((router) =>
             const write = yield* socket.writer;
             yield* controlEvents.record({
               sessionId,
-              actorUserId: authed.value.user.id,
+              actorUserId: caller.userId,
               kind: "terminal-attach",
               refId: target.processId,
             });
             // Removing the account closes this socket, and drops its input from then on (docs/adr/0003).
             const guard = yield* guardSocket(
               connections,
-              authed.value.user.id,
+              caller.userId,
               write,
-              auth.getSession(headers).pipe(Effect.map(Option.isSome)),
+              caller.stillAdmitted,
               sessionId,
               "terminal",
             );

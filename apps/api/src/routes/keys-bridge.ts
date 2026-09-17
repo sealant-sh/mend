@@ -1,11 +1,13 @@
 import { Auth } from "@mend/auth";
+import { OrganizationsRepo, UpgradeTicketsRepo } from "@mend/db";
 import { AgentBridge } from "@mend/store";
-import { Effect, Option } from "effect";
+import { Effect } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
 import { Budgets } from "../budgets.ts";
 import { ConnectionRegistry, guardSocket } from "../connections.ts";
 import { connectionRefusal, makeFrameGuard } from "../socket-budgets.ts";
+import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tickets.ts";
 
 /**
  * The ssh-agent bridge's transport (docs/GIT-ACCESS.md decision 2): one
@@ -22,6 +24,9 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const auth = yield* Auth;
     const connections = yield* ConnectionRegistry;
+    const tickets = yield* UpgradeTicketsRepo;
+    const organizations = yield* OrganizationsRepo;
+    const urlBearers = yield* UrlBearers;
     const budgets = yield* Budgets;
     const bridge = yield* AgentBridge;
 
@@ -31,18 +36,24 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
         const headers = new Headers(
           Object.entries(request.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(",") : v]),
         );
-        const token = url.searchParams.get("token");
-        if (!headers.has("authorization") && token !== null) {
-          headers.set("authorization", `Bearer ${token}`);
-        }
-        const authed = yield* auth.getSession(headers);
-        if (Option.isNone(authed)) return HttpServerResponse.empty({ status: 401 });
+        // A ticket, a header or the cookie; a bearer in the URL only while MEND_URL_BEARERS allows it
+        // (docs/adr/0004, "Upgrade tickets").
+        const caller = yield* resolveUpgradeCaller({
+          auth,
+          tickets,
+          organizations,
+          urlBearers,
+          headers,
+          url,
+          target: "keys-bridge",
+        });
+        if (!isUpgradeCaller(caller)) return caller;
 
         // Before anything is resolved, dialled or upgraded (docs/adr/0004, "Budgets").
         const overBudget = yield* connectionRefusal(
           budgets,
           connections,
-          authed.value.user.id,
+          caller.userId,
           "key-bridge",
         );
         if (overBudget !== null) return overBudget;
@@ -56,9 +67,9 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
             // Removing the account closes this socket, and drops its input from then on (docs/adr/0003).
             const guard = yield* guardSocket(
               connections,
-              authed.value.user.id,
+              caller.userId,
               write,
-              auth.getSession(headers).pipe(Effect.map(Option.isSome)),
+              caller.stillAdmitted,
               undefined,
               "key-bridge",
             );
@@ -68,7 +79,7 @@ export const KeysBridgeRoutes = HttpRouter.use((router) =>
             // its own forked fiber (writes are tiny and ordered enough — the
             // agent protocol above serializes at one in-flight request).
             // The share serves this account's own bridge; it never signs for anyone else.
-            const handle = yield* bridge.attach(authed.value.user.id, {
+            const handle = yield* bridge.attach(caller.userId, {
               name: clientName,
               send: (frame) => {
                 Effect.runFork(write(frame).pipe(Effect.ignore));

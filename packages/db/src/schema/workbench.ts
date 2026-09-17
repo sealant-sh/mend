@@ -822,6 +822,26 @@ export const sessionChannelTokens = pgTable("session_channel_tokens", {
 });
 
 /**
+ * One upgrade ticket (docs/adr/0004, "Upgrade tickets"): thirty seconds, one account, one target,
+ * that target's exact parameters. Only the hash is stored, and spending a ticket deletes its row.
+ * `credential` names the sign-in or the paired device that minted it (`session:<id>`,
+ * `device:<id>`): a ticket is worth nothing once that credential is gone.
+ */
+export const upgradeTickets = pgTable(
+  "upgrade_tickets",
+  {
+    tokenHash: text().primaryKey(),
+    userId: text().notNull(),
+    target: text().notNull(),
+    scope: text().notNull(),
+    credential: text(),
+    expiresAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("upgrade_tickets_expires_at_idx").on(table.expiresAt)],
+);
+
+/**
  * One short-lived pairing code, single use: claiming stamps `claimed_at` and
  * mints a device token for the code's owner.
  */

@@ -1,16 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { bridgeUrlOf, retryDelayMs } from "./agent-share.ts";
-
-describe("bridgeUrlOf", () => {
-  it("turns the server url into the bridge websocket with host and token", () => {
-    const url = bridgeUrlOf("https://mend.example", "tok", "laptop");
-    expect(url.toString()).toBe("wss://mend.example/api/keys/bridge/ws?host=laptop&token=tok");
-    expect(bridgeUrlOf("http://10.0.0.216:3105", null, "laptop").toString()).toBe(
-      "ws://10.0.0.216:3105/api/keys/bridge/ws?host=laptop",
-    );
-  });
-});
+import { retryDelayMs } from "./agent-share.ts";
 
 describe("retryDelayMs", () => {
   it("doubles from a second and caps at thirty", () => {

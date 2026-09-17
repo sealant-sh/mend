@@ -47,6 +47,8 @@ export interface AuthenticatedUser {
 export interface AuthenticatedSession {
   readonly user: AuthenticatedUser;
   readonly expiresAt: Date;
+  /** The sign-in (`session:<id>`) or paired device (`device:<id>`) that proved this caller. */
+  readonly credential?: `session:${string}` | `device:${string}`;
 }
 
 /** Who is signed in, provided to protected endpoints by the auth middleware. */
@@ -84,6 +86,12 @@ export class HealthStatus extends Schema.Class<HealthStatus>("HealthStatus")({
     passed: Schema.Boolean,
     failing: Schema.Array(Schema.String),
   }),
+  /**
+   * True on a server that mints upgrade tickets (docs/adr/0004). A client whose mint answers 404
+   * reads this before it lets its bearer ride a URL: absent means a server older than tickets,
+   * true means something between the client and Mend refused the mint, and the bearer stays put.
+   */
+  upgradeTickets: Schema.optional(Schema.Boolean),
 }) {}
 
 export class ProcessLogChunk extends Schema.Class<ProcessLogChunk>("ProcessLogChunk")({

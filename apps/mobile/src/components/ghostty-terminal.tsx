@@ -7,6 +7,7 @@
 // When the installed binary lacks the native module (Expo Go, stale build),
 // the WebView terminal takes over — the app never loses its terminal.
 
+import { useQuery } from "@tanstack/react-query";
 import { requireNativeView } from "expo";
 import type { ComponentType } from "react";
 import { useCallback, useRef, useState } from "react";
@@ -15,7 +16,8 @@ import { Pressable, View } from "react-native";
 import { WebView } from "react-native-webview";
 
 import { MonoText, useTextScale } from "@/components/typography";
-import { useTtySocket } from "@/data/tty-socket";
+import { api, ApiError } from "@/data/live";
+import { legacyBearerAfterMint404, useTtySocket } from "@/data/tty-socket";
 import { useEvidenceTheme } from "@/theme/evidence";
 
 interface TerminalInputEvent {
@@ -159,12 +161,12 @@ export function GhosttyTerminal({
   if (Native === null) {
     // Binary without the native module — the WebView terminal still works.
     return (
-      <WebView
-        source={{
-          uri: `${serverUrl}/tty-embed?session=${sessionId}${processId === undefined ? "" : `&process=${encodeURIComponent(processId)}`}&token=${encodeURIComponent(token)}`,
-        }}
-        style={{ flex: 1, backgroundColor: colors.panel }}
-        keyboardDisplayRequiresUserAction={false}
+      <EmbeddedTerminal
+        serverUrl={serverUrl}
+        token={token}
+        sessionId={sessionId}
+        processId={processId}
+        background={colors.panel}
       />
     );
   }
@@ -215,3 +217,68 @@ export function GhosttyTerminal({
     </View>
   );
 }
+
+/**
+ * The WebView fallback. A WebView cannot set a header on a page load, so its URL carries an
+ * upgrade ticket (docs/adr/0004, "Upgrade tickets"): single use, thirty seconds, good for this
+ * terminal's embed only. The page trades it for the socket's own ticket; the device bearer never
+ * reaches the WebView's URL, history or referrer. A server older than tickets answers the mint
+ * with 404, and only then does the bearer ride the URL, as it always did with that server.
+ */
+const EmbeddedTerminal = ({
+  serverUrl,
+  token,
+  sessionId,
+  processId,
+  background,
+}: {
+  readonly serverUrl: string;
+  readonly token: string;
+  readonly sessionId: string;
+  readonly processId: string | undefined;
+  readonly background: string;
+}) => {
+  // The page is told both; the ticket is bound to the one it attaches by (the process when named).
+  const address = `session=${encodeURIComponent(sessionId)}${
+    processId === undefined ? "" : `&process=${encodeURIComponent(processId)}`
+  }`;
+  const credential = useQuery({
+    queryKey: ["tty-embed-ticket", serverUrl, sessionId, processId ?? null],
+    queryFn: async (): Promise<string> => {
+      try {
+        const minted = await api<{ readonly ticket: string }>("POST", "/upgrade-tickets", {
+          target: "tty-embed",
+          ...(processId === undefined ? { session: sessionId } : { process: processId }),
+        });
+        return `ticket=${encodeURIComponent(minted.ticket)}`;
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 404) {
+          return `token=${encodeURIComponent(await legacyBearerAfterMint404(token))}`;
+        }
+        throw error;
+      }
+    },
+    // A ticket is spent by the page that loads it: never reuse one from a cache.
+    staleTime: 0,
+    gcTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: false,
+    retry: false,
+  });
+  if (credential.data === undefined) return null;
+  // A spent or expired ticket cannot be renewed by the page: it asks, and a fresh one is minted
+  // here, with the device's bearer in a header. A new URL reloads the WebView. The same when the
+  // OS kills the WebView's process, whose reload would present the spent ticket from its URL.
+  const remint = () => void credential.refetch();
+  return (
+    <WebView
+      source={{ uri: `${serverUrl}/tty-embed?${address}&${credential.data}` }}
+      style={{ flex: 1, backgroundColor: background }}
+      keyboardDisplayRequiresUserAction={false}
+      onMessage={(event) => {
+        if (event.nativeEvent.data === "mend:embed-expired") remint();
+      }}
+      onContentProcessDidTerminate={remint}
+    />
+  );
+};

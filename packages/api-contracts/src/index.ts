@@ -12,6 +12,7 @@ export * from "./changes.ts";
 export * from "./worktrees.ts";
 export * from "./github.ts";
 export * from "./devices.ts";
+export * from "./upgrade-tickets.ts";
 export * from "./folders.ts";
 export * from "./operator.ts";
 export * from "./organization.ts";

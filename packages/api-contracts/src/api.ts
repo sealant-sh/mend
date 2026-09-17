@@ -31,6 +31,7 @@ import {
   sealantGroup,
   workspaceSshGroup,
 } from "./system.ts";
+import { upgradeTicketExchangeGroup, upgradeTicketsGroup } from "./upgrade-tickets.ts";
 import { worktreesGroup } from "./worktrees.ts";
 
 export const MendApi = HttpApi.make("mend")
@@ -67,4 +68,6 @@ export const MendApi = HttpApi.make("mend")
   .add(userDevicesGroup)
   .add(pairGroup)
   .add(cliAuthGroup)
+  .add(upgradeTicketsGroup)
+  .add(upgradeTicketExchangeGroup)
   .prefix("/api");
