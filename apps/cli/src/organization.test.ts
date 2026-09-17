@@ -115,7 +115,7 @@ describe("members", () => {
   });
 });
 
-const staged = (name: string, size: number) => ({ path: name, bytes: Buffer.alloc(size) });
+const staged = (name: string, size: number) => ({ path: name, size });
 
 describe("folder push", () => {
   it("sends files relative to the directory, skipping version control, symlinks and oversize files", () => {

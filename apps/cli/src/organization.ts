@@ -113,8 +113,14 @@ export const FOLDER_REQUEST_BYTES = 4 * 1024 * 1024;
 
 const SKIPPED_DIRECTORIES = new Set([".git", "node_modules"]);
 
+/** A file to push by its place in the folder and its size; its bytes are read per batch. */
+export interface ScannedFile {
+  readonly path: string;
+  readonly size: number;
+}
+
 export interface ScannedFolder {
-  readonly files: ReadonlyArray<{ readonly path: string; readonly bytes: Buffer }>;
+  readonly files: ReadonlyArray<ScannedFile>;
   readonly skipped: ReadonlyArray<{ readonly path: string; readonly reason: string }>;
 }
 
@@ -124,7 +130,7 @@ export interface ScannedFolder {
  * over the per-file cap are named rather than sent.
  */
 export const scanFolder = (dir: string): ScannedFolder => {
-  const files: Array<{ readonly path: string; readonly bytes: Buffer }> = [];
+  const files: Array<ScannedFile> = [];
   const skipped: Array<{ readonly path: string; readonly reason: string }> = [];
   const walk = (relative: string) => {
     const entries = fs
@@ -138,10 +144,9 @@ export const scanFolder = (dir: string): ScannedFolder => {
         if (SKIPPED_DIRECTORIES.has(entry.name)) skipped.push({ path: child, reason: "skipped" });
         else walk(child);
       } else if (entry.isFile()) {
-        const bytes = fs.readFileSync(path.join(dir, child));
-        if (bytes.byteLength > FOLDER_FILE_BYTES)
-          skipped.push({ path: child, reason: "over 1 MiB" });
-        else files.push({ path: child, bytes });
+        const size = fs.statSync(path.join(dir, child)).size;
+        if (size > FOLDER_FILE_BYTES) skipped.push({ path: child, reason: "over 1 MiB" });
+        else files.push({ path: child, size });
       }
     }
   };
@@ -150,7 +155,7 @@ export const scanFolder = (dir: string): ScannedFolder => {
 };
 
 /** Pack files into upload requests under the request cap, in order. */
-export const uploadBatches = <F extends { readonly bytes: Buffer }>(
+export const uploadBatches = <F extends { readonly size: number }>(
   files: ReadonlyArray<F>,
   cap = FOLDER_REQUEST_BYTES,
 ): ReadonlyArray<ReadonlyArray<F>> => {
@@ -158,13 +163,13 @@ export const uploadBatches = <F extends { readonly bytes: Buffer }>(
   let current: Array<F> = [];
   let size = 0;
   for (const file of files) {
-    if (current.length > 0 && size + file.bytes.byteLength > cap) {
+    if (current.length > 0 && size + file.size > cap) {
       batches.push(current);
       current = [];
       size = 0;
     }
     current.push(file);
-    size += file.bytes.byteLength;
+    size += file.size;
   }
   if (current.length > 0) batches.push(current);
   return batches;
@@ -213,7 +218,8 @@ export const folderCommand = async (api: ApiCall, args: ReadonlyArray<string>) =
         await api("POST", `/organization/folders/${folder.id}/files`, {
           files: batch.map((file) => ({
             path: file.path,
-            contentsBase64: file.bytes.toString("base64"),
+            // Read one batch at a time, so a large tree never sits in memory at once.
+            contentsBase64: fs.readFileSync(path.join(dir, file.path)).toString("base64"),
           })),
           // --replace empties the folder with the first batch; the rest add to it.
           merge: !(replace && index === 0),
