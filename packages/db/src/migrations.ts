@@ -1563,6 +1563,115 @@ const projectInstallCommandMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE projects ADD COLUMN IF NOT EXISTS install_command text`;
 });
 
+/**
+ * docs/adr/0003-organizations-and-tenancy.md: the tenant. Creates organizations, memberships
+ * (one per account), single-use invitations and instance roles, then upgrades what exists
+ * without widening anything: one organization, every account a member, the oldest account its
+ * owner and the operator, every project shared (today everyone sees everything), and sessions
+ * with no owner assigned to the oldest account (today's fallback). Accounts are deactivated,
+ * never deleted, so every FK to "user" RESTRICTs.
+ */
+const organizationsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE organizations (
+      id text PRIMARY KEY,
+      name text NOT NULL,
+      created_by_user_id text REFERENCES "user" (id) ON DELETE RESTRICT,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`CREATE UNIQUE INDEX organizations_name_lower_key ON organizations (lower(btrim(name)))`;
+  yield* sql`
+    CREATE TABLE organization_members (
+      organization_id text NOT NULL REFERENCES organizations (id) ON DELETE RESTRICT,
+      user_id text NOT NULL REFERENCES "user" (id) ON DELETE RESTRICT,
+      role text NOT NULL,
+      added_by_user_id text REFERENCES "user" (id) ON DELETE RESTRICT,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (organization_id, user_id),
+      CONSTRAINT organization_members_user_key UNIQUE (user_id),
+      CONSTRAINT organization_members_role_check CHECK (role IN ('owner', 'member'))
+    )`;
+  yield* sql`
+    CREATE INDEX organization_members_org_role_idx ON organization_members (organization_id, role)`;
+  yield* sql`
+    CREATE TABLE organization_invitations (
+      id text PRIMARY KEY,
+      organization_id text NOT NULL REFERENCES organizations (id) ON DELETE CASCADE,
+      token_hash text NOT NULL UNIQUE,
+      role text NOT NULL,
+      email text,
+      created_by_user_id text NOT NULL REFERENCES "user" (id) ON DELETE RESTRICT,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      expires_at timestamptz NOT NULL,
+      accepted_by_user_id text REFERENCES "user" (id) ON DELETE RESTRICT,
+      accepted_at timestamptz,
+      revoked_at timestamptz,
+      CONSTRAINT organization_invitations_role_check CHECK (role IN ('owner', 'member')),
+      CONSTRAINT organization_invitations_email_check
+        CHECK (email IS NULL OR email = lower(btrim(email))),
+      CONSTRAINT organization_invitations_expiry_check CHECK (expires_at > created_at),
+      CONSTRAINT organization_invitations_accepted_check
+        CHECK ((accepted_by_user_id IS NULL) = (accepted_at IS NULL)),
+      CONSTRAINT organization_invitations_spent_check
+        CHECK (accepted_at IS NULL OR revoked_at IS NULL)
+    )`;
+  yield* sql`
+    CREATE INDEX organization_invitations_org_idx
+    ON organization_invitations (organization_id, created_at DESC)`;
+  yield* sql`
+    CREATE TABLE instance_roles (
+      user_id text NOT NULL REFERENCES "user" (id) ON DELETE RESTRICT,
+      role text NOT NULL,
+      granted_by_user_id text REFERENCES "user" (id) ON DELETE RESTRICT,
+      granted_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, role),
+      CONSTRAINT instance_roles_role_check CHECK (role IN ('operator'))
+    )`;
+  // Deactivation replaces deletion; enforcement lands with member removal.
+  yield* sql`ALTER TABLE "user" ADD COLUMN IF NOT EXISTS "deactivatedAt" timestamptz`;
+
+  // The upgrade. Exactly one organization exists from here on, even on an empty database.
+  yield* sql`
+    INSERT INTO organizations (id, name)
+    SELECT gen_random_uuid()::text, 'Default'
+    WHERE NOT EXISTS (SELECT 1 FROM organizations)`;
+  yield* sql`
+    WITH org AS (SELECT id FROM organizations ORDER BY created_at, id LIMIT 1),
+         oldest AS (SELECT id FROM "user" ORDER BY "createdAt" ASC, id ASC LIMIT 1)
+    INSERT INTO organization_members (organization_id, user_id, role)
+    SELECT org.id, u.id, CASE WHEN u.id = oldest.id THEN 'owner' ELSE 'member' END
+    FROM "user" u, org, oldest`;
+  yield* sql`
+    INSERT INTO instance_roles (user_id, role)
+    SELECT id, 'operator' FROM "user" ORDER BY "createdAt" ASC, id ASC LIMIT 1`;
+
+  yield* sql`
+    ALTER TABLE projects
+      ADD COLUMN organization_id text REFERENCES organizations (id) ON DELETE RESTRICT,
+      ADD COLUMN visibility text NOT NULL DEFAULT 'private',
+      ADD COLUMN created_by_user_id text REFERENCES "user" (id) ON DELETE RESTRICT`;
+  yield* sql`
+    UPDATE projects SET
+      organization_id = (SELECT id FROM organizations ORDER BY created_at, id LIMIT 1),
+      visibility = 'shared',
+      created_by_user_id = (SELECT id FROM "user" ORDER BY "createdAt" ASC, id ASC LIMIT 1)`;
+  yield* sql`ALTER TABLE projects ALTER COLUMN organization_id SET NOT NULL`;
+  yield* sql`
+    ALTER TABLE projects
+      DROP CONSTRAINT projects_name_key,
+      ADD CONSTRAINT projects_organization_name_key UNIQUE (organization_id, name),
+      ADD CONSTRAINT projects_visibility_check CHECK (visibility IN ('private', 'shared'))`;
+  yield* sql`
+    CREATE INDEX projects_organization_visibility_idx ON projects (organization_id, visibility)`;
+
+  yield* sql`
+    UPDATE agent_sessions
+    SET owner_user_id = (SELECT id FROM "user" ORDER BY "createdAt" ASC, id ASC LIMIT 1)
+    WHERE owner_user_id IS NULL`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1619,4 +1728,5 @@ export const migrations = {
   "0052_project_inherit_user_skills": projectInheritUserSkillsMigration,
   "0053_capture_store": captureStoreMigration,
   "0054_project_install_command": projectInstallCommandMigration,
+  "0055_organizations": organizationsMigration,
 };

@@ -9,6 +9,7 @@ import { Timestamp } from "@mend/domain";
 import {
   AutomationChoice,
   GitAuthMode,
+  ProjectVisibility,
   Project,
   RepositoryCloneUrl,
   Session,
@@ -60,6 +61,8 @@ export class AdoptProject extends Schema.Class<AdoptProject>("AdoptProject")({
   name: Schema.String,
   source: RepositoryCloneUrl,
   gitAuthMode: Schema.optional(GitAuthMode),
+  /** `private` (only the adopter) unless the request says `shared`. */
+  visibility: Schema.optional(ProjectVisibility),
 }) {}
 
 /**

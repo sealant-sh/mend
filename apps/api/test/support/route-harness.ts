@@ -27,6 +27,7 @@ import {
   ChangeId,
   CheckpointId,
   FollowUpId,
+  OrganizationId,
   ProjectId,
   ReviewSliceId,
   SealantWorkspaceId,
@@ -361,6 +362,9 @@ export const createRouteHarness = async (
   const project = new Project({
     id: PROJECT_ID,
     name: "route-harness",
+    organizationId: OrganizationId.make("org-harness"),
+    visibility: "shared",
+    createdByUserId: null,
     originUrl: "https://example.invalid/route-harness.git",
     storePath: join(root, "repo.git"),
     defaultBranch: "main",

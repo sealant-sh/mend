@@ -106,3 +106,11 @@ export type ProjectSecretId = typeof ProjectSecretId.Type;
 
 export const ProjectClusterBindingId = Schema.String.pipe(Schema.brand("ProjectClusterBindingId"));
 export type ProjectClusterBindingId = typeof ProjectClusterBindingId.Type;
+
+// ── Organizations (docs/adr/0003-organizations-and-tenancy.md) ───────────────
+
+export const OrganizationId = Schema.String.pipe(Schema.brand("OrganizationId"));
+export type OrganizationId = typeof OrganizationId.Type;
+
+export const InvitationId = Schema.String.pipe(Schema.brand("InvitationId"));
+export type InvitationId = typeof InvitationId.Type;

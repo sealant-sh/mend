@@ -94,6 +94,11 @@ export const MendEvent = Schema.Union([
     userId: Schema.String,
     facet: Schema.Literals(["accounts", "devices", "git-access"]),
   }),
+  Schema.Struct({
+    // Membership, roles or invitations of one organization changed.
+    type: Schema.Literals(["organization"]),
+    organizationId: Schema.String,
+  }),
 ]);
 export type MendEvent = typeof MendEvent.Type;
 

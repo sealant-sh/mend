@@ -3,15 +3,17 @@
  * (MEND-AGENT-WORKBENCH-PLAN.md §5).
  *
  * ```
- * machine  1 ── 0..n  projects    a repository adopted into the central store
- * project  1 ── 0..n  worktrees   a durable named place in the store; explicit removal only
- * worktree 1 ── 0..n  sessions    one agent conversation each; several may be live at once
- * worktree 1 ── 1     change      worktree vs base — the reviewable object
- * worktree 1 ── 0..n  checkpoints hidden git ref + exact record pointer; two = a slice
- * session  1 ── 0..n  runs        Sealant execution records, one sequence space each
- * session  1 ── 0..n  processes   PTYs in the current workspace: agent, shells, Services
- * session  1 ── 0..1  snapshot    immutable context manifest
- * change   1 ── 0..n  comments    reviewer's and Mend's, same pipeline
+ * machine      1 ── 1..n organizations the tenant (docs/adr/0003)
+ * organization 1 ── 0..n members       one organization per account
+ * organization 1 ── 0..n projects      a repository adopted into the central store
+ * project      1 ── 0..n worktrees     a durable named place in the store; explicit removal only
+ * worktree     1 ── 0..n sessions      one agent conversation each; several may be live at once
+ * worktree     1 ── 1    change        worktree vs base — the reviewable object
+ * worktree     1 ── 0..n checkpoints   hidden git ref + exact record pointer; two = a slice
+ * session      1 ── 0..n runs          Sealant execution records, one sequence space each
+ * session      1 ── 0..n processes     PTYs in the current workspace: agent, shells, Services
+ * session      1 ── 0..1 snapshot      immutable context manifest
+ * change       1 ── 0..n comments      reviewer's and Mend's, same pipeline
  * ```
  *
  * Lives on a subpath while the queue-era model retires; promotes to the root
@@ -27,6 +29,7 @@ export * from "./harness-launch.ts";
 export * from "./hot-workspace.ts";
 export * from "./mount.ts";
 export * from "./link.ts";
+export * from "./organization.ts";
 export * from "./pass.ts";
 export * from "./project.ts";
 export * from "./project-cluster-binding.ts";

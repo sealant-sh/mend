@@ -29,6 +29,8 @@ import type {
   InferenceToolName,
   IssueSource,
   IssueStage,
+  InvitationId,
+  OrganizationId,
   ProjectClusterBindingId,
   ProjectEnvironmentVariableId,
   ProjectId,
@@ -82,6 +84,8 @@ import type {
   CommentState,
   HotWorkspaceStatus,
   NativeIngestCursor,
+  OrganizationRole,
+  ProjectVisibility,
   PassKind,
   PassStatus,
   DiffDigest,
@@ -254,41 +258,132 @@ export const briefComments = pgTable(
   (table) => [index("brief_comments_brief_idx").on(table.briefId, table.createdAt)],
 );
 
-export const projects = pgTable("projects", {
-  id: text().$type<ProjectId>().primaryKey(),
-  name: text().notNull().unique(),
-  originUrl: text(),
-  storePath: text().notNull().unique(),
-  defaultBranch: text().notNull(),
-  adoptedSha: text().$type<Sha>(),
-  autoTour: text().$type<AutomationChoice>().notNull().default("inherit"),
-  autoSuggest: text().$type<AutomationChoice>().notNull().default("inherit"),
-  autoName: text().$type<AutomationChoice>().notNull().default("inherit"),
-  backgroundSessions: text().$type<AutomationChoice>().notNull().default("inherit"),
-  gitAuthMode: text().$type<GitAuthMode>().notNull().default("ambient"),
-  // NULL inherits the global settings.workspaceImage default.
-  workspaceImage: jsonbOf(WorkspaceImage),
-  // Whether sessions here receive the launching user's dotfiles.
-  applyDotfiles: boolean().notNull().default(true),
-  // Whether sessions inherit the launching user's skills. Project skills are always included.
-  inheritUserSkills: boolean().notNull().default(true),
-  // Aggregate revision of the project's environment variables; bumped by every mutation under the
-  // project row lock, so a launch snapshot can prove it read one coherent state.
-  environmentRevision: integer().notNull().default(0),
-  // Same discipline for the Secrets set.
-  secretRevision: integer().notNull().default(0),
-  // …and for the Cluster bindings set (service-account changes bump the same revision).
-  clusterBindingRevision: integer().notNull().default(0),
-  // Workspace ServiceAccount trust grant (cluster installs); a NAME only, allowlisted platform-side.
-  workspaceServiceAccount: text(),
-  // How many hot workspaces to keep ready for new sessions (0 = none).
-  hotSessions: integer().notNull().default(0),
-  // The command that builds the dependency tree (ADR-0002 decisions 2/9); NULL = detect it
-  // from the base tree's lockfile at launch.
-  installCommand: text(),
+/**
+ * The tenant (docs/adr/0003-organizations-and-tenancy.md). Names are unique per instance after
+ * trimming and case folding (expression index, declared in the migration).
+ */
+export const organizations = pgTable("organizations", {
+  id: text().$type<OrganizationId>().primaryKey(),
+  name: text().notNull(),
+  // FK to better-auth's "user"(id) ON DELETE RESTRICT, declared in the migration.
+  createdByUserId: text(),
   createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
+
+/**
+ * One account's membership. The unique `user_id` is the one-organization-per-account rule;
+ * relaxing it is the whole multi-organization migration. Accounts are deactivated, never
+ * deleted, so the user FKs RESTRICT. Every organization keeps an owner (repo-enforced under an
+ * advisory lock).
+ */
+export const organizationMembers = pgTable(
+  "organization_members",
+  {
+    organizationId: text()
+      .$type<OrganizationId>()
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    // FK to "user"(id) ON DELETE RESTRICT, declared in the migration.
+    userId: text().notNull().unique("organization_members_user_key"),
+    role: text().$type<OrganizationRole>().notNull(),
+    addedByUserId: text(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.organizationId, table.userId] }),
+    index("organization_members_org_role_idx").on(table.organizationId, table.role),
+  ],
+);
+
+/**
+ * A single-use invitation link. Only the token's sha256 is stored; the link is shown once at
+ * minting. `email` binds acceptance to one account when set. Check constraints in the migration
+ * keep the accepted and revoked fields consistent.
+ */
+export const organizationInvitations = pgTable(
+  "organization_invitations",
+  {
+    id: text().$type<InvitationId>().primaryKey(),
+    organizationId: text()
+      .$type<OrganizationId>()
+      .notNull()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    tokenHash: text().notNull().unique(),
+    role: text().$type<OrganizationRole>().notNull(),
+    email: text(),
+    createdByUserId: text().notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    expiresAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    acceptedByUserId: text(),
+    acceptedAt: timestamp({ mode: "date", withTimezone: true }),
+    revokedAt: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (table) => [index("organization_invitations_org_idx").on(table.organizationId, table.createdAt)],
+);
+
+/** Instance roles, separate from organization ownership. Only `operator` exists. */
+export const instanceRoles = pgTable(
+  "instance_roles",
+  {
+    // FK to "user"(id) ON DELETE RESTRICT, declared in the migration.
+    userId: text().notNull(),
+    role: text().$type<"operator">().notNull(),
+    grantedByUserId: text(),
+    grantedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.role] })],
+);
+
+export const projects = pgTable(
+  "projects",
+  {
+    id: text().$type<ProjectId>().primaryKey(),
+    name: text().notNull(),
+    organizationId: text()
+      .$type<OrganizationId>()
+      .notNull()
+      .references(() => organizations.id, { onDelete: "restrict" }),
+    visibility: text().$type<ProjectVisibility>().notNull().default("private"),
+    // FK to "user"(id) ON DELETE RESTRICT, declared in the migration. Null only when unknown.
+    createdByUserId: text(),
+    originUrl: text(),
+    storePath: text().notNull().unique(),
+    defaultBranch: text().notNull(),
+    adoptedSha: text().$type<Sha>(),
+    autoTour: text().$type<AutomationChoice>().notNull().default("inherit"),
+    autoSuggest: text().$type<AutomationChoice>().notNull().default("inherit"),
+    autoName: text().$type<AutomationChoice>().notNull().default("inherit"),
+    backgroundSessions: text().$type<AutomationChoice>().notNull().default("inherit"),
+    gitAuthMode: text().$type<GitAuthMode>().notNull().default("ambient"),
+    // NULL inherits the global settings.workspaceImage default.
+    workspaceImage: jsonbOf(WorkspaceImage),
+    // Whether sessions here receive the launching user's dotfiles.
+    applyDotfiles: boolean().notNull().default(true),
+    // Whether sessions inherit the launching user's skills. Project skills are always included.
+    inheritUserSkills: boolean().notNull().default(true),
+    // Aggregate revision of the project's environment variables; bumped by every mutation under the
+    // project row lock, so a launch snapshot can prove it read one coherent state.
+    environmentRevision: integer().notNull().default(0),
+    // Same discipline for the Secrets set.
+    secretRevision: integer().notNull().default(0),
+    // …and for the Cluster bindings set (service-account changes bump the same revision).
+    clusterBindingRevision: integer().notNull().default(0),
+    // Workspace ServiceAccount trust grant (cluster installs); a NAME only, allowlisted platform-side.
+    workspaceServiceAccount: text(),
+    // How many hot workspaces to keep ready for new sessions (0 = none).
+    hotSessions: integer().notNull().default(0),
+    // The command that builds the dependency tree (ADR-0002 decisions 2/9); NULL = detect it
+    // from the base tree's lockfile at launch.
+    installCommand: text(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("projects_organization_name_key").on(table.organizationId, table.name),
+    index("projects_organization_visibility_idx").on(table.organizationId, table.visibility),
+  ],
+);
 
 /**
  * The durable container (plan §5.5/§5.6): one named git worktree in the project's

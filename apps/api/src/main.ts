@@ -35,6 +35,8 @@ import {
   ProjectLinksRepoLive,
   ProjectSecretsRepoLive,
   ProjectServiceRecipesRepoLive,
+  OrganizationsRepoLive,
+  InstanceRolesRepoLive,
   ProjectsRepoLive,
   PushDevicesRepoLive,
   ReferencesRepoLive,
@@ -143,12 +145,14 @@ import { Config, Effect, Layer, Option, Schema } from "effect";
 import { HttpRouter, HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 
 import { publicNetworkPolicy } from "./public-network-policy.ts";
+import { RegistrationPolicyLive } from "./registration-policy.ts";
 import { MendApiLive } from "./routes/api-live.ts";
 import { EventsRoutes } from "./routes/events.ts";
 import { GhLive } from "./routes/github.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
 import { SessionSteeringLive } from "./session-steering.ts";
+import { TenancyConfigLive } from "./tenancy.ts";
 
 /**
  * The composition boundary (ARCHITECTURE.md §2): every service is wired here
@@ -173,6 +177,8 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   ServiceObservationsRepoLive,
   SessionRunsRepoLive,
   CheckpointsRepoLive,
+  OrganizationsRepoLive,
+  InstanceRolesRepoLive,
   ProjectsRepoLive,
   ProjectClusterBindingsRepoLive,
   ProjectEnvironmentRepoLive,
@@ -563,6 +569,8 @@ const MainLive = Layer.unwrap(
     // on it, so it must be launched explicitly rather than provided.
     return Layer.merge(parts, SessionChannelNetworkLayer).pipe(
       Layer.provide(SessionSteeringLive),
+      // MEND_TENANCY: refuses to build (so nothing serves) when the mode may not run here.
+      Layer.provide(TenancyConfigLive),
       // Shared by the API (enqueue on comment) and the workers (one instance).
       Layer.provide(JobRunner.pgBossLayer),
       // Follow-up delivery owns persistence → process acceptance → correlation.
@@ -584,7 +592,7 @@ const MainLive = Layer.unwrap(
       // The host's GitHub CLI, behind the api's Gh service (adoption discovery).
       Layer.provide(GhLive),
       Layer.provide(HostEnvironmentLive),
-      Layer.provide(AuthLive),
+      Layer.provide(AuthLive.pipe(Layer.provide(RegistrationPolicyLive))),
       Layer.provide(NetworkConfigLive),
       // One Sealant client per user, provisioned on first use (docs/SEALANT-IDENTITY.md).
       Layer.provide(SealantLiveFromEnv.pipe(Layer.provide(SealantIdentityStoreLive))),

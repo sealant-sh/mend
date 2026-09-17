@@ -1,4 +1,5 @@
 import { SealantRunId, SessionProcessId } from "@mend/domain";
+import { TenancyMode } from "@mend/domain/workbench";
 import { Schema } from "effect";
 import * as Context from "effect/Context";
 import { HttpApiMiddleware } from "effect/unstable/httpapi";
@@ -56,6 +57,8 @@ export class HealthStatus extends Schema.Class<HealthStatus>("HealthStatus")({
     mode: Schema.Literals(["unix-socket", "network"]),
     endpoint: Schema.NullOr(Schema.String),
   }),
+  /** `MEND_TENANCY` (docs/adr/0003-organizations-and-tenancy.md). */
+  tenancy: TenancyMode,
 }) {}
 
 export class ProcessLogChunk extends Schema.Class<ProcessLogChunk>("ProcessLogChunk")({

@@ -27,9 +27,9 @@ export const Route = createFileRoute("/login")({
 /**
  * Sign-in, or the first of the three setup steps. The page asks the instance
  * whether any account exists before it renders: a fresh install opens on
- * registration and says so; one with accounts opens on sign-in, with
- * registration a link away (sign-up stays open behind the operator's
- * perimeter — docs/SELF-HOSTING.md).
+ * registration and says so; one with accounts opens on sign-in only, because
+ * after the first account people join through an invitation link
+ * (docs/adr/0003-organizations-and-tenancy.md).
  */
 function LoginPage() {
   const navigate = useNavigate();
@@ -50,7 +50,8 @@ function LoginPage() {
   if (instance.isPending) return <SetupFrame />;
 
   const fresh = instance.data?.users === "none";
-  const mode = chosen ?? defaultLoginMode(instance.data);
+  const closed = instance.data?.registration === "closed";
+  const mode = closed ? "sign-in" : (chosen ?? defaultLoginMode(instance.data));
   const problem = mode === "sign-up" ? passwordProblem(password, confirm) : null;
 
   const submit = async () => {
@@ -159,7 +160,11 @@ function LoginPage() {
           {pending ? "One moment…" : mode === "sign-in" ? "Sign in" : "Create account and continue"}
         </Button>
       </form>
-      {mode === "sign-in" ? (
+      {closed ? (
+        <p className="mt-5 text-[13px] leading-relaxed text-muted-foreground">
+          Accounts are created by invitation. Ask an owner of this Mend for a link.
+        </p>
+      ) : mode === "sign-in" ? (
         <Button
           type="button"
           variant="ghost"

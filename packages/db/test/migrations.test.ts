@@ -579,3 +579,232 @@ describe.skipIf(!reachable)("0046 worktree containers", () => {
     expect(result.afterDelete[0]?.checkpoints).toBe("3");
   });
 });
+
+/** Run a statement that a constraint may refuse, reporting which it was. */
+const attempt = (statement: Effect.Effect<unknown, unknown>) =>
+  statement.pipe(
+    Effect.as("inserted"),
+    Effect.catch(() => Effect.succeed("refused")),
+  );
+
+describe.skipIf(!reachable)("0055 organizations", () => {
+  const ORG_DB = `${SCRATCH_DB}_org`;
+  const EMPTY_DB = `${SCRATCH_DB}_org_empty`;
+  const layerFor = (database: string) => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${database}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  };
+  const withDb =
+    (database: string) =>
+    <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+      Effect.runPromise(effect.pipe(Effect.provide(layerFor(database)), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${ORG_DB}`);
+        yield* sql.unsafe(`CREATE DATABASE ${EMPTY_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${ORG_DB} WITH (FORCE)`);
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${EMPTY_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("upgrades without widening: one organization, the oldest account owns and operates it, projects stay shared", async () => {
+    const result = await withDb(ORG_DB)(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0054_project_install_command");
+        yield* sql`
+          INSERT INTO "user" ("id", "name", "email", "createdAt") VALUES
+            ('u-middle', 'Middle', 'middle@example.com', '2026-02-01T00:00:00Z'),
+            ('u-oldest', 'Oldest', 'oldest@example.com', '2026-01-01T00:00:00Z'),
+            ('u-newest', 'Newest', 'newest@example.com', '2026-03-01T00:00:00Z')`;
+        yield* sql`
+          INSERT INTO projects (id, name, origin_url, store_path, default_branch) VALUES
+            ('p-1', 'api', NULL, '/store/api/repo.git', 'main'),
+            ('p-2', 'web', NULL, '/store/web/repo.git', 'main')`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-1', 'p-1', 'one', 'one', 'one', 'abc'),
+                 ('wt-2', 'p-1', 'two', 'two', 'two', 'abc')`;
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, owner_user_id, harness, worktree, branch, base_sha, status)
+          VALUES ('s-null', 'p-1', 'wt-1', NULL, 'codex', 'one', 'one', 'abc', 'stopped'),
+                 ('s-owned', 'p-1', 'wt-2', 'u-newest', 'codex', 'two', 'two', 'abc', 'stopped')`;
+        yield* migrations["0055_organizations"];
+
+        const organizations = yield* sql<{
+          readonly id: string;
+          readonly name: string;
+        }>`SELECT id, name FROM organizations`;
+        const members = yield* sql<{
+          readonly user_id: string;
+          readonly role: string;
+        }>`SELECT user_id, role FROM organization_members ORDER BY user_id`;
+        const operators = yield* sql<{
+          readonly user_id: string;
+        }>`SELECT user_id FROM instance_roles WHERE role = 'operator'`;
+        const projects = yield* sql<{
+          readonly id: string;
+          readonly organization_id: string;
+          readonly visibility: string;
+          readonly created_by_user_id: string;
+        }>`SELECT id, organization_id, visibility, created_by_user_id FROM projects ORDER BY id`;
+        const sessions = yield* sql<{
+          readonly id: string;
+          readonly owner_user_id: string;
+        }>`SELECT id, owner_user_id FROM agent_sessions ORDER BY id`;
+
+        const organizationId = organizations[0]?.id ?? "";
+        yield* sql`INSERT INTO organizations (id, name) VALUES ('org-other', 'Other')`;
+        const sameNameElsewhere = yield* sql`
+          INSERT INTO projects (id, name, organization_id, store_path, default_branch)
+          VALUES ('p-3', 'api', 'org-other', '/store/p-3/repo.git', 'main')`.pipe(
+          Effect.as("inserted"),
+          Effect.catch(() => Effect.succeed("refused")),
+        );
+        const sameNameSameOrganization = yield* sql`
+          INSERT INTO projects (id, name, organization_id, store_path, default_branch)
+          VALUES ('p-4', 'api', ${organizationId}, '/store/p-4/repo.git', 'main')`.pipe(
+          Effect.as("inserted"),
+          Effect.catch(() => Effect.succeed("refused")),
+        );
+        return {
+          organizations,
+          members,
+          operators,
+          projects,
+          sessions,
+          sameNameElsewhere,
+          sameNameSameOrganization,
+        };
+      }),
+    );
+
+    expect(result.organizations).toHaveLength(1);
+    expect(result.organizations[0]?.name).toBe("Default");
+    expect(result.members).toEqual([
+      { user_id: "u-middle", role: "member" },
+      { user_id: "u-newest", role: "member" },
+      { user_id: "u-oldest", role: "owner" },
+    ]);
+    expect(result.operators).toEqual([{ user_id: "u-oldest" }]);
+    const organizationId = result.organizations[0]?.id;
+    expect(result.projects).toEqual([
+      {
+        id: "p-1",
+        organization_id: organizationId,
+        visibility: "shared",
+        created_by_user_id: "u-oldest",
+      },
+      {
+        id: "p-2",
+        organization_id: organizationId,
+        visibility: "shared",
+        created_by_user_id: "u-oldest",
+      },
+    ]);
+    expect(result.sessions).toEqual([
+      { id: "s-null", owner_user_id: "u-oldest" },
+      { id: "s-owned", owner_user_id: "u-newest" },
+    ]);
+    expect(result.sameNameElsewhere).toBe("inserted");
+    expect(result.sameNameSameOrganization).toBe("refused");
+  });
+
+  it("creates the organization on an empty database, and new projects need one", async () => {
+    const result = await withDb(EMPTY_DB)(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0055_organizations");
+        const organizations = yield* sql<{
+          readonly id: string;
+        }>`SELECT id FROM organizations`;
+        const members = yield* sql`SELECT 1 FROM organization_members`;
+        const withoutOrganization = yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch)
+          VALUES ('p-x', 'x', '/store/p-x/repo.git', 'main')`.pipe(
+          Effect.as("inserted"),
+          Effect.catch(() => Effect.succeed("refused")),
+        );
+        return { organizations, members, withoutOrganization };
+      }),
+    );
+    expect(result.organizations).toHaveLength(1);
+    expect(result.members).toHaveLength(0);
+    expect(result.withoutOrganization).toBe("refused");
+  });
+
+  it("the constraints hold the model: roles, one organization per account, consistent invitations, no deletion", async () => {
+    const outcomes = await withDb(ORG_DB)(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const [organization] = yield* sql<{
+          readonly id: string;
+        }>`SELECT id FROM organizations WHERE id <> 'org-other' LIMIT 1`;
+        const organizationId = organization?.id ?? "";
+        return {
+          validInvitation: yield* attempt(sql`
+            INSERT INTO organization_invitations
+              (id, organization_id, token_hash, role, email, created_by_user_id, expires_at)
+            VALUES ('inv-0', ${organizationId}, 'h0', 'member', 'carol@example.com', 'u-oldest',
+                    now() + interval '1 day')`),
+          validAcceptance: yield* attempt(sql`
+            UPDATE organization_invitations
+            SET accepted_by_user_id = 'u-middle', accepted_at = now() WHERE id = 'inv-0'`),
+          badRole: yield* attempt(sql`
+            UPDATE organization_members SET role = 'admin' WHERE user_id = 'u-middle'`),
+          secondMembership: yield* attempt(sql`
+            INSERT INTO organization_members (organization_id, user_id, role)
+            VALUES ('org-other', 'u-middle', 'member')`),
+          acceptedWithoutAccepter: yield* attempt(sql`
+            INSERT INTO organization_invitations
+              (id, organization_id, token_hash, role, created_by_user_id, expires_at, accepted_at)
+            VALUES ('inv-1', ${organizationId}, 'h1', 'member', 'u-oldest',
+                    now() + interval '1 day', now())`),
+          acceptedAndRevoked: yield* attempt(sql`
+            INSERT INTO organization_invitations
+              (id, organization_id, token_hash, role, created_by_user_id, expires_at,
+               accepted_by_user_id, accepted_at, revoked_at)
+            VALUES ('inv-2', ${organizationId}, 'h2', 'member', 'u-oldest',
+                    now() + interval '1 day', 'u-middle', now(), now())`),
+          expiredAtBirth: yield* attempt(sql`
+            INSERT INTO organization_invitations
+              (id, organization_id, token_hash, role, created_by_user_id, expires_at)
+            VALUES ('inv-3', ${organizationId}, 'h3', 'member', 'u-oldest', now() - interval '1 day')`),
+          unfoldedEmail: yield* attempt(sql`
+            INSERT INTO organization_invitations
+              (id, organization_id, token_hash, role, email, created_by_user_id, expires_at)
+            VALUES ('inv-4', ${organizationId}, 'h4', 'member', 'Carol@Example.com', 'u-oldest',
+                    now() + interval '1 day')`),
+          deleteMember: yield* attempt(sql`DELETE FROM "user" WHERE id = 'u-middle'`),
+          duplicateOrganizationName: yield* attempt(sql`
+            INSERT INTO organizations (id, name) VALUES ('org-dup', '  default ')`),
+        };
+      }),
+    );
+    expect(outcomes).toEqual({
+      validInvitation: "inserted",
+      validAcceptance: "inserted",
+      badRole: "refused",
+      secondMembership: "refused",
+      acceptedWithoutAccepter: "refused",
+      acceptedAndRevoked: "refused",
+      expiredAtBirth: "refused",
+      unfoldedEmail: "refused",
+      deleteMember: "refused",
+      duplicateOrganizationName: "refused",
+    });
+  });
+});
