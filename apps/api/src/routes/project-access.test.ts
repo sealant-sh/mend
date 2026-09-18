@@ -229,6 +229,7 @@ const CASES: ReadonlyArray<AccessCase> = [
   // ── Operator recovery: organizations are named and recovered, never read ──
   fixed("operator", "GET", "/api/operator/organizations", "operator")("operator.organizations"),
   fixed("operator", "GET", "/api/operator/gate", "operator")("operator.gate"),
+  fixed("operator", "GET", "/api/operator/exposure", "operator")("operator.exposure"),
   fixed("operator", "POST", "/api/operator/organizations", "operator", { name: "Globex" })(
     "operator.createOrganization",
   ),

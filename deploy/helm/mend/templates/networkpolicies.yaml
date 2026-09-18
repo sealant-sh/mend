@@ -20,6 +20,15 @@ spec:
         {{- end }}
       ports: [{ protocol: TCP, port: 3105 }]
     {{- end }}
+    {{- if .Values.ingress.enabled }}
+    # The ingress controller's Pods, by namespace AND label in ONE selector: two entries would
+    # mean OR, and admit everything else in that namespace.
+    - from:
+        - namespaceSelector: { matchLabels: { kubernetes.io/metadata.name: {{ .Values.ingress.controller.namespace | quote }} } }
+          podSelector:
+            matchLabels: {{ toYaml .Values.ingress.controller.podLabels | nindent 14 }}
+      ports: [{ protocol: TCP, port: 3105 }]
+    {{- end }}
   egress:
     - {}
 ---

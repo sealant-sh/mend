@@ -141,6 +141,54 @@ web:
   # Empty keeps the application's defaults, which include APP_URL. No wildcard origins.
   allowedOrigins: []
 
+# How this instance is reached (docs/adr/0004-access-without-a-private-network.md):
+#   loopback  from the machine only (a port-forward)
+#   private   over a network you control admission to (a tailnet, a VPN, a private ingress)
+#   public    from the Internet
+# It is your statement; Mend cannot observe what is published in front of its Pods. `public`
+# refuses to start while an item of the public exposure gate that Mend can observe is open
+# (`mend operator exposure` lists them): https origins, trusted proxies, budgets, MEND_URL_BEARERS
+# and the rest. The gate's last items are yours to verify; nothing here says an instance is fit to
+# expose.
+exposure:
+  mode: private
+  # Set to "private" when executors reach the session channel over plain http on a network you
+  # control (the cluster network, a VPC). Reported as declared, never as observed.
+  executorNetwork: ""
+  # Refuse a session or device bearer in a URL. Off for one release, so clients older than upgrade
+  # tickets keep working; `public` needs it on.
+  refuseUrlBearers: false
+  # The version you recorded an independent security reassessment of. It counts only while it
+  # equals the running version.
+  reassessedVersion: ""
+  # The gate items no process can observe from inside the deployment, once YOU have verified them
+  # from outside: "core-private" (Sealant, its registry and the database answer nothing from the
+  # Internet) and "edge-tls" (public certificate, renewal, port 80 redirects). Reported as
+  # declared, never as observed. Nothing else can be declared.
+  declared: []
+
+# An Ingress to the WEB Service only, on one host, with TLS. Opt-in. The chart renders the Ingress;
+# it does not install a controller or an issuer: those are cluster decisions. TLS ends at the
+# controller, so:
+#   - web.appUrl must be https://<host>, exactly (checked at render);
+#   - api.trustedProxyCidrs must cover the controller's Pods and the web tier, and nothing wider;
+#   - the controller must not log query strings on /api/tty, /api/service-tunnel,
+#     /api/keys/bridge/ws and /tty-embed (they carry single-use tickets; docs/KUBERNETES.md).
+# Nothing but web is ever routed: not the API, not Sealant, not the session channel.
+ingress:
+  enabled: false
+  className: ""
+  host: ""
+  annotations: {}
+  tls:
+    # A kubernetes.io/tls Secret for `host` (cert-manager can fill it from an annotation above).
+    secretName: ""
+  # Which Pods may reach web through NetworkPolicy: the controller's namespace AND its Pod labels,
+  # in one selector. Another workload in that namespace does not inherit the access.
+  controller:
+    namespace: ""
+    podLabels: {}
+
 # Supervised Service listeners (`mend service run/add`) — the same operator policy as
 # everywhere else (MEND_SERVICE_HOSTS, MEND_SERVICE_PORT_MIN/MAX). Defaults match local mode:
 # loopback only, nothing exposed — Services then answer only inside the Pod. To reach them from

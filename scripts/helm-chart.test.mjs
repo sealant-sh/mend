@@ -561,3 +561,168 @@ for (const nodePort of [30000, 32767]) {
     );
   });
 }
+
+// ─── The edge (docs/adr/0004-access-without-a-private-network.md) ────────────────────────────────
+
+const INGRESS = [
+  "ingress.enabled=true",
+  "ingress.host=mend.example.com",
+  "ingress.tls.secretName=mend-tls",
+  "ingress.className=nginx",
+  "ingress.controller.namespace=ingress-nginx",
+  "ingress.controller.podLabels.app\\.kubernetes\\.io/name=ingress-nginx",
+];
+const withIngress = (...extra) =>
+  render(
+    "-f",
+    path.join(chart, "ci/obc-values.yaml"),
+    "--set-string",
+    "web.appUrl=https://mend.example.com",
+    ...[...INGRESS, ...extra].flatMap((s) => ["--set", s]),
+  );
+
+test("no Ingress is rendered unless asked for, and exposure defaults to private", { skip }, () => {
+  const result = renderFixture("obc");
+  assert.equal(result.status, 0, result.stderr);
+  assert.ok(!result.stdout.includes("kind: Ingress"));
+  assert.equal(envOf(result.stdout, "mend-api").get("MEND_EXPOSURE"), "private");
+  assert.equal(envOf(result.stdout, "mend-api").get("MEND_URL_BEARERS"), undefined);
+});
+
+test("the Ingress routes one TLS host to the web Service and nothing else", { skip }, () => {
+  const result = withIngress();
+  assert.equal(result.status, 0, result.stderr);
+  const ingress = documentOf(result.stdout, "Ingress", "mend-web");
+  assert.match(ingress, /ingressClassName: "nginx"/);
+  assert.match(ingress, /hosts: \["mend\.example\.com"\]\n\s+secretName: "mend-tls"/);
+  assert.match(ingress, /name: mend-web\n\s+port: \{ number: 3105 \}/);
+  // One rule, one path, one backend: the API, Sealant and the session channel are never routed.
+  assert.equal(ingress.match(/backend:/g).length, 1);
+  assert.ok(!ingress.includes("mend-api"));
+  assert.ok(!ingress.includes("3101") && !ingress.includes("3106"));
+  // Exactly one Ingress in the whole render.
+  assert.equal(result.stdout.match(/^kind: Ingress$/gm).length, 1);
+});
+
+test(
+  "the Ingress is refused without TLS, without a host, or with a browser origin that is not it",
+  { skip },
+  () => {
+    const base = ["-f", path.join(chart, "ci/obc-values.yaml")];
+    const noTls = render(
+      ...base,
+      "--set-string",
+      "web.appUrl=https://mend.example.com",
+      "--set",
+      "ingress.enabled=true",
+      "--set",
+      "ingress.host=mend.example.com",
+    );
+    assert.notEqual(noTls.status, 0);
+    assert.match(noTls.stderr, /never routed without TLS/);
+
+    const noHost = render(
+      ...base,
+      "--set",
+      "ingress.enabled=true",
+      "--set",
+      "ingress.tls.secretName=t",
+    );
+    assert.notEqual(noHost.status, 0);
+    assert.match(noHost.stderr, /ingress\.host is required/);
+
+    for (const appUrl of [
+      "http://mend.example.com",
+      "https://other.example.com",
+      "https://mend.example.com/",
+    ]) {
+      const mismatched = render(
+        ...base,
+        "--set-string",
+        `web.appUrl=${appUrl}`,
+        ...INGRESS.flatMap((s) => ["--set", s]),
+      );
+      assert.notEqual(mismatched.status, 0, appUrl);
+      assert.match(mismatched.stderr, /web\.appUrl must be exactly https:\/\/mend\.example\.com/);
+    }
+  },
+);
+
+test(
+  "exposure values are held to what the API accepts, so a typo fails at render and not at boot",
+  { skip },
+  () => {
+    const base = ["-f", path.join(chart, "ci/obc-values.yaml")];
+    const typo = render(...base, "--set", "exposure.executorNetwork=yes");
+    assert.notEqual(typo.status, 0);
+    assert.match(typo.stderr, /exposure\.executorNetwork must be empty or "private"/);
+
+    const stated = render(...base, "--set", "exposure.declared={core-private,edge-tls}");
+    assert.equal(stated.status, 0, stated.stderr);
+    assert.match(stated.stdout, /name: MEND_EXPOSURE_DECLARED, value: "core-private,edge-tls"/);
+
+    // Only what no process can observe may be declared: an observable item is read, not stated.
+    const observable = render(...base, "--set", "exposure.declared={budgets}");
+    assert.notEqual(observable.status, 0);
+    assert.match(observable.stderr, /exposure\.declared takes only core-private and edge-tls/);
+
+    const unset = render(...base);
+    assert.equal(unset.status, 0, unset.stderr);
+    assert.ok(!unset.stdout.includes("MEND_EXPOSURE_DECLARED"));
+    assert.ok(!unset.stdout.includes("MEND_EXECUTOR_NETWORK"));
+  },
+);
+
+test(
+  "NetworkPolicy admits the ingress controller's Pods to web by namespace AND label, and not to the API",
+  { skip },
+  () => {
+    const result = withIngress();
+    assert.equal(result.status, 0, result.stderr);
+    const web = documentOf(result.stdout, "NetworkPolicy", "mend-web");
+    // One `from` entry carrying both selectors: two entries would mean OR.
+    assert.match(
+      web,
+      /- namespaceSelector: \{ matchLabels: \{ kubernetes\.io\/metadata\.name: "ingress-nginx" \} \}\n\s+podSelector:\n\s+matchLabels:\s*\n\s+app\.kubernetes\.io\/name: ingress-nginx\n\s+ports: \[\{ protocol: TCP, port: 3105 \}\]/,
+    );
+    const api = documentOf(result.stdout, "NetworkPolicy", "mend-api");
+    assert.ok(!api.includes("ingress-nginx"));
+
+    const unnamed = render(
+      "-f",
+      path.join(chart, "ci/obc-values.yaml"),
+      "--set-string",
+      "web.appUrl=https://mend.example.com",
+      ...INGRESS.filter((s) => !s.startsWith("ingress.controller")).flatMap((s) => ["--set", s]),
+    );
+    assert.notEqual(unnamed.status, 0);
+    assert.match(
+      unnamed.stderr,
+      /ingress\.controller\.namespace and ingress\.controller\.podLabels/,
+    );
+  },
+);
+
+test(
+  "the exposure values reach the API as the operator's declaration, and only the API",
+  { skip },
+  () => {
+    const result = withIngress(
+      "exposure.mode=public",
+      "exposure.executorNetwork=private",
+      "exposure.refuseUrlBearers=true",
+      "exposure.reassessedVersion=0.29.0",
+    );
+    assert.equal(result.status, 0, result.stderr);
+    const api = envOf(result.stdout, "mend-api");
+    assert.equal(api.get("MEND_EXPOSURE"), "public");
+    assert.equal(api.get("MEND_EXECUTOR_NETWORK"), "private");
+    assert.equal(api.get("MEND_URL_BEARERS"), "refuse");
+    assert.equal(api.get("MEND_EXPOSURE_REASSESSED"), "0.29.0");
+    assert.equal(envOf(result.stdout, "mend-web").get("MEND_EXPOSURE"), undefined);
+
+    const unknown = renderFixture("obc", "exposure.mode=internet");
+    assert.notEqual(unknown.status, 0);
+    assert.match(unknown.stderr, /exposure\.mode must be loopback, private or public/);
+  },
+);

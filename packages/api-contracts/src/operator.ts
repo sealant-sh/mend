@@ -45,7 +45,38 @@ export class MultiModeGateItem extends Schema.Class<MultiModeGateItem>("MultiMod
   fix: Schema.NullOr(Schema.String),
 }) {}
 
+/**
+ * How an exposure gate item was established: read by this process (`observed`), contained in this
+ * build where this process cannot see it in effect (`carried`), stated by the operator
+ * (`declared`), or none of those (`open`).
+ */
+export const ExposureEstablished = Schema.Literals(["observed", "carried", "declared", "open"]);
+
+/** One item of the public exposure gate as evaluated on this instance (docs/adr/0004). */
+export class ExposureGateItem extends Schema.Class<ExposureGateItem>("ExposureGateItem")({
+  id: Schema.String,
+  established: ExposureEstablished,
+  detail: Schema.String,
+  /** What would close it; for an item no build can observe, what would verify it. */
+  fix: Schema.NullOr(Schema.String),
+  /** Whether an open item refuses a `public` start. */
+  blocksStart: Schema.Boolean,
+}) {}
+
+export class ExposureReport extends Schema.Class<ExposureReport>("ExposureReport")({
+  /** `MEND_EXPOSURE`, as the operator declared it. */
+  declared: Schema.Literals(["loopback", "private", "public"]),
+  items: Schema.Array(ExposureGateItem),
+}) {}
+
 export const operatorGroup = HttpApiGroup.make("operator")
+  .add(
+    // What was declared, and every gate item with how it was established.
+    HttpApiEndpoint.get("exposure", "/operator/exposure", {
+      success: ExposureReport,
+      error: NotFound,
+    }),
+  )
   .add(
     // Every gate item with what was observed and what would satisfy it.
     HttpApiEndpoint.get("gate", "/operator/gate", {

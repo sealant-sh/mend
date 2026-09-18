@@ -109,6 +109,18 @@ const registrationHooks = (policy: RegistrationPolicy["Service"]) => ({
   },
 });
 
+/**
+ * The session cookie's attributes, stated and not inferred (docs/adr/0004, "The access model").
+ * `Secure` follows the scheme of the one primary origin (`APP_URL`): over https the cookie never
+ * travels in clear, and the public exposure gate reads this same answer. `HttpOnly` keeps it from
+ * scripts. `SameSite=Lax` keeps it off cross-site subrequests, and every state-changing request
+ * also has to name an exact allowed Origin (`publicNetworkPolicy`).
+ */
+export const sessionCookiePolicy = (network: { readonly appUrl: string }) => {
+  const secure = network.appUrl.startsWith("https://");
+  return { secure, httpOnly: true, sameSite: "lax" } as const;
+};
+
 const createBetterAuth = (options: AuthHandlerOptions) =>
   betterAuth({
     ...(options.database === undefined ? {} : { database: options.database }),
@@ -126,7 +138,12 @@ const createBetterAuth = (options: AuthHandlerOptions) =>
         deactivatedAt: { type: "date", required: false, input: false, fieldName: "deactivatedAt" },
       },
     },
-    advanced: { disableOriginCheck: false },
+    advanced: {
+      disableOriginCheck: false,
+      // Also prefixes the cookie names with `__Secure-`, which a browser refuses over http.
+      useSecureCookies: sessionCookiePolicy(options.network).secure,
+      defaultCookieAttributes: sessionCookiePolicy(options.network),
+    },
     plugins: [bearer()],
     trustedOrigins: [...options.network.allowedOrigins],
   });

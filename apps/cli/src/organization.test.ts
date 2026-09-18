@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import {
+  renderExposure,
   renderGate,
   renderMembers,
   renderOrganizations,
@@ -254,6 +255,78 @@ describe("operator", () => {
       "· upload-length-binding  capture uploads without a declared size are accepted · set MEND_CAPTURE_REQUIRE_SIZES=true",
       "1 of 2 items open; MEND_TENANCY=multi refuses to start",
     ]);
+  });
+
+  it("prints the exposure gate as what was observed, declared and open, never a verdict", () => {
+    const lines = renderExposure({
+      declared: "public",
+      items: [
+        {
+          id: "https-origin",
+          established: "observed",
+          detail: "every browser origin is https (1)",
+          fix: null,
+          blocksStart: true,
+        },
+        {
+          id: "browser-headers",
+          established: "carried",
+          detail: "this build's web tier sets the browser header policy",
+          fix: "what would observe it: mend doctor against the public origin",
+          blocksStart: false,
+        },
+        {
+          id: "executor-channel-transport",
+          established: "declared",
+          detail:
+            "the session channel is plain http, and the operator declared the executor network private (MEND_EXECUTOR_NETWORK=private)",
+          fix: null,
+          blocksStart: true,
+        },
+        {
+          id: "reassessment",
+          established: "open",
+          detail: "no independent reassessment of 0.29.0 is recorded",
+          fix: "after an independent security reassessment of this exact release, set MEND_EXPOSURE_REASSESSED=0.29.0",
+          blocksStart: false,
+        },
+      ],
+    });
+    expect(lines[0]).toBe("exposure · declared public · reachable from the Internet");
+    // No check mark and no green: an observed item is a fact about one setting.
+    expect(lines[1]).toBe(
+      "● https-origin                observed  every browser origin is https (1)",
+    );
+    expect(lines[2]).toContain(
+      "◐ browser-headers             carried   this build's web tier sets the browser header policy",
+    );
+    expect(lines[3]).toContain(
+      "○ executor-channel-transport  declared  the session channel is plain http",
+    );
+    expect(lines[4]).toContain(
+      "· reassessment                open      no independent reassessment of 0.29.0 is recorded",
+    );
+    expect(lines[5]).toBe("1 of 4 items open · 0 this build can observe · 1 it cannot");
+    expect(lines.join("")).not.toContain("✓");
+    expect(lines.join(" ").toLowerCase()).not.toMatch(/\bsafe\b|ready|approved/);
+  });
+
+  it("says a public start is refused while an observable item is open", () => {
+    const lines = renderExposure({
+      declared: "private",
+      items: [
+        {
+          id: "budgets",
+          established: "open",
+          detail: "budget(s) off: MEND_BUDGET_BODY_BYTES",
+          fix: "unset them",
+          blocksStart: true,
+        },
+      ],
+    });
+    expect(lines.at(-1)).toBe(
+      "1 of 1 items open · 1 this build can observe; MEND_EXPOSURE=public refuses to start · 0 it cannot",
+    );
   });
 
   it("lists organizations and says when one has no owner", () => {

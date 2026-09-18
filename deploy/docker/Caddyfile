@@ -1,0 +1,34 @@
+# The edge for a packaged Mend install (docs/adr/0004-access-without-a-private-network.md).
+# TLS ends here: Caddy obtains and renews a certificate for MEND_EDGE_HOST and redirects port 80.
+# Everything goes to Mend's web tier, which proxies /api, the event stream and every WebSocket on
+# this one origin. Nothing else is routed: not the API, not Sealant, not the session channel, not
+# the bucket.
+{$MEND_EDGE_HOST} {
+	encode zstd gzip
+
+	# Mend's web tier deletes inbound Forwarded, X-Forwarded-Host and X-Forwarded-Proto and appends
+	# the address it saw to X-Forwarded-For. Caddy sets X-Forwarded-For to the client it accepted;
+	# it does not trust one a client sent, since no trusted_proxies are configured above it.
+	reverse_proxy mend:3105 {
+		# Terminals and the event stream are long-lived: never buffer, never time them out.
+		flush_interval -1
+	}
+
+	log {
+		output stdout
+		# The terminal, tunnel and key bridge sockets and the phone's embed carry a single-use
+		# ticket in the query, and pairing carries a code. A log holds none of them. Caddy already
+		# redacts Authorization, Cookie and Set-Cookie.
+		format filter {
+			wrap json
+			fields {
+				request>uri query {
+					replace ticket REDACTED
+					replace token REDACTED
+					replace code REDACTED
+				}
+				request>headers>Referer delete
+			}
+		}
+	}
+}

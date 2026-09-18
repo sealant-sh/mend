@@ -657,6 +657,16 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     see: ["operator org invite-owner", "operator grant-owner"],
   },
   {
+    name: "operator exposure",
+    section: "this machine",
+    summary: "how this instance is exposed, as declared and as observed",
+    synopsis: [],
+    description: [
+      "Operator only. States MEND_EXPOSURE as declared (loopback, private or public) and one line per item of the public exposure gate, with how it was established: observed (this server read it), carried (this build contains it, and the server cannot see it in effect), declared (you stated it and the server cannot check it), or open. MEND_EXPOSURE=public refuses to start while an item the server can observe is open. Items it cannot observe say what would verify them; once you have verified core-private or edge-tls from outside, name it in MEND_EXPOSURE_DECLARED. The report is what was observed; it is not a statement that the instance is fit to expose.",
+    ],
+    see: ["operator gate", "doctor"],
+  },
+  {
     name: "operator gate",
     section: "this machine",
     summary: "what MEND_TENANCY=multi still needs on this instance",

@@ -1,5 +1,7 @@
 import {
   MendApi,
+  ExposureGateItem,
+  ExposureReport,
   MultiModeGateItem,
   NotFound,
   OneTimeLink,
@@ -15,6 +17,7 @@ import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
+import { ExposureConfig } from "../exposure.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { invitationDays, invitationEmail, invitationJoinPath } from "./organization.ts";
 
@@ -46,6 +49,16 @@ const organizationOr404 = (id: OrganizationId) =>
  */
 export const OperatorGroupLive = HttpApiBuilder.group(MendApi, "operator", (handlers) =>
   handlers
+    .handle("exposure", () =>
+      Effect.gen(function* () {
+        yield* operator;
+        const exposure = yield* ExposureConfig;
+        return new ExposureReport({
+          declared: exposure.exposure,
+          items: exposure.gate.map((outcome) => new ExposureGateItem(outcome)),
+        });
+      }),
+    )
     .handle("gate", () =>
       Effect.gen(function* () {
         yield* operator;
