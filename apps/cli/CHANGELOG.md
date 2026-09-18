@@ -4,6 +4,11 @@
 
 ### Minor Changes
 
+- The session harness home stops handing out its credential. The mode keeper re-opens read bits
+  every 15 seconds so the store-side reader can see harness state, and it was doing that to the
+  provider credential the platform injects as well — leaving a refresh token good for weeks
+  world-readable on the store. Credentials are now exempt, on the first pass and in the loop.
+  Nothing store-side reads them: no harness lists a credential among the paths the harvest collects.
 - `mend connect claude` sends the Claude grant alone. The credential document Claude Code writes
   holds `mcpOAuth` beside `claudeAiOauth` — refresh tokens for whichever MCP servers that machine
   authorized — and the whole file used to travel to the platform and into every workspace. Only the

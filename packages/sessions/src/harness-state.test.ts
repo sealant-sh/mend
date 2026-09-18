@@ -151,6 +151,14 @@ describe("harness home", () => {
     // store-side observer; a detached root loop re-opens read bits.
     expect(script).toContain("chmod -R go+rX");
     expect(script).toContain(".mode-keeper.pid");
+    // Credentials are exempt from the widening, in the loop and on the first pass: the harness
+    // home holds the injected provider credential, and `go+rX` made a refresh token
+    // world-readable on the store (docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md).
+    expect(script).toContain('for c in ".claude/.credentials.json" ".codex/auth.json"');
+    expect(script).toContain("chmod go-rwx");
+    const widens = script.split("chmod -R go+rX").length - 1;
+    const tightens = script.split("chmod go-rwx").length - 1;
+    expect(tightens).toBe(widens);
   });
 
   it("executes relocation against a capture root without starting the co-located mode keeper", () => {
