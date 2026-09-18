@@ -94,10 +94,15 @@ These are source-development inputs. The installed CLI generates and preserves i
 configuration; shell environment overrides do not change a saved installation.
 
 Credential files the harness writes into its home (`.claude/.credentials.json`, `.codex/auth.json`)
-are captured with the rest of the harness-home class (decision 6, 2026-09-13): nothing on the Mend
-side excludes them, and the bucket holds them under the provider's at-rest encryption only.
-Client-side encryption with a Mend-held key is the follow-up gated on multi-tenancy; until then a
-bucket is one installation's, and whoever can read it can read a session's provider login.
+are **not** captured. sealantd excludes both paths from the capture listing and from the watcher
+(`CREDENTIAL_FILES` in `crates/sealant-capture/src/index.rs`, used by `roots.rs` and `watch.rs`,
+with a test), so the bucket holds no provider login. ADR 0002 decision 6 said the opposite until
+2026-09-18; the daemon was right and the document was wrong.
+
+One consequence is worth knowing while you work: a pickup therefore needs the platform to inject the
+credential into the new workspace again. It does that at launch, but that every pickup path
+re-injects before the harness reads it is unverified — if a resumed session meets a logged-out
+harness, that is the thing to check first.
 
 ## Work through a session
 
