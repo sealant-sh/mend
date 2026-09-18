@@ -8,7 +8,7 @@ import * as path from "node:path";
 
 import { repositoryCloneUrlIssue } from "@mend/domain/workbench";
 
-import { type AgentShareHandle, bridgeUrlOf, shareAgent, startAgentShare } from "./agent-share.ts";
+import { type AgentShareHandle, shareAgent, startAgentShare } from "./agent-share.ts";
 import { readClipboardImage } from "./clipboard.ts";
 import { doctorCommand } from "./doctor.ts";
 import { readSyncFiles, scanDotfileCandidates } from "./dotfiles.ts";
@@ -71,6 +71,14 @@ import {
   UNINSTALL_USAGE,
   type UninstallScope,
 } from "./uninstall.ts";
+import {
+  MINT_REFUSED_IN_TRANSIT,
+  type MintTicket,
+  mintRefusedInTransit,
+  type UpgradeParams,
+  type UpgradeTarget,
+  upgradeUrl,
+} from "./upgrade-url.ts";
 import { cliVersion, fetchServerVersion, versionLines } from "./version.ts";
 
 /**
@@ -334,6 +342,55 @@ const api = async <T>(
     return fail(error instanceof Error ? error.message : String(error));
   }
 };
+
+/**
+ * One upgrade ticket for a WebSocket this process is about to open (upgrade-url.ts). The saved
+ * token travels in this call's Authorization header, never in the socket's URL. A server older
+ * than tickets answers 404, which is the only case the token still rides a URL.
+ */
+let warnedLegacyBearer = false;
+const mintTicket =
+  (config: CliConfig): MintTicket =>
+  async (target, params) => {
+    const headers: Record<string, string> = { "content-type": "application/json" };
+    if (config.token !== null) headers["authorization"] = `Bearer ${config.token}`;
+    const response = await fetch(`${config.url}/api/upgrade-tickets`, {
+      method: "POST",
+      headers,
+      body: JSON.stringify({ target, ...params }),
+    });
+    if (response.status === 404) {
+      if (await mintRefusedInTransit(config.url)) throw new Error(MINT_REFUSED_IN_TRANSIT);
+      if (config.token !== null && !warnedLegacyBearer) {
+        warnedLegacyBearer = true;
+        console.error(
+          "mend: this server predates upgrade tickets, so the saved token rides the socket's URL. Upgrade the server to stop that.",
+        );
+      }
+      return { kind: "unsupported" };
+    }
+    if (!response.ok) throw new Error(`upgrade ticket refused (${response.status})`);
+    const minted = (await response.json()) as { readonly ticket?: unknown };
+    if (typeof minted.ticket !== "string")
+      throw new Error("upgrade ticket missing from the answer");
+    return { kind: "ticket", ticket: minted.ticket };
+  };
+
+/** A ready-to-connect WebSocket URL for one data plane, with a fresh ticket. */
+const socketUrl = (
+  config: CliConfig,
+  target: UpgradeTarget,
+  params: UpgradeParams,
+  extra?: Readonly<Record<string, string>>,
+): Promise<URL> =>
+  upgradeUrl({
+    serverUrl: parseMendUrl(config.url).toString(),
+    target,
+    params,
+    ...(extra === undefined ? {} : { extra }),
+    mint: mintTicket(config),
+    legacyToken: config.token,
+  });
 
 /** The same call bound to one config — the dependency ./pair.ts takes. */
 const boundApi =
@@ -661,14 +718,19 @@ const attachTty = async (
   processId?: string,
   options?: { readonly readOnly?: boolean; readonly handleSignals?: boolean },
 ): Promise<AttachOutcome> => {
-  const url = parseMendUrl(`${config.url}/api/tty`);
-  url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   // Process addressing reaches any PTY in the workspace (a shell); the
   // session form remains the agent's PTY.
-  if (processId === undefined) url.searchParams.set("session", sessionId);
-  else url.searchParams.set("process", processId);
-  url.searchParams.set("from", from.toString());
-  if (config.token !== null) url.searchParams.set("token", config.token);
+  let url: URL;
+  try {
+    url = await socketUrl(
+      config,
+      "tty",
+      processId === undefined ? { session: sessionId } : { process: processId },
+      { from: from.toString() },
+    );
+  } catch {
+    return "unavailable";
+  }
 
   const ws = new WebSocket(url);
   ws.binaryType = "arraybuffer";
@@ -1727,36 +1789,40 @@ const tunnelServices = async (
   services: ReadonlyArray<ServiceDto>,
   portOverride: number | null,
 ): Promise<void> => {
-  const tunnelUrl = (serviceId: string): URL => {
-    const url = parseMendUrl(`${config.url}/api/service-tunnel`);
-    url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
-    url.searchParams.set("service", serviceId);
-    if (config.token !== null) url.searchParams.set("token", config.token);
-    return url;
-  };
+  // One ticket per local connection: a ticket opens one tunnel once.
+  const tunnelUrl = (serviceId: string): Promise<URL> =>
+    socketUrl(config, "service-tunnel", { service: serviceId });
 
   for (const service of services) {
     const port = portOverride ?? service.hostPort ?? service.workspacePort;
     const server = net.createServer((socket) => {
       // Hold local bytes until the tunnel is open; loopback buffers are tiny.
       socket.pause();
-      const ws = new WebSocket(tunnelUrl(service.id));
-      ws.binaryType = "arraybuffer";
-      ws.addEventListener("open", () => socket.resume(), { once: true });
-      ws.addEventListener("message", (event) => {
-        if (typeof event.data === "string") return; // no text frames come down
-        socket.write(Buffer.from(event.data as ArrayBuffer));
-      });
-      ws.addEventListener("close", () => socket.end(), { once: true });
-      ws.addEventListener("error", () => socket.destroy(), { once: true });
-      // Copy per chunk: the WS client wants an ArrayBuffer-backed view, and
-      // Buffer pools share their backing store.
-      socket.on("data", (chunk: Buffer) => ws.send(new Uint8Array(chunk)));
-      socket.on("end", () => {
-        if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: "eof" }));
-      });
-      socket.on("close", () => ws.close());
-      socket.on("error", () => ws.close());
+      void tunnelUrl(service.id).then(
+        (url) => {
+          if (socket.destroyed) return null;
+          const ws = new WebSocket(url);
+          ws.binaryType = "arraybuffer";
+          ws.addEventListener("open", () => socket.resume(), { once: true });
+          ws.addEventListener("message", (event) => {
+            if (typeof event.data === "string") return; // no text frames come down
+            socket.write(Buffer.from(event.data as ArrayBuffer));
+          });
+          ws.addEventListener("close", () => socket.end(), { once: true });
+          ws.addEventListener("error", () => socket.destroy(), { once: true });
+          // Copy per chunk: the WS client wants an ArrayBuffer-backed view, and
+          // Buffer pools share their backing store.
+          socket.on("data", (chunk: Buffer) => ws.send(new Uint8Array(chunk)));
+          socket.on("end", () => {
+            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: "eof" }));
+          });
+          socket.on("close", () => ws.close());
+          socket.on("error", () => ws.close());
+          return null;
+        },
+        // No ticket, no tunnel: the local connection ends the way a refused one would.
+        () => socket.destroy(),
+      );
     });
     await new Promise<void>((resolve, reject) => {
       server.once("error", (error: NodeJS.ErrnoException) => {
@@ -2149,13 +2215,8 @@ const keysShare = async (config: CliConfig) => {
   if (agentSock === undefined || agentSock === "") {
     return fail("SSH_AUTH_SOCK is not set — start (or plug in) your ssh-agent first");
   }
-  const url = bridgeUrlOf(
-    parseMendUrl(config.url).toString().replace(/\/$/, ""),
-    config.token,
-    os.hostname(),
-  );
   await shareAgent({
-    url,
+    url: () => socketUrl(config, "keys-bridge", { host: os.hostname() }),
     agentSock,
     signal: new AbortController().signal,
     onEvent: (event) => {
@@ -3572,11 +3633,7 @@ const startShareIfBridge = async (config: CliConfig): Promise<AgentShareHandle |
   }
   if (access.mode !== "bridge") return null;
   return startAgentShare({
-    url: bridgeUrlOf(
-      parseMendUrl(config.url).toString().replace(/\/$/, ""),
-      config.token,
-      os.hostname(),
-    ),
+    url: () => socketUrl(config, "keys-bridge", { host: os.hostname() }),
     agentSock,
   });
 };

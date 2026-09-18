@@ -608,6 +608,8 @@ export const createTenancyWorld = async (): Promise<TenancyWorld> => {
           ? Option.some({
               user: { id: token, email: `${token}@example.invalid`, name: token },
               expiresAt: new Date("2026-09-18T10:00:00.000Z"),
+              // One sign-in per account, so a test can strike it (`session:<account>`).
+              credential: `session:${token}` as const,
             })
           : Option.none(),
       );

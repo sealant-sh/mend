@@ -10,11 +10,13 @@ import { gitKeysGroup } from "@mend/api-contracts";
 import { Auth, createAuthHandler } from "@mend/auth";
 import {
   AgentConversationRepo,
+  OrganizationsRepo,
   ServiceForwardsRepo,
   ServicesRepo,
   SessionProcessesRepo,
   SessionsRepo,
   SessionControlEventsRepo,
+  UpgradeTicketsRepo,
   UserDotfilesRepo,
   UserEvents,
   UserGitAccessRepo,
@@ -32,6 +34,7 @@ import { Budgets, DEFAULT_BUDGET_LIMITS, makeBudgets } from "./budgets.ts";
 import { ConnectionRegistry, makeConnectionRegistry } from "./connections.ts";
 import { publicNetworkPolicy } from "./public-network-policy.ts";
 import { AuthMiddlewareLive } from "./routes/api-live.ts";
+import { UrlBearers } from "./routes/upgrade-tickets.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
 import { GitKeysGroupLive } from "./routes/workbench.ts";
 import { SessionSteeringLive } from "./session-steering.ts";
@@ -129,6 +132,9 @@ const startServer = async () => {
   const websocketRoutes = WebSocketRoutes.pipe(
     Layer.provide(connections),
     Layer.provide(Layer.succeed(Budgets, makeBudgets(DEFAULT_BUDGET_LIMITS))),
+    Layer.provide(Layer.succeed(UrlBearers, { mode: "accept" as const })),
+    Layer.provide(Layer.mock(UpgradeTicketsRepo, {})),
+    Layer.provide(Layer.mock(OrganizationsRepo, {})),
     Layer.provide(SessionSteeringLive),
     Layer.provide(Layer.mock(ProjectAccess, {})),
   );

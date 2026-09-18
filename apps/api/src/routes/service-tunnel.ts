@@ -1,5 +1,11 @@
 import { Auth } from "@mend/auth";
-import { ServiceForwardsRepo, ServicesRepo, SessionsRepo } from "@mend/db";
+import {
+  OrganizationsRepo,
+  ServiceForwardsRepo,
+  ServicesRepo,
+  SessionsRepo,
+  UpgradeTicketsRepo,
+} from "@mend/db";
 import { ServiceId } from "@mend/domain";
 import { asSealantUser, SealantClient } from "@mend/sealant";
 import { Effect, Option } from "effect";
@@ -10,6 +16,7 @@ import { Budgets } from "../budgets.ts";
 import { ConnectionRegistry, guardSocket } from "../connections.ts";
 import { SessionSteering } from "../session-steering.ts";
 import { connectionRefusal, makeFrameGuard } from "../socket-budgets.ts";
+import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tickets.ts";
 
 /**
  * The Service tunnel (docs/SESSION-SERVICES.md): the client-side data plane
@@ -37,6 +44,9 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
   Effect.gen(function* () {
     const auth = yield* Auth;
     const connections = yield* ConnectionRegistry;
+    const tickets = yield* UpgradeTicketsRepo;
+    const organizations = yield* OrganizationsRepo;
+    const urlBearers = yield* UrlBearers;
     const budgets = yield* Budgets;
     const services = yield* ServicesRepo;
     const forwards = yield* ServiceForwardsRepo;
@@ -51,20 +61,21 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
         const headers = new Headers(
           Object.entries(request.headers).map(([k, v]) => [k, Array.isArray(v) ? v.join(",") : v]),
         );
-        const token = url.searchParams.get("token");
-        if (!headers.has("authorization") && token !== null) {
-          headers.set("authorization", `Bearer ${token}`);
-        }
-        const authed = yield* auth.getSession(headers);
-        if (Option.isNone(authed)) return HttpServerResponse.empty({ status: 401 });
+        // A ticket, a header or the cookie; a bearer in the URL only while MEND_URL_BEARERS allows it
+        // (docs/adr/0004, "Upgrade tickets").
+        const caller = yield* resolveUpgradeCaller({
+          auth,
+          tickets,
+          organizations,
+          urlBearers,
+          headers,
+          url,
+          target: "service-tunnel",
+        });
+        if (!isUpgradeCaller(caller)) return caller;
 
         // Before anything is resolved, dialled or upgraded (docs/adr/0004, "Budgets").
-        const overBudget = yield* connectionRefusal(
-          budgets,
-          connections,
-          authed.value.user.id,
-          "tunnel",
-        );
+        const overBudget = yield* connectionRefusal(budgets, connections, caller.userId, "tunnel");
         if (overBudget !== null) return overBudget;
 
         const serviceParam = url.searchParams.get("service");
@@ -80,7 +91,7 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
           return HttpServerResponse.text("unknown service", { status: 404 });
         }
         // Visibility first: a session the caller cannot see answers exactly like a missing one.
-        const refusal = yield* steering.authorizeUser(owner.value, authed.value.user.id).pipe(
+        const refusal = yield* steering.authorizeUser(owner.value, caller.userId).pipe(
           Effect.as(null),
           Effect.catch((error) => Effect.succeed(error._tag)),
         );
@@ -133,9 +144,9 @@ export const ServiceTunnelRoutes = HttpRouter.use((router) =>
             // Removing the account closes this socket, and drops its input from then on (docs/adr/0003).
             const guard = yield* guardSocket(
               connections,
-              authed.value.user.id,
+              caller.userId,
               write,
-              auth.getSession(headers).pipe(Effect.map(Option.isSome)),
+              caller.stillAdmitted,
               owner.value.id,
               "tunnel",
             );

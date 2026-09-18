@@ -19,6 +19,12 @@ export interface AuthUser {
 export interface AuthSession {
   readonly user: AuthUser;
   readonly expiresAt: Date;
+  /**
+   * The row this session was proven by: `session:<id>` for a sign-in, `device:<id>` for a paired
+   * device. Absent for a credential with no row (the dev token). What an upgrade ticket is bound
+   * to, so it dies with the sign-in or the device that minted it (docs/adr/0004).
+   */
+  readonly credential?: `session:${string}` | `device:${string}`;
 }
 
 /** The header a sign-up request carries its invitation token in. */
@@ -249,6 +255,7 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
         return Option.some<AuthSession>({
           user: { id: row.user_id, email: row.email, name: row.name },
           expiresAt: new Date(Date.now() + 86_400_000),
+          credential: `device:${row.device_id}`,
         });
       });
 
@@ -288,6 +295,7 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
             name: result.user.name,
           },
           expiresAt: result.session.expiresAt,
+          credential: `session:${result.session.id}`,
         });
       });
 

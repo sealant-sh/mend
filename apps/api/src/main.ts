@@ -63,6 +63,7 @@ import {
   UserGitAccessRepoLive,
   UserEventsLive,
   UsersRepoLive,
+  UpgradeTicketsRepoLive,
 } from "@mend/db";
 import type { ChangeId, SessionId } from "@mend/domain";
 import { resolveAutomation } from "@mend/domain/workbench";
@@ -164,6 +165,7 @@ import { boundedWebRequest, requestBudgets } from "./request-budgets.ts";
 import { MendApiLive } from "./routes/api-live.ts";
 import { EventsRoutes } from "./routes/events.ts";
 import { GhLive } from "./routes/github.ts";
+import { UrlBearersLive } from "./routes/upgrade-tickets.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
 import { SessionSteeringLive } from "./session-steering.ts";
@@ -224,6 +226,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   BriefCommentsRepoLive,
   SessionsRepoLive,
   SessionChannelTokensRepoLive,
+  UpgradeTicketsRepoLive,
 ).pipe(Layer.provideMerge(MendDBLive));
 
 const DatabaseLive = DrizzleRepositoriesLive.pipe(
@@ -616,7 +619,7 @@ const MainLive = Layer.unwrap(
       Layer.provide(Layer.merge(ProjectAccessLive, GithubIdentityLive)),
       // MEND_TENANCY: refuses to build (so nothing serves) when the mode may not run here.
       // Budgets ride the same step: `pipe` takes at most twenty.
-      Layer.provide(Layer.merge(TenancyConfigLive, BudgetsLive)),
+      Layer.provide(Layer.mergeAll(TenancyConfigLive, BudgetsLive, UrlBearersLive)),
       // Shared by the API (enqueue on comment) and the workers (one instance).
       Layer.provide(JobRunner.pgBossLayer),
       // Follow-up delivery owns persistence → process acceptance → correlation.

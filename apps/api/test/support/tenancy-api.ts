@@ -30,6 +30,8 @@ import {
   UserGitAccessRepo,
   UsersRepo,
   type MendEvent,
+  makeUpgradeTicketsMemory,
+  UpgradeTicketsRepo,
 } from "@mend/db";
 import { JobRunner } from "@mend/jobs";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
@@ -66,6 +68,7 @@ import { EventsRoutes } from "../../src/routes/events.ts";
 import { Gh } from "../../src/routes/github.ts";
 import { ServiceTunnelRoutes } from "../../src/routes/service-tunnel.ts";
 import { TtyRoutes } from "../../src/routes/tty.ts";
+import { UrlBearers } from "../../src/routes/upgrade-tickets.ts";
 import { HostEnvironment } from "../../src/services/host-environment.ts";
 import { SessionSteeringLive } from "../../src/session-steering.ts";
 import { TenancyConfig } from "../../src/tenancy.ts";
@@ -90,7 +93,7 @@ export interface TenancyApi {
     readonly close: () => Promise<void>;
   }>;
   /** Send a raw (WebSocket upgrade) route request: `/api/tty` and `/api/service-tunnel`. */
-  readonly rawRequest: (user: HarnessUser, path: string) => Promise<Response>;
+  readonly rawRequest: (user: HarnessUser | null, path: string) => Promise<Response>;
   /** Push-device writes as `method:userId:token`, to prove the caller's id reaches the repo. */
   readonly deviceWrites: ReadonlyArray<string>;
   readonly dispose: () => Promise<void>;
@@ -109,8 +112,21 @@ const network = makePublicNetwork(
 export const createTenancyApi = async (
   /** Budgets for this world; the defaults unless a test wants one tight enough to reach. */
   limits: Partial<BudgetLimits> = {},
+  options: {
+    readonly urlBearers?: "accept" | "refuse";
+    readonly clock?: () => number;
+    /** Credentials that no longer stand (`session:<account>`): add one to sign that account out. */
+    readonly revokedCredentials?: ReadonlySet<string>;
+  } = {},
 ): Promise<TenancyApi> => {
   const world = await createTenancyWorld();
+  const ticketsLayer = Layer.mergeAll(
+    Layer.succeed(
+      UpgradeTicketsRepo,
+      makeUpgradeTicketsMemory(options.clock, options.revokedCredentials),
+    ),
+    Layer.succeed(UrlBearers, { mode: options.urlBearers ?? "accept" }),
+  );
   const budgetsLayer = Layer.succeed(Budgets, makeBudgets({ ...DEFAULT_BUDGET_LIMITS, ...limits }));
   const calls = world.calls;
   const deviceWrites: Array<string> = [];
@@ -229,6 +245,7 @@ export const createTenancyApi = async (
     Layer.provideMerge(ProjectAccessLive),
     Layer.provideMerge(connections),
     Layer.provideMerge(budgetsLayer),
+    Layer.provideMerge(ticketsLayer),
     Layer.provideMerge(dependencies),
   );
   const apiLayer = MendApiLive.pipe(
@@ -320,7 +337,7 @@ export const createTenancyApi = async (
     rawRequest: (user, path) =>
       raw.handler(
         new Request(`http://api.internal${path}`, {
-          headers: { authorization: `Bearer ${user}` },
+          headers: user === null ? {} : { authorization: `Bearer ${user}` },
         }),
         context,
       ),

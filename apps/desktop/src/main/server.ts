@@ -95,14 +95,66 @@ export const signOut = (): void => {
   saveConfig({ url: config.url, token: null });
 };
 
-/** The `/api/tty` address the CLI uses — bearer as `?token=` (WebSocket cannot set headers). */
-export const ttyUrl = (target: TtyTarget, from: string): string => {
+/** Whether `/health` says this server mints upgrade tickets (absent on a server older than them). */
+const serverMintsTickets = async (base: string): Promise<boolean> => {
+  try {
+    const response = await fetch(`${base}/api/health`);
+    if (!response.ok) return false;
+    const health: unknown = await response.json();
+    return (
+      typeof health === "object" &&
+      health !== null &&
+      "upgradeTickets" in health &&
+      health.upgradeTickets === true
+    );
+  } catch {
+    return false;
+  }
+};
+
+/**
+ * The `/api/tty` address for one connection. The renderer's WebSocket cannot set a header, so the
+ * credential in the URL is an upgrade ticket (docs/adr/0004, "Upgrade tickets"): single use, thirty
+ * seconds, good for this terminal only. The saved bearer goes to the server in a header, from this
+ * process, and never reaches the renderer or a URL. A server older than tickets answers the mint
+ * with 404; only then does the bearer ride the URL, as it always did with that server.
+ */
+export const ttyUrl = async (target: TtyTarget, from: string): Promise<string> => {
   const config = loadConfig();
-  const url = new URL(`${normalizeUrl(config.url)}/api/tty`);
+  const base = normalizeUrl(config.url);
+  const url = new URL(`${base}/api/tty`);
   url.protocol = url.protocol === "https:" ? "wss:" : "ws:";
   url.searchParams.set(target.kind, target.id);
   url.searchParams.set("from", from);
-  if (config.token !== null) url.searchParams.set("token", config.token);
+  if (config.token === null) return url.toString();
+  const response = await fetch(`${base}/api/upgrade-tickets`, {
+    method: "POST",
+    headers: { "content-type": "application/json", authorization: `Bearer ${config.token}` },
+    body: JSON.stringify({ target: "tty", [target.kind]: target.id }),
+  });
+  if (response.status === 404) {
+    // Only a server older than tickets gets the bearer in a URL. One that mints them says so on
+    // /health, and then this 404 came from something in between: the bearer stays out of URLs.
+    if (await serverMintsTickets(base)) {
+      throw new Error(
+        "upgrade tickets answered 404 on a server that mints them: something between this app and Mend is refusing POST /api/upgrade-tickets",
+      );
+    }
+    console.warn("this server predates upgrade tickets: the saved token rides the terminal URL");
+    url.searchParams.set("token", config.token);
+    return url.toString();
+  }
+  if (!response.ok) throw new Error(`upgrade ticket refused (${response.status})`);
+  const minted: unknown = await response.json();
+  if (
+    typeof minted !== "object" ||
+    minted === null ||
+    !("ticket" in minted) ||
+    typeof minted.ticket !== "string"
+  ) {
+    throw new Error("upgrade ticket missing from the answer");
+  }
+  url.searchParams.set("ticket", minted.ticket);
   return url.toString();
 };
 

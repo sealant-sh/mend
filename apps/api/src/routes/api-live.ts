@@ -57,6 +57,7 @@ import { MachineGroupLive } from "./machine.ts";
 import { OperatorGroupLive } from "./operator.ts";
 import { InvitationsGroupLive, OrganizationGroupLive } from "./organization.ts";
 import { SkillsGroupLive } from "./skills.ts";
+import { UpgradeTicketExchangeGroupLive, UpgradeTicketsGroupLive } from "./upgrade-tickets.ts";
 import {
   DotfilesGroupLive,
   GitKeysGroupLive,
@@ -118,6 +119,7 @@ export const HealthGroupLive = HttpApiBuilder.group(MendApi, "health", (handlers
           passed: tenancy.gate.every((outcome) => outcome.ok),
           failing: tenancy.gate.filter((outcome) => !outcome.ok).map((outcome) => outcome.id),
         },
+        upgradeTickets: true,
       });
     }),
   ),
@@ -640,6 +642,8 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(SessionChangesGroupLive),
   Layer.provide(GithubGroupLive),
   Layer.provide(DevicesGroupLive),
-  Layer.provide(DevicePairingLive),
+  Layer.provide(
+    Layer.mergeAll(DevicePairingLive, UpgradeTicketsGroupLive, UpgradeTicketExchangeGroupLive),
+  ),
   Layer.provide(AuthMiddlewareLive),
 );

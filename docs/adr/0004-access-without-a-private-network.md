@@ -205,22 +205,42 @@ anywhere else:
 
 - `POST /api/upgrade-tickets` (authenticated by cookie or `Authorization`) mints a **ticket**: 32
   random bytes, stored hashed, single use, 30 seconds to live, bound to the account, to one target
-  (`tty`, `service-tunnel`, `keys-bridge`, `tty-embed`) and to that target's exact parameters (the
-  session or process id, the service id, the bridge host).
-- The three WebSocket routes accept `?ticket=`. A ticket is consumed under a row lock on first use,
-  refused for any other target or parameter, and refused after expiry. Authorization still runs as
-  the ticket's account, exactly as for a header.
-- `/tty-embed` takes a ticket and exchanges it, in the page, for a second ticket for the socket. No
-  bearer reaches the WebView's URL, history or referrer.
-- Native clients (CLI, desktop main process, mobile socket, editor extension) send
-  `Authorization: Bearer` on the upgrade. Every one of them can: only browsers cannot.
+  (`tty`, `service-tunnel`, `keys-bridge`, `tty-embed`), to that target's exact parameters (the
+  session or process id, the service id, the bridge host), and to the credential that minted it: the
+  sign-in (`session:<id>`) or the paired device (`device:<id>`).
+- The three WebSocket routes accept `?ticket=`. A ticket is spent by one statement that deletes it
+  only when it is unexpired, for exactly this target and these parameters, and its credential still
+  stands (the sign-in row exists and has not expired; the device is not revoked). Of many requests
+  racing one ticket exactly one wins, a wrong guess spends nothing, and signing out, a password
+  change that ends other sign-ins, revoking a device or removing a member ends every ticket that
+  credential minted. A repeated addressing parameter is refused with 400, so the scope the ticket is
+  checked against is always the parameter the route goes on to read. Authorization still runs as the
+  ticket's account, exactly as for a header.
+- `/tty-embed` takes a ticket and trades it, in the page, for the socket's ticket and a **renewal
+  ticket**. The renewal ticket lives in the page's memory, travels only in a request body and is
+  bound to the same terminal and the same credential, so a dropped socket reconnects without the app
+  minting a new URL. It is the one ticket that is shown rather than spent: rotating it would strand
+  the page whenever a reply was lost on the way back. It ends twelve hours after the app minted the
+  URL, however often it was used, or with its credential, whichever is first. When the exchange
+  refuses it, the page posts `mend:embed-expired` to the app that embedded it, which mints a fresh
+  URL. No bearer reaches the WebView's URL, history or referrer.
+- First-party clients all mint a ticket per connection, native ones included: the CLI (terminal,
+  service tunnel, key bridge), the desktop main process on the renderer's behalf, the phone's socket
+  and its WebView. One path is simpler to keep correct than a header on some clients and a ticket on
+  others, and the saved bearer then travels only in a header on an HTTPS API call. An
+  `Authorization` header on the upgrade still works for a client that can set one.
+- A client newer than its server gets 404 from the mint. It falls back to `?token=`, which is what
+  that server always received, only when `/health` does not say `upgradeTickets: true`. When it
+  does, the 404 came from a hop in between, and the client refuses to connect with that reason
+  instead of putting its bearer in URLs every hop logs.
 - `?token=` is refused with 400 when `MEND_URL_BEARERS=refuse`, and accepted with a logged
-  deprecation when `accept`. `accept` exists for one release, so a newer server still serves an
-  older CLI or phone build. It is an open gate item.
-- **Redaction through the chain.** Web strips `token` and `ticket` from anything it logs and sets
-  `Referrer-Policy: no-referrer` on the embed. The chart's Ingress annotations and the Caddy edge's
-  log format drop query strings. The docs say what an operator's own proxy must do. Mend's error
-  bodies, audit rows and Sealant records never contain a request URL's query.
+  deprecation (the URL redacted) when `accept`. `accept` is the default for one release, so a newer
+  server still serves an older CLI or phone build. It is an open gate item.
+- **Redaction through the chain.** `redactUrl` (`@mend/network`) replaces the value of `token`,
+  `ticket` and `code` in anything Mend writes down, and the embed answers
+  `Referrer-Policy: no-referrer`. The chart's Ingress annotations and the Caddy edge's log format
+  drop query strings. The docs say what an operator's own proxy must do. Mend's error bodies, audit
+  rows and Sealant records never contain a request URL's query.
 
 ### Errors and browser headers (MEND-11)
 

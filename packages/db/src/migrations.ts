@@ -1804,6 +1804,27 @@ const sharedControlMigration = Effect.gen(function* () {
     ON session_control_events (session_id, created_at)`;
 });
 
+/**
+ * Upgrade tickets (docs/adr/0004-access-without-a-private-network.md, "Upgrade tickets"): the one
+ * credential that still rides a URL, because a browser cannot set a header on a WebSocket and a
+ * WebView cannot set one on a page load. Single use, thirty seconds, bound to one account, one
+ * target and that target's exact parameters. Only the hash is stored.
+ */
+const upgradeTicketsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE upgrade_tickets (
+      token_hash text PRIMARY KEY,
+      user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
+      target text NOT NULL,
+      scope text NOT NULL,
+      credential text,
+      expires_at timestamptz NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`CREATE INDEX upgrade_tickets_expires_at_idx ON upgrade_tickets (expires_at)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1866,4 +1887,5 @@ export const migrations = {
   "0058_hot_pool_owners": hotPoolOwnersMigration,
   "0059_audit_events": auditEventsMigration,
   "0060_shared_control": sharedControlMigration,
+  "0061_upgrade_tickets": upgradeTicketsMigration,
 };
