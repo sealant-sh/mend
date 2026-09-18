@@ -4,6 +4,12 @@
 
 ### Minor Changes
 
+- `mend connect claude` gets Mend a Claude login of its own. Claude rotates its refresh token, so
+  two copies of one login fight and whichever refreshes second is signed out; Mend refreshes on a
+  schedule, which made your laptop the loser. It now logs in once against a directory Mend keeps
+  (`$XDG_CONFIG_HOME/mend/claude-grant`, 0700), checks that Claude really read that directory,
+  refuses a grant that is the one this machine already holds, and reports whether your own login
+  survived. `--use-my-login` connects the shared login deliberately, and says what it costs.
 - The session harness home stops handing out its credential. The mode keeper re-opens read bits
   every 15 seconds so the store-side reader can see harness state, and it was doing that to the
   provider credential the platform injects as well — leaving a refresh token good for weeks
