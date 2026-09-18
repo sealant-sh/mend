@@ -152,8 +152,11 @@ web:
 # expose.
 exposure:
   mode: private
-  # Set to "private" when executors reach the session channel over plain http on a network you
-  # control (the cluster network, a VPC). Reported as declared, never as observed.
+  # Your statement that executors reach the session channel over a network you control (the
+  # cluster network, a VPC), so a plain-http channel may be dialled. The daemon baked in Sealant
+  # 0.34 refuses a plain-http channel without it, and the chart refuses to render one; enable
+  # sessionChannel.tls instead when the channel crosses a network you do not control. Reported by
+  # the exposure gate as declared, never as observed.
   executorNetwork: ""
   # Refuse a session or device bearer in a URL. Off for one release, so clients older than upgrade
   # tickets keep working; `public` needs it on.
@@ -225,6 +228,12 @@ sessionChannel:
   tls:
     enabled: false
     secretName: "" # kubernetes.io/tls secret with tls.crt/tls.key
+    # The roots that certificate chains to, when a private CA signed it: handed to every workspace
+    # as `source.transport.channelCaPem`, so the daemon verifies the channel against them instead
+    # of the public roots. cert-manager writes the issuer's chain to `ca.crt` in the same secret.
+    ca:
+      secretName: ""
+      key: ca.crt
 
 networkPolicies:
   enabled: true

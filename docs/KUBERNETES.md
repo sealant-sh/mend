@@ -420,9 +420,12 @@ What to check, because the chart cannot:
   the controller's namespace, including while a Pod starts.
 - **The session channel.** `sessionChannel.tls` serves it over https;
   `exposure.executorNetwork: private` declares that executors reach it over a network you control.
-  Today that is a statement in Mend's report only. The executor's own refusal of a plain-http
-  channel is in sealantd (sealant-sh/sealantd#86, unreleased when this was written), and Mend passes
-  the declaration down to it only once Mend pins a Sealant release that carries it.
+  The daemon Sealant 0.34 bakes (sealant-sh/sealantd#86) dials the channel and the bucket over
+  verified TLS and otherwise refuses to boot, unless the launch carries that statement
+  (`source.transport.plaintext`), which Mend sends from exactly this value. A plain-http channel
+  without it therefore no longer renders: the chart fails with the sentence to act on. A channel
+  under a private CA hands the daemon its roots through `sessionChannel.tls.ca` (cert-manager writes
+  them to `ca.crt` in the TLS secret); a bucket under one, through `MEND_BLOB_STORE_CA_FILE`.
 - **What only you can verify.** `exposure.declared: [core-private, edge-tls]` records that you
   checked, from outside the cluster, that Sealant, its registry and the database answer nothing from
   the Internet, and the Ingress's certificate, renewal and port 80 redirect. The report marks them
@@ -487,6 +490,14 @@ tailnet, a VPN) or leave `expose` off.
 rest wait on the lock. The worker is `Recreate`: sessions are re-attached by the boot reconciliation
 (hot-pool sweep, socket re-staging, token verification from the hash) — the workspaces themselves
 keep running in Sealant.
+
+**To chart 0.3.x on Sealant 0.34.** Sealant 0.34 bakes a daemon that dials the session channel and
+the bucket over verified TLS or refuses to boot. Before upgrading, set one of
+`exposure.executorNetwork: private` (executors reach the channel over the cluster network or a VPC
+you control) or `sessionChannel.tls.enabled: true` with its secret; the chart refuses to render
+otherwise, so `helm upgrade` fails in your terminal instead of every workspace failing at launch.
+The Mend release that pins Sealant 0.34 must roll **before or with** that Sealant release: a Mend
+older than it does not send the statement.
 
 **From chart 0.1.x (the RWX co-located store).** Chart 0.2.0 requires a bucket and renders no
 co-located store, so the upgrade is: stop sessions, add the bucket, upgrade with the old claim still

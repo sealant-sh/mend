@@ -114,7 +114,7 @@ const startBundle = async (supervisor) => {
     SEALANT_CREDENTIALS_KEY: configuration.credentialsKey,
   };
 
-  console.log("[bundle] applying Sealant 0.33.1 migrations from its published API image");
+  console.log("[bundle] applying Sealant 0.34.0 migrations from its published API image");
   await supervisor.run(
     baseSpecification("sealant-migrate", ["node", "/opt/sealant/api/dist/migrate.js"], {
       DATABASE_URL: configuration.sealantDatabaseUrl,
@@ -163,6 +163,11 @@ const startBundle = async (supervisor) => {
       MEND_WEB_PORT: "3105",
       MEND_MODE: "all",
       MEND_STORE_ROOT: STORE_ROOT,
+      // Workspaces reach the session channel (http://mend:3106) and Garage over the Compose
+      // network, which never leaves the host: the bundle states that on the operator's behalf,
+      // and every capture launch carries it as `source.transport.plaintext`. The daemon in
+      // Sealant 0.34 refuses a plain-http channel without the statement.
+      MEND_EXECUTOR_NETWORK: "private",
       DATABASE_URL: configuration.mendDatabaseUrl,
       SEALANT_BASE_URL: "http://127.0.0.1:4000",
       SEALANT_SERVICE_KEY: configuration.serviceKey,

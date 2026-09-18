@@ -75,7 +75,10 @@ export interface ExposurePosture {
   readonly errorDetail: "redacted" | "verbose";
   /** The session channel URL workspaces are given, when it is a network endpoint. */
   readonly sessionChannelUrl: string | undefined;
-  /** `MEND_EXECUTOR_NETWORK=private`: the operator states executors reach the channel privately. */
+  /**
+   * `MEND_EXECUTOR_NETWORK=private`: the operator states executors reach the channel privately.
+   * What the engine sends the daemon as `transport.plaintext`; here, what the gate reports.
+   */
   readonly executorNetwork: "private" | undefined;
   /** `MEND_EXPOSURE_DECLARED`: the unobservable items the operator states they verified. */
   readonly declared: ReadonlyArray<Declarable>;
@@ -315,10 +318,6 @@ export const ExposureConfigLive: Layer.Layer<
       // than one reached from its own machine, and the two differ only in what the report says.
       Config.withDefault("private" as const),
     );
-    const executorNetwork = yield* Config.schema(
-      Schema.Literals(["private"]),
-      "MEND_EXECUTOR_NETWORK",
-    ).pipe(Config.option);
     const declaredRaw = yield* Config.string("MEND_EXPOSURE_DECLARED").pipe(Config.withDefault(""));
     const stated = declaredRaw
       .split(",")
@@ -343,7 +342,9 @@ export const ExposureConfigLive: Layer.Layer<
       urlBearers: (yield* UrlBearers).mode,
       errorDetail: (yield* ErrorDetail).mode,
       sessionChannelUrl: deployment.sessionEndpoint?.url,
-      executorNetwork: executorNetwork._tag === "Some" ? executorNetwork.value : undefined,
+      // The same statement the session engine sends to every capture launch as
+      // `source.transport.plaintext`: one variable, read once (`DeploymentConfig`).
+      executorNetwork: deployment.executorTransport?.plaintext === true ? "private" : undefined,
       declared: DECLARABLE.filter((id) => stated.includes(id)),
       reassessedVersion: reassessed._tag === "Some" ? reassessed.value : undefined,
       version,

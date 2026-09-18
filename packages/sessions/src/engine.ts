@@ -930,6 +930,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * channel token (sealed by Core into the boot env file as `SEALANT_CAPTURE_TOKEN`). Null
        * under the co-located store.
        */
+      /**
+       * What the daemon is told about dialling the channel and the object store (sealantd
+       * ADR-0015 "Transport"). Only what the operator stated goes over: without a statement the
+       * daemon requires verified HTTPS and refuses to boot otherwise, and Mend does not soften
+       * that on its own. `MEND_EXECUTOR_NETWORK=private` is the statement for a plain-HTTP channel.
+       */
+      const captureTransport = (): Pick<WorkspaceCaptureSource, "transport"> => {
+        const stated = deployment.executorTransport;
+        if (stated === undefined) return {};
+        const transport = {
+          ...(stated.plaintext ? { plaintext: true } : {}),
+          ...(stated.channelCaPem === undefined ? {} : { channelCaPem: stated.channelCaPem }),
+          ...(stated.objectCaPem === undefined ? {} : { objectCaPem: stated.objectCaPem }),
+        };
+        return Object.keys(transport).length === 0 ? {} : { transport };
+      };
+
       const captureSourceFor = (
         sessionId: SessionId,
         secretEnv: Record<string, string>,
@@ -958,6 +975,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 endpoint: endpoint.url,
                 token,
                 harnessHome: HARNESS_HOME_MOUNT_PATH,
+                ...captureTransport(),
               },
             };
           }
@@ -968,6 +986,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               worktreeId: session.value.worktreeId,
               token,
               harnessHome: HARNESS_HOME_MOUNT_PATH,
+              ...captureTransport(),
             },
           };
         });

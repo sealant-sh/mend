@@ -167,8 +167,11 @@ What the overlay does, and what it states on your behalf:
   it and a client cannot choose the address it is counted by. That network is `192.168.250.0/28`;
   set `MEND_EDGE_SUBNET` when that range is already routed where the host lives, and the trusted
   range follows it.
-- `MEND_EXECUTOR_NETWORK=private`: workspaces reach the session channel over plain HTTP on the
-  Compose network, which never leaves the host. Mend reports that as declared.
+- `MEND_EXECUTOR_NETWORK=private`: workspaces reach the session channel and Garage over plain HTTP
+  on the Compose network, which never leaves the host. The packaged bundle states this itself (the
+  supervisor sets it); the overlay repeats it for a Compose project run by hand. Every capture
+  launch carries it to the daemon as `source.transport.plaintext`, which the daemon in Sealant 0.34
+  requires before it dials plain HTTP. Mend reports it as declared.
 - The edge's log replaces the value of `ticket`, `token` and `code` in every URL. The terminal,
   tunnel and key bridge sockets carry a single-use ticket there, and pairing carries a code.
 
