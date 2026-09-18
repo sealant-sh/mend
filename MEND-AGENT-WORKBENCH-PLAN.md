@@ -702,25 +702,39 @@ desktop diff control.
 
 ## 7.5 Remote access
 
-Mend should integrate with Tailscale rather than replace it.
+_Rewritten 2026-09-17 ([ADR 0004](docs/adr/0004-access-without-a-private-network.md)). The first
+version of this section assumed a tailnet: bind to private interfaces, show the tailnet address,
+require no public inbound port. The network was the perimeter. It no longer has to be._
 
-The first version should:
+Mend is its own authenticated front door. A person reaches it at one HTTPS origin from any device;
+the web tier serves the app and proxies the API, the event stream and every WebSocket on that
+origin. Mend authenticates and authorizes every request itself, so a private network in front of it
+(a tailnet, a VPN, a LAN) is a choice an operator makes, not something the product needs.
 
-- detect whether Tailscale is installed and connected;
-- show the machine's tailnet address and reachability;
-- bind the product and SSH/terminal gateway only to localhost and explicitly selected private
-  interfaces by default;
-- provide a simple pairing flow for another browser or phone;
-- issue scoped, revocable device tokens;
-- display whether web and terminal access are reachable;
-- require no public inbound port;
-- provide clear setup instructions when Tailscale is missing.
+Mend:
 
-A QR code may carry the private instance address plus a short-lived pairing token. It must not
-contain a permanent administrator credential.
+- binds to localhost by default, and is reached beyond the machine only through an edge that
+  terminates TLS for the exact browser origin;
+- lets the operator declare how the instance is reached (`loopback`, `private`, `public`) and
+  reports what it observes beside that. It never says "reachable" and never says "safe": a server
+  cannot observe what is published in front of it;
+- refuses to start as `public` while an item of the public exposure gate it can observe is open, and
+  reports the items it cannot observe, an independent reassessment among them, as open until the
+  operator records them;
+- provides a simple pairing flow for another browser or phone, and issues scoped, revocable device
+  tokens;
+- never puts a long-lived credential in a URL: sockets and the terminal embed take single-use,
+  thirty-second upgrade tickets;
+- bounds what one client, one account and one organization may ask of it, refusing new work and
+  never stopping work that is running;
+- keeps everything behind it private: Sealant, its registry, the database, the bucket and raw
+  service ports get no exposure of their own.
 
-Later work may support Headscale, a hosted relay, or alternative private networks. None is necessary
-to prove the product.
+A QR code may carry the instance address plus a short-lived pairing token. It must not contain a
+permanent administrator credential.
+
+Tailscale, Headscale or another private network remains a good way to run a `private` instance, and
+the docs say how. None is necessary to use the product.
 
 ## 7.6 Session development services
 
@@ -743,9 +757,10 @@ The first useful version should:
 - require no public port and never publish or autostart a Service by default.
 
 Raw forwarded ports have no Mend request authentication. They bind to loopback and explicitly
-selected private interfaces; the private network is the access boundary. The UI states this beside
-private-interface exposure. Mend must consume forwarding and any future listener observations only
-through the public Sealant SDK.
+selected private interfaces; a private network is the access boundary for them, and on an instance
+declared `public` they stay on loopback and are reached through the authenticated tunnel. The UI
+states this beside private-interface exposure. Mend must consume forwarding and any future listener
+observations only through the public Sealant SDK.
 
 ---
 

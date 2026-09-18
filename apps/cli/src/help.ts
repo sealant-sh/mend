@@ -791,7 +791,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       {
         command:
           "mend server setup --context orbstack --bind 0.0.0.0 --url http://100.70.80.90:3105",
-        text: "explicit tailnet exposure",
+        text: "explicit private-network exposure (a tailnet, a LAN, a VPN)",
       },
       {
         command: "mend server setup --version 0.25.0 --assets-dir ./release-assets --offline",

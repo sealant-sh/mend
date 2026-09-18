@@ -10,11 +10,12 @@
 #   APP_URL=https://mend.example.com       exactly https://<MEND_EDGE_HOST>
 #   MEND_EXPOSURE=public                   or private, when admission to this host is yours to control
 #
-# `mend server setup` installs do not know this overlay yet. Their lifecycle commands
-# (`mend server start`, `upgrade`) run compose.yaml alone, which recreates `mend` without the
-# edge's network and settings, and the edge then answers 502 until the overlay is applied again.
-# server.env is checked against the server config, so the overlay's variables do not go in it.
-# This file and the Caddyfile are in the repository (deploy/docker), not among the release assets.
+# `mend server setup` cannot install this yet: it refuses Mend's port on loopback with a non-local
+# --url, server.env is checked against the server config so these variables cannot go in it, and
+# `mend server start` and `upgrade` run compose.yaml alone, which would recreate `mend` without the
+# edge's network and settings. This file and the Caddyfile are in the repository (deploy/docker),
+# not among the release assets. Checked: the merged files render, and the Caddyfile validates.
+# Not checked: a certificate issued and a browser session through it, end to end.
 #
 # The edge publishes 80 and 443. Mend's own port stays on loopback (MEND_BIND_HOST), so the only
 # way in from outside is through TLS. Ports 80/443 on a public address mean a public certificate,

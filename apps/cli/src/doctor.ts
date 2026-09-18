@@ -105,11 +105,50 @@ interface IdentityDto {
 }
 
 interface MachineDto {
-  readonly tailnet: {
-    readonly status: "reachable" | "not-detected";
-    readonly address: string | null;
+  /** Absent from a server older than `exposure` (docs/adr/0004). */
+  readonly exposure?: {
+    readonly declared: "loopback" | "private" | "public";
+    readonly originScheme: "http" | "https";
+    /** Absent from a server that predates the `private` default; read as false. */
+    readonly originOnMachine?: boolean;
+    readonly arrivedVia: "direct" | "trusted-proxy";
+    readonly addressKinds: ReadonlyArray<string>;
+    readonly gateOpen: number;
   };
 }
+
+/**
+ * How this instance is reached, as one doctor line: what the operator declared, then what the
+ * server observed. A missing tailnet is not a finding, and neither is a present one. The line is
+ * `todo` only for something the reader can act on: a browser origin still on plain http while
+ * the instance is reachable beyond the machine. "Beyond the machine" is read from two facts, not
+ * the declaration alone: the default declaration is `private`, so a laptop install whose APP_URL
+ * is http://localhost would otherwise be asked for https on every run. The open gate items are
+ * counted only then too: the gate is about exposure, some of its items can only ever be closed by
+ * an operator's own statement, and a line that always says "items open" on a laptop install is
+ * the tailnet line again under another name.
+ */
+export const exposureCheck = (exposure: NonNullable<MachineDto["exposure"]>): Check => {
+  const beyondMachine = exposure.declared !== "loopback" && exposure.originOnMachine !== true;
+  const gateOpen = beyondMachine ? exposure.gateOpen : 0;
+  const facts = [
+    `declared ${exposure.declared}`,
+    `${exposure.originScheme} origin`,
+    ...(exposure.arrivedVia === "trusted-proxy" ? ["arrived via a trusted proxy"] : []),
+    ...(gateOpen === 0 ? [] : [`${gateOpen} gate items open`]),
+  ].join(" · ");
+  const plainBeyondMachine = beyondMachine && exposure.originScheme === "http";
+  return {
+    label: "exposure",
+    state: plainBeyondMachine ? "todo" : "ok",
+    detail: facts,
+    fix: plainBeyondMachine
+      ? "serve it over https and set APP_URL to that origin"
+      : gateOpen === 0
+        ? null
+        : "mend operator exposure",
+  };
+};
 
 /** Where each provider's own CLI writes the credential Mend forwards (mirrors `mend connect`). */
 const LOGIN_COMMANDS: Record<Provider, string> = {
@@ -290,13 +329,8 @@ export const runChecks = async (
   }
 
   const machine = signedIn ? await getJson<MachineDto>(config, "/machine") : null;
-  const tailnet = machine === null || machine.value === null ? null : machine.value.tailnet;
-  if (tailnet === null) checks.push(notChecked("tailnet"));
-  else if (tailnet.status === "reachable" && tailnet.address !== null) {
-    checks.push({ label: "tailnet", state: "ok", detail: tailnet.address, fix: null });
-  } else {
-    checks.push({ label: "tailnet", state: "todo", detail: "not detected", fix: null });
-  }
+  const exposure = machine === null || machine.value === null ? undefined : machine.value.exposure;
+  checks.push(exposure === undefined ? notChecked("exposure") : exposureCheck(exposure));
 
   return checks;
 };

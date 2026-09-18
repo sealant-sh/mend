@@ -414,7 +414,11 @@ Choices a reviewer may overturn without touching the rest. Each names what was t
     `Caddyfile`, opt-in, validated with the real Caddy binary and rendered in CI. The edge publishes
     80 and 443, Mend's own port stays on loopback, the edge shares a network with Mend alone, and
     Mend trusts exactly that network as a proxy hop. A `--edge` flag that writes the same overlay
-    belongs with the next bundle contract revision.
+    belongs with the next bundle contract revision. Until then a `mend server setup` install cannot
+    take the overlay: setup refuses a loopback bind with a non-local `--url`, `server.env` is
+    checked against the server config, and the lifecycle commands run `compose.yaml` alone. The
+    overlay applies to a Compose project run by hand, and it has not been run end to end with an
+    issued certificate. That is the largest gap between this stack and a packaged public install.
 16. **A `public` instance needs an operator before it starts.** `operator-present` is part of the
     tenancy gate, and the exposure gate includes every tenancy item. Until the first account exists,
     registration is open to whoever arrives first; on the Internet that is not the owner. Create the

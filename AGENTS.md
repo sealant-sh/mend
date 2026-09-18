@@ -43,6 +43,14 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   organization). Only a session's owner steers it unless they turn on `shared control`, which lets
   others steer while spending the owner's credentials. `MEND_TENANCY=single|multi` picks the
   posture; `single` is the default and `multi` stays refused until the multi mode gate passes.
+- Access nouns (`docs/adr/0004-access-without-a-private-network.md`): `exposure` is how an instance
+  is reached, as its operator declares it: `loopback`, `private` (a network they control admission
+  to) or `public`. Mend reports what it **observed** beside what was **declared**; an item neither
+  covers is `open`. The `public exposure gate` is that report. An `edge` terminates TLS in front of
+  the web tier. An `upgrade ticket` is the single-use, thirty-second credential a socket or the
+  terminal embed carries in its URL. A `budget` bounds what a client, an account or an organization
+  may ask; it refuses new work and never stops running work. Never write "tailnet · reachable",
+  "safe to expose" or "gate passed": write what was declared and what was observed.
 - The queue is gone: no triage/queued/mending stages, no issue intake, no kanban. Issues and PRs are
   optional references attached to work, never its identity.
 - Platform nouns follow Sealant: `workspace` (the live environment; sessions run in workspaces that
