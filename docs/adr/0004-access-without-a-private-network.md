@@ -278,9 +278,13 @@ anywhere else:
 
 ### Event stream lifecycle
 
-A test through the real `/api/events` route: two streams open, one is torn down mid-delivery, the
-other keeps receiving and nothing is unsubscribed at the database; a stream ended by member removal
-releases its registration; a refused stream over the account's budget leaves no subscription behind.
+A test through the real `/api/events` route: streams open, one is torn down with an event published
+and unread, the others keep receiving and the one listen behind the bus is neither restarted nor
+ended; a stream closed the way member removal closes it (the registry's `closeForUser`) releases its
+registration; a refused stream over the account's budget leaves no subscription behind. The test
+waits on what it can observe (a subscription taken, a registration released) and never on a fixed
+sleep. Whether the server was part-way through writing a frame when the client left cannot be told
+from outside the process, so the test does not claim it.
 
 ### The platform halves
 

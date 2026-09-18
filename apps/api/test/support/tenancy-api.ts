@@ -59,7 +59,11 @@ import {
   makeBudgets,
   type BudgetLimits,
 } from "../../src/budgets.ts";
-import { ConnectionRegistry, makeConnectionRegistry } from "../../src/connections.ts";
+import {
+  ConnectionRegistry,
+  makeConnectionRegistry,
+  type ConnectionKind,
+} from "../../src/connections.ts";
 import { EventBus, makeEventBus } from "../../src/events-bus.ts";
 import { GithubIdentityLive } from "../../src/github-identity.ts";
 import { MemberRemovalLive } from "../../src/member-removal.ts";
@@ -87,13 +91,19 @@ export interface TenancyApi {
   /** Publish one NOTIFY payload into the in-memory event bus, as Postgres would. */
   readonly notify: (event: MendEvent) => Promise<void>;
   /** Open `/api/events` as `user`; frames are read one at a time, `null` after the timeout. */
-  readonly events: (user: HarnessUser) => Promise<{
+  readonly events: (user: HarnessUser | null) => Promise<{
     readonly status: number;
     readonly next: (timeoutMs?: number) => Promise<string | null>;
     readonly close: () => Promise<void>;
   }>;
   /** Send a raw (WebSocket upgrade) route request: `/api/tty` and `/api/service-tunnel`. */
   readonly rawRequest: (user: HarnessUser | null, path: string) => Promise<Response>;
+  /** How often the shared listen stream behind the event bus was started and ended. */
+  readonly listen: { readonly starts: number; readonly ends: number };
+  /** Long-lived connections of one kind the registry holds for `user` right now. */
+  readonly openConnections: (user: HarnessUser, kind: ConnectionKind) => Promise<number>;
+  /** What removing a member does to their connections: close every one this process holds. */
+  readonly closeConnectionsOf: (user: HarnessUser) => Promise<number>;
   /** Push-device writes as `method:userId:token`, to prove the caller's id reaches the repo. */
   readonly deviceWrites: ReadonlyArray<string>;
   readonly dispose: () => Promise<void>;
@@ -227,15 +237,16 @@ export const createTenancyApi = async (
     ),
   );
   const dependencies = Layer.mergeAll(world.authLayer, world.accessLayers, effects);
-  const connections = Layer.effect(
-    ConnectionRegistry,
-    Effect.map(makeConnectionRegistry, (registry) => ({
-      register: registry.register,
-      closeForUser: registry.closeForUser,
-      closeForSession: registry.closeForSession,
-      countFor: registry.countFor,
-    })),
-  );
+  // One registry for the whole world. The API, the socket routes and the event route are separate
+  // web handlers here, each building its own layers; they must still see each other's connections,
+  // as they do in the one production process.
+  const registry = Effect.runSync(makeConnectionRegistry);
+  const connections = Layer.succeed(ConnectionRegistry, {
+    register: registry.register,
+    closeForUser: registry.closeForUser,
+    closeForSession: registry.closeForSession,
+    countFor: registry.countFor,
+  });
   const authorization = Layer.mergeAll(
     ProjectAccessLive,
     SessionSteeringLive,
@@ -261,7 +272,38 @@ export const createTenancyApi = async (
   );
   const raw = HttpRouter.toWebHandler(rawLayer, { disableLogger: true });
   const source = Effect.runSync(Queue.unbounded<string>());
-  const busLayer = Layer.effect(EventBus, makeEventBus(Stream.fromQueue(source)));
+  // The stand-in for the one LISTEN: how often it was started and ended is what a lifecycle test
+  // reads, since a stream tearing down must never end it for the others.
+  const listen = { starts: 0, ends: 0 };
+  // Subscriptions taken from the bus so far: how `events()` knows a stream is really listening,
+  // observed instead of slept for.
+  const subscriptions = { taken: 0 };
+  const busLayer = Layer.effect(
+    EventBus,
+    Effect.map(
+      makeEventBus(
+        Stream.fromQueue(source).pipe(
+          Stream.onStart(
+            Effect.sync(() => {
+              listen.starts += 1;
+            }),
+          ),
+          Stream.ensuring(
+            Effect.sync(() => {
+              listen.ends += 1;
+            }),
+          ),
+        ),
+      ),
+      (bus) => ({
+        subscribe: Effect.tap(bus.subscribe, () =>
+          Effect.sync(() => {
+            subscriptions.taken += 1;
+          }),
+        ),
+      }),
+    ),
+  );
   const eventsLayer = EventsRoutes.pipe(
     Layer.provide(HttpServer.layerServices),
     Layer.provide(busLayer),
@@ -289,10 +331,11 @@ export const createTenancyApi = async (
         Queue.offer(source, JSON.stringify(event)).pipe(Effect.andThen(Effect.sleep("20 millis"))),
       ),
     events: async (user) => {
+      const before = subscriptions.taken;
       const controller = new AbortController();
       const response = await eventRoutes.handler(
         new Request("http://api.internal/api/events", {
-          headers: { authorization: `Bearer ${user}` },
+          headers: user === null ? {} : { authorization: `Bearer ${user}` },
           signal: controller.signal,
         }),
         context,
@@ -321,9 +364,18 @@ export const createTenancyApi = async (
         pending = pending.slice(end + 2);
         return frame;
       };
-      // The subscription starts when the body is first pulled; pull once so nothing published
-      // after `events()` returns can be missed.
-      await next(50);
+      // The subscription starts when the body is first pulled. Pull, then wait until the bus has
+      // handed this stream its subscription, so nothing published after `events()` returns can
+      // be missed. A refused stream never subscribes and is not waited for.
+      await next(1);
+      if (response.status === 200) {
+        const listening = () => subscriptions.taken > before;
+        const deadline = Date.now() + 5_000;
+        while (!listening() && Date.now() < deadline) {
+          await new Promise((resolve) => setTimeout(resolve, 2));
+        }
+        if (!listening()) throw new Error("the event stream never subscribed");
+      }
       return {
         status: response.status,
         next,
@@ -334,6 +386,9 @@ export const createTenancyApi = async (
       };
     },
     deviceWrites,
+    listen,
+    openConnections: (user, kind) => Effect.runPromise(registry.countFor(user, kind)),
+    closeConnectionsOf: (user) => Effect.runPromise(registry.closeForUser(user)),
     rawRequest: (user, path) =>
       raw.handler(
         new Request(`http://api.internal${path}`, {
