@@ -10,9 +10,18 @@ import {
   claudeGrantFacts,
   narrowCredential,
   repositoryCloneUrlIssue,
+  sameGrant,
 } from "@mend/domain/workbench";
 
 import { type AgentShareHandle, shareAgent, startAgentShare } from "./agent-share.ts";
+import {
+  claudeCli,
+  claudeGrantDir,
+  grantStatus,
+  personalClaudeDir,
+  readGrant,
+  runClaudeLogin,
+} from "./claude-grant.ts";
 import { readClipboardImage } from "./clipboard.ts";
 import { doctorCommand } from "./doctor.ts";
 import { readSyncFiles, scanDotfileCandidates } from "./dotfiles.ts";
@@ -1993,6 +2002,87 @@ const minuteOrUnknown = (at: Date | null): string =>
   at === null ? "unknown" : at.toISOString().slice(0, 16);
 
 /**
+ * Mend's own Claude grant: log in once against a directory Mend owns, then read it. Returns the
+ * credential to send, or null after saying why it could not get one.
+ *
+ * The person's own login is probed before and after, because the one thing nobody has verified is
+ * whether Anthropic lets one account hold two live grants. If the second login signs the first one
+ * out, this is where a person finds out — from Mend, in plain words, rather than from a failure
+ * hours later.
+ */
+const claudeGrant = async (): Promise<string | null> => {
+  const cli = claudeCli();
+  const dir = claudeGrantDir(mendCliHome());
+  const personal = personalClaudeDir();
+  const personalBefore = grantStatus(cli, personal);
+
+  let status = grantStatus(cli, dir);
+  if (status === null) {
+    fail(
+      "claude: could not run `claude auth status` — install Claude Code, set MEND_CLAUDE_BIN, " +
+        "or paste a credential: mend connect claude --from-stdin",
+    );
+    return null;
+  }
+  if (!status.loggedIn) {
+    say(`  Mend needs its own Claude login, kept in ${dir}`);
+    say(dim("  your own Claude login stays as it is"));
+    if (!runClaudeLogin(cli, dir)) {
+      fail("claude: the login did not complete");
+      return null;
+    }
+    status = grantStatus(cli, dir) ?? status;
+    if (!status.loggedIn) {
+      fail("claude: the login completed but Claude still reports no grant in Mend's directory");
+      return null;
+    }
+  }
+  // Proof the isolation took effect: a Claude that ignored CLAUDE_CONFIG_DIR would report the
+  // person's directory here, and Mend would be about to send the very grant it set out to avoid.
+  if (
+    status.configDirectory !== null &&
+    path.resolve(status.configDirectory) !== path.resolve(dir)
+  ) {
+    fail(
+      `claude: this Claude read ${status.configDirectory} instead of ${dir}, so a separate grant is not possible — ` +
+        "connect the shared one deliberately with --use-my-login",
+    );
+    return null;
+  }
+
+  const read = readGrant(dir);
+  if (read.kind === "missing") {
+    const where =
+      read.triedService === null
+        ? read.triedPath
+        : `${read.triedPath} or the Keychain item ${read.triedService}`;
+    fail(`claude: logged in, but no credential to read — looked in ${where}`);
+    return null;
+  }
+
+  const mine = localCredential("claude");
+  if (mine !== null && sameGrant(read.secret, mine)) {
+    fail(
+      "claude: that is the same grant this machine's Claude holds, so both sides would race on " +
+        "refresh — remove Mend's directory and log in again, or accept the race with --use-my-login",
+    );
+    return null;
+  }
+
+  const personalAfter = grantStatus(cli, personal);
+  if (personalBefore?.loggedIn === true && personalAfter?.loggedIn === false) {
+    say(
+      `  your own Claude login was signed out by this one — this account allows one grant at a time. ` +
+        `Run \`claude auth login\` to get it back, and connect the shared grant with --use-my-login instead.`,
+    );
+  } else if (personalAfter?.loggedIn === true) {
+    say(dim("  your own Claude login still works · verified"));
+  }
+  say(dim(`  grant ${read.kind === "file" ? read.path : `keychain ${read.service}`}`));
+  return read.secret;
+};
+
+/**
  * `mend connect claude|codex|github [--from-stdin] [--remove]`: send THIS machine's credential
  * for the provider to the platform under your own user. The file the provider's CLI wrote at
  * login is read (codex: ~/.codex/auth.json; claude: ~/.claude/.credentials.json; github:
@@ -2018,6 +2108,11 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
   if (flags.includes("--from-stdin")) {
     secret = fs.readFileSync(0, "utf8").trim();
     if (secret === "") return fail("nothing on stdin");
+  } else if (provider === "claude" && !flags.includes("--use-my-login")) {
+    // A grant of Mend's own, so Mend's scheduled refresh never rotates the token this machine's
+    // Claude is holding (docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md).
+    secret = await claudeGrant();
+    if (secret === null) return;
   } else {
     secret = localCredential(provider);
     if (secret === null) {
@@ -2026,8 +2121,15 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
           ? "`gh auth login` first, or pipe a token: gh auth token | mend connect github --from-stdin"
           : provider === "codex"
             ? "`codex login` first, or: mend connect codex --from-stdin < auth.json"
-            : "`claude setup-token` then: mend connect claude --from-stdin";
+            : "`claude auth login` first, or: mend connect claude --from-stdin";
       return fail(`${provider}: no credential on this machine — ${where}`);
+    }
+    if (provider === "claude") {
+      say(
+        dim(
+          "  --use-my-login: Mend and this machine will share one grant, and whichever refreshes second is signed out",
+        ),
+      );
     }
   }
   // Only the Claude grant travels; the MCP refresh tokens beside it stay on this machine
