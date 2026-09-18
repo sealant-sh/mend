@@ -198,6 +198,22 @@ const CLAUDE_JSONL = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{
 const CODEX_ROLLOUT =
   /rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
 
+/**
+ * Provider credentials that can appear inside a session's harness home, because the platform
+ * injects them at `$HOME/<dir>/…` and `<dir>` is a symlink onto the mount. They are the one thing
+ * the mode keeper must not open up (ADR 0005). Paths, not globs: a guess here would either miss a
+ * credential or tighten a transcript.
+ */
+export const HARNESS_HOME_CREDENTIALS: ReadonlyArray<string> = [
+  ".claude/.credentials.json",
+  ".codex/auth.json",
+];
+
+/** `chmod go-rwx` over every credential that exists, quiet about the ones that do not. */
+const tightenCredentials = (mountPath: string): string =>
+  `for c in ${HARNESS_HOME_CREDENTIALS.map((file) => `"${file}"`).join(" ")}; ` +
+  `do chmod go-rwx "${mountPath}/$c" 2>/dev/null || true; done`;
+
 export const HARNESS_STATE: Record<string, HarnessStateShape> = {
   claude: {
     paths: [
@@ -314,12 +330,21 @@ export const relocateHarnessHomeScript = (
   // loop inside the workspace re-opens read bits every 15s. The pidfile keeps relaunches from
   // stacking keepers. Interim by design: the structural fix is a single uid story for
   // workspace-written store files (PLATFORM-FEEDBACK.md 2026-08-29).
+  //
+  // Credentials are exempt. The harness home holds the provider credential the platform injected
+  // (`.claude/.credentials.json` at 0600, `.codex/auth.json`), and a recursive `go+rX` left it
+  // world-readable on the store — a file holding a refresh token good for weeks
+  // (docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md). Nothing store-side reads it:
+  // no harness's `paths` lists a credential, so the harvest never collects one. The widen and the
+  // re-tighten are two commands, so a reader inside the workspace has a sub-second window — and
+  // inside the workspace the only other reader is root, which modes do not stop anyway.
   const keeper =
     `if ! kill -0 "$(cat "${mountPath}/.mode-keeper.pid" 2>/dev/null)" 2>/dev/null; then ` +
     `setsid sh -c 'echo $$ > "${mountPath}/.mode-keeper.pid"; ` +
-    `while sleep 15; do chmod -R go+rX "${mountPath}" 2>/dev/null || exit 0; done' ` +
+    `while sleep 15; do chmod -R go+rX "${mountPath}" 2>/dev/null || exit 0; ` +
+    `${tightenCredentials(mountPath)}; done' ` +
     `>/dev/null 2>&1 & fi; ` +
-    `chmod -R go+rX "${mountPath}" 2>/dev/null || true`;
+    `chmod -R go+rX "${mountPath}" 2>/dev/null || true; ${tightenCredentials(mountPath)}`;
   return [...preflight, ...perDir, ...(options.keepStoreReadable === false ? [] : [keeper])].join(
     "; ",
   );
