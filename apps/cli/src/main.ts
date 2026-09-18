@@ -2002,6 +2002,20 @@ const minuteOrUnknown = (at: Date | null): string =>
   at === null ? "unknown" : at.toISOString().slice(0, 16);
 
 /**
+ * Why a grant is unusable even though Claude calls it logged in, or null when it is fine. Claude
+ * reports `loggedIn` from what it stored, so a cleared refresh token or one past its own expiry
+ * still reads healthy (ADR 0005, states 3 and 4).
+ */
+const staleGrantReason = (secret: string): string | null => {
+  const facts = claudeGrantFacts(secret);
+  if (facts === null) return null;
+  if (!facts.hasRefreshToken) return "signed out";
+  return facts.refreshExpiresAt !== null && facts.refreshExpiresAt.getTime() <= Date.now()
+    ? `expired ${facts.refreshExpiresAt.toISOString().slice(0, 10)}`
+    : null;
+};
+
+/**
  * Mend's own Claude grant: log in once against a directory Mend owns, then read it. Returns the
  * credential to send, or null after saying why it could not get one.
  *
@@ -2050,7 +2064,23 @@ const claudeGrant = async (): Promise<string | null> => {
     return null;
   }
 
-  const read = readGrant(dir);
+  let read = readGrant(dir);
+  if (read.kind !== "missing") {
+    const why = staleGrantReason(read.secret);
+    if (why !== null) {
+      say(`  Mend's Claude grant is ${why}; logging in again`);
+      if (!runClaudeLogin(cli, dir)) {
+        fail("claude: the login did not complete");
+        return null;
+      }
+      read = readGrant(dir);
+      const still = read.kind === "missing" ? "missing" : staleGrantReason(read.secret);
+      if (still !== null) {
+        fail(`claude: the grant is still ${still} after logging in`);
+        return null;
+      }
+    }
+  }
   if (read.kind === "missing") {
     const where =
       read.triedService === null
@@ -3888,7 +3918,10 @@ const main = async () => {
     case "qr":
       return qrCommand(rest);
     case "doctor":
-      return doctorCommand(config, localCredential);
+      return doctorCommand(config, localCredential, () => {
+        const read = readGrant(claudeGrantDir(mendCliHome()));
+        return read.kind === "missing" ? null : read.secret;
+      });
     case "env":
       return envCommand(config, rest);
     case "ssh":

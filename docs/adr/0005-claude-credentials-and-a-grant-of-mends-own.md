@@ -130,16 +130,24 @@ it observes about expiry; it does not mint.
 
 ## Delivery
 
-| PR  | What it delivers                                                                                                  |
-| --- | ----------------------------------------------------------------------------------------------------------------- |
-| 1   | This ADR, and the platform feedback for the two Core halves.                                                      |
-| 2   | `claudeAiOauth` only, in `@mend/domain`, used by the CLI and the API.                                             |
-| 3   | The harness-home credential stays 0600.                                                                           |
-| 4   | ADR 0002 and `DEVELOPMENT.md` corrected to what sealantd does.                                                    |
-| 5   | The dedicated grant in `mend connect claude`, with the same-grant refusal.                                        |
-| 6   | The four states, the `claude auth status` probe, and expiry reported by doctor, the web app and a refused launch. |
+| PR  | What it delivers                                                                             |
+| --- | -------------------------------------------------------------------------------------------- |
+| 1   | This ADR, and the platform feedback for the two Core halves.                                 |
+| 2   | `claudeAiOauth` only, in `@mend/domain`, used by the CLI and the API.                        |
+| 3   | The harness-home credential stays 0600.                                                      |
+| 4   | ADR 0002 and `DEVELOPMENT.md` corrected to what sealantd does.                               |
+| 5   | The dedicated grant in `mend connect claude`, with the same-grant refusal.                   |
+| 6   | The four states, the `claude auth status` probe, and the grant's freshness in `mend doctor`. |
 
 PRs 2 to 4 stand on their own and depend on nothing below. PR 5 depends on the first open question.
+
+PR 6 stops short of two things this ADR first listed for it, and both wait on the platform half
+rather than on more Mend code. The **web app** reports nothing about grant freshness, because a
+connected account carries no expiry over the API; `mend doctor` reads the copy on the machine that
+connected the grant, which no other client has. A **launch does not refuse** a session whose grant
+is dead, for the same reason: Mend's API cannot see what the platform's sweeper already knows, and
+marking an account when a session fails to authenticate needs that typed state too. Until it exists,
+doctor on the connecting machine is the honest report, and it says which machine it read.
 
 ## Decision log
 

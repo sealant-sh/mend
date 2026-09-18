@@ -4,6 +4,12 @@
 
 ### Minor Changes
 
+- `mend doctor` reports Mend's Claude grant, and `mend connect claude` notices a dead one. Claude
+  reports `loggedIn` from what it stored, so a grant whose refresh token is gone or past its own
+  28-day expiry still reads healthy; connecting now detects that and logs in again once. Doctor adds
+  a `grant` line while Mend keeps a grant of its own: when it expires, that it is signed out, or
+  that it cannot be read, each with `mend connect claude` beside it. Nothing is printed for someone
+  who connected with `--use-my-login`, because there is no grant of Mend's own to report.
 - `mend connect claude` gets Mend a Claude login of its own. Claude rotates its refresh token, so
   two copies of one login fight and whichever refreshes second is signed out; Mend refreshes on a
   schedule, which made your laptop the loser. It now logs in once against a directory Mend keeps

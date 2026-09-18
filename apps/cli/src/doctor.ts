@@ -1,6 +1,8 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
+import { claudeGrantFacts } from "@mend/domain/workbench";
+
 /**
  * `mend doctor`: one read-only pass over everything a first run depends on, printed
  * as mono status lines (DESIGN.md §4 — a mark plus a word, never a badge). Every
@@ -34,12 +36,21 @@ export interface Check {
 export interface DoctorProbes {
   /** The credential as THIS machine holds it (main.ts owns the file locations). */
   readonly localCredential: (provider: Provider) => string | null;
+  /**
+   * The Claude grant Mend keeps for itself, or null when it keeps none — someone who connected
+   * with `--use-my-login` or `--from-stdin` has no grant of Mend's own, and there is nothing to
+   * report (docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md).
+   */
+  readonly claudeGrant: () => string | null;
   readonly onPath: (command: string) => boolean;
 }
 
 const MARKS: Record<CheckState, string> = { ok: "✓", todo: "○", failed: "✗" };
 
 const LABEL_WIDTH = 11;
+
+/** A date as a person reads it in a status line. */
+const day = (at: Date): string => at.toISOString().slice(0, 10);
 
 /** One status line. The mark is painted by the caller so the formatter stays testable. */
 export const formatCheck = (
@@ -301,6 +312,46 @@ export const runChecks = async (
     );
   }
 
+  // Mend's own Claude grant, from the copy on this machine. The platform holds the same grant and
+  // refreshes it, but it does not report freshness yet (PLATFORM-FEEDBACK.md 2026-09-18), so this
+  // reads the local copy and says what it observed rather than guessing.
+  const grant = probes.claudeGrant();
+  if (grant !== null) {
+    const facts = claudeGrantFacts(grant);
+    if (facts === null) {
+      checks.push({
+        label: "grant",
+        state: "failed",
+        detail: "unreadable",
+        fix: "mend connect claude",
+      });
+    } else if (!facts.hasRefreshToken) {
+      checks.push({
+        label: "grant",
+        state: "failed",
+        detail: "signed out",
+        fix: "mend connect claude",
+      });
+    } else if (facts.refreshExpiresAt !== null && facts.refreshExpiresAt.getTime() <= Date.now()) {
+      checks.push({
+        label: "grant",
+        state: "todo",
+        detail: `expired ${day(facts.refreshExpiresAt)}`,
+        fix: "mend connect claude",
+      });
+    } else {
+      checks.push({
+        label: "grant",
+        state: "ok",
+        detail:
+          facts.refreshExpiresAt === null
+            ? "Mend's own"
+            : `Mend's own · expires ${day(facts.refreshExpiresAt)}`,
+        fix: null,
+      });
+    }
+  }
+
   const adopted = projects === null ? null : projects.value;
   if (adopted === null) checks.push(notChecked("projects"));
   else if (adopted.length === 0) {
@@ -359,8 +410,9 @@ const paintMark = (state: CheckState, mark: string): string => {
 export const doctorCommand = async (
   config: DoctorConfig,
   localCredential: (provider: Provider) => string | null,
+  claudeGrant: () => string | null,
 ): Promise<void> => {
-  const checks = await runChecks(config, { localCredential, onPath });
+  const checks = await runChecks(config, { localCredential, claudeGrant, onPath });
   for (const check of checks) process.stdout.write(`${formatCheck(check, paintMark)}\n`);
   if (checks.some((check) => check.state === "failed")) process.exitCode = 1;
 };
