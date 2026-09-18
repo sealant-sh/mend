@@ -23,6 +23,7 @@ export * from "./audit.ts";
 export * from "./agent-protocol.ts";
 export * from "./change.ts";
 export * from "./checkpoint.ts";
+export * from "./connected-credential.ts";
 export * from "./context.ts";
 export * from "./dotenv.ts";
 export * from "./folder.ts";

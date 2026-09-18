@@ -4,6 +4,12 @@
 
 ### Minor Changes
 
+- `mend connect claude` sends the Claude grant alone. The credential document Claude Code writes
+  holds `mcpOAuth` beside `claudeAiOauth` — refresh tokens for whichever MCP servers that machine
+  authorized — and the whole file used to travel to the platform and into every workspace. Only the
+  `claudeAiOauth` section leaves the machine now, the CLI says what it held back, and Mend's API
+  narrows the same way so a hand-rolled client cannot widen it
+  (`docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md`).
 - f51da1f: Add budgets: what one client address, one account and one organization may ask of an
   instance. A request body is refused before it is decoded (1 MiB; 24 MiB on the routes that take a
   file), a WebSocket frame over 1 MiB closes its socket, requests are counted per minute per address

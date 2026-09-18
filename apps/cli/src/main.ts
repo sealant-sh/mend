@@ -6,7 +6,11 @@ import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { repositoryCloneUrlIssue } from "@mend/domain/workbench";
+import {
+  claudeGrantFacts,
+  narrowCredential,
+  repositoryCloneUrlIssue,
+} from "@mend/domain/workbench";
 
 import { type AgentShareHandle, shareAgent, startAgentShare } from "./agent-share.ts";
 import { readClipboardImage } from "./clipboard.ts";
@@ -1984,12 +1988,17 @@ const accountsCommand = async (config: CliConfig) => {
   }
 };
 
+/** A moment as a person reads it beside a credential, or `unknown` when nothing said. */
+const minuteOrUnknown = (at: Date | null): string =>
+  at === null ? "unknown" : at.toISOString().slice(0, 16);
+
 /**
  * `mend connect claude|codex|github [--from-stdin] [--remove]`: send THIS machine's credential
  * for the provider to the platform under your own user. The file the provider's CLI wrote at
- * login is read verbatim (codex: ~/.codex/auth.json; claude: ~/.claude/.credentials.json;
- * github: `gh auth token`); `--from-stdin` takes a pasted token or file instead. Mend forwards
- * it once and stores nothing.
+ * login is read (codex: ~/.codex/auth.json; claude: ~/.claude/.credentials.json; github:
+ * `gh auth token`); `--from-stdin` takes a pasted token or file instead. A Claude credential is
+ * narrowed to its `claudeAiOauth` grant first, so the MCP refresh tokens in the same file stay
+ * here (ADR 0005). Mend forwards it once and stores nothing.
  */
 const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const [providerArg, ...flags] = args;
@@ -2021,11 +2030,28 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
       return fail(`${provider}: no credential on this machine — ${where}`);
     }
   }
+  // Only the Claude grant travels; the MCP refresh tokens beside it stay on this machine
+  // (docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md).
+  const narrowed = narrowCredential(provider, secret);
+  if (narrowed.kind === "narrowed" && narrowed.dropped.length > 0) {
+    say(dim(`  keeping ${narrowed.dropped.join(", ")} on this machine`));
+  }
   const account = await withSpinner(
     `connecting ${provider}`,
-    api<ConnectedAccountDto>(config, "POST", "/me/sealant/accounts", { provider, secret }),
+    api<ConnectedAccountDto>(config, "POST", "/me/sealant/accounts", {
+      provider,
+      secret: narrowed.secret,
+    }),
   );
   process.stdout.write(`${accountLine(account)}\n`);
+  const facts = claudeGrantFacts(narrowed.secret);
+  if (facts !== null) {
+    say(
+      dim(
+        `  access expires ${minuteOrUnknown(facts.accessExpiresAt)} · grant expires ${minuteOrUnknown(facts.refreshExpiresAt)}`,
+      ),
+    );
+  }
 };
 
 // ─── login: authorize this terminal through the browser (login.ts) ──────────
