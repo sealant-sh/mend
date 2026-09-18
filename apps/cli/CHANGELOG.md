@@ -194,6 +194,12 @@
 
 ### Patch Changes
 
+- Runs on Sealant 0.35.0 (sealant-sh/sealant#259, #260). The platform stores a Claude credentials
+  file as its `claudeAiOauth` grant alone, dropping the `mcpOAuth` refresh tokens beside it at
+  connect and at sync-back, and a connected account now reports how fresh its credential is:
+  `accessExpiresAt`, `refreshExpiresAt`, `lastRefreshAt` and `lastRefreshOutcome`. `@sealant/sdk`
+  and `@sealant/api-contracts` move to 0.35.0, and the bundled server image pins the 0.35.0 API,
+  worker and ssh-gateway digests.
 - 6b0eb97: Allow only a session's owner to steer it, including terminal and Service tunnel access.
   Legacy sessions without an owner continue to use the first account as their owner.
 - 2c05944: Runs on Sealant 0.33.1, which bakes sealantd 0.16.0 (sealant-sh/sealant#249). That is the
