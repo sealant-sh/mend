@@ -12,6 +12,9 @@ import { EventBus, type BusSignal } from "./events-bus.ts";
  * member"). Removing a member closes theirs at once instead of letting an authenticated socket
  * outlive the membership that authorized it.
  */
+/** What a long-lived connection is, for its per-account budget (docs/adr/0004, "Budgets"). */
+export type ConnectionKind = "event-stream" | "terminal" | "tunnel" | "key-bridge";
+
 export class ConnectionRegistry extends Context.Service<
   ConnectionRegistry,
   {
@@ -23,7 +26,10 @@ export class ConnectionRegistry extends Context.Service<
       userId: string,
       close: Effect.Effect<void>,
       sessionId?: string,
+      kind?: ConnectionKind,
     ) => Effect.Effect<void, never, Scope.Scope>;
+    /** Connections of one kind this process holds for one account right now. */
+    readonly countFor: (userId: string, kind: ConnectionKind) => Effect.Effect<number>;
     /** Close this process's open connections of one account; answers how many there were. */
     readonly closeForUser: (userId: string) => Effect.Effect<number>;
     /** Close the connections other accounts hold on a session; its owner's stay open. */
@@ -40,6 +46,7 @@ const CLOSE_TIMEOUT = "5 seconds";
 interface Registration {
   readonly close: Effect.Effect<void>;
   readonly sessionId: string | null;
+  readonly kind: ConnectionKind | null;
 }
 
 /**
@@ -55,13 +62,14 @@ export const guardSocket = <E>(
   stillSignedIn: Effect.Effect<boolean>,
   /** The session this socket steers, when it steers one (terminals and tunnels). */
   sessionId?: string,
+  kind?: ConnectionKind,
 ) =>
   Effect.gen(function* () {
     let revoked = false;
     const close = Effect.sync(() => {
       revoked = true;
     }).pipe(Effect.andThen(write(new Socket.CloseEvent(1008, "access revoked"))), Effect.ignore);
-    yield* connections.register(userId, close, sessionId);
+    yield* connections.register(userId, close, sessionId, kind);
     if (!(yield* stillSignedIn)) yield* close;
     return { revoked: () => revoked };
   });
@@ -82,10 +90,19 @@ const closeAll = (held: ReadonlyArray<Registration>) =>
 export const makeConnectionRegistry = Effect.sync(() => {
   const open = new Map<string, Set<Registration>>();
 
-  const register = (userId: string, close: Effect.Effect<void>, sessionId?: string) =>
+  const register = (
+    userId: string,
+    close: Effect.Effect<void>,
+    sessionId?: string,
+    kind?: ConnectionKind,
+  ) =>
     Effect.acquireRelease(
       Effect.sync(() => {
-        const registration: Registration = { close, sessionId: sessionId ?? null };
+        const registration: Registration = {
+          close,
+          sessionId: sessionId ?? null,
+          kind: kind ?? null,
+        };
         const held = open.get(userId) ?? new Set<Registration>();
         held.add(registration);
         open.set(userId, held);
@@ -108,7 +125,10 @@ export const makeConnectionRegistry = Effect.sync(() => {
         .flatMap(([, held]) => [...held].filter((entry) => entry.sessionId === sessionId)),
     );
 
-  return { register, closeForUser, closeForSession, accounts: () => [...open.keys()] };
+  const countFor = (userId: string, kind: ConnectionKind) =>
+    Effect.sync(() => [...(open.get(userId) ?? [])].filter((entry) => entry.kind === kind).length);
+
+  return { register, closeForUser, closeForSession, countFor, accounts: () => [...open.keys()] };
 });
 
 /**
@@ -170,6 +190,7 @@ export const ConnectionRegistryLive: Layer.Layer<
       register: registry.register,
       closeForUser: registry.closeForUser,
       closeForSession: registry.closeForSession,
+      countFor: registry.countFor,
     };
   }),
 );

@@ -51,6 +51,12 @@ import { Effect, Layer, ManagedRuntime, Queue, Schema, Stream } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 
 import { ProjectAccessLive } from "../../src/access.ts";
+import {
+  Budgets,
+  DEFAULT_BUDGET_LIMITS,
+  makeBudgets,
+  type BudgetLimits,
+} from "../../src/budgets.ts";
 import { ConnectionRegistry, makeConnectionRegistry } from "../../src/connections.ts";
 import { EventBus, makeEventBus } from "../../src/events-bus.ts";
 import { GithubIdentityLive } from "../../src/github-identity.ts";
@@ -100,8 +106,12 @@ const network = makePublicNetwork(
  * recording mock with no implementation, so a handler that gets past authorization records the
  * first thing it touches and then fails; a refused request must record nothing.
  */
-export const createTenancyApi = async (): Promise<TenancyApi> => {
+export const createTenancyApi = async (
+  /** Budgets for this world; the defaults unless a test wants one tight enough to reach. */
+  limits: Partial<BudgetLimits> = {},
+): Promise<TenancyApi> => {
   const world = await createTenancyWorld();
+  const budgetsLayer = Layer.succeed(Budgets, makeBudgets({ ...DEFAULT_BUDGET_LIMITS, ...limits }));
   const calls = world.calls;
   const deviceWrites: Array<string> = [];
   const effects = Layer.mergeAll(
@@ -207,6 +217,7 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
       register: registry.register,
       closeForUser: registry.closeForUser,
       closeForSession: registry.closeForSession,
+      countFor: registry.countFor,
     })),
   );
   const authorization = Layer.mergeAll(
@@ -217,6 +228,7 @@ export const createTenancyApi = async (): Promise<TenancyApi> => {
   ).pipe(
     Layer.provideMerge(ProjectAccessLive),
     Layer.provideMerge(connections),
+    Layer.provideMerge(budgetsLayer),
     Layer.provideMerge(dependencies),
   );
   const apiLayer = MendApiLive.pipe(

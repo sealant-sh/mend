@@ -18,6 +18,23 @@ export class Unauthorized extends Schema.TaggedErrorClass<Unauthorized>()(
 ) {}
 
 /**
+ * A budget refused new work (docs/adr/0004-access-without-a-private-network.md, "Budgets").
+ * Nothing running was stopped. `budget` names which one, `retryAfterSeconds` when a window frees
+ * (null for a ceiling, which frees when the account's own work settles). The global request
+ * budgets answer the same shape from the router, before any endpoint is reached.
+ */
+export class BudgetExceeded extends Schema.TaggedErrorClass<BudgetExceeded>()(
+  "BudgetExceeded",
+  {
+    budget: Schema.String,
+    limit: Schema.Int,
+    retryAfterSeconds: Schema.NullOr(Schema.Int),
+    message: Schema.String,
+  },
+  { httpApiStatus: 429 },
+) {}
+
+/**
  * The signed-in identity as endpoints see it. The shape @mend/auth's session
  * resolves to — declared here (not imported) so the contract package carries
  * no auth implementation; the server's auth layer satisfies it structurally.

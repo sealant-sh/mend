@@ -560,6 +560,29 @@ describe.skipIf(!reachable)("organizations", () => {
     });
   });
 
+  it("the organization session budget counts starting sessions and no other organization's", async () => {
+    const counts = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const sessions = yield* SessionsRepo;
+        const before = yield* sessions.countUnsettledForOrganization(acme);
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-globex', 'p-globex-api', 'wt-globex', 'wt-globex', 'mend/wt/g', ${"a".repeat(40)})`;
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, status, owner_user_id, settled_at)
+          VALUES
+            ('s-starting', 'p-acme-api', 'wt-hot', 'claude', 'c1', 'cb1', 'abc', 'starting', 'alice', NULL),
+            ('s-running', 'p-acme-api', 'wt-hot', 'claude', 'c2', 'cb2', 'abc', 'running', 'bob', NULL),
+            ('s-settled', 'p-acme-api', 'wt-hot', 'claude', 'c3', 'cb3', 'abc', 'completed', 'bob', now()),
+            ('s-elsewhere', 'p-globex-api', 'wt-globex', 'claude', 'c4', 'cb4', 'abc', 'running', 'erin', NULL)`;
+        return { before, after: yield* sessions.countUnsettledForOrganization(acme) };
+      }),
+    );
+    expect(counts.after - counts.before).toBe(2);
+  });
+
   it("audit pages never skip events that share an instant", async () => {
     const pages = await run(
       Effect.gen(function* () {

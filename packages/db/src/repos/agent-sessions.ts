@@ -1,6 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import {
   type ContextSnapshotId,
+  type OrganizationId,
   type ProjectId,
   type SealantRunId,
   type SealantWorkspaceId,
@@ -23,7 +24,7 @@ import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
-import { agentSessions } from "../schema/workbench.ts";
+import { agentSessions, projects } from "../schema/workbench.ts";
 
 export class SessionNotFoundError extends Schema.TaggedErrorClass<SessionNotFoundError>()(
   "SessionNotFoundError",
@@ -76,6 +77,13 @@ export class SessionsRepo extends Context.Service<
     readonly listUnsettled: () => Effect.Effect<ReadonlyArray<Session>>;
     /** One account's sessions that have not settled, starting ones included: what removal stops. */
     readonly listUnsettledForOwner: (userId: string) => Effect.Effect<ReadonlyArray<Session>>;
+    /**
+     * How many sessions in one organization's projects have not settled, starting ones included:
+     * what the organization's session budget counts (docs/adr/0004, "Budgets").
+     */
+    readonly countUnsettledForOrganization: (
+      organizationId: OrganizationId,
+    ) => Effect.Effect<number>;
     /** Recently settled sessions — the boot sweep reaps any workspace that outlived them. */
     readonly listRecentlySettled: () => Effect.Effect<ReadonlyArray<Session>>;
     /**
@@ -326,6 +334,20 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
         return rows.map(toSession);
       });
+
+      const countUnsettledForOrganization = Effect.fn("SessionsRepo.countUnsettledForOrganization")(
+        function* (organizationId: OrganizationId) {
+          const rows = yield* db
+            .select({ count: sql<number>`count(*)::int` })
+            .from(agentSessions)
+            .innerJoin(projects, eq(projects.id, agentSessions.projectId))
+            .where(
+              and(eq(projects.organizationId, organizationId), isNull(agentSessions.settledAt)),
+            )
+            .pipe(Effect.orDie);
+          return rows[0]?.count ?? 0;
+        },
+      );
 
       const listRecentlySettled = Effect.fn("SessionsRepo.listRecentlySettled")(function* () {
         const rows = yield* db
@@ -728,6 +750,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         listForProject,
         recentOwnersForProject,
         listUnsettledForOwner,
+        countUnsettledForOrganization,
         listForWorktree,
         listActive,
         listUnsettled,

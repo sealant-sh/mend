@@ -5,8 +5,10 @@ import { Deferred, Effect, Option, Ref, Schedule, Stream } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
 import { ProjectAccess } from "../access.ts";
+import { Budgets } from "../budgets.ts";
 import { ConnectionRegistry } from "../connections.ts";
 import { EventBus, type BusSignal } from "../events-bus.ts";
+import { connectionRefusal } from "../socket-budgets.ts";
 
 const encoder = new TextEncoder();
 
@@ -84,6 +86,7 @@ export const EventsRoutes = HttpRouter.use((router) =>
     const access = yield* ProjectAccess;
     const projects = yield* ProjectsRepo;
     const connections = yield* ConnectionRegistry;
+    const budgets = yield* Budgets;
 
     const viewOf = (userId: string) =>
       Effect.gen(function* () {
@@ -115,6 +118,9 @@ export const EventsRoutes = HttpRouter.use((router) =>
         const session = yield* auth.getSession(headers);
         if (Option.isNone(session)) return HttpServerResponse.empty({ status: 401 });
         const userId = session.value.user.id;
+        // One account holds a bounded number of streams; a refused one subscribes to nothing.
+        const overBudget = yield* connectionRefusal(budgets, connections, userId, "event-stream");
+        if (overBudget !== null) return overBudget;
         const view = yield* Ref.make(yield* viewOf(userId));
         const refresh = Effect.gen(function* () {
           const next = yield* viewOf(userId);
@@ -156,7 +162,7 @@ export const EventsRoutes = HttpRouter.use((router) =>
         const events = Stream.unwrap(
           Effect.gen(function* () {
             const end = Deferred.succeed(revoked, undefined).pipe(Effect.asVoid);
-            yield* connections.register(userId, end);
+            yield* connections.register(userId, end, undefined, "event-stream");
             // A removal that landed between sign-in and registration ends the stream too.
             if (Option.isNone(yield* auth.getSession(headers))) yield* end;
             const subscription = yield* bus.subscribe;
