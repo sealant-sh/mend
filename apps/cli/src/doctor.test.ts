@@ -8,7 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
-import { exposureCheck, formatCheck } from "./doctor.ts";
+import { exposureCheck, formatCheck, runChecks } from "./doctor.ts";
 
 type Handler = (request: IncomingMessage, response: ServerResponse) => void;
 
@@ -257,5 +257,59 @@ describe("the exposure line", () => {
     expect(check).toMatchObject({ state: "ok", fix: "mend operator exposure" });
     expect(check.detail).toBe("declared public · https origin · 3 gate items open");
     expect(`${check.detail} ${check.fix}`.toLowerCase()).not.toMatch(/safe|reachable|secure/);
+  });
+});
+
+/**
+ * The platform holds the same grant and refreshes it, but reports no freshness yet, so doctor reads
+ * Mend's local copy and states what it observed
+ * (docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md).
+ */
+const grantLine = async (grant: string | null) => {
+  const checks = await runChecks(
+    // Nothing is listening: every other check degrades, which is fine, this is about one line.
+    { url: "http://127.0.0.1:9", token: null },
+    { localCredential: () => null, claudeGrant: () => grant, onPath: () => false },
+  );
+  return checks.find((check) => check.label === "grant") ?? null;
+};
+
+const grantWith = (fields: Record<string, unknown>) =>
+  JSON.stringify({ claudeAiOauth: { refreshToken: "sk-ant-ort01", ...fields } });
+
+describe("the claude grant line", () => {
+  it("says when the grant expires while it is good", async () => {
+    const line = await grantLine(
+      grantWith({ refreshTokenExpiresAt: Date.now() + 20 * 86_400_000 }),
+    );
+    expect(line?.state).toBe("ok");
+    expect(line?.detail).toContain("Mend's own · expires ");
+    expect(line?.fix).toBeNull();
+  });
+
+  it("names the day it expired, with the one command that fixes it", async () => {
+    const line = await grantLine(grantWith({ refreshTokenExpiresAt: Date.now() - 86_400_000 }));
+    expect(line?.state).toBe("todo");
+    expect(line?.detail).toMatch(/^expired \d{4}-\d{2}-\d{2}$/);
+    expect(line?.fix).toBe("mend connect claude");
+  });
+
+  /** A grant Claude cleared after `invalid_grant` keeps its shape and loses its tokens. */
+  it("reports a cleared grant as signed out, and an unreadable one as failed", async () => {
+    const cleared = await grantLine(JSON.stringify({ claudeAiOauth: { refreshToken: "" } }));
+    expect({ state: cleared?.state, detail: cleared?.detail }).toEqual({
+      state: "failed",
+      detail: "signed out",
+    });
+    const broken = await grantLine("not a credential");
+    expect({ state: broken?.state, detail: broken?.detail }).toEqual({
+      state: "failed",
+      detail: "unreadable",
+    });
+  });
+
+  /** Someone who connected with --use-my-login has no grant of Mend's own: say nothing. */
+  it("prints no line at all when Mend keeps no grant", async () => {
+    expect(await grantLine(null)).toBeNull();
   });
 });
