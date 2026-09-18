@@ -2,14 +2,14 @@
 
 Status: accepted 2026-09-12; amended 2026-09-13 by decisions 2, 6, 8 and 9 (marked "amended
 2026-09-13" below): captures everywhere from day one, dependency trees captured with a per-project
-shared cache fed only by Mend-controlled installs, credential files captured. Cross-repo: sealantd
-ADR-0015 (capture engine, pack kinds, cadence — being amended in parallel; this ADR references it
-and does not restate the format), Sealant Core (`capture` workspace source, `microvm` adapter,
-bridge `stop()`), Mend (everything below). Supersedes the co-located store invariant of
-`docs/DEPLOYMENT-STRATEGIES.md` and `docs/KUBERNETES.md` for every remote deployment. Evidence and
-arithmetic: the 2026-09-12 remote-session-storage decision record (§2.3 components and SQL, §2.4
-latency, §2.6 cost, §2.7 lease settlement); figures below are marked as it marks them: measured,
-cited, or estimate.
+shared cache fed only by Mend-controlled installs, credential files (decision 6, corrected
+2026-09-18: the daemon excludes them). Cross-repo: sealantd ADR-0015 (capture engine, pack kinds,
+cadence — being amended in parallel; this ADR references it and does not restate the format),
+Sealant Core (`capture` workspace source, `microvm` adapter, bridge `stop()`), Mend (everything
+below). Supersedes the co-located store invariant of `docs/DEPLOYMENT-STRATEGIES.md` and
+`docs/KUBERNETES.md` for every remote deployment. Evidence and arithmetic: the 2026-09-12
+remote-session-storage decision record (§2.3 components and SQL, §2.4 latency, §2.6 cost, §2.7 lease
+settlement); figures below are marked as it marks them: measured, cited, or estimate.
 
 ## Context
 
@@ -344,14 +344,29 @@ the session; revoked at pickup and replacement) and presigned per-key URLs under
 `captures/<worktree>/<epoch>/…` with a 15 min TTL. No bucket credentials, no Postgres credentials,
 no other epoch's prefix. Its blast radius is its own epoch prefix: a fenced executor's still-valid
 URLs name keys the live epoch never reads, and an overwrite inside its own live epoch is self-harm
-caught by sha256 at read. Amended 2026-09-13 (decision 6): credential files the harness writes into
-its home (`.claude/.credentials.json`, `.codex/auth.json`) are **captured** with the rest of the
-harness-home class — nothing excludes them, on either side — so a pickup resumes a logged-in harness
-without Core re-injecting anything. In the bucket they sit under the provider's at-rest encryption
-only (S3 SSE, R2's default encryption, Garage's on-disk state); the bucket is one installation's and
-whoever can read it can read a session's provider login. Client-side encryption with a Mend-held key
-is the follow-up gated on multi-tenancy, not on this decision. The agent's own connected-account
-tokens are outside Mend's fence.
+caught by sha256 at read. Amended 2026-09-13 (decision 6), **corrected 2026-09-18**: decision 6 said
+credential files the harness writes into its home (`.claude/.credentials.json`, `.codex/auth.json`)
+are captured with the harness-home class, that nothing excludes them on either side, and that a
+pickup therefore resumes a logged-in harness without Core re-injecting anything.
+
+That is not what the daemon does. sealantd names those two paths in
+`crates/sealant-capture/src/index.rs` (`CREDENTIAL_FILES`, citing its own ADR-0015 open question 2),
+filters them out of the capture listing in `roots.rs`, classifies them as `None` in the watcher in
+`watch.rs`, and asserts the exclusion in a test. **Credentials are not captured**, and never were on
+the daemon side. So the bucket does not hold a session's provider login, and the paragraph about
+at-rest encryption and client-side encryption describes a risk this store does not carry.
+
+What follows from the correction, rather than from the decision: because a capture carries no
+credential, a pickup depends on the platform injecting the credential into the new workspace again.
+Core does inject it at launch (`connected_accounts` → a 0600 file at
+`$HOME/.claude/.credentials.json`), but that every pickup path re-injects before the harness reads
+it is **unverified** — it needs a forced-kill pickup with an expired access token to prove. Until
+then, treat a resumed harness's login as something to observe, not something the chain guarantees.
+
+Whether exclusion is what Mend _wants_ is a separate question, still open: capturing a credential
+would survive a pickup without the platform, and would put a refresh token in the bucket. The
+daemon's behaviour decides today's answer; changing it is a decision for both repos, not a
+documentation edit. The agent's own connected-account tokens are outside Mend's fence either way.
 
 ## Considered options
 
