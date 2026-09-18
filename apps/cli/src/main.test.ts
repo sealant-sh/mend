@@ -1,7 +1,10 @@
 import { spawn } from "node:child_process";
 import { createHash } from "node:crypto";
 import { once } from "node:events";
+import * as fs from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
+import * as os from "node:os";
+import * as path from "node:path";
 import type { Duplex } from "node:stream";
 import { fileURLToPath } from "node:url";
 
@@ -111,10 +114,14 @@ const startFakeMend = async (
   };
 };
 
-const startCli = (url: string, args: ReadonlyArray<string>) => {
+const startCli = (
+  url: string,
+  args: ReadonlyArray<string>,
+  env: Readonly<Record<string, string>> = {},
+) => {
   const entrypoint = fileURLToPath(new URL("./main.ts", import.meta.url));
   const child = spawn(process.execPath, ["--experimental-strip-types", entrypoint, ...args], {
-    env: { ...process.env, MEND_URL: url, MEND_DETACH_KEY: "none" },
+    env: { ...process.env, MEND_URL: url, MEND_DETACH_KEY: "none", ...env },
     stdio: ["ignore", "pipe", "pipe"],
   });
   let stdout = "";
@@ -450,5 +457,70 @@ describe("mend help", () => {
     const outcome = await cli.exited;
     expect(outcome.code).toBe(1);
     expect(cli.stderr()).toContain("usage: mend service stop <name-or-id>");
+  });
+});
+
+describe("mend connect claude", () => {
+  /**
+   * The finding this pins: the credential document Claude Code writes holds `mcpOAuth` beside the
+   * Claude grant, and the whole file used to travel — so a person's Figma, Atlassian and Linear
+   * refresh tokens reached the platform and every workspace
+   * (docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md).
+   */
+  it("sends the Claude grant alone, and says what stayed on this machine", async () => {
+    const configDir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-connect-claude-"));
+    fs.writeFileSync(
+      path.join(configDir, ".credentials.json"),
+      JSON.stringify({
+        claudeAiOauth: {
+          accessToken: "sk-ant-oat01-access",
+          refreshToken: "sk-ant-ort01-refresh",
+          expiresAt: 1_789_000_000_000,
+          refreshTokenExpiresAt: 1_791_000_000_000,
+          subscriptionType: "max",
+        },
+        mcpOAuth: { "figma:https://figma.com": { refreshToken: "figma-refresh" } },
+      }),
+    );
+    let body = "";
+    const fake = await startFakeMend((request, response) => {
+      if (request.url === "/api/me/sealant/accounts" && request.method === "POST") {
+        request.on("data", (chunk: Buffer) => {
+          body += chunk.toString();
+        });
+        request.on("end", () =>
+          json(response, {
+            id: "account-1",
+            provider: "claude",
+            name: "default",
+            kind: "credentials-json",
+            status: "active",
+            metadata: {},
+            connectedAt: "2026-09-18T00:00:00.000Z",
+            lastUsedAt: null,
+          }),
+        );
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    try {
+      const cli = startCli(fake.url, ["connect", "claude"], { CLAUDE_CONFIG_DIR: configDir });
+      const exit = await cli.exited;
+      expect(exit.code, cli.stderr()).toBe(0);
+      await waitFor(() => body !== "");
+      const sent = JSON.parse(body) as { readonly secret: string };
+      const secret = JSON.parse(sent.secret) as Record<string, unknown>;
+      expect(Object.keys(secret)).toEqual(["claudeAiOauth"]);
+      expect(sent.secret).not.toContain("figma-refresh");
+      expect(sent.secret).toContain("sk-ant-ort01-refresh");
+      // The person is told what was held back, and what the grant says about itself.
+      expect(cli.stdout() + cli.stderr()).toContain("keeping mcpOAuth on this machine");
+      expect(cli.stdout() + cli.stderr()).toContain("grant expires");
+    } finally {
+      await fake.close();
+      fs.rmSync(configDir, { recursive: true, force: true });
+    }
   });
 });

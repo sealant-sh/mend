@@ -34,6 +34,7 @@ import {
   UsersRepo,
 } from "@mend/db";
 import type { RunId } from "@mend/domain";
+import { narrowCredential } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import {
   asSealantUser,
@@ -190,7 +191,21 @@ export const AccountsGroupLive = HttpApiBuilder.group(MendApi, "accounts", (hand
       Effect.gen(function* () {
         const clients = yield* SealantClients;
         const caller = yield* CurrentUser;
-        const account = yield* clients.connectedAccounts(caller.user.id).connect(payload);
+        // Narrowed again here, not only in the CLI: a hand-rolled client is a client too, and a
+        // Claude credential document carries MCP refresh tokens that belong to the machine that
+        // authorized those servers (docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md).
+        const narrowed = narrowCredential(payload.provider, payload.secret);
+        if (narrowed.kind === "narrowed" && narrowed.dropped.length > 0) {
+          yield* Effect.logInfo("connect: credential narrowed before the platform saw it").pipe(
+            Effect.annotateLogs({
+              provider: payload.provider,
+              dropped: narrowed.dropped.join(","),
+            }),
+          );
+        }
+        const account = yield* clients
+          .connectedAccounts(caller.user.id)
+          .connect({ ...payload, secret: narrowed.secret });
         yield* accountsChanged(caller.user.id);
         return account;
       }).pipe(
