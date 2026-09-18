@@ -9,6 +9,7 @@ import { loadPublicNetwork } from "@mend/network";
 import { Effect } from "effect";
 
 import { forwardHeaders } from "./proxy-headers.ts";
+import { securityHeaders } from "./security-headers.ts";
 
 /**
  * The web tier's FRONT (ARCHITECTURE.md §2): one public port that owns the
@@ -113,15 +114,30 @@ const proxyRequest = (
         upstreamResponse.destroy();
         return;
       }
-      const headers = Object.fromEntries(
-        Object.entries(upstreamResponse.headers).filter(([name]) => !hopByHop.has(name)),
-      );
+      const headers = {
+        ...Object.fromEntries(
+          Object.entries(upstreamResponse.headers).filter(([name]) => !hopByHop.has(name)),
+        ),
+        // The browser header policy, on the app's responses and the API's alike (MEND-11).
+        ...securityHeaders({
+          pathname: new URL(request.url ?? "/", "http://mend.local").pathname,
+          appUrl: publicNetwork.appUrl,
+        }),
+      };
       response.writeHead(upstreamResponse.statusCode ?? 502, headers);
       relay(upstreamResponse, response);
     },
   );
   upstream.on("error", () => {
-    if (!response.headersSent) response.writeHead(502, { "content-type": "text/plain" });
+    if (!response.headersSent) {
+      response.writeHead(502, {
+        "content-type": "text/plain",
+        ...securityHeaders({
+          pathname: new URL(request.url ?? "/", "http://mend.local").pathname,
+          appUrl: publicNetwork.appUrl,
+        }),
+      });
+    }
     response.end("upstream unreachable");
   });
   relay(request, upstream);
@@ -183,7 +199,9 @@ server.on("upgrade", (request, socket, head) => {
     relay(socket, upstreamSocket);
     relay(upstreamSocket, socket);
   });
-  // The API answered without upgrading (401, 404, ...): relay it as HTTP.
+  // The API answered without upgrading (401, 404, ...): relay it as HTTP. Its headers are relayed
+  // as they are: every API answer carries the API's own policy (nosniff, no framing, no referrer,
+  // `default-src 'none'`), which is tighter than the browser policy set on documents above.
   // Hop-by-hop headers are stripped — node already de-chunked the body, so
   // `connection: close` + EOF delimits it instead of stale framing headers.
   upstream.on("response", (upstreamResponse) => {

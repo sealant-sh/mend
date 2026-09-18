@@ -35,6 +35,20 @@ export class BudgetExceeded extends Schema.TaggedErrorClass<BudgetExceeded>()(
 ) {}
 
 /**
+ * What a failure nobody declared answers (docs/adr/0004, "Errors and browser headers"). The
+ * detail stays in the server's log under `reference`; a client shows the reference and nothing
+ * else. Answered by the API's error boundary, outside every endpoint, so no endpoint declares it.
+ */
+export class InternalError extends Schema.TaggedErrorClass<InternalError>()(
+  "InternalError",
+  {
+    reference: Schema.String,
+    message: Schema.String,
+  },
+  { httpApiStatus: 500 },
+) {}
+
+/**
  * The signed-in identity as endpoints see it. The shape @mend/auth's session
  * resolves to — declared here (not imported) so the contract package carries
  * no auth implementation; the server's auth layer satisfies it structurally.

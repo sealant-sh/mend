@@ -244,22 +244,37 @@ anywhere else:
 
 ### Errors and browser headers (MEND-11)
 
-- **Errors.** One boundary maps what leaves the API. A declared contract error crosses with its tag
-  and a message written for the person reading it. Anything else (an upstream message, a platform
-  error's text, a defect) crosses as its tag or `InternalError` and a short reference id. The detail
-  goes to the server log under that id. `MEND_ERROR_DETAIL=verbose` restores upstream text for an
-  operator debugging a private instance, and is an open gate item.
-- **Headers.** Web sets them on every response, API on its own: `Content-Security-Policy` (self
-  only; `connect-src` self plus `wss:` on the same origin; `wasm-unsafe-eval` for the terminal;
-  `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`,
-  `Referrer-Policy: strict-origin-when-cross-origin` (`no-referrer` on `/tty-embed`), a
-  `Permissions-Policy` that turns off what Mend does not use,
-  `Cross-Origin-Opener-Policy: same-origin`, and `Strict-Transport-Security` when the origin is
-  `https:`.
+- **Errors.** One boundary, on the router, maps what leaves the API. A declared contract error
+  crosses with its tag and its message, and the message is scrubbed of what arrived from below:
+  server paths (the leaf is kept), internal hosts, URL credentials and queries, bearers, JWTs,
+  `Authorization` values, `name=value` pairs that name a credential, and anything long enough to be
+  a secret, of which a short head is kept so a commit, a digest or a long branch name still says
+  which one it is (`redactDetail`, `@mend/network`). Mend's own words pass through unchanged. The
+  socket routes' plain-text 502s are scrubbed the same way. A defect, or a 5xx body nobody declared,
+  crosses as `InternalError` and a reference; its detail goes to the log under that reference.
+  `MEND_ERROR_DETAIL=verbose` turns the scrubbing off for an operator debugging a private instance,
+  and is an open gate item.
+- **Headers.** The web front sets the browser policy on every response it relays, the app's and the
+  API's alike: `Content-Security-Policy` (this origin only for scripts, connections, workers, form
+  targets and the base URI; `wasm-unsafe-eval` for the terminal, and `data:` in `connect-src`
+  because the terminal library fetches its inlined WebAssembly from a `data:` URL, which reaches no
+  server; `object-src 'none'`; `frame-ancestors 'none'`), `X-Content-Type-Options: nosniff`,
+  `X-Frame-Options: DENY`, `Referrer-Policy: strict-origin-when-cross-origin` (`no-referrer` on
+  `/tty-embed`, `/pair` and `/authorize`, whose URLs carry a credential), a `Permissions-Policy`
+  that turns off what Mend does not use, `Cross-Origin-Opener-Policy` and
+  `Cross-Origin-Resource-Policy: same-origin`, and `Strict-Transport-Security` for this host (no
+  `includeSubDomains`: sibling hosts are not Mend's to pin) when the origin is `https:`. The API
+  sets `nosniff`, `DENY`, `no-referrer` and `default-src 'none'` on every answer, for whatever
+  reaches it without the front: its header middleware is outermost, so the budgets' and the origin
+  policy's refusals, a defect's answer and a route that does not exist all carry them. The order of
+  the API's global middleware is stated in one module and held by a test against what a client
+  observes.
 - **The terminal embed stays supported.** The one supported embedder of `/tty-embed` is the mobile
   app's WebView, which loads it as a top-level document, not a frame. `frame-ancestors 'none'` does
-  not apply to it, and a test pins both halves: the embed page loads under the policy, and the
-  policy forbids framing it.
+  not apply to it, and tests pin both halves: the policy allows the way the installed terminal
+  library loads, and forbids framing the page. The WebAssembly load under the policy was observed in
+  headless Chromium (refused without `data:`, loaded with it); no browser runs in CI, so that
+  observation is not repeated on every change.
 
 ### Event stream lifecycle
 
@@ -360,6 +375,19 @@ Choices a reviewer may overturn without touching the rest. Each names what was t
     (reaches into a transitive dependency's internals from application code) and copying
     `NodeHttpServer.make` to own the upgrade path (sixty lines of a moving library). The residual is
     one frame of up to `ws`'s own 100 MiB default buffered per connection before Mend can refuse it.
+
+13. **`script-src` allows inline scripts for now.** The document carries two kinds: the no-flash
+    theme bootstrap and the framework's hydration payload. A nonce on both is the fix and touches
+    the SSR entry. Taken: `'self' 'unsafe-inline' 'wasm-unsafe-eval'`, which still refuses every
+    other origin as a script source, plus `object-src 'none'`, `base-uri 'self'` and
+    `form-action 'self'`. What it does not give: protection from an injected inline script. Mend
+    renders no HTML from a repository or an agent as HTML, which is what would make that reachable.
+14. **Upstream error text is scrubbed, not hidden.** Git's stderr is the user's own repository
+    talking, and "remote branch not found" is what they need to read. Taken: keep the sentence,
+    remove paths, internal hosts, credentials and secrets, at one boundary that sees every error
+    response. Rejected: replacing every upstream message with a reference id (safe, and useless to
+    the person who has to fix their base ref), and editing the eighty-odd call sites one by one (the
+    next one written would be missed).
 
 ## Open questions
 
