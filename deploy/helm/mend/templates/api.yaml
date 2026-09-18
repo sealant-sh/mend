@@ -98,6 +98,16 @@ spec:
             {{- end }}
             - { name: MEND_EXECUTOR_NETWORK, value: {{ . | quote }} }
             {{- end }}
+            {{- /* Sealant 0.34 bakes a daemon that dials the session channel over verified TLS or
+                   refuses to boot. A plain-http channel therefore needs the operator's statement
+                   that executors reach it over a network they control; the chart refuses to render
+                   a workspace that could not boot. */}}
+            {{- if and (not .Values.sessionChannel.tls.enabled) (ne .Values.exposure.executorNetwork "private") }}
+            {{ fail "sessionChannel.tls.enabled is false, so workspaces reach the session channel over plain http; set exposure.executorNetwork: private to state that executors reach it over a network you control (the cluster network, a VPC), or enable sessionChannel.tls. The daemon baked in Sealant 0.34 refuses to boot otherwise." }}
+            {{- end }}
+            {{- if .Values.sessionChannel.tls.ca.secretName }}
+            - { name: MEND_SESSION_ENDPOINT_CA_FILE, value: /etc/mend/session-ca/{{ .Values.sessionChannel.tls.ca.key }} }
+            {{- end }}
             {{- range .Values.exposure.declared }}
             {{- if not (has . (list "core-private" "edge-tls")) }}
             {{ fail (printf "exposure.declared takes only core-private and edge-tls (got %q)" .) }}
@@ -144,6 +154,9 @@ spec:
             {{- if .Values.sessionChannel.tls.enabled }}
             - { name: session-tls, mountPath: /etc/mend/session-tls, readOnly: true }
             {{- end }}
+            {{- if .Values.sessionChannel.tls.ca.secretName }}
+            - { name: session-ca, mountPath: /etc/mend/session-ca, readOnly: true }
+            {{- end }}
           readinessProbe:
             httpGet: { path: /api/health, port: http }
             periodSeconds: 10
@@ -158,4 +171,10 @@ spec:
         {{- if .Values.sessionChannel.tls.enabled }}
         - name: session-tls
           secret: { secretName: {{ required "sessionChannel.tls.secretName" .Values.sessionChannel.tls.secretName }} }
+        {{- end }}
+        {{- if .Values.sessionChannel.tls.ca.secretName }}
+        - name: session-ca
+          secret:
+            secretName: {{ .Values.sessionChannel.tls.ca.secretName }}
+            items: [{ key: {{ .Values.sessionChannel.tls.ca.key }}, path: {{ .Values.sessionChannel.tls.ca.key }} }]
         {{- end }}

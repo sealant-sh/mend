@@ -7,3 +7,8 @@ captureStore:
 store:
   create:
     enabled: true
+
+# The CI fixtures render an in-cluster channel over plain http, which the Sealant 0.34 daemon dials
+# only on this statement (the cluster network is one the operator controls).
+exposure:
+  executorNetwork: private

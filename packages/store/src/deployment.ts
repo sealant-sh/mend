@@ -1,3 +1,5 @@
+import { readFileSync } from "node:fs";
+
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -42,6 +44,24 @@ export interface SessionEndpointConfig {
   readonly tls?: { readonly certPath: string; readonly keyPath: string } | undefined;
 }
 
+/**
+ * How a captured workspace's executor dials the session channel and the object store (sealantd
+ * ADR-0015 "Transport"; docs/adr/0004-access-without-a-private-network.md). The daemon dials HTTPS
+ * with a verified certificate and refuses anything else, unless the launcher states otherwise:
+ *
+ * - `plaintext` (`MEND_EXECUTOR_NETWORK=private`): the operator's statement that the network between
+ *   executors and the channel is private (a Docker network, a cluster network, a VPC), so plain HTTP
+ *   may be dialled. Reported by the exposure gate as declared, never as observed.
+ * - `channelCaPem` (`MEND_SESSION_ENDPOINT_CA_FILE`): the roots the channel's certificate chains to,
+ *   for a channel served under a private CA.
+ * - `objectCaPem` (`MEND_BLOB_STORE_CA_FILE`): the same for presigned object URLs.
+ */
+export interface ExecutorTransport {
+  readonly plaintext: boolean;
+  readonly channelCaPem: string | undefined;
+  readonly objectCaPem: string | undefined;
+}
+
 export class DeploymentConfig extends Context.Service<
   DeploymentConfig,
   {
@@ -49,6 +69,11 @@ export class DeploymentConfig extends Context.Service<
     /** Present when the network session channel is configured (required in kubernetes mode). */
     readonly sessionEndpoint: SessionEndpointConfig | undefined;
     readonly sessionStore: SessionStoreKind;
+    /**
+     * What every capture launch tells the daemon about its transport. Absent (a test fake) means
+     * no statement: the daemon then requires verified HTTPS, which is the fail-closed reading.
+     */
+    readonly executorTransport?: ExecutorTransport;
   }
 >()("@mend/store/DeploymentConfig") {}
 
@@ -63,7 +88,47 @@ export interface DeploymentEnvLike {
   readonly MEND_SESSION_ENDPOINT_URL?: string | undefined;
   readonly MEND_SESSION_ENDPOINT_TLS_CERT?: string | undefined;
   readonly MEND_SESSION_ENDPOINT_TLS_KEY?: string | undefined;
+  readonly MEND_EXECUTOR_NETWORK?: string | undefined;
+  readonly MEND_SESSION_ENDPOINT_CA_FILE?: string | undefined;
+  readonly MEND_BLOB_STORE_CA_FILE?: string | undefined;
 }
+
+/**
+ * Pure: the transport statement from the environment, with the CA bundles read by `readFile`
+ * (injected so the resolution stays testable without a filesystem).
+ */
+export const resolveExecutorTransport = (
+  env: DeploymentEnvLike,
+  readFile: (path: string) => string,
+): ExecutorTransport => {
+  const network = env.MEND_EXECUTOR_NETWORK?.trim();
+  if (network !== undefined && network !== "" && network !== "private") {
+    throw new DeploymentConfigError(
+      `MEND_EXECUTOR_NETWORK must be "private" or unset, got "${network}".`,
+    );
+  }
+  const pem = (variable: "MEND_SESSION_ENDPOINT_CA_FILE" | "MEND_BLOB_STORE_CA_FILE") => {
+    const file = env[variable]?.trim();
+    if (file === undefined || file === "") return undefined;
+    let content: string;
+    try {
+      content = readFile(file);
+    } catch (cause) {
+      throw new DeploymentConfigError(
+        `${variable} names ${file}, which could not be read: ${cause instanceof Error ? cause.message : String(cause)}`,
+      );
+    }
+    if (!content.includes("-----BEGIN CERTIFICATE-----")) {
+      throw new DeploymentConfigError(`${variable} names ${file}, which holds no PEM certificate.`);
+    }
+    return content;
+  };
+  return {
+    plaintext: network === "private",
+    channelCaPem: pem("MEND_SESSION_ENDPOINT_CA_FILE"),
+    objectCaPem: pem("MEND_BLOB_STORE_CA_FILE"),
+  };
+};
 
 const LISTEN = /^(\[[0-9a-fA-F:]+\]|[A-Za-z0-9.-]+):([0-9]{1,5})$/;
 
@@ -150,7 +215,10 @@ export const resolveDeploymentConfig = (
 
 export const DeploymentConfigLive: Layer.Layer<DeploymentConfig> = Layer.effect(
   DeploymentConfig,
-  Effect.sync(() => resolveDeploymentConfig(process.env)),
+  Effect.sync(() => ({
+    ...resolveDeploymentConfig(process.env),
+    executorTransport: resolveExecutorTransport(process.env, (file) => readFileSync(file, "utf8")),
+  })),
 );
 
 export const DeploymentConfigLocal: Layer.Layer<DeploymentConfig> = Layer.succeed(

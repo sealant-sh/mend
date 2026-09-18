@@ -56,8 +56,12 @@ const envOf = (manifest, deployment) => {
   return env;
 };
 
+// The fixtures under ci/ state a private executor network; a bare render states it here, so these
+// tests reach the refusal they are about and not the plain-channel one.
+const STATED = ["--set", "exposure.executorNetwork=private"];
+
 test("the chart refuses to render without a bucket", { skip }, () => {
-  const result = render();
+  const result = render(...STATED);
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /captureStore\.blobStore: set fromObjectBucketClaim/);
 });
@@ -166,7 +170,7 @@ test(
 );
 
 test("a plain URL without endpoint= needs an explicit public URL", { skip }, () => {
-  const values = ["--set", "captureStore.blobStore.url=s3://mend?region=eu-west-1"];
+  const values = ["--set", "captureStore.blobStore.url=s3://mend?region=eu-west-1", ...STATED];
   const values2 = [
     "--set",
     "captureStore.blobStore.credentialsSecret=aws,store.create.enabled=true",
@@ -669,7 +673,42 @@ test(
     const unset = render(...base);
     assert.equal(unset.status, 0, unset.stderr);
     assert.ok(!unset.stdout.includes("MEND_EXPOSURE_DECLARED"));
-    assert.ok(!unset.stdout.includes("MEND_EXECUTOR_NETWORK"));
+  },
+);
+
+test(
+  "a plain-http session channel renders only on the operator's statement, or under TLS",
+  { skip },
+  () => {
+    // The fixtures state it; without the statement the daemon Sealant 0.34 bakes would refuse to
+    // boot every workspace, so the chart refuses to render one.
+    const base = ["-f", path.join(chart, "ci/obc-values.yaml")];
+    const unstated = render(...base, "--set", "exposure.executorNetwork=");
+    assert.notEqual(unstated.status, 0);
+    assert.match(unstated.stderr, /set exposure\.executorNetwork: private/);
+
+    const tls = render(
+      ...base,
+      "--set",
+      "exposure.executorNetwork=",
+      "--set",
+      "sessionChannel.tls.enabled=true",
+      "--set",
+      "sessionChannel.tls.secretName=session-tls",
+      "--set",
+      "sessionChannel.tls.ca.secretName=session-tls",
+    );
+    assert.equal(tls.status, 0, tls.stderr);
+    const api = envOf(tls.stdout, "mend-api");
+    assert.equal(api.get("MEND_EXECUTOR_NETWORK"), undefined);
+    // A private CA's roots reach the API as a file, and from there every capture launch.
+    assert.equal(api.get("MEND_SESSION_ENDPOINT_CA_FILE"), "/etc/mend/session-ca/ca.crt");
+    assert.match(tls.stdout, /name: session-ca\n\s+secret:\n\s+secretName: session-tls/);
+
+    const stated = render(...base);
+    assert.equal(stated.status, 0, stated.stderr);
+    assert.equal(envOf(stated.stdout, "mend-api").get("MEND_EXECUTOR_NETWORK"), "private");
+    assert.equal(envOf(stated.stdout, "mend-api").get("MEND_SESSION_ENDPOINT_CA_FILE"), undefined);
   },
 );
 

@@ -19,3 +19,8 @@ sessionChannel:
     secretName: mend-session-tls
 networkPolicies:
   sessionChannelCidrs: [10.42.16.0/20]
+
+# The CI fixtures render an in-cluster channel over plain http, which the Sealant 0.34 daemon dials
+# only on this statement (the cluster network is one the operator controls).
+exposure:
+  executorNetwork: private

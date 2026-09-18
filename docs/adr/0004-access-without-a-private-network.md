@@ -313,8 +313,15 @@ from outside the process, so the test does not claim it.
   bounded answers (CORE-08). Core stays private throughout.
 
 Each bakes the one below, so the release order is sealantd, then Core, then Mend. No PR in one
-repository depends on an unmerged PR in another: Mend adopts `transport` on the capture source, and
-the owner on every record read, in the PR that bumps its Sealant pin.
+repository depends on an unmerged PR in another. The top of this stack is that pin bump: Sealant
+0.34.0 (which bakes sealantd 0.17.0), and `source.transport` on every capture launch, built from
+`MEND_EXECUTOR_NETWORK` (the same value the exposure gate reports), `MEND_SESSION_ENDPOINT_CA_FILE`
+and `MEND_BLOB_STORE_CA_FILE`, all read once in `DeploymentConfig`. Mend sends only what the
+operator stated: no statement, no transport, and the daemon then requires verified HTTPS. The
+packaged bundle states `private` itself, because the Compose network is a fact of the bundle; the
+chart refuses to render a plain-http channel without the statement, so the failure is a sentence at
+`helm upgrade` and not a workspace that never boots. The owner was already sent on every call: Mend
+builds one Sealant client per user (#105), so Core's `SEALANT_REQUIRE_OWNER_SCOPE` can be on.
 
 ## Consequences
 

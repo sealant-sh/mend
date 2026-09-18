@@ -120,6 +120,7 @@ import {
   BlobStoreFsLive,
   captureKeys,
   DeploymentConfig,
+  type ExecutorTransport,
   DotfilesStore,
   type GitSection,
   GitOpsRunnerLive,
@@ -1804,6 +1805,8 @@ const withEngine = <A, E>(
     readonly fixture?: { readonly world: World; readonly tmp: string };
     /** Capture mode (ADR-0002): the pointer store the test inspects; the bucket is `<tmp>/blobs`. */
     readonly captured?: MemoryCaptureStore;
+    /** What the deployment states about the executor's transport (capture mode only). */
+    readonly executorTransport?: ExecutorTransport;
   } = {},
 ): Promise<A> => {
   const tmp = options.fixture?.tmp ?? fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
@@ -1855,6 +1858,9 @@ const withEngine = <A, E>(
           mode: "local",
           sessionEndpoint: { listen: "127.0.0.1:0", url: "http://mend.test:3106" },
           sessionStore: "captured",
+          ...(options.executorTransport === undefined
+            ? {}
+            : { executorTransport: options.executorTransport }),
         });
   const engineLayer = SessionEngineLive.pipe(
     Layer.provide(sessionRepositoryLayer),
@@ -5224,6 +5230,55 @@ const failureText = (exit: Exit.Exit<unknown, unknown>) =>
   Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "";
 
 describe("SessionEngine capture mode", () => {
+  it("tells the daemon only what the deployment stated about its transport", async () => {
+    // Without a statement the source names no transport: the daemon then requires verified
+    // HTTPS, and Mend does not soften that on its own. With one, exactly that statement goes.
+    const launchWith = async (executorTransport: ExecutorTransport | undefined) => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(session.id, ["codex"]);
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(created),
+          ...(executorTransport === undefined ? {} : { executorTransport }),
+        },
+      );
+      const source = created[0]?.source;
+      return source?.kind === "capture" ? source.transport : "not a capture source";
+    };
+    expect(await launchWith(undefined)).toBeUndefined();
+    expect(
+      await launchWith({ plaintext: false, channelCaPem: undefined, objectCaPem: undefined }),
+    ).toBeUndefined();
+    expect(
+      await launchWith({ plaintext: true, channelCaPem: undefined, objectCaPem: undefined }),
+    ).toEqual({ plaintext: true });
+    expect(
+      await launchWith({
+        plaintext: false,
+        channelCaPem: "-----BEGIN CERTIFICATE-----\nchannel\n-----END CERTIFICATE-----\n",
+        objectCaPem: "-----BEGIN CERTIFICATE-----\nobjects\n-----END CERTIFICATE-----\n",
+      }),
+    ).toEqual({
+      channelCaPem: "-----BEGIN CERTIFICATE-----\nchannel\n-----END CERTIFICATE-----\n",
+      objectCaPem: "-----BEGIN CERTIFICATE-----\nobjects\n-----END CERTIFICATE-----\n",
+    });
+  });
+
   it(
     "relocates HOME into the configured capture root before launch, harvests the final flush, and restores it before pickup",
     { timeout: 20_000 },

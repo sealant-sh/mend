@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { resolveDeploymentConfig } from "../src/deployment.ts";
+import { resolveDeploymentConfig, resolveExecutorTransport } from "../src/deployment.ts";
 
 describe("resolveDeploymentConfig", () => {
   it("defaults to local with no endpoint", () => {
@@ -89,5 +89,38 @@ describe("resolveDeploymentConfig", () => {
     expect(() => resolveDeploymentConfig({ MEND_SESSION_STORE: "remote" })).toThrow(
       /MEND_SESSION_STORE/,
     );
+  });
+
+  it("reads the executor transport statement, and only a statement", () => {
+    const files: Record<string, string> = {
+      "/ca/channel.pem": "-----BEGIN CERTIFICATE-----\nA\n-----END CERTIFICATE-----\n",
+      "/ca/empty.pem": "",
+    };
+    const read = (file: string) => {
+      const content = files[file];
+      if (content === undefined) throw new Error(`ENOENT: ${file}`);
+      return content;
+    };
+    expect(resolveExecutorTransport({}, read)).toEqual({
+      plaintext: false,
+      channelCaPem: undefined,
+      objectCaPem: undefined,
+    });
+    expect(resolveExecutorTransport({ MEND_EXECUTOR_NETWORK: "private" }, read).plaintext).toBe(
+      true,
+    );
+    expect(() => resolveExecutorTransport({ MEND_EXECUTOR_NETWORK: "yes" }, read)).toThrow(
+      /MEND_EXECUTOR_NETWORK/,
+    );
+    expect(
+      resolveExecutorTransport({ MEND_SESSION_ENDPOINT_CA_FILE: "/ca/channel.pem" }, read)
+        .channelCaPem,
+    ).toBe(files["/ca/channel.pem"]);
+    expect(() =>
+      resolveExecutorTransport({ MEND_BLOB_STORE_CA_FILE: "/ca/missing.pem" }, read),
+    ).toThrow(/could not be read/);
+    expect(() =>
+      resolveExecutorTransport({ MEND_BLOB_STORE_CA_FILE: "/ca/empty.pem" }, read),
+    ).toThrow(/no PEM certificate/);
   });
 });
