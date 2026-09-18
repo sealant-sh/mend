@@ -7,6 +7,34 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-18 · 0.34.0 · Narrow a Claude credential at connect and at sync-back
+
+- **Needed:** the platform stores only the Claude credential, whatever a client sends. Claude Code's
+  `.credentials.json` is `{ claudeAiOauth, mcpOAuth }`, and the `mcpOAuth` half holds refresh tokens
+  for whichever MCP servers the person authorized — Figma, Atlassian and Linear on the machine that
+  found this. Those belong to the person's laptop, not to a workspace
+  (docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md).
+- **Today:** `connectedAccounts(user).connect({ provider, secret })` takes the document verbatim,
+  `connected_accounts.encrypted_payload` stores it whole, and the injected file carries it into
+  every workspace that attaches the account. A rotated file read back by
+  `claude-credentials-sync-back.ts` can bring an `mcpOAuth` section back with it.
+- **Suggested:** narrow on the way in and on the way back, so a hand-rolled client cannot widen what
+  is stored. Mend 0.29.0 narrows before it sends; this is the same rule one layer down.
+
+## 2026-09-18 · 0.34.0 · A connected account reports its expiry and its last refresh
+
+- **Needed:** typed fields on a connected account — the access expiry, the refresh expiry, and the
+  outcome and time of the last refresh — so Mend can tell a person
+  `grant expired · run mend connect claude` before a session fails, rather than after.
+- **Today:** `ConnectedAccount` carries `status`, `metadata` and `lastUsedAt`. Freshness is not
+  reported, so Mend either trusts a timestamp it parsed at connect time (which reads healthy while a
+  grant is revoked) or observes failure only when a harness cannot authenticate. The platform knows
+  the answer: `refresh-claude-sessions.ts` computes staleness every 15 minutes and holds the
+  outcome.
+- **Suggested:** surface what the sweeper already learns. `status: "invalid"` exists; a typed
+  `credential: { accessExpiresAt, refreshExpiresAt, lastRefreshAt, lastRefreshOutcome }` would let
+  every consumer report freshness as an observation.
+
 ## 2026-09-17 · 0.33.0 · The capture executor declares every upload's size
 
 **Shipped in sealantd 0.16.0** (sealant-sh/sealantd#82). `UrlMinter::put_url` takes the object's
