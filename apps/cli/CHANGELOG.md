@@ -1,5 +1,210 @@
 # @sealant/mend
 
+## 0.29.0
+
+### Minor Changes
+
+- f51da1f: Add budgets: what one client address, one account and one organization may ask of an
+  instance. A request body is refused before it is decoded (1 MiB; 24 MiB on the routes that take a
+  file), a WebSocket frame over 1 MiB closes its socket, requests are counted per minute per address
+  and per credential with a tighter window for sign-in attempts, and an account holds a bounded
+  number of unsettled sessions, launches starting at once, event streams, terminals, tunnels and key
+  bridges. A refusal is `429` (or `413`) with the budget's name, and never stops a running session
+  or closes an open connection. Every limit is a `MEND_BUDGET_*` variable, `0` turns one off, and
+  `docs/operations/budgets.md` lists them. `sessions.create` and `sessions.launch` gain the
+  `BudgetExceeded` error.
+- b02b45e: Folders and reference repositories reach captured workspaces, and the multi mode gate
+  passes. A captured workspace binds no host path, so each folder a project selected now travels
+  with the session plan as a gzipped archive — a folder as `tar` of its contents, a reference as
+  `git archive HEAD`, the tree an agent reads without the history behind it. sealantd 0.16.0 lays
+  each one down beside the worktree, at `/workspace/home/<name>` and `/workspace/ref/<name>`, the
+  same paths a co-located install bind-mounts.
+
+  An archive is keyed by its own sha256 under the session's epoch prefix, so a re-plan of unchanged
+  content writes nothing, the executor only ever holds URLs under its own prefix, and capture
+  retention sweeps the archives with the fenced epoch. A source is a copy: writes inside a session
+  stay in that session, because the archives land outside every capture root. A folder that cannot
+  be archived is left out with a warning rather than costing the session its start, and one archive
+  is capped at 64 MiB — the ceiling the daemon enforces too.
+
+  Both gate items that waited on the platform are in: sealantd declares the length of every upload
+  it asks a URL for, and lays down the plan's sources. With the source policy, upload length
+  binding, loopback service ports and an operator present, `MEND_TENANCY=multi` no longer refuses to
+  start. It requires sealantd 0.16.0 or newer, which the gate's detail names, and which the operator
+  pins.
+
+- 8007722: The CLI speaks organizations: `mend members` lists who belongs, `mend invite` prints a
+  one-time link (owners), `mend folder list|create|push|rm` manages organization folders,
+  `mend session share <id> on|off` turns shared control on or off, and `mend adopt` takes
+  `--private` (the default) or `--shared`. The phone app hides steering actions from someone who
+  cannot steer a session and stops retrying a terminal whose access was revoked. Projects adopted
+  without a stated visibility, from any client, are private.
+- 1224d70: Add an error boundary and a browser header policy. Error messages that leave the API are
+  scrubbed of what arrived from below (server paths, internal hostnames, credentials and queries in
+  URLs, tokens) while Mend's own words pass through; a defect answers `InternalError` with a
+  reference id and its detail goes to the server log under that id. `MEND_ERROR_DETAIL=verbose`
+  turns the scrubbing off for debugging a private instance. The web tier now sets a
+  Content-Security-Policy (this origin only, no framing), `nosniff`, a referrer policy
+  (`no-referrer` on pages whose URL carries a credential), a permissions policy, same-origin opener
+  and resource policies, and HSTS when the origin is https. The terminal embed keeps working: the
+  phone loads it as a top-level document.
+- aedabb8: Add `MEND_EXPOSURE` (`loopback`, `private` (the default), `public`) and the public
+  exposure gate. How an instance is reached is the operator's statement, since a server cannot
+  observe what is published in front of it; Mend reports what it observes beside it.
+  `MEND_EXPOSURE=public` refuses to start while an item Mend can observe is open: https browser
+  origins, `Secure` session cookies, trusted proxies set and not wildcarded, every multi mode gate
+  item (an operator account included), every budget, URL bearers refused, error redaction on, and a
+  session channel that is https or declared private (`MEND_EXECUTOR_NETWORK=private`). Items no
+  build can observe (Sealant and the database not reachable from outside, the edge's certificate, an
+  independent reassessment recorded with `MEND_EXPOSURE_REASSESSED=<version>`) are reported as open
+  or declared and never block a start; the first two close only when the operator, having checked
+  from outside, names them in `MEND_EXPOSURE_DECLARED`. What the build contains and the API cannot
+  see in effect (invitation-only registration, the web tier's header policy) is reported as carried,
+  not observed. `mend operator exposure` prints the report; `/health`, which needs no sign-in,
+  carries the declared exposure and how many items are open, never which. The gate reports what was
+  observed; it never says an instance is fit to expose.
+
+  Session cookies are now explicitly `HttpOnly` and `SameSite=Lax`, and `Secure` whenever `APP_URL`
+  is https. The Helm chart (0.3.0) can render an Ingress to the web Service only, refused without
+  TLS or with a browser origin that is not its host, and its NetworkPolicy admits the ingress
+  controller's Pods by namespace and label. A Compose install run by hand gains an opt-in TLS edge,
+  `deploy/docker/compose.edge.yaml` with a Caddyfile that keeps tickets and tokens out of its log;
+  `mend server setup` installs do not apply it yet.
+
+- c56e90d: Report how an instance is exposed, not whether a tailnet was found. The shell's machine
+  block and `mend doctor` used to say `tailnet · reachable` or `tailnet · not detected`, inferred
+  from an interface address in 100.64.0.0/10: a false alarm on a LAN or public install, and never a
+  statement about who can reach the instance. They now say what the operator declared and what the
+  server observed, for example `exposure · private · https · via proxy`, and `mend doctor` asks for
+  https only when the instance is declared reachable beyond the machine. `GET /api/machine` gains
+  `exposure` (declared mode, origin scheme, whether the request arrived through a trusted proxy, the
+  kinds of address on the host without the addresses, open gate items); `tailnet` stays for older
+  clients.
+- 820eb92: Add organization folders: directories Mend keeps under the store, which owners create and
+  fill and projects select to mount at `/workspace/home/<name>`, read-only unless chosen otherwise.
+  They replace host mounts for everyone but the operator of a single-organization install. Uploads
+  are capped at 1 MiB a file and 4 MiB a request, and paths never leave their folder. Project detail
+  reports whether this deployment mounts them at all (`mountDelivery`).
+- 311953b: Warm hot sessions for each person who recently ran a session in the project and can still
+  see it, instead of as the first account, and drain a person's standbys once they lose access.
+  Nothing runs as a stand-in account any more: a session with no owner cannot launch or be steered,
+  the dependency install runs as whoever changed the install command (or the project's creator), and
+  the retired queue's runs act as the operator.
+- 4a53432: Owners can remove members, change roles, take over a project whose creator left, and read
+  the organization's audit log. Removing a member deactivates the account, revokes its browser
+  sessions, paired devices and phones, closes its open terminals, tunnels, key bridge and event
+  streams on every server process, and stops its sessions through the normal flush and checkpoint.
+  The static token now acts as the operator instead of the oldest account. Invitations, role and
+  visibility changes, takeovers, folders and references are recorded in the audit log.
+- 2540df0: The multi mode gate is computed. Each item answers from this build, this instance's
+  configuration, or the platform work it waits on; `MEND_TENANCY=multi` refuses to start while any
+  is open and names each with its fix. `/health` reports whether the gate passes and which items are
+  open, and `mend operator gate` shows the details.
+- adba99f: Recovery without email. Owners hand a member a one-time password reset link from
+  Settings; the operator lists organizations, renames them, invites or grants an owner, and issues
+  reset links from `mend operator`. A reset link works once for a day, and setting a password with
+  it signs the account out everywhere. Every operator act is recorded in the affected organization's
+  audit log.
+- 3843b11: Add organizations. Upgrading creates one organization that every existing account joins;
+  the oldest account becomes its owner and the instance operator, and every existing project stays
+  visible to everyone as a shared project. New projects are shared unless adopted as private, and
+  project names are unique within an organization. Registration now closes after the first account:
+  owners mint single-use invitation links instead, and an account that could not join an
+  organization is deactivated. `MEND_TENANCY` defaults to `single`; `multi` is refused at start
+  until the isolation work lands.
+- a2cab8c: Give each account its own ssh-agent bridge, so a shared signer only ever signs for the
+  account that shared it, and send session notifications only to the session owner's phones.
+  Reference repositories belong to the organization: owners add, refresh and remove them with their
+  own git access, and a project can select only its organization's references. Calls to the GitHub
+  API use the host's `gh` login only for the operator of a single-organization install. Adding host
+  mounts is refused in multi mode, and multi mode also refuses raw service listeners off loopback.
+- 01ba33f: Enforce project visibility on every route. A project, session, worktree, change, process
+  or Service the caller cannot see answers exactly like a missing one, and the check runs before any
+  effect. Members see shared projects and their own private ones; project settings are for owners
+  and the project's creator; removal is for owners, or the creator of a private project; only owners
+  change visibility, and organization owners may stop any session they can see. Machine settings and
+  the retired queue are the operator's, and adding host mounts needs the operator role. Live events
+  are filtered to what each account can see, and one closing stream no longer silences the others.
+- 0e5387b: Runs on Sealant 0.34.0, which bakes sealantd 0.17.0 (sealant-sh/sealantd#86): the
+  workspace daemon dials the session channel and every presigned object URL over HTTPS with a
+  verified certificate, and refuses to boot otherwise, unless the launch states that the network
+  between executor and channel is private. Mend now sends that statement with every capture launch
+  as `source.transport`, built from `MEND_EXECUTOR_NETWORK=private`, and hands the daemon the roots
+  of a private CA from `MEND_SESSION_ENDPOINT_CA_FILE` (the channel) and `MEND_BLOB_STORE_CA_FILE`
+  (the bucket). The packaged bundle states `private` itself, since its Compose network never leaves
+  the host. The Helm chart refuses to render a plain-http session channel without
+  `exposure.executorNetwork: private` or `sessionChannel.tls.enabled`, and takes the channel's CA
+  through `sessionChannel.tls.ca`.
+
+  Upgrade note for the chart: set one of those two values before `helm upgrade`, and roll this Mend
+  before or with Sealant 0.34; a Mend older than this release does not send the statement, and its
+  workspaces would refuse to boot under the new daemon.
+
+  `@sealant/sdk` and `@sealant/api-contracts` move to 0.34.0, and the bundled server image pins the
+  0.34.0 API, worker and ssh-gateway digests.
+
+- 188cd59: A session's owner can turn on shared control, letting anyone who can see the session
+  steer it on the owner's credentials; the owner or an organization owner can turn it off. Session
+  detail says what the viewer may do (steer, stop, change shared control). Interrupts, terminal
+  attaches, shell opens, stops and shared control changes are recorded per session with who did
+  them, and shared control changes also go to the audit log. While control is shared, notifications
+  also reach whoever sent the latest turn. Removing a member turns off shared control on their
+  sessions first.
+- 55d0b02: Under `MEND_SOURCE_POLICY=tenant`, git dials exactly the address the source policy
+  checked, over HTTPS and ssh, so a name cannot resolve somewhere else between the check and the
+  connection. The dotfiles clone at each launch is now checked and pinned too.
+- 4e78243: Mend checks where its own git goes. Adoption, reference repositories, dotfiles and
+  project refreshes are refused for the cloud metadata service and, except for the operator, this
+  machine; `MEND_SOURCE_POLICY=tenant` also refuses private and reserved networks and `git://`
+  unless `MEND_SOURCE_ALLOWED_HOSTS` allows them. A workspace's git transport now signs only against
+  its project's own remote; `MEND_GIT_TRANSPORT_BIND_ORIGIN=false` restores the old behavior for a
+  machine one person uses.
+- 14c6486: Add upgrade tickets, so no long-lived bearer rides a URL. A WebSocket opened by a browser
+  or the CLI cannot set a header, and neither can a WebView loading a page, so the terminal, service
+  tunnel and key bridge sockets and the phone's terminal embed carried the session or device token
+  as `?token=`, where every proxy on the way could log it. `POST /api/upgrade-tickets` now mints a
+  ticket that is single use, lives thirty seconds, and opens exactly one target with exactly the
+  parameters it was minted for; the socket routes take it as `?ticket=`. The CLI (`mend attach`,
+  `mend service connect`, `mend keys share`), the desktop app, the phone and the embed page all use
+  tickets, and the embed page keeps a renewal ticket in memory so a dropped terminal reconnects for
+  up to twelve hours. A ticket is bound to the sign-in or paired device that minted it: signing out
+  or revoking the device ends every ticket it minted. `MEND_URL_BEARERS=refuse` answers `?token=`
+  with 400; the default, `accept`, keeps clients older than this release working and logs each use.
+  A client newer than its server falls back to `?token=` only when the mint answers 404 and
+  `/health` does not report `upgradeTickets`.
+- 341a001: Capture uploads can no longer store more than they declared. Presigned PUT and part URLs
+  sign the declared size, so an S3-compatible bucket refuses any other length; a multipart upload
+  must complete with exactly the parts its size implies, and an object whose stored size differs
+  from its declaration is removed and refused with `size-mismatch` at complete or register.
+  `MEND_CAPTURE_REQUIRE_SIZES=true` also refuses keys sent without a size (today's sealantd sends
+  sizes only for multipart keys).
+- fb73d6f: Settings shows your organization: members with roles, owners' invitation links, folders
+  with their files and uploads, projects a departed member left behind, and the audit log. Owners
+  change roles, remove members (the page says what removal does first), take over a departed
+  member's project, and page back through the audit log. Invitation links open a join page that
+  creates the account; a signed-in account is told which organization it already belongs to. A
+  removed account's browser is signed out and told why.
+- 289f409: The web app shows each person only the controls they may use. A session page names whose
+  credentials it runs on, lets its owner turn shared control on or off (an organization owner can
+  turn it off), and shows the record instead of the terminal to someone who cannot steer. Menus, the
+  Services card and "Send review to session" follow the same rules. Adoption asks who may see the
+  new project, owners change a project's visibility in its setup, managers pick the organization
+  folders its sessions mount, and setup sections a viewer cannot change are replaced by a note
+  saying who can.
+
+### Patch Changes
+
+- 6b0eb97: Allow only a session's owner to steer it, including terminal and Service tunnel access.
+  Legacy sessions without an owner continue to use the first account as their owner.
+- 2c05944: Runs on Sealant 0.33.1, which bakes sealantd 0.16.0 (sealant-sh/sealant#249). That is the
+  daemon release Mend's capture channel now expects: every PUT URL the executor mints is bound to
+  the length the PUT sends, which is what `MEND_CAPTURE_REQUIRE_SIZES=true` refuses uploads without,
+  and `plan.get`'s `sources` are laid down beside the worktree, which is how a project's folders and
+  reference repositories reach a captured workspace.
+
+  `@sealant/sdk` and `@sealant/api-contracts` move to 0.33.1, and the bundled server image pins the
+  0.33.1 API, worker and ssh-gateway digests.
+
 ## 0.28.0
 
 ### Minor Changes
