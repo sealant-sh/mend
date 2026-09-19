@@ -116,12 +116,16 @@ export const gitRemoteLocation = (value: string): GitRemoteLocation | null => {
 /**
  * Whether a workspace's git transport target is the project's own remote: the same host, and the
  * same ssh port (22 when unspecified).
+ *
+ * `target.host` is the destination git hands its ssh command, which is `user@host` for every
+ * remote that names a user (`git@github.com`). The user is not part of where the connection
+ * goes, so it is set aside the way ssh itself reads it: everything up to the last `@`.
  */
 export const isSameGitRemote = (
   origin: GitRemoteLocation,
   target: { readonly host: string; readonly port: number | null },
 ): boolean =>
-  origin.host === target.host.toLowerCase() &&
+  origin.host === target.host.slice(target.host.lastIndexOf("@") + 1).toLowerCase() &&
   (origin.scheme === "ssh" ? (origin.port ?? 22) === (target.port ?? 22) : true);
 
 export const RepositoryCloneUrl = Schema.String.pipe(

@@ -42,4 +42,20 @@ describe("isSameGitRemote", () => {
     expect(isSameGitRemote(origin, { host: "github.com", port: 2222 })).toBe(false);
     expect(isSameGitRemote(origin, { host: "gitlab.com", port: null })).toBe(false);
   });
+
+  it("reads the destination git hands ssh, which carries the remote's user", () => {
+    // `git push` to git@github.com:acme/api.git runs `ssh git@github.com …`: refusing that as
+    // "another host" refused every push and fetch to the project's own origin.
+    expect(isSameGitRemote(origin, { host: "git@github.com", port: null })).toBe(true);
+    expect(isSameGitRemote(origin, { host: "deploy@GitHub.com", port: 22 })).toBe(true);
+    expect(isSameGitRemote(origin, { host: "git@gitlab.com", port: null })).toBe(false);
+    expect(isSameGitRemote(origin, { host: "git@github.com", port: 2222 })).toBe(false);
+  });
+
+  it("takes the host after the last @, as ssh does, so a user cannot pose as the origin", () => {
+    expect(isSameGitRemote(origin, { host: "github.com@evil.example", port: null })).toBe(false);
+    expect(isSameGitRemote(origin, { host: "git@github.com@evil.example", port: null })).toBe(
+      false,
+    );
+  });
 });

@@ -6870,6 +6870,23 @@ describe("SessionEngine capture mode", () => {
             })
             .pipe(Effect.exit);
           expect(failureText(home)).not.toContain("bound to");
+          // What git really sends: the remote's user rides the destination (`git@host`).
+          const asGitSendsIt = yield* api
+            .gitTransport({
+              host: `git@${origin.hostname}`,
+              port: null,
+              command: "git-upload-pack 'fixture.git'",
+            })
+            .pipe(Effect.exit);
+          expect(failureText(asGitSendsIt)).not.toContain("bound to");
+          const posing = yield* api
+            .gitTransport({
+              host: `${origin.hostname}@github.com`,
+              port: null,
+              command: "git-receive-pack 'acme/api.git'",
+            })
+            .pipe(Effect.exit);
+          expect(failureText(posing)).toContain(`bound to ${origin.hostname}`);
         }),
       { sealantLayer: sealantLaunchLayer(created) },
     );
