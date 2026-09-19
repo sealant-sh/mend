@@ -241,6 +241,10 @@
   (sealant-sh/sealantd#91); a password embedded in an adopted URL is dropped first, so no credential
   enters a workspace. It takes effect with the Sealant release that bakes that daemon; an older one
   ignores the field.
+- A workspace's git transport recognises the project's own remote when it names a user. Git hands
+  its ssh command `git@host`, and the origin binding compared that whole destination with the
+  origin's host, so every push and fetch to an ssh origin was refused as "bound to" another host.
+  The user is now set aside the way ssh reads it, after the last `@`.
 - 6b0eb97: Allow only a session's owner to steer it, including terminal and Service tunnel access.
   Legacy sessions without an owner continue to use the first account as their owner.
 - 2c05944: Runs on Sealant 0.33.1, which bakes sealantd 0.16.0 (sealant-sh/sealant#249). That is the
