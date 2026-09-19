@@ -19,6 +19,7 @@ import {
 import { Duration, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import { CaptureRemotes, type PlanRemote } from "./capture-remotes.ts";
 import { CaptureSources, type PlanSource } from "./capture-sources.ts";
 import { CaptureGitVerifier } from "./capture-verify.ts";
 
@@ -71,6 +72,12 @@ export interface PlanGetResponse {
    * none; a sealantd older than 0.16.0 ignores it.
    */
   readonly sources?: ReadonlyArray<PlanSource>;
+  /**
+   * The remotes the worktree's repository should have (`capture-remotes.ts`): sealantd builds
+   * that repository itself, so it has none otherwise. Absent when the project has no origin; a
+   * sealantd that predates plan remotes ignores it.
+   */
+  readonly remotes?: ReadonlyArray<PlanRemote>;
 }
 
 /**
@@ -457,7 +464,12 @@ const VERIFIED_AT_REGISTER = new Set<CaptureManifest["kind"]>([
 export const CaptureChannelLive: Layer.Layer<
   CaptureChannel,
   never,
-  CaptureStoreRepo | BlobStore | CaptureUploadPolicy | CaptureGitVerifier | CaptureSources
+  | CaptureStoreRepo
+  | BlobStore
+  | CaptureUploadPolicy
+  | CaptureGitVerifier
+  | CaptureSources
+  | CaptureRemotes
 > = Layer.effect(
   CaptureChannel,
   Effect.gen(function* () {
@@ -466,6 +478,7 @@ export const CaptureChannelLive: Layer.Layer<
     const policy = yield* CaptureUploadPolicy;
     const verifier = yield* CaptureGitVerifier;
     const sources = yield* CaptureSources;
+    const remotes = yield* CaptureRemotes;
     /**
      * A GET URL per source archive, minted like the head's objects. A source whose URL cannot be
      * minted is dropped rather than named without one: sealantd would only skip it anyway.
@@ -761,6 +774,7 @@ export const CaptureChannelLive: Layer.Layer<
         // Folders and references travel with the plan, so a captured workspace has them beside
         // the worktree; an empty chain gets them too (the session still reads its folders).
         const beside = yield* sources.forProject(scope.projectId, worktreeId, epoch);
+        const origin = yield* remotes.forProject(scope.projectId);
         const chain = yield* repo.headOf(worktreeId);
         const head = chain?.head ?? null;
         if (head === null) {
@@ -770,6 +784,7 @@ export const CaptureChannelLive: Layer.Layer<
             head: null,
             get_urls: yield* sourceUrls(beside),
             ...(beside.length === 0 ? {} : { sources: beside }),
+            ...(origin.length === 0 ? {} : { remotes: origin }),
           };
         }
         const stored = yield* readManifest(head);
@@ -795,6 +810,7 @@ export const CaptureChannelLive: Layer.Layer<
           },
           get_urls: urls,
           ...(beside.length === 0 ? {} : { sources: beside }),
+          ...(origin.length === 0 ? {} : { remotes: origin }),
         } satisfies PlanGetResponse;
       });
 

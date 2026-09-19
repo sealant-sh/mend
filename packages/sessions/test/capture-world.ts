@@ -35,6 +35,7 @@ import {
   CaptureChannelLive,
   CaptureUploadPolicyDefault,
 } from "../src/capture-channel.ts";
+import { CaptureRemotesLive } from "../src/capture-remotes.ts";
 import { type CaptureSources, CaptureSourcesLive } from "../src/capture-sources.ts";
 import { CaptureGitVerifierLive } from "../src/capture-verify.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
@@ -311,6 +312,7 @@ export const makeCaptureWorld = (
     Layer.provide(blobs),
     Layer.provide(CaptureUploadPolicyDefault),
     Layer.provide(sources),
+    Layer.provide(CaptureRemotesLive.pipe(Layer.provide(projectsFor(project)))),
   );
   const layer = Layer.mergeAll(
     store,

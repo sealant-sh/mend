@@ -98,6 +98,7 @@ import { SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
   CaptureChannelLive,
   CaptureGitVerifierOff,
+  CaptureRemotesOff,
   CaptureSourcesOff,
   CaptureRuntimeLive,
   CaptureRuntimeOff,
@@ -1830,6 +1831,7 @@ const withEngine = <A, E>(
           CaptureChannelLive.pipe(
             Layer.provide(CaptureGitVerifierOff),
             Layer.provide(CaptureSourcesOff),
+            Layer.provide(CaptureRemotesOff),
             Layer.provide(options.captured.layer),
             Layer.provide(blobsLayer),
             Layer.provide(CaptureUploadPolicyDefault),
