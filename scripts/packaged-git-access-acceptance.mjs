@@ -4,7 +4,9 @@ import { join } from "node:path";
 
 const port = 2222;
 const repositories = ["repo.git", "bridge-first.git", "bridge-second.git"];
+const pushBranch = "packaged-proof-push";
 const refreshBranch = "packaged-refresh-proof";
+const pushEvidence = "/tmp/mend-acceptance-push.log";
 const processTimeout = 5000;
 
 function requireFact(condition, message) {
@@ -49,11 +51,12 @@ export function acceptedFingerprints(log) {
 /**
  * Git access through the installed CLI against an SSH git remote, which is what a git host is to
  * Mend (docs/GIT-ACCESS.md): `keys init` / `keys show`, adoption signed by the account's Mend key,
- * `refresh`, and the ssh-agent bridge through `keys share`.
+ * `refresh`, the ssh-agent bridge through `keys share`, and a push from inside a session.
  *
  * await preparePackagedGitAccessAcceptance({ cli, startCli, docker, startDocker, run, start, until, api, own,
  *   scratch, fixtures, runId, name, network, bare, baseSha, environment })
- *   -> { project, image, containerId, assertKeyUnchanged }
+ *   -> { project, image, containerId, pushCommand, pushEvidence, verifyPush, mendKeySignatures,
+ *        assertKeyUnchanged }
  *
  * Callbacks match check-packaged-server.mjs. cli(args) and run(command, args, options) resolve
  * stdout and reject an unsuccessful process; startCli(args, options), startDocker(args, options)
@@ -307,6 +310,35 @@ export async function preparePackagedGitAccessAcceptance({
     project,
     image,
     containerId,
+    /** Shell for the session: non-fatal, so a refused push is named by verifyPush, not by a failed session. */
+    // git's own words stay in the workspace (pushEvidence): the parent reads them as private
+    // evidence while the executor is alive, because a refused push leaves nothing on the remote.
+    pushCommand: `{ git remote -v; git push origin HEAD:refs/heads/${pushBranch} && echo pushed || echo "refused $?"; } > ${pushEvidence} 2>&1; touch ${pushEvidence}.done`,
+    pushEvidence,
+    /** The session's commit must have reached the remote, signed by its owner's Mend key. */
+    async verifyPush(marker, signaturesBefore) {
+      const pushed = await startDocker([
+        "exec",
+        "--user",
+        "git",
+        containerId,
+        "git",
+        "-C",
+        "/srv/git/repo.git",
+        "show",
+        `refs/heads/${pushBranch}:packaged-proof.txt`,
+      ]).result;
+      requireFact(
+        pushed.ok && pushed.output === `${marker}\n`,
+        "A git push from inside the session must arrive at the SSH remote with the session's commit",
+      );
+      requireFact(
+        (await accepted()).filter((item) => item === mendFingerprint).length > signaturesBefore,
+        "The session's push must be signed by its owner's Mend key, observed on the remote",
+      );
+    },
+    mendKeySignatures: async () =>
+      (await accepted()).filter((item) => item === mendFingerprint).length,
     /** Restart, stop/start and upgrade must keep the key a git host already trusts. */
     async assertKeyUnchanged(when) {
       const current = await api("/keys/git");
