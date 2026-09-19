@@ -108,6 +108,7 @@ import { asSealantUser, SealantLiveFromEnv } from "@mend/sealant";
 import {
   CaptureChannelLive,
   CaptureGitVerifierLive,
+  CaptureRemotesLive,
   CaptureSourcesLive,
   CaptureRuntimeLive,
   CaptureUploadPolicyLive,
@@ -592,6 +593,10 @@ const MainLive = Layer.unwrap(
       Layer.provide(captureStore),
       Layer.provide(CaptureUploadPolicyLive),
       Layer.provide(captureSources),
+      // A captured repository is built by sealantd and has no remotes until the plan names them.
+      Layer.provide(
+        CaptureRemotesLive.pipe(Layer.provide(ProjectsRepoLive.pipe(Layer.provide(DatabaseLive)))),
+      ),
     );
     const captureRuntime = captured
       ? CaptureRuntimeLive.pipe(Layer.provide(captureChannel), Layer.provide(captureStore))
