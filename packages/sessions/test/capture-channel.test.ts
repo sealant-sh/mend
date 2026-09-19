@@ -38,6 +38,7 @@ import {
   PRESIGN_TTL_SECONDS,
   resolveCaptureUploadPolicy,
 } from "../src/capture-channel.ts";
+import { CaptureRemotes } from "../src/capture-remotes.ts";
 import { CaptureSourcesLive } from "../src/capture-sources.ts";
 import { CaptureGitVerifierOff } from "../src/capture-verify.ts";
 import {
@@ -56,6 +57,7 @@ import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
  */
 
 const WORKTREE = WorktreeId.make("wt-cap-1");
+const ORIGIN = "git@example.invalid:acme/api.git";
 const PROJECT = ProjectId.make("proj-cap");
 const SESSION = SessionId.make("sess-cap-1");
 
@@ -174,6 +176,11 @@ describe("capture channel routes", () => {
     CaptureChannelLive.pipe(
       Layer.provide(CaptureGitVerifierOff),
       Layer.provide(sources),
+      Layer.provide(
+        Layer.succeed(CaptureRemotes, {
+          forProject: () => Effect.succeed([{ name: "origin", url: ORIGIN }]),
+        }),
+      ),
       Layer.provide(memory.layer),
       Layer.provide(blobs),
       // Small numbers so a multipart plan is exercised with bytes a test can afford.
@@ -317,6 +324,8 @@ describe("capture channel routes", () => {
     expect(docs?.["read_only"]).toBe(true);
     expect(docs?.["key"]).toBe(`captures/${WORKTREE}/2/sources/${docs?.["sha256"]}.tar.gz`);
     expect(urls[String(docs?.["key"])]).toMatch(/^file:\/\//);
+    // So does its origin: sealantd builds the repository itself, and it has no remotes otherwise.
+    expect(first.json["remotes"]).toEqual([{ name: "origin", url: ORIGIN }]);
     // The archive sits under the epoch the executor reads, and nowhere else: capture retention
     // sweeps it when the epoch is fenced.
     expect(fs.readFileSync(path.join(blobRoot, String(docs?.["key"]))).byteLength).toBe(

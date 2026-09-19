@@ -7,6 +7,7 @@ import { WorktreeId } from "@mend/domain";
 import {
   CaptureChannelLive,
   CaptureGitVerifierOff,
+  CaptureRemotesOff,
   CaptureSourcesOff,
   CaptureRuntimeLive,
   CaptureUploadPolicyDefault,
@@ -109,6 +110,7 @@ describe("CaptureRetention over dir://", () => {
   const channel = CaptureChannelLive.pipe(
     Layer.provide(CaptureGitVerifierOff),
     Layer.provide(CaptureSourcesOff),
+    Layer.provide(CaptureRemotesOff),
     Layer.provide(memory.layer),
     Layer.provide(blobs),
     Layer.provide(CaptureUploadPolicyDefault),

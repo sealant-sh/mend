@@ -229,6 +229,12 @@
   using the capture store (the default since 0.27.0). The scripts are now written into the workspace
   at provisioning and reach the server over the session endpoint. A workspace where they cannot be
   installed is logged, no longer passed over.
+- A captured session's repository has its `origin`. sealantd builds that repository itself, so it
+  had no remotes and `git push origin` failed with "'origin' does not appear to be a git
+  repository". `plan.get` now names the project's origin for sealantd to set
+  (sealant-sh/sealantd#91); a password embedded in an adopted URL is dropped first, so no credential
+  enters a workspace. It takes effect with the Sealant release that bakes that daemon; an older one
+  ignores the field.
 - 6b0eb97: Allow only a session's owner to steer it, including terminal and Service tunnel access.
   Legacy sessions without an owner continue to use the first account as their owner.
 - 2c05944: Runs on Sealant 0.33.1, which bakes sealantd 0.16.0 (sealant-sh/sealant#249). That is the

@@ -4,6 +4,7 @@ export * from "./session-repository.ts";
 export * from "./session-repository-captured.ts";
 export * from "./capture-channel.ts";
 export * from "./capture-runtime.ts";
+export * from "./capture-remotes.ts";
 export * from "./capture-sources.ts";
 export * from "./capture-verify.ts";
 export * from "./worktree-reads.ts";
