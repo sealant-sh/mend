@@ -11,12 +11,12 @@ import { MendMark } from "#/components/logo";
 export const REPO_URL = "https://github.com/sealant-sh/mend";
 export const DOCS_URL = "https://docs.mend.run";
 export const DOCS_INSTALL_URL = `${DOCS_URL}/getting-started/install/`;
-export const INSTALL_COMMAND = "curl -fsSL https://mend.sealant.dev/install.sh | sh";
+export const INSTALL_COMMAND = "npm install --global @sealant/mend";
 
 export const HEADLINE = "Run your TUI agents anywhere you want";
 export const SUBLINE =
   "The coding agent you already use, in a recorded worktree on your own machine — reachable from every device you own.";
-export const TRUST_LINE = "Open source · Self-hosted · Linux";
+export const TRUST_LINE = "Open source · Self-hosted · Linux · Node 22, 26 for the TUI";
 
 export const FEATURES: ReadonlyArray<{ title: string; body: ReactNode }> = [
   {

@@ -19,7 +19,8 @@ Install the CLI on each device. Set up the server on the machine that will keep 
 
 ## Requirements
 
-- Node.js 22 or newer for the CLI. The optional terminal dashboard requires Node.js 26.
+- Node.js 22 or newer for the CLI. The TUI, the dashboard `mend` opens in a terminal, requires
+  Node.js 26 or newer.
 - For the server, a local Docker daemon with client/server API 1.45 or newer and Docker Compose v2.
 - Disk space for repositories, worktrees, images, databases, and backups.
 - A trusted private network for access from another device.
@@ -35,15 +36,7 @@ checks are not evidence that MacBook-to-Mac-Mini operation has been verified.
 npm install --global @sealant/mend
 ```
 
-Or download and inspect the POSIX bootstrap:
-
-```sh
-curl -fsSL https://mend.sealant.dev/install.sh -o /tmp/mend-install.sh
-less /tmp/mend-install.sh
-sh /tmp/mend-install.sh
-```
-
-Both methods install only the CLI. Neither installs Docker, creates a server, nor starts a service.
+This installs only the CLI. It does not install Docker, create a server, or start a service.
 
 ## Set up the server
 
