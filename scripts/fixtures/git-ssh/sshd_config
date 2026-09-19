@@ -1,0 +1,15 @@
+# A non-default port on purpose: the origin binding and the adopted URL both carry it.
+Port 2222
+AllowUsers git
+PermitRootLogin no
+PubkeyAuthentication yes
+PasswordAuthentication no
+KbdInteractiveAuthentication no
+# Root-owned and outside the account's home, so only the acceptance run decides who gets in.
+AuthorizedKeysFile /etc/ssh/authorized/%u
+# VERBOSE names the accepted key's fingerprint; the run reads it back from the container's log.
+LogLevel VERBOSE
+AllowAgentForwarding no
+AllowTcpForwarding no
+X11Forwarding no
+PermitTTY no
