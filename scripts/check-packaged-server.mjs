@@ -1025,7 +1025,7 @@ async function main() {
     "Authenticated installed CLI must list the adopted project",
   );
   // Anonymous HTTP above needs no credential, so it cannot notice a broken signer. The session
-  // below therefore runs in a project adopted over SSH with the account's Mend key.
+  // below therefore runs in a project adopted over SSH with the account's Mend key, and pushes.
   let gitAccess;
   if (offline) console.log("NOT TESTED git access; the SSH git remote image needs a registry");
   else {
@@ -1104,8 +1104,9 @@ async function main() {
   // Keep the real process alive briefly so inspect can observe the executor before normal
   // reclamation. No mock launch or host-store write creates the change: the commit happens in
   // the executor and reaches Mend as a capture (ADR-0002), never through a store mount.
-  const command = `set -eu; git config user.name Acceptance; git config user.email acceptance@example.invalid; printf '%s\\n' '${marker}' > packaged-proof.txt; git add packaged-proof.txt; git commit -m 'packaged acceptance'; sleep 30; printf '%s\\n' '${marker}'`;
+  const command = `set -eu; git config user.name Acceptance; git config user.email acceptance@example.invalid; printf '%s\\n' '${marker}' > packaged-proof.txt; git add packaged-proof.txt; git commit -m 'packaged acceptance'; ${gitAccess?.pushCommand ?? "true"}; sleep 30; printf '%s\\n' '${marker}'`;
   const launchStarted = new Date().toISOString();
+  const signaturesBeforeSession = (await gitAccess?.mendKeySignatures()) ?? 0;
   const launched = start(
     process.execPath,
     [bin, "run", "--project", project.name, "--name", "packaged-proof", "--", "sh", "-c", command],
@@ -1174,6 +1175,33 @@ async function main() {
     transport.ok,
     "The workspace must hold the mend helper and the git transport its git is configured with",
   );
+  if (gitAccess) {
+    // What git said about the push, kept beside failed-command diagnostics and never printed.
+    // A claimed standby makes "the session's executor" any owned workspace, so each is asked.
+    const deadline = Date.now() + 60_000;
+    let recorded = false;
+    while (!recorded && Date.now() < deadline) {
+      const { now } = await collectOwned();
+      for (const item of now.containers) {
+        if (!item.State.Running || !ownsWorkspaceContainer(item, initialIds)) continue;
+        const probe = ["--context", context, "exec", item.Id];
+        const done = await start("docker", [
+          ...probe,
+          "test",
+          "-e",
+          `${gitAccess.pushEvidence}.done`,
+        ]).result;
+        if (!done.ok) continue;
+        await start("docker", [...probe, "cat", gitAccess.pushEvidence], {
+          timeout: 10_000,
+          failureEvidence: true,
+        }).result;
+        recorded = true;
+        break;
+      }
+      if (!recorded) await pause(1000);
+    }
+  }
   const captured = evidence.observation;
   console.log(
     `OBSERVED store-less capture executor and ${captured.label} (${captured.state}, capture ${captured.captureN})`,
@@ -1193,6 +1221,14 @@ async function main() {
     (await launched.result).ok,
     "mend run must finish successfully through the real record stream",
   );
+  if (gitAccess) {
+    stage = "git push from inside the session";
+    await gitAccess.verifyPush(marker, signaturesBeforeSession);
+    console.log(
+      "PASS git push from inside the session reached the SSH remote, signed by its owner's Mend key",
+    );
+    stage = "recorded command and change";
+  }
   const detail = await until("completed session and checkpoint", async () =>
     completedCommandEvidence(await sessionDetail()),
   );
