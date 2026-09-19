@@ -1,13 +1,13 @@
 # Mend Quick Context
 
-Mend (by Sealant) is a `pnpm` + `turbo` monorepo. **Code is now cheap. Trust is not.** Mend is a
-**local-first workbench for developers who use coding agents heavily**: adopt a repository into
-Mend's central store, run your own agent (`mend codex`, `mend claude`, an arbitrary command) in a
-recorded per-session git worktree, review the accumulated local change with evidence beside every
-claim, send review comments back to the same session, and steer it all from any device over a
-private network. No issue tracker or PR required. Read `MEND-AGENT-WORKBENCH-PLAN.md` first; it is
-the canonical product direction and carries the decision log. The retired issue-to-PR/queue
-documents live in `docs/archive/` — do not implement against them.
+Mend (by Sealant) is a `pnpm` + `turbo` monorepo. Mend is a **local-first workbench for developers
+who use coding agents heavily**: adopt a repository into Mend's central store, run your own agent
+(`mend codex`, `mend claude`, an arbitrary command) in a recorded per-session git worktree, review
+the accumulated local change with evidence beside every claim, send review comments back to the same
+session, and steer it all from any device over a private network. No issue tracker or PR required.
+Read `MEND-AGENT-WORKBENCH-PLAN.md` first; it is the canonical product direction and carries the
+decision log. The retired issue-to-PR/queue documents live in `docs/archive/` — do not implement
+against them.
 
 - `apps/marketing`: TanStack Start marketing site (Cloudflare Workers via wrangler). Pitches the
   workbench direction (refreshed 2026-08-01).

@@ -1,7 +1,5 @@
 # Mend
 
-**Code is now cheap. Trust is not.**
-
 Mend, by [Sealant](https://github.com/sealant-sh/sealant), is for developers who run coding agents
 heavily and work from more than one device. It co-locates agent sessions, their git worktrees, and
 the project context they run with in one self-hostable environment, and makes working there feel
@@ -12,49 +10,50 @@ terminals, provider apps, and browser tabs.
 mend codex → recorded session in a store worktree → local review with provenance → follow-up → commit or PR
 ```
 
-Inside an adopted repository, `mend codex`, `mend claude`, or `mend run -- <cmd>` starts the agent
-the way it always started: a real terminal, a real git worktree. What changes is where everything
-lives. The session runs under Sealant supervision on the Mend machine, next to the worktree it edits
-and the context it launched with: repository instructions, environment and secrets, mounted
-references, your accounts and dotfiles. Close the terminal and the agent keeps working. Come back
-from the CLI, a browser, the desktop app, or a phone on your tailnet, and the same session picks up
-where it was.
+Inside an adopted repository, `mend codex`, `mend claude` or `mend run -- <cmd>` starts the agent
+the way you always start it, in a terminal on a git worktree. It runs on the Mend machine under
+Sealant supervision, in its own worktree, with the context it launched with: repository
+instructions, environment and secrets, mounted references, your accounts and your dotfiles. Close
+the terminal and the agent keeps working. Open the CLI, a browser, the desktop app or a phone later
+and you are back in the same session.
 
-Review the accumulated change in the same place. Every hunk in the diff can answer "why did this
-change?" from the recording, comments go back to the same session as an editable follow-up, and
-"Mend read this change" drafts evidence-linked findings a diff-only reviewer cannot make. No issue
-tracker, no pull request required; publication is optional output, not the point.
+You review the change on the same machine. Mend records the session, so for any hunk in the diff you
+can ask why it changed and get the answer from the recording. Review comments go back to the same
+session as a follow-up you can edit before sending. Mend can also read the change itself and draft
+findings, each linked to the recording or shipped with a check you can run. None of this needs an
+issue tracker or a pull request. Commit or open a PR when you want to.
 
-Mend is open-source, self-hosted, and built on the public
-[`@sealant/sdk`](https://www.npmjs.com/package/@sealant/sdk), with no private hooks into the Sealant
-runtime underneath. [`MEND-AGENT-WORKBENCH-PLAN.md`](MEND-AGENT-WORKBENCH-PLAN.md) is the canonical
-product direction and carries the decision log.
+Mend is open source and self-hosted. It uses Sealant only through the public
+[`@sealant/sdk`](https://www.npmjs.com/package/@sealant/sdk), the same package anyone can install.
+[`MEND-AGENT-WORKBENCH-PLAN.md`](MEND-AGENT-WORKBENCH-PLAN.md) holds the product direction and the
+decision log.
 
 ## Install
 
-Install the CLI with Node.js 22 or newer:
+Install the CLI with Node.js 22 or newer. The TUI, which is the dashboard `mend` opens in a
+terminal, needs Node.js 26 or newer. Every other command works on Node.js 22.
 
 ```sh
 npm install --global @sealant/mend
-# Or: curl -fsSL https://mend.sealant.dev/install.sh | sh
 ```
 
-Both methods install **only the CLI**. They do not install Docker, create a server, or start
-services. The optional terminal dashboard requires Node.js 26; other commands work on Node.js 22.
+This installs the CLI and nothing else. It does not install Docker, create a server or start
+services.
 
 On the machine that will hold your projects, install a current Docker Engine or Docker Desktop with
-Compose v2, then explicitly set up the server:
+Compose v2, then set up the server:
 
 ```sh
 mend server setup
 ```
 
-At idle there are two containers: the complete Mend application and official Postgres. Sealant is
-pinned inside the application image; you manage the Mend version, not a separate platform version.
-Session workspaces may create additional containers while work is running. Repositories, worktrees,
-harness state, database data, and SSH identity live in Docker-managed volumes.
+At idle there are three containers: the Mend application, Postgres, and Garage, which holds session
+captures. Sealant is pinned inside the application image, so the only version you manage is Mend's.
+Session workspaces may create more containers while work is running. Repositories, worktrees,
+harness state, database data and the SSH identity live in Docker-managed volumes.
 
-Open `http://localhost:3105`, create an account, then:
+Open `http://localhost:3105` and create an account. The first account owns the instance and closes
+registration. Everyone after that joins by invitation. Then:
 
 ```sh
 mend login --url http://localhost:3105
@@ -63,49 +62,48 @@ mend adopt https://github.com/your-org/your-repo.git --name demo
 mend codex --project demo
 ```
 
-Adoption takes a Git repository URL, not a local folder or a server filesystem path. An existing
-checkout can still identify an already-adopted project when you run a command from it.
+Adoption takes a Git repository URL. It does not take a local folder or a path on the server. If you
+run a command from an existing checkout, Mend matches it to the project you already adopted.
 
-Setup reruns preserve the server pin, secrets, and data. Updating the npm CLI does not upgrade the
-server. Use `mend server upgrade --version VERSION` when you choose to change it. See
-[`docs/SELF-HOSTING.md`](docs/SELF-HOSTING.md) for lifecycle commands, offline setup, and recovery.
+Rerunning setup keeps the server pin, secrets and data. Updating the npm CLI does not upgrade the
+server. Run `mend server upgrade --version VERSION` when you want to change it. See
+[`docs/SELF-HOSTING.md`](docs/SELF-HOSTING.md) for lifecycle commands, offline setup and recovery.
 
 ## Connect from another device
 
-The server binds to localhost by default. Private-network access is explicit; for example, on a Mac
-Mini or home server reachable as `mac-mini.local`:
+The server binds to localhost by default. To reach it from another device, give setup the address to
+bind and the URL you will use. For a Mac Mini or home server reachable as `mac-mini.local`:
 
 ```sh
 mend server setup --bind 0.0.0.0 --url http://mac-mini.local:3105 \
   --origin http://localhost:3105
 ```
 
-Keep the host behind a private network or firewall. Binding `0.0.0.0` exposes web and SSH on every
-IPv4 interface; it does not configure Tailscale or a firewall for you. Sign-up remains open to
-anyone who can reach Mend. Only web and SSH are published; Postgres has no published port.
+Keep the host behind a private network or a firewall. Binding `0.0.0.0` exposes web and SSH on every
+IPv4 interface. Mend does not configure Tailscale or a firewall for you. Setup publishes the web and
+SSH ports only. Postgres has no published port.
 
-On your laptop, install just the CLI and run `mend login --url http://mac-mini.local:3105`.
-`mend connect` reads credentials from that laptop, not the server. `mend pair` offers only
-configured server URLs. The native mobile app is unpublished; build it yourself or use the browser.
+On your laptop, install the CLI and run `mend login --url http://mac-mini.local:3105`.
+`mend connect` reads credentials from that laptop, never from the server. `mend pair` offers only
+the server URLs you configured. The native mobile app is unpublished, so build it yourself or use
+the browser.
 
-The VS Code extension opens session workspaces through Remote-SSH, using the configured Mend URL's
-hostname and the advertised SSH port. It maintains a separate SSH alias for each server, with your
-consent. See [`docs/WORKSPACE-SSH.md`](docs/WORKSPACE-SSH.md).
+The VS Code extension opens session workspaces through Remote-SSH, using the hostname of the Mend
+URL you configured and the SSH port the server advertises. With your consent it keeps one SSH alias
+per server. See [`docs/WORKSPACE-SSH.md`](docs/WORKSPACE-SSH.md).
 
-Physical macOS and installed VS Code acceptance are tracked in
-[`docs/MACOS-VALIDATION.md`](docs/MACOS-VALIDATION.md). Linux container tests are not evidence that
-MacBook-to-Mac-Mini operation has been verified.
+[`docs/MACOS-VALIDATION.md`](docs/MACOS-VALIDATION.md) tracks acceptance on physical macOS and with
+an installed VS Code. Linux container tests say nothing about a MacBook talking to a Mac Mini.
 
-`mend server setup` currently targets Docker. Kubernetes setup is later work; the existing
-[`deploy/helm/mend`](deploy/helm/mend) chart and [`docs/KUBERNETES.md`](docs/KUBERNETES.md) remain
-an operator-managed deployment path, not part of this installer.
+`mend server setup` targets Docker and does not set up Kubernetes. The
+[`deploy/helm/mend`](deploy/helm/mend) chart and [`docs/KUBERNETES.md`](docs/KUBERNETES.md) are for
+operators who deploy it themselves.
 
 ## Status
 
-In development. The server, CLI, web app, desktop app, VS Code extension, documentation site, and
-Kubernetes charts exist in the repository; the native mobile app is unpublished. The documentation
-site's feature-status page separates current behavior from planned work. Treat plan milestones as
-direction, not release status.
+In development. The server, CLI, web app, desktop app, VS Code extension, documentation site and
+Kubernetes chart are in this repository. The native mobile app is unpublished. The documentation
+site's feature-status page says what works today. Plan milestones describe direction.
 
 ## Monorepo
 
@@ -132,24 +130,25 @@ pnpm format:fix
 
 ## Acknowledgments
 
-Mend borrows deliberately from projects that solved hard problems well. Vendored code keeps its
-upstream license and notices next to it.
+Mend uses code and ideas from these projects. Vendored code keeps its upstream license and notices
+next to it.
 
 - [t3code](https://github.com/pingdotgg/t3code) (T3 Tools Inc., MIT) is the project we've taken the
   most from:
-  - `apps/mobile/modules/t3-terminal` vendors their native terminal module (libghostty on iOS via
-    `GhosttyKit.xcframework`, `libghostty-vt` over JNI on Android); notices in that directory.
-  - `apps/desktop/src/renderer/src/terminal/ghostty` adapts their browser terminal, the official
-    `libghostty-vt` C ABI compiled to wasm with their own renderer and input surface; notices in
-    that directory.
-  - The desktop inbox re-implements their sidebar model: static creation order (activity never
-    reorders), attention carried by contrast, client-local unseen state, lifecycle shelves, held-
-    modifier jump hints.
-  - The terminal reconnect discipline (fixed ladder, reset-once-stable, retry on focus), the mobile
-    chat list's pinned-follow scrolling, PTY frame coalescing, and the notification suppression
-    guards were studied in their source and re-implemented here.
+  - `apps/mobile/modules/t3-terminal` vendors their native terminal module: libghostty on iOS via
+    `GhosttyKit.xcframework`, and `libghostty-vt` over JNI on Android. Notices are in that
+    directory.
+  - `apps/desktop/src/renderer/src/terminal/ghostty` adapts their browser terminal, which is the
+    official `libghostty-vt` C ABI compiled to wasm with their own renderer and input handling.
+    Notices are in that directory.
+  - The desktop inbox re-implements their sidebar model: a static creation order that activity never
+    reorders, attention carried by contrast, unseen state kept on the client, lifecycle shelves, and
+    jump hints while a modifier is held.
+  - We studied these in their source and re-implemented them here: the terminal reconnect rules
+    (fixed ladder, reset once stable, retry on focus), the mobile chat list's pinned-follow
+    scrolling, PTY frame coalescing, and the notification suppression guards.
 - [Ghostty](https://github.com/ghostty-org/ghostty) (Mitchell Hashimoto & contributors, MIT):
-  `libghostty-vt` is the terminal core behind every Mend terminal surface, on all three platforms.
+  `libghostty-vt` is the terminal core behind every Mend terminal, on all three platforms.
 - [ghostty-web](https://github.com/coder/ghostty-web) (Coder, MIT): the wasm terminal used by
   `apps/web`.
 - Symbols Nerd Font (Ryan L McIntyre, MIT): vendored with the desktop terminal so prompt glyphs
