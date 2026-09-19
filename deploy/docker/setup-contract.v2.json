@@ -3,7 +3,7 @@
   "composeTemplate": "compose.v2.yaml",
   "environmentTemplate": "bundle.env.example",
   "mendImageRepository": "ghcr.io/sealant-sh/mend",
-  "sealantVersion": "0.35.0",
+  "sealantVersion": "0.35.1",
   "runtimeContainers": ["mend", "postgres", "garage"],
   "canonicalPaths": {
     "store": "/var/lib/mend/store",
@@ -56,7 +56,7 @@
     }
   },
   "bootstrap": {
-    "sealantMigrations": "node /opt/sealant/api/dist/migrate.js from sealant-api 0.35.0",
+    "sealantMigrations": "node /opt/sealant/api/dist/migrate.js from sealant-api 0.35.1",
     "servicePrincipal": "SEALANT_SERVICE_KEY configures the platform principal; Mend provisions each user through public @sealant/sdk users.ensure on first use",
     "jobQueue": "pg-boss inside sealant_control_plane (schema pgboss); created by the Sealant API/worker on first start"
   },
@@ -78,7 +78,7 @@
     "init": "mend server setup/start run `garage layout assign`, `layout apply`, `bucket create mend`, `key import`, `bucket allow` through `docker compose exec -T garage`, idempotently, after `up --wait`",
     "sessionEndpoint": "http://mend:3106 on the Compose network (not published)",
     "publicUrl": "http://garage:3900 on the Compose network (not published)",
-    "workspaceNetwork": "mend_default \u2014 set as SEALANT_DOCKER_WORKSPACE_NETWORK; the Sealant 0.35.0 runtime attaches workspace containers to it",
+    "workspaceNetwork": "mend_default \u2014 set as SEALANT_DOCKER_WORKSPACE_NETWORK; the Sealant 0.35.1 runtime attaches workspace containers to it",
     "idleMemoryMiB": 7.5
   }
 }
