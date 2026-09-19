@@ -7,6 +7,21 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-20 · 0.35.1 · A runtime with a fixed image still builds one, on the host's Docker
+
+- **Needed:** a control plane with the MicroVM runtime and no Docker daemon, on one machine
+  (deploy/aws "Single instance"). Tenants' sessions run in Lambda MicroVMs so that none of their
+  code runs beside the control plane.
+- **Today:** the worker's build job always runs phase A, "build the image, publish it"
+  (`process-workspace-build-job.ts`), before the runtime adapter is selected in phase B. With no
+  `imageBuilder` injected it falls back to `createDockerWorkspaceImageBuilder`, which needs the
+  Docker socket. The MicroVM adapter never reads the result: it boots `SEALANT_MICROVM_IMAGE_ARN`.
+  So without a socket every workspace fails at the build, and with one a tenant's image setup
+  commands run on the control plane's kernel to produce an image nothing uses. The EKS deployment
+  hides this by configuring the Kubernetes BuildKit builder.
+- **Suggested:** let a runtime adapter say whether it consumes a built image, select the adapter
+  before phase A, and skip the build (and its registry publish) when it does not.
+
 ## 2026-09-18 · 0.34.0 · Narrow a Claude credential at connect and at sync-back
 
 - **Needed:** the platform stores only the Claude credential, whatever a client sends. Claude Code's

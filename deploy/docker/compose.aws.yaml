@@ -1,0 +1,102 @@
+# Mend on one AWS instance: the control plane here, everything stateful or tenant-run elsewhere.
+# Used with the TLS edge (docs/adr/0004-access-without-a-private-network.md):
+#
+#   docker compose -f compose.aws.yaml -f compose.edge.yaml up -d
+#
+# It stands alone, not over compose.v2.yaml: that file's Postgres, Garage and Docker socket are
+# exactly what this shape does not have, and Compose interpolates a base file's required values
+# before it merges an overlay, so the overlay would still demand passwords for services it turns
+# off. scripts/aws-compose.test.mjs holds the two `mend` services to the same settings, and names
+# every one that differs on purpose.
+#
+#   Postgres   external (PlanetScale over PrivateLink), two databases, TLS verified
+#   Captures   S3, with the instance role; no static key, no Garage
+#   Sessions   Lambda MicroVMs. No Docker socket is mounted and the Docker runtime is off, so no
+#              tenant code runs on this host.
+#   Reached    through the edge on 443, and workspace SSH on 2222. Mend's web port stays on
+#              loopback, which is also the private path for creating the first account
+#              (aws ssm start-session … AWS-StartPortForwardingSession, portNumber=3105).
+#
+# First boot is two steps, because both gates count the operator account (tenancy.ts,
+# exposure.ts): start with MEND_TENANCY=single and MEND_EXPOSURE=private, create the first
+# account through the SSM tunnel, then set multi and public and `up -d` again.
+#
+# `mend server setup`, `start` and `upgrade` do not know this file. Upgrade by changing
+# MEND_VERSION in .env and running the command above.
+name: mend
+
+services:
+  mend:
+    image:
+      ${MEND_IMAGE_REPOSITORY:-ghcr.io/sealant-sh/mend}:${MEND_VERSION:?set MEND_VERSION in .env}
+    hostname: mend
+    init: true
+    restart: unless-stopped
+    stop_grace_period: 30s
+    ports:
+      - "127.0.0.1:${MEND_PORT:-3105}:3105"
+      - "0.0.0.0:${MEND_SSH_PORT:-2222}:2222"
+      # The session channel, for MicroVMs inside the VPC. The security group admits the MicroVM
+      # connector alone. MEND_SESSION_BIND_HOST is the instance's private IPv4, never 0.0.0.0.
+      - "${MEND_SESSION_BIND_HOST:?set MEND_SESSION_BIND_HOST in .env}:3106:3106"
+    environment:
+      APP_URL: ${APP_URL:?set APP_URL in .env}
+      MEND_ALLOWED_ORIGINS: ${MEND_ALLOWED_ORIGINS:-[]}
+      MEND_SSH_PORT: ${MEND_SSH_PORT:-2222}
+      SEALANT_SSH_HOST: ${SEALANT_SSH_HOST:?set SEALANT_SSH_HOST in .env}
+      # Whole URLs, because the host, the role and sslmode are the provider's to name. Use
+      # sslmode=verify-full and the direct port: both applications LISTEN/NOTIFY.
+      DATABASE_URL: ${MEND_DATABASE_URL:?set MEND_DATABASE_URL in .env}
+      SEALANT_DATABASE_URL: ${SEALANT_DATABASE_URL:?set SEALANT_DATABASE_URL in .env}
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET:?set BETTER_AUTH_SECRET in .env}
+      SEALANT_CREDENTIALS_KEY: ${SEALANT_CREDENTIALS_KEY:?set SEALANT_CREDENTIALS_KEY in .env}
+      SEALANT_SERVICE_KEY: ${SEALANT_SERVICE_KEY:?set SEALANT_SERVICE_KEY in .env}
+      WORKSPACE_SSH_GATEWAY_TOKEN:
+        ${WORKSPACE_SSH_GATEWAY_TOKEN:?set WORKSPACE_SSH_GATEWAY_TOKEN in .env}
+      # The bundle's supervisor requires these two exactly. Nothing reads them here: the Docker
+      # runtime that would is off.
+      SEALANT_MOUNT_ALLOWED_STORE_ROOTS: /var/lib/mend/store
+      SEALANT_DOCKER_VOLUME_MAPPINGS: >-
+        [{"logicalRoot":"/var/lib/mend/store","volumeName":"mend-store"},{"logicalRoot":"/run/sealant/sockets","volumeName":"mend-control"}]
+
+      # The capture store (ADR-0002): S3 with the instance role. No AWS_ACCESS_KEY_ID is set, so
+      # the SDK reads the role from the instance metadata service.
+      AWS_REGION: ${AWS_REGION:?set AWS_REGION in .env}
+      MEND_SESSION_ENDPOINT_LISTEN: 0.0.0.0:3106
+      MEND_SESSION_ENDPOINT_URL: ${MEND_SESSION_ENDPOINT_URL:?set MEND_SESSION_ENDPOINT_URL in .env}
+      MEND_BLOB_STORE: ${MEND_BLOB_STORE:?set MEND_BLOB_STORE in .env}
+      MEND_CAPTURE_REQUIRE_SIZES: "true"
+
+      # Sessions run in Lambda MicroVMs (deploy/aws/tofu/microvm.tf, application.tf).
+      DEFAULT_RUNTIME_ADAPTER: microvm
+      DOCKER_RUNTIME_ENABLED: "false"
+      SEALANT_MICROVM_REGION: ${AWS_REGION:?set AWS_REGION in .env}
+      SEALANT_MICROVM_AGENT_PORT: "8080"
+      SEALANT_MICROVM_IMAGE_ARN: ${SEALANT_MICROVM_IMAGE_ARN:?set SEALANT_MICROVM_IMAGE_ARN in .env}
+      SEALANT_MICROVM_IMAGE_VERSION:
+        ${SEALANT_MICROVM_IMAGE_VERSION:?set SEALANT_MICROVM_IMAGE_VERSION in .env}
+      SEALANT_MICROVM_EXEC_ROLE_ARN:
+        ${SEALANT_MICROVM_EXEC_ROLE_ARN:?set SEALANT_MICROVM_EXEC_ROLE_ARN in .env}
+      SEALANT_MICROVM_EGRESS_CONNECTOR:
+        ${SEALANT_MICROVM_EGRESS_CONNECTOR:?set SEALANT_MICROVM_EGRESS_CONNECTOR in .env}
+      SEALANT_MICROVM_INGRESS_CONNECTOR:
+        ${SEALANT_MICROVM_INGRESS_CONNECTOR:?set SEALANT_MICROVM_INGRESS_CONNECTOR in .env}
+      SEALANT_MICROVM_LOG_GROUP: ${SEALANT_MICROVM_LOG_GROUP:?set SEALANT_MICROVM_LOG_GROUP in .env}
+      SEALANT_MICROVM_MAX_DURATION_SECONDS: ${SEALANT_MICROVM_MAX_DURATION_SECONDS:-3600}
+
+      # Posture (docs/adr/0003, 0004). MEND_EXPOSURE, MEND_TRUSTED_PROXIES, MEND_EXECUTOR_NETWORK
+      # and MEND_URL_BEARERS come from compose.edge.yaml. The multi mode gate's configuration
+      # items are fixed here; `operator-present` is the account you create first.
+      MEND_TENANCY: ${MEND_TENANCY:-single}
+      MEND_SOURCE_POLICY: tenant
+    volumes:
+      - mend-store:/var/lib/mend/store
+      - mend-control:/run/sealant/sockets
+      - mend-config:/var/lib/mend/config
+      - mend-ssh:/var/lib/mend/ssh
+
+volumes:
+  mend-store:
+  mend-control:
+  mend-config:
+  mend-ssh:
