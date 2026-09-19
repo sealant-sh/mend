@@ -23,6 +23,7 @@ jobs:
     permissions:
       contents: write
       pull-requests: write
+      actions: write
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -33,9 +34,18 @@ jobs:
       # CI resolves package.json without modifying the intentionally frozen lockfile.
       - run: pnpm install --lockfile=false --ignore-scripts
       - uses: changesets/action@v1
+        id: changesets
         with:
           version: pnpm version-packages
           commit: "chore: version packages"
           title: "chore: version packages"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # The Version PR is opened with GITHUB_TOKEN, so no pull_request workflow runs on it. A
+      # dispatch is exempt from that rule, and its checks attach to the branch's head commit.
+      - name: Run packaged acceptance on the Version PR
+        if: steps.changesets.outputs.pullRequestNumber != ''
+        run: gh workflow run release-acceptance.yml --ref changeset-release/main
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}

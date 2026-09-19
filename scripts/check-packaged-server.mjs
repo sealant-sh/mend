@@ -41,6 +41,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { preparePackagedGitAccessAcceptance } from "./packaged-git-access-acceptance.mjs";
 import {
   assertFreshDocker,
   assertHealth,
@@ -92,6 +93,7 @@ let context;
 let initial;
 let configRoot;
 let fixtureId;
+let gitAccessImage;
 let setupAttempted = false;
 let cleanupFailed = false;
 const containers = new Set();
@@ -175,7 +177,13 @@ function start(command, args, options = {}) {
         output,
         Buffer.concat(stderr),
       );
-    return { ok, output: output.toString(), diagnosticMatched: probe.matched() };
+    return {
+      ok,
+      code,
+      output: output.toString(),
+      error: Buffer.concat(stderr).toString(),
+      diagnosticMatched: probe.matched(),
+    };
   });
   return { result, terminate };
 }
@@ -194,6 +202,17 @@ const docker = (args, options) =>
 const lines = (text) => text.trim().split(/\s+/).filter(Boolean);
 const hash = (text) => createHash("sha256").update(text).digest("hex");
 const pause = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+// How the instance is deployed, not what it found: /health also reports the tenancy and
+// exposure gates as evaluated at start, and an installation with an account and a project
+// answers those differently from the empty one the baseline was read from.
+const deployment = (body) =>
+  JSON.stringify([
+    body.deploymentMode,
+    body.storeRoot,
+    body.sessionChannel,
+    body.tenancy,
+    body.exposure?.declared,
+  ]);
 
 async function snapshot() {
   const inspect = async (kind, listing) => {
@@ -462,6 +481,25 @@ async function cleanup() {
     }
     if (pass === 0 && (setupAttempted || fixtureId)) await collectOwned();
   }
+  if (gitAccessImage) {
+    // Built by this run under a run-unique tag; nothing else can reference it. A build that
+    // never finished left no tag to remove.
+    const listed = await start("docker", [
+      "--context",
+      context,
+      "image",
+      "ls",
+      "-q",
+      "--filter",
+      `reference=${gitAccessImage}`,
+    ]).result;
+    if (!listed.ok) cleanupFailed = true;
+    else if (lines(listed.output).length > 0) {
+      const result = await start("docker", ["--context", context, "image", "rm", gitAccessImage])
+        .result;
+      if (!result.ok) cleanupFailed = true;
+    }
+  }
   const remainingNetworkIds = networks.size
     ? new Set(lines(await docker(["network", "ls", "-q", "--no-trunc"])))
     : new Set();
@@ -659,6 +697,8 @@ async function main() {
   );
   const cli = (args, options = {}) =>
     run(process.execPath, [bin, ...args], { environment: env, ...options });
+  const startCli = (args, options = {}) =>
+    start(process.execPath, [bin, ...args], { environment: env, ...options });
   check((await cli(["--help"])).includes("adopt"), "Installed CLI help must work");
   check(
     (await cli([])).includes("adopt"),
@@ -970,18 +1010,52 @@ async function main() {
     Array.isArray(projects) && projects.length === 1,
     "Fresh account must have exactly the adopted project",
   );
-  const project = projects[0];
+  const httpProject = projects[0];
   check(
-    project.name === projectName &&
-      project.storePath === `/var/lib/mend/store/${projectName}/repo.git` &&
-      project.originUrl === sourceUrl &&
-      project.adoptedSha === baseSha,
+    httpProject.name === projectName &&
+      // Stores are laid out by project id: a name is unique only within an organization.
+      /^[0-9a-f-]{36}$/.test(httpProject.id) &&
+      httpProject.storePath === `/var/lib/mend/store/${httpProject.id}/repo.git` &&
+      httpProject.originUrl === sourceUrl &&
+      httpProject.adoptedSha === baseSha,
     "CLI adoption must preserve network source and fixture Git identity",
   );
   check(
     (await cli(["projects"])).includes(projectName),
     "Authenticated installed CLI must list the adopted project",
   );
+  // Anonymous HTTP above needs no credential, so it cannot notice a broken signer. The session
+  // below therefore runs in a project adopted over SSH with the account's Mend key.
+  let gitAccess;
+  if (offline) console.log("NOT TESTED git access; the SSH git remote image needs a registry");
+  else {
+    stage = "git access over SSH";
+    gitAccessImage = `mend-acceptance-git-ssh:${runId}`;
+    gitAccess = await preparePackagedGitAccessAcceptance({
+      cli,
+      startCli,
+      docker,
+      startDocker: (args, options) => start("docker", ["--context", context, ...args], options),
+      run,
+      start,
+      until,
+      api,
+      own: (id) => containers.add(id),
+      scratch,
+      fixtures: join(repo, "scripts/fixtures/git-ssh"),
+      runId,
+      name: `${fixtureName}-ssh`,
+      network: networkIds[0],
+      bare,
+      baseSha,
+      environment: env,
+    });
+    check(
+      gitAccess.image === gitAccessImage,
+      "The SSH git remote image must be the one cleanup removes",
+    );
+  }
+  const project = gitAccess?.project ?? httpProject;
   stage = "workspace image fixture";
   // The public custom-base contract checks git/node/npm before setupCommands run.
   // A unique local alias also prevents the platform's build tag from replacing another test's tag.
@@ -1034,7 +1108,7 @@ async function main() {
   const launchStarted = new Date().toISOString();
   const launched = start(
     process.execPath,
-    [bin, "run", "--project", projectName, "--name", "packaged-proof", "--", "sh", "-c", command],
+    [bin, "run", "--project", project.name, "--name", "packaged-proof", "--", "sh", "-c", command],
     { timeout: 600_000 },
   );
   const session = await until("CLI-created session", async () => {
@@ -1079,6 +1153,27 @@ async function main() {
   // explicitly so the message names the regression if the executor's shape ever changes.
   assertCaptureExecutor(evidence.executor);
   check(containers.has(evidence.executor.Id), "The store-less executor must be owned for cleanup");
+  // A captured workspace mounts nothing, so the helper and the git transport must have been
+  // written into it (packages/sessions workspaceScriptStaging). Asserted where they are used,
+  // not inferred: git configured with a transport that does not exist fails only at the first
+  // push, and `mend` inside the session fails only when someone runs a service.
+  const transport = await start(
+    "docker",
+    [
+      "--context",
+      context,
+      "exec",
+      evidence.executor.Id,
+      "sh",
+      "-c",
+      'test -x /run/mend/bin/mend && test -x /run/mend/bin/mend-git-ssh && [ "$(readlink /usr/local/bin/mend)" = /run/mend/bin/mend ] && [ "$(git config --system core.sshCommand)" = /run/mend/bin/mend-git-ssh ] && [ "$(git config --system ssh.variant)" = ssh ]',
+    ],
+    { timeout: 10_000 },
+  ).result;
+  check(
+    transport.ok,
+    "The workspace must hold the mend helper and the git transport its git is configured with",
+  );
   const captured = evidence.observation;
   console.log(
     `OBSERVED store-less capture executor and ${captured.label} (${captured.state}, capture ${captured.captureN})`,
@@ -1229,6 +1324,7 @@ async function main() {
   // Fixture is temporary infrastructure, not a third idle product container.
   await docker(["rm", "-f", fixtureId]);
   fixtureId = undefined;
+  if (gitAccess) await docker(["rm", "-f", gitAccess.containerId]);
   await until("executor reclamation", async () => {
     const { now } = await collectOwned();
     return !now.containers.some(
@@ -1239,10 +1335,8 @@ async function main() {
 
   async function retained(expected = saved, expectedAssets = assets) {
     const observedHealth = await health(origin, expected.config.serverVersion);
-    const { version: _baselineVersion, ...baselineDeployment } = baselineHealth;
-    const { version: _observedVersion, ...observedDeployment } = observedHealth;
     check(
-      JSON.stringify(observedDeployment) === JSON.stringify(baselineDeployment),
+      deployment(observedHealth) === deployment(baselineHealth),
       "Health deployment mode, store root and session channel must survive unchanged",
     );
     const after = await installation(expected.config.serverVersion, expectedAssets);
@@ -1268,13 +1362,14 @@ async function main() {
     const projectAfter = await api(`/projects/${project.id}?deadEnds=include`);
     check(
       projectAfter.project?.id === project.id &&
-        projectAfter.project.name === projectName &&
-        projectAfter.project.originUrl === sourceUrl &&
+        projectAfter.project.name === project.name &&
+        projectAfter.project.originUrl === project.originUrl &&
         projectAfter.project.storePath === project.storePath &&
         projectAfter.project.adoptedSha === baseSha &&
         projectAfter.worktrees?.some((item) => item.id === detail.session.worktreeId),
       "Project and worktree rows must survive",
     );
+    await gitAccess?.assertKeyUnchanged("after a lifecycle operation");
     const sessionAfter = await api(`/sessions/${session.id}`);
     check(
       sessionAfter.session.id === detail.session.id &&
