@@ -183,6 +183,7 @@ import { SessionRepository, type SessionRepositoryError } from "./session-reposi
 import {
   SESSION_SOCKET_MOUNT_PATH,
   SessionSocketHost,
+  workspaceScriptStaging,
   type SessionSocketApi,
 } from "./session-socket.ts";
 import { materializeSkills, mergeSkillLibraries } from "./skills.ts";
@@ -3779,15 +3780,32 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // ssh.variant=ssh keeps ports and protocol v2 working through it.
         // Touches /usr/local/bin and system git config, never $HOME, so it is
         // safe before any state restore.
+        //
+        // A captured workspace mounts nothing (ADR-0002), so the socket dir that carries the two
+        // scripts never arrives: they are written into it here instead, and reach this machine
+        // over the session endpoint. Without this, both paths above named files that did not
+        // exist, and every push, fetch and `mend service` inside a captured session failed.
+        const notInstalled = (detail: Record<string, unknown>) =>
+          Effect.logWarning(
+            "session engine: the mend helper and git transport were not installed in the workspace",
+          ).pipe(Effect.annotateLogs({ sessionId, ...detail }));
+        // The session still launches: an agent can work without a remote. It must not be
+        // silent, though: that is how a workspace with no git transport went unnoticed.
         yield* sealant
           .exec(workspace, [
             "sh",
             "-c",
-            `ln -sf ${SESSION_SOCKET_MOUNT_PATH}/bin/mend /usr/local/bin/mend; ` +
-              `git config --system core.sshCommand ${SESSION_SOCKET_MOUNT_PATH}/bin/mend-git-ssh; ` +
+            `${captureSource === null ? "" : `${workspaceScriptStaging(SESSION_SOCKET_MOUNT_PATH)} && `}` +
+              `ln -sf ${SESSION_SOCKET_MOUNT_PATH}/bin/mend /usr/local/bin/mend && ` +
+              `git config --system core.sshCommand ${SESSION_SOCKET_MOUNT_PATH}/bin/mend-git-ssh && ` +
               `git config --system ssh.variant ssh`,
           ])
-          .pipe(Effect.ignore);
+          .pipe(
+            Effect.flatMap((result) =>
+              result.exitCode === 0 ? Effect.void : notInstalled({ exitCode: result.exitCode }),
+            ),
+            Effect.catch((error) => notInstalled({ message: error.message })),
+          );
         return {
           workspace,
           workspaceImage,
