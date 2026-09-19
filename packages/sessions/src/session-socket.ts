@@ -281,6 +281,24 @@ const stageScripts = (dir: string): void => {
   fs.writeFileSync(path.join(dir, "bin", "mend-git-ssh"), GIT_SSH_SHIM_SCRIPT, { mode: 0o755 });
 };
 
+const encoded = (script: string) => Buffer.from(script).toString("base64");
+
+/**
+ * Shell that writes the helper and the shim into `<dir>/bin` from inside a workspace. A captured
+ * workspace mounts nothing (ADR-0002), so the socket dir `stageScripts` fills never reaches it;
+ * the scripts then talk to this machine over the session endpoint. The payload is base64, so the
+ * command carries no quoting of its own beyond the fixed program.
+ */
+export const workspaceScriptStaging = (dir: string): string => {
+  return (
+    `node -e 'const fs=require("fs");const [d,...s]=process.argv.slice(1);` +
+    `fs.mkdirSync(d+"/bin",{recursive:true});` +
+    `["mend","mend-git-ssh"].forEach((n,i)=>` +
+    `fs.writeFileSync(d+"/bin/"+n,Buffer.from(s[i],"base64"),{mode:0o755}))' ` +
+    `'${dir.replaceAll("'", "'\\''")}' ${encoded(HELPER_SCRIPT)} ${encoded(GIT_SSH_SHIM_SCRIPT)}`
+  );
+};
+
 export const SessionSocketHostLive: Layer.Layer<
   SessionSocketHost,
   never,

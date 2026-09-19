@@ -223,6 +223,12 @@
   `accessExpiresAt`, `refreshExpiresAt`, `lastRefreshAt` and `lastRefreshOutcome`. `@sealant/sdk`
   and `@sealant/api-contracts` move to 0.35.0, and the bundled server image pins the 0.35.0 API,
   worker and ssh-gateway digests.
+- Install the `mend` helper and the git transport inside captured workspaces. A captured workspace
+  mounts nothing, so the two scripts never arrived while git was configured to use them: `git push`
+  and `git fetch` over ssh, and `mend service` commands, failed inside every session on a server
+  using the capture store (the default since 0.27.0). The scripts are now written into the workspace
+  at provisioning and reach the server over the session endpoint. A workspace where they cannot be
+  installed is logged, no longer passed over.
 - 6b0eb97: Allow only a session's owner to steer it, including terminal and Service tunnel access.
   Legacy sessions without an owner continue to use the first account as their owner.
 - 2c05944: Runs on Sealant 0.33.1, which bakes sealantd 0.16.0 (sealant-sh/sealant#249). That is the
