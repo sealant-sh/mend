@@ -217,6 +217,12 @@
 
 ### Patch Changes
 
+- Runs on Sealant 0.35.1 (sealant-sh/sealant#263), which bakes sealantd 0.18.0
+  (sealant-sh/sealantd#91, #93). That daemon sets the remotes `plan.get` names, so a captured
+  session's repository has its `origin` and `git push` and `git fetch` work inside a session again;
+  it also sends the reply to a graceful shutdown before it exits. `@sealant/sdk` and
+  `@sealant/api-contracts` move to 0.35.1, and the bundled server image pins the 0.35.1 API, worker
+  and ssh-gateway digests.
 - Runs on Sealant 0.35.0 (sealant-sh/sealant#259, #260). The platform stores a Claude credentials
   file as its `claudeAiOauth` grant alone, dropping the `mcpOAuth` refresh tokens beside it at
   connect and at sync-back, and a connected account now reports how fresh its credential is:
