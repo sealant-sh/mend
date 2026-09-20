@@ -41,7 +41,28 @@ Open as sealant#267.
       and an image cap are in scope; the per-build zip is deleted after the build; the same recipe
       builds once, with a test.
 
-## To get alpha running
+## Alpha is up (2026-09-20 evening)
+
+https://alpha.mend.run runs Mend 0.29.0 on Sealant 0.36.0 on one instance, `multi` and `public`, the
+EKS cluster taken down (`cluster_enabled = false`). What the first day found:
+
+- [ ] Arch, Mend's default family, cannot be built on the MicroVM runtime with Sealant 0.36.0:
+      Docker Hub's `archlinux` is x86_64 only. sealant#276 builds Arch from Arch Linux ARM's signed
+      rootfs, links glibc's loader on the nix image (no native harness binary ran there), and lets
+      opencode's postinstall run. Until Core 0.36.1 and a Mend pin bump, alpha projects must pick
+      Fedora or Ubuntu.
+- [ ] Mend defaults every project to Docker on, and to Arch, without asking the deployment what it
+      serves. Sealant's health answers the runtime's support; the setup page should default the OS
+      family and the Docker toggle from it and say why an option is off.
+- [x] Workspace-scoped Docker on every family, proven live on 2026-09-20 (sealant#276).
+      `SEALANT_MICROVM_DOCKER_ENABLED=true` is set on alpha.
+- [ ] A real capture session through Mend on alpha, with its flush at stop, has still not run.
+- [ ] The `reassessment` exposure item is open until someone records a reassessment of 0.29.0.
+- [ ] Remove the setup SSH key from the instance once the next pin bump has landed there.
+- [ ] Tailnet: remove the cluster's Tailscale operator device and OAuth client. Orphan captures from
+      the cluster's sessions sit in the capture bucket.
+
+## To get alpha running (done 2026-09-20)
 
 - [x] Core step two: merged as one stack of five (sealant#267, #268, #270, #271, #273).
   - #268: the MicroVM builder. One plan is one image, named `sealant-ws-<plan hash>`. The per-build
