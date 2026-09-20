@@ -35,23 +35,40 @@ Open as sealant#267.
       no opt-out. (Not a member of the adapter class: adapters are constructed in about ninety
       places.)
 - [x] Builders declare `host` or `isolated`.
-- [x] A conformance test over every adapter id. MicroVM is an expected failure until step two.
+- [x] A conformance test over every adapter id. MicroVM was an expected failure until step two;
+      sealant#270 removes the exception.
 - [x] Correct the design record: the instance never mounts the Docker socket; MicroVM image cleanup
       and an image cap are in scope; the per-build zip is deleted after the build; the same recipe
       builds once, with a test.
 
 ## To get alpha running
 
-- [ ] Core step two: the MicroVM builder, named by recipe hash, with cleanup and the image cap.
+- [x] Core step two, open as one stack of four (sealant#267, #268, #270, #271). It merges together,
+      after the live proof below.
+  - #268: the MicroVM builder. One plan is one image, named `sealant-ws-<plan hash>`. The per-build
+    zip is deleted after the build. An image cap.
+  - #270: the MicroVM adapter boots the built image. The four one-image settings are retired and
+    refused at start. `SEALANT_MICROVM_BUILD_ROLE_ARN` enables the adapter. Docker on a MicroVM is
+    `SEALANT_MICROVM_DOCKER_ENABLED`, off by default. `build-image.sh` is removed.
+  - #271: image retention deletes unused MicroVM images, and the ones no build job names.
+  - Found on the way: `ListMicrovmImages` returns no tags, so the cap as first written counted
+    nothing. Images are now told by name. Two control planes in one AWS account set different
+    `SEALANT_MICROVM_IMAGE_NAME_PREFIX` values.
+- [x] The build context needs no binaries: the recipe takes `sealantd` with `COPY --from` the
+      released image, and the worker image carries only the agent files. No Docker on the control
+      plane for a MicroVM build.
+- [ ] The released sealantd image has no `sealantctl`, and the agent's suspend and terminate hooks
+      run `sealantctl capture flush`. Open as sealantd#94. Merge, tag a sealantd release, then a
+      fifth Core PR moves the daemon pin. A managed build of the recipe fails until then.
+- [ ] Live proof: a real MicroVM session boots an image built from a customised blueprint. Needs the
+      sealantd release above.
 - [ ] Core step three: one read-only build role and one prefix per organization.
-- [ ] Bake the ARM64 `sealantd` and the agent files into Core's worker image, so building a MicroVM
-      image needs no Docker on the control plane.
-- [ ] The released sealantd image has no `sealantctl`. `microvm-image/build-image.sh` needs it.
-      Publish it or drop it from the recipe.
 - [ ] Core release, then the Mend pin bump (template: mend#307).
 - [ ] Mend: a multi mode gate item that refuses `MEND_TENANCY=multi` while recipes run on the
       control plane's host.
-- [ ] Mend OpenTofu: per-organization build roles and prefixes.
+- [ ] Mend OpenTofu: per-organization build roles and prefixes. Also the worker's new permissions
+      (the four `lambda:*MicrovmImage` actions, `iam:PassRole` on the build role, `s3:PutObject` and
+      `s3:DeleteObject` on the prefix) and the new settings in `compose.aws.yaml`.
 - [ ] Apply `deploy/aws/tofu` with `instance_enabled = true`.
 - [ ] `alpha.mend.run` A record, DNS-only, at the instance's Elastic IP.
 - [ ] Fresh `mend` and `sealant_control_plane` databases on PlanetScale. No data carried over.
