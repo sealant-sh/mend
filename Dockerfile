@@ -1,11 +1,11 @@
 # Mend bundle: one Mend container plus one official Postgres container at runtime.
-# Sealant stays a published platform dependency. These stages copy the released 0.35.1 artifacts;
-# this build never imports Core source or its database schema. Sealant 0.35.1 runs its job queue
+# Sealant stays a published platform dependency. These stages copy the released 0.36.0 artifacts;
+# this build never imports Core source or its database schema. Sealant 0.36.0 runs its job queue
 # in Postgres and keeps workspace images in the host Docker Engine, so the bundle carries no
 # RabbitMQ and no registry.
-FROM ghcr.io/sealant-sh/sealant-api@sha256:a709488291bf693b44b8ac21f333535fe85c93fc02965fc3d9bfb0393a9f5f34 AS sealant-api
-FROM ghcr.io/sealant-sh/sealant-worker@sha256:5c3ab4bb7503765130ac7520d9d4c03f0bcee21ad085a83b683225e4e05be111 AS sealant-worker
-FROM ghcr.io/sealant-sh/sealant-ssh-gateway@sha256:a389d545be89672d4a02684afc0db8f187ed80800232869fe82bf54b16d643ab AS sealant-ssh-gateway
+FROM ghcr.io/sealant-sh/sealant-api@sha256:825c5694bbb566f27f3f5995f5d80ad5d27f557f60f225cac81e66f92f6eb8c0 AS sealant-api
+FROM ghcr.io/sealant-sh/sealant-worker@sha256:9174cda2c6d3bfe0e7f04aab90b3d3dec8897774abfb93eb0928db63f56c5531 AS sealant-worker
+FROM ghcr.io/sealant-sh/sealant-ssh-gateway@sha256:d4b7a2118a50e8505a016e5bc0fc42d403bcefba7262b5cf55752597a3503dea AS sealant-ssh-gateway
 
 # Mend's API server and web front are esbuild-bundled here (tooling/scripts/bundle-app.mjs and
 # apps/web/scripts/build-server.mjs), so the runtime ships two self-contained files plus the
@@ -27,7 +27,7 @@ FROM node:26-bookworm-slim AS runtime
 ARG MEND_VERSION=dev
 LABEL org.opencontainers.image.title="Mend bundle" \
   org.opencontainers.image.version="${MEND_VERSION}" \
-  dev.sealant.mend.sealant-version="0.35.1"
+  dev.sealant.mend.sealant-version="0.36.0"
 
 # Required by Sealant's root-owned control sockets and the host Docker socket contract.
 USER root
@@ -51,6 +51,10 @@ COPY --from=sealant-api /app/drizzle /opt/sealant/api/drizzle
 COPY --from=sealant-api /app/node_modules /opt/sealant/api/node_modules
 COPY --from=sealant-worker /app/dist /opt/sealant/worker/dist
 COPY --from=sealant-worker /app/node_modules /opt/sealant/worker/node_modules
+# What Sealant's MicroVM image builder copies into every workspace image it builds: the in-VM agent
+# and the guest-local Docker installer. The worker looks for them beside dist/ and refuses to start
+# a MicroVM deployment without them. A Docker deployment never reads them.
+COPY --from=sealant-worker /app/microvm-image /opt/sealant/worker/microvm-image
 COPY --from=sealant-ssh-gateway /app/dist /opt/sealant/ssh-gateway/dist
 COPY --from=sealant-ssh-gateway /app/node_modules /opt/sealant/ssh-gateway/node_modules
 RUN mkdir -p /var/lib/mend/store /var/lib/mend/config /var/lib/mend/ssh /run/sealant/sockets /run/mend-bundle

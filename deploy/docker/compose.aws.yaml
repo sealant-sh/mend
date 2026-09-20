@@ -76,9 +76,22 @@ services:
       SEALANT_CONTROL_BEARER_TOKEN:
         ${SEALANT_CONTROL_BEARER_TOKEN:?set SEALANT_CONTROL_BEARER_TOKEN in .env}
       SEALANT_MICROVM_AGENT_PORT: "8080"
-      SEALANT_MICROVM_IMAGE_ARN: ${SEALANT_MICROVM_IMAGE_ARN:?set SEALANT_MICROVM_IMAGE_ARN in .env}
-      SEALANT_MICROVM_IMAGE_VERSION:
-        ${SEALANT_MICROVM_IMAGE_VERSION:?set SEALANT_MICROVM_IMAGE_VERSION in .env}
+      # There is no image to register (Sealant 0.36). Sealant builds each project's image from
+      # its blueprint with AWS's managed image build, under a role that can read one prefix of the
+      # artifacts bucket and nothing else. No recipe step runs on this instance.
+      SEALANT_MICROVM_BUILD_ROLE_ARN:
+        ${SEALANT_MICROVM_BUILD_ROLE_ARN:?set SEALANT_MICROVM_BUILD_ROLE_ARN in .env}
+      SEALANT_MICROVM_ARTIFACT_BUCKET:
+        ${SEALANT_MICROVM_ARTIFACT_BUCKET:?set SEALANT_MICROVM_ARTIFACT_BUCKET in .env}
+      SEALANT_MICROVM_ARTIFACT_PREFIX:
+        ${SEALANT_MICROVM_ARTIFACT_PREFIX:?set SEALANT_MICROVM_ARTIFACT_PREFIX in .env}
+      # Names this control plane's images. The instance role is granted this name pattern only.
+      SEALANT_MICROVM_IMAGE_NAME_PREFIX:
+        ${SEALANT_MICROVM_IMAGE_NAME_PREFIX:?set SEALANT_MICROVM_IMAGE_NAME_PREFIX in .env}
+      SEALANT_MICROVM_BUILD_LOG_GROUP:
+        ${SEALANT_MICROVM_BUILD_LOG_GROUP:?set SEALANT_MICROVM_BUILD_LOG_GROUP in .env}
+      # Workspace-scoped Docker needs an image created with every OS capability. Off.
+      SEALANT_MICROVM_DOCKER_ENABLED: "false"
       SEALANT_MICROVM_EXEC_ROLE_ARN:
         ${SEALANT_MICROVM_EXEC_ROLE_ARN:?set SEALANT_MICROVM_EXEC_ROLE_ARN in .env}
       SEALANT_MICROVM_EGRESS_CONNECTOR:
