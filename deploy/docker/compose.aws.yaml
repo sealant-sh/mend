@@ -71,6 +71,10 @@ services:
       DEFAULT_RUNTIME_ADAPTER: microvm
       DOCKER_RUNTIME_ENABLED: "false"
       SEALANT_MICROVM_REGION: ${AWS_REGION:?set AWS_REGION in .env}
+      # The secret Sealant's API, worker and SSH gateway present to a MicroVM's agent. One value for
+      # all three, which is one container here. The worker refuses to start without it.
+      SEALANT_CONTROL_BEARER_TOKEN:
+        ${SEALANT_CONTROL_BEARER_TOKEN:?set SEALANT_CONTROL_BEARER_TOKEN in .env}
       SEALANT_MICROVM_AGENT_PORT: "8080"
       SEALANT_MICROVM_IMAGE_ARN: ${SEALANT_MICROVM_IMAGE_ARN:?set SEALANT_MICROVM_IMAGE_ARN in .env}
       SEALANT_MICROVM_IMAGE_VERSION:

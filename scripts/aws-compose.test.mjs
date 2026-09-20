@@ -46,6 +46,7 @@ const AWS_ENVIRONMENT = {
   WORKSPACE_SSH_GATEWAY_TOKEN: "synthetic",
   SEALANT_SERVICE_KEY: "synthetic",
   SEALANT_CREDENTIALS_KEY: "synthetic",
+  SEALANT_CONTROL_BEARER_TOKEN: "synthetic",
   SEALANT_MICROVM_IMAGE_ARN: "arn:aws:lambda:eu-central-1:000000000000:microvm-image:example",
   SEALANT_MICROVM_IMAGE_VERSION: "1.0",
   SEALANT_MICROVM_EXEC_ROLE_ARN: "arn:aws:iam::000000000000:role/example-exec",
