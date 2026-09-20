@@ -12,3 +12,8 @@ addon_versions = {
   kube_proxy = "v1.35.3-eksbuild.29"
   ebs_csi    = "v1.66.0-eksbuild.1"
 }
+
+# The single-instance control plane (instance.tf), beside EKS until that is torn down.
+# instance_enabled  = true
+# instance_type     = "t4g.large"
+# instance_hostname = "alpha.mend.run"

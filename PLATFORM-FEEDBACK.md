@@ -7,6 +7,27 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-20 · 0.35.1 · MicroVM ignores a project's image, and the host builds it anyway
+
+- **Needed:** a project's packages and setup commands take effect on every runtime, MicroVM
+  included, and never run where they can read the control plane's credentials or harm it. The
+  private beta puts the control plane on one machine with MicroVM executors (deploy/aws "Single
+  instance") so that no tenant code runs beside it.
+- **Today:** the worker's build job always builds and publishes an image in phase A
+  (`process-workspace-build-job.ts`), with the host's Docker when no Kubernetes builder is injected,
+  and selects the runtime adapter afterwards. The MicroVM adapter never reads the result: it boots
+  `SEALANT_MICROVM_IMAGE_ARN`, one image registered by hand. So customisation is a no-op on MicroVM,
+  a control plane without a Docker socket fails every workspace at the build, and one with a socket
+  runs tenants' setup commands on its own kernel. The EKS deployment hides the failure behind the
+  Kubernetes BuildKit builder.
+- **Suggested, and agreed:** sealant-sh/sealant#266. A runtime adapter names the builder of the
+  image it boots, with a conformance test over every adapter id; builders say whether the recipe
+  runs on the host or isolated; MicroVM builds through AWS's managed image build, named by plan
+  hash, with one read-only build role and prefix per organization. Mend's multi mode gate then
+  refuses `multi` while recipes run on the control plane's host. A first attempt that skipped the
+  build for MicroVM (sealant-sh/sealant#265) was closed: it made customisation permanently a no-op
+  there.
+
 ## 2026-09-18 · 0.34.0 · Narrow a Claude credential at connect and at sync-back
 
 - **Needed:** the platform stores only the Claude credential, whatever a client sends. Claude Code's

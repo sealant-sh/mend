@@ -32,6 +32,7 @@
 !/tofu/*.tf
 !/tofu/.terraform.lock.hcl
 !/tofu/example.tfvars
+!/tofu/instance-user-data.sh
 
 # Even source-shaped local overrides and secrets must not be tracked.
 /tofu/*override.tf

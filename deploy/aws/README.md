@@ -8,6 +8,62 @@ See the [capture-store ADR](../../docs/adr/0002-session-capture-store.md),
 [workbench plan](../../MEND-AGENT-WORKBENCH-PLAN.md), [Sealant manifests](kubernetes/README.md), and
 [teardown procedure](TEARDOWN.md).
 
+## Single instance
+
+`tofu/instance.tf` puts the control plane on one EC2 instance, beside the EKS cluster until that is
+torn down. It is off until `instance_enabled = true`. The instance runs
+[`deploy/docker/compose.aws.yaml`](../docker/compose.aws.yaml) behind the Caddy edge and reuses this
+stack's VPC, capture bucket, PlanetScale endpoint and MicroVM connector. Sessions stay in Lambda
+MicroVMs. No Docker socket is mounted and the Docker runtime is off, so no tenant code runs on the
+host.
+
+**Not applied, and sessions cannot start on it yet.** Sealant's worker builds a workspace image for
+every workspace with the host's Docker when no Kubernetes builder is configured, and the MicroVM
+runtime ignores that image: it boots one hand-registered image, so a project's packages and setup
+commands do nothing on MicroVM. With no Docker socket here, that build fails and no session starts.
+Mounting the socket as things stand would run tenants' setup commands on the control plane's kernel.
+
+The agreed fix is Sealant's workspace image builders design (sealant-sh/sealant#266): each runtime
+builds the blueprint's image itself, and MicroVM does it through AWS's managed image build, under a
+read-only build role scoped to one organization's prefix. It was measured on this account on
+2026-09-20: a recipe step there cannot reach this VPC, the database or the capture bucket, and a
+MicroVM image can be built from any distro's base. When that ships, this stack gains the
+per-organization build roles and prefixes, and this Compose file still mounts no Docker socket: the
+worker image carries `sealantd` and the agent files, so building a MicroVM image needs no Docker
+here. The socket is root on the host, and "for staging only" would be a promise about the worker's
+code, not a control.
+
+What is published: 80 and 443 to the edge, 2222 to Mend's workspace SSH gateway, and 3106 to the
+MicroVM connector's security group only. There is no host sshd on the Internet. Administration is
+SSM Session Manager, and Mend's own port stays on loopback.
+
+1. `tofu apply` with `instance_enabled = true`. Create a DNS-only A record for `instance_hostname`
+   at `instance_public_ip`. A proxied record breaks workspace SSH and terminates TLS before the
+   edge.
+2. Create fresh `mend` and `sealant_control_plane` databases and roles on PlanetScale, as
+   `scripts/bootstrap-databases.py` does for the cluster.
+3. Over `instance_shell_command`, put `compose.aws.yaml`, `compose.edge.yaml`, `Caddyfile` and a
+   `.env` from [`aws.env.example`](../docker/aws.env.example) in `/opt/mend`. The `.env` holds the
+   only secrets; nothing secret is in OpenTofu state or user data.
+4. First boot with `MEND_TENANCY=single` and `MEND_EXPOSURE=private`:
+   `docker compose -f compose.aws.yaml -f compose.edge.yaml up -d`. Both gates count the operator
+   account, so neither `multi` nor `public` may start on an empty database.
+5. Run `instance_first_account_tunnel` and create the first account at `http://localhost:3105`. It
+   becomes the owner and the operator, and registration closes.
+6. Set `MEND_TENANCY=multi` and `MEND_EXPOSURE=public`, `up -d` again, then read
+   `mend operator gate` and `mend operator exposure`.
+7. From outside the VPC: `mend doctor` against the origin, a sign-up without an invitation, and
+   connection attempts to PlanetScale and Sealant. Only then name `core-private,edge-tls` in
+   `MEND_EXPOSURE_DECLARED`.
+
+The instance role holds the three policies the cluster keeps on separate service accounts, because
+Mend and Sealant's API and worker run in one container here. The metadata hop limit is 2 so that
+container can use the role; user data drops the edge network's path to the metadata address.
+
+Docker's data root is a separate encrypted volume with daily snapshots, seven kept, and
+`prevent_destroy`. It holds the store, the SSH host key and the edge's certificates. PlanetScale and
+S3 hold the rest.
+
 ## Private access update — 2026-09-16 UTC
 
 Owner-only Tailscale HTTPS is installed at <https://mend-access.tailc79e49.ts.net>. Connect
