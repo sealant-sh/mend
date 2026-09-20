@@ -8,8 +8,8 @@ output "private_route_table_ids" { value = { for az, route in aws_route_table.pr
 output "nat_public_ip" { value = aws_eip.nat.public_ip }
 output "s3_gateway_endpoint_id" { value = aws_vpc_endpoint.s3.id }
 
-output "eks_workload_sg_id" { value = aws_security_group.eks_workload.id }
-output "eks_cluster_sg_id" { value = aws_eks_cluster.poc.vpc_config[0].cluster_security_group_id }
+output "eks_workload_sg_id" { value = one(aws_security_group.eks_workload[*].id) }
+output "eks_cluster_sg_id" { value = one(aws_eks_cluster.poc[*].vpc_config[0].cluster_security_group_id) }
 output "microvm_sg_id" { value = aws_security_group.microvm.id }
 output "planetscale_sg_id" { value = aws_security_group.planetscale.id }
 output "planetscale_endpoint_id" { value = aws_vpc_endpoint.planetscale.id }
@@ -32,21 +32,21 @@ output "microvm_build_log_group" { value = aws_cloudwatch_log_group.microvm_buil
 output "microvm_exec_log_group" { value = aws_cloudwatch_log_group.microvm_exec.name }
 output "vpc_egress_connector_arn" { value = aws_lambdacore_network_connector.vpc_egress.arn }
 
-output "cluster_name" { value = aws_eks_cluster.poc.name }
-output "cluster_arn" { value = aws_eks_cluster.poc.arn }
-output "cluster_endpoint" { value = aws_eks_cluster.poc.endpoint }
-output "cluster_certificate_authority_data" { value = aws_eks_cluster.poc.certificate_authority[0].data }
-output "kubernetes_version" { value = aws_eks_cluster.poc.version }
-output "node_group_name" { value = aws_eks_node_group.poc.node_group_name }
-output "eks_role_arn" { value = aws_iam_role.eks.arn }
-output "node_role_arn" { value = aws_iam_role.node.arn }
-output "cni_role_arn" { value = aws_iam_role.cni.arn }
-output "ebs_csi_role_arn" { value = aws_iam_role.ebs_csi.arn }
-output "oidc_provider_arn" { value = aws_iam_openid_connect_provider.eks.arn }
-output "oidc_provider_url" { value = aws_iam_openid_connect_provider.eks.url }
+output "cluster_name" { value = one(aws_eks_cluster.poc[*].name) }
+output "cluster_arn" { value = one(aws_eks_cluster.poc[*].arn) }
+output "cluster_endpoint" { value = one(aws_eks_cluster.poc[*].endpoint) }
+output "cluster_certificate_authority_data" { value = one(aws_eks_cluster.poc[*].certificate_authority[0].data) }
+output "kubernetes_version" { value = one(aws_eks_cluster.poc[*].version) }
+output "node_group_name" { value = one(aws_eks_node_group.poc[*].node_group_name) }
+output "eks_role_arn" { value = one(aws_iam_role.eks[*].arn) }
+output "node_role_arn" { value = one(aws_iam_role.node[*].arn) }
+output "cni_role_arn" { value = one(aws_iam_role.cni[*].arn) }
+output "ebs_csi_role_arn" { value = one(aws_iam_role.ebs_csi[*].arn) }
+output "oidc_provider_arn" { value = one(aws_iam_openid_connect_provider.eks[*].arn) }
+output "oidc_provider_url" { value = one(aws_iam_openid_connect_provider.eks[*].url) }
 output "oidc_issuer_hostpath" { value = local.oidc_issuer }
 output "kubeconfig_command" {
   description = "Run after a separately approved apply, as the cluster-creating principal and from an allowed CIDR."
-  value       = "aws eks update-kubeconfig --region ${local.region} --name ${aws_eks_cluster.poc.name}"
+  value       = var.cluster_enabled ? "aws eks update-kubeconfig --region ${local.region} --name ${aws_eks_cluster.poc[0].name}" : null
 }
 output "budget_name" { value = aws_budgets_budget.poc.name }

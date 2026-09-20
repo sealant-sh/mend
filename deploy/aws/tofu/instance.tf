@@ -8,7 +8,7 @@
 # Nothing secret is in this file, in user data or in state. The operator places .env over SSM.
 
 variable "instance_enabled" {
-  description = "Create the single-instance control plane. EKS is untouched either way."
+  description = "Create the single-instance control plane. Independent of cluster_enabled."
   type        = bool
   default     = false
   nullable    = false

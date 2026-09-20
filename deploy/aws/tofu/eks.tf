@@ -9,23 +9,27 @@ data "aws_iam_policy_document" "eks_trust" {
 }
 
 resource "aws_iam_role" "eks" {
+  count              = local.cluster_count
   name               = "${local.name}-eks"
   assume_role_policy = data.aws_iam_policy_document.eks_trust.json
 }
 
 resource "aws_iam_role_policy_attachment" "eks" {
-  role       = aws_iam_role.eks.name
+  count      = local.cluster_count
+  role       = aws_iam_role.eks[0].name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKSClusterPolicy"
 }
 
 resource "aws_cloudwatch_log_group" "eks" {
+  count             = local.cluster_count
   name              = "/aws/eks/${local.name}/cluster"
   retention_in_days = 14
 }
 
 resource "aws_eks_cluster" "poc" {
+  count                         = local.cluster_count
   name                          = local.name
-  role_arn                      = aws_iam_role.eks.arn
+  role_arn                      = aws_iam_role.eks[0].arn
   version                       = var.kubernetes_version
   bootstrap_self_managed_addons = false
   enabled_cluster_log_types     = ["api", "audit", "authenticator", "controllerManager", "scheduler"]
@@ -41,7 +45,7 @@ resource "aws_eks_cluster" "poc" {
 
   vpc_config {
     subnet_ids              = [for subnet in aws_subnet.private : subnet.id]
-    security_group_ids      = [aws_security_group.eks_workload.id]
+    security_group_ids      = [aws_security_group.eks_workload[0].id]
     endpoint_private_access = true
     endpoint_public_access  = true
     public_access_cidrs     = var.operator_cidrs
@@ -51,13 +55,14 @@ resource "aws_eks_cluster" "poc" {
 }
 
 resource "aws_iam_openid_connect_provider" "eks" {
-  url            = aws_eks_cluster.poc.identity[0].oidc[0].issuer
+  count          = local.cluster_count
+  url            = aws_eks_cluster.poc[0].identity[0].oidc[0].issuer
   client_id_list = ["sts.amazonaws.com"]
   # IAM retrieves the thumbprint and verifies the issuer through its trusted CA list.
 }
 
 locals {
-  oidc_issuer = replace(aws_iam_openid_connect_provider.eks.url, "https://", "")
+  oidc_issuer = var.cluster_enabled ? replace(aws_iam_openid_connect_provider.eks[0].url, "https://", "") : ""
 }
 
 data "aws_iam_policy_document" "node_trust" {
@@ -71,20 +76,22 @@ data "aws_iam_policy_document" "node_trust" {
 }
 
 resource "aws_iam_role" "node" {
+  count              = local.cluster_count
   name               = "${local.name}-node"
   assume_role_policy = data.aws_iam_policy_document.node_trust.json
 }
 
 resource "aws_iam_role_policy_attachment" "node" {
-  for_each = toset(["AmazonEKSWorkerNodePolicy", "AmazonEC2ContainerRegistryPullOnly"])
+  for_each = var.cluster_enabled ? toset(["AmazonEKSWorkerNodePolicy", "AmazonEC2ContainerRegistryPullOnly"]) : toset([])
 
-  role       = aws_iam_role.node.name
+  role       = aws_iam_role.node[0].name
   policy_arn = "arn:aws:iam::aws:policy/${each.value}"
 }
 
 resource "aws_launch_template" "node" {
+  count                  = local.cluster_count
   name                   = "${local.name}-node"
-  vpc_security_group_ids = [aws_security_group.eks_workload.id]
+  vpc_security_group_ids = [aws_security_group.eks_workload[0].id]
   update_default_version = true
 
   metadata_options {
@@ -119,9 +126,10 @@ resource "aws_launch_template" "node" {
 }
 
 resource "aws_eks_node_group" "poc" {
-  cluster_name    = aws_eks_cluster.poc.name
+  count           = local.cluster_count
+  cluster_name    = aws_eks_cluster.poc[0].name
   node_group_name = "control-plane-workloads"
-  node_role_arn   = aws_iam_role.node.arn
+  node_role_arn   = aws_iam_role.node[0].arn
   # Keep single-node replacements in the same AZ as NAT and future gp3 PVCs.
   # The EKS control plane and both endpoints still span both private subnets.
   subnet_ids      = [aws_subnet.private["${local.region}${var.az_suffixes[0]}"].id]
@@ -144,8 +152,8 @@ resource "aws_eks_node_group" "poc" {
   }
 
   launch_template {
-    id      = aws_launch_template.node.id
-    version = aws_launch_template.node.latest_version
+    id      = aws_launch_template.node[0].id
+    version = aws_launch_template.node[0].latest_version
   }
 
   depends_on = [
@@ -159,11 +167,12 @@ resource "aws_eks_node_group" "poc" {
 
 # CNI permissions do not belong on the EC2 node role either.
 data "aws_iam_policy_document" "cni_trust" {
+  count = local.cluster_count
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
     principals {
       type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.eks.arn]
+      identifiers = [aws_iam_openid_connect_provider.eks[0].arn]
     }
     condition {
       test     = "StringEquals"
@@ -179,27 +188,31 @@ data "aws_iam_policy_document" "cni_trust" {
 }
 
 resource "aws_iam_role" "cni" {
+  count              = local.cluster_count
   name               = "${local.name}-vpc-cni"
-  assume_role_policy = data.aws_iam_policy_document.cni_trust.json
+  assume_role_policy = data.aws_iam_policy_document.cni_trust[0].json
 }
 
 resource "aws_iam_role_policy_attachment" "cni" {
-  role       = aws_iam_role.cni.name
+  count      = local.cluster_count
+  role       = aws_iam_role.cni[0].name
   policy_arn = "arn:aws:iam::aws:policy/AmazonEKS_CNI_Policy"
 }
 
 resource "aws_eks_addon" "vpc_cni" {
-  cluster_name                = aws_eks_cluster.poc.name
+  count                       = local.cluster_count
+  cluster_name                = aws_eks_cluster.poc[0].name
   addon_name                  = "vpc-cni"
   addon_version               = var.addon_versions.vpc_cni
-  service_account_role_arn    = aws_iam_role.cni.arn
+  service_account_role_arn    = aws_iam_role.cni[0].arn
   resolve_conflicts_on_update = "PRESERVE"
   configuration_values        = jsonencode({ enableNetworkPolicy = "true" })
   depends_on                  = [aws_iam_role_policy_attachment.cni]
 }
 
 resource "aws_eks_addon" "kube_proxy" {
-  cluster_name                = aws_eks_cluster.poc.name
+  count                       = local.cluster_count
+  cluster_name                = aws_eks_cluster.poc[0].name
   addon_name                  = "kube-proxy"
   addon_version               = var.addon_versions.kube_proxy
   resolve_conflicts_on_update = "PRESERVE"
@@ -207,7 +220,8 @@ resource "aws_eks_addon" "kube_proxy" {
 }
 
 resource "aws_eks_addon" "coredns" {
-  cluster_name                = aws_eks_cluster.poc.name
+  count                       = local.cluster_count
+  cluster_name                = aws_eks_cluster.poc[0].name
   addon_name                  = "coredns"
   addon_version               = var.addon_versions.coredns
   resolve_conflicts_on_update = "PRESERVE"
