@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
+import { readFileSync } from "node:fs";
 import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -125,7 +126,14 @@ test(
       mend.volumes.every((volume) => !String(volume.source).includes("docker.sock")),
       "the Docker socket must not be mounted",
     );
+    // The same value is what lets the bundle's supervisor start without the socket it otherwise
+    // requires (scripts/bundle-supervisor.mjs): with the runtime on, a missing socket refuses boot.
     assert.equal(mend.environment.DOCKER_RUNTIME_ENABLED, "false");
+    assert.match(
+      readFileSync(path.join(root, "scripts/bundle-supervisor.mjs"), "utf8"),
+      /DOCKER_RUNTIME_ENABLED\?\.trim\(\) !== "false"/,
+      "the supervisor must not require the Docker socket when the Docker runtime is off",
+    );
     assert.equal(mend.environment.DEFAULT_RUNTIME_ADAPTER, "microvm");
     assert.equal(mend.depends_on, undefined);
   },

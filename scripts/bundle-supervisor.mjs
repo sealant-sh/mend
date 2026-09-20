@@ -63,9 +63,14 @@ const parseConfiguration = async () => {
     throw new Error(`SEALANT_MOUNT_ALLOWED_STORE_ROOTS must be exactly ${STORE_ROOT}`);
   }
 
-  const dockerSocket = await stat("/var/run/docker.sock").catch(() => undefined);
-  if (!dockerSocket?.isSocket()) {
-    throw new Error("/var/run/docker.sock must be the Docker daemon socket");
+  // Sealant's Docker runtime and its host image builder drive the host's Docker through this
+  // socket. A deployment whose sessions run elsewhere (deploy/docker/compose.aws.yaml: Lambda
+  // MicroVMs) turns that runtime off and mounts no socket, because the socket is root on the host.
+  if (process.env.DOCKER_RUNTIME_ENABLED?.trim() !== "false") {
+    const dockerSocket = await stat("/var/run/docker.sock").catch(() => undefined);
+    if (!dockerSocket?.isSocket()) {
+      throw new Error("/var/run/docker.sock must be the Docker daemon socket");
+    }
   }
 
   await Promise.all([
