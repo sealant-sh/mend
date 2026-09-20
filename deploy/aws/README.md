@@ -27,9 +27,11 @@ The agreed fix is Sealant's workspace image builders design (sealant-sh/sealant#
 builds the blueprint's image itself, and MicroVM does it through AWS's managed image build, under a
 read-only build role scoped to one organization's prefix. It was measured on this account on
 2026-09-20: a recipe step there cannot reach this VPC, the database or the capture bucket, and a
-MicroVM image can be built from any distro's base. When that ships, this Compose file mounts the
-Docker socket again, for staging Sealant's own binaries only, and this stack gains the
-per-organization build roles and prefixes.
+MicroVM image can be built from any distro's base. When that ships, this stack gains the
+per-organization build roles and prefixes, and this Compose file still mounts no Docker socket: the
+worker image carries `sealantd` and the agent files, so building a MicroVM image needs no Docker
+here. The socket is root on the host, and "for staging only" would be a promise about the worker's
+code, not a control.
 
 What is published: 80 and 443 to the edge, 2222 to Mend's workspace SSH gateway, and 3106 to the
 MicroVM connector's security group only. There is no host sshd on the Internet. Administration is
