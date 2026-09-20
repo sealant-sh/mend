@@ -5,13 +5,15 @@ Written 2026-09-20. A working list across `sealant-sh/mend`, `sealant-sh/sealant
 
 ## What we are fixing now
 
-Image customisation on MicroVM, in Core. A project's packages and setup commands do nothing on
-MicroVM today, and the build that is ignored still runs on the control plane's Docker. This is the
-one thing between the alpha instance and running sessions.
+Image customisation on MicroVM, in Core. A project's OS family, custom base image and packages do
+nothing on MicroVM today, and the build that is ignored still runs on the control plane's Docker.
+This is the one thing between the alpha instance and running sessions.
 
 The design is merged: `sealant` `docs/workspace-image-builders-design.md` (sealant#266). Two rules:
 
-1. A project's image customisation works on every runtime, including every adapter added later.
+1. A project's image customisation (OS family or custom base image, packages, default shell) works
+   on every runtime, including every adapter added later. Setup commands are Mend's: it runs them
+   inside the live workspace, which already works on MicroVM.
 2. It never runs where it can read the control plane's credentials or harm it.
 
 Measured on the AWS account on 2026-09-20 (all experiment resources deleted):
@@ -27,10 +29,14 @@ Measured on the AWS account on 2026-09-20 (all experiment resources deleted):
 
 Core step one. No behaviour change.
 
-- [ ] Every runtime adapter names its image builder. Required, no opt-out.
-- [ ] Builders declare `host` or `isolated`.
-- [ ] A conformance test over every adapter id. MicroVM is an expected failure until step two.
-- [ ] Correct the design record: the instance never mounts the Docker socket; MicroVM image cleanup
+Open as sealant#267.
+
+- [x] A runtime is registered with the worker as an adapter plus the builder of its image. Required,
+      no opt-out. (Not a member of the adapter class: adapters are constructed in about ninety
+      places.)
+- [x] Builders declare `host` or `isolated`.
+- [x] A conformance test over every adapter id. MicroVM is an expected failure until step two.
+- [x] Correct the design record: the instance never mounts the Docker socket; MicroVM image cleanup
       and an image cap are in scope; the per-build zip is deleted after the build; the same recipe
       builds once, with a test.
 
