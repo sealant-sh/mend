@@ -14,15 +14,16 @@ locals {
     sealant_api    = "system:serviceaccount:sealant:sealant-api"
     sealant_worker = "system:serviceaccount:sealant:sealant-worker"
   }
+  cluster_application_subjects = var.cluster_enabled ? local.application_subjects : {}
 }
 
 data "aws_iam_policy_document" "application_trust" {
-  for_each = local.application_subjects
+  for_each = local.cluster_application_subjects
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
     principals {
       type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.eks.arn]
+      identifiers = [aws_iam_openid_connect_provider.eks[0].arn]
     }
     condition {
       test     = "StringEquals"
@@ -38,7 +39,7 @@ data "aws_iam_policy_document" "application_trust" {
 }
 
 resource "aws_iam_role" "application" {
-  for_each           = local.application_subjects
+  for_each           = local.cluster_application_subjects
   name               = "${local.name}-${replace(each.key, "_", "-")}"
   assume_role_policy = data.aws_iam_policy_document.application_trust[each.key].json
 }
@@ -55,6 +56,7 @@ data "aws_iam_policy_document" "mend_captures" {
 }
 
 resource "aws_iam_role_policy" "mend_captures" {
+  count  = local.cluster_count
   name   = "capture-bucket-only"
   role   = aws_iam_role.application["mend"].id
   policy = data.aws_iam_policy_document.mend_captures.json
@@ -69,6 +71,7 @@ data "aws_iam_policy_document" "sealant_api" {
 }
 
 resource "aws_iam_role_policy" "sealant_api" {
+  count  = local.cluster_count
   name   = "microvm-control-connections"
   role   = aws_iam_role.application["sealant_api"].id
   policy = data.aws_iam_policy_document.sealant_api.json
@@ -111,6 +114,7 @@ data "aws_iam_policy_document" "sealant_worker" {
 }
 
 resource "aws_iam_role_policy" "sealant_worker" {
+  count  = local.cluster_count
   name   = "microvm-lifecycle"
   role   = aws_iam_role.application["sealant_worker"].id
   policy = data.aws_iam_policy_document.sealant_worker.json
@@ -119,40 +123,46 @@ resource "aws_iam_role_policy" "sealant_worker" {
 # Raw TCP preserves HTTP CONNECT for Git and the authenticated session/capture protocol.
 # This listener is VPC-only HTTP; it does not claim TLS. Browser traffic never uses it.
 resource "aws_security_group" "session_nlb" {
+  count       = local.cluster_count
   name        = "${local.name}-session-nlb"
   description = "Private Mend session channel from the MicroVM connector only"
   vpc_id      = aws_vpc.poc.id
 }
 resource "aws_vpc_security_group_ingress_rule" "session_nlb" {
-  security_group_id            = aws_security_group.session_nlb.id
+  count                        = local.cluster_count
+  security_group_id            = aws_security_group.session_nlb[0].id
   referenced_security_group_id = aws_security_group.microvm.id
   ip_protocol                  = "tcp"
   from_port                    = 3106
   to_port                      = 3106
 }
 resource "aws_vpc_security_group_egress_rule" "session_nlb" {
-  security_group_id            = aws_security_group.session_nlb.id
-  referenced_security_group_id = aws_security_group.eks_workload.id
+  count                        = local.cluster_count
+  security_group_id            = aws_security_group.session_nlb[0].id
+  referenced_security_group_id = aws_security_group.eks_workload[0].id
   ip_protocol                  = "tcp"
   from_port                    = 31006
   to_port                      = 31006
 }
 resource "aws_vpc_security_group_ingress_rule" "session_nodeport" {
-  security_group_id            = aws_security_group.eks_workload.id
-  referenced_security_group_id = aws_security_group.session_nlb.id
+  count                        = local.cluster_count
+  security_group_id            = aws_security_group.eks_workload[0].id
+  referenced_security_group_id = aws_security_group.session_nlb[0].id
   ip_protocol                  = "tcp"
   from_port                    = 31006
   to_port                      = 31006
 }
 resource "aws_lb" "session" {
+  count                            = local.cluster_count
   name                             = "${local.name}-session"
   internal                         = true
   load_balancer_type               = "network"
   subnets                          = [for subnet in aws_subnet.private : subnet.id]
-  security_groups                  = [aws_security_group.session_nlb.id]
+  security_groups                  = [aws_security_group.session_nlb[0].id]
   enable_cross_zone_load_balancing = true
 }
 resource "aws_lb_target_group" "session" {
+  count                = local.cluster_count
   name                 = "${local.name}-session"
   vpc_id               = aws_vpc.poc.id
   protocol             = "TCP"
@@ -166,23 +176,25 @@ resource "aws_lb_target_group" "session" {
   }
 }
 resource "aws_lb_listener" "session" {
-  load_balancer_arn = aws_lb.session.arn
+  count             = local.cluster_count
+  load_balancer_arn = aws_lb.session[0].arn
   protocol          = "TCP"
   port              = 3106
   default_action {
     type             = "forward"
-    target_group_arn = aws_lb_target_group.session.arn
+    target_group_arn = aws_lb_target_group.session[0].arn
   }
 }
 resource "aws_autoscaling_attachment" "session" {
-  autoscaling_group_name = aws_eks_node_group.poc.resources[0].autoscaling_groups[0].name
-  lb_target_group_arn    = aws_lb_target_group.session.arn
+  count                  = local.cluster_count
+  autoscaling_group_name = aws_eks_node_group.poc[0].resources[0].autoscaling_groups[0].name
+  lb_target_group_arn    = aws_lb_target_group.session[0].arn
 }
 output "application_role_arns" {
   value = { for name, role in aws_iam_role.application : name => role.arn }
 }
 output "session_endpoint_url" {
-  value = "http://${aws_lb.session.dns_name}:3106"
+  value = var.cluster_enabled ? "http://${aws_lb.session[0].dns_name}:3106" : null
 }
 output "microvm_image_name_prefix" { value = local.microvm_image_name_prefix }
 output "microvm_artifact_prefix" { value = local.microvm_artifact_prefix }

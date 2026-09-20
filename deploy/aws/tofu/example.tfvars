@@ -13,7 +13,9 @@ addon_versions = {
   ebs_csi    = "v1.66.0-eksbuild.1"
 }
 
-# The single-instance control plane (instance.tf), beside EKS until that is torn down.
+# Which control planes to run (README, "Two control planes, one stack"). Independent of each other.
+# cluster_enabled   = true
+# The single-instance control plane (instance.tf).
 # instance_enabled  = true
 # instance_type     = "t4g.large"
 # instance_hostname = "alpha.mend.run"

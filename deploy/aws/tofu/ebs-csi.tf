@@ -1,9 +1,10 @@
 data "aws_iam_policy_document" "ebs_csi_trust" {
+  count = local.cluster_count
   statement {
     actions = ["sts:AssumeRoleWithWebIdentity"]
     principals {
       type        = "Federated"
-      identifiers = [aws_iam_openid_connect_provider.eks.arn]
+      identifiers = [aws_iam_openid_connect_provider.eks[0].arn]
     }
     condition {
       test     = "StringEquals"
@@ -19,8 +20,9 @@ data "aws_iam_policy_document" "ebs_csi_trust" {
 }
 
 resource "aws_iam_role" "ebs_csi" {
+  count              = local.cluster_count
   name               = "${local.name}-ebs-csi"
-  assume_role_policy = data.aws_iam_policy_document.ebs_csi_trust.json
+  assume_role_policy = data.aws_iam_policy_document.ebs_csi_trust[0].json
 }
 
 # Fresh encrypted gp3 PVCs only. Snapshot restore, snapshot management, FSR and
@@ -107,16 +109,18 @@ data "aws_iam_policy_document" "ebs_csi" {
 }
 
 resource "aws_iam_role_policy" "ebs_csi" {
+  count  = local.cluster_count
   name   = "cluster-gp3-volumes"
-  role   = aws_iam_role.ebs_csi.id
+  role   = aws_iam_role.ebs_csi[0].id
   policy = data.aws_iam_policy_document.ebs_csi.json
 }
 
 resource "aws_eks_addon" "ebs_csi" {
-  cluster_name                = aws_eks_cluster.poc.name
+  count                       = local.cluster_count
+  cluster_name                = aws_eks_cluster.poc[0].name
   addon_name                  = "aws-ebs-csi-driver"
   addon_version               = var.addon_versions.ebs_csi
-  service_account_role_arn    = aws_iam_role.ebs_csi.arn
+  service_account_role_arn    = aws_iam_role.ebs_csi[0].arn
   resolve_conflicts_on_update = "PRESERVE"
   configuration_values = jsonencode({
     controller = {

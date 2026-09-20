@@ -8,10 +8,25 @@ See the [capture-store ADR](../../docs/adr/0002-session-capture-store.md),
 [workbench plan](../../MEND-AGENT-WORKBENCH-PLAN.md), [Sealant manifests](kubernetes/README.md), and
 [teardown procedure](TEARDOWN.md).
 
+## Two control planes, one stack
+
+This stack can run Mend's control plane two ways, and sessions run in Lambda MicroVMs either way.
+
+|                 | Setting            | Default | What it adds                                                                                                                |
+| --------------- | ------------------ | ------- | --------------------------------------------------------------------------------------------------------------------------- |
+| EKS cluster     | `cluster_enabled`  | `true`  | The cluster, node group and add-ons, the EBS CSI role, one IAM role per service account, the VPC-only session load balancer |
+| Single instance | `instance_enabled` | `false` | One ARM64 instance with an Elastic IP and a data volume, one instance role                                                  |
+
+The two are independent: either, both or neither. Everything else here is shared and never gated:
+the VPC and NAT gateway, both buckets, the PlanetScale endpoint, the MicroVM connector and the
+MicroVM build and execution roles. Turning a control plane off removes only what that row names.
+Before `cluster_enabled = false` on a cluster that has run, follow [`TEARDOWN.md`](TEARDOWN.md)
+steps 1 to 3: a PVC deleted after the EBS CSI controller is gone leaves its volume behind.
+
 ## Single instance
 
-`tofu/instance.tf` puts the control plane on one EC2 instance, beside the EKS cluster until that is
-torn down. It is off until `instance_enabled = true`. The instance runs
+`tofu/instance.tf` puts the control plane on one EC2 instance. It is off until
+`instance_enabled = true`. The instance runs
 [`deploy/docker/compose.aws.yaml`](../docker/compose.aws.yaml) behind the Caddy edge and reuses this
 stack's VPC, capture bucket, PlanetScale endpoint and MicroVM connector. Sessions stay in Lambda
 MicroVMs. No Docker socket is mounted and the Docker runtime is off, so no tenant code runs on the

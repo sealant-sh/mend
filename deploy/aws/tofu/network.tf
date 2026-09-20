@@ -92,6 +92,7 @@ resource "aws_vpc_endpoint" "s3" {
 }
 
 resource "aws_security_group" "eks_workload" {
+  count       = local.cluster_count
   name        = "${local.name}-eks-workload"
   description = "Dedicated EKS control-plane and node ENIs, never MicroVM connectors"
   vpc_id      = aws_vpc.poc.id
@@ -99,14 +100,16 @@ resource "aws_security_group" "eks_workload" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "eks_internal" {
-  security_group_id            = aws_security_group.eks_workload.id
-  referenced_security_group_id = aws_security_group.eks_workload.id
+  count                        = local.cluster_count
+  security_group_id            = aws_security_group.eks_workload[0].id
+  referenced_security_group_id = aws_security_group.eks_workload[0].id
   ip_protocol                  = "-1"
   description                  = "EKS API, kubelet, DNS, and pod traffic within the EKS group"
 }
 
 resource "aws_vpc_security_group_egress_rule" "eks" {
-  security_group_id = aws_security_group.eks_workload.id
+  count             = local.cluster_count
+  security_group_id = aws_security_group.eks_workload[0].id
   cidr_ipv4         = "0.0.0.0/0"
   ip_protocol       = "-1"
   description       = "PrivateLink, S3 endpoint, and outbound package/image/API traffic through NAT"
@@ -134,8 +137,9 @@ resource "aws_security_group" "planetscale" {
 }
 
 resource "aws_vpc_security_group_ingress_rule" "planetscale" {
+  count                        = local.cluster_count
   security_group_id            = aws_security_group.planetscale.id
-  referenced_security_group_id = aws_security_group.eks_workload.id
+  referenced_security_group_id = aws_security_group.eks_workload[0].id
   ip_protocol                  = "tcp"
   from_port                    = 5432
   to_port                      = 5432

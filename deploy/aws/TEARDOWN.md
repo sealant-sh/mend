@@ -20,6 +20,34 @@ The fixed deployment identity is:
 Both MicroVM images, Kubernetes application objects, and the PlanetScale database are outside the
 Tofu state. `tofu destroy` cannot remove them.
 
+## Taking down only the cluster
+
+The stack has two control planes (README, "Two control planes, one stack"), and the single instance
+reuses the VPC, NAT gateway, buckets, PlanetScale endpoint, MicroVM connector and MicroVM roles.
+Step 6 below destroys the whole stack, those and the instance with them. To take down the cluster
+alone, turn it off instead.
+
+Run steps 1 to 3 below first, in that order. Step 3 matters most: a PVC deleted after the EBS CSI
+controller is gone leaves its volume behind, billed and outside the state. Skip step 4 (the buckets
+stay) and step 5 (unless the database goes too). In place of step 6, a saved ordinary plan:
+
+```sh
+cd "$TF_ROOT"
+CLUSTER_OFF_PLAN="$HOME/.config/mend/aws-poc/cluster-off.tfplan"
+umask 077
+tofu plan -input=false -var-file=poc.tfvars -var cluster_enabled=false -out="$CLUSTER_OFF_PLAN"
+tofu show -no-color "$CLUSTER_OFF_PLAN" > "$CLUSTER_OFF_PLAN.txt"
+```
+
+Against the live state on 2026-09-20 that plan read `0 to add, 1 to change, 36 to destroy`. The
+change is the MicroVM build role narrowing. The deletions are the cluster, its node group, launch
+template and four add-ons, the OIDC provider, the EKS log group, seven IAM roles with their
+policies, the session load balancer with its listener, target group, attachment and security group,
+and the EKS workload security group with the PlanetScale rule that named it. Stop if the plan
+touches the VPC, a subnet, the NAT gateway, a bucket, the PlanetScale endpoint, the network
+connector or a `microvm_*` role. Apply that exact saved plan, and keep `cluster_enabled = false` in
+`poc.tfvars` afterwards, or the next plan creates the cluster again.
+
 ## Safety gates
 
 Run AWS and Tofu commands from the repository's deployment shell:
