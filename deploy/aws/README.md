@@ -17,13 +17,19 @@ stack's VPC, capture bucket, PlanetScale endpoint and MicroVM connector. Session
 MicroVMs. No Docker socket is mounted and the Docker runtime is off, so no tenant code runs on the
 host.
 
-**Not applied, and one platform gap is open.** Sealant's worker builds a workspace image for every
-workspace, with the host's Docker when no Kubernetes builder is configured
-(`process-workspace-build-job.ts`, phase A). The MicroVM runtime never uses that image: it boots a
-fixed image ARN. With no Docker socket here, that build fails and no session starts. Mounting the
-socket would run tenants' image setup commands on the control plane's kernel, which is what this
-shape exists to avoid. The fix belongs in Sealant: skip the build when the selected runtime does not
-consume a built image. Until that ships, this instance can start Mend and cannot start sessions.
+**Not applied, and sessions cannot start on it yet.** Sealant's worker builds a workspace image for
+every workspace with the host's Docker when no Kubernetes builder is configured, and the MicroVM
+runtime ignores that image: it boots one hand-registered image, so a project's packages and setup
+commands do nothing on MicroVM. With no Docker socket here, that build fails and no session starts.
+Mounting the socket as things stand would run tenants' setup commands on the control plane's kernel.
+
+The agreed fix is Sealant's workspace image builders design (sealant-sh/sealant#266): each runtime
+builds the blueprint's image itself, and MicroVM does it through AWS's managed image build, under a
+read-only build role scoped to one organization's prefix. It was measured on this account on
+2026-09-20: a recipe step there cannot reach this VPC, the database or the capture bucket, and a
+MicroVM image can be built from any distro's base. When that ships, this Compose file mounts the
+Docker socket again, for staging Sealant's own binaries only, and this stack gains the
+per-organization build roles and prefixes.
 
 What is published: 80 and 443 to the edge, 2222 to Mend's workspace SSH gateway, and 3106 to the
 MicroVM connector's security group only. There is no host sshd on the Internet. Administration is
