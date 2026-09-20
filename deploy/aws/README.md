@@ -17,21 +17,27 @@ stack's VPC, capture bucket, PlanetScale endpoint and MicroVM connector. Session
 MicroVMs. No Docker socket is mounted and the Docker runtime is off, so no tenant code runs on the
 host.
 
-**Not applied, and sessions cannot start on it yet.** Sealant's worker builds a workspace image for
-every workspace with the host's Docker when no Kubernetes builder is configured, and the MicroVM
-runtime ignores that image: it boots one hand-registered image, so a project's packages and setup
-commands do nothing on MicroVM. With no Docker socket here, that build fails and no session starts.
-Mounting the socket as things stand would run tenants' setup commands on the control plane's kernel.
+**Not applied.** Nothing here has run against the account yet.
 
-The agreed fix is Sealant's workspace image builders design (sealant-sh/sealant#266): each runtime
-builds the blueprint's image itself, and MicroVM does it through AWS's managed image build, under a
-read-only build role scoped to one organization's prefix. It was measured on this account on
-2026-09-20: a recipe step there cannot reach this VPC, the database or the capture bucket, and a
-MicroVM image can be built from any distro's base. When that ships, this stack gains the
-per-organization build roles and prefixes, and this Compose file still mounts no Docker socket: the
-worker image carries `sealantd` and the agent files, so building a MicroVM image needs no Docker
-here. The socket is root on the host, and "for staging only" would be a promise about the worker's
-code, not a control.
+A project's image is built away from this host. Since Sealant 0.36 every runtime builds the image
+for a project's blueprint itself, and MicroVM does it with AWS's managed image build. The worker
+uploads a build context (a Containerfile and the in-VM agent's scripts, no binaries and no secrets)
+to `sealant/workspace-images/` in the artifacts bucket, the managed build runs the recipe, and the
+worker deletes the context. One recipe is one image, named `<name>-ws-<plan hash>` and reused by
+every workspace with that recipe. Sealant's retention deletes the ones nothing uses, and refuses to
+build past 50. A first session on a new recipe waits for the build, which took 193 to 203 s when
+measured on this account on 2026-09-20; the VM then started in 7 s.
+
+A recipe step runs as root and can read the build role's credentials. So that role can read that one
+prefix and write its build log, and nothing else. Measured on this account: a step cannot reach this
+VPC, the database or the capture bucket. The role is one for the whole deployment. One role and one
+prefix per organization is Sealant's next step, and this stack gains them then. Until then a step of
+one organization's recipe could read another's build context if it could guess a random key, and a
+context holds no secrets. No Docker socket is mounted: the socket is root on the host, and "for
+staging only" would be a promise about the worker's code, not a control.
+
+Workspace-scoped Docker inside a session is off (`SEALANT_MICROVM_DOCKER_ENABLED`). Its image is
+created with every OS capability, and that variant has not been built on the platform yet.
 
 What is published: 80 and 443 to the edge, 2222 to Mend's workspace SSH gateway, and 3106 to the
 MicroVM connector's security group only. There is no host sshd on the Internet. Administration is
@@ -44,7 +50,9 @@ SSM Session Manager, and Mend's own port stays on loopback.
    `scripts/bootstrap-databases.py` does for the cluster.
 3. Over `instance_shell_command`, put `compose.aws.yaml`, `compose.edge.yaml`, `Caddyfile` and a
    `.env` from [`aws.env.example`](../docker/aws.env.example) in `/opt/mend`. The `.env` holds the
-   only secrets; nothing secret is in OpenTofu state or user data.
+   only secrets; nothing secret is in OpenTofu state or user data. Take the two prefixes
+   (`microvm_artifact_prefix`, `microvm_image_name_prefix`) from `tofu output` as they are: the
+   instance role and the build role are granted exactly those.
 4. First boot with `MEND_TENANCY=single` and `MEND_EXPOSURE=private`:
    `docker compose -f compose.aws.yaml -f compose.edge.yaml up -d`. Both gates count the operator
    account, so neither `multi` nor `public` may start on an empty database.
@@ -57,7 +65,10 @@ SSM Session Manager, and Mend's own port stays on loopback.
    `MEND_EXPOSURE_DECLARED`.
 
 The instance role holds the three policies the cluster keeps on separate service accounts, because
-Mend and Sealant's API and worker run in one container here. The metadata hop limit is 2 so that
+Mend and Sealant's API and worker run in one container here. The worker's policy covers running
+MicroVMs and building, reading and deleting images under this stack's name prefix. Whether
+`CreateMicrovmImage` also authorizes against the managed base image was not measured, so the policy
+names it; the first build says if something is missing. The metadata hop limit is 2 so that
 container can use the role; user data drops the edge network's path to the metadata address.
 
 Docker's data root is a separate encrypted volume with daily snapshots, seven kept, and

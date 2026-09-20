@@ -1,9 +1,14 @@
 # Application identities. No static AWS credentials or bucket access on the node role.
 locals {
-  microvm_image_name = "mend-capture-poc-workspace"
-  microvm_image_arn  = "arn:aws:lambda:${local.region}:${local.account_id}:microvm-image:${local.microvm_image_name}"
-  # Separate retained image; Docker still requires the explicit API/worker image pair.
-  microvm_docker_image_arn = "${local.microvm_image_arn}-docker"
+  # Since Sealant 0.36 there is no registered image. Sealant builds one image per blueprint and
+  # names it `<prefix>-<24 hex of the plan hash>`, so the grants below name that pattern. A
+  # second control plane in this account takes another prefix (SEALANT_MICROVM_IMAGE_NAME_PREFIX).
+  microvm_image_name_prefix = "${local.name}-ws"
+  microvm_image_arns        = "arn:aws:lambda:${local.region}:${local.account_id}:microvm-image:${local.microvm_image_name_prefix}-*"
+  # The managed base every image is created on top of.
+  microvm_base_image_arn = "arn:aws:lambda:${local.region}:aws:microvm-image:al2023-1"
+  # The only keys the build role can read, and the only ones the worker writes.
+  microvm_artifact_prefix = "sealant/workspace-images"
   application_subjects = {
     mend           = "system:serviceaccount:mend:mend-api"
     sealant_api    = "system:serviceaccount:sealant:sealant-api"
@@ -59,7 +64,7 @@ data "aws_iam_policy_document" "sealant_api" {
   statement {
     actions = ["lambda:CreateMicrovmAuthToken", "lambda:GetMicrovm"]
     # These operations authorize against the image, not an individual VM ARN.
-    resources = [local.microvm_image_arn, local.microvm_docker_image_arn]
+    resources = [local.microvm_image_arns]
   }
 }
 
@@ -72,14 +77,31 @@ resource "aws_iam_role_policy" "sealant_api" {
 data "aws_iam_policy_document" "sealant_worker" {
   statement {
     actions   = ["lambda:RunMicrovm", "lambda:GetMicrovm", "lambda:TerminateMicrovm", "lambda:CreateMicrovmAuthToken"]
-    resources = [local.microvm_image_arn, local.microvm_docker_image_arn]
+    resources = [local.microvm_image_arns]
+  }
+  statement {
+    # The worker builds each blueprint's image with the managed image build, and its retention
+    # deletes the ones nothing uses. Whether CreateMicrovmImage also authorizes against the base
+    # image was not measured (the proof ran as an administrator), so the base is named too.
+    actions   = ["lambda:CreateMicrovmImage", "lambda:GetMicrovmImage", "lambda:DeleteMicrovmImage"]
+    resources = [local.microvm_image_arns, local.microvm_base_image_arn]
+  }
+  statement {
+    # A listing has no resource to name. It carries names, states and dates, and no tags.
+    actions   = ["lambda:ListMicrovmImages"]
+    resources = ["*"]
+  }
+  statement {
+    # A build context is uploaded for the managed build to read and deleted when the build ends.
+    actions   = ["s3:PutObject", "s3:DeleteObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/${local.microvm_artifact_prefix}/*"]
   }
   statement {
     # RunMicrovm rejected an otherwise matching grant with
     # iam:PassedToService=lambda.amazonaws.com in the live POC. Keep this
     # restricted to the log-only runtime role, whose trust permits Lambda only.
     actions   = ["iam:PassRole"]
-    resources = [aws_iam_role.microvm_exec.arn]
+    resources = [aws_iam_role.microvm_exec.arn, aws_iam_role.microvm_build.arn]
   }
   statement {
     # AWS's service-authorization table lists no resource-level support for this action.
@@ -162,5 +184,5 @@ output "application_role_arns" {
 output "session_endpoint_url" {
   value = "http://${aws_lb.session.dns_name}:3106"
 }
-output "microvm_image_name" { value = local.microvm_image_name }
-output "microvm_image_arn" { value = local.microvm_image_arn }
+output "microvm_image_name_prefix" { value = local.microvm_image_name_prefix }
+output "microvm_artifact_prefix" { value = local.microvm_artifact_prefix }

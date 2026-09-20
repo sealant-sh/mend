@@ -47,8 +47,11 @@ const AWS_ENVIRONMENT = {
   SEALANT_SERVICE_KEY: "synthetic",
   SEALANT_CREDENTIALS_KEY: "synthetic",
   SEALANT_CONTROL_BEARER_TOKEN: "synthetic",
-  SEALANT_MICROVM_IMAGE_ARN: "arn:aws:lambda:eu-central-1:000000000000:microvm-image:example",
-  SEALANT_MICROVM_IMAGE_VERSION: "1.0",
+  SEALANT_MICROVM_BUILD_ROLE_ARN: "arn:aws:iam::000000000000:role/example-build",
+  SEALANT_MICROVM_ARTIFACT_BUCKET: "example-artifacts",
+  SEALANT_MICROVM_ARTIFACT_PREFIX: "sealant/workspace-images",
+  SEALANT_MICROVM_IMAGE_NAME_PREFIX: "example-ws",
+  SEALANT_MICROVM_BUILD_LOG_GROUP: "/aws/lambda/microvms/example-build",
   SEALANT_MICROVM_EXEC_ROLE_ARN: "arn:aws:iam::000000000000:role/example-exec",
   SEALANT_MICROVM_EGRESS_CONNECTOR: "arn:aws:lambda:eu-central-1:000000000000:connector:egress",
   SEALANT_MICROVM_INGRESS_CONNECTOR: "arn:aws:lambda:eu-central-1:000000000000:connector:ingress",
@@ -137,6 +140,36 @@ test(
     );
     assert.equal(mend.environment.DEFAULT_RUNTIME_ADAPTER, "microvm");
     assert.equal(mend.depends_on, undefined);
+  },
+);
+
+test(
+  "a project's image is built away from the host, and none of Sealant's retired image settings is set",
+  { skip },
+  () => {
+    const environment = aws().services.mend.environment;
+    // Sealant 0.36 refuses to start while one of these is set.
+    for (const retired of [
+      "SEALANT_MICROVM_IMAGE_ARN",
+      "SEALANT_MICROVM_IMAGE_VERSION",
+      "SEALANT_MICROVM_DOCKER_IMAGE_ARN",
+      "SEALANT_MICROVM_DOCKER_IMAGE_VERSION",
+    ])
+      assert.ok(!(retired in environment), `${retired} is retired and must not be set`);
+    // The build role is what registers the MicroVM runtime, and with it the managed image build.
+    for (const required of [
+      "SEALANT_MICROVM_BUILD_ROLE_ARN",
+      "SEALANT_MICROVM_ARTIFACT_BUCKET",
+      "SEALANT_MICROVM_ARTIFACT_PREFIX",
+      "SEALANT_MICROVM_IMAGE_NAME_PREFIX",
+    ])
+      assert.ok(environment[required], `${required} must be set`);
+    // An image with every OS capability is an operator's decision, and this deployment says no.
+    assert.equal(environment.SEALANT_MICROVM_DOCKER_ENABLED, "false");
+    // What tofu grants and what compose asks for have to be the same two prefixes.
+    const tofu = readFileSync(path.join(root, "deploy/aws/tofu/application.tf"), "utf8");
+    assert.match(tofu, /microvm_artifact_prefix = "sealant\/workspace-images"/);
+    assert.match(tofu, /microvm-image:\$\{local\.microvm_image_name_prefix\}-\*/);
   },
 );
 

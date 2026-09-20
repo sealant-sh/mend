@@ -35,17 +35,13 @@ resource "aws_iam_role" "microvm_build" {
 }
 
 data "aws_iam_policy_document" "microvm_build" {
+  # A step of a project's image recipe runs as root under this role and can read its credentials
+  # from the instance metadata service (measured 2026-09-20). So it can read one prefix and write
+  # its build log, and nothing else: no PutObject, no ListBucket, no registry. Base images come
+  # from public registries, and the daemon from its public release image.
   statement {
-    actions   = ["s3:GetObject", "s3:PutObject"]
-    resources = ["${aws_s3_bucket.artifacts.arn}/*"]
-  }
-  statement {
-    actions   = ["ecr:GetAuthorizationToken"]
-    resources = ["*"]
-  }
-  statement {
-    actions   = ["ecr:BatchGetImage", "ecr:GetDownloadUrlForLayer", "ecr:BatchCheckLayerAvailability"]
-    resources = [aws_ecr_repository.workspace.arn]
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/${local.microvm_artifact_prefix}/*"]
   }
   statement {
     actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]

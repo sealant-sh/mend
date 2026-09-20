@@ -27,6 +27,11 @@ after they ship, marked **Shipped**, so the dogfood trail stays readable.
   refuses `multi` while recipes run on the control plane's host. A first attempt that skipped the
   build for MicroVM (sealant-sh/sealant#265) was closed: it made customisation permanently a no-op
   there.
+- **Shipped in 0.36.0** (sealant-sh/sealant#267, #268, #270, #271, #273, #275), except the
+  per-organization role and prefix, which is one role and one prefix per deployment for now, and the
+  builder isolation on the capability surface that Mend's gate would read. Observed on AWS on
+  2026-09-20: a Fedora blueprint with a package built in 193 to 203 s, the same recipe again built
+  nothing, and the MicroVM booted that image in 7 s with the OS and the package inside.
 
 ## 2026-09-18 · 0.34.0 · Narrow a Claude credential at connect and at sync-back
 

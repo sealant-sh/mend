@@ -217,6 +217,20 @@
 
 ### Patch Changes
 
+- Runs on Sealant 0.36.0 (sealant-sh/sealant#267, #268, #270, #271, #273, #275), which bakes
+  sealantd 0.18.1. A session on a Lambda MicroVM now boots the image built from its project's
+  blueprint, so the project's OS, base image and packages apply there as they do on Docker and
+  Kubernetes. AWS's managed image build runs the recipe, under a role that can read one prefix of
+  the artifacts bucket, so no recipe step runs on the control plane and a MicroVM deployment needs
+  no Docker. One recipe is one image, reused by every session with that recipe, and Sealant's
+  retention deletes the ones nothing uses. Nothing changes for a Docker or Kubernetes install.
+  `deploy/docker/compose.aws.yaml` and `deploy/aws/tofu` move with it: Sealant's four one-image
+  MicroVM settings are retired (0.36.0 refuses to start while one is set) in favour of a build role,
+  an artifacts prefix and an image name prefix; the worker's role gains the image actions on that
+  name prefix; and the build role loses its write access and its registry access. The server image
+  carries the in-VM agent's files beside Sealant's worker, which checks for them at start.
+  `@sealant/sdk` and `@sealant/api-contracts` move to 0.36.0, and the bundled server image pins the
+  0.36.0 API, worker and ssh-gateway digests.
 - Runs on Sealant 0.35.1 (sealant-sh/sealant#263), which bakes sealantd 0.18.0
   (sealant-sh/sealantd#91, #93). That daemon sets the remotes `plan.get` names, so a captured
   session's repository has its `origin` and `git push` and `git fetch` work inside a session again;
