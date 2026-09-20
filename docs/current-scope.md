@@ -43,25 +43,28 @@ Open as sealant#267.
 
 ## To get alpha running
 
-- [x] Core step two, open as one stack of four (sealant#267, #268, #270, #271). It merges together,
-      after the live proof below.
+- [x] Core step two: merged as one stack of five (sealant#267, #268, #270, #271, #273).
   - #268: the MicroVM builder. One plan is one image, named `sealant-ws-<plan hash>`. The per-build
     zip is deleted after the build. An image cap.
   - #270: the MicroVM adapter boots the built image. The four one-image settings are retired and
     refused at start. `SEALANT_MICROVM_BUILD_ROLE_ARN` enables the adapter. Docker on a MicroVM is
     `SEALANT_MICROVM_DOCKER_ENABLED`, off by default. `build-image.sh` is removed.
   - #271: image retention deletes unused MicroVM images, and the ones no build job names.
-  - Found on the way: `ListMicrovmImages` returns no tags, so the cap as first written counted
-    nothing. Images are now told by name. Two control planes in one AWS account set different
-    `SEALANT_MICROVM_IMAGE_NAME_PREFIX` values.
-- [x] The build context needs no binaries: the recipe takes `sealantd` with `COPY --from` the
-      released image, and the worker image carries only the agent files. No Docker on the control
-      plane for a MicroVM build.
-- [ ] The released sealantd image has no `sealantctl`, and the agent's suspend and terminate hooks
-      run `sealantctl capture flush`. Open as sealantd#94. Merge, tag a sealantd release, then a
-      fifth Core PR moves the daemon pin. A managed build of the recipe fails until then.
-- [ ] Live proof: a real MicroVM session boots an image built from a customised blueprint. Needs the
-      sealantd release above.
+  - #273: sealantd 0.18.1, whose image ships `sealantctl` (sealantd#94). The agent's suspend and
+    terminate hooks run `sealantctl capture flush`.
+  - `ListMicrovmImages` returns no tags, so images are told by name. Two control planes in one AWS
+    account set different `SEALANT_MICROVM_IMAGE_NAME_PREFIX` values.
+- [x] The build context needs no binaries: the recipe takes `sealantd` and `sealantctl` with
+      `COPY --from` the released image. No Docker on the control plane for a MicroVM build.
+- [x] Live proof on AWS, 2026-09-20. A Fedora blueprint with `ripgrep` built in 203 s. The same plan
+      again took under a second. The adapter booted it in 7 s, and the OS, the package, `sealantd`,
+      a working `sealantctl` and the repository were inside. A fenced stop took 3 s. Not covered: a
+      capture-source flush at terminate (needs Mend), and the Docker variant.
+- [ ] sealant#275, open. The proof found two faults: image lookups need an ARN, and the create
+      request's token must be one per attempt. Until it merges, `main` builds no MicroVM image. Hold
+      the Core Version PR (sealant#274) until then.
+- [ ] One proof image, `proof-ws-2f90f800473b7775fd29c642`, is stuck in `CREATING` in the AWS
+      account and cannot be deleted in that state. Try `delete-microvm-image` again later.
 - [ ] Core step three: one read-only build role and one prefix per organization.
 - [ ] Core release, then the Mend pin bump (template: mend#307).
 - [ ] Mend: a multi mode gate item that refuses `MEND_TENANCY=multi` while recipes run on the
