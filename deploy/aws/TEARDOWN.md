@@ -189,7 +189,10 @@ aws lambda-microvms list-microvm-image-versions \
   --output json
 ```
 
-Delete version `1.0` and any other version shown, one at a time, then delete the image container:
+Delete every version but the last, one at a time, then delete the image, which takes its last
+version with it. The platform refuses to delete an image's only version on its own ("This is the
+last version. Please delete the entire image", observed 2026-09-20), so for an image with one
+version skip straight to `delete-microvm-image`:
 
 ```sh
 aws lambda-microvms delete-microvm-image-version \

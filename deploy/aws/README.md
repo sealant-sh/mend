@@ -32,8 +32,6 @@ stack's VPC, capture bucket, PlanetScale endpoint and MicroVM connector. Session
 MicroVMs. No Docker socket is mounted and the Docker runtime is off, so no tenant code runs on the
 host.
 
-**Not applied.** Nothing here has run against the account yet.
-
 A project's image is built away from this host. Since Sealant 0.36 every runtime builds the image
 for a project's blueprint itself, and MicroVM does it with AWS's managed image build. The worker
 uploads a build context (a Containerfile and the in-VM agent's scripts, no binaries and no secrets)
@@ -62,22 +60,40 @@ SSM Session Manager, and Mend's own port stays on loopback.
    at `instance_public_ip`. A proxied record breaks workspace SSH and terminates TLS before the
    edge.
 2. Create fresh `mend` and `sealant_control_plane` databases and roles on PlanetScale, as
-   `scripts/bootstrap-databases.py` does for the cluster.
-3. Over `instance_shell_command`, put `compose.aws.yaml`, `compose.edge.yaml`, `Caddyfile` and a
-   `.env` from [`aws.env.example`](../docker/aws.env.example) in `/opt/mend`. The `.env` holds the
-   only secrets; nothing secret is in OpenTofu state or user data. Take the two prefixes
+   `scripts/bootstrap-databases.py` does for the cluster. To reuse databases that have run, empty
+   them as each application's own role: drop the schemas it made (`pgboss`, `drizzle`) and every
+   object it owns in `public`. `DROP OWNED` also revokes the role's grants, so do not use it.
+3. Put `compose.aws.yaml`, `compose.edge.yaml`, `Caddyfile` and a `.env` from
+   [`aws.env.example`](../docker/aws.env.example) in `/opt/mend`, mode 600, owned by root. The
+   `.env` holds the only secrets; nothing secret is in OpenTofu state or user data. Do not send it
+   with `aws ssm send-command`: a command's input and output are kept in the account's SSM history.
+   Forward the instance's sshd over Session Manager and copy the files through that. Nothing is
+   opened to the Internet, and the key is removed afterwards. Take the two prefixes
    (`microvm_artifact_prefix`, `microvm_image_name_prefix`) from `tofu output` as they are: the
    instance role and the build role are granted exactly those.
-4. First boot with `MEND_TENANCY=single` and `MEND_EXPOSURE=private`:
-   `docker compose -f compose.aws.yaml -f compose.edge.yaml up -d`. Both gates count the operator
-   account, so neither `multi` nor `public` may start on an empty database.
+4. First boot with `MEND_TENANCY=single`, `MEND_EXPOSURE=private` and
+   `MEND_ALLOWED_ORIGINS=["http://localhost:3105"]`, **and start `mend` only**:
+   `docker compose -f compose.aws.yaml up -d mend`. Both gates count the operator account, so
+   neither `multi` nor `public` may start on an empty database. Registration is open until that
+   account exists, and the edge would serve the public name the moment it starts. Its certificate
+   puts that name in the public certificate logs at once. So the edge stays down until step 6.
 5. Run `instance_first_account_tunnel` and create the first account at `http://localhost:3105`. It
-   becomes the owner and the operator, and registration closes.
-6. Set `MEND_TENANCY=multi` and `MEND_EXPOSURE=public`, `up -d` again, then read
-   `mend operator gate` and `mend operator exposure`.
-7. From outside the VPC: `mend doctor` against the origin, a sign-up without an invitation, and
-   connection attempts to PlanetScale and Sealant. Only then name `core-private,edge-tls` in
-   `MEND_EXPOSURE_DECLARED`.
+   becomes the owner and the operator, and registration closes (`/api/instance` answers
+   `"registration":"closed"`). The extra origin in step 4 is what lets sign-up accept the tunnel.
+   Session Manager closes a forward that sits idle, so start it when you are ready to register.
+6. Remove `MEND_ALLOWED_ORIGINS`, set `MEND_TENANCY=multi` and `MEND_EXPOSURE=public`, and bring
+   everything up: `docker compose -f compose.aws.yaml -f compose.edge.yaml up -d`. Read
+   `mend operator gate` and `mend operator exposure`, or the `tenancy` and `exposure` lines Mend
+   logs at start.
+7. From outside the VPC: TLS and the redirect on the public name, a sign-up without an invitation
+   (refused), which ports answer at the public address (80, 443 and 2222, and nothing else), and a
+   connection to PlanetScale's public endpoint with an application role (refused). Only then name
+   `core-private,edge-tls` in `MEND_EXPOSURE_DECLARED` and `up -d` again. The `reassessment` item
+   stays open until someone records a reassessment of the running release.
+
+This order ran on 2026-09-20 for `alpha.mend.run` (Mend 0.29.0, Sealant 0.36.0). Steps 4 and 5 are
+as corrected by that run: the first attempt started the edge with `mend`, and the public name
+answered with registration open until the edge was stopped. No account had been made.
 
 The instance role holds the three policies the cluster keeps on separate service accounts, because
 Mend and Sealant's API and worker run in one container here. The worker's policy covers running
