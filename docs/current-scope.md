@@ -56,6 +56,16 @@ EKS cluster taken down (`cluster_enabled = false`). What the first day found:
       family and the Docker toggle from it and say why an option is off.
 - [x] Workspace-scoped Docker on every family, proven live on 2026-09-20 (sealant#276).
       `SEALANT_MICROVM_DOCKER_ENABLED=true` is set on alpha.
+- [ ] Mend's default package list only existed on Arch x86_64 (Fedora 41 has no `mise` or `lazygit`,
+      Ubuntu 24.04 also lacks `uv` and `pnpm`, both call the GitHub CLI `gh`, Arch Linux ARM lacks
+      `mise`), and Core passed unknown ids to the package manager as is. Decided: Core owns a
+      package catalog (sealant#279): repository package, or a pinned checksum-verified release, or
+      npm, per family; unknown ids refused at create. Proven live with Mend's defaults on all four
+      families. Until it ships and Mend re-pins, a default project on alpha fails at the build.
+- [ ] Three faults the first alpha sessions found, all fixed and applied: `CreateMicrovmImage` and
+      `TagResource` authorize on `*` (mend#320); `associate_public_ip_address` drifted and would
+      have replaced the instance on any apply (mend#320); the Arch package step swallowed pacman
+      failures (sealant#278).
 - [ ] A real capture session through Mend on alpha, with its flush at stop, has still not run.
 - [ ] The `reassessment` exposure item is open until someone records a reassessment of 0.29.0.
 - [ ] Remove the setup SSH key from the instance once the next pin bump has landed there.
