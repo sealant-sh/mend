@@ -98,12 +98,12 @@ answered with registration open until the edge was stopped. No account had been 
 The instance role holds the three policies the cluster keeps on separate service accounts, because
 Mend and Sealant's API and worker run in one container here. The worker's policy covers running
 MicroVMs and building, reading and deleting images under this stack's name prefix.
-`CreateMicrovmImage` and `ListMicrovmImages` authorize against no resource, so those two are granted
-on `*`; what the worker may create is bounded by the name prefix in its configuration.
-`GetMicrovmImage` and `DeleteMicrovmImage` authorize against the image ARN, so those are granted on
-the name pattern. Measured on the instance on 2026-09-21: the first build was refused until the
-create action was granted on `*`. The metadata hop limit is 2 so that container can use the role;
-user data drops the edge network's path to the metadata address.
+`CreateMicrovmImage`, `ListMicrovmImages` and `TagResource` (a create carries tags) authorize
+against no resource, so those are granted on `*`; what the worker may create is bounded by the name
+prefix in its configuration. `GetMicrovmImage` and `DeleteMicrovmImage` authorize against the image
+ARN, so those are granted on the name pattern. Measured on the instance on 2026-09-21: the first
+build was refused until the create action was granted on `*`. The metadata hop limit is 2 so that
+container can use the role; user data drops the edge network's path to the metadata address.
 
 Docker's data root is a separate encrypted volume with daily snapshots, seven kept, and
 `prevent_destroy`. It holds the store, the SSH host key and the edge's certificates. PlanetScale and
