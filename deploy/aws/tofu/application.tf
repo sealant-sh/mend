@@ -83,15 +83,18 @@ data "aws_iam_policy_document" "sealant_worker" {
     resources = [local.microvm_image_arns]
   }
   statement {
-    # The worker builds each blueprint's image with the managed image build, and its retention
-    # deletes the ones nothing uses. Whether CreateMicrovmImage also authorizes against the base
-    # image was not measured (the proof ran as an administrator), so the base is named too.
-    actions   = ["lambda:CreateMicrovmImage", "lambda:GetMicrovmImage", "lambda:DeleteMicrovmImage"]
-    resources = [local.microvm_image_arns, local.microvm_base_image_arn]
+    # The worker reads each blueprint's image by name before it builds, and its retention deletes
+    # the ones nothing uses. Both authorize against the image ARN (measured on the instance on
+    # 2026-09-21: a lookup under this pattern was allowed).
+    actions   = ["lambda:GetMicrovmImage", "lambda:DeleteMicrovmImage"]
+    resources = [local.microvm_image_arns]
   }
   statement {
-    # A listing has no resource to name. It carries names, states and dates, and no tags.
-    actions   = ["lambda:ListMicrovmImages"]
+    # Creating an image and listing images authorize against no resource: the first build on the
+    # instance was refused with "not authorized to perform lambda:CreateMicrovmImage on resource: *"
+    # under the pattern above (2026-09-21). What the worker may create is bounded by the name
+    # prefix in its configuration, not by IAM.
+    actions   = ["lambda:CreateMicrovmImage", "lambda:ListMicrovmImages"]
     resources = ["*"]
   }
   statement {

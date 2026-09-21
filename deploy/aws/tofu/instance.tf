@@ -191,13 +191,16 @@ resource "aws_vpc_security_group_ingress_rule" "planetscale_from_instance" {
 }
 
 resource "aws_instance" "control_plane" {
-  count                       = local.instance_count
-  ami                         = data.aws_ssm_parameter.al2023_arm64[0].value
-  instance_type               = var.instance_type
-  subnet_id                   = aws_subnet.public[local.instance_az].id
-  vpc_security_group_ids      = [aws_security_group.instance[0].id]
-  iam_instance_profile        = aws_iam_instance_profile.instance[0].name
-  associate_public_ip_address = false # the Elastic IP below is its only public address
+  count                  = local.instance_count
+  ami                    = data.aws_ssm_parameter.al2023_arm64[0].value
+  instance_type          = var.instance_type
+  subnet_id              = aws_subnet.public[local.instance_az].id
+  vpc_security_group_ids = [aws_security_group.instance[0].id]
+  iam_instance_profile   = aws_iam_instance_profile.instance[0].name
+  # The Elastic IP below is its only public address. Once that address is associated, AWS reports
+  # this attribute as true, so it is ignored below: the first plan after go-live (2026-09-21)
+  # otherwise proposed replacing the instance for it.
+  associate_public_ip_address = false
   user_data                   = file("${path.module}/instance-user-data.sh")
   user_data_replace_on_change = false
 
@@ -217,7 +220,7 @@ resource "aws_instance" "control_plane" {
   }
 
   lifecycle {
-    ignore_changes = [ami, user_data]
+    ignore_changes = [ami, user_data, associate_public_ip_address]
   }
 
   tags = { Name = "${local.name}-control-plane" }
