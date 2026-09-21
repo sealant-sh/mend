@@ -94,7 +94,8 @@ data "aws_iam_policy_document" "sealant_worker" {
     # instance was refused with "not authorized to perform lambda:CreateMicrovmImage on resource: *"
     # under the pattern above (2026-09-21). What the worker may create is bounded by the name
     # prefix in its configuration, not by IAM.
-    actions   = ["lambda:CreateMicrovmImage", "lambda:ListMicrovmImages"]
+    # A create carries tags, and tagging is its own action (refused next, 2026-09-21).
+    actions   = ["lambda:CreateMicrovmImage", "lambda:ListMicrovmImages", "lambda:TagResource"]
     resources = ["*"]
   }
   statement {
