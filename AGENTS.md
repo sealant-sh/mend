@@ -51,6 +51,11 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   terminal embed carries in its URL. A `budget` bounds what a client, an account or an organization
   may ask; it refuses new work and never stops running work. Never write "tailnet · reachable",
   "safe to expose" or "gate passed": write what was declared and what was observed.
+- Slack nouns (`docs/adr/0006-slack.md`): a `Slack app` is an organization's own install, made from
+  Mend's manifest and connected over Socket Mode (outbound only). A `Slack link` joins one Slack user
+  to one Mend account, explicitly, never by email. A `Slack thread` is a thread sessions report to;
+  `@mend <prompt>` there is a follow-up. Mend picks a session's project from the message, then the
+  thread, then the channel default, then the person's default, and says which one decided.
 - The queue is gone: no triage/queued/mending stages, no issue intake, no kanban. Issues and PRs are
   optional references attached to work, never its identity.
 - Platform nouns follow Sealant: `workspace` (the live environment; sessions run in workspaces that
