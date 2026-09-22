@@ -2,10 +2,11 @@
   "name": "@mend/slack",
   "version": "0.0.0",
   "private": true,
-  "description": "Slack as pure functions: the app manifest, mention parsing, repository matching, thread context and message formatting (docs/adr/0006-slack.md)",
+  "description": "Slack for Mend (docs/adr/0006-slack.md): the app manifest, mention parsing, repository matching, thread context and message formatting as pure functions, and `./client`, the Web API behind the SlackApi service",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./client": "./src/client.ts"
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",
@@ -13,7 +14,9 @@
     "typecheck": "tsgo -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@mend/domain": "workspace:*"
+    "@mend/domain": "workspace:*",
+    "@slack/web-api": "catalog:",
+    "effect": "catalog:"
   },
   "devDependencies": {
     "@mend/typescript": "workspace:*",

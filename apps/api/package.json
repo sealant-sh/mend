@@ -23,6 +23,7 @@
     "@mend/network": "workspace:*",
     "@mend/sealant": "workspace:*",
     "@mend/sessions": "workspace:*",
+    "@mend/slack": "workspace:*",
     "@mend/store": "workspace:*",
     "effect": "catalog:"
   },
