@@ -78,6 +78,7 @@ import {
   normalizeProjectName,
   pendingId,
 } from "./shared.ts";
+import { SnakeBoard, SnakeHeading, SnakeRows, useSnake } from "./snake.tsx";
 import { openUrl } from "./terminal.ts";
 import {
   ACCENT,
@@ -174,6 +175,8 @@ export interface DashboardContext {
   ) => Promise<"detached" | "ended" | "dropped" | "interrupted" | "unavailable">;
   /** The ssh-agent share running alongside; null when off or no agent. */
   readonly agentShare: AgentShareHandle | null;
+  /** `mend snake`: open with the game over the dashboard. */
+  readonly openSnake?: boolean;
 }
 
 // ─── panes and rows ─────────────────────────────────────────────────────────
@@ -748,6 +751,29 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   // facts drops them from the end rather than pushing the record out.
   const factRows = Math.max(0, Math.min(SESSION_FACT_ROWS, layout.detailRows - 2));
   const showFactRule = factRows > 0 && layout.detailRows - factRows > 1;
+  // A session that is still starting has no record to show. The image builds, then the session
+  // boots; a first build on a new setup takes about seven minutes. Snake fills the wait.
+  const waiting =
+    selectedSession !== null &&
+    (selectedSession.status === "starting" || isPendingId(selectedSession.id));
+  const snake = useSnake({
+    width: Math.max(8, Math.min(40, detailWidth - 4)),
+    // The pane minus the facts, the rule, the starting line, two lines of hints and the border.
+    height: Math.max(4, Math.min(14, layout.detailRows - factRows - 8)),
+    enabled: waiting,
+  });
+  // esc puts the game away for this session; space brings it back.
+  const [snakeAwayFor, setSnakeAwayFor] = useState<string | null>(null);
+  const snakeShown = waiting && snakeAwayFor !== selectedSession?.id;
+  // `mend snake`: the game floats over the whole dashboard until esc, whatever is selected.
+  const [snakeOverlay, setSnakeOverlay] = useState(ctx.openSnake === true);
+  const overlayWidth = Math.max(16, Math.min(60, terminalCols - 8));
+  const overlayHeight = Math.max(6, Math.min(20, terminalRows - 10));
+  const overlaySnake = useSnake({
+    width: overlayWidth,
+    height: overlayHeight,
+    enabled: snakeOverlay,
+  });
   const previewRows = Math.max(1, layout.detailRows - factRows - (showFactRule ? 1 : 0));
   const previewView = previewWindow(preview, previewRows, previewOffset);
 
@@ -1558,6 +1584,37 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     if (reviewing !== null) return;
     if (lockRef.current) return;
     if (key.ctrl && key.name === "c") return onQuit();
+    if (snakeOverlay) {
+      // The game over the dashboard owns the keyboard until esc or q.
+      if (key.name === "up" || key.name === "down" || key.name === "left" || key.name === "right") {
+        overlaySnake.steer(key.name);
+      } else if (key.name === "space") {
+        overlaySnake.togglePause();
+      } else if (key.name === "escape" || key.name === "q") {
+        setSnakeOverlay(false);
+      }
+      return;
+    }
+    if (waiting && focus === "detail" && picker === null && editing === null && creating === null) {
+      // The snake, while a starting session is in the focused detail pane. The arrows steer it,
+      // space pauses it, esc puts it away and space brings it back; h j k l and tab still move
+      // the dashboard.
+      if (snakeShown) {
+        if (
+          key.name === "up" ||
+          key.name === "down" ||
+          key.name === "left" ||
+          key.name === "right"
+        ) {
+          snake.steer(key.name);
+          return;
+        }
+        if (key.name === "space") return snake.togglePause();
+        if (key.name === "escape") return setSnakeAwayFor(selectedSession?.id ?? null);
+      } else if (key.name === "space") {
+        return setSnakeAwayFor(null);
+      }
+    }
     const verb = verbForKey(key.name ?? "", key.shift === true);
     if (verb !== "stop") setStopArmed(null);
     if (verb !== "remove") setRemoveArmed(null);
@@ -2001,7 +2058,24 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             </text>
           ) : null}
           <box flexGrow={1} flexShrink={1} minHeight={0} flexDirection="column">
-            {previewSessionId === null ? (
+            {waiting ? (
+              <>
+                <text height={1} bg="transparent">
+                  <span>{"  "}</span>
+                  <span fg={INK_2}>starting</span>
+                  <span fg={FAINT}>
+                    {
+                      " · the image builds, then the session boots · a first build on a new setup takes about 7 minutes"
+                    }
+                  </span>
+                </text>
+                {snakeShown ? (
+                  <SnakeBoard handle={snake} focused={focus === "detail"} />
+                ) : (
+                  <EmptyNote text="snake is put away · space brings it back" />
+                )}
+              </>
+            ) : previewSessionId === null ? (
               <EmptyNote text="provisioning — no record yet" />
             ) : selectedSession?.harness === "shell" ? (
               <EmptyNote text="shell — no conversation record; a attaches if live" />
@@ -2089,6 +2163,29 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         )}
         {detailWidth === 0 ? null : renderDetail()}
       </box>
+
+      {snakeOverlay ? (
+        <box
+          position="absolute"
+          zIndex={13}
+          left={Math.max(1, Math.floor((terminalCols - (overlayWidth + 4)) / 2))}
+          top={Math.max(1, Math.floor((terminalRows - (overlayHeight + 5)) / 2))}
+          width={overlayWidth + 4}
+          height={overlayHeight + 5}
+          border
+          borderStyle="rounded"
+          borderColor={ACCENT}
+          title=" snake "
+          titleAlignment="left"
+          backgroundColor={SURFACE}
+          flexDirection="column"
+        >
+          <SnakeHeading handle={overlaySnake} hint="arrows steer · space pauses · esc closes" />
+          <box marginLeft={1} flexDirection="column">
+            <SnakeRows game={overlaySnake.game} />
+          </box>
+        </box>
+      ) : null}
 
       {picker === null ? null : (
         <box

@@ -3733,7 +3733,7 @@ const hasNodeFfi = (): boolean => {
  * --experimental-ffi. Gate here and re-exec the same argv with the flag so
  * the user never types it; every other command stays on plain Node >= 22.
  */
-const dashboard = async (config: CliConfig) => {
+const dashboard = async (config: CliConfig, options: { readonly openSnake?: boolean } = {}) => {
   if (process.stdout.isTTY !== true) {
     say(renderIndex());
     return;
@@ -3757,6 +3757,7 @@ const dashboard = async (config: CliConfig) => {
   try {
     await runDashboard({
       config,
+      ...(options.openSnake === true ? { openSnake: true } : {}),
       cwd: process.cwd(),
       cwdBranch: gitCurrentBranch(process.cwd()),
       api: <T>(method: "GET" | "POST" | "DELETE", route: string, body?: unknown) =>
@@ -3948,6 +3949,8 @@ const main = async () => {
     case undefined:
     case "ui":
       return dashboard(config);
+    case "snake":
+      return dashboard(config, { openSnake: true });
     case "help":
     case "--help":
     case "-h":

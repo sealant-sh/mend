@@ -207,6 +207,17 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     see: ["sessions", "attach"],
   },
   {
+    name: "snake",
+    section: "sessions",
+    summary: "the dashboard, with snake over it",
+    synopsis: [],
+    description: [
+      "Opens the dashboard with a game of snake floating over it. The arrows steer, space pauses, and esc or q closes the game and leaves you in the dashboard, which has been live underneath the whole time. The same game appears on its own in the session pane while a session is starting: a first session on a new project setup builds its image before it boots, about seven minutes on some families.",
+      "Needs Node 26 or newer, like the dashboard.",
+    ],
+    see: ["ui"],
+  },
+  {
     name: "attach",
     section: "sessions",
     summary: "reattach this terminal to a running session",
