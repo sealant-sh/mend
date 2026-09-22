@@ -20,6 +20,7 @@ export const SLACK_ACTIONS = {
   otherProject: "mend_other_project",
   linkAccount: "mend_link_account",
   reviewChange: "mend_review_change",
+  switchProject: "mend_switch_project",
 } as const;
 
 /** A project button's `action_id`: unique within its block, and starts with `pickProject`. */
@@ -127,6 +128,11 @@ export interface StatusInput {
   readonly change: ChangeCounts | null;
   /** The session in Mend. */
   readonly url: string;
+  /**
+   * The session "Switch project" restarts in another project, while that is offered (until the
+   * session's first turn completes; see `switchOffered`). Absent or null offers no button.
+   */
+  readonly switchSession?: string | null;
 }
 
 /** `billing-api · from the thread · claude · running · mend/flaky-login-test`. */
@@ -140,9 +146,30 @@ export const statusLine = (input: StatusInput): string =>
     ...(input.change === null ? [] : [changeWords(input.change)]),
   ].join(" · ");
 
-/** The one status message, which Mend edits in place as the session moves. */
+/**
+ * The one status message, which Mend edits in place as the session moves. Until the first turn
+ * completes it also offers "Switch project", which restarts the request in a project the
+ * requester picks.
+ */
 export const statusMessage = (input: StatusInput): SlackMessage => {
   const line = escapeSlack(statusLine(input));
+  const switchSession = input.switchSession ?? null;
+  const switching: ReadonlyArray<ActionsBlock> =
+    switchSession === null
+      ? []
+      : [
+          {
+            type: "actions",
+            elements: [
+              {
+                type: "button",
+                action_id: SLACK_ACTIONS.switchProject,
+                text: plain("Switch project"),
+                value: switchSession,
+              },
+            ],
+          },
+        ];
   return {
     text: line,
     blocks: [
@@ -156,6 +183,7 @@ export const statusMessage = (input: StatusInput): SlackMessage => {
           url: input.url,
         },
       },
+      ...switching,
     ],
   };
 };
@@ -459,14 +487,22 @@ export const PICKER_BUTTON_LIMIT = 5;
 /** Slack's cap on a select's options. */
 export const PICKER_OPTION_LIMIT = 100;
 
+/** Why Mend asks for a project, as the picker words it. */
+const PICKER_REASONS = {
+  none: "No project named in the request or the thread, and no default set. Pick one to start the session.",
+  several: "More than one project matches. Pick one to start the session.",
+  switch:
+    "Pick the project to restart this request in. The session already started for it is stopped when you pick.",
+} as const;
+
 /**
  * Buttons for the likeliest projects, and "Other…" with the full list. `requestKey` identifies the
  * request the choice answers (see {@link projectPickerBlockId}). `reason` says why Mend asks:
- * nothing answered, or several projects did.
+ * nothing answered, several projects did, or the requester is switching the session's project.
  */
 export const projectPicker = (input: {
   readonly requestKey: string;
-  readonly reason: "none" | "several";
+  readonly reason: keyof typeof PICKER_REASONS;
   readonly likeliest: ReadonlyArray<PickableProject>;
   readonly all: ReadonlyArray<PickableProject>;
 }): SlackMessage => {
@@ -474,10 +510,7 @@ export const projectPicker = (input: {
     const text = "No projects to pick from. In a channel, Mend offers shared projects only.";
     return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
   }
-  const text =
-    input.reason === "none"
-      ? "No project named in the request or the thread, and no default set. Pick one to start the session."
-      : "More than one project matches. Pick one to start the session.";
+  const text = PICKER_REASONS[input.reason];
   const buttons: ReadonlyArray<ButtonElement> = input.likeliest
     .slice(0, PICKER_BUTTON_LIMIT)
     .map((project, index) => ({

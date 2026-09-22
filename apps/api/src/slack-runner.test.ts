@@ -2,11 +2,14 @@ import {
   BudgetExceeded,
   ConnectedAccount,
   NotFound,
+  SessionNotSteerable,
   StoreFailure,
   type LaunchRequest,
 } from "@mend/api-contracts";
 import {
+  AgentConversationRepo,
   AuditEventsRepo,
+  SessionControlEventsRepo,
   SessionNotFoundError,
   SessionsRepo,
   SlackDefaultsRepo,
@@ -19,24 +22,41 @@ import {
   type SlackLink,
   type SlackThreadSession,
 } from "@mend/db";
-import { OrganizationId, ProjectId, SessionId, WorktreeId } from "@mend/domain";
 import {
+  AgentTurnId,
+  OrganizationId,
+  ProjectId,
+  SessionId,
+  SessionProcessId,
+  WorktreeId,
+} from "@mend/domain";
+import {
+  AgentTurn,
   Project,
   Session,
+  type AgentTurnStatus,
   type SlackLinkedMentionJob,
   type SlackPendingMention,
 } from "@mend/domain/workbench";
-import { SealantClients } from "@mend/sealant";
+import {
+  InferenceError,
+  InferenceProvider,
+  ThreadProjectReaderLive,
+  type InferenceRequest,
+} from "@mend/inference";
+import { SealantClients, SealantPrincipal } from "@mend/sealant";
+import { SessionEngine } from "@mend/sessions";
 import { projectPickerBlockId, SLACK_ACTIONS, type SlackThreadMessage } from "@mend/slack";
 import { makeFakeSlack, type FakeSlackWorkspace } from "@mend/slack/client";
 import type { SlackEnvelope } from "@mend/slack/socket";
-import { SecretCipher } from "@mend/store";
+import { SecretCipher, Store } from "@mend/store";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { makeProject, makeSession } from "../test/support/tenancy-harness.ts";
 import { ProjectAccess } from "./access.ts";
 import { SessionStart } from "./session-start.ts";
+import { SessionSteering } from "./session-steering.ts";
 import {
   chooseProject,
   makeSlackRunner,
@@ -176,7 +196,29 @@ interface WorldOptions {
   readonly threadSession?: { readonly threadTs: string; readonly projectId: ProjectId };
   /** The reporter moved the status message before the launch returned. */
   readonly reporterMovedFirst?: boolean;
+  /**
+   * What the inference provider answers for the thread's project, one per call; a call past the
+   * end fails. Nothing given: no inference is expected.
+   */
+  readonly inference?: ReadonlyArray<unknown>;
+  readonly inferencesPerHour?: number;
+  /** The turns every session has, for "Switch project". */
+  readonly turns?: ReadonlyArray<AgentTurnStatus>;
 }
+
+/** A thread that names no repository: only inference can tell which project it is about. */
+const RETRY_THREAD = "1700000200.000100";
+const RETRY_MENTION = "1700000200.000200";
+
+const inferred = (
+  projectId: string | null,
+  likeliest: ReadonlyArray<string> = [],
+  options = {},
+) => ({
+  projectId,
+  likeliest,
+  options: { harness: null, model: null, effort: null, branch: null, ...options },
+});
 
 /**
  * A runner over fakes: Slack is the in-memory fake, the repositories are maps, and SessionStart
@@ -205,6 +247,14 @@ const world = (options: WorldOptions = {}) => {
   const reported = new Map<string, string>();
   const audited: Array<NewAuditEvent> = [];
   const launches: Array<LaunchRequest> = [];
+  const inferences: Array<InferenceRequest> = [];
+  /** Who each inference ran as. */
+  const principals: Array<string> = [];
+  const answers = [...(options.inference ?? [])];
+  /** The state and status message each session shows, as `slack_threads` holds them. */
+  const shownState = new Map<string, string>();
+  const statusTs = new Map<string, string>();
+  const sessionsCreated = new Map<string, Session>();
   const visible = [billing, web, notes];
   const created = (projectId: ProjectId, owner: string) =>
     new Session({
@@ -219,6 +269,18 @@ const world = (options: WorldOptions = {}) => {
       status: "starting",
       origin: "slack",
     });
+  const threadRow = (row: SlackThreadSession): SlackThreadSession => {
+    const state = shownState.get(row.sessionId);
+    return {
+      ...row,
+      statusTs: statusTs.get(row.sessionId) ?? null,
+      reportedStatus: reported.get(row.sessionId) ?? null,
+      reportedState:
+        state === "starting" || state === "running" || state === "failed" || state === "stopped"
+          ? state
+          : null,
+    };
+  };
 
   const layer = Layer.mergeAll(
     slack.layer,
@@ -284,18 +346,26 @@ const world = (options: WorldOptions = {}) => {
               }
             : null,
         ),
-      setStatusTs: (sessionId, statusTs, shown) =>
-        note(`threads.setStatusTs:${sessionId}:${statusTs}`).pipe(
+      forSession: (sessionId) =>
+        Effect.sync(() => {
+          const row = recorded.find((candidate) => candidate.sessionId === sessionId);
+          return row === undefined ? null : threadRow(row);
+        }),
+      setStatusTs: (sessionId, ts, shown) =>
+        note(`threads.setStatusTs:${sessionId}:${ts}`).pipe(
           Effect.andThen(
-            Effect.sync(() =>
-              reported.set(sessionId, options.reporterMovedFirst === true ? "moved" : shown.line),
-            ),
+            Effect.sync(() => {
+              statusTs.set(sessionId, ts);
+              shownState.set(sessionId, shown.state);
+              reported.set(sessionId, options.reporterMovedFirst === true ? "moved" : shown.line);
+            }),
           ),
         ),
       claimStatus: (sessionId, from, to) =>
         Effect.sync(() => {
           if (reported.get(sessionId) !== from) return false;
           reported.set(sessionId, to.line);
+          shownState.set(sessionId, to.state);
           return true;
         }),
     }),
@@ -307,13 +377,80 @@ const world = (options: WorldOptions = {}) => {
         ),
     }),
     Layer.mock(SessionsRepo, {
-      byId: (id) =>
-        options.threadSession !== undefined && id === SessionId.make("session-earlier")
+      byId: (id) => {
+        const made = sessionsCreated.get(id);
+        if (made !== undefined) return Effect.succeed(made);
+        return options.threadSession !== undefined && id === SessionId.make("session-earlier")
           ? Effect.succeed(
               makeSession(id, options.threadSession.projectId, WorktreeId.make("wt-0"), "bob"),
             )
-          : Effect.fail(new SessionNotFoundError({ sessionId: id })),
+          : Effect.fail(new SessionNotFoundError({ sessionId: id }));
+      },
     }),
+    Layer.mock(AgentConversationRepo, {
+      listTurns: (sessionId) =>
+        Effect.succeed(
+          (options.turns ?? []).map(
+            (status, index) =>
+              new AgentTurn({
+                id: AgentTurnId.make(`turn-${index + 1}`),
+                sessionId,
+                processId: SessionProcessId.make("agent-1"),
+                ordinal: index + 1,
+                author: "alice",
+                input: "tidy up",
+                status,
+                providerTurnId: null,
+                error: null,
+                usage: null,
+                createdAt: NOW,
+                startedAt: NOW,
+                endedAt: null,
+              }),
+          ),
+        ),
+    }),
+    Layer.mock(SessionControlEventsRepo, {
+      record: (event) =>
+        note(`controls.record:${event.sessionId}:${event.kind}:${event.actorUserId}`),
+    }),
+    Layer.mock(SessionEngine, {
+      stop: (sessionId) => note(`engine.stop:${sessionId}`),
+    }),
+    Layer.mock(SessionSteering, {
+      authorizeUser: (session, userId) =>
+        session.ownerUserId === userId
+          ? Effect.succeed(session)
+          : Effect.fail(
+              new SessionNotSteerable({
+                sessionId: session.id,
+                message: "only the session owner can steer this session",
+              }),
+            ),
+    }),
+    Layer.mock(Store, {
+      listTopLevel: (dir) =>
+        dir === billing.storePath
+          ? Effect.succeed({ files: ["README.md", "ledger/", "invoices/"], truncated: false })
+          : Effect.succeed({ files: ["app/", "package.json"], truncated: false }),
+    }),
+    ThreadProjectReaderLive.pipe(
+      Layer.provide(
+        Layer.succeed(InferenceProvider, {
+          respond: (request) =>
+            Effect.gen(function* () {
+              inferences.push(request);
+              const principal = yield* SealantPrincipal;
+              principals.push(principal.kind === "user" ? principal.userId : "none");
+              const answer = answers.shift();
+              if (answer === undefined) {
+                return yield* new InferenceError({ message: "no answer scripted", cause: null });
+              }
+              return answer;
+            }),
+        }),
+      ),
+    ),
     Layer.mock(AuditEventsRepo, {
       record: (event) => Effect.sync(() => void audited.push(event)),
     }),
@@ -339,7 +476,11 @@ const world = (options: WorldOptions = {}) => {
             options.createDies
               ? Effect.die(new Error("pg: connection reset at /srv/mend/store"))
               : options.createFails === undefined
-                ? Effect.succeed(created(projectId, userId))
+                ? Effect.sync(() => {
+                    const session = created(projectId, userId);
+                    sessionsCreated.set(session.id, session);
+                    return session;
+                  })
                 : Effect.fail(options.createFails),
           ),
         ),
@@ -373,6 +514,7 @@ const world = (options: WorldOptions = {}) => {
           const runner = yield* makeSlackRunner({
             eventsPerMinute: options.eventsPerMinute ?? 120,
             linkedRequestMaxAgeMs: 15 * 60_000,
+            inferencesPerHour: options.inferencesPerHour ?? 60,
             now: () => options.now ?? NOW.getTime(),
           });
           const result = yield* body(runner);
@@ -415,6 +557,8 @@ const world = (options: WorldOptions = {}) => {
     readonly messageTs: string;
     readonly projectId: string;
     readonly envelopeId: string;
+    /** The session a "Switch project" picker stops. */
+    readonly switchFrom?: string;
   }) =>
     envelope("interactive", input.envelopeId, {
       type: "block_actions",
@@ -425,10 +569,27 @@ const world = (options: WorldOptions = {}) => {
       actions: [
         {
           action_id: `${SLACK_ACTIONS.pickProject}_0`,
-          block_id: projectPickerBlockId(`${input.parentTs}/${input.messageTs}`),
+          block_id: projectPickerBlockId(
+            `${input.parentTs}/${input.messageTs}${input.switchFrom === undefined ? "" : `/s:${input.switchFrom}`}`,
+          ),
           value: input.projectId,
         },
       ],
+    });
+
+  /** A click on a status message's "Switch project". */
+  const switchClick = (input: {
+    readonly user: string;
+    readonly sessionId: string;
+    readonly envelopeId: string;
+  }) =>
+    envelope("interactive", input.envelopeId, {
+      type: "block_actions",
+      team: { id: "T-acme" },
+      user: { id: input.user },
+      channel: { id: "C-general" },
+      container: { channel_id: "C-general", message_ts: "1700000000.000001" },
+      actions: [{ action_id: SLACK_ACTIONS.switchProject, value: input.sessionId }],
     });
 
   return {
@@ -438,11 +599,14 @@ const world = (options: WorldOptions = {}) => {
     recorded,
     audited,
     launches,
+    inferences,
+    principals,
     run,
     deliver,
     envelope,
     mention,
     pick,
+    switchClick,
   };
 };
 
@@ -509,6 +673,9 @@ describe("the Slack runner, for a linked person's mention", () => {
     expect(updates.map((update) => update.text)).toEqual([
       "billing-api · from a link in the thread · claude · running · mend/wt-1",
     ]);
+
+    // The thread's link answered: no inference was asked.
+    expect(w.inferences).toEqual([]);
 
     const [launch] = w.launches;
     expect(launch?.mode).toBe("protocol");
@@ -685,7 +852,7 @@ describe("the Slack runner, choosing a project", () => {
   });
 
   it("offers only shared projects in a channel, and private ones in a direct message", async () => {
-    const channel = world({ personalDefault: notes.id });
+    const channel = world({ personalDefault: notes.id, inference: [inferred(null)] });
     await channel.deliver(
       channel.mention("Ev1", {
         user: "U-alice",
@@ -701,7 +868,7 @@ describe("the Slack runner, choosing a project", () => {
     expect(JSON.stringify(picker?.blocks)).not.toContain("notes");
     expect(channel.effects.some((entry) => entry.startsWith("start."))).toBe(false);
 
-    const direct = world({ personalDefault: notes.id });
+    const direct = world({ personalDefault: notes.id, inference: [inferred(null)] });
     await direct.deliver(
       direct.mention("Ev1", {
         type: "message",
@@ -717,7 +884,11 @@ describe("the Slack runner, choosing a project", () => {
   });
 
   it("uses the channel default before the person's own", async () => {
-    const w = world({ channelDefault: web.id, personalDefault: billing.id });
+    const w = world({
+      channelDefault: web.id,
+      personalDefault: billing.id,
+      inference: [inferred(null)],
+    });
     await w.deliver(
       w.mention("Ev1", { user: "U-alice", text: "<@U-bot> tidy up", ts: "1700000300.000100" }),
     );
@@ -757,6 +928,238 @@ describe("the Slack runner, choosing a project", () => {
     ]);
     expect(w.effects.some((entry) => entry.startsWith("claim:pick:"))).toBe(false);
     expect(w.effects.some((entry) => entry.startsWith("start."))).toBe(false);
+  });
+});
+
+describe("the Slack runner, reading the thread with inference", () => {
+  const retryMention = (w: ReturnType<typeof world>, eventId: string, text: string) =>
+    w.mention(eventId, {
+      user: "U-alice",
+      text,
+      ts: RETRY_MENTION,
+      thread_ts: RETRY_THREAD,
+    });
+
+  it("starts in the project inference reads from the thread, as the requester, and says so", async () => {
+    const w = world({ inference: [inferred(web.id, [web.id, billing.id])] });
+    await w.deliver(retryMention(w, "Ev1", "<@U-bot> look into it"));
+
+    expect(w.effects).toContain(`start.createAs:alice:${web.id}:claude:null:slack`);
+    expect(w.recorded[0]).toMatchObject({ projectSource: "thread-inference" });
+    expect(w.audited[0]?.data).toMatchObject({ projectSource: "thread-inference" });
+    expect(posts(w, "postMessage")[0]?.text).toBe(
+      "web · from the thread · claude · starting · mend/wt-1",
+    );
+
+    expect(w.principals).toEqual(["alice"]);
+    const [request] = w.inferences;
+    expect(request?.context).toBe("slack-project");
+    // Channel candidates only: the private project is not shown to inference either.
+    expect(request?.prompt).toContain(`id: ${billing.id}`);
+    expect(request?.prompt).toContain(`id: ${web.id}`);
+    expect(request?.prompt).not.toContain(notes.id);
+    expect(request?.prompt).toContain("root: README.md, ledger/, invoices/");
+    expect(request?.prompt).toContain("Bob: anyone seen the retry storm?");
+    expect(request?.prompt).toContain("The request:\nlook into it");
+  });
+
+  it("asks inference before the channel default, and uses the default when inference cannot choose", async () => {
+    const first = world({ channelDefault: web.id, inference: [inferred(billing.id)] });
+    await first.deliver(retryMention(first, "Ev1", "<@U-bot> look into it"));
+    expect(first.recorded[0]).toMatchObject({
+      projectSource: "thread-inference",
+      sessionId: "session-1",
+    });
+    expect(first.effects).toContain(`start.createAs:alice:${billing.id}:claude:null:slack`);
+
+    const second = world({ channelDefault: web.id, inference: [inferred(null, [billing.id])] });
+    await second.deliver(retryMention(second, "Ev1", "<@U-bot> look into it"));
+    expect(second.recorded[0]).toMatchObject({ projectSource: "channel-default" });
+  });
+
+  it("asks with the likeliest projects first when nothing answers, and never offers a non-candidate", async () => {
+    const w = world({ inference: [inferred(notes.id, [notes.id, web.id])] });
+    await w.deliver(retryMention(w, "Ev1", "<@U-bot> look into it"));
+
+    expect(w.effects.some((entry) => entry.startsWith("start."))).toBe(false);
+    const [picker] = posts(w, "postEphemeral");
+    expect(picker?.text).toBe(
+      "No project named in the request or the thread, and no default set. Pick one to start the session.",
+    );
+    const actions = picker?.blocks?.[1];
+    if (actions?.type !== "actions") throw new Error("expected the picker's actions");
+    const [button, select] = actions.elements;
+    expect(button).toMatchObject({ value: web.id });
+    expect(actions.elements).toHaveLength(2);
+    expect(select?.type === "static_select" ? select.options.map((o) => o.value) : []).toEqual([
+      web.id,
+      billing.id,
+    ]);
+  });
+
+  it("takes the options the requester wrote, never over theirs and never from the thread", async () => {
+    const w = world({
+      inference: [
+        inferred(web.id, [], { harness: "codex", effort: "high", branch: "main" }),
+        inferred(web.id, [], { harness: "codex", effort: "high" }),
+      ],
+    });
+    await w.deliver(
+      retryMention(w, "Ev1", "<@U-bot> use codex for this and go high effort, look into it"),
+    );
+    // `main` is not in the request: dropped. The rest are the requester's own words.
+    expect(w.effects).toContain(`start.createAs:alice:${web.id}:codex:null:slack`);
+    expect(w.launches[0]?.effort).toBe("high");
+
+    await w.deliver(
+      w.mention("Ev2", {
+        user: "U-alice",
+        text: "<@U-bot> harness=claude use codex for this and go high effort",
+        ts: "1700000200.000300",
+        thread_ts: RETRY_THREAD,
+      }),
+    );
+    expect(w.effects).toContain(`start.createAs:alice:${web.id}:claude:null:slack`);
+  });
+
+  it("goes on without inference when it fails or the organization is over its hourly ceiling", async () => {
+    const failing = world({ personalDefault: web.id, inference: [] });
+    await failing.deliver(retryMention(failing, "Ev1", "<@U-bot> look into it"));
+    expect(failing.recorded[0]).toMatchObject({ projectSource: "personal-default" });
+
+    const capped = world({
+      personalDefault: web.id,
+      inferencesPerHour: 1,
+      inference: [inferred(billing.id), inferred(billing.id)],
+    });
+    await capped.deliver(
+      retryMention(capped, "Ev1", "<@U-bot> look into it"),
+      capped.mention("Ev2", {
+        user: "U-alice",
+        text: "<@U-bot> and again",
+        ts: "1700000200.000300",
+        thread_ts: RETRY_THREAD,
+      }),
+    );
+    expect(capped.inferences).toHaveLength(1);
+    expect(capped.recorded.map((row) => row.projectSource).toSorted()).toEqual([
+      "personal-default",
+      "thread-inference",
+    ]);
+  });
+});
+
+describe("the Slack runner, switching a session's project", () => {
+  /** Alice asks in web; the status message offers Switch project. */
+  const started = (options: WorldOptions = {}) => {
+    const w = world(options);
+    return {
+      w,
+      start: () =>
+        w.deliver(
+          w.mention("Ev1", {
+            user: "U-alice",
+            text: "<@U-bot> in web tidy up",
+            ts: "1700000300.000100",
+          }),
+        ),
+    };
+  };
+
+  it("offers Switch project on the status message until the first turn completes", async () => {
+    const { w, start } = started();
+    await start();
+    const [status] = posts(w, "postMessage");
+    expect(JSON.stringify(status?.blocks)).toContain(SLACK_ACTIONS.switchProject);
+    expect(JSON.stringify(status?.blocks)).toContain('"value":"session-1"');
+  });
+
+  it("gives the requester a picker of the other projects, and stops and restarts on a pick", async () => {
+    const { w, start } = started();
+    await start();
+    await w.deliver(w.switchClick({ user: "U-alice", sessionId: "session-1", envelopeId: "i1" }));
+
+    const picker = posts(w, "postEphemeral").at(-1);
+    expect(picker?.text).toBe(
+      "Pick the project to restart this request in. The session already started for it is stopped when you pick.",
+    );
+    const blocks = JSON.stringify(picker?.blocks);
+    expect(blocks).toContain(billing.id);
+    expect(blocks).not.toContain(`"value":"${web.id}"`);
+    expect(blocks).toContain(
+      projectPickerBlockId("1700000300.000100/1700000300.000100/e/s:session-1"),
+    );
+
+    await w.deliver(
+      w.pick({
+        user: "U-alice",
+        parentTs: "1700000300.000100",
+        messageTs: "1700000300.000100",
+        projectId: billing.id,
+        envelopeId: "i2",
+        switchFrom: "session-1",
+      }),
+      // A second click on the same switch does nothing.
+      w.pick({
+        user: "U-alice",
+        parentTs: "1700000300.000100",
+        messageTs: "1700000300.000100",
+        projectId: web.id,
+        envelopeId: "i3",
+        switchFrom: "session-1",
+      }),
+    );
+
+    const after = w.effects.slice(w.effects.indexOf("claim:switch:T-acme:session-1"));
+    expect(
+      after.filter((entry) => !entry.startsWith("ack:") && !entry.startsWith("claim:")),
+    ).toEqual([
+      "engine.stop:session-1",
+      "controls.record:session-1:stop:alice",
+      `start.createAs:alice:${billing.id}:claude:null:slack`,
+      "threads.setStatusTs:session-2:1700000000.000003",
+      "start.launchAs:alice:session-2",
+    ]);
+    const updates = w.slack.calls.flatMap((call) => (call.kind === "update" ? [call.input] : []));
+    expect(updates.map((update) => update.text)).toContain(
+      "web · named in the request · claude · stopped · mend/wt-1",
+    );
+    const stopped = updates.find((update) => update.text.includes("stopped"));
+    expect(JSON.stringify(stopped?.blocks)).not.toContain(SLACK_ACTIONS.switchProject);
+    expect(w.recorded[1]).toMatchObject({ sessionId: "session-2", projectSource: "picked" });
+    expect(w.audited[1]?.data).toMatchObject({
+      switchedFrom: "session-1",
+      projectName: "billing-api",
+    });
+    // The request carries the new session's reaction only.
+    expect(w.slack.reactions.get("C-general:1700000300.000100")).toEqual(
+      new Set(["hourglass_flowing_sand"]),
+    );
+  });
+
+  it("switches only for the requester, and not once the first turn has completed", async () => {
+    const { w, start } = started({ turns: ["completed"] });
+    await start();
+    await w.deliver(
+      w.switchClick({ user: "U-bob", sessionId: "session-1", envelopeId: "i1" }),
+      w.switchClick({ user: "U-alice", sessionId: "session-1", envelopeId: "i2" }),
+      w.pick({
+        user: "U-alice",
+        parentTs: "1700000300.000100",
+        messageTs: "1700000300.000100",
+        projectId: billing.id,
+        envelopeId: "i3",
+        switchFrom: "session-1",
+      }),
+    );
+
+    expect(posts(w, "postEphemeral").map((post) => post.text)).toEqual([
+      "Only the person who made the request switches its project.",
+      "not switched · the session's first turn has completed · mention Mend again to start another session",
+      "not switched · the session's first turn has completed · mention Mend again to start another session",
+    ]);
+    expect(w.effects.some((entry) => entry.startsWith("engine.stop"))).toBe(false);
+    expect(w.effects.filter((entry) => entry.startsWith("start.createAs"))).toHaveLength(1);
   });
 });
 
@@ -918,6 +1321,7 @@ describe("chooseProject", () => {
     named: null,
     threadSession: null,
     threadText: "",
+    inferred: null,
     channelDefault: null,
     personalDefault: null,
   };
@@ -953,6 +1357,29 @@ describe("chooseProject", () => {
       }),
     ).toMatchObject({ source: "personal-default", project: { id: web.id } });
     expect(chooseProject(base)).toEqual({ kind: "ask", reason: "none", likeliest: [] });
+  });
+
+  it("asks inference after the thread's links and before the defaults, and checks its answer", () => {
+    const open = { ...base, channelDefault: web.id };
+    expect(chooseProject({ ...open, inferred: "not-asked" })).toEqual({ kind: "infer" });
+    // A link answers first: inference is not asked.
+    expect(
+      chooseProject({
+        ...open,
+        inferred: "not-asked",
+        threadText: "https://github.com/acme/billing-api/pull/1",
+      }),
+    ).toMatchObject({ source: "thread-link" });
+    expect(
+      chooseProject({ ...open, inferred: { projectId: billing.id, likeliest: [] } }),
+    ).toMatchObject({ source: "thread-inference", project: { id: billing.id } });
+    // Not a candidate: it answers nothing, and the channel default does.
+    expect(
+      chooseProject({ ...open, inferred: { projectId: notes.id, likeliest: [notes.id] } }),
+    ).toMatchObject({ source: "channel-default" });
+    expect(
+      chooseProject({ ...base, inferred: { projectId: null, likeliest: [notes.id, web.id] } }),
+    ).toEqual({ kind: "ask", reason: "none", likeliest: [web] });
   });
 
   it("asks when a thread links several projects, and never answers with a non-candidate", () => {
@@ -996,11 +1423,25 @@ describe("mentions and picker keys", () => {
       parentTs: "1.1",
       messageTs: "2.2",
       external: false,
+      switchFrom: null,
     });
     expect(parsePickerRequestKey("1.1/2.2/e")).toEqual({
       parentTs: "1.1",
       messageTs: "2.2",
       external: true,
+      switchFrom: null,
+    });
+    // A "Switch project" picker names the session its pick stops.
+    const switching = pickerRequestKey(
+      { threadTs: "1.1", messageTs: "2.2", external: true },
+      SessionId.make("session-1"),
+    );
+    expect(switching).toBe("1.1/2.2/e/s:session-1");
+    expect(parsePickerRequestKey(switching)).toEqual({
+      parentTs: "1.1",
+      messageTs: "2.2",
+      external: true,
+      switchFrom: "session-1",
     });
     expect(parsePickerRequestKey("nope")).toBeNull();
   });

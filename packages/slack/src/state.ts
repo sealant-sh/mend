@@ -66,3 +66,12 @@ export const statusMayMove = (from: SlackSessionState | null, to: SlackSessionSt
 /** A state the thread reports the change beside: the turn or the session has ended. */
 export const isSettledState = (state: SlackSessionState): boolean =>
   state === "completed" || state === "failed" || state === "stopped";
+
+/**
+ * Whether the status message offers "Switch project" (docs/adr/0006-slack.md): only until the
+ * session's first turn completes, and not once the session is stopped, which a switch does to it.
+ */
+export const switchOffered = (
+  state: SlackSessionState,
+  turns: ReadonlyArray<Pick<AgentTurn, "status">>,
+): boolean => state !== "stopped" && !turns.some((turn) => turn.status === "completed");

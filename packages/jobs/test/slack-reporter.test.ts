@@ -496,6 +496,20 @@ describe("the Slack thread reporter", () => {
     expect(w.state.thread.reportedState).toBe("completed");
   });
 
+  it("offers Switch project until the first turn completes, and takes it off with that edit", async () => {
+    const w = world();
+    const reporter = w.worker();
+    w.state.turns = [turn(1, "running")];
+    await w.observe(reporter);
+    w.state.turns = [turn(1, "completed", NOW)];
+    await w.observe(reporter);
+    const [running, completed] = w
+      .writes()
+      .flatMap((call: FakeSlackCall) => (call.kind === "update" ? [call.input] : []));
+    expect(blockText(running ?? {})).toContain(SLACK_ACTIONS.switchProject);
+    expect(blockText(completed ?? {})).not.toContain(SLACK_ACTIONS.switchProject);
+  });
+
   it("marks a failed turn with ❌, and a stopped one with no reaction", async () => {
     const w = world();
     const reporter = w.worker();
