@@ -191,11 +191,11 @@ const linksLayer = Layer.mock(SlackLinksRepo, {
         return Effect.fail(new SlackLinkNotMemberError({ teamId: found.teamId, userId }));
       }
       found.spent = true;
-      removeLinks(
-        (link) =>
-          link.teamId !== found.teamId ||
-          (link.slackUserId !== found.slackUserId && link.userId !== userId),
-      );
+      const kept = (link: SlackLink) =>
+        link.teamId !== found.teamId ||
+        (link.slackUserId !== found.slackUserId && link.userId !== userId);
+      const replaced = links.filter((link) => !kept(link));
+      removeLinks(kept);
       const link: SlackLink = {
         organizationId: install.organizationId,
         teamId: found.teamId,
@@ -204,7 +204,7 @@ const linksLayer = Layer.mock(SlackLinksRepo, {
         createdAt: NOW,
       };
       links.push(link);
-      return Effect.succeed({ link, request: found.request });
+      return Effect.succeed({ link, request: found.request, replaced });
     }),
 });
 
@@ -599,6 +599,29 @@ describe("linking a Slack user to a Mend account (docs/adr/0006)", () => {
       slackUserId: "U-carol",
       replacedSlackUserId: "U-carol-old",
     });
+  });
+
+  it("records another account's link to the Slack user as removed when a code replaces it", async () => {
+    await connect();
+    links.push({
+      organizationId: acme.id,
+      teamId: "T-acme",
+      slackUserId: "U-carol",
+      userId: "alice",
+      createdAt: NOW,
+    });
+    mintCode("msl_one");
+    const confirmed = await call("carol", "POST", "/api/slack/link/confirm", { code: "msl_one" });
+    expect(confirmed.status).toBe(200);
+    expect(links.map((link) => [link.slackUserId, link.userId])).toEqual([["U-carol", "carol"]]);
+    expect(
+      audited.slice(-2).map((event) => [event.action, event.actorUserId, event.subjectId]),
+    ).toEqual([
+      ["slack.link_removed", "carol", "alice"],
+      ["slack.link_created", "carol", "carol"],
+    ]);
+    expect(audited.at(-2)?.data).toEqual({ teamId: "T-acme", slackUserId: "U-carol" });
+    expect(audited.at(-1)?.data).toEqual({ teamId: "T-acme", slackUserId: "U-carol" });
   });
 
   it("shows a person their link and default, and lets them unlink", async () => {

@@ -79,15 +79,21 @@ export class SlackLinksRepo extends Context.Service<
     /**
      * Spend a code and link its Slack user to `userId`, in one transaction. Null when the code is
      * unknown, spent or expired: of two requests racing one code, one links and the other gets
-     * null. A link either side already had in that workspace is replaced. An account outside the
-     * install's organization is refused, and the code stays unspent.
+     * null. A link either side already had in that workspace is replaced, and `replaced` names
+     * each one removed: the account's own earlier link, and the Slack user's link to another
+     * account. An account outside the install's organization is refused, and the code stays
+     * unspent.
      */
     readonly redeemCode: (input: {
       readonly code: string;
       readonly userId: string;
       readonly now?: Date;
     }) => Effect.Effect<
-      { readonly link: SlackLink; readonly request: SlackPendingMention } | null,
+      {
+        readonly link: SlackLink;
+        readonly request: SlackPendingMention;
+        readonly replaced: ReadonlyArray<SlackLink>;
+      } | null,
       SlackLinkNotMemberError
     >;
   }
@@ -246,7 +252,7 @@ export const SlackLinksRepoLive: Layer.Layer<SlackLinksRepo, never, MendDB> = La
                 userId: input.userId,
               });
             }
-            yield* tx
+            const replaced = yield* tx
               .delete(slackLinks)
               .where(
                 and(
@@ -257,6 +263,7 @@ export const SlackLinksRepoLive: Layer.Layer<SlackLinksRepo, never, MendDB> = La
                   ),
                 ),
               )
+              .returning()
               .pipe(Effect.orDie);
             const [row] = yield* tx
               .insert(slackLinks)
@@ -270,7 +277,11 @@ export const SlackLinksRepoLive: Layer.Layer<SlackLinksRepo, never, MendDB> = La
               .returning()
               .pipe(Effect.orDie);
             if (row === undefined) return yield* Effect.die("slack link insert returned no row");
-            return { link: toLink(row), request: spent.request };
+            return {
+              link: toLink(row),
+              request: spent.request,
+              replaced: replaced.map(toLink),
+            };
           }),
         )
         .pipe(Effect.catchTag("SqlError", (error) => Effect.die(error)));

@@ -430,15 +430,20 @@ export const SlackGroupLive = HttpApiBuilder.group(MendApi, "slack", (handlers) 
         const found = yield* membership;
         const caller = yield* CurrentUser;
         const links = yield* SlackLinksRepo;
-        const earlier = yield* links.listForUser(caller.user.id);
         const redeemed = yield* links
           .redeemCode({ code: payload.code, userId: caller.user.id })
           .pipe(Effect.catchTag("SlackLinkNotMemberError", () => new NotFound({ id: LINK_CODE })));
         if (redeemed === null) return yield* new NotFound({ id: LINK_CODE });
         const { link, request } = redeemed;
-        const replaced = earlier.find(
-          (entry) => entry.teamId === link.teamId && entry.slackUserId !== link.slackUserId,
+        // The caller's own earlier link is named on the new one; another account's link to this
+        // Slack user was removed, and says so on its own.
+        const replaced = redeemed.replaced.find(
+          (entry) => entry.userId === caller.user.id && entry.slackUserId !== link.slackUserId,
         );
+        for (const removed of redeemed.replaced) {
+          if (removed.userId === caller.user.id) continue;
+          yield* recordLinkRemoved(found.organization.id, caller.user.id, removed);
+        }
         yield* (yield* AuditEventsRepo).record({
           organizationId: found.organization.id,
           actorUserId: caller.user.id,
