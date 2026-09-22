@@ -165,6 +165,10 @@ interface WorldOptions {
   readonly eventsPerMinute?: number;
   readonly now?: number;
   readonly createFails?: NotFound | StoreFailure | BudgetExceeded;
+  /** SessionStart dies: a failure nothing expected. */
+  readonly createDies?: boolean;
+  /** Alice has unlinked since. */
+  readonly unlinked?: boolean;
   readonly launchFails?: StoreFailure;
   readonly accounts?: ReadonlyArray<ConnectedAccount>;
   readonly channelDefault?: ProjectId;
@@ -182,15 +186,17 @@ const world = (options: WorldOptions = {}) => {
   const note = (entry: string) => Effect.sync(() => void effects.push(entry));
   const slack = makeFakeSlack([slackWorkspace]);
   const claimed = new Set<string>();
-  const links: Array<SlackLink> = [
-    {
-      organizationId: ACME,
-      teamId: "T-acme",
-      slackUserId: "U-alice",
-      userId: "alice",
-      createdAt: NOW,
-    },
-  ];
+  const links: Array<SlackLink> = options.unlinked
+    ? []
+    : [
+        {
+          organizationId: ACME,
+          teamId: "T-acme",
+          slackUserId: "U-alice",
+          userId: "alice",
+          createdAt: NOW,
+        },
+      ];
   const minted: Array<{ readonly slackUserId: string; readonly request: SlackPendingMention }> = [];
   const recorded: Array<SlackThreadSession> = [];
   const audited: Array<NewAuditEvent> = [];
@@ -304,9 +310,11 @@ const world = (options: WorldOptions = {}) => {
           `start.createAs:${userId}:${projectId}:${input.harness}:${input.base}:${input.origin}`,
         ).pipe(
           Effect.andThen(
-            options.createFails === undefined
-              ? Effect.succeed(created(projectId, userId))
-              : Effect.fail(options.createFails),
+            options.createDies
+              ? Effect.die(new Error("pg: connection reset at /srv/mend/store"))
+              : options.createFails === undefined
+                ? Effect.succeed(created(projectId, userId))
+                : Effect.fail(options.createFails),
           ),
         ),
       launchAs: (userId, session, request) =>
@@ -707,6 +715,21 @@ describe("the Slack runner, choosing a project", () => {
     expect(w.recorded[0]).toMatchObject({ projectSource: "picked", requestTs: key.messageTs });
     expect(w.launches[0]?.prompt).toBe("tidy up");
   });
+
+  it("checks the clicker's link before claiming the pick, so an unlinked click spends nothing", async () => {
+    const w = world({ unlinked: true });
+    const key = { parentTs: "1700000300.000100", messageTs: "1700000300.000100" };
+    await w.deliver(w.pick({ ...key, user: "U-alice", projectId: web.id, envelopeId: "i1" }));
+
+    expect(posts(w, "postEphemeral")).toMatchObject([
+      {
+        user: "U-alice",
+        text: "not started · this Slack account is no longer linked to Mend · mention Mend again to link it",
+      },
+    ]);
+    expect(w.effects.some((entry) => entry.startsWith("claim:pick:"))).toBe(false);
+    expect(w.effects.some((entry) => entry.startsWith("start."))).toBe(false);
+  });
 });
 
 describe("the Slack runner, when a start is refused", () => {
@@ -730,6 +753,35 @@ describe("the Slack runner, when a start is refused", () => {
     expect(w.recorded).toEqual([]);
   });
 
+  it("keeps a store failure's own words out of the channel, and tells only the requester", async () => {
+    const stderr = "fatal: '/srv/mend/store/p-web/worktrees/wt-1' already exists";
+    const w = world({ createFails: new StoreFailure({ message: stderr }) });
+    await w.deliver(
+      w.mention("Ev1", { user: "U-alice", text: "<@U-bot> in web tidy up", ts: "1.1" }),
+    );
+
+    expect(posts(w, "postMessage").map((post) => post.text)).toEqual([
+      "not started · the worktree could not be created",
+    ]);
+    expect(posts(w, "postEphemeral")).toMatchObject([
+      { user: "U-alice", text: `not started · ${stderr}` },
+    ]);
+    expect(w.slack.reactions.get("C-general:1.1")).toEqual(new Set(["x"]));
+  });
+
+  it("reports a failure nothing expected in the thread, without its internals", async () => {
+    const w = world({ createDies: true });
+    await w.deliver(
+      w.mention("Ev1", { user: "U-alice", text: "<@U-bot> in web tidy up", ts: "1.1" }),
+    );
+
+    expect(posts(w, "postMessage").map((post) => post.text)).toEqual([
+      "failed · Mend could not finish handling this request · see the Mend logs",
+    ]);
+    expect(JSON.stringify(w.slack.calls)).not.toContain("/srv/mend");
+    expect(w.slack.reactions.get("C-general:1.1")).toEqual(new Set(["x"]));
+  });
+
   it("reports a failed launch, swaps the reaction and marks the status failed", async () => {
     const w = world({ launchFails: new StoreFailure({ message: "workspace create refused" }) });
     await w.deliver(
@@ -738,7 +790,10 @@ describe("the Slack runner, when a start is refused", () => {
 
     expect(posts(w, "postMessage").map((post) => post.text)).toEqual([
       "web · named in the request · claude · starting · mend/wt-1",
-      "launch failed · workspace create refused",
+      "launch failed · the session could not be launched",
+    ]);
+    expect(posts(w, "postEphemeral")).toMatchObject([
+      { user: "U-alice", text: "launch failed · workspace create refused" },
     ]);
     expect(w.slack.reactions.get("C-general:1.1")).toEqual(new Set(["x"]));
     const updates = w.slack.calls.flatMap((call) => (call.kind === "update" ? [call.input] : []));

@@ -50,7 +50,7 @@ import {
 import { SlackApi, type SlackApiError } from "@mend/slack/client";
 import type { SlackEnvelope } from "@mend/slack/socket";
 import { SecretCipher } from "@mend/store";
-import { Config, Effect, FiberSet, Layer, Option, Schema, type Fiber } from "effect";
+import { Cause, Config, Effect, FiberSet, Layer, Option, Schema, type Fiber } from "effect";
 import * as Context from "effect/Context";
 
 import { ProjectAccess } from "./access.ts";
@@ -270,9 +270,44 @@ export const notStarted = (reason: string): SlackMessage =>
 export const launchFailed = (reason: string): SlackMessage =>
   section(escapeSlack(`launch failed · ${reason}`));
 
-/** A refusal from `SessionStart`, as the thread reads it. */
-export const refusalWords = (error: NotFound | StoreFailure | BudgetExceeded): string =>
-  error._tag === "NotFound" ? "the project is not available to you" : error.message;
+type StartRefusal = NotFound | StoreFailure | BudgetExceeded;
+
+/**
+ * A refusal from `SessionStart`, as the thread reads it. A budget's words are the budget's own. A
+ * store failure's message can carry git's stderr and server paths, so the thread reads `stored`,
+ * what the step could not do, and the message itself goes only to the requester
+ * (`refusalDetail`).
+ */
+export const refusalWords = (
+  error: StartRefusal,
+  stored = "Mend could not prepare the session",
+): string => {
+  switch (error._tag) {
+    case "NotFound":
+      return "the project is not available to you";
+    case "StoreFailure":
+      return stored;
+    case "BudgetExceeded":
+      return error.message;
+  }
+};
+
+/** What only the requester reads about a refusal, or null when the thread already says it all. */
+export const refusalDetail = (error: StartRefusal): string | null =>
+  error._tag === "StoreFailure" ? error.message : null;
+
+/**
+ * A claimed request whose handling failed unexpectedly: the event is never replayed. It may have
+ * failed before or after a session started, so the line says neither.
+ */
+export const handlingFailed: SlackMessage = section(
+  "failed · Mend could not finish handling this request · see the Mend logs",
+);
+
+/** The person who clicked a project is no longer linked; nothing was claimed for their click. */
+const pickNotLinked = section(
+  "not started · this Slack account is no longer linked to Mend · mention Mend again to link it",
+);
 
 const unknownProject = (
   choice: { readonly value: string; readonly picked: boolean },
@@ -434,6 +469,52 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         else yield* whisper(token, mention, message);
         yield* react(token, mention, reactionFor("refused"));
       });
+
+    /**
+     * A refusal from `SessionStart`, in the thread in words that name no path or stderr, and in
+     * full only to the requester.
+     */
+    const refuseStart = (
+      token: string,
+      mention: SlackMention,
+      wording: (reason: string) => SlackMessage,
+      error: StartRefusal,
+      stored: string,
+    ) =>
+      Effect.gen(function* () {
+        yield* refuse(token, mention, wording(refusalWords(error, stored)), true);
+        const detail = refusalDetail(error);
+        if (detail !== null) yield* whisper(token, mention, wording(detail));
+      });
+
+    /**
+     * Past its claim, a request that fails unexpectedly is reported in its thread, as a line that
+     * names nothing internal, with ❌ on the request; the cause goes to the log. Best effort: a
+     * Slack write that fails here is dropped. An interruption (shutdown) posts nothing.
+     */
+    const reportingFailure =
+      (install: SealedSlackInstall, mention: SlackMention) =>
+      <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A | undefined, never, R> =>
+        effect.pipe(
+          Effect.catchCause((cause) =>
+            Effect.gen(function* () {
+              yield* Effect.logWarning("slack runner: request handling failed").pipe(
+                Effect.annotateLogs({
+                  organizationId: install.organizationId,
+                  channelId: mention.channelId,
+                  messageTs: mention.messageTs,
+                  cause: Cause.pretty(cause),
+                }),
+              );
+              if (Cause.hasInterruptsOnly(cause)) return undefined;
+              const token = yield* botTokenOf(install);
+              if (token === null) return undefined;
+              yield* quietly("chat.postMessage", say(token, mention, handlingFailed));
+              yield* react(token, mention, reactionFor("failed"), reactionFor("starting"));
+              return undefined;
+            }).pipe(Effect.catchCause(() => Effect.succeed(undefined))),
+          ),
+        );
 
     /**
      * The thread up to the mention, with each author's display name looked up. A name Slack will
@@ -606,7 +687,13 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         })
         .pipe(Effect.result);
       if (created._tag === "Failure") {
-        return yield* refuse(token, mention, notStarted(refusalWords(created.failure)), true);
+        return yield* refuseStart(
+          token,
+          mention,
+          notStarted,
+          created.failure,
+          "the worktree could not be created",
+        );
       }
       const session = created.success;
       yield* threads.record({
@@ -688,8 +775,14 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       if (launched._tag === "Failure") {
         yield* quietly(
           "chat.postMessage",
-          say(token, mention, launchFailed(refusalWords(launched.failure))),
+          say(
+            token,
+            mention,
+            launchFailed(refusalWords(launched.failure, "the session could not be launched")),
+          ),
         );
+        const detail = refusalDetail(launched.failure);
+        if (detail !== null) yield* whisper(token, mention, launchFailed(detail));
         yield* react(token, mention, reactionFor("failed"), reactionFor("starting"));
         return yield* updateStatus("failed", session);
       }
@@ -746,6 +839,13 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       yield* startFor(install, token, mention, link.userId, null);
     });
 
+    /** Past the claim, or the redeemed link code, a failure is the thread's to hear about. */
+    const runClaimed = (
+      install: SealedSlackInstall,
+      mention: SlackMention,
+      linkedUserId: string | null,
+    ) => runMention(install, mention, linkedUserId).pipe(reportingFailure(install, mention));
+
     const onEvent = Effect.fn("SlackRunner.onEvent")(function* (
       install: SealedSlackInstall,
       body: unknown,
@@ -765,7 +865,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         teamId: install.teamId,
       });
       if (!first) return;
-      yield* runMention(install, mention, null);
+      yield* runClaimed(install, mention, null);
     });
 
     const onInteraction = Effect.fn("SlackRunner.onInteraction")(function* (
@@ -807,20 +907,18 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         return yield* whisper(token, clicker, requestGone);
       }
       if (request.userId !== payload.user.id) return yield* whisper(token, clicker, onlyRequester);
+      // The link before the claim: a click from someone unlinked since leaves the pick open.
+      const link = yield* links.bySlackUser(install.teamId, payload.user.id);
+      if (link === null) return yield* whisper(token, clicker, pickNotLinked);
       // One pick per request, however many clicks or workers.
       const first = yield* claims.claim({
         eventId: `pick:${install.teamId}:${channel}:${key.messageTs}`,
         teamId: install.teamId,
       });
       if (!first) return;
-      const link = yield* links.bySlackUser(install.teamId, payload.user.id);
-      if (link === null) return;
-      yield* startFor(
-        install,
-        token,
-        { ...clicker, text: request.text, userTeamId: request.teamId },
-        link.userId,
-        ProjectId.make(projectId),
+      const picked = { ...clicker, text: request.text, userTeamId: request.teamId };
+      yield* startFor(install, token, picked, link.userId, ProjectId.make(projectId)).pipe(
+        reportingFailure(install, picked),
       );
     });
 
@@ -867,7 +965,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       }
       const install = yield* installs.byTeam(job.teamId);
       if (install === null || install.organizationId !== job.organizationId) return;
-      yield* runMention(
+      yield* runClaimed(
         install,
         {
           teamId: job.teamId,
