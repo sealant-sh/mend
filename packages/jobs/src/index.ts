@@ -8,3 +8,4 @@ export * from "./job-runner.ts";
 export * from "./run-starter.ts";
 export * from "./start-run-tool.ts";
 export * from "./notification-recipients.ts";
+export * from "./slack-reporter.ts";

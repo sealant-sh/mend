@@ -109,6 +109,7 @@ import type {
   SessionOrigin,
   SessionStatus,
   SlackProjectSource,
+  SlackSessionState,
 } from "@mend/domain/workbench";
 import { sql } from "drizzle-orm";
 import {
@@ -1015,6 +1016,11 @@ export const slackThreads = pgTable(
     /** Who asked, in Slack. */
     slackUserId: text().notNull(),
     projectSource: text().$type<SlackProjectSource>().notNull(),
+    /** A Slack Connect channel: only status and links, unless the install says otherwise. */
+    external: boolean().notNull().default(true),
+    /** The state and the status line the status message last showed. */
+    reportedState: text().$type<SlackSessionState>(),
+    reportedStatus: text(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [
@@ -1025,6 +1031,20 @@ export const slackThreads = pgTable(
       table.createdAt.desc(),
     ),
   ],
+);
+
+/** A reply the thread reporter posted, by key: the first worker to insert the key posts it. */
+export const slackThreadPosts = pgTable(
+  "slack_thread_posts",
+  {
+    sessionId: text()
+      .$type<SessionId>()
+      .notNull()
+      .references(() => slackThreads.sessionId, { onDelete: "cascade" }),
+    key: text().notNull(),
+    postedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.sessionId, table.key] })],
 );
 
 /** A Slack event some worker has claimed. The first claim acts; old claims are swept by age. */

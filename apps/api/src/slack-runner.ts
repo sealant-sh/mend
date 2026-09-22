@@ -82,6 +82,12 @@ export interface SlackMention {
   readonly slackUserId: string;
   /** The author's own Slack workspace, when Slack names it; another one is Slack Connect. */
   readonly userTeamId: string | null;
+  /**
+   * Whether the channel is a Slack Connect channel, as the event said; null when nothing said.
+   * The thread reporter shows an external channel only status and links, unless the owner opened
+   * it, and treats null as external.
+   */
+  readonly external: boolean | null;
 }
 
 /** Where Mend answers a mention: its thread, or the thread the mention starts. */
@@ -96,6 +102,7 @@ export const isDirectMessage = (channelId: string): boolean => channelId.startsW
 const EventCallback = Schema.Struct({
   team_id: Schema.String,
   event_id: Schema.String,
+  is_ext_shared_channel: Schema.optional(Schema.Boolean),
   event: Schema.Struct({
     type: Schema.String,
     user: Schema.optional(Schema.String),
@@ -138,6 +145,7 @@ const decodeBlockActions = Schema.decodeUnknownOption(BlockActions);
 export const mentionOf = (
   install: Pick<SealedSlackInstall, "teamId" | "botUserId">,
   event: SlackEvent,
+  external: boolean | null = null,
 ): SlackMention | null => {
   const direct = event.type === "message" && event.channel_type === "im";
   if (event.type !== "app_mention" && !direct) return null;
@@ -155,23 +163,31 @@ export const mentionOf = (
     text: event.text ?? "",
     slackUserId: event.user,
     userTeamId: event.user_team ?? event.team ?? null,
+    external,
   };
 };
 
 /**
  * The picker's request key: the thread's first message and the mention, so a click on any worker
- * reads the mention back from Slack instead of from memory.
+ * reads the mention back from Slack instead of from memory. A trailing `/e` marks a channel that
+ * is, or may be, a Slack Connect channel: a click does not say.
  */
-export const pickerRequestKey = (mention: Pick<SlackMention, "threadTs" | "messageTs">): string =>
-  `${mention.threadTs ?? mention.messageTs}/${mention.messageTs}`;
+export const pickerRequestKey = (
+  mention: Pick<SlackMention, "threadTs" | "messageTs" | "external">,
+): string =>
+  `${mention.threadTs ?? mention.messageTs}/${mention.messageTs}${mention.external === false ? "" : "/e"}`;
 
 export const parsePickerRequestKey = (
   key: string,
-): { readonly parentTs: string; readonly messageTs: string } | null => {
-  const match = /^(\d+\.\d+)\/(\d+\.\d+)$/.exec(key);
+): {
+  readonly parentTs: string;
+  readonly messageTs: string;
+  readonly external: boolean;
+} | null => {
+  const match = /^(\d+\.\d+)\/(\d+\.\d+)(\/e)?$/.exec(key);
   return match === null || match[1] === undefined || match[2] === undefined
     ? null
-    : { parentTs: match[1], messageTs: match[2] };
+    : { parentTs: match[1], messageTs: match[2], external: match[3] !== undefined };
 };
 
 // ─── Which project a mention runs in ────────────────────────────────────────
@@ -334,7 +350,7 @@ const requestGone = section("The request is no longer in the thread.");
 export const slackStateOf = (session: Pick<Session, "status">): SlackSessionState => {
   switch (session.status) {
     case "idle":
-      // The agent's process is between turns or gone; the reporter (PR 7) folds it properly.
+      // Right after launch; the reporter reads the turns and the process (slackSessionState).
       return "running";
     default:
       return session.status;
@@ -704,6 +720,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         requestTs: mention.messageTs,
         slackUserId: mention.slackUserId,
         projectSource: choice.source,
+        external: mention.external !== false,
       });
       yield* audit.record({
         organizationId: choice.project.organizationId,
@@ -722,6 +739,9 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         },
       });
       yield* react(token, mention, reactionFor("starting"));
+      // The status message is the reporter's once posted: every move after the first goes
+      // through the same compare-and-set, so a launch that ends here and the reporter's next
+      // event cannot both write it.
       const status = (state: SlackSessionState, current: Session) =>
         statusMessage({
           project: choice.project.name,
@@ -733,7 +753,8 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           change: null,
           url: sessionUrl(install.webOrigin, current.id),
         });
-      const posted = yield* say(token, mention, status("starting", session)).pipe(
+      const shown = status("starting", session);
+      const posted = yield* say(token, mention, shown).pipe(
         Effect.map((message) => message.ts),
         Effect.catch((error) =>
           Effect.logWarning("slack runner: status message not posted").pipe(
@@ -742,18 +763,26 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           ),
         ),
       );
-      if (posted !== null) yield* threads.setStatusTs(session.id, posted);
+      if (posted !== null) {
+        yield* threads.setStatusTs(session.id, posted, { state: "starting", line: shown.text });
+      }
+      /** Move the status message on from `starting`, unless the reporter already has. */
       const updateStatus = (state: SlackSessionState, current: Session) =>
-        posted === null
-          ? Effect.void
-          : quietly(
+        Effect.gen(function* () {
+          if (posted === null) return false;
+          const next = status(state, current);
+          const moved = yield* threads.claimStatus(session.id, shown.text, {
+            state,
+            line: next.text,
+          });
+          if (moved) {
+            yield* quietly(
               "chat.update",
-              slack.update(token, {
-                channel: mention.channelId,
-                ts: posted,
-                ...status(state, current),
-              }),
+              slack.update(token, { channel: mention.channelId, ts: posted, ...next }),
             );
+          }
+          return moved;
+        });
 
       const opening = renderOpeningTurn({
         prompt: parsed.prompt,
@@ -784,7 +813,8 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         const detail = refusalDetail(launched.failure);
         if (detail !== null) yield* whisper(token, mention, launchFailed(detail));
         yield* react(token, mention, reactionFor("failed"), reactionFor("starting"));
-        return yield* updateStatus("failed", session);
+        yield* updateStatus("failed", session);
+        return;
       }
       yield* updateStatus(slackStateOf(launched.success), launched.success);
     });
@@ -827,6 +857,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
             messageTs: mention.messageTs,
             threadTs: mention.threadTs,
             text: mention.text,
+            ...(mention.external === null ? {} : { external: mention.external }),
           },
         });
         return yield* whisper(token, mention, linkPrompt(linkUrl(install.webOrigin, code)));
@@ -857,7 +888,11 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         teamId: install.teamId,
       });
       if (!claimed) return;
-      const mention = mentionOf(install, callback.value.event);
+      const mention = mentionOf(
+        install,
+        callback.value.event,
+        callback.value.is_ext_shared_channel ?? null,
+      );
       if (mention === null) return;
       // A message can arrive as two events (a mention and a direct message); one of them acts.
       const first = yield* claims.claim({
@@ -896,6 +931,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         text: "",
         slackUserId: payload.user.id,
         userTeamId: null,
+        external: key.external,
       };
       const request = yield* slack
         .conversationsReplies(token, { channel, ts: key.parentTs, latest: key.messageTs })
@@ -976,6 +1012,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           slackUserId: job.slackUserId,
           // The outsider check ran before the code was minted.
           userTeamId: null,
+          external: job.request.external ?? null,
         },
         job.userId,
       );

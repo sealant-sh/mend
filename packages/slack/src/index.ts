@@ -4,4 +4,5 @@ export * from "./manifest.ts";
 export * from "./markup.ts";
 export * from "./mention.ts";
 export * from "./repository.ts";
+export * from "./state.ts";
 export * from "./thread.ts";

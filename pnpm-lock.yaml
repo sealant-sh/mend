@@ -1037,6 +1037,9 @@ importers:
       '@mend/sessions':
         specifier: workspace:*
         version: link:../sessions
+      '@mend/slack':
+        specifier: workspace:*
+        version: link:../slack
       '@mend/store':
         specifier: workspace:*
         version: link:../store

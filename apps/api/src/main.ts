@@ -104,6 +104,7 @@ import {
   ReviewPrepLive,
   runStarterLayer,
   SessionNotifierLive,
+  SlackReporterLive,
   startRunToolLayer,
   SummaryObserverLive,
   SummaryObserveWorkerLive,
@@ -560,6 +561,8 @@ const WorkerLive = Layer.mergeAll(
   SessionNotifierLive,
   // Mentions of Mend in Slack start sessions as the linked person.
   SlackWorkerLive,
+  // Sessions started from Slack report into their thread: status, reactions, agent messages.
+  SlackReporterLive,
   // Queues tour + suggestion passes at settle, per the automation cascade.
   ReviewPrepLive,
   // Capture mode (ADR-0002 "Review", "Retention"): the observed pass over posted summaries,

@@ -46,6 +46,21 @@ export const SlackProjectSource = Schema.Literals([
 export type SlackProjectSource = typeof SlackProjectSource.Type;
 
 /**
+ * A Slack-started session as its thread hears it ("What Mend posts, and where"): the reporter folds
+ * session, process and turn state into this, and the status message and the reaction show it.
+ * `completed` and `failed` also cover a protocol turn that ended while the agent stays live.
+ */
+export const SlackSessionState = Schema.Literals([
+  "starting",
+  "running",
+  "waiting",
+  "completed",
+  "failed",
+  "stopped",
+]);
+export type SlackSessionState = typeof SlackSessionState.Type;
+
+/**
  * The mention a link code carries ("A Slack user acts only once they have linked their account"):
  * enough to run the original request once the person has linked, so linking does not mean asking
  * twice. The thread is read again when the request runs.
@@ -57,6 +72,11 @@ export const SlackPendingMention = Schema.Struct({
   /** The thread it was written in; null when the mention is the thread's first message. */
   threadTs: Schema.NullOr(Schema.String),
   text: Schema.String,
+  /**
+   * Whether the channel is a Slack Connect channel, as the event said. Absent on codes minted
+   * before Mend recorded it, which the reporter treats as external.
+   */
+  external: Schema.optional(Schema.Boolean),
 });
 export type SlackPendingMention = typeof SlackPendingMention.Type;
 
