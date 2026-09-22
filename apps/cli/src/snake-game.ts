@@ -81,17 +81,20 @@ export const turn = (game: SnakeGame, direction: Direction): SnakeGame => {
   return { ...game, pending: direction };
 };
 
-/** One tick: move, eat or not, die on a wall or the body. */
+/** One tick: move, wrapping at the edges, eat or not, die only on the body. */
 export const tick = (game: SnakeGame, random: () => number): SnakeGame => {
   if (game.over) return game;
   const direction = game.pending ?? game.direction;
   const head = game.snake[0]!;
-  const next = { x: head.x + STEP[direction].x, y: head.y + STEP[direction].y };
+  // The board wraps: out one side, in the other.
+  const next = {
+    x: (head.x + STEP[direction].x + game.width) % game.width,
+    y: (head.y + STEP[direction].y + game.height) % game.height,
+  };
   const eats = same(next, game.food);
   // The tail moves out of the way unless the snake grows, so the last cell is not a collision.
   const body = eats ? game.snake : game.snake.slice(0, -1);
-  const hitsWall = next.x < 0 || next.y < 0 || next.x >= game.width || next.y >= game.height;
-  if (hitsWall || body.some((cell) => same(cell, next))) {
+  if (body.some((cell) => same(cell, next))) {
     return { ...game, direction, pending: null, over: true };
   }
   const snake = [next, ...body];

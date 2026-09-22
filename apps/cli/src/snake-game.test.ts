@@ -40,14 +40,21 @@ describe("snake", () => {
     expect(turned.snake[0]).toEqual({ x: game.snake[0]!.x, y: game.snake[0]!.y - 1 });
   });
 
-  it("ends on a wall and on its own body, and then stays ended", () => {
+  it("wraps at the edges: out one side, in the other", () => {
     let game = newSnakeGame(8, 4, zero);
-    for (let i = 0; i < 10; i += 1) game = tick(game, zero);
-    expect(game.over).toBe(true);
-    expect(tick(game, zero)).toBe(game);
-    expect(turn(game, "up")).toBe(game);
+    // Heading right from x=4: three ticks reach x=7, the fourth wraps to x=0.
+    for (let i = 0; i < 4; i += 1) game = tick(game, zero);
+    expect(game.over).toBe(false);
+    expect(game.snake[0]).toEqual({ x: 0, y: 2 });
+    let up = tick(turn(newSnakeGame(8, 4, zero), "up"), zero);
+    up = tick(up, zero);
+    up = tick(up, zero);
+    expect(up.snake[0]!.y).toBe(3);
+    expect(up.over).toBe(false);
+  });
 
-    // A snake long enough to bite itself: down, left, up runs the head into the body.
+  it("ends only on its own body, and then stays ended", () => {
+    // A snake long enough to bite itself: down runs the head into the body.
     let long: SnakeGame = {
       ...newSnakeGame(12, 6, zero),
       snake: [
@@ -62,5 +69,7 @@ describe("snake", () => {
     };
     long = tick(turn(long, "down"), zero);
     expect(long.over).toBe(true);
+    expect(tick(long, zero)).toBe(long);
+    expect(turn(long, "up")).toBe(long);
   });
 });
