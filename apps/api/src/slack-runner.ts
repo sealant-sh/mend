@@ -27,6 +27,7 @@ import {
   DEFAULT_MENTION_VOCABULARY,
   escapeSlack,
   helpMessage,
+  isDirectMessage,
   linkPrompt,
   linkUrl,
   outsiderMessage,
@@ -92,12 +93,6 @@ export interface SlackMention {
 
 /** Where Mend answers a mention: its thread, or the thread the mention starts. */
 const replyThreadOf = (mention: SlackMention): string => mention.threadTs ?? mention.messageTs;
-
-/**
- * A direct message with the bot. Only there are private projects candidates: everyone in a
- * channel, a private channel or a group DM reads what Mend posts.
- */
-export const isDirectMessage = (channelId: string): boolean => channelId.startsWith("D");
 
 const EventCallback = Schema.Struct({
   team_id: Schema.String,

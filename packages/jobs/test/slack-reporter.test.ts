@@ -43,7 +43,7 @@ import {
   type SlackInstallSettings,
 } from "@mend/domain/workbench";
 import { WORKTREE_STAMP, WorktreeReads } from "@mend/sessions";
-import { SLACK_ACTIONS, statusLine } from "@mend/slack";
+import { PRIVATE_PROJECT_STATUS, SLACK_ACTIONS, statusLine } from "@mend/slack";
 import { makeFakeSlack, type FakeSlackCall } from "@mend/slack/client";
 import { SecretCipher } from "@mend/store";
 import { Effect, Layer } from "effect";
@@ -308,6 +308,10 @@ const startingLine = statusLine({
 
 interface WorldOptions {
   readonly settings?: Partial<SlackInstallSettings>;
+  /** The channel the thread is in; a `D…` channel is a direct message with the bot. */
+  readonly channelId?: string;
+  /** The organization that installed the app, when it is not the project's. */
+  readonly installOrganization?: OrganizationId;
   readonly external?: boolean;
   /** When the thread started: recent threads have no history to replay. */
   readonly threadCreatedAt?: Date;
@@ -334,7 +338,7 @@ const world = (options: WorldOptions = {}) => {
     thread: {
       sessionId: SESSION,
       teamId: "T-acme",
-      channelId: CHANNEL,
+      channelId: options.channelId ?? CHANNEL,
       threadTs: THREAD,
       requestTs: REQUEST,
       statusTs: STATUS,
@@ -354,11 +358,16 @@ const world = (options: WorldOptions = {}) => {
     passes: [] as ReadonlyArray<ChangePass>,
     comments: [] as ReadonlyArray<ReviewComment>,
     posted: new Set<string>(),
+    project,
+    /** The thread row is gone (its session deleted). */
+    threadGone: false,
+    /** The reporter's clock. */
+    now: NOW.getTime(),
   };
   // The runner put ⏳ on the request when the session started; the reporter's writes follow.
   Effect.runSync(
     slack.service.reactionsAdd("xoxb-acme", {
-      channel: CHANNEL,
+      channel: options.channelId ?? CHANNEL,
       timestamp: REQUEST,
       name: "hourglass_flowing_sand",
     }),
@@ -368,7 +377,8 @@ const world = (options: WorldOptions = {}) => {
   const layer = Layer.mergeAll(
     slack.layer,
     Layer.mock(SlackThreadsRepo, {
-      forSession: (id) => Effect.sync(() => (id === SESSION ? state.thread : null)),
+      forSession: (id) =>
+        Effect.sync(() => (id === SESSION && !state.threadGone ? state.thread : null)),
       claimStatus: (_id, from, to) =>
         Effect.sync(() => {
           if (state.thread.statusTs === null || state.thread.reportedStatus !== from) return false;
@@ -385,7 +395,14 @@ const world = (options: WorldOptions = {}) => {
     }),
     Layer.mock(SlackInstallsRepo, {
       byTeam: (teamId) =>
-        Effect.succeed(teamId === "T-acme" ? installWith(options.settings) : null),
+        Effect.succeed(
+          teamId === "T-acme"
+            ? {
+                ...installWith(options.settings),
+                organizationId: options.installOrganization ?? ACME,
+              }
+            : null,
+        ),
     }),
     Layer.mock(SessionsRepo, {
       byId: (id) =>
@@ -397,7 +414,7 @@ const world = (options: WorldOptions = {}) => {
     Layer.mock(SessionProcessesRepo, {
       listForSession: () => Effect.sync(() => state.processes),
     }),
-    Layer.mock(ProjectsRepo, { byId: () => Effect.succeed(project) }),
+    Layer.mock(ProjectsRepo, { byId: () => Effect.sync(() => state.project) }),
     Layer.mock(AgentConversationRepo, {
       listTurns: () => Effect.sync(() => state.turns),
       listRequests: () => Effect.sync(() => state.requests),
@@ -426,7 +443,7 @@ const world = (options: WorldOptions = {}) => {
 
   /** One worker process: its own memory of what it has seen, the shared database and Slack. */
   const worker = () =>
-    Effect.runSync(makeSlackReporter({ now: () => NOW.getTime() }).pipe(Effect.provide(layer)));
+    Effect.runSync(makeSlackReporter({ now: () => state.now }).pipe(Effect.provide(layer)));
   const observe = (reporter: ReturnType<typeof worker>) =>
     Effect.runPromise(reporter.observe(SESSION).pipe(Effect.provide(layer)));
   const baseline = (reporter: ReturnType<typeof worker>) =>
@@ -443,7 +460,7 @@ const world = (options: WorldOptions = {}) => {
       writes().flatMap((call: FakeSlackCall) => (call.kind === "postMessage" ? [call.input] : [])),
     updates: () =>
       writes().flatMap((call: FakeSlackCall) => (call.kind === "update" ? [call.input.text] : [])),
-    reactions: () => slack.reactions.get(`${CHANNEL}:${REQUEST}`),
+    reactions: () => slack.reactions.get(`${options.channelId ?? CHANNEL}:${REQUEST}`),
   };
 };
 
@@ -681,6 +698,104 @@ describe("the Slack thread reporter", () => {
     const text = diff?.blocks?.[0]?.type === "markdown" ? diff.blocks[0].text : "";
     expect(text).toContain("**src/login.ts** · +2 −1\n\n```diff\ndiff --git a/src/login.ts");
     expect(text).toContain("**test/login.test.ts** · +1 −0");
+  });
+
+  it("posts the diff once, when the session first settles, not on every turn", async () => {
+    const w = world({ settings: { showDiffs: true }, threadCreatedAt: NOW });
+    const reporter = w.worker();
+    w.state.change = change;
+    w.state.turns = [turn(1, "running")];
+    await w.observe(reporter);
+    w.state.turns = [turn(1, "completed", NOW)];
+    await w.observe(reporter);
+    await w.observe(reporter);
+    // A follow-up turn runs and completes: the change is posted in full only the first time.
+    w.state.turns = [turn(1, "completed", NOW), turn(2, "running")];
+    await w.observe(reporter);
+    w.state.turns = [turn(1, "completed", NOW), turn(2, "completed", NOW)];
+    await w.observe(reporter);
+    await w.observe(w.worker());
+
+    expect(w.posts().filter((post) => post.text.startsWith("diff ·"))).toHaveLength(1);
+  });
+
+  it("names nothing in a channel once the project is private: the status says so, and nothing is posted", async () => {
+    const w = world({ threadCreatedAt: NOW });
+    const reporter = w.worker();
+    w.state.turns = [turn(1, "running")];
+    await w.observe(reporter);
+    expect(w.updates().at(-1)).toContain("billing-api");
+
+    w.state.project = new Project({ ...project, visibility: "private" });
+    w.state.turns = [turn(1, "completed", NOW)];
+    w.state.items = [item("i1", 1, "assistant-message", "Fixed the retry in billing-api.")];
+    w.state.requests = [request("r1", "user-input")];
+    w.state.change = change;
+    await w.observe(reporter);
+    await w.observe(reporter);
+
+    expect(w.posts()).toEqual([]);
+    expect(w.updates()).toEqual([
+      "billing-api · from a link in the thread · claude · running · mend/flaky-login-test",
+      PRIVATE_PROJECT_STATUS,
+    ]);
+    const edit = w.writes().findLast((call) => call.kind === "update");
+    expect(JSON.stringify(edit)).not.toContain("billing-api");
+    expect(JSON.stringify(edit)).not.toContain(SESSION_URL);
+    // The reaction still follows the state: it names nothing.
+    expect(w.reactions()).toEqual(new Set(["white_check_mark"]));
+  });
+
+  it("keeps posting a private project's session in a direct message with the bot", async () => {
+    const w = world({ channelId: "D-alice", threadCreatedAt: NOW });
+    w.state.project = new Project({ ...project, visibility: "private" });
+    w.state.turns = [turn(1, "completed", NOW)];
+    w.state.items = [item("i1", 1, "assistant-message", "Fixed the retry.")];
+    await w.observe(w.worker());
+
+    expect(w.posts().map((post) => post.text)).toEqual(["Fixed the retry."]);
+    expect(w.updates().at(-1)).toContain("billing-api");
+  });
+
+  it("writes nothing through an install of another organization than the project's", async () => {
+    const w = world({
+      installOrganization: OrganizationId.make("org-globex"),
+      threadCreatedAt: NOW,
+    });
+    w.state.turns = [turn(1, "completed", NOW)];
+    w.state.items = [item("i1", 1, "assistant-message", "Fixed the retry.")];
+    await w.observe(w.worker());
+
+    expect(w.writes()).toEqual([]);
+  });
+
+  it("forgets a settled session after an hour unseen, and a session that is gone at once", async () => {
+    const w = world();
+    const reporter = w.worker();
+    w.state.turns = [turn(1, "completed", NOW)];
+    await w.observe(reporter);
+    expect(reporter.remembered()).toBe(1);
+
+    // Half an hour on, it is remembered: a question asked now is news.
+    w.state.now = NOW.getTime() + 30 * 60_000;
+    w.state.requests = [request("r1", "command-approval", new Date(w.state.now))];
+    await w.observe(reporter);
+    expect(w.posts()).toHaveLength(1);
+
+    // An hour after that look it is forgotten, so the next look is a baseline and posts nothing.
+    w.state.now += 61 * 60_000;
+    w.state.requests = [
+      ...w.state.requests,
+      request("r2", "command-approval", new Date(w.state.now)),
+    ];
+    await w.observe(reporter);
+    expect(w.posts()).toHaveLength(1);
+    expect(reporter.remembered()).toBe(1);
+
+    // Its thread is gone: forgotten at once.
+    w.state.threadGone = true;
+    await w.observe(reporter);
+    expect(reporter.remembered()).toBe(0);
   });
 
   it("posts each reply once across two workers and a restart, and edits the status once", async () => {

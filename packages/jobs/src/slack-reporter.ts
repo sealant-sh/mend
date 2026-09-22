@@ -31,7 +31,9 @@ import {
   changeUrl,
   diffMessages,
   disclosureFor,
+  isDirectMessage,
   isSettledState,
+  privateProjectStatusMessage,
   questionMessage,
   reactionFor,
   reviewMessage,
@@ -57,11 +59,16 @@ import { Cause, Effect, Layer, Queue, Schema, Stream } from "effect";
  * - the agent's first message when it is a plan, and each turn's closing message;
  * - a question the agent asks, naming the owner, and an approval as a status line with a link;
  * - once the machine review pass has run, what it drafted, with "Review in Mend";
- * - on completion, the change's line counts in the status line, and each file's diff when the
- *   owner turned diffs on.
+ * - on completion, the change's line counts in the status line; and when the owner turned diffs
+ *   on, each file's diff, once, the first time the session settles with a change.
  *
  * The install's display settings decide how much: with agent messages off, or in a Slack Connect
  * channel the owner did not open, the thread gets status, reactions and links only.
+ *
+ * Disclosure is checked again on every look. A channel thread whose project is no longer `shared`
+ * gets its status message edited to a line that names nothing, and no reply; a direct message
+ * with the bot is the requester's own. A thread is written only through the install of the
+ * organization that owns the session's project.
  *
  * The notifier's guards apply to every reply: a session first seen mid-flight is recorded without
  * posting, and nothing older than two minutes is announced. The status message is not a reply: it
@@ -75,6 +82,13 @@ import { Cause, Effect, Layer, Queue, Schema, Stream } from "effect";
  */
 
 const REPORT_FRESHNESS_MS = 2 * 60_000;
+
+/** A settled session not looked at for this long is forgotten: its next look is a baseline. */
+const SEEN_SETTLED_TTL_MS = 60 * 60_000;
+/** Anything not looked at for a day is forgotten, settled or not. */
+const SEEN_TTL_MS = 24 * 60 * 60_000;
+/** How often the memory of what was seen is swept. */
+const SEEN_SWEEP_MS = 60_000;
 
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(MendEvent));
 
@@ -143,6 +157,10 @@ interface Seen {
   /** The opening message is decided (a plan, or anything else). */
   readonly opening: boolean;
   readonly review: string | null;
+  /** The thread's state was settled (completed, failed, stopped): its diff moment has passed. */
+  readonly settled: boolean;
+  /** When this process last looked, for forgetting sessions nobody looks at any more. */
+  readonly at: number;
 }
 
 /** Everything one look at a session reads. */
@@ -163,9 +181,11 @@ const NOTHING_SEEN: Seen = {
   requests: new Set(),
   opening: false,
   review: null,
+  settled: false,
+  at: 0,
 };
 
-const seenOf = (look: Look): Seen => ({
+const seenOf = (look: Look, at: number): Seen => ({
   endedTurns: new Set(
     look.turns.flatMap((turn) =>
       turn.status === "queued" || turn.status === "running" ? [] : [turn.id],
@@ -174,6 +194,8 @@ const seenOf = (look: Look): Seen => ({
   requests: new Set(look.pending.map((request) => request.id)),
   opening: look.opening !== undefined,
   review: look.review?.key ?? null,
+  settled: isSettledState(look.state),
+  at,
 });
 
 /** A Slack write whose failure is logged, never raised: the thread is not the session. */
@@ -208,6 +230,20 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
     const now = options.now ?? Date.now;
 
     const seen = new Map<string, Seen>();
+    let sweptAt = 0;
+
+    /** Forget settled sessions nobody has looked at in an hour, and anything after a day. */
+    const sweep = () => {
+      const at = now();
+      if (at - sweptAt < SEEN_SWEEP_MS) return;
+      sweptAt = at;
+      for (const [sessionId, entry] of seen) {
+        const idle = at - entry.at;
+        if (idle > SEEN_TTL_MS || (entry.settled && idle > SEEN_SETTLED_TTL_MS)) {
+          seen.delete(sessionId);
+        }
+      }
+    };
 
     const fresh = (at: Date | null): boolean =>
       at !== null && now() - at.getTime() <= REPORT_FRESHNESS_MS;
@@ -270,16 +306,58 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         ),
       );
 
-    /** Keep the status message and the reaction on the observed state. */
+    /**
+     * Edit the status message to `message` and move the reaction to the state, once, whichever
+     * worker gets there first. A line that stays the same (a private project's) still moves the
+     * reaction when the state does.
+     */
+    const moveStatus = Effect.fn("SlackReporter.moveStatus")(function* (
+      token: string,
+      look: Look,
+      message: SlackMessage,
+    ) {
+      const { thread, session, state } = look;
+      if (thread.statusTs === null) return;
+      const edit = message.text !== thread.reportedStatus;
+      if (!edit && state === thread.reportedState) return;
+      const moved = yield* threads.claimStatus(session.id, thread.reportedStatus, {
+        state,
+        line: message.text,
+      });
+      if (!moved) return;
+      if (edit) {
+        yield* quietly(
+          "chat.update",
+          slack.update(token, { channel: thread.channelId, ts: thread.statusTs, ...message }),
+        );
+      }
+      const was = reactionFor(thread.reportedState ?? "starting");
+      const is = reactionFor(state);
+      if (was === is) return;
+      const at = { channel: thread.channelId, timestamp: thread.requestTs };
+      if (is !== null)
+        yield* quietly("reactions.add", slack.reactionsAdd(token, { ...at, name: is }));
+      if (was !== null) {
+        yield* quietly("reactions.remove", slack.reactionsRemove(token, { ...at, name: was }));
+      }
+    });
+
+    /**
+     * Keep the status message and the reaction on the observed state. A null `projectName` is a
+     * channel thread whose project is private now: the message says so and names nothing.
+     */
     const reportStatus = Effect.fn("SlackReporter.reportStatus")(function* (
       install: SealedSlackInstall,
       token: string,
       look: Look,
-      projectName: string,
+      projectName: string | null,
     ) {
       const { thread, session, state } = look;
       if (thread.statusTs === null) return;
       if (!statusMayMove(thread.reportedState, state)) return;
+      if (projectName === null) {
+        return yield* moveStatus(token, look, privateProjectStatusMessage());
+      }
       const change =
         look.change !== null && isSettledState(state)
           ? yield* countsOf(session, look.change)
@@ -294,25 +372,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         change,
         url: sessionUrl(install.webOrigin, session.id),
       });
-      if (message.text === thread.reportedStatus) return;
-      const moved = yield* threads.claimStatus(session.id, thread.reportedStatus, {
-        state,
-        line: message.text,
-      });
-      if (!moved) return;
-      yield* quietly(
-        "chat.update",
-        slack.update(token, { channel: thread.channelId, ts: thread.statusTs, ...message }),
-      );
-      const was = reactionFor(thread.reportedState ?? "starting");
-      const is = reactionFor(state);
-      if (was === is) return;
-      const at = { channel: thread.channelId, timestamp: thread.requestTs };
-      if (is !== null)
-        yield* quietly("reactions.add", slack.reactionsAdd(token, { ...at, name: is }));
-      if (was !== null) {
-        yield* quietly("reactions.remove", slack.reactionsRemove(token, { ...at, name: was }));
-      }
+      yield* moveStatus(token, look, message);
     });
 
     /** Post a reply once, whichever worker gets there first. */
@@ -391,7 +451,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         yield* postOnce(token, thread, "plan", Effect.succeed([agentMessage(opening.text, url)]));
       }
 
-      // Each turn that ended since the last look: its closing message, and the diff.
+      // Each turn that ended since the last look: its closing message.
       for (const turn of look.turns) {
         if (turn.status !== "completed" || before.endedTurns.has(turn.id)) continue;
         if (!fresh(turn.endedAt)) continue;
@@ -406,10 +466,12 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
             );
           }
         }
-        const change = look.change;
-        if (shown.diffs && change !== null) {
-          yield* postOnce(token, thread, `diff:${turn.id}`, diffsOf(session, change, url));
-        }
+      }
+
+      // The diff, once: the first time the session settles with a change, not on every turn.
+      if (shown.diffs && look.change !== null && isSettledState(look.state) && !before.settled) {
+        const diffs = yield* diffsOf(session, look.change, url);
+        if (diffs.length > 0) yield* postOnce(token, thread, "diff", Effect.succeed(diffs));
       }
 
       // Questions and approvals opened since the last look.
@@ -465,22 +527,36 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
 
     /** Look at a session again and bring its thread up to date. */
     const observe = Effect.fn("SlackReporter.observe")(function* (sessionId: SessionId) {
+      sweep();
       const look = yield* lookAt(sessionId);
-      if (look === null) return;
+      if (look === null) {
+        seen.delete(sessionId);
+        return;
+      }
       // A thread started in the last two minutes has no history to replay: everything in it is
       // news, even to a process that has not looked at it yet.
       const before =
         seen.get(sessionId) ?? (fresh(look.thread.createdAt) ? NOTHING_SEEN : undefined);
-      seen.set(sessionId, seenOf(look));
+      seen.set(sessionId, seenOf(look, now()));
       const install = yield* installs.byTeam(look.thread.teamId);
       // The app was removed: the thread stays, and nothing can be written to it.
       if (install === null) return;
-      const token = yield* botTokenOf(install);
-      if (token === null) return;
       const project = yield* projects
         .byId(look.session.projectId)
         .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
       if (project === null) return;
+      // The workspace now belongs to another organization than the project's: write nothing.
+      if (project.organizationId !== install.organizationId) {
+        return yield* Effect.logWarning(
+          "slack reporter: the thread's install is not the project's organization's, not posted",
+        ).pipe(Effect.annotateLogs({ sessionId, organizationId: install.organizationId }));
+      }
+      const token = yield* botTokenOf(install);
+      if (token === null) return;
+      // Everyone in a channel reads the thread: a project made private since is not shown there.
+      if (!isDirectMessage(look.thread.channelId) && project.visibility !== "shared") {
+        return yield* reportStatus(install, token, look, null);
+      }
       yield* reportStatus(install, token, look, project.name);
       if (before === undefined) return; // unknown baseline: record, never post
       yield* reportReplies(install, token, look, before);
@@ -493,11 +569,16 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
     const baseline = Effect.fn("SlackReporter.baseline")(function* () {
       for (const session of yield* sessions.listActive()) {
         const look = yield* lookAt(session.id);
-        if (look !== null && !fresh(look.thread.createdAt)) seen.set(session.id, seenOf(look));
+        if (look !== null && !fresh(look.thread.createdAt)) {
+          seen.set(session.id, seenOf(look, now()));
+        }
       }
     });
 
-    return { observe, baseline };
+    /** How many sessions this process remembers having seen: for tests. */
+    const remembered = () => seen.size;
+
+    return { observe, baseline, remembered };
   });
 
 export const SlackReporterLive: Layer.Layer<
