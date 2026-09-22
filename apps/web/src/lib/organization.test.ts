@@ -65,6 +65,15 @@ describe("describeAudit for Slack (docs/adr/0006)", () => {
         event("slack.link_removed", { slackUserId: "U1", memberRemoved: true }, "Carol"),
       ),
     ).toBe("removed the Slack link of Carol with their membership");
+    expect(
+      describeAudit(
+        event("slack.session_started", {
+          projectName: "billing-api",
+          projectSource: "channel-default",
+          slackUserId: "U1",
+        }),
+      ),
+    ).toBe("started session carol from Slack in billing-api · channel default");
   });
 });
 

@@ -133,6 +133,7 @@ import {
   WorktreeReadsColocatedLive,
 } from "@mend/sessions";
 import { SlackApiLive } from "@mend/slack/client";
+import { SlackSocketLive } from "@mend/slack/socket";
 import {
   type AgentBridge,
   AgentBridgeLive,
@@ -177,7 +178,10 @@ import { GhLive } from "./routes/github.ts";
 import { UrlBearersLive } from "./routes/upgrade-tickets.ts";
 import { WebSocketRoutes } from "./routes/websocket.ts";
 import { HostEnvironmentLive } from "./services/host-environment.ts";
+import { SessionStartLive } from "./session-start.ts";
 import { SessionSteeringLive } from "./session-steering.ts";
+import { SlackRunnerLive } from "./slack-runner.ts";
+import { SlackLinkedMentionWorkerLive, SlackSocketsLive } from "./slack-worker.ts";
 import { TenancyConfigLive } from "./tenancy.ts";
 
 /**
@@ -533,6 +537,15 @@ const InferenceWorkersLive = Layer.effectDiscard(
   }),
 );
 
+/**
+ * Slack (docs/adr/0006-slack.md): a Socket Mode connection per install, and the mention that
+ * waited for a link. One runner serves both, and starts sessions through SessionStart.
+ */
+const SlackWorkerLive = Layer.merge(SlackSocketsLive, SlackLinkedMentionWorkerLive).pipe(
+  Layer.provide(SlackRunnerLive.pipe(Layer.provide(SessionStartLive))),
+  Layer.provide(SlackSocketLive),
+);
+
 const WorkerLive = Layer.mergeAll(
   Layer.effectDiscard(
     Effect.gen(function* () {
@@ -545,6 +558,8 @@ const WorkerLive = Layer.mergeAll(
   SessionEngineLayer,
   // Pushes to registered phones when a session settles or waits on the user.
   SessionNotifierLive,
+  // Mentions of Mend in Slack start sessions as the linked person.
+  SlackWorkerLive,
   // Queues tour + suggestion passes at settle, per the automation cascade.
   ReviewPrepLive,
   // Capture mode (ADR-0002 "Review", "Retention"): the observed pass over posted summaries,
