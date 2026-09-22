@@ -6,8 +6,9 @@ import { canRemove, runsAsLine, sessionActions } from "./viewer.ts";
 const org = OrganizationId.make("org-1");
 const alice = { userId: "alice", organizationId: org, role: "member" as const };
 const bob = { userId: "bob", organizationId: org, role: "owner" as const };
-const owned = { ownerUserId: "alice", sharedControlEnabledAt: null };
-const shared = { ownerUserId: "alice", sharedControlEnabledAt: new Date() };
+const owned = { ownerUserId: "alice", sharedControlEnabledAt: null, origin: "mend" as const };
+const shared = { ...owned, sharedControlEnabledAt: new Date() };
+const fromSlack = { ...owned, origin: "slack" as const };
 
 describe("session rows", () => {
   it("offer steering to the owner, or anyone while control is shared, and stop to owners", () => {
@@ -28,6 +29,18 @@ describe("session rows", () => {
     expect(runsAsLine(shared, "carol", names)).toBe("runs as Alice · shared control on");
     expect(runsAsLine({ ...owned, ownerUserId: "zed" }, "carol", names)).toBe(
       "runs as another account",
+    );
+    expect(runsAsLine({ ...owned, ownerUserId: null }, "carol", names)).toBe(
+      "no owner · nobody steers it",
+    );
+  });
+
+  it("say a session came from Slack, beside its owner", () => {
+    const names = new Map([["alice", "Alice"]]);
+    expect(runsAsLine(fromSlack, "alice", names)).toBe("from Slack");
+    expect(runsAsLine(fromSlack, "carol", names)).toBe("runs as Alice · from Slack");
+    expect(runsAsLine({ ...fromSlack, sharedControlEnabledAt: new Date() }, "carol", names)).toBe(
+      "runs as Alice · from Slack · shared control on",
     );
   });
 });
