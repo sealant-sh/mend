@@ -115,7 +115,7 @@ export interface SlackRepliesInput {
   readonly ts: string;
   /** Stop at this message, inclusive: the mention being read. */
   readonly latest?: string;
-  /** The most messages read, across pages; defaults to `SLACK_REPLIES_MAX`. */
+  /** The most messages kept, the newest; defaults to `SLACK_REPLIES_MAX`. */
   readonly max?: number;
 }
 
@@ -126,6 +126,13 @@ export interface SlackDownload {
 
 /** Enough of any thread for the fifty messages the session receives. */
 export const SLACK_REPLIES_MAX = 1_000;
+
+/**
+ * The most pages of 200 one read asks for. Slack pages a thread oldest first, so the newest
+ * messages are on the last page: a thread longer than this many pages (10,000 messages) is read
+ * only as far as its first 10,000, and the newest beyond them are left out.
+ */
+export const SLACK_REPLIES_MAX_PAGES = 50;
 
 export class SlackApi extends Context.Service<
   SlackApi,
@@ -159,8 +166,9 @@ export class SlackApi extends Context.Service<
       input: SlackReactionInput,
     ) => Effect.Effect<void, SlackApiError>;
     /**
-     * A thread's messages, oldest first, across pages. Names are not looked up: `displayName` is
-     * null, for the caller to fill from `usersInfo`.
+     * A thread's newest messages up to `latest`, oldest first, across pages. Slack pages a thread
+     * from its start, so every page is read and only the newest `max` are kept. Names are not
+     * looked up: `displayName` is null, for the caller to fill from `usersInfo`.
      */
     readonly conversationsReplies: (
       token: string,
@@ -396,9 +404,12 @@ export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"]
     conversationsReplies: (token, input) =>
       Effect.gen(function* () {
         const max = input.max ?? SLACK_REPLIES_MAX;
+        // The newest `max` so far: an older message falls out as a newer one comes in.
         const messages: Array<SlackThreadMessage> = [];
         let cursor: string | null = null;
+        let pages = 0;
         do {
+          pages += 1;
           const page: typeof RepliesResult.Type = yield* call(
             "conversations.replies",
             token,
@@ -412,7 +423,8 @@ export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"]
             RepliesResult,
           );
           for (const entry of page.messages ?? []) {
-            if (messages.length >= max) break;
+            if (max <= 0) break;
+            if (messages.length >= max) messages.shift();
             messages.push({
               ts: entry.ts,
               userId: present(entry.user),
@@ -429,7 +441,7 @@ export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"]
             });
           }
           cursor = present(page.response_metadata?.next_cursor);
-        } while (cursor !== null && messages.length < max);
+        } while (cursor !== null && pages < SLACK_REPLIES_MAX_PAGES);
         return messages;
       }),
     usersInfo: (token, user) =>
@@ -642,11 +654,11 @@ export const makeFakeSlack = (workspaces: ReadonlyArray<FakeSlackWorkspace>): Fa
           const thread = workspace.threads?.[`${input.channel}:${input.ts}`];
           if (thread === undefined) return refuse("conversations.replies", "thread_not_found");
           const latest = input.latest;
-          return Effect.succeed(
-            thread
-              .filter((entry) => latest === undefined || Number(entry.ts) <= Number(latest))
-              .slice(0, input.max ?? SLACK_REPLIES_MAX),
+          const max = input.max ?? SLACK_REPLIES_MAX;
+          const upTo = thread.filter(
+            (entry) => latest === undefined || Number(entry.ts) <= Number(latest),
           );
+          return Effect.succeed(max <= 0 ? [] : upTo.slice(-max));
         }),
       ),
     usersInfo: (token, user) =>

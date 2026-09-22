@@ -170,6 +170,34 @@ describe("the live Slack client (over @slack/web-api)", () => {
     expect(slack.sent[0]?.body.get("latest")).toBe("1.3");
   });
 
+  it("reads every page and keeps the newest messages, the mention among them", async () => {
+    const page = (from: number, cursor: string) => ({
+      ok: true,
+      messages: [0, 1, 2].map((offset) => ({
+        ts: `1.${from + offset}`,
+        user: "U1",
+        text: `message ${from + offset}`,
+      })),
+      response_metadata: { next_cursor: cursor },
+    });
+    const slack = fakeFetch({
+      "conversations.replies": [page(1, "page-2"), page(4, "page-3"), page(7, "")],
+    });
+    const result = await run(
+      makeSlackApi({ fetch: slack.fetch }).conversationsReplies("xoxb-1", {
+        channel: "C1",
+        ts: "1.1",
+        latest: "1.9",
+        max: 4,
+      }),
+    );
+    expect(result._tag).toBe("Success");
+    if (result._tag !== "Success") return;
+    expect(result.success.map((message) => message.ts)).toEqual(["1.6", "1.7", "1.8", "1.9"]);
+    expect(slack.sent).toHaveLength(3);
+    expect(slack.sent[0]?.body.get("inclusive")).toBe("true");
+  });
+
   it("treats a reaction already there as done", async () => {
     const slack = fakeFetch({ "reactions.add": [{ ok: false, error: "already_reacted" }] });
     const result = await run(
@@ -275,5 +303,31 @@ describe("the fake Slack", () => {
       "reactionsRemove",
     ]);
     expect([...(slack.reactions.get("C1:1.3") ?? [])]).toEqual(["white_check_mark"]);
+  });
+
+  it("keeps a thread's newest messages up to the mention, as Slack's pages do", async () => {
+    const message = (ts: string) => ({
+      ts,
+      userId: "U1",
+      teamId: "T1",
+      isBot: false,
+      displayName: null,
+      text: ts,
+      files: [],
+    });
+    const slack = makeFakeSlack([
+      { ...acme, threads: { "C1:1.1": ["1.1", "1.2", "1.3", "1.4", "1.5"].map(message) } },
+    ]);
+    const result = await run(
+      slack.service.conversationsReplies("xoxb-acme", {
+        channel: "C1",
+        ts: "1.1",
+        latest: "1.4",
+        max: 2,
+      }),
+    );
+    expect(result._tag).toBe("Success");
+    if (result._tag !== "Success") return;
+    expect(result.success.map((entry) => entry.ts)).toEqual(["1.3", "1.4"]);
   });
 });
