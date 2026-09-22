@@ -185,6 +185,10 @@ interface WorldOptions {
   readonly eventsPerMinute?: number;
   readonly now?: number;
   readonly createFails?: NotFound | StoreFailure | BudgetExceeded;
+  /** The first create `createFails` refuses, counting from 1; the ones before it succeed. */
+  readonly createFailsFrom?: number;
+  /** The engine cannot stop a session. */
+  readonly stopFails?: boolean;
   /** SessionStart dies: a failure nothing expected. */
   readonly createDies?: boolean;
   /** Alice has unlinked since. */
@@ -255,6 +259,7 @@ const world = (options: WorldOptions = {}) => {
   const shownState = new Map<string, string>();
   const statusTs = new Map<string, string>();
   const sessionsCreated = new Map<string, Session>();
+  let creates = 0;
   const visible = [billing, web, notes];
   const created = (projectId: ProjectId, owner: string) =>
     new Session({
@@ -415,7 +420,14 @@ const world = (options: WorldOptions = {}) => {
         note(`controls.record:${event.sessionId}:${event.kind}:${event.actorUserId}`),
     }),
     Layer.mock(SessionEngine, {
-      stop: (sessionId) => note(`engine.stop:${sessionId}`),
+      stop: (sessionId) =>
+        note(`engine.stop:${sessionId}`).pipe(
+          Effect.andThen(
+            options.stopFails === true
+              ? Effect.fail(new SessionNotFoundError({ sessionId }))
+              : Effect.void,
+          ),
+        ),
     }),
     Layer.mock(SessionSteering, {
       authorizeUser: (session, userId) =>
@@ -475,7 +487,7 @@ const world = (options: WorldOptions = {}) => {
           Effect.andThen(
             options.createDies
               ? Effect.die(new Error("pg: connection reset at /srv/mend/store"))
-              : options.createFails === undefined
+              : options.createFails === undefined || ++creates < (options.createFailsFrom ?? 1)
                 ? Effect.sync(() => {
                     const session = created(projectId, userId);
                     sessionsCreated.set(session.id, session);
@@ -1049,6 +1061,19 @@ describe("the Slack runner, reading the thread with inference", () => {
   });
 });
 
+/** The requester picks `projectId` from the switch picker of session-1. */
+const switchTo = (w: ReturnType<typeof world>, projectId: string) =>
+  w.deliver(
+    w.pick({
+      user: "U-alice",
+      parentTs: "1700000300.000100",
+      messageTs: "1700000300.000100",
+      projectId,
+      envelopeId: "i2",
+      switchFrom: "session-1",
+    }),
+  );
+
 describe("the Slack runner, switching a session's project", () => {
   /** Alice asks in web; the status message offers Switch project. */
   const started = (options: WorldOptions = {}) => {
@@ -1081,7 +1106,7 @@ describe("the Slack runner, switching a session's project", () => {
 
     const picker = posts(w, "postEphemeral").at(-1);
     expect(picker?.text).toBe(
-      "Pick the project to restart this request in. The session already started for it is stopped when you pick.",
+      "Pick the project to restart this request in. The session already started for it is stopped once the new one is created.",
     );
     const blocks = JSON.stringify(picker?.blocks);
     expect(blocks).toContain(billing.id);
@@ -1114,9 +1139,10 @@ describe("the Slack runner, switching a session's project", () => {
     expect(
       after.filter((entry) => !entry.startsWith("ack:") && !entry.startsWith("claim:")),
     ).toEqual([
+      // The new session first; the one it replaces is stopped only once it exists.
+      `start.createAs:alice:${billing.id}:claude:null:slack`,
       "engine.stop:session-1",
       "controls.record:session-1:stop:alice",
-      `start.createAs:alice:${billing.id}:claude:null:slack`,
       "threads.setStatusTs:session-2:1700000000.000003",
       "start.launchAs:alice:session-2",
     ]);
@@ -1135,6 +1161,40 @@ describe("the Slack runner, switching a session's project", () => {
     expect(w.slack.reactions.get("C-general:1700000300.000100")).toEqual(
       new Set(["hourglass_flowing_sand"]),
     );
+  });
+
+  it("leaves the session running when the new one is refused", async () => {
+    const refusal = new BudgetExceeded({
+      budget: "accountLiveSessions",
+      limit: 1,
+      retryAfterSeconds: null,
+      message: "budget reached · 1 unsettled session for one account · nothing running was stopped",
+    });
+    const { w, start } = started({ createFails: refusal, createFailsFrom: 2 });
+    await start();
+    await switchTo(w, billing.id);
+
+    expect(w.effects.some((entry) => entry.startsWith("engine.stop"))).toBe(false);
+    expect(w.effects.some((entry) => entry.startsWith("controls.record"))).toBe(false);
+    expect(posts(w, "postMessage").at(-1)?.text).toBe(
+      "not started · budget reached · 1 unsettled session for one account · nothing running was stopped",
+    );
+    const updates = w.slack.calls.flatMap((call) => (call.kind === "update" ? [call.input] : []));
+    expect(updates.some((update) => update.text.includes("stopped"))).toBe(false);
+  });
+
+  it("records no stop when the engine could not stop the session, and tells the requester", async () => {
+    const { w, start } = started({ stopFails: true });
+    await start();
+    await switchTo(w, billing.id);
+
+    expect(w.effects).toContain("engine.stop:session-1");
+    expect(w.effects.some((entry) => entry.startsWith("controls.record"))).toBe(false);
+    expect(posts(w, "postEphemeral").at(-1)?.text).toBe(
+      "switched · the earlier session could not be stopped · stop it in Mend",
+    );
+    // The new session still starts: the requester asked for it.
+    expect(w.effects).toContain("start.launchAs:alice:session-2");
   });
 
   it("switches only for the requester, and not once the first turn has completed", async () => {

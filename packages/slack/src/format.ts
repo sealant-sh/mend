@@ -492,7 +492,7 @@ const PICKER_REASONS = {
   none: "No project named in the request or the thread, and no default set. Pick one to start the session.",
   several: "More than one project matches. Pick one to start the session.",
   switch:
-    "Pick the project to restart this request in. The session already started for it is stopped when you pick.",
+    "Pick the project to restart this request in. The session already started for it is stopped once the new one is created.",
 } as const;
 
 /**

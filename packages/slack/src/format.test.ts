@@ -201,7 +201,7 @@ describe("asking for a project", () => {
       "More than one project matches. Pick one to start the session.",
     );
     expect(projectPicker({ requestKey: "k", reason: "switch", likeliest, all }).text).toBe(
-      "Pick the project to restart this request in. The session already started for it is stopped when you pick.",
+      "Pick the project to restart this request in. The session already started for it is stopped once the new one is created.",
     );
     expect(
       projectPicker({ requestKey: "k", reason: "none", likeliest: [], all: [] }).blocks,

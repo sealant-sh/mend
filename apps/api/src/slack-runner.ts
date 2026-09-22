@@ -401,7 +401,18 @@ const onlySwitcher = section("Only the person who made the request switches its 
 export const notSwitched = (reason: string): SlackMessage =>
   section(escapeSlack(`not switched · ${reason} · mention Mend again to start another session`));
 
+/** The new session started, and the one it replaces could not be stopped. */
+export const earlierNotStopped = section(
+  "switched · the earlier session could not be stopped · stop it in Mend",
+);
+
 const requestGone = section("The request is no longer in the thread.");
+
+/** A session "Switch project" replaces, checked and still running until its replacement exists. */
+interface SwitchedSession {
+  readonly thread: SlackThreadSession;
+  readonly session: Session;
+}
 
 /** The session's state, as the status message words it until the reporter takes over. */
 export const slackStateOf = (session: Pick<Session, "status">): SlackSessionState => {
@@ -816,12 +827,12 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
     });
 
     /**
-     * Stop the session a switch replaces, as the requester and through the same steering check as
-     * the web app, and show it stopped. The status message moves by the reporter's own
-     * compare-and-set, so the reporter finds `stopped` already shown and leaves the request's
-     * reaction to the session that replaces it. False, after saying why, when it cannot.
+     * The session a switch replaces, when the requester may still switch it: the same thread and
+     * request, before its first turn completes, and through the same steering check as the web
+     * app. Null, after saying why, when not. Nothing is stopped here: the session keeps running
+     * until its replacement has been created (`stopSwitched`).
      */
-    const switchAway = Effect.fn("SlackRunner.switchAway")(function* (
+    const switchable = Effect.fn("SlackRunner.switchable")(function* (
       install: SealedSlackInstall,
       token: string,
       mention: SlackMention,
@@ -837,19 +848,19 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         thread.slackUserId !== mention.slackUserId
       ) {
         yield* whisper(token, mention, requestGone);
-        return false;
+        return null;
       }
       const refusal = yield* switchRefusal(thread);
       if (refusal !== null) {
         yield* whisper(token, mention, notSwitched(refusal));
-        return false;
+        return null;
       }
       const session = yield* sessions
         .byId(sessionId)
         .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
       if (session === null) {
         yield* whisper(token, mention, requestGone);
-        return false;
+        return null;
       }
       const allowed = yield* steering.authorizeUser(session, userId).pipe(Effect.result);
       if (allowed._tag === "Failure") {
@@ -862,9 +873,32 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
               : allowed.failure.message,
           ),
         );
-        return false;
+        return null;
       }
-      yield* engine.stop(session.id).pipe(Effect.ignore);
+      return { thread, session } satisfies SwitchedSession;
+    });
+
+    /**
+     * Stop the session a switch replaced, once its replacement exists, as the requester, and show
+     * it stopped. The stop is recorded as a control event only when the engine stopped it; when it
+     * could not, the requester is told, and the thread is left as it reads. The status message
+     * moves by the reporter's own compare-and-set, so the reporter finds `stopped` already shown
+     * and leaves the request's reaction to the session that replaces it.
+     */
+    const stopSwitched = Effect.fn("SlackRunner.stopSwitched")(function* (
+      install: SealedSlackInstall,
+      token: string,
+      mention: SlackMention,
+      userId: string,
+      { thread, session }: SwitchedSession,
+    ) {
+      const stoppedByEngine = yield* engine.stop(session.id).pipe(Effect.exit);
+      if (stoppedByEngine._tag === "Failure") {
+        yield* Effect.logWarning("slack runner: the switched session was not stopped").pipe(
+          Effect.annotateLogs({ sessionId: session.id, cause: String(stoppedByEngine.cause) }),
+        );
+        return yield* whisper(token, mention, earlierNotStopped);
+      }
       yield* controls.record({
         sessionId: session.id,
         actorUserId: userId,
@@ -886,7 +920,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         url: sessionUrl(install.webOrigin, session.id),
       });
       // The reporter may be moving the message too: claim from what it shows, a few times over.
-      let shown = thread;
+      let shown = (yield* threads.forSession(session.id)) ?? thread;
       for (let attempt = 0; attempt < 3; attempt++) {
         if (shown.statusTs === null || shown.reportedState === "stopped") break;
         const moved = yield* threads.claimStatus(session.id, shown.reportedStatus, {
@@ -905,7 +939,6 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         if (again === null) break;
         shown = again;
       }
-      return true;
     });
 
     /** Start a session for a linked person, or say why not. */
@@ -915,8 +948,11 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       mention: SlackMention,
       userId: string,
       picked: ProjectId | null,
-      /** The session this one replaces, when the requester switched its project. */
-      switchedFrom: SessionId | null = null,
+      /**
+       * The session this one replaces, when the requester switched its project. It is stopped
+       * only once this one is created: every check before that leaves it running.
+       */
+      replacing: SwitchedSession | null = null,
     ) {
       const direct = isDirectMessage(mention.channelId);
       const candidates = yield* candidatesFor(userId, mention.channelId);
@@ -1053,6 +1089,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         );
       }
       const session = created.success;
+      if (replacing !== null) yield* stopSwitched(install, token, mention, userId, replacing);
       yield* threads.record({
         sessionId: session.id,
         teamId: install.teamId,
@@ -1077,7 +1114,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           projectId: choice.project.id,
           projectName: choice.project.name,
           projectSource: choice.source,
-          ...(switchedFrom === null ? {} : { switchedFrom }),
+          ...(replacing === null ? {} : { switchedFrom: replacing.session.id }),
         },
       });
       yield* react(token, mention, reactionFor("starting"));
@@ -1313,18 +1350,14 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       if (!first) return;
       const mention = { ...clicker, text: request.text, userTeamId: request.teamId };
       yield* Effect.gen(function* () {
-        if (key.switchFrom !== null) {
-          const away = yield* switchAway(install, token, mention, link.userId, key.switchFrom);
-          if (!away) return;
-        }
-        yield* startFor(
-          install,
-          token,
-          mention,
-          link.userId,
-          ProjectId.make(projectId),
-          key.switchFrom,
-        );
+        // A switch checks the session it replaces first; it is stopped only once the new one
+        // exists, so a refusal on the way leaves the requester with the session they had.
+        const replacing =
+          key.switchFrom === null
+            ? null
+            : yield* switchable(install, token, mention, link.userId, key.switchFrom);
+        if (key.switchFrom !== null && replacing === null) return;
+        yield* startFor(install, token, mention, link.userId, ProjectId.make(projectId), replacing);
       }).pipe(reportingFailure(install, mention));
     });
 
