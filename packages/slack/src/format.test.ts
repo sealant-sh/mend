@@ -1,0 +1,256 @@
+import { describe, expect, it } from "vitest";
+
+import {
+  agentMessage,
+  AGENT_MESSAGE_LIMIT,
+  changeWords,
+  clipAgentMessage,
+  helpMessage,
+  linkPrompt,
+  linkUrl,
+  outsiderMessage,
+  pickProjectActionId,
+  projectPicker,
+  projectPickerBlockId,
+  reactionFor,
+  requestKeyOfPicker,
+  SLACK_ACTIONS,
+  sessionUrl,
+  statusLine,
+  statusMessage,
+  type StatusInput,
+} from "./format.ts";
+
+const status: StatusInput = {
+  project: "billing-api",
+  source: "thread-inference",
+  harness: "claude",
+  branch: "mend/flaky-login-test",
+  state: "running",
+  recorded: true,
+  change: null,
+  url: "https://mend.example/sessions/s1",
+};
+
+/** Every piece of copy a message carries, for the voice checks. */
+const copyOf = (message: { readonly text: string; readonly blocks: ReadonlyArray<unknown> }) =>
+  JSON.stringify(message);
+
+const VERDICTS = /\b(done|looks good|safe to merge|success(ful)?|approved|passed)\b/i;
+
+describe("the status message", () => {
+  it("reads project, why, harness, observed state and branch", () => {
+    expect(statusLine(status)).toBe(
+      "billing-api · from the thread · claude · running · mend/flaky-login-test",
+    );
+    expect(
+      statusLine({
+        ...status,
+        source: "channel-default",
+        state: "completed",
+        change: { files: 4, additions: 120, deletions: 30 },
+      }),
+    ).toBe(
+      "billing-api · channel default · claude · completed · observed · mend/flaky-login-test · 4 files · +120 −30",
+    );
+  });
+
+  it("claims observed only when a run stands behind the session", () => {
+    expect(statusLine({ ...status, state: "completed", recorded: false })).toContain(
+      "· completed ·",
+    );
+    expect(statusLine({ ...status, state: "failed", recorded: true })).toContain(
+      "failed · observed",
+    );
+    expect(statusLine({ ...status, state: "waiting" })).toContain("waiting for input");
+  });
+
+  it("counts one file in the singular", () => {
+    expect(changeWords({ files: 1, additions: 2, deletions: 0 })).toBe("1 file · +2 −0");
+  });
+
+  it("carries an Open in Mend button and escapes Slack's control characters", () => {
+    const message = statusMessage({ ...status, project: "a<b>&c" });
+    expect(message.text).toBe(
+      "a&lt;b&gt;&amp;c · from the thread · claude · running · mend/flaky-login-test",
+    );
+    expect(message.blocks).toEqual([
+      {
+        type: "section",
+        text: { type: "mrkdwn", text: message.text },
+        accessory: {
+          type: "button",
+          action_id: SLACK_ACTIONS.openSession,
+          text: { type: "plain_text", text: "Open in Mend", emoji: true },
+          url: "https://mend.example/sessions/s1",
+        },
+      },
+    ]);
+  });
+
+  it("builds links from the install's web origin", () => {
+    expect(sessionUrl("https://mend.example/", "s 1")).toBe("https://mend.example/sessions/s%201");
+    expect(linkUrl("http://100.64.0.1:3000", "msl_abc")).toBe(
+      "http://100.64.0.1:3000/slack/link/msl_abc",
+    );
+  });
+});
+
+describe("the reaction on the request", () => {
+  it("is an hourglass while the session runs, a check when it completes, an x otherwise", () => {
+    expect(reactionFor("starting")).toBe("hourglass_flowing_sand");
+    expect(reactionFor("running")).toBe("hourglass_flowing_sand");
+    expect(reactionFor("waiting")).toBe("hourglass_flowing_sand");
+    expect(reactionFor("completed")).toBe("white_check_mark");
+    expect(reactionFor("failed")).toBe("x");
+    expect(reactionFor("refused")).toBe("x");
+    expect(reactionFor("stopped")).toBeNull();
+  });
+});
+
+describe("agent messages", () => {
+  const url = "https://mend.example/sessions/s1";
+
+  it("posts a short message whole, as Markdown", () => {
+    expect(agentMessage("**Plan**\n1. read the test", url)).toEqual({
+      text: "**Plan**\n1. read the test",
+      blocks: [{ type: "markdown", text: "**Plan**\n1. read the test" }],
+    });
+  });
+
+  it("cuts a long message at 3,000 characters on a boundary, with a link to the rest", () => {
+    const words = Array.from({ length: 800 }, (_, index) => `word${index}`).join(" ");
+    const clipped = clipAgentMessage(words, url);
+    expect(clipped.clipped).toBe(true);
+    const [body, link] = clipped.text.split("\n\n… ");
+    expect(body?.length).toBeLessThanOrEqual(AGENT_MESSAGE_LIMIT);
+    expect(body?.length).toBeGreaterThan(AGENT_MESSAGE_LIMIT * 0.9);
+    expect(words.startsWith(`${body} `)).toBe(true);
+    expect(link).toBe(`[The full message is in Mend](${url})`);
+  });
+
+  it("closes a code fence the cut leaves open", () => {
+    const text = `Here is the diff:\n\`\`\`ts\n${"const a = 1;\n".repeat(400)}\`\`\``;
+    const clipped = clipAgentMessage(text, url);
+    const body = clipped.text.split("\n\n… ")[0] ?? "";
+    expect(body.match(/^```/gm)).toHaveLength(2);
+    expect(body.endsWith("\n```")).toBe(true);
+  });
+
+  it("never splits a surrogate pair", () => {
+    const text = `${"a".repeat(AGENT_MESSAGE_LIMIT - 1)}😀${"b".repeat(10)}`;
+    const body = clipAgentMessage(text, url).text.split("\n\n… ")[0] ?? "";
+    expect(body).toBe("a".repeat(AGENT_MESSAGE_LIMIT - 1));
+  });
+});
+
+describe("asking for a project", () => {
+  const all = Array.from({ length: 120 }, (_, index) => ({
+    id: `p${index}`,
+    name: `project-${index}`,
+  }));
+
+  it("offers buttons for the likeliest projects and Other… with the full list", () => {
+    const message = projectPicker({
+      requestKey: "C1:1700000100.000000",
+      reason: "none",
+      likeliest: all.slice(0, 7),
+      all,
+    });
+    const actions = message.blocks[1];
+    expect(actions?.type).toBe("actions");
+    if (actions?.type !== "actions") return;
+    expect(actions.block_id).toBe(projectPickerBlockId("C1:1700000100.000000"));
+    expect(requestKeyOfPicker(actions.block_id ?? "")).toBe("C1:1700000100.000000");
+    const buttons = actions.elements.filter((element) => element.type === "button");
+    expect(buttons.map((button) => [button.action_id, button.value])).toEqual(
+      [0, 1, 2, 3, 4].map((index) => [pickProjectActionId(index), `p${index}`]),
+    );
+    const select = actions.elements.find((element) => element.type === "static_select");
+    expect(select?.action_id).toBe(SLACK_ACTIONS.otherProject);
+    expect(select?.options).toHaveLength(100);
+    expect(select?.placeholder.text).toBe("Other…");
+  });
+
+  it("says why it asks", () => {
+    const likeliest = all.slice(0, 2);
+    expect(projectPicker({ requestKey: "k", reason: "several", likeliest, all }).text).toBe(
+      "More than one project matches. Pick one to start the session.",
+    );
+    expect(
+      projectPicker({ requestKey: "k", reason: "none", likeliest: [], all: [] }).blocks,
+    ).toHaveLength(1);
+    expect(requestKeyOfPicker("something_else")).toBeNull();
+  });
+
+  it("clips a long project name to fit a button", () => {
+    const long = { id: "p", name: "n".repeat(90) };
+    const message = projectPicker({
+      requestKey: "k",
+      reason: "none",
+      likeliest: [long],
+      all: [long],
+    });
+    const actions = message.blocks[1];
+    if (actions?.type !== "actions") throw new Error("expected actions");
+    const button = actions.elements[0];
+    expect(button?.type === "button" ? button.text.text : "").toHaveLength(75);
+  });
+});
+
+describe("replies only the person sees", () => {
+  it("lists the options and commands, escaped for mrkdwn", () => {
+    const message = helpMessage({ botName: "mend", harnesses: ["claude", "codex"] });
+    const text = message.blocks[0]?.type === "section" ? message.blocks[0].text.text : "";
+    expect(text).toContain("*@mend &lt;request&gt;* starts a session for you.");
+    expect(text).toContain("`with claude`, `with codex`");
+    expect(text).toContain("low, medium, high, xhigh, max");
+    for (const command of ["new", "list", "settings", "help"]) {
+      expect(text).toContain(`\`@mend ${command}`);
+    }
+  });
+
+  it("asks an unlinked person to link, with a button to the link page", () => {
+    const url = "https://mend.example/slack/link/msl_abc";
+    const message = linkPrompt(url);
+    expect(message.blocks[1]).toEqual({
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          action_id: SLACK_ACTIONS.linkAccount,
+          text: { type: "plain_text", text: "Link your Mend account", emoji: true },
+          url,
+          style: "primary",
+        },
+      ],
+    });
+    expect(copyOf(message)).toContain("The link works once, for 10 minutes.");
+  });
+
+  it("tells someone from another workspace who can use Mend", () => {
+    expect(outsiderMessage("Acme & Co").text).toBe(
+      "Only members of Acme &amp; Co can use Mend here.",
+    );
+  });
+
+  it("gives no verdicts", () => {
+    const messages = [
+      statusMessage({
+        ...status,
+        state: "completed",
+        change: { files: 2, additions: 1, deletions: 1 },
+      }),
+      projectPicker({
+        requestKey: "k",
+        reason: "none",
+        likeliest: [],
+        all: [{ id: "p", name: "p" }],
+      }),
+      helpMessage({ botName: "mend", harnesses: ["claude"] }),
+      linkPrompt("https://mend.example/slack/link/x"),
+      outsiderMessage("Acme"),
+    ];
+    for (const message of messages) expect(copyOf(message)).not.toMatch(VERDICTS);
+  });
+});

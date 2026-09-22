@@ -1,0 +1,24 @@
+{
+  "name": "@mend/slack",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Slack as pure functions: the app manifest, mention parsing, repository matching, thread context and message formatting (docs/adr/0006-slack.md)",
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "lint": "oxlint . --no-error-on-unmatched-pattern",
+    "test": "vitest run --passWithNoTests",
+    "typecheck": "tsgo -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@mend/domain": "workspace:*"
+  },
+  "devDependencies": {
+    "@mend/typescript": "workspace:*",
+    "@types/node": "catalog:",
+    "typescript": "catalog:",
+    "vitest": "catalog:"
+  }
+}
