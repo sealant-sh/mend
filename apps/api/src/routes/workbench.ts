@@ -105,15 +105,12 @@ import {
 } from "@mend/domain";
 import {
   DiffDigest,
-  PROMPTABLE_HARNESSES,
   ReviewCommentAnchor,
-  composeLaunchArgv,
   currentAgentProcess,
   isAgentProcessKind,
   type ReviewSlice,
   formatProjectEnvironmentIssue,
   parseDotenv,
-  resolveAutomation,
   resolveServiceEndpoints,
   routeDotenvName,
   validateProjectSecretValue,
@@ -163,14 +160,13 @@ import { Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
-import { Budgets } from "../budgets.ts";
 import { GithubIdentity } from "../github-identity.ts";
 import { HostEnvironment } from "../services/host-environment.ts";
 import {
   resolveWorkspaceEnvironment,
   saveResolvedWorkspaceEnvironment,
 } from "../services/workspace-environment.ts";
-import { budgetExceeded, requireSessionRoom } from "../session-budgets.ts";
+import { makeSessionStart } from "../session-start.ts";
 import { SessionSteering } from "../session-steering.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { classifyGhError, Gh, parseGithubRepo } from "./github.ts";
@@ -2103,37 +2099,16 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("create", ({ params, payload }) =>
       Effect.gen(function* () {
-        const project = yield* (yield* ProjectAccess).project(params.id);
-        const engine = yield* SessionEngine;
-        // Ownership is stamped at provision: launches apply the OWNER's dotfiles, and the
-        // auth middleware guarantees a real account here (the CLI's static token included).
+        // The auth middleware guarantees a real account here (the CLI's static token included).
         const caller = yield* CurrentUser;
-        // After authorization, before the worktree exists: a refusal leaves nothing behind.
-        yield* requireSessionRoom(caller.user.id, project.organizationId);
-        return yield* engine
-          .provision({
-            projectId: params.id,
-            harness: payload.harness,
-            label: payload.label,
-            name: payload.name,
-            base: payload.base,
-            ownerUserId: caller.user.id,
-          })
-          .pipe(
-            Effect.catchTag("ProjectNotFoundError", () =>
-              Effect.fail(new NotFound({ id: params.id })),
-            ),
-            Effect.catchTag("GitError", (error) =>
-              Effect.fail(new StoreFailure({ message: error.stderr })),
-            ),
-            Effect.catchTag("WorktreeBaseConflictError", (error) =>
-              Effect.fail(
-                new StoreFailure({
-                  message: `worktree "${error.name}" is based on ${error.baseRef ?? "its pinned commit"} — joining with base "${error.requestedBase}" would silently re-base it; drop the base to join as it stands`,
-                }),
-              ),
-            ),
-          );
+        const start = yield* makeSessionStart;
+        return yield* start.createAs(caller.user.id, params.id, {
+          harness: payload.harness,
+          label: payload.label,
+          name: payload.name,
+          base: payload.base,
+          origin: null,
+        });
       }),
     )
     .handle("detail", ({ params }) =>
@@ -2846,106 +2821,9 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
         const session = yield* steering.session(params.id);
-        const engine = yield* SessionEngine;
         const caller = yield* CurrentUser;
-        if (payload.mode === "protocol" && payload.argv !== undefined) {
-          return yield* new StoreFailure({
-            message: "Protocol launches use the supported harness adapter and cannot take argv.",
-          });
-        }
-        // Verbatim argv wins only for PTY mode. Protocol flags and turn settings are split by the
-        // server because model and effort ride on provider turns, not the long-lived process argv.
-        const argv = payload.argv ?? composeLaunchArgv(session.harness, payload);
-        const prompt = payload.prompt?.trim() ?? "";
-        const inlineNamePrompt =
-          payload.argv === undefined && prompt !== "" && PROMPTABLE_HARNESSES.has(session.harness)
-            ? prompt
-            : null;
-        // Session auto-naming: queue the namer at launch so a label appears in
-        // lists while the session still runs. A composed start knows the first
-        // prompt already, so the namer runs immediately on it; a bare launch
-        // keeps the delayed first attempt + spaced retries that cover "the
-        // user hasn't typed the first prompt yet". The worker re-checks
-        // label/setting and no-ops when either changed. Best-effort — a
-        // launch never fails because naming could not queue.
-        const queueAutoName = Effect.gen(function* () {
-          const projects = yield* ProjectsRepo;
-          const settingsRepo = yield* SettingsRepo;
-          const jobs = yield* JobRunner;
-          if (session.label !== null) return;
-          const project = yield* projects.byId(session.projectId);
-          const settings = yield* settingsRepo.get();
-          if (!resolveAutomation(project.autoName, settings.autoName)) return;
-          yield* jobs.enqueue({
-            name: "name-session",
-            payload:
-              inlineNamePrompt === null
-                ? { sessionId: params.id }
-                : { sessionId: params.id, firstUserTurn: inlineNamePrompt },
-            idempotencyKey: `name-session:${params.id}`,
-            startAfterSeconds: inlineNamePrompt === null ? 45 : 0,
-            retryDelaySeconds: 30,
-            retryLimit: 6,
-          });
-        }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.annotateLogs(Effect.logWarning("auto-name enqueue failed; continuing"), {
-              sessionId: params.id,
-              cause: String(cause),
-            }),
-          ),
-          Effect.asVoid,
-        );
-        // Inline naming has no transcript dependency and a first launch can
-        // take minutes — enqueue before the launch so the label lands while
-        // the workspace still provisions.
-        if (inlineNamePrompt !== null) yield* queueAutoName;
-        const launch =
-          payload.mode === "protocol"
-            ? engine.launchProtocol(params.id, payload, caller.user.id)
-            : engine.launch(params.id, argv);
-        // A launch holds a platform workspace build for minutes. One account starts a bounded
-        // number at once; a launch already under way is never touched.
-        const budgets = yield* Budgets;
-        const launched = yield* budgets.withLaunchSlot(
-          caller.user.id,
-          launch.pipe(
-            Effect.tap(() => (inlineNamePrompt === null ? queueAutoName : Effect.void)),
-            Effect.catchTag("SessionNotFoundError", () =>
-              Effect.fail(new NotFound({ id: params.id })),
-            ),
-            Effect.catchTag("LegacyBenchReadOnlyError", () =>
-              Effect.fail(new StoreFailure({ message: "Legacy bench sessions are review-only." })),
-            ),
-            Effect.catchTag("ProjectNotFoundError", () =>
-              Effect.fail(new NotFound({ id: params.id })),
-            ),
-            Effect.catchTag("SealantPlatformError", (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            ),
-            Effect.catchTag("ProtocolHarnessUnsupportedError", (error) =>
-              Effect.fail(new StoreFailure({ message: error.message })),
-            ),
-            Effect.catchTags({
-              HarnessStateNotFoundError: (error) =>
-                Effect.fail(new StoreFailure({ message: error.message })),
-              HarnessStateIOError: (error) =>
-                Effect.fail(new StoreFailure({ message: error.message })),
-              HarnessStateInvalidError: (error) =>
-                Effect.fail(new StoreFailure({ message: error.message })),
-              HarnessStateCommandError: (error) =>
-                Effect.fail(new StoreFailure({ message: error.message })),
-              SessionLaunchSetupError: (error) =>
-                Effect.fail(new StoreFailure({ message: error.message })),
-              DotfilesResolveError: (error) =>
-                Effect.fail(new StoreFailure({ message: error.message })),
-            }),
-          ),
-        );
-        if (launched === null) {
-          return yield* budgetExceeded("accountLaunchesInFlight", budgets.limits);
-        }
-        return launched;
+        const start = yield* makeSessionStart;
+        return yield* start.launchAs(caller.user.id, session, payload);
       }),
     )
     .handle("followUpPending", ({ params }) =>
