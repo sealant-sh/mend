@@ -61,6 +61,19 @@ export const SlackSessionState = Schema.Literals([
 export type SlackSessionState = typeof SlackSessionState.Type;
 
 /**
+ * A file on a mention, as Slack described it (`files:read`): enough to fetch it with the bot token
+ * when the mention runs, so a screenshot sent before linking still reaches the session.
+ */
+export const SlackPendingFile = Schema.Struct({
+  id: Schema.String,
+  name: Schema.NullOr(Schema.String),
+  mimetype: Schema.NullOr(Schema.String),
+  urlPrivate: Schema.NullOr(Schema.String),
+  size: Schema.NullOr(Schema.Number),
+});
+export type SlackPendingFile = typeof SlackPendingFile.Type;
+
+/**
  * The mention a link code carries ("A Slack user acts only once they have linked their account"):
  * enough to run the original request once the person has linked, so linking does not mean asking
  * twice. The thread is read again when the request runs.
@@ -77,6 +90,8 @@ export const SlackPendingMention = Schema.Struct({
    * before Mend recorded it, which the reporter treats as external.
    */
   external: Schema.optional(Schema.Boolean),
+  /** The files on the mention itself. Absent on codes minted before Mend recorded them. */
+  files: Schema.optional(Schema.Array(SlackPendingFile)),
 });
 export type SlackPendingMention = typeof SlackPendingMention.Type;
 

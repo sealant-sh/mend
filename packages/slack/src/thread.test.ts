@@ -115,6 +115,7 @@ describe("assembling a thread's context", () => {
       name: "login.png",
       mimetype: "image/png",
       urlPrivate: "https://files.slack.com/F1",
+      size: 2048,
     };
     const context = threadContext([message("1700000001.000000", "", { files: [shot] })], input);
     expect(context.messages[0]?.files).toEqual([shot]);
@@ -131,7 +132,9 @@ describe("rendering the opening turn", () => {
           displayName: "Bo",
         }),
         message("1700000003.000000", "", {
-          files: [{ id: "F1", name: "shot.png", mimetype: "image/png", urlPrivate: null }],
+          files: [
+            { id: "F1", name: "shot.png", mimetype: "image/png", urlPrivate: null, size: null },
+          ],
         }),
       ],
       input,

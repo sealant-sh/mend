@@ -231,6 +231,7 @@ const RepliesResult = Schema.Struct({
               name: OptionalString,
               mimetype: OptionalString,
               url_private: OptionalString,
+              size: Schema.optional(Schema.NullOr(Schema.Number)),
             }),
           ),
         ),
@@ -437,6 +438,7 @@ export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"]
                 name: present(file.name),
                 mimetype: present(file.mimetype),
                 urlPrivate: present(file.url_private),
+                size: file.size ?? null,
               })),
             });
           }

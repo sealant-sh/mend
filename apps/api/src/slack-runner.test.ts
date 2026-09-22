@@ -1,3 +1,7 @@
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+
 import {
   BudgetExceeded,
   ConnectedAccount,
@@ -59,11 +63,12 @@ import {
   channelSettingsBlockId,
   projectPickerBlockId,
   SLACK_ACTIONS,
+  type SlackThreadFile,
   type SlackThreadMessage,
 } from "@mend/slack";
 import { makeFakeSlack, type FakeSlackWorkspace } from "@mend/slack/client";
 import type { SlackEnvelope } from "@mend/slack/socket";
-import { SecretCipher, Store } from "@mend/store";
+import { harnessHomePathOf, SecretCipher, Store } from "@mend/store";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -244,6 +249,11 @@ interface WorldOptions {
   readonly inferencesPerHour?: number;
   /** The turns every session has, for "Switch project". */
   readonly turns?: ReadonlyArray<AgentTurnStatus>;
+  /** Where the projects' stores are, so pasted images can be written; `/store` unless said. */
+  readonly storeRoot?: string;
+  /** More threads for the fake Slack, and the bytes of the files in them, by URL. */
+  readonly threads?: Readonly<Record<string, ReadonlyArray<SlackThreadMessage>>>;
+  readonly files?: Readonly<Record<string, Uint8Array>>;
 }
 
 const EARLIER = SessionId.make("session-earlier");
@@ -318,7 +328,13 @@ const inferred = (
 const world = (options: WorldOptions = {}) => {
   const effects: Array<string> = [];
   const note = (entry: string) => Effect.sync(() => void effects.push(entry));
-  const slack = makeFakeSlack([slackWorkspace]);
+  const slack = makeFakeSlack([
+    {
+      ...slackWorkspace,
+      threads: { ...threads, ...options.threads },
+      ...(options.files === undefined ? {} : { files: options.files }),
+    },
+  ]);
   const claimed = new Set<string>();
   const links: Array<SlackLink> = [
     ...(options.unlinked === true
@@ -359,7 +375,12 @@ const world = (options: WorldOptions = {}) => {
   const statusTs = new Map<string, string>();
   const sessionsCreated = new Map<string, Session>();
   let creates = 0;
-  const visible = [billing, web, notes];
+  const storeRoot = options.storeRoot;
+  const visible = [billing, web, notes].map((candidate) =>
+    storeRoot === undefined
+      ? candidate
+      : new Project({ ...candidate, storePath: path.join(storeRoot, candidate.id) }),
+  );
   /** Alice sees every project; a linked Bob sees the shared ones. */
   const visibleTo = (userId: string) =>
     userId === "alice"
@@ -627,7 +648,7 @@ const world = (options: WorldOptions = {}) => {
     }),
     Layer.mock(Store, {
       listTopLevel: (dir) =>
-        dir === billing.storePath
+        dir.endsWith(billing.id)
           ? Effect.succeed({ files: ["README.md", "ledger/", "invoices/"], truncated: false })
           : Effect.succeed({ files: ["app/", "package.json"], truncated: false }),
     }),
@@ -1937,6 +1958,276 @@ describe("the Slack runner, after a link is confirmed", () => {
 
     expect(stale.slack.calls).toEqual([]);
     expect(relinked.slack.calls).toEqual([]);
+  });
+});
+
+/** Screenshots in a thread: the files, their bytes, and the store they are pasted into. */
+const SHOTS_THREAD = "1700000400.000100";
+const SHOTS_MENTION = "1700000400.000300";
+const MB = 1024 * 1024;
+const png = (bytes = 64) => {
+  const data = new Uint8Array(bytes);
+  data.set([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+  return data;
+};
+const url = (id: string) => `https://files.slack.com/files-pri/T-acme-${id}/${id}`;
+const shot = (
+  id: string,
+  name: string,
+  overrides: Partial<SlackThreadFile> = {},
+): SlackThreadFile => ({
+  id,
+  name,
+  mimetype: "image/png",
+  urlPrivate: url(id),
+  size: 64,
+  ...overrides,
+});
+/** A mention's files as the event carries them, in Slack's own field names. */
+const onTheWire = (files: ReadonlyArray<SlackThreadFile>) =>
+  files.map((file) => ({
+    id: file.id,
+    name: file.name,
+    mimetype: file.mimetype,
+    url_private: file.urlPrivate,
+    size: file.size,
+  }));
+
+const withStore = async <A>(body: (storeRoot: string) => Promise<A>) => {
+  const storeRoot = await fs.mkdtemp(path.join(os.tmpdir(), "mend-slack-shots-"));
+  try {
+    return await body(storeRoot);
+  } finally {
+    await fs.rm(storeRoot, { recursive: true, force: true });
+  }
+};
+const pasted = async (storeRoot: string, projectId: string, sessionId: string) => {
+  const directory = path.join(
+    harnessHomePathOf(path.join(storeRoot, projectId), sessionId),
+    "paste",
+  );
+  const names = await fs.readdir(directory).catch(() => []);
+  return Promise.all(
+    names.toSorted().map(async (name) => ({
+      name,
+      bytes: (await fs.readFile(path.join(directory, name))).byteLength,
+    })),
+  );
+};
+
+describe("the Slack runner, attaching screenshots from the thread", () => {
+  it("attaches the request's and the thread's images to the opening turn, and names what it skipped", async () => {
+    await withStore(async (storeRoot) => {
+      const requestFiles = [
+        shot("F-alice", "layout.png"),
+        shot("F-heic", "photo.heic", { mimetype: "image/heic" }),
+        shot("F-huge", "huge.png", { size: 9 * MB }),
+        shot("F-fake", "fake.png"),
+      ];
+      const w = world({
+        storeRoot,
+        threads: {
+          [`C-general:${SHOTS_THREAD}`]: [
+            {
+              ...message(SHOTS_THREAD, "U-bob", "the login page renders like this"),
+              files: [shot("F-bob", "bob.png", { size: 128 })],
+            },
+            {
+              ...message(SHOTS_MENTION, "U-alice", "<@U-bot> project=billing-api fix the layout"),
+              files: requestFiles,
+            },
+          ],
+        },
+        files: {
+          [url("F-alice")]: png(),
+          [url("F-bob")]: png(128),
+          [url("F-fake")]: new TextEncoder().encode("<html>sign in</html>"),
+        },
+      });
+      await w.deliver(
+        w.mention("Ev1", {
+          user: "U-alice",
+          text: "<@U-bot> project=billing-api fix the layout",
+          ts: SHOTS_MENTION,
+          thread_ts: SHOTS_THREAD,
+          files: onTheWire(requestFiles),
+        }),
+      );
+
+      // Both images are pasted into the new session's harness home before it launches.
+      const stored = await pasted(storeRoot, billing.id, "session-1");
+      expect(stored.every((file) => file.name.endsWith(".png"))).toBe(true);
+      expect(stored.map((file) => file.bytes).toSorted((a, b) => a - b)).toEqual([64, 128]);
+      const [launch] = w.launches;
+      const prompt = launch?.prompt ?? "";
+      expect(prompt).toMatch(
+        /^fix the layout\n\nAttached to the request:\n\[image: layout\.png · \/workspace\/harness-home\/paste\/[\w-]+\.png\]\n/,
+      );
+      expect(prompt).toContain(
+        "[image: photo.heic · not attached · not a PNG, JPEG, GIF or WebP image]",
+      );
+      expect(prompt).toContain("[image: huge.png · not attached · over the 8 MB an image may be]");
+      expect(prompt).toContain(
+        "[image: fake.png · not attached · not a PNG, JPEG, GIF or WebP image]",
+      );
+      expect(prompt).toContain("Open a path to see the image.");
+      expect(prompt).toMatch(
+        /Bob wrote:\n> the login page renders like this\n> \[image: bob\.png · \/workspace\/harness-home\/paste\/[\w-]+\.png\]/,
+      );
+      expect(posts(w, "postEphemeral")).toMatchObject([
+        {
+          user: "U-alice",
+          threadTs: SHOTS_THREAD,
+          text: "not attached · photo.heic · not a PNG, JPEG, GIF or WebP image; huge.png · over the 8 MB an image may be; fake.png · not a PNG, JPEG, GIF or WebP image",
+        },
+      ]);
+    });
+  });
+
+  it("stops at the turn's image count and bytes, newest first after the request's own", async () => {
+    await withStore(async (storeRoot) => {
+      // Eleven images over two messages, each under the paste's limit, most with no size said.
+      const older = Array.from({ length: 6 }, (_, index) =>
+        shot(`F-old${index}`, `old${index}.png`, { size: null }),
+      );
+      const newer = Array.from({ length: 5 }, (_, index) =>
+        shot(`F-new${index}`, `new${index}.png`, { size: null }),
+      );
+      const files = Object.fromEntries(
+        [...older, ...newer].map((file) => [file.urlPrivate, png(1024)]),
+      );
+      const w = world({
+        storeRoot,
+        threads: {
+          [`C-general:${SHOTS_THREAD}`]: [
+            { ...message(SHOTS_THREAD, "U-bob", "before"), files: older },
+            { ...message("1700000400.000200", "U-bob", "after"), files: newer },
+            message(SHOTS_MENTION, "U-alice", "<@U-bot> project=billing-api compare them"),
+          ],
+        },
+        files,
+      });
+      await w.deliver(
+        w.mention("Ev1", {
+          user: "U-alice",
+          text: "<@U-bot> project=billing-api compare them",
+          ts: SHOTS_MENTION,
+          thread_ts: SHOTS_THREAD,
+        }),
+      );
+
+      expect(await pasted(storeRoot, billing.id, "session-1")).toHaveLength(10);
+      const prompt = w.launches[0]?.prompt ?? "";
+      // The newer message's five come first, then the older one's, in the order it lists them.
+      for (const file of newer) expect(prompt).toContain(`[image: ${file.name} · /workspace/`);
+      expect(prompt).toContain(
+        "[image: old5.png · not attached · past the 10 images one turn carries]",
+      );
+      expect(posts(w, "postEphemeral")[0]?.text).toBe(
+        "not attached · old5.png · past the 10 images one turn carries",
+      );
+    });
+  });
+
+  it("sends a follow-up's images with its turn, and a follow-up of images alone", async () => {
+    await withStore(async (storeRoot) => {
+      const w = world({
+        storeRoot,
+        threadSession: { threadTs: RETRY_THREAD, projectId: web.id, owner: "alice" },
+        files: { [url("F-next")]: png() },
+      });
+      await w.deliver(
+        w.mention("Ev9", {
+          user: "U-alice",
+          text: "<@U-bot>",
+          ts: "1700000200.000900",
+          thread_ts: RETRY_THREAD,
+          files: onTheWire([shot("F-next", "next.png")]),
+        }),
+      );
+
+      expect(await pasted(storeRoot, web.id, EARLIER)).toMatchObject([{ bytes: 64 }]);
+      const turns = w.effects.filter((entry) => entry.startsWith("engine.submitTurn:"));
+      expect(turns).toHaveLength(1);
+      expect(turns[0]).toMatch(
+        /^engine\.submitTurn:session-earlier:alice:The request is in the files attached to it\.\n\nAttached to the request:\n\[image: next\.png · \/workspace\/harness-home\/paste\/[\w-]+\.png\]/,
+      );
+      // Everything was attached: nothing to tell the requester.
+      expect(w.slack.calls).toEqual([]);
+    });
+  });
+
+  it("answers the agent's question with the words, and tells the owner the images stayed behind", async () => {
+    const w = world({
+      threadSession: {
+        threadTs: RETRY_THREAD,
+        projectId: web.id,
+        owner: "alice",
+        questions: [
+          {
+            id: "q-retries",
+            header: null,
+            question: "Keep the retry limit?",
+            options: [{ label: "Keep 3", description: null }],
+            multiSelect: false,
+          },
+        ],
+      },
+    });
+    await w.deliver(
+      w.mention("Ev9", {
+        user: "U-alice",
+        text: "<@U-bot> keep 3",
+        ts: "1700000200.000900",
+        thread_ts: RETRY_THREAD,
+        files: onTheWire([shot("F-next", "next.png")]),
+      }),
+    );
+
+    expect(w.effects).toContain('engine.respondRequest:request-1:alice:{"q-retries":["Keep 3"]}');
+    expect(w.effects.some((entry) => entry.startsWith("engine.submitTurn"))).toBe(false);
+    expect(posts(w, "postEphemeral").map((post) => post.text)).toEqual([
+      "not attached · the images · an answer to the agent's question carries text only · mention Mend again with them once it has the answer",
+    ]);
+  });
+
+  it("keeps a mention's images through a link, and attaches them once the person has linked", async () => {
+    await withStore(async (storeRoot) => {
+      const files = [shot("F-first", "first.png")];
+      const unlinked = world();
+      await unlinked.deliver(
+        unlinked.mention("Ev1", {
+          user: "U-bob",
+          text: "<@U-bot> fix it",
+          ts: "1700000200.000200",
+          thread_ts: "1700000200.000100",
+          files: onTheWire(files),
+        }),
+      );
+      expect(unlinked.minted[0]?.request.files).toEqual(files);
+
+      const w = world({ storeRoot, files: { [url("F-first")]: png() } });
+      await w.run((runner) =>
+        runner.runLinked({
+          organizationId: ACME,
+          teamId: "T-acme",
+          slackUserId: "U-alice",
+          userId: "alice",
+          request: {
+            channelId: "C-general",
+            messageTs: "1700000500.000100",
+            threadTs: null,
+            text: "<@U-bot> project=billing-api fix what the screenshot shows",
+            files,
+          },
+          linkedAt: NOW.toISOString(),
+        }),
+      );
+      expect(await pasted(storeRoot, billing.id, "session-1")).toHaveLength(1);
+      expect(w.launches[0]?.prompt).toMatch(
+        /^fix what the screenshot shows\n\nAttached to the request:\n\[image: first\.png · \/workspace\//,
+      );
+    });
   });
 });
 

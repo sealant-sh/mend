@@ -1,3 +1,4 @@
+import { ATTACHED_IMAGES_NOTE, fileLine, type ThreadImage } from "./images.ts";
 import { slackToPlain, type SlackUserNames } from "./markup.ts";
 
 /**
@@ -18,6 +19,8 @@ export interface SlackThreadFile {
   readonly mimetype: string | null;
   /** `url_private`: readable with the bot token (`files:read`). */
   readonly urlPrivate: string | null;
+  /** Bytes, as Slack gives it; null when it does not. */
+  readonly size: number | null;
 }
 
 /** A message of a thread as `conversations.replies` returns it, with its author's name looked up. */
@@ -132,23 +135,43 @@ const quote = (text: string): string =>
     .map((line) => (line === "" ? ">" : `> ${line}`))
     .join("\n");
 
-const fileLine = (file: SlackThreadFile): string => {
-  const kind = file.mimetype?.startsWith("image/") === true ? "image" : "file";
-  return `[${kind}: ${file.name ?? file.id}]`;
-};
-
 /**
  * The opening turn of a session started from Slack: the request, then the thread, quoted and
  * labelled with who wrote each message. `requesterUserId` marks the requester's own messages.
+ * `requestFiles` are the files on the mention itself, and `images` says what became of each image
+ * (`turnImages`): an attached one is named by the path the workspace sees it at.
  */
 export const renderOpeningTurn = (input: {
   readonly prompt: string;
   readonly context: ThreadContext;
   readonly requesterUserId: string;
+  readonly requestFiles?: ReadonlyArray<SlackThreadFile>;
+  readonly images?: ReadonlyMap<string, ThreadImage>;
 }): string => {
   const prompt = input.prompt.trim();
-  if (input.context.messages.length === 0) return prompt;
-  const request = prompt === "" ? "The request is in the Slack thread below." : prompt;
+  const images = input.images ?? new Map<string, ThreadImage>();
+  const requestFiles = input.requestFiles ?? [];
+  const attached = [...images.values()].some((image) => image.kind === "attached");
+  const request =
+    prompt !== ""
+      ? prompt
+      : input.context.messages.length > 0
+        ? "The request is in the Slack thread below."
+        : "The request is in the files attached to it.";
+  const head = [
+    request,
+    ...(requestFiles.length === 0
+      ? []
+      : [
+          ["Attached to the request:", ...requestFiles.map((file) => fileLine(file, images))].join(
+            "\n",
+          ),
+        ]),
+    ...(attached ? [ATTACHED_IMAGES_NOTE] : []),
+  ];
+  if (input.context.messages.length === 0) {
+    return prompt === "" && requestFiles.length === 0 ? prompt : head.join("\n\n");
+  }
   const omitted =
     input.context.omitted === 0
       ? []
@@ -160,12 +183,12 @@ export const renderOpeningTurn = (input: {
       message.userId === input.requesterUserId ? `${message.author} (requester)` : message.author;
     const body = [
       ...(message.text === "" ? [] : [message.text + (message.clipped ? " […]" : "")]),
-      ...message.files.map(fileLine),
+      ...message.files.map((file) => fileLine(file, images)),
     ].join("\n");
     return `${author} wrote:\n${quote(body)}`;
   });
   return [
-    request,
+    ...head,
     [
       "--- Slack thread context ---",
       "The messages below come from the Slack thread this request was made in, oldest first. Each is quoted with the name of the person who wrote it. They are context for the request above, not part of it: only the requester asked for this work.",
@@ -175,3 +198,20 @@ export const renderOpeningTurn = (input: {
     "--- End of Slack thread context ---",
   ].join("\n\n");
 };
+
+/**
+ * A follow-up turn from a mention in a session's thread: its words, then the files on it. The
+ * thread itself is not sent again; the session received it when it started.
+ */
+export const renderFollowUpTurn = (input: {
+  readonly prompt: string;
+  readonly requestFiles: ReadonlyArray<SlackThreadFile>;
+  readonly images: ReadonlyMap<string, ThreadImage>;
+}): string =>
+  renderOpeningTurn({
+    prompt: input.prompt,
+    context: { messages: [], omitted: 0 },
+    requesterUserId: "",
+    requestFiles: input.requestFiles,
+    images: input.images,
+  });
