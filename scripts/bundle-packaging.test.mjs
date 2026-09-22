@@ -119,7 +119,7 @@ test("named-volume lowering and persistence paths stay aligned", () => {
   assert.equal(compose.volumes["mend-registry"], undefined);
 });
 
-test("the bundle pins published Sealant 0.36.1 artifacts and its official migrator", async () => {
+test("the bundle pins published Sealant 0.37.0 artifacts and its official migrator", async () => {
   const [dockerfile, supervisor, contract, contractFixture, composeTemplate, composeFixture] =
     await Promise.all([
       readFile(path.join(root, "Dockerfile"), "utf8"),
@@ -131,15 +131,15 @@ test("the bundle pins published Sealant 0.36.1 artifacts and its official migrat
       readFile(path.join(composeDirectory, "compose.v2.yaml"), "utf8"),
       readFile(path.join(composeFixtureDirectory, "compose.v2.yaml"), "utf8"),
     ]);
-  assert.equal(contract.sealantVersion, "0.36.1");
+  assert.equal(contract.sealantVersion, "0.37.0");
   assert.equal(
     contract.bootstrap.sealantMigrations,
-    "node /opt/sealant/api/dist/migrate.js from sealant-api 0.36.1",
+    "node /opt/sealant/api/dist/migrate.js from sealant-api 0.37.0",
   );
-  assert.match(contract.captureStore.workspaceNetwork, /Sealant 0\.36\.1 runtime/);
+  assert.match(contract.captureStore.workspaceNetwork, /Sealant 0\.37\.0 runtime/);
   assert.deepEqual(contractFixture, contract);
   assert.equal(composeFixture, composeTemplate);
-  assert.match(composeTemplate, /Sealant 0\.36\.1 API/);
+  assert.match(composeTemplate, /Sealant 0\.37\.0 API/);
   assert.equal(contract.schemaVersion, 2);
   assert.deepEqual(contract.runtimeContainers, ["mend", "postgres", "garage"]);
   assert.equal(contract.captureStore.image, "dxflrs/garage:v2.4.1");
@@ -147,18 +147,18 @@ test("the bundle pins published Sealant 0.36.1 artifacts and its official migrat
   assert.match(dockerfile, /MEND_VERSION=\$\{MEND_VERSION\}/);
   assert.match(
     dockerfile,
-    /^FROM ghcr\.io\/sealant-sh\/sealant-api@sha256:c5c4576ac57e27bdf6cb3fedc4a05c11c205bf86a0a87b5b30aa845ecace3d44 AS sealant-api$/m,
+    /^FROM ghcr\.io\/sealant-sh\/sealant-api@sha256:5d00ba6812a991ab144f918043800b6391068a9ea9cca9fb756b8f6b1da96563 AS sealant-api$/m,
   );
   assert.match(
     dockerfile,
-    /^FROM ghcr\.io\/sealant-sh\/sealant-worker@sha256:a6884b0e2041aa8cbd2b2b5aa2241206d448033c4774c0f7d18b06c7615a9bd3 AS sealant-worker$/m,
+    /^FROM ghcr\.io\/sealant-sh\/sealant-worker@sha256:f23dee0dfee408af94e4dd47fa0496d4056e86c363e5f87359c3dcc011d33047 AS sealant-worker$/m,
   );
   assert.match(
     dockerfile,
-    /^FROM ghcr\.io\/sealant-sh\/sealant-ssh-gateway@sha256:b8600066db79322b35d79fe1b99374f35d2082c85ebcac33550055da78cb1fd8 AS sealant-ssh-gateway$/m,
+    /^FROM ghcr\.io\/sealant-sh\/sealant-ssh-gateway@sha256:036adbdbd5c1516d574f50db3af129905bf4644c9248cc8b20719822febf42bc AS sealant-ssh-gateway$/m,
   );
-  assert.match(dockerfile, /dev\.sealant\.mend\.sealant-version="0\.36\.1"/);
-  assert.match(supervisor, /applying Sealant 0\.36\.1 migrations/);
+  assert.match(dockerfile, /dev\.sealant\.mend\.sealant-version="0\.37\.0"/);
+  assert.match(supervisor, /applying Sealant 0\.37\.0 migrations/);
   assert.doesNotMatch(
     [dockerfile, supervisor, JSON.stringify(contract), composeTemplate].join("\n"),
     /0\.32\.0/,
