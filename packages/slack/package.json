@@ -6,7 +6,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./client": "./src/client.ts"
+    "./client": "./src/client.ts",
+    "./socket": "./src/socket.ts"
   },
   "scripts": {
     "lint": "oxlint . --no-error-on-unmatched-pattern",
@@ -15,8 +16,10 @@
   },
   "dependencies": {
     "@mend/domain": "workspace:*",
+    "@slack/socket-mode": "catalog:",
     "@slack/web-api": "catalog:",
-    "effect": "catalog:"
+    "effect": "catalog:",
+    "undici": "catalog:"
   },
   "devDependencies": {
     "@mend/typescript": "workspace:*",

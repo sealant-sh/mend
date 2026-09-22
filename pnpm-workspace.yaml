@@ -23,6 +23,7 @@ catalog:
   "@pierre/diffs": ^1.2.12
   "@sealant/api-contracts": 0.37.0
   "@sealant/sdk": 0.37.0
+  "@slack/socket-mode": ^3.0.1
   "@slack/web-api": ^8.1.1
   "@tailwindcss/vite": ^4.1.18
   "@tanstack/devtools-vite": 0.8.0
@@ -58,6 +59,7 @@ catalog:
   tailwindcss: ^4.1.18
   tsx: ^4.23.12
   typescript: ^5.7.2
+  undici: ^7.28.0
   vite: ^7.3.1
   vite-tsconfig-paths: ^5.1.4
   vitest: ^3.0.5

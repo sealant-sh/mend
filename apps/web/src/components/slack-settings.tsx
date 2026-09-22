@@ -128,8 +128,9 @@ function ConnectForm({
       {replacing === null ? (
         <p className="text-[13px] leading-relaxed text-muted-foreground">
           Each organization runs its own Slack app, made from this manifest. It asks for Socket
-          Mode, the <span className="font-mono text-[12px]">app_mention</span> event and ten bot
-          scopes, and names no URL.
+          Mode, the <span className="font-mono text-[12px]">app_mention</span> and{" "}
+          <span className="font-mono text-[12px]">message.im</span> events and ten bot scopes, and
+          names no URL.
         </p>
       ) : (
         <p className="text-[13px] leading-relaxed text-muted-foreground">
