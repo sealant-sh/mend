@@ -7,6 +7,7 @@ import {
   PushDevicesRepo,
   SessionControlEventsRepo,
   SessionsRepo,
+  SlackLinksRepo,
   UserEvents,
   UsersRepo,
 } from "@mend/db";
@@ -95,6 +96,20 @@ const removalWorld = (options: { readonly lastOwner?: boolean } = {}) => {
               }),
             ]),
         }),
+        Layer.mock(SlackLinksRepo, {
+          listForUser: (userId) =>
+            Effect.succeed([
+              {
+                organizationId: ACME,
+                teamId: "T-acme",
+                slackUserId: `U-${userId}`,
+                userId,
+                createdAt: new Date(),
+              },
+            ]),
+          unlink: (teamId, slackUserId) =>
+            note(`slackLinks.unlink:${teamId}:${slackUserId}`).pipe(Effect.as(null)),
+        }),
         Layer.mock(SessionEngine, {
           stop: (sessionId) => note(`engine.stop:${sessionId}`),
           reconcileHotSessions: (projectId) =>
@@ -122,7 +137,7 @@ const remove = (world: ReturnType<typeof removalWorld>) =>
   );
 
 describe("member removal (docs/adr/0003)", () => {
-  it("revokes before it answers, then stops the account's sessions and drains the pools", async () => {
+  it("revokes and unlinks Slack before it answers, then stops the account's sessions and drains the pools", async () => {
     const world = removalWorld();
     const exit = await remove(world);
     expect(Exit.isSuccess(exit)).toBe(true);
@@ -135,6 +150,8 @@ describe("member removal (docs/adr/0003)", () => {
       "devices.revokeAllForUser:carol",
       "pushDevices.removeAllForUser:carol",
       "audit.record:member.removed:carol",
+      "slackLinks.unlink:T-acme:U-carol",
+      "audit.record:slack.link_removed:carol",
       "userEvents.changed:carol:access",
       "connections.closeForUser:carol",
       "engine.stop:session-carol",

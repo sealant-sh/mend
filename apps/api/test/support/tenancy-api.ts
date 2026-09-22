@@ -25,6 +25,9 @@ import {
   ServiceObservationsRepo,
   SessionControlEventsRepo,
   SettingsRepo,
+  SlackDefaultsRepo,
+  SlackInstallsRepo,
+  SlackLinksRepo,
   UserDotfilesRepo,
   UserEvents,
   UserGitAccessRepo,
@@ -37,6 +40,7 @@ import { JobRunner } from "@mend/jobs";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { SealantClient, SealantClients } from "@mend/sealant";
 import { CaptureRuntime, FollowUpDelivery, SessionEngine, WorktreeReads } from "@mend/sessions";
+import { SlackApi } from "@mend/slack/client";
 import {
   AgentBridge,
   DeploymentConfig,
@@ -219,6 +223,16 @@ export const createTenancyApi = async (
     Layer.mergeAll(
       recording(Store, "store", {}, calls),
       recording(Gh, "gh", {}, calls),
+      recording(SlackApi, "slackApi", {}, calls),
+      recording(SlackDefaultsRepo, "slackDefaults", {}, calls),
+      recording(SlackInstallsRepo, "slackInstalls", {}, calls),
+      recording(
+        SlackLinksRepo,
+        "slackLinks",
+        // Removing a member reads their links first; nobody in this world has one.
+        { listForUser: () => Effect.succeed([]) },
+        calls,
+      ),
       recording(HostEnvironment, "hostEnvironment", {}, calls),
       Layer.succeed(NetworkConfig, network),
       Layer.succeed(DeploymentConfig, {

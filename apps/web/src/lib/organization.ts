@@ -10,6 +10,14 @@ import type { AuditEntryDto, InvitationPreviewDto } from "./api.ts";
 const text = (value: string | number | boolean | null | undefined): string | null =>
   typeof value === "string" ? value : null;
 
+/** Slack settings by the words Settings → Slack uses for them. */
+const SLACK_SETTING_WORDS: Readonly<Record<string, string>> = {
+  defaultHarness: "default harness",
+  showAgentMessages: "show agent messages",
+  showDiffs: "show diffs",
+  externalChannels: "external channels",
+};
+
 /**
  * One audit event as a plain sentence, without the actor or time (the row shows those). Member
  * events name the account the server resolved, removed members included.
@@ -55,6 +63,26 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       return `made ${subject} an owner, as the operator`;
     case "recovery.password_reset_issued":
       return `issued a password reset link for ${subject}, as the operator`;
+    case "slack.installed":
+      return `connected the Slack workspace ${text(event.data["teamName"]) ?? event.subjectId}`;
+    case "slack.replaced":
+      return event.data["linksKept"] === false
+        ? `connected the Slack workspace ${text(event.data["teamName"]) ?? event.subjectId} in place of ${text(event.data["previousTeamId"]) ?? "the previous one"}, dropping its links`
+        : `replaced the Slack tokens for ${text(event.data["teamName"]) ?? event.subjectId}`;
+    case "slack.removed":
+      return `removed the Slack app from ${text(event.data["teamName"]) ?? event.subjectId}`;
+    case "slack.settings_changed": {
+      const changed = Object.entries(event.data)
+        .map(([key, value]) => `${SLACK_SETTING_WORDS[key] ?? key} ${String(value)}`)
+        .join(", ");
+      return changed === "" ? "changed the Slack settings" : `set Slack ${changed}`;
+    }
+    case "slack.link_created":
+      return `linked Slack user ${text(event.data["slackUserId"]) ?? "?"} to ${subject}`;
+    case "slack.link_removed":
+      return event.data["memberRemoved"] === true
+        ? `removed the Slack link of ${subject} with their membership`
+        : `removed the Slack link of ${subject} (${text(event.data["slackUserId"]) ?? "?"})`;
   }
 };
 

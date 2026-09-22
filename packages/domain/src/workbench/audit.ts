@@ -27,6 +27,13 @@ export const AuditAction = Schema.Literals([
   "organization.renamed",
   "recovery.owner_granted",
   "recovery.password_reset_issued",
+  // docs/adr/0006-slack.md, "Audit".
+  "slack.installed",
+  "slack.replaced",
+  "slack.removed",
+  "slack.settings_changed",
+  "slack.link_created",
+  "slack.link_removed",
 ]);
 export type AuditAction = typeof AuditAction.Type;
 
@@ -44,7 +51,10 @@ export class AuditEvent extends Schema.Class<AuditEvent>("AuditEvent")({
   /** The account that acted. */
   actorUserId: Schema.String,
   action: AuditAction,
-  /** What the action touched: `member`, `invitation`, `project`, `session`, `folder` or `reference`. */
+  /**
+   * What the action touched: `member`, `invitation`, `project`, `session`, `folder`, `reference`
+   * or `slack` (the organization's Slack app).
+   */
   subjectType: Schema.String,
   subjectId: Schema.String,
   data: AuditData,

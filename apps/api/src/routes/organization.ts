@@ -71,7 +71,7 @@ export const auditPage = (
 };
 
 /** The caller's membership, or 404: an account in no organization sees none. */
-const membership = Effect.gen(function* () {
+export const membership = Effect.gen(function* () {
   const caller = yield* CurrentUser;
   const organizations = yield* OrganizationsRepo;
   const found = yield* organizations.membershipOf(caller.user.id);
@@ -88,7 +88,7 @@ const memberOf = (organization: OrganizationMembership, userId: string) =>
   });
 
 /** The caller's membership when they own the organization; members get the same 404. */
-const ownership = (id: string) =>
+export const ownership = (id: string) =>
   Effect.gen(function* () {
     const found: OrganizationMembership = yield* membership;
     if (found.role !== "owner") return yield* new NotFound({ id });

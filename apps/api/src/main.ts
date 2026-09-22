@@ -51,6 +51,11 @@ import {
   ServiceObservationsRepoLive,
   ServicesRepoLive,
   SkillsRepoLive,
+  SlackDefaultsRepoLive,
+  SlackEventClaimsRepoLive,
+  SlackInstallsRepoLive,
+  SlackLinksRepoLive,
+  SlackThreadsRepoLive,
   WorktreeChangesRepoLive,
   WorktreesRepoLive,
   SessionGitOpsRepoLive,
@@ -127,6 +132,7 @@ import {
   WorktreeReadsCapturedLive,
   WorktreeReadsColocatedLive,
 } from "@mend/sessions";
+import { SlackApiLive } from "@mend/slack/client";
 import {
   type AgentBridge,
   AgentBridgeLive,
@@ -211,6 +217,11 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   ProjectServiceRecipesRepoLive,
   SettingsRepoLive,
   SkillsRepoLive,
+  SlackInstallsRepoLive,
+  SlackLinksRepoLive,
+  SlackDefaultsRepoLive,
+  SlackThreadsRepoLive,
+  SlackEventClaimsRepoLive,
   InferenceCallsRepoLive,
   FollowUpsRepoLive,
   ReviewCommentsRepoLive,
@@ -653,7 +664,9 @@ const MainLive = Layer.unwrap(
       Layer.provide(Layer.merge(DotfilesStoreLayer, FolderStoreLayer)),
       // The machine's Mend git key (docs/GIT-ACCESS.md — the mend-key auth mode).
       Layer.provide(KeysLive),
-      Layer.provide(SecretCipherLayer),
+      // Sealed secrets, and Slack's Web API that the Slack routes check tokens against and that
+      // the Slack runner and reporter talk through (docs/adr/0006-slack.md).
+      Layer.provide(Layer.merge(SecretCipherLayer, SlackApiLive)),
       // The ssh-agent bridge (decision 2) — signer presence + bridged git ops.
       Layer.provide(BridgeLive),
       // The host's GitHub CLI, behind the api's Gh service (adoption discovery).

@@ -44,6 +44,30 @@ describe("describeAudit", () => {
   });
 });
 
+describe("describeAudit for Slack (docs/adr/0006)", () => {
+  it("names the workspace, what changed, and whose link", () => {
+    expect(describeAudit(event("slack.installed", { teamName: "Acme HQ" }))).toBe(
+      "connected the Slack workspace Acme HQ",
+    );
+    expect(
+      describeAudit(
+        event("slack.replaced", { teamName: "Acme HQ", previousTeamId: "T-old", linksKept: false }),
+      ),
+    ).toBe("connected the Slack workspace Acme HQ in place of T-old, dropping its links");
+    expect(describeAudit(event("slack.settings_changed", { showDiffs: true }))).toBe(
+      "set Slack show diffs true",
+    );
+    expect(describeAudit(event("slack.link_created", { slackUserId: "U1" }, "Carol Chen"))).toBe(
+      "linked Slack user U1 to Carol Chen",
+    );
+    expect(
+      describeAudit(
+        event("slack.link_removed", { slackUserId: "U1", memberRemoved: true }, "Carol"),
+      ),
+    ).toBe("removed the Slack link of Carol with their membership");
+  });
+});
+
 describe("joinState", () => {
   const open = { state: "open" as const, organizationId: OrganizationId.make("org-acme") };
 

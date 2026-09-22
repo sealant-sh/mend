@@ -8,6 +8,7 @@ import {
   PushDevicesRepo,
   SessionControlEventsRepo,
   SessionsRepo,
+  SlackLinksRepo,
   UserEvents,
   UsersRepo,
 } from "@mend/db";
@@ -28,8 +29,9 @@ export interface RemoveMemberInput {
 /**
  * Removing a member (docs/adr/0003-organizations-and-tenancy.md): the membership goes, the account
  * is deactivated, every way it signs in is revoked, its open connections close on every process,
- * and its unsettled sessions stop. Stopping flushes and checkpoints like any stop, so the work so
- * far stays reviewable. Private projects stay where they are until an owner takes them over.
+ * its Slack links go (docs/adr/0006-slack.md), and its unsettled sessions stop. Stopping flushes
+ * and checkpoints like any stop, so the work so far stays reviewable. Private projects stay where
+ * they are until an owner takes them over.
  */
 export class MemberRemoval extends Context.Service<
   MemberRemoval,
@@ -59,6 +61,7 @@ export const MemberRemovalLive: Layer.Layer<
   | SessionControlEventsRepo
   | SessionEngine
   | SessionsRepo
+  | SlackLinksRepo
   | UserEvents
   | UsersRepo
 > = Layer.effect(
@@ -73,6 +76,7 @@ export const MemberRemovalLive: Layer.Layer<
     const pushDevices = yield* PushDevicesRepo;
     const engine = yield* SessionEngine;
     const sessions = yield* SessionsRepo;
+    const slackLinks = yield* SlackLinksRepo;
     const userEvents = yield* UserEvents;
     const users = yield* UsersRepo;
     const scope = yield* Effect.scope;
@@ -104,6 +108,8 @@ export const MemberRemovalLive: Layer.Layer<
       });
 
     const remove = Effect.fn("MemberRemoval.remove")(function* (input: RemoveMemberInput) {
+      // Read first: the membership going takes the Slack links with it.
+      const linked = yield* slackLinks.listForUser(input.userId);
       // The owner lock refuses removing the last owner before anything else moves.
       yield* organizations.removeMember(input.organizationId, input.userId);
       // Nobody keeps steering on the removed account's credentials, even before their sessions stop.
@@ -130,6 +136,19 @@ export const MemberRemovalLive: Layer.Layer<
         subjectType: "member",
         subjectId: input.userId,
       });
+      // Nobody in Slack acts as the removed account any more. The database already dropped the
+      // links with the membership; this says so explicitly and records each one.
+      for (const link of linked) {
+        yield* slackLinks.unlink(link.teamId, link.slackUserId);
+        yield* audit.record({
+          organizationId: input.organizationId,
+          actorUserId: input.actorUserId,
+          action: "slack.link_removed",
+          subjectType: "member",
+          subjectId: input.userId,
+          data: { teamId: link.teamId, slackUserId: link.slackUserId, memberRemoved: true },
+        });
+      }
       // Other processes close on the event; this one closes now.
       yield* userEvents.changed(input.userId, "access");
       yield* connections.closeForUser(input.userId);

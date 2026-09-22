@@ -24,6 +24,7 @@ import { issuesGroup, briefsGroup, runsGroup } from "./queue.ts";
 import { sessionsGroup } from "./sessions.ts";
 import { settingsGroup, dotfilesGroup } from "./settings.ts";
 import { skillsGroup } from "./skills.ts";
+import { slackGroup } from "./slack.ts";
 import {
   healthGroup,
   instanceGroup,
@@ -43,6 +44,7 @@ export const MendApi = HttpApi.make("mend")
   .add(accountsGroup)
   .add(organizationGroup)
   .add(invitationsGroup)
+  .add(slackGroup)
   .add(operatorGroup)
   .add(foldersGroup)
   .add(settingsGroup)
