@@ -123,6 +123,13 @@ export type InvitationDto = Outputs["organization"]["invitations"][number];
 export type InvitationCreatedDto = Outputs["organization"]["createInvitation"];
 export type InvitationPreviewDto = Outputs["organization"]["invitationPreview"];
 export type AuditEntryDto = Outputs["organization"]["audit"][number];
+export type SlackAppStatusDto = Outputs["slack"]["app"];
+export type SlackAppDto = NonNullable<SlackAppStatusDto["app"]>;
+export type SlackSettingsDto = SlackAppDto["settings"];
+export type SlackLinkDto = Outputs["slack"]["links"][number];
+export type SlackMeDto = Outputs["slack"]["me"];
+export type SlackLinkPreviewDto = Outputs["slack"]["previewLink"];
+export type SlackLinkConfirmedDto = Outputs["slack"]["confirmLink"];
 export type FolderDto = Outputs["folders"]["list"][number];
 export type FolderListingDto = Outputs["folders"]["files"];
 export type ProjectFolderViewDto = Outputs["projects"]["folders"][number];
@@ -476,6 +483,21 @@ export const removeMember = (userId: string) =>
   orLogin(trpcClient.organization.removeMember.mutate({ userId }));
 export const takeOverProject = (id: ProjectDto["id"]) =>
   orLogin(trpcClient.organization.takeOverProject.mutate({ id }));
+
+// ─── Slack (docs/adr/0006-slack.md) ─────────────────────────────────────────
+
+export const connectSlack = (appToken: string, botToken: string) =>
+  orLogin(trpcClient.slack.connect.mutate({ appToken, botToken }));
+export const disconnectSlack = () => orLogin(trpcClient.slack.disconnect.mutate());
+export const setSlackSettings = (settings: SlackSettingsDto) =>
+  orLogin(trpcClient.slack.setSettings.mutate({ settings }));
+export const removeSlackLink = (slackUserId: string) =>
+  orLogin(trpcClient.slack.removeLink.mutate({ slackUserId }));
+export const unlinkSlack = () => orLogin(trpcClient.slack.unlink.mutate());
+export const setSlackDefaultProject = (projectId: ProjectDto["id"] | null) =>
+  orLogin(trpcClient.slack.setDefaultProject.mutate({ projectId }));
+export const confirmSlackLink = (code: string) =>
+  orLogin(trpcClient.slack.confirmLink.mutate({ code }));
 
 export const createFolder = (name: string) => orLogin(trpcClient.folders.create.mutate({ name }));
 export const removeFolder = (id: FolderDto["id"]) =>

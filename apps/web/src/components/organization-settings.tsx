@@ -55,10 +55,10 @@ export function OrganizationSettings() {
   );
 }
 
-const describe = (cause: unknown): string =>
+export const describe = (cause: unknown): string =>
   cause instanceof Error ? cause.message : String(cause);
 
-function Panel({
+export function Panel({
   id,
   title,
   description,
@@ -87,7 +87,7 @@ function Panel({
   );
 }
 
-function QuietButton({
+export function QuietButton({
   children,
   onClick,
   danger = false,
@@ -112,10 +112,10 @@ function QuietButton({
   );
 }
 
-const PRIMARY =
+export const PRIMARY =
   "rounded-xl bg-primary px-3.5 py-1.5 font-sans text-xs font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:opacity-50";
 
-function ErrorLine({ error }: { readonly error: string | null }) {
+export function ErrorLine({ error }: { readonly error: string | null }) {
   return error === null ? null : (
     <p
       role="alert"
@@ -126,7 +126,7 @@ function ErrorLine({ error }: { readonly error: string | null }) {
   );
 }
 
-function Empty({ children }: { readonly children: string }) {
+export function Empty({ children }: { readonly children: string }) {
   return <p className="font-mono text-[12px] text-label">{children}</p>;
 }
 

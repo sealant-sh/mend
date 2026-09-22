@@ -15,6 +15,7 @@ import {
   useSecondTick,
 } from "#/components/pairing-qr";
 import { AppShell } from "#/components/shell";
+import { SlackSettings } from "#/components/slack-settings";
 import {
   connectAccount,
   createPairing,
@@ -85,6 +86,7 @@ function SettingsPage() {
         <ConnectedAccountsPanel />
         <DevicesPanel />
         <OrganizationSettings />
+        <SlackSettings />
         <SealantConnectionPanel connection={connection} />
       </div>
     </AppShell>
