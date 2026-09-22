@@ -34,6 +34,28 @@ const fakeFetch = (answers: Record<string, ReadonlyArray<unknown>>) => {
 
 const run = <A, E>(effect: Effect.Effect<A, E>) => Effect.runPromise(Effect.result(effect));
 
+/** One page of `conversations.replies`: three messages from `1.<from>`, then the cursor. */
+const page = (from: number, cursor: string) => ({
+  ok: true,
+  messages: [0, 1, 2].map((offset) => ({
+    ts: `1.${from + offset}`,
+    user: "U1",
+    text: `message ${from + offset}`,
+  })),
+  response_metadata: { next_cursor: cursor },
+});
+
+/** A thread message as the fake Slack holds it, its text its timestamp. */
+const threadMessage = (ts: string) => ({
+  ts,
+  userId: "U1",
+  teamId: "T1",
+  isBot: false,
+  displayName: null,
+  text: ts,
+  files: [],
+});
+
 describe("the live Slack client (over @slack/web-api)", () => {
   it("sends the token as a bearer and reads auth.test", async () => {
     const slack = fakeFetch({
@@ -171,15 +193,6 @@ describe("the live Slack client (over @slack/web-api)", () => {
   });
 
   it("reads every page and keeps the newest messages, the mention among them", async () => {
-    const page = (from: number, cursor: string) => ({
-      ok: true,
-      messages: [0, 1, 2].map((offset) => ({
-        ts: `1.${from + offset}`,
-        user: "U1",
-        text: `message ${from + offset}`,
-      })),
-      response_metadata: { next_cursor: cursor },
-    });
     const slack = fakeFetch({
       "conversations.replies": [page(1, "page-2"), page(4, "page-3"), page(7, "")],
     });
@@ -306,17 +319,8 @@ describe("the fake Slack", () => {
   });
 
   it("keeps a thread's newest messages up to the mention, as Slack's pages do", async () => {
-    const message = (ts: string) => ({
-      ts,
-      userId: "U1",
-      teamId: "T1",
-      isBot: false,
-      displayName: null,
-      text: ts,
-      files: [],
-    });
     const slack = makeFakeSlack([
-      { ...acme, threads: { "C1:1.1": ["1.1", "1.2", "1.3", "1.4", "1.5"].map(message) } },
+      { ...acme, threads: { "C1:1.1": ["1.1", "1.2", "1.3", "1.4", "1.5"].map(threadMessage) } },
     ]);
     const result = await run(
       slack.service.conversationsReplies("xoxb-acme", {
