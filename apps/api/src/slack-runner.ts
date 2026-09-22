@@ -411,6 +411,13 @@ export const notAnswered = (reason: string): SlackMessage =>
 export const notResumed = (reason: string): SlackMessage =>
   section(escapeSlack(`not resumed · ${reason}`));
 
+/** `model=` or `effort=` on a follow-up: a running session keeps the ones it started with. */
+export const modelEffortNotApplied = section(
+  escapeSlack(
+    "model and effort not applied · they apply when a session starts · use `@mend new …`",
+  ),
+);
+
 /** Said in the thread when a follow-up cannot resume the session it follows. */
 export const startingAnew = section(
   "The thread's session is no longer live and cannot be resumed. Mend starts a new session in this thread, with the thread as context.",
@@ -1270,7 +1277,8 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
      * A follow-up whose session no longer takes turns here: resume it with the prompt as its
      * opening turn when the engine can (`followUpWhenNotLive`), through `SessionStart.launchAs`,
      * the web app's launch with its launch slot, as the person who sent it. Otherwise say so in
-     * the thread and start a new session there, with the thread as context.
+     * the thread and start a new session there, with the thread as context. True when the session
+     * took the turn.
      */
     const resumeOrStartAnew = Effect.fn("SlackRunner.resumeOrStartAnew")(function* (
       install: SealedSlackInstall,
@@ -1283,36 +1291,48 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       const agent = currentAgentProcess(yield* processes.listForSession(session.id));
       switch (followUpWhenNotLive(session, agent)) {
         case "starting":
-          return yield* refuse(
+          yield* refuse(
             token,
             mention,
             notSent("the session is still starting · mention Mend again once it runs"),
             false,
           );
+          return false;
         case "out-of-reach":
-          return yield* refuse(
+          yield* refuse(
             token,
             mention,
             notSent("the session's agent runs where Slack cannot reach it · send it from Mend"),
             false,
           );
+          return false;
         case "start-new":
           yield* quietly("chat.postMessage", say(token, mention, startingAnew));
-          return yield* startFor(install, token, mention, userId, null);
+          yield* startFor(install, token, mention, userId, null);
+          return false;
         case "resume":
           break;
       }
       // A resume spends the owner's credentials, whoever sends the turn.
       const noCredential = yield* credentialProblem(session.ownerUserId ?? userId, session.harness);
       if (noCredential !== null) {
-        return yield* refuse(token, mention, notResumed(noCredential), true);
+        yield* refuse(token, mention, notResumed(noCredential), true);
+        return false;
       }
       const resumed = yield* start
         .launchAs(userId, session, new LaunchRequest({ mode: "protocol", prompt }))
         .pipe(Effect.result);
       if (resumed._tag === "Failure") {
-        yield* refuse(token, mention, notResumed(refusalWords(resumed.failure)), true);
+        yield* refuseStart(
+          token,
+          mention,
+          notResumed,
+          resumed.failure,
+          "the session could not be resumed",
+        );
+        return false;
       }
+      return true;
     });
 
     /**
@@ -1344,7 +1364,9 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         );
         return yield* refuse(token, mention, notSent(reasons.join("; ")), false);
       }
-      const { project, harness, branch } = parsed.options;
+      const { project, harness, branch, model, effort } = parsed.options;
+      // A session keeps the model and effort it started with; a new one takes them (`new`).
+      const unapplied = model !== null || effort !== null;
       const named = project === null ? [] : projectsNamedBy(project.value, candidates);
       const elsewhere =
         (project !== null && !(named.length === 1 && named[0]?.id === session.projectId)) ||
@@ -1396,7 +1418,10 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           const answered = yield* engine
             .respondRequest(question.id, { answers: answer.answers }, userId)
             .pipe(Effect.result);
-          if (answered._tag === "Success") return;
+          if (answered._tag === "Success") {
+            if (unapplied) yield* whisper(token, mention, modelEffortNotApplied);
+            return;
+          }
           // Answered in Mend meanwhile, or the agent is gone: the words go on as a turn.
         }
       }
@@ -1405,8 +1430,10 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         return yield* refuse(token, mention, notSent("the mention has no request"), false);
       }
       const sent = yield* engine.submitTurn(session.id, parsed.prompt, userId).pipe(Effect.result);
-      if (sent._tag === "Success") return;
-      yield* resumeOrStartAnew(install, token, mention, userId, session, parsed.prompt);
+      const delivered =
+        sent._tag === "Success" ||
+        (yield* resumeOrStartAnew(install, token, mention, userId, session, parsed.prompt));
+      if (delivered && unapplied) yield* whisper(token, mention, modelEffortNotApplied);
     });
 
     /** Who set a channel default, as the settings reply names them. */

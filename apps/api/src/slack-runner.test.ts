@@ -1458,8 +1458,19 @@ describe("the Slack runner, following up a thread's session", () => {
     expect(
       w.effects.filter((entry) => !entry.startsWith("ack:") && !entry.startsWith("claim:")),
     ).toEqual([`engine.submitTurn:session-earlier:alice:also cover the logout test`]);
-    expect(w.slack.calls).toEqual([]);
+    // The session keeps its effort: only the requester hears that `effort=` was not applied.
+    expect(posts(w, "postMessage")).toEqual([]);
+    expect(posts(w, "postEphemeral")).toMatchObject([
+      {
+        user: "U-alice",
+        text: "model and effort not applied · they apply when a session starts · use `@mend new …`",
+      },
+    ]);
     expect(w.inferences).toEqual([]);
+
+    const plain = alices();
+    await plain.deliver(followUp(plain, "also cover the logout test"));
+    expect(plain.slack.calls).toEqual([]);
   });
 
   it("refuses a follow-up from someone who may not steer the session, only to them", async () => {
@@ -1552,6 +1563,26 @@ describe("the Slack runner, following up a thread's session", () => {
     ]);
     expect(w.launches).toMatchObject([{ mode: "protocol", prompt: "also cover the logout test" }]);
     expect(w.slack.calls).toEqual([]);
+  });
+
+  it("keeps a resume's store failure out of the channel, and tells only the requester", async () => {
+    const stderr = "fatal: '/srv/mend/store/p-web/worktrees/wt-0' is locked";
+    const w = world({
+      launchFails: new StoreFailure({ message: stderr }),
+      threadSession: {
+        threadTs: RETRY_THREAD,
+        projectId: web.id,
+        owner: "alice",
+        live: false,
+        status: "completed",
+      },
+    });
+    await w.deliver(followUp(w, "also cover the logout test"));
+
+    expect(posts(w, "postMessage").map((post) => post.text)).toEqual([
+      "not resumed · the session could not be resumed",
+    ]);
+    expect(posts(w, "postEphemeral").map((post) => post.text)).toEqual([`not resumed · ${stderr}`]);
   });
 
   it("says so, and starts a new session in the thread, when the session cannot be resumed", async () => {
