@@ -114,6 +114,33 @@ const withStore = async <A, E>(
 };
 
 describe("Store", () => {
+  it("lists a tree's root entries, a directory with a trailing slash, under a cap", async () => {
+    await withStore((tmp) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        const repo = path.join(tmp, "nested");
+        makeOrigin(repo);
+        fs.mkdirSync(path.join(repo, "src", "lib"), { recursive: true });
+        fs.writeFileSync(path.join(repo, "src", "lib", "retry.ts"), "export {}\n");
+        execFileSync("git", ["add", "-A"], { cwd: repo });
+        execFileSync(
+          "git",
+          ["-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-m", "src"],
+          { cwd: repo },
+        );
+
+        expect(yield* store.listTopLevel(repo, "main", 10)).toEqual({
+          files: ["README.md", "app.ts", "src/"],
+          truncated: false,
+        });
+        expect(yield* store.listTopLevel(repo, "main", 2)).toEqual({
+          files: ["README.md", "app.ts"],
+          truncated: true,
+        });
+      }),
+    );
+  });
+
   it("terminates clone options for actual network adoption and reference clones", async () => {
     await withStore((tmp, _origin, source) =>
       Effect.gen(function* () {

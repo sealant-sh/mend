@@ -444,6 +444,15 @@ export class Store extends Context.Service<
       limit: number,
     ) => Effect.Effect<FileListing, GitError>;
     /**
+     * The entries at the root of one commit's tree (`ls-tree`, not recursive), a directory with
+     * a trailing `/`: what a project holds at a glance, without walking a large repository.
+     */
+    readonly listTopLevel: (
+      dir: string,
+      ref: string,
+      limit: number,
+    ) => Effect.Effect<FileListing, GitError>;
+    /**
      * Clone `source` shallow into `directory` (relative to the store root) as read-only source
      * material (plan §17, decided 2026-08-01). References belong to an organization, so callers
      * pass `referenceDirectory(organizationId, referenceId)`. `ref` pins a branch or tag; null
@@ -925,6 +934,22 @@ export class Store extends Context.Service<
         return capListing(out.split("\0"), limit);
       });
 
+      const listTopLevel = Effect.fn("Store.listTopLevel")(function* (
+        dir: string,
+        ref: string,
+        limit: number,
+      ) {
+        // `<mode> <type> <sha>\t<name>`, NUL-separated so unusual names survive.
+        const out = yield* git(["ls-tree", "-z", ref], dir);
+        const entries = out.split("\0").flatMap((line) => {
+          const tab = line.indexOf("\t");
+          if (tab === -1) return [];
+          const name = line.slice(tab + 1);
+          return [line.split(" ")[1] === "tree" ? `${name}/` : name];
+        });
+        return capListing(entries, limit);
+      });
+
       const headSha = Effect.fn("Store.headSha")(function* (dir: string) {
         const head = yield* git(["rev-parse", "HEAD"], dir);
         return sha(head);
@@ -1006,6 +1031,7 @@ export class Store extends Context.Service<
         headSha,
         listWorktreeFiles,
         listTreeFiles,
+        listTopLevel,
       };
     }),
   );
