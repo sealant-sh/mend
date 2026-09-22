@@ -50,15 +50,15 @@ export const useSnake = (options: {
   return { game, paused, steer, togglePause };
 };
 
-export const SnakeBoard = ({
+/** The score line and the key hints; the same wording in the pane and over the dashboard. */
+export const SnakeHeading = ({
   handle,
-  focused,
+  hint,
 }: {
   readonly handle: SnakeHandle;
-  readonly focused: boolean;
+  readonly hint: string;
 }) => {
   const { game, paused } = handle;
-  const rows = render(game);
   const state = game.over ? "over · any arrow starts again" : paused ? "paused" : null;
   return (
     <>
@@ -70,10 +70,31 @@ export const SnakeBoard = ({
         {state === null ? null : <span fg={FAINT}>{` · ${state}`}</span>}
       </text>
       <text height={1} bg="transparent" fg={FAINT}>
-        {focused
-          ? "  arrows steer · space pauses · esc puts it away"
-          : "  focus this pane to play · esc puts it away"}
+        {`  ${hint}`}
       </text>
+    </>
+  );
+};
+
+export const SnakeBoard = ({
+  handle,
+  focused,
+}: {
+  readonly handle: SnakeHandle;
+  readonly focused: boolean;
+}) => {
+  const { game } = handle;
+  const rows = render(game);
+  return (
+    <>
+      <SnakeHeading
+        handle={handle}
+        hint={
+          focused
+            ? "arrows steer · space pauses · esc puts it away"
+            : "focus this pane to play · esc puts it away"
+        }
+      />
       <box
         border
         borderStyle="rounded"
@@ -99,3 +120,21 @@ export const SnakeBoard = ({
     </>
   );
 };
+
+/** The rows alone; the overlay draws its own frame around them. */
+export const SnakeRows = ({ game }: { readonly game: SnakeGame }) => (
+  <>
+    {render(game).map((row, index) => (
+      <text key={index} height={1} bg="transparent">
+        {[...row].map((cell, x) => (
+          <span
+            key={x}
+            fg={cell === "◆" ? ACCENT : cell === "█" ? GREEN : cell === "●" ? INK : FAINT}
+          >
+            {cell === "·" ? " " : cell}
+          </span>
+        ))}
+      </text>
+    ))}
+  </>
+);

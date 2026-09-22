@@ -78,7 +78,7 @@ import {
   normalizeProjectName,
   pendingId,
 } from "./shared.ts";
-import { SnakeBoard, useSnake } from "./snake.tsx";
+import { SnakeBoard, SnakeHeading, SnakeRows, useSnake } from "./snake.tsx";
 import { openUrl } from "./terminal.ts";
 import {
   ACCENT,
@@ -175,6 +175,8 @@ export interface DashboardContext {
   ) => Promise<"detached" | "ended" | "dropped" | "interrupted" | "unavailable">;
   /** The ssh-agent share running alongside; null when off or no agent. */
   readonly agentShare: AgentShareHandle | null;
+  /** `mend snake`: open with the game over the dashboard. */
+  readonly openSnake?: boolean;
 }
 
 // ─── panes and rows ─────────────────────────────────────────────────────────
@@ -763,6 +765,15 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   // esc puts the game away for this session; space brings it back.
   const [snakeAwayFor, setSnakeAwayFor] = useState<string | null>(null);
   const snakeShown = waiting && snakeAwayFor !== selectedSession?.id;
+  // `mend snake`: the game floats over the whole dashboard until esc, whatever is selected.
+  const [snakeOverlay, setSnakeOverlay] = useState(ctx.openSnake === true);
+  const overlayWidth = Math.max(16, Math.min(60, terminalCols - 8));
+  const overlayHeight = Math.max(6, Math.min(20, terminalRows - 10));
+  const overlaySnake = useSnake({
+    width: overlayWidth,
+    height: overlayHeight,
+    enabled: snakeOverlay,
+  });
   const previewRows = Math.max(1, layout.detailRows - factRows - (showFactRule ? 1 : 0));
   const previewView = previewWindow(preview, previewRows, previewOffset);
 
@@ -1573,6 +1584,17 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     if (reviewing !== null) return;
     if (lockRef.current) return;
     if (key.ctrl && key.name === "c") return onQuit();
+    if (snakeOverlay) {
+      // The game over the dashboard owns the keyboard until esc or q.
+      if (key.name === "up" || key.name === "down" || key.name === "left" || key.name === "right") {
+        overlaySnake.steer(key.name);
+      } else if (key.name === "space") {
+        overlaySnake.togglePause();
+      } else if (key.name === "escape" || key.name === "q") {
+        setSnakeOverlay(false);
+      }
+      return;
+    }
     if (waiting && focus === "detail" && picker === null && editing === null && creating === null) {
       // The snake, while a starting session is in the focused detail pane. The arrows steer it,
       // space pauses it, esc puts it away and space brings it back; h j k l and tab still move
@@ -2141,6 +2163,29 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         )}
         {detailWidth === 0 ? null : renderDetail()}
       </box>
+
+      {snakeOverlay ? (
+        <box
+          position="absolute"
+          zIndex={13}
+          left={Math.max(1, Math.floor((terminalCols - (overlayWidth + 4)) / 2))}
+          top={Math.max(1, Math.floor((terminalRows - (overlayHeight + 5)) / 2))}
+          width={overlayWidth + 4}
+          height={overlayHeight + 5}
+          border
+          borderStyle="rounded"
+          borderColor={ACCENT}
+          title=" snake "
+          titleAlignment="left"
+          backgroundColor={SURFACE}
+          flexDirection="column"
+        >
+          <SnakeHeading handle={overlaySnake} hint="arrows steer · space pauses · esc closes" />
+          <box marginLeft={1} flexDirection="column">
+            <SnakeRows game={overlaySnake.game} />
+          </box>
+        </box>
+      ) : null}
 
       {picker === null ? null : (
         <box

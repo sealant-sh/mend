@@ -8,4 +8,5 @@ families, and the detail pane used to read "no conversation recorded yet" the wh
 says the image builds, then the session boots, and how long a first build takes, and below it "play
 snake while you wait": a bordered board the arrows steer while the detail pane is focused. Space
 pauses, esc puts the game away for that session and space brings it back; `h j k l` and tab still
-move the dashboard. The game stops the moment the session reads `running`.
+move the dashboard. The game stops the moment the session reads `running`. `mend snake` opens the
+dashboard with the game floating over it, esc or q closes it and leaves you in the dashboard.
