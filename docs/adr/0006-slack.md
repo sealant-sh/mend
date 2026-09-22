@@ -7,13 +7,13 @@ the thread, and a later `@mend` in the same thread adds a follow-up to it. This 
 identity, transport, inference, storage and disclosure rules this needs, and one refactor: Slack
 must start sessions through the same checks as the web app, not a second, weaker path.
 
-**What this ADR does not claim.** It does not make Slack a place to review a change. Review stays
-in Mend. Slack gets a status, the agent's summary and a link.
+**What this ADR does not claim.** It does not make Slack a place to review a change. Review stays in
+Mend. Slack gets a status, the agent's summary and a link.
 
 ## The model: Cursor's Slack integration
 
-Cursor's integration is the behaviour people already expect from `@cursor`, so Mend copies its
-shape and changes it only where Mend's own model requires it:
+Cursor's integration is the behaviour people already expect from `@cursor`, so Mend copies its shape
+and changes it only where Mend's own model requires it:
 
 | Cursor                                                                                                       | Mend                                                                                                   |
 | ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
@@ -33,8 +33,9 @@ shape and changes it only where Mend's own model requires it:
 Mend today has one way to start a session: an authenticated HTTP caller. The web app, the CLI and
 the phone all make the same two calls:
 
-- `POST /projects/:id/sessions` provisions the worktree and session. It runs `ProjectAccess.project`,
-  then `requireSessionRoom`, then `SessionEngine.provision({ …, ownerUserId: caller.user.id })`
+- `POST /projects/:id/sessions` provisions the worktree and session. It runs
+  `ProjectAccess.project`, then `requireSessionRoom`, then
+  `SessionEngine.provision({ …, ownerUserId: caller.user.id })`
   (`apps/api/src/routes/workbench.ts`).
 - `POST /sessions/:id/launch` launches the harness. It runs `SessionSteering.session`, then
   `Budgets.withLaunchSlot` and the auto-name job, and submits the prompt as the opening turn in
@@ -52,8 +53,8 @@ The pieces Slack can reuse already exist:
 - `SecretCipher` (`packages/store/src/secret-cipher.ts`) seals a value with AES-256-GCM under
   `secrets.key`. `project_secrets` uses it. No organization-scoped secret table exists.
 - `SessionNotifierLive` (`packages/jobs/src/session-notifier.ts`) listens on `mend_events`, folds
-  session and turn state, and pushes to phones. A Slack reporter is the same shape with a
-  different sink.
+  session and turn state, and pushes to phones. A Slack reporter is the same shape with a different
+  sink.
 - `ProjectAccess.projectAs(userId, id)`, `visibleProjectsOf(userId)` and
   `SessionSteering.authorizeUser(session, userId)` already authorize a user id without an HTTP
   request.
@@ -62,8 +63,8 @@ The pieces Slack can reuse already exist:
 - `@mend/inference` already runs small inference jobs through `InferenceProvider`: session naming
   and comment routing.
 
-Slack offers two ways to deliver events. With the HTTP Events API, Slack POSTs to a public URL.
-With Socket Mode, the app opens an outbound WebSocket using an app-level token (`xapp-`,
+Slack offers two ways to deliver events. With the HTTP Events API, Slack POSTs to a public URL. With
+Socket Mode, the app opens an outbound WebSocket using an app-level token (`xapp-`,
 `connections:write`). Up to ten connections may be open, and Slack sends each payload to one of
 them. Socket Mode apps cannot be listed in the Slack Marketplace.
 
@@ -77,9 +78,8 @@ Mend connects to Slack and Slack never connects to Mend. That works the same on 
 The Socket Mode client runs in the worker (`WorkerLive`, next to `SessionNotifierLive`), with one
 connection per installed organization per worker process. Every envelope is acknowledged as soon as
 it arrives, before any work. Slack may deliver an event twice, or to two workers, so the event is
-claimed once in Postgres by its Slack `event_id` before anything acts on it. A claimed event is
-done even if the work fails. The failure is reported in the thread, and the event is never
-replayed.
+claimed once in Postgres by its Slack `event_id` before anything acts on it. A claimed event is done
+even if the work fails. The failure is reported in the thread, and the event is never replayed.
 
 ### One Slack app per organization, made from Mend's manifest
 
@@ -101,19 +101,23 @@ The manifest asks for the bot scopes Cursor asks for, less what Mend does not us
 - `files:read` reads screenshots in the thread.
 - `users:read` shows who wrote each message.
 
-Mend checks both tokens with `auth.test` before it saves anything. It seals both with
-`SecretCipher` and stores them in `slack_installs`, which is one row per organization. The Slack
-workspace id (`team_id`) is unique across the instance, so a Slack workspace belongs to at most one
-organization. That matters in `multi` mode, where two organizations might otherwise claim the same
-workspace.
+The manifest subscribes to two bot events. `app_mention` carries a mention in a channel. Slack does
+not send `app_mention` for a direct message with the bot, so direct messages arrive as `message.im`,
+and a direct message is read as a mention without the `@mend`.
+
+Mend checks the bot token with `auth.test` and the app-level token with `apps.connections.open`, and
+that both belong to the same app, before it saves anything. It seals both with `SecretCipher` and
+stores them in `slack_installs`, which is one row per organization. The Slack workspace id
+(`team_id`) is unique across the instance, so a Slack workspace belongs to at most one organization.
+That matters in `multi` mode, where two organizations might otherwise claim the same workspace.
 
 When the owner connects Slack, the install also records the web origin they were using. Mend builds
 every link it posts into Slack from that origin. Mend has no configured public URL today, and this
 avoids adding one.
 
 Only an organization owner installs, replaces or removes the app, or changes its settings. Removing
-it deletes the tokens, the links and the channel defaults. Session records stay, including where
-the sessions came from.
+it deletes the tokens, the links and the channel defaults. Session records stay, including where the
+sessions came from.
 
 ### A Slack user acts only once they have linked their account
 
@@ -128,9 +132,9 @@ The link joins one Slack user in one Slack workspace to one Mend account in the 
 organization. Mend does not link by email address. An address match proves nothing about who
 controls the Mend account, and a linked account is one Mend will spend credentials for.
 
-Mend ignores mentions from bots, including itself. A mention from a user outside the install's
-Slack workspace, in a Slack Connect channel, gets an ephemeral reply saying that only members of
-the workspace can use Mend.
+Mend ignores mentions from bots, including itself. A mention from a user outside the install's Slack
+workspace, in a Slack Connect channel, gets an ephemeral reply saying that only members of the
+workspace can use Mend.
 
 Removing a member (ADR 0003) deletes their Slack link. A person can unlink from Settings, and an
 owner can remove any link in their organization.
@@ -165,8 +169,8 @@ an earlier one. What is left after the options is the prompt.
 
 The project comes from the first of these that answers:
 
-1. **The message.** `project=` or `in <project>`, matched by name or against a project's
-   `originUrl` (`acme/api`, or a full Git or web URL).
+1. **The message.** `project=` or `in <project>`, matched by name or against a project's `originUrl`
+   (`acme/api`, or a full Git or web URL).
 2. **The thread.** If the thread already has a Mend session, its project. Otherwise, the repository
    URLs in the thread: a GitHub or GitLab link to a repository, pull request, issue, commit or file
    names a repository, and Mend matches it against `originUrl`. Otherwise, Mend uses inference over
@@ -199,9 +203,10 @@ user cannot see does not exist for them in Slack, just as it does not in the web
 
 The opening turn is the prompt, then the thread. Like Cursor, Mend reads the whole thread: every
 message up to the mention, up to fifty messages or 20,000 characters, whichever limit it reaches
-first, keeping the newest. Each message is quoted with its author's display name and marked as
-Slack thread context, separate from the request. Screenshots and images in those messages are
-attached through the same path as an image pasted into a session.
+first, keeping the newest. Each message is quoted with its author's display name and marked as Slack
+thread context, separate from the request. Screenshots and images in those messages are attached
+through the same path as an image pasted into a session: each is stored as a file in the session's
+harness home, and the turn text names its path. They are not sent as image content blocks.
 
 Thread text written by someone other than the requester is input from a third party, and it reaches
 an agent that runs with the requester's Git access. Mend keeps those messages so the request makes
@@ -225,11 +230,14 @@ Starting a session records the Slack thread (`team_id`, `channel_id`, `thread_ts
 `slack_threads`. A thread can hold several sessions. A session belongs to at most one thread.
 
 - `@mend <prompt>` in a thread that has a session is a follow-up turn for the thread's most recent
-  session, like Cursor. It goes through `SessionSteering.authorizeUser(session, linkedUserId)`:
-  the owner can always send it, and anyone else only while the owner has shared control on. That is
+  session, like Cursor. It goes through `SessionSteering.authorizeUser(session, linkedUserId)`: the
+  owner can always send it, and anyone else only while the owner has shared control on. That is
   Mend's form of Cursor's team follow-up setting. A refusal is an ephemeral reply.
-- `@mend new <prompt>`, or a mention that asks for a new session in words, starts another session in
-  the same thread and project.
+- `@mend new <prompt>` starts another session in the same thread and project. So does a mention that
+  names a different project, harness or branch. Mend does not infer a request for a new session from
+  the words of a mention: without one of those, a mention is a follow-up.
+- `model=` and `effort=` on a follow-up are not applied. They apply when a session starts, and the
+  requester gets an ephemeral reply saying so.
 - If the agent asked a question (`user-input`), the owner's next mention answers it rather than
   starting a new turn.
 - A mention in the thread of a session that is no longer live resumes it with that turn, if the
@@ -253,16 +261,16 @@ Mend posts only into the thread the request came from.
   message when it is one, and does not write a plan of its own.
 - **A question the agent asks**, as a reply that names the owner.
 - **Approvals** as a status line with a link. They are answered in Mend.
-- **Once the machine review has run**, the count of draft comments and proposed checks, with a
-  "Review in Mend" button.
+- **Once the machine review has run**, the count of draft comments and suggested edits, with a
+  "Review in Mend" button. Mend has no proposed-check entity yet, so the count names none.
 
 An organization owner decides how much goes into Slack, as Cursor's admins do:
 
-| Setting             | Off                                                       | On                                                         |
-| ------------------- | --------------------------------------------------------- | ---------------------------------------------------------- |
-| Show agent messages | Status, reactions and links only                          | Also the plan, closing messages and questions (default)    |
-| Show diffs          | Changed files and line counts only (default)              | Also the diff of each changed file, up to 3,000 characters |
-| External channels   | Only status and links in Slack Connect channels (default) | The two settings above apply there too                     |
+| Setting             | Off                                                       | On                                                                                               |
+| ------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| Show agent messages | Status, reactions and links only                          | Also the plan, closing messages and questions (default)                                          |
+| Show diffs          | Changed files and line counts only (default)              | Also the diff of each changed file, up to 3,000 characters, once, when the session first settles |
+| External channels   | Only status and links in Slack Connect channels (default) | The two settings above apply there too                                                           |
 
 Status copy follows the product voice. It states what was observed and gives no verdict:
 `completed · observed`, never "done", "looks good" or "safe to merge".
@@ -270,6 +278,12 @@ Status copy follows the product voice. It states what was observed and gives no 
 The reporter is a sibling of `SessionNotifierLive`. It listens on `mend_events`, re-reads the
 sessions that have a Slack thread, and applies the same guards: a session first seen mid-flight is
 recorded without posting, and state older than two minutes is not announced.
+
+The reporter checks disclosure again on every look, since a project's visibility can change while
+its session runs. When a channel thread's project is no longer `shared`, Mend edits the status
+message to `not shown · the project is private`, which does not name the project, and posts nothing
+more into that thread. The reporter posts only through the install of the organization that owns the
+session's project.
 
 ### Commands
 
@@ -300,15 +314,19 @@ These go to the organization's audit log:
 - a session being started from Slack, with the Slack user, channel, message timestamp and how its
   project was chosen.
 
-Sessions gain an `origin` of `slack`, which the web app shows beside the owner.
+Sessions gain an `origin` column (`agent_sessions.origin`), `mend` or `slack`. The web app shows
+`slack` beside the owner.
 
 ### Budgets
 
 A Slack-started session counts against the same session and launch budgets as any other, under the
-linked user. Refusals are posted in the thread as the budget worded them. The project-picking
-inference counts against the organization's inference budget. An install also has its own ceiling
-on events per minute, and above it Mend acknowledges each event and drops it, so a busy or hostile
-channel cannot queue unbounded work.
+linked user. Refusals are posted in the thread as the budget worded them. Mend has no organization
+inference budget yet, so thread inference has its own ceiling: inferences per organization per hour,
+per worker process (`MEND_SLACK_INFERENCES_PER_HOUR`). Past it, the choice goes on to the defaults
+and the buttons without inference. An install also has a ceiling on events per minute, per worker
+process (`MEND_SLACK_EVENTS_PER_MINUTE`), and above it Mend acknowledges each event and drops it, so
+a busy or hostile channel cannot queue unbounded work. Both move to an organization budget once one
+exists.
 
 ## Consequences
 
@@ -330,18 +348,18 @@ channel cannot queue unbounded work.
 
 One ready-for-review PR per step, stacked:
 
-| PR  | What it delivers                                                                                                                                                                       |
-| --- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | This ADR, and the product-language amendments.                                                                                                                                         |
-| 2   | `SessionStart.startAs`, extracted from the create and launch handlers. No change in behaviour, and the existing route tests pass unchanged.                                            |
-| 3   | Schema and repositories: `slack_installs`, `slack_links`, `slack_link_codes`, `slack_channel_defaults`, `slack_threads`, `slack_event_claims`, and `sessions.origin`.                  |
-| 4   | `@mend/slack`: the manifest, the mention and option parser, repository-URL matching against `originUrl`, thread-context assembly and message formatting, as pure functions with tests. |
-| 5   | Install and link: owner-only API routes, Settings → Slack (manifest, tokens, `auth.test`, the display settings), the `/slack/link/<code>` page, and audit events.                      |
-| 6   | The Socket Mode runner in the worker: connect per install, acknowledge, claim, pick the project without inference (message, thread URL, defaults, buttons), and start the session.     |
-| 7   | The thread reporter: reactions, the status message, agent messages, questions, the review count, and the display settings.                                                             |
-| 8   | Project inference from the thread, in `@mend/inference`, with "Switch project".                                                                                                        |
-| 9   | Follow-ups, `new`, answers and resume in a thread, and `help`, `settings` and `list`.                                                                                                  |
-| 10  | Screenshots from the thread.                                                                                                                                                           |
+| PR  | What it delivers                                                                                                                                                                              |
+| --- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 1   | This ADR, and the product-language amendments.                                                                                                                                                |
+| 2   | `SessionStart.startAs`, extracted from the create and launch handlers. No change in behaviour, and the existing route tests pass unchanged.                                                   |
+| 3   | Schema and repositories: `slack_installs`, `slack_links`, `slack_link_codes`, `slack_channel_defaults`, `slack_threads`, `slack_event_claims`, and `agent_sessions.origin`.                   |
+| 4   | `@mend/slack`: the manifest, the mention and option parser, repository-URL matching against `originUrl`, thread-context assembly and message formatting, as pure functions with tests.        |
+| 5   | Install and link: owner-only API routes, Settings → Slack (manifest, tokens, `auth.test` and `apps.connections.open`, the display settings), the `/slack/link/<code>` page, and audit events. |
+| 6   | The Socket Mode runner in the worker: connect per install, acknowledge, claim, pick the project without inference (message, thread URL, defaults, buttons), and start the session.            |
+| 7   | The thread reporter: reactions, the status message, agent messages, questions, the review count, and the display settings.                                                                    |
+| 8   | Project inference from the thread, in `@mend/inference`, with "Switch project".                                                                                                               |
+| 9   | Follow-ups, `new`, answers and resume in a thread, and `help`, `settings` and `list`.                                                                                                         |
+| 10  | Screenshots from the thread.                                                                                                                                                                  |
 
 PRs 2 and 4 depend on nothing else. PR 6 needs 2, 3 and 5. After PR 7, `@mend <prompt>` in a thread
 that links a repository, or in a channel with a default, starts a session and reports back. That is
@@ -370,8 +388,8 @@ the first slice worth using. PR 8 makes a thread that names no repository work t
    would send half-formed chat to an agent with Git access.
 9. **Diffs off by default.** Slack is outside the instance, and plan §15 says no code leaves without
    explicit configuration. The owner's diff setting is that configuration.
-10. **One start path.** A second implementation of session start would drift from the first, and
-    the drift would land in authorization.
+10. **One start path.** A second implementation of session start would drift from the first, and the
+    drift would land in authorization.
 
 ## Open questions
 
