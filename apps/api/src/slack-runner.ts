@@ -8,6 +8,7 @@ import {
   AgentConversationRepo,
   AuditEventsRepo,
   SessionControlEventsRepo,
+  SessionProcessesRepo,
   SessionsRepo,
   SlackDefaultsRepo,
   SlackEventClaimsRepo,
@@ -18,11 +19,14 @@ import {
   type SlackThreadSession,
 } from "@mend/db";
 import { ProjectId, SessionId, type OrganizationId } from "@mend/domain";
-import type {
-  Project,
-  Session,
-  SlackLinkedMentionJob,
-  SlackProjectSource,
+import {
+  currentAgentProcess,
+  isLiveProcess,
+  type Project,
+  type Session,
+  type SessionProcess,
+  type SlackLinkedMentionJob,
+  type SlackProjectSource,
 } from "@mend/domain/workbench";
 import {
   NO_THREAD_PROJECT,
@@ -35,10 +39,14 @@ import { makeWindowLimiter } from "@mend/network";
 import { asSealantUser, SealantClients } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import {
+  answersFromMention,
+  channelDefaultChanged,
+  channelSettingsMessage,
   DEFAULT_MENTION_VOCABULARY,
   escapeSlack,
   helpMessage,
   isDirectMessage,
+  LISTED_SESSIONS,
   linkPrompt,
   linkUrl,
   outsiderMessage,
@@ -49,12 +57,17 @@ import {
   reactionFor,
   renderOpeningTurn,
   requestKeyOfPicker,
+  sessionListMessage,
   sessionUrl,
+  setsChannelDefault,
+  settingsUrl,
   SLACK_ACTIONS,
   slackToPlain,
   statusMessage,
   switchOffered,
   threadContext,
+  threadOfChannelSettings,
+  userMentionPattern,
   type ParsedMention,
   type SlackMessage,
   type SlackReaction,
@@ -109,6 +122,10 @@ export interface SlackMention {
 /** Where Mend answers a mention: its thread, or the thread the mention starts. */
 const replyThreadOf = (mention: SlackMention): string => mention.threadTs ?? mention.messageTs;
 
+/** The mention's words with Mend's own mention taken out, as plain text: an answer. */
+const wordsOf = (botUserId: string, mention: SlackMention): string =>
+  slackToPlain(mention.text.replace(userMentionPattern(botUserId), " ")).trim();
+
 /** The request a session answers, as a mention the requester made: for its thread's replies. */
 const requestOf = (thread: SlackThreadSession, slackUserId: string): SlackMention => ({
   teamId: thread.teamId,
@@ -150,6 +167,7 @@ const BlockActions = Schema.Struct({
   actions: Schema.Array(
     Schema.Struct({
       action_id: Schema.String,
+      action_ts: Schema.optional(Schema.String),
       block_id: Schema.optional(Schema.String),
       value: Schema.optional(Schema.String),
       selected_option: Schema.optional(Schema.Struct({ value: Schema.String })),
@@ -382,12 +400,35 @@ const unknownProject = (
 ) =>
   `${choice.picked ? "the picked project is not one you can start in here" : `no project you can start in here is named ${choice.value}`}${direct ? "" : " · a channel offers shared projects only"}`;
 
-const notYet = (command: "settings" | "list"): SlackMessage =>
+/** A follow-up Mend did not deliver to the thread's session, in the reason's own words. */
+export const notSent = (reason: string): SlackMessage =>
+  section(escapeSlack(`not sent · ${reason}`));
+
+/** The owner's answer to the agent's question, refused, in the reason's own words. */
+export const notAnswered = (reason: string): SlackMessage =>
+  section(escapeSlack(`not answered · ${reason}`));
+
+export const notResumed = (reason: string): SlackMessage =>
+  section(escapeSlack(`not resumed · ${reason}`));
+
+/** Said in the thread when a follow-up cannot resume the session it follows. */
+export const startingAnew = section(
+  "The thread's session is no longer live and cannot be resumed. Mend starts a new session in this thread, with the thread as context.",
+);
+
+/** `settings` in a direct message, where no channel default applies. */
+const settingsElsewhere = (webOrigin: string): SlackMessage =>
   section(
-    command === "settings"
-      ? "`settings` is not in this version of Mend yet. Your own default project is in Mend under Settings → Slack."
-      : "`list` is not in this version of Mend yet. Your sessions are listed in Mend.",
+    `\`settings\` sets a channel's default project: mention Mend in the channel. Your own default is in Mend under <${settingsUrl(webOrigin)}|Settings → Slack>.`,
   );
+
+const notLinkedYet = section(
+  "Mend acts only for a linked Mend account. Mention Mend to get a link only you see.",
+);
+
+const notSettable = section(
+  "not set · the project is not one you can pick here · a channel offers shared projects only",
+);
 
 const emptyRequest = section(
   "The mention has no request, and there is no thread to read. `help` lists what Mend reads.",
@@ -423,6 +464,31 @@ export const slackStateOf = (session: Pick<Session, "status">): SlackSessionStat
     default:
       return session.status;
   }
+};
+
+/**
+ * What a follow-up does when no protocol process of the thread's session takes turns here
+ * (docs/adr/0006-slack.md, "Follow-ups in a thread", and open question 1). The engine's protocol
+ * launch resumes a session whose latest agent was a protocol process of its own harness: it opens
+ * the provider's session by its id and submits the prompt as the opening turn. So such a session
+ * resumes with the follow-up. One with no agent to resume starts over as a new session in the
+ * thread. One still launching, or whose agent is live where Slack cannot reach it (a terminal
+ * after a mode handoff), is left alone.
+ */
+export type NotLiveFollowUp = "resume" | "start-new" | "starting" | "out-of-reach";
+
+export const followUpWhenNotLive = (
+  session: Pick<Session, "status" | "harness">,
+  agent: SessionProcess | null,
+): NotLiveFollowUp => {
+  if (session.status === "starting") return "starting";
+  if (agent === null) return "start-new";
+  if (isLiveProcess(agent)) return "out-of-reach";
+  return agent.kind === "agent-protocol" &&
+    agent.harness === session.harness &&
+    agent.providerSessionId !== null
+    ? "resume"
+    : "start-new";
 };
 
 /** A Slack write whose failure is logged, never raised: the next step does not depend on it. */
@@ -500,6 +566,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
     const steering = yield* SessionSteering;
     const conversations = yield* AgentConversationRepo;
     const controls = yield* SessionControlEventsRepo;
+    const processes = yield* SessionProcessesRepo;
     const now = options.now ?? Date.now;
     const ceiling = makeWindowLimiter();
     const inferenceCeiling = makeWindowLimiter(60 * 60_000);
@@ -1200,9 +1267,305 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
     });
 
     /**
+     * A follow-up whose session no longer takes turns here: resume it with the prompt as its
+     * opening turn when the engine can (`followUpWhenNotLive`), through `SessionStart.launchAs`,
+     * the web app's launch with its launch slot, as the person who sent it. Otherwise say so in
+     * the thread and start a new session there, with the thread as context.
+     */
+    const resumeOrStartAnew = Effect.fn("SlackRunner.resumeOrStartAnew")(function* (
+      install: SealedSlackInstall,
+      token: string,
+      mention: SlackMention,
+      userId: string,
+      session: Session,
+      prompt: string,
+    ) {
+      const agent = currentAgentProcess(yield* processes.listForSession(session.id));
+      switch (followUpWhenNotLive(session, agent)) {
+        case "starting":
+          return yield* refuse(
+            token,
+            mention,
+            notSent("the session is still starting · mention Mend again once it runs"),
+            false,
+          );
+        case "out-of-reach":
+          return yield* refuse(
+            token,
+            mention,
+            notSent("the session's agent runs where Slack cannot reach it · send it from Mend"),
+            false,
+          );
+        case "start-new":
+          yield* quietly("chat.postMessage", say(token, mention, startingAnew));
+          return yield* startFor(install, token, mention, userId, null);
+        case "resume":
+          break;
+      }
+      // A resume spends the owner's credentials, whoever sends the turn.
+      const noCredential = yield* credentialProblem(session.ownerUserId ?? userId, session.harness);
+      if (noCredential !== null) {
+        return yield* refuse(token, mention, notResumed(noCredential), true);
+      }
+      const resumed = yield* start
+        .launchAs(userId, session, new LaunchRequest({ mode: "protocol", prompt }))
+        .pipe(Effect.result);
+      if (resumed._tag === "Failure") {
+        yield* refuse(token, mention, notResumed(refusalWords(resumed.failure)), true);
+      }
+    });
+
+    /**
+     * A mention in a thread that has a session (docs/adr/0006-slack.md, "Follow-ups in a thread"):
+     * a turn for the thread's latest session, through the same steering check as the web app, so
+     * the owner always may and anyone else only while the owner shares control. When the agent
+     * asked the owner a question, the owner's mention answers it instead. A mention that names
+     * another project, harness or base branch asks for another session, and gets one.
+     */
+    const followUp = Effect.fn("SlackRunner.followUp")(function* (
+      install: SealedSlackInstall,
+      token: string,
+      mention: SlackMention,
+      userId: string,
+      thread: SlackThreadSession,
+    ) {
+      const session = yield* sessions
+        .byId(thread.sessionId)
+        .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+      if (session === null) return yield* startFor(install, token, mention, userId, null);
+      const candidates = yield* candidatesFor(userId, mention.channelId);
+      const parsed = parseMention(mention.text, install.botUserId, {
+        ...DEFAULT_MENTION_VOCABULARY,
+        projects: candidates,
+      });
+      if (parsed.rejected.length > 0) {
+        const reasons = parsed.rejected.map(
+          (rejected) => `${rejected.option}=${rejected.value} · ${rejected.reason}`,
+        );
+        return yield* refuse(token, mention, notSent(reasons.join("; ")), false);
+      }
+      const { project, harness, branch } = parsed.options;
+      const named = project === null ? [] : projectsNamedBy(project.value, candidates);
+      const elsewhere =
+        (project !== null && !(named.length === 1 && named[0]?.id === session.projectId)) ||
+        (harness !== null && harness.value !== session.harness) ||
+        branch !== null;
+      if (elsewhere) return yield* startFor(install, token, mention, userId, null);
+
+      const allowed = yield* steering.authorizeUser(session, userId).pipe(Effect.result);
+      if (allowed._tag === "Failure") {
+        return yield* refuse(
+          token,
+          mention,
+          notSent(
+            allowed.failure._tag === "NotFound"
+              ? "the session is not available to you"
+              : allowed.failure.message,
+          ),
+          false,
+        );
+      }
+      // Everyone in a channel reads what the session posts: a project made private since is out.
+      if (!isDirectMessage(mention.channelId)) {
+        const shown = yield* access
+          .projectAs(userId, session.projectId)
+          .pipe(Effect.catchTag("NotFound", () => Effect.succeed(null)));
+        if (shown === null || shown.visibility !== "shared") {
+          return yield* refuse(
+            token,
+            mention,
+            notSent("the session's project is private · a channel offers shared projects only"),
+            false,
+          );
+        }
+      }
+
+      // The owner's mention answers the agent's question, when it asked one.
+      if (session.ownerUserId === userId) {
+        const [question] = (yield* conversations.listRequests(session.id, true)).filter(
+          (request) => request.kind === "user-input",
+        );
+        if (question !== undefined) {
+          const answer = answersFromMention(
+            question.questions,
+            wordsOf(install.botUserId, mention),
+          );
+          if (answer.kind === "refused") {
+            return yield* refuse(token, mention, notAnswered(answer.reason), false);
+          }
+          const answered = yield* engine
+            .respondRequest(question.id, { answers: answer.answers }, userId)
+            .pipe(Effect.result);
+          if (answered._tag === "Success") return;
+          // Answered in Mend meanwhile, or the agent is gone: the words go on as a turn.
+        }
+      }
+
+      if (parsed.prompt === "") {
+        return yield* refuse(token, mention, notSent("the mention has no request"), false);
+      }
+      const sent = yield* engine.submitTurn(session.id, parsed.prompt, userId).pipe(Effect.result);
+      if (sent._tag === "Success") return;
+      yield* resumeOrStartAnew(install, token, mention, userId, session, parsed.prompt);
+    });
+
+    /** Who set a channel default, as the settings reply names them. */
+    const setByWords = (install: SealedSlackInstall, setByUserId: string, viewerId: string) =>
+      setByUserId === viewerId
+        ? Effect.succeed("you")
+        : links.listForUser(setByUserId).pipe(
+            Effect.map((linked) => {
+              const here = linked.find((link) => link.teamId === install.teamId);
+              return here === undefined ? "a member" : `<@${here.slackUserId}>`;
+            }),
+          );
+
+    /**
+     * `@mend settings` (docs/adr/0006-slack.md, "Commands"): the channel's default project, with
+     * buttons to set or clear it. The choices are the shared projects the member can see.
+     */
+    const channelSettings = Effect.fn("SlackRunner.channelSettings")(function* (
+      install: SealedSlackInstall,
+      token: string,
+      mention: SlackMention,
+      userId: string,
+    ) {
+      if (isDirectMessage(mention.channelId)) {
+        return yield* whisper(token, mention, settingsElsewhere(install.webOrigin));
+      }
+      const candidates = (yield* candidatesFor(userId, mention.channelId)).toSorted((a, b) =>
+        a.name.localeCompare(b.name),
+      );
+      const current = yield* defaults.channelDefault(install.teamId, mention.channelId);
+      yield* whisper(
+        token,
+        mention,
+        channelSettingsMessage({
+          threadTs: replyThreadOf(mention),
+          current:
+            current === null
+              ? null
+              : {
+                  project:
+                    candidates.find((project) => project.id === current.projectId)?.name ?? null,
+                  setBy: yield* setByWords(install, current.setByUserId, userId),
+                  setOn: current.updatedAt.toISOString().slice(0, 10),
+                },
+          projects: pickable(candidates),
+        }),
+      );
+    });
+
+    /**
+     * A click on the settings reply: set the channel default to a shared project the member can
+     * see, or clear it, and write it to the organization's audit log.
+     */
+    const changeChannelDefault = Effect.fn("SlackRunner.changeChannelDefault")(function* (
+      install: SealedSlackInstall,
+      token: string,
+      at: SlackMention,
+      userId: string,
+      projectId: string | null,
+    ) {
+      if (isDirectMessage(at.channelId)) return;
+      const previous = yield* defaults.channelDefault(install.teamId, at.channelId);
+      const nameOf = (id: ProjectId) =>
+        access.projectAs(userId, id).pipe(
+          Effect.map((project) => project.name),
+          Effect.catchTag("NotFound", () => Effect.succeed(null)),
+        );
+      const facts = {
+        teamId: install.teamId,
+        channelId: at.channelId,
+        slackUserId: at.slackUserId,
+      };
+      if (projectId === null) {
+        const cleared = yield* defaults.clearChannelDefault(install.teamId, at.channelId);
+        if (cleared && previous !== null) {
+          yield* audit.record({
+            organizationId: install.organizationId,
+            actorUserId: userId,
+            action: "slack.channel_default_cleared",
+            subjectType: "project",
+            subjectId: previous.projectId,
+            data: { ...facts, projectName: yield* nameOf(previous.projectId) },
+          });
+        }
+        return yield* whisper(token, at, channelDefaultChanged(null));
+      }
+      const project = (yield* candidatesFor(userId, at.channelId)).find(
+        (candidate) => candidate.id === projectId,
+      );
+      if (project === undefined) return yield* whisper(token, at, notSettable);
+      yield* defaults.setChannelDefault({
+        teamId: install.teamId,
+        channelId: at.channelId,
+        projectId: project.id,
+        setByUserId: userId,
+      });
+      yield* audit.record({
+        organizationId: install.organizationId,
+        actorUserId: userId,
+        action: "slack.channel_default_set",
+        subjectType: "project",
+        subjectId: project.id,
+        data: {
+          ...facts,
+          projectName: project.name,
+          previousProjectId: previous?.projectId ?? null,
+        },
+      });
+      yield* whisper(token, at, channelDefaultChanged(project.name));
+    });
+
+    /**
+     * `@mend list` (docs/adr/0006-slack.md, "Commands"): the person's sessions started from
+     * Slack in this workspace, newest first, with their state and links. Only they see it; a
+     * session whose project they can no longer see is left out.
+     */
+    const listSessions = Effect.fn("SlackRunner.listSessions")(function* (
+      install: SealedSlackInstall,
+      token: string,
+      mention: SlackMention,
+      userId: string,
+    ) {
+      const rows = yield* threads.listForOwner({
+        teamId: install.teamId,
+        ownerUserId: userId,
+        limit: LISTED_SESSIONS + 1,
+      });
+      const visible = new Map(
+        (yield* access.visibleProjectsOf(userId)).map((project) => [project.id, project]),
+      );
+      yield* whisper(
+        token,
+        mention,
+        sessionListMessage({
+          sessions: rows.slice(0, LISTED_SESSIONS).flatMap((row) => {
+            const project = visible.get(row.projectId);
+            return project === undefined
+              ? []
+              : [
+                  {
+                    project: project.name,
+                    label: row.label,
+                    branch: row.branch,
+                    state: row.reportedState ?? slackStateOf(row),
+                    channelId: row.channelId,
+                    url: sessionUrl(install.webOrigin, row.sessionId),
+                  },
+                ];
+          }),
+          more: rows.length > LISTED_SESSIONS,
+        }),
+      );
+    });
+
+    /**
      * A mention, read from the top: an outsider is refused, `help` is answered for anyone, an
-     * unlinked person gets a link, and a linked one gets a session. `linkedUserId` is set when
-     * the mention waited for a link, and it must still be that person's link.
+     * unlinked person gets a link, and a linked one gets `settings`, `list`, a follow-up to the
+     * thread's latest session, or a new session (`new`, or a thread without one). `linkedUserId`
+     * is set when the mention waited for a link, and it must still be that person's link.
      */
     const runMention = Effect.fn("SlackRunner.runMention")(function* (
       install: SealedSlackInstall,
@@ -1242,10 +1605,21 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         });
         return yield* whisper(token, mention, linkPrompt(linkUrl(install.webOrigin, code)));
       }
-      // Follow-ups to the thread's session, answers and resume arrive in PR 9. Until then a
-      // mention in a thread with a session starts another one in the same project.
-      if (command === "settings" || command === "list") {
-        return yield* whisper(token, mention, notYet(command));
+      if (command === "settings") {
+        return yield* channelSettings(install, token, mention, link.userId);
+      }
+      if (command === "list") return yield* listSessions(install, token, mention, link.userId);
+      // `new` starts another session in the thread; anything else follows up its latest one.
+      const latest =
+        command === "new" || mention.threadTs === null
+          ? null
+          : yield* threads.latestInThread({
+              teamId: install.teamId,
+              channelId: mention.channelId,
+              threadTs: mention.threadTs,
+            });
+      if (latest !== null) {
+        return yield* followUp(install, token, mention, link.userId, latest);
       }
       yield* startFor(install, token, mention, link.userId, null);
     });
@@ -1306,6 +1680,39 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           payload.user.id,
           SessionId.make(action.value),
         );
+      }
+      if (
+        setsChannelDefault(action.action_id) ||
+        action.action_id === SLACK_ACTIONS.clearChannelDefault
+      ) {
+        const threadTs = threadOfChannelSettings(action.block_id ?? "");
+        if (channel === undefined || threadTs === null) return;
+        const clearing = action.action_id === SLACK_ACTIONS.clearChannelDefault;
+        const projectId = clearing ? null : (action.value ?? action.selected_option?.value);
+        if (projectId === undefined) return;
+        // One change per click, however many times Slack delivers it.
+        if (action.action_ts !== undefined) {
+          const first = yield* claims.claim({
+            eventId: `settings:${install.teamId}:${channel}:${action.action_ts}`,
+            teamId: install.teamId,
+          });
+          if (!first) return;
+        }
+        const token = yield* botTokenOf(install);
+        if (token === null) return;
+        const at: SlackMention = {
+          teamId: install.teamId,
+          channelId: channel,
+          messageTs: threadTs,
+          threadTs: null,
+          text: "",
+          slackUserId: payload.user.id,
+          userTeamId: null,
+          external: null,
+        };
+        const link = yield* links.bySlackUser(install.teamId, payload.user.id);
+        if (link === null) return yield* whisper(token, at, notLinkedYet);
+        return yield* changeChannelDefault(install, token, at, link.userId, projectId);
       }
       const picking =
         action.action_id === SLACK_ACTIONS.otherProject ||
@@ -1444,6 +1851,7 @@ export const SlackRunnerLive: Layer.Layer<
   | SecretCipher
   | SessionControlEventsRepo
   | SessionEngine
+  | SessionProcessesRepo
   | SessionStart
   | SessionSteering
   | SessionsRepo

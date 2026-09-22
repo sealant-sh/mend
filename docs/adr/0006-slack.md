@@ -395,6 +395,10 @@ the first slice worth using. PR 8 makes a thread that names no repository work t
 
 1. **Resume with a prompt.** Whether a protocol resume takes an opening turn needs checking in
    `engine.ts` before PR 9. If it does not, a mention on a settled session starts a new one.
+   Answered in PR 9: `SessionEngine.launchProtocol` on a session whose latest agent was a protocol
+   process of the same harness resumes the provider's session by its id and submits the prompt as
+   the opening turn. Slack resumes through `SessionStart.launchAs`, the web app's launch. A session
+   with no such agent (none launched, or no provider session id recorded) starts a new one.
 2. **Approvals as buttons.** Slack's interactive buttons arrive over the same socket. Answering an
    approval from Slack is a steering action, so it needs the same authorization as a turn. It also
    puts a one-tap "allow" in a channel.

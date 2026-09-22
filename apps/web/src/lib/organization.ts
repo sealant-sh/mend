@@ -100,6 +100,16 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       const why = source === null ? "" : ` · ${SLACK_PROJECT_SOURCE_WORDS[source] ?? source}`;
       return `started session ${event.subjectId} from Slack in ${project}${why}`;
     }
+    case "slack.channel_default_set": {
+      const channel = text(event.data["channelId"]) ?? "?";
+      const project = text(event.data["projectName"]) ?? event.subjectId;
+      return `set the default project of Slack channel ${channel} to ${project}`;
+    }
+    case "slack.channel_default_cleared": {
+      const channel = text(event.data["channelId"]) ?? "?";
+      const project = text(event.data["projectName"]) ?? event.subjectId;
+      return `cleared the default project of Slack channel ${channel} (was ${project})`;
+    }
   }
 };
 

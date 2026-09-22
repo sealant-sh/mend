@@ -11,6 +11,7 @@ import {
   AuditEventsRepo,
   SessionControlEventsRepo,
   SessionNotFoundError,
+  SessionProcessesRepo,
   SessionsRepo,
   SlackDefaultsRepo,
   SlackEventClaimsRepo,
@@ -20,21 +21,28 @@ import {
   type NewAuditEvent,
   type SealedSlackInstall,
   type SlackLink,
+  type SlackOwnedSession,
   type SlackThreadSession,
 } from "@mend/db";
 import {
+  AgentRequestId,
   AgentTurnId,
   OrganizationId,
   ProjectId,
+  SealantWorkspaceId,
   SessionId,
   SessionProcessId,
   WorktreeId,
 } from "@mend/domain";
 import {
+  AgentRequest,
   AgentTurn,
   Project,
   Session,
+  SessionProcess,
+  type AgentInputQuestion,
   type AgentTurnStatus,
+  type SessionStatus,
   type SlackLinkedMentionJob,
   type SlackPendingMention,
 } from "@mend/domain/workbench";
@@ -45,8 +53,14 @@ import {
   type InferenceRequest,
 } from "@mend/inference";
 import { SealantClients, SealantPrincipal } from "@mend/sealant";
-import { SessionEngine } from "@mend/sessions";
-import { projectPickerBlockId, SLACK_ACTIONS, type SlackThreadMessage } from "@mend/slack";
+import { ProtocolHostNotLiveError, SessionEngine } from "@mend/sessions";
+import {
+  channelDefaultActionId,
+  channelSettingsBlockId,
+  projectPickerBlockId,
+  SLACK_ACTIONS,
+  type SlackThreadMessage,
+} from "@mend/slack";
 import { makeFakeSlack, type FakeSlackWorkspace } from "@mend/slack/client";
 import type { SlackEnvelope } from "@mend/slack/socket";
 import { SecretCipher, Store } from "@mend/store";
@@ -59,6 +73,7 @@ import { SessionStart } from "./session-start.ts";
 import { SessionSteering } from "./session-steering.ts";
 import {
   chooseProject,
+  followUpWhenNotLive,
   makeSlackRunner,
   mentionOf,
   parsePickerRequestKey,
@@ -196,8 +211,29 @@ interface WorldOptions {
   readonly launchFails?: StoreFailure;
   readonly accounts?: ReadonlyArray<ConnectedAccount>;
   readonly channelDefault?: ProjectId;
+  /** Who set the channel default; Alice unless said. */
+  readonly channelDefaultSetBy?: string;
   readonly personalDefault?: ProjectId;
-  readonly threadSession?: { readonly threadTs: string; readonly projectId: ProjectId };
+  /** The thread's latest session, `session-earlier`. */
+  readonly threadSession?: {
+    readonly threadTs: string;
+    readonly projectId: ProjectId;
+    /** Its owner; Bob unless said. */
+    readonly owner?: string;
+    readonly status?: SessionStatus;
+    /** Whether a protocol process of it takes turns here; true unless said. */
+    readonly live?: boolean;
+    /** Its latest agent process: by default a protocol one that exited with a provider id. */
+    readonly agent?: "resumable" | "no-provider-id" | "live-terminal" | "none";
+    /** A pending user-input request the agent made. */
+    readonly questions?: ReadonlyArray<AgentInputQuestion>;
+    /** The owner lets others steer it. */
+    readonly sharedControl?: boolean;
+  };
+  /** Bob is linked too, and sees the shared projects. */
+  readonly bobLinked?: boolean;
+  /** What `@mend list` finds for Alice, newest first. */
+  readonly owned?: ReadonlyArray<SlackOwnedSession>;
   /** The reporter moved the status message before the launch returned. */
   readonly reporterMovedFirst?: boolean;
   /**
@@ -209,6 +245,56 @@ interface WorldOptions {
   /** The turns every session has, for "Switch project". */
   readonly turns?: ReadonlyArray<AgentTurnStatus>;
 }
+
+const EARLIER = SessionId.make("session-earlier");
+
+const agentTurn = (sessionId: SessionId, status: AgentTurnStatus, ordinal: number) =>
+  new AgentTurn({
+    id: AgentTurnId.make(`turn-${ordinal}`),
+    sessionId,
+    processId: SessionProcessId.make("agent-1"),
+    ordinal,
+    author: "alice",
+    input: "tidy up",
+    status,
+    providerTurnId: null,
+    error: null,
+    usage: null,
+    createdAt: NOW,
+    startedAt: NOW,
+    endedAt: null,
+  });
+
+const agentProcess = (
+  sessionId: SessionId,
+  kind: "agent-protocol" | "agent-pty",
+  providerSessionId: string | null,
+  live: boolean,
+) =>
+  new SessionProcess({
+    id: SessionProcessId.make("agent-1"),
+    sessionId,
+    sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
+    sealantSessionId: "platform-1",
+    sealantRunId: null,
+    launchCorrelationId: null,
+    serviceId: null,
+    attemptOrdinal: null,
+    kind,
+    harness: "claude",
+    providerSessionId,
+    protocolOptions: null,
+    label: "claude",
+    argv: ["claude"],
+    status: live ? "running" : "stopped",
+    exitCode: live ? null : 0,
+    workspacePort: null,
+    protocol: "tcp",
+    hostPort: null,
+    createdAt: NOW,
+    exitedAt: live ? null : NOW,
+    updatedAt: NOW,
+  });
 
 /** A thread that names no repository: only inference can tell which project it is about. */
 const RETRY_THREAD = "1700000200.000100";
@@ -234,17 +320,30 @@ const world = (options: WorldOptions = {}) => {
   const note = (entry: string) => Effect.sync(() => void effects.push(entry));
   const slack = makeFakeSlack([slackWorkspace]);
   const claimed = new Set<string>();
-  const links: Array<SlackLink> = options.unlinked
-    ? []
-    : [
-        {
-          organizationId: ACME,
-          teamId: "T-acme",
-          slackUserId: "U-alice",
-          userId: "alice",
-          createdAt: NOW,
-        },
-      ];
+  const links: Array<SlackLink> = [
+    ...(options.unlinked === true
+      ? []
+      : [
+          {
+            organizationId: ACME,
+            teamId: "T-acme",
+            slackUserId: "U-alice",
+            userId: "alice",
+            createdAt: NOW,
+          },
+        ]),
+    ...(options.bobLinked === true
+      ? [
+          {
+            organizationId: ACME,
+            teamId: "T-acme",
+            slackUserId: "U-bob",
+            userId: "bob",
+            createdAt: NOW,
+          },
+        ]
+      : []),
+  ];
   const minted: Array<{ readonly slackUserId: string; readonly request: SlackPendingMention }> = [];
   const recorded: Array<SlackThreadSession> = [];
   /** The status line each session's message shows, as `slack_threads.reported_status`. */
@@ -261,6 +360,52 @@ const world = (options: WorldOptions = {}) => {
   const sessionsCreated = new Map<string, Session>();
   let creates = 0;
   const visible = [billing, web, notes];
+  /** Alice sees every project; a linked Bob sees the shared ones. */
+  const visibleTo = (userId: string) =>
+    userId === "alice"
+      ? visible
+      : userId === "bob" && options.bobLinked === true
+        ? visible.filter((candidate) => candidate.visibility === "shared")
+        : [];
+  let channelDefault = options.channelDefault ?? null;
+  const earlier = options.threadSession;
+  const earlierSession =
+    earlier === undefined
+      ? null
+      : new Session({
+          ...makeSession(
+            EARLIER,
+            earlier.projectId,
+            WorktreeId.make("wt-0"),
+            earlier.owner ?? "bob",
+          ),
+          harness: "claude",
+          status: earlier.status ?? "running",
+          origin: "slack",
+          sharedControlEnabledByUserId: earlier.sharedControl === true ? "alice" : null,
+          sharedControlEnabledAt: earlier.sharedControl === true ? NOW : null,
+        });
+  const question =
+    earlier?.questions === undefined
+      ? null
+      : new AgentRequest({
+          id: AgentRequestId.make("request-1"),
+          sessionId: EARLIER,
+          processId: SessionProcessId.make("agent-1"),
+          turnId: AgentTurnId.make("turn-1"),
+          kind: "user-input",
+          providerRequestId: "provider-request-1",
+          providerItemId: null,
+          title: null,
+          detail: null,
+          questions: earlier.questions,
+          status: "pending",
+          decision: null,
+          decidedBy: null,
+          answers: null,
+          createdAt: NOW,
+          decidedAt: null,
+        });
   const created = (projectId: ProjectId, owner: string) =>
     new Session({
       ...makeSession(
@@ -298,6 +443,7 @@ const world = (options: WorldOptions = {}) => {
         Effect.succeed(
           links.find((link) => link.teamId === teamId && link.slackUserId === slackUserId) ?? null,
         ),
+      listForUser: (userId) => Effect.succeed(links.filter((link) => link.userId === userId)),
       mintCode: ({ slackUserId, request }) =>
         note(`links.mintCode:${slackUserId}`).pipe(
           Effect.andThen(Effect.sync(() => minted.push({ slackUserId, request }))),
@@ -306,16 +452,37 @@ const world = (options: WorldOptions = {}) => {
     }),
     Layer.mock(SlackDefaultsRepo, {
       channelDefault: (teamId, channelId) =>
-        Effect.succeed(
-          options.channelDefault === undefined
+        Effect.sync(() =>
+          channelDefault === null
             ? null
             : {
                 teamId,
                 channelId,
-                projectId: options.channelDefault,
-                setByUserId: "alice",
+                projectId: channelDefault,
+                setByUserId: options.channelDefaultSetBy ?? "alice",
                 updatedAt: NOW,
               },
+        ),
+      setChannelDefault: (input) =>
+        note(
+          `defaults.setChannelDefault:${input.channelId}:${input.projectId}:${input.setByUserId}`,
+        ).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              channelDefault = input.projectId;
+              return { ...input, updatedAt: NOW };
+            }),
+          ),
+        ),
+      clearChannelDefault: (_teamId, channelId) =>
+        note(`defaults.clearChannelDefault:${channelId}`).pipe(
+          Effect.andThen(
+            Effect.sync(() => {
+              const had = channelDefault !== null;
+              channelDefault = null;
+              return had;
+            }),
+          ),
         ),
       personalDefault: () => Effect.succeed(options.personalDefault ?? null),
     }),
@@ -336,7 +503,7 @@ const world = (options: WorldOptions = {}) => {
         Effect.succeed(
           options.threadSession?.threadTs === thread.threadTs
             ? {
-                sessionId: SessionId.make("session-earlier"),
+                sessionId: EARLIER,
                 teamId: thread.teamId,
                 channelId: thread.channelId,
                 threadTs: thread.threadTs,
@@ -366,6 +533,10 @@ const world = (options: WorldOptions = {}) => {
             }),
           ),
         ),
+      listForOwner: (input) =>
+        note(`threads.listForOwner:${input.teamId}:${input.ownerUserId}:${input.limit}`).pipe(
+          Effect.as((options.owned ?? []).slice(0, input.limit)),
+        ),
       claimStatus: (sessionId, from, to) =>
         Effect.sync(() => {
           if (reported.get(sessionId) !== from) return false;
@@ -385,35 +556,33 @@ const world = (options: WorldOptions = {}) => {
       byId: (id) => {
         const made = sessionsCreated.get(id);
         if (made !== undefined) return Effect.succeed(made);
-        return options.threadSession !== undefined && id === SessionId.make("session-earlier")
-          ? Effect.succeed(
-              makeSession(id, options.threadSession.projectId, WorktreeId.make("wt-0"), "bob"),
-            )
+        return earlierSession !== null && id === EARLIER
+          ? Effect.succeed(earlierSession)
           : Effect.fail(new SessionNotFoundError({ sessionId: id }));
       },
     }),
     Layer.mock(AgentConversationRepo, {
       listTurns: (sessionId) =>
         Effect.succeed(
-          (options.turns ?? []).map(
-            (status, index) =>
-              new AgentTurn({
-                id: AgentTurnId.make(`turn-${index + 1}`),
-                sessionId,
-                processId: SessionProcessId.make("agent-1"),
-                ordinal: index + 1,
-                author: "alice",
-                input: "tidy up",
-                status,
-                providerTurnId: null,
-                error: null,
-                usage: null,
-                createdAt: NOW,
-                startedAt: NOW,
-                endedAt: null,
-              }),
-          ),
+          (options.turns ?? []).map((status, index) => agentTurn(sessionId, status, index + 1)),
         ),
+      listRequests: (sessionId, pendingOnly) =>
+        Effect.succeed(question !== null && sessionId === EARLIER && pendingOnly ? [question] : []),
+    }),
+    Layer.mock(SessionProcessesRepo, {
+      listForSession: (sessionId) => {
+        if (sessionId !== EARLIER) return Effect.succeed([]);
+        switch (earlier?.agent ?? "resumable") {
+          case "resumable":
+            return Effect.succeed([agentProcess(sessionId, "agent-protocol", "claude-1", false)]);
+          case "no-provider-id":
+            return Effect.succeed([agentProcess(sessionId, "agent-protocol", null, false)]);
+          case "live-terminal":
+            return Effect.succeed([agentProcess(sessionId, "agent-pty", "claude-1", true)]);
+          case "none":
+            return Effect.succeed([]);
+        }
+      },
     }),
     Layer.mock(SessionControlEventsRepo, {
       record: (event) =>
@@ -428,10 +597,26 @@ const world = (options: WorldOptions = {}) => {
               : Effect.void,
           ),
         ),
+      submitTurn: (sessionId, input, author) =>
+        note(`engine.submitTurn:${sessionId}:${author}:${input}`).pipe(
+          Effect.andThen(
+            earlier?.live === false
+              ? Effect.fail(new ProtocolHostNotLiveError({ processId: sessionId }))
+              : Effect.succeed(agentTurn(sessionId, "queued", 2)),
+          ),
+        ),
+      respondRequest: (requestId, response, decidedBy) =>
+        note(
+          `engine.respondRequest:${requestId}:${decidedBy}:${JSON.stringify("answers" in response ? response.answers : response.decision)}`,
+        ).pipe(
+          Effect.andThen(
+            question === null ? Effect.die("no question in this test") : Effect.succeed(question),
+          ),
+        ),
     }),
     Layer.mock(SessionSteering, {
       authorizeUser: (session, userId) =>
-        session.ownerUserId === userId
+        session.ownerUserId === userId || session.sharedControlEnabledAt !== null
           ? Effect.succeed(session)
           : Effect.fail(
               new SessionNotSteerable({
@@ -471,12 +656,10 @@ const world = (options: WorldOptions = {}) => {
       decrypt: (sealed) => Effect.succeed(sealed.replace(/^sealed:/, "")),
     }),
     Layer.mock(ProjectAccess, {
-      visibleProjectsOf: (userId) => Effect.succeed(userId === "alice" ? visible : []),
+      visibleProjectsOf: (userId) => Effect.succeed(visibleTo(userId)),
       projectAs: (userId, id) => {
-        const found = visible.find((candidate) => candidate.id === id);
-        return userId === "alice" && found !== undefined
-          ? Effect.succeed(found)
-          : Effect.fail(new NotFound({ id }));
+        const found = visibleTo(userId).find((candidate) => candidate.id === id);
+        return found === undefined ? Effect.fail(new NotFound({ id })) : Effect.succeed(found);
       },
     }),
     Layer.mock(SessionStart, {
@@ -604,6 +787,35 @@ const world = (options: WorldOptions = {}) => {
       actions: [{ action_id: SLACK_ACTIONS.switchProject, value: input.sessionId }],
     });
 
+  /** A click on the `@mend settings` reply: a project, or Clear. */
+  const settingsClick = (input: {
+    readonly user: string;
+    readonly envelopeId: string;
+    readonly threadTs: string;
+    /** A project id; null clicks Clear. */
+    readonly projectId: string | null;
+    readonly actionTs?: string;
+    readonly channel?: string;
+  }) =>
+    envelope("interactive", input.envelopeId, {
+      type: "block_actions",
+      team: { id: "T-acme" },
+      user: { id: input.user },
+      channel: { id: input.channel ?? "C-general" },
+      container: { channel_id: input.channel ?? "C-general", is_ephemeral: true },
+      actions: [
+        {
+          action_id:
+            input.projectId === null
+              ? SLACK_ACTIONS.clearChannelDefault
+              : channelDefaultActionId(0),
+          block_id: channelSettingsBlockId(input.threadTs),
+          ...(input.projectId === null ? { value: "clear" } : { value: input.projectId }),
+          ...(input.actionTs === undefined ? {} : { action_ts: input.actionTs }),
+        },
+      ],
+    });
+
   return {
     effects,
     slack,
@@ -619,6 +831,7 @@ const world = (options: WorldOptions = {}) => {
     mention,
     pick,
     switchClick,
+    settingsClick,
   };
 };
 
@@ -848,12 +1061,12 @@ describe("the Slack runner, choosing a project", () => {
     expect(w.recorded[0]?.projectSource).toBe("message");
   });
 
-  it("follows the thread's earlier session into its project", async () => {
+  it("starts another session in the thread's project on `new`", async () => {
     const w = world({ threadSession: { threadTs: "1700000200.000100", projectId: web.id } });
     await w.deliver(
       w.mention("Ev1", {
         user: "U-alice",
-        text: "<@U-bot> look into it",
+        text: "<@U-bot> new look into it",
         ts: "1700000200.000200",
         thread_ts: "1700000200.000100",
       }),
@@ -861,6 +1074,8 @@ describe("the Slack runner, choosing a project", () => {
 
     expect(w.recorded[0]).toMatchObject({ projectSource: "thread-session" });
     expect(w.effects).toContain(`start.createAs:alice:${web.id}:claude:null:slack`);
+    expect(w.effects.some((entry) => entry.startsWith("engine.submitTurn"))).toBe(false);
+    expect(w.launches[0]?.prompt?.startsWith("look into it")).toBe(true);
   });
 
   it("offers only shared projects in a channel, and private ones in a direct message", async () => {
@@ -1220,6 +1435,326 @@ describe("the Slack runner, switching a session's project", () => {
     ]);
     expect(w.effects.some((entry) => entry.startsWith("engine.stop"))).toBe(false);
     expect(w.effects.filter((entry) => entry.startsWith("start.createAs"))).toHaveLength(1);
+  });
+});
+
+describe("the Slack runner, following up a thread's session", () => {
+  const followUp = (w: ReturnType<typeof world>, text: string, user = "U-alice") =>
+    w.mention("Ev9", {
+      user,
+      text: `<@U-bot> ${text}`,
+      ts: "1700000200.000900",
+      thread_ts: RETRY_THREAD,
+    });
+  const alices = (overrides: Partial<NonNullable<WorldOptions["threadSession"]>> = {}) =>
+    world({
+      threadSession: { threadTs: RETRY_THREAD, projectId: web.id, owner: "alice", ...overrides },
+    });
+
+  it("sends the mention as a turn to the thread's latest session, as the person who sent it", async () => {
+    const w = alices();
+    await w.deliver(followUp(w, "also cover the logout test effort=high"));
+
+    expect(
+      w.effects.filter((entry) => !entry.startsWith("ack:") && !entry.startsWith("claim:")),
+    ).toEqual([`engine.submitTurn:session-earlier:alice:also cover the logout test`]);
+    expect(w.slack.calls).toEqual([]);
+    expect(w.inferences).toEqual([]);
+  });
+
+  it("refuses a follow-up from someone who may not steer the session, only to them", async () => {
+    const w = world({ threadSession: { threadTs: RETRY_THREAD, projectId: web.id } });
+    await w.deliver(followUp(w, "also cover the logout test"));
+
+    expect(posts(w, "postEphemeral")).toMatchObject([
+      {
+        user: "U-alice",
+        threadTs: RETRY_THREAD,
+        text: "not sent · only the session owner can steer this session",
+      },
+    ]);
+    expect(posts(w, "postMessage")).toEqual([]);
+    expect(w.slack.reactions.get("C-general:1700000200.000900")).toEqual(new Set(["x"]));
+    expect(w.effects.some((entry) => entry.startsWith("engine."))).toBe(false);
+    expect(w.effects.some((entry) => entry.startsWith("start."))).toBe(false);
+  });
+
+  it("starts a new session instead when the mention names another project", async () => {
+    const w = alices();
+    await w.deliver(followUp(w, "in billing-api check the ledger too"));
+
+    expect(w.effects.some((entry) => entry.startsWith("engine.submitTurn"))).toBe(false);
+    expect(w.effects).toContain(`start.createAs:alice:${billing.id}:claude:null:slack`);
+    expect(w.recorded[0]).toMatchObject({ projectSource: "message" });
+  });
+
+  it("answers the agent's question with the owner's mention, instead of a turn", async () => {
+    const questions: ReadonlyArray<AgentInputQuestion> = [
+      {
+        id: "q-retries",
+        header: null,
+        question: "Keep the retry limit?",
+        options: [
+          { label: "Keep 3", description: null },
+          { label: "Make it configurable", description: null },
+        ],
+        multiSelect: false,
+      },
+    ];
+    const w = alices({ questions });
+    await w.deliver(followUp(w, "2"));
+
+    expect(w.effects).toContain(
+      'engine.respondRequest:request-1:alice:{"q-retries":["Make it configurable"]}',
+    );
+    expect(w.effects.some((entry) => entry.startsWith("engine.submitTurn"))).toBe(false);
+
+    // Two questions, one line: refused, to the owner only.
+    const twice = alices({
+      questions: [...questions, { ...questions[0]!, id: "q-branch", question: "Which base?" }],
+    });
+    await twice.deliver(followUp(twice, "2"));
+    expect(posts(twice, "postEphemeral").map((post) => post.text)).toEqual([
+      "not answered · the agent asked 2 questions · answer one per line, in order",
+    ]);
+    expect(twice.effects.some((entry) => entry.startsWith("engine."))).toBe(false);
+  });
+
+  it("leaves the question to the owner: someone steering under shared control sends a turn", async () => {
+    const w = world({
+      bobLinked: true,
+      threadSession: {
+        threadTs: RETRY_THREAD,
+        projectId: web.id,
+        owner: "alice",
+        sharedControl: true,
+        questions: [
+          { id: "q", header: null, question: "Keep it?", options: [], multiSelect: false },
+        ],
+      },
+    });
+    await w.deliver(followUp(w, "keep it", "U-bob"));
+
+    expect(w.effects.filter((entry) => entry.startsWith("engine."))).toEqual([
+      "engine.submitTurn:session-earlier:bob:keep it",
+    ]);
+  });
+
+  it("resumes a session that is no longer live, with the follow-up as its opening turn", async () => {
+    const w = alices({ live: false, status: "completed" });
+    await w.deliver(followUp(w, "also cover the logout test"));
+
+    expect(
+      w.effects.filter((entry) => entry.startsWith("engine.") || entry.startsWith("start.")),
+    ).toEqual([
+      "engine.submitTurn:session-earlier:alice:also cover the logout test",
+      "start.launchAs:alice:session-earlier",
+    ]);
+    expect(w.launches).toMatchObject([{ mode: "protocol", prompt: "also cover the logout test" }]);
+    expect(w.slack.calls).toEqual([]);
+  });
+
+  it("says so, and starts a new session in the thread, when the session cannot be resumed", async () => {
+    const w = alices({ live: false, status: "failed", agent: "no-provider-id" });
+    await w.deliver(followUp(w, "try again"));
+
+    const [said] = posts(w, "postMessage");
+    expect(said).toMatchObject({
+      threadTs: RETRY_THREAD,
+      text: "The thread's session is no longer live and cannot be resumed. Mend starts a new session in this thread, with the thread as context.",
+    });
+    expect(w.effects).toContain(`start.createAs:alice:${web.id}:claude:null:slack`);
+    expect(w.recorded[0]).toMatchObject({
+      projectSource: "thread-session",
+      threadTs: RETRY_THREAD,
+    });
+    expect(w.launches[0]?.prompt).toContain("--- Slack thread context ---");
+    expect(w.launches[0]?.prompt).toContain("anyone seen the retry storm?");
+  });
+
+  it("leaves a session that is still starting, or live out of Slack's reach, alone", async () => {
+    const starting = alices({ live: false, status: "starting", agent: "none" });
+    await starting.deliver(followUp(starting, "also this"));
+    const terminal = alices({ live: false, agent: "live-terminal" });
+    await terminal.deliver(followUp(terminal, "also this"));
+
+    expect(posts(starting, "postEphemeral").map((post) => post.text)).toEqual([
+      "not sent · the session is still starting · mention Mend again once it runs",
+    ]);
+    expect(posts(terminal, "postEphemeral").map((post) => post.text)).toEqual([
+      "not sent · the session's agent runs where Slack cannot reach it · send it from Mend",
+    ]);
+    for (const w of [starting, terminal]) {
+      expect(w.effects.some((entry) => entry.startsWith("start."))).toBe(false);
+    }
+  });
+
+  it("decides what a follow-up does when nothing takes its turn", () => {
+    const session = { status: "completed" as const, harness: "claude" };
+    expect(
+      followUpWhenNotLive(session, agentProcess(EARLIER, "agent-protocol", "c-1", false)),
+    ).toBe("resume");
+    expect(followUpWhenNotLive(session, agentProcess(EARLIER, "agent-protocol", null, false))).toBe(
+      "start-new",
+    );
+    expect(followUpWhenNotLive(session, agentProcess(EARLIER, "agent-pty", "c-1", false))).toBe(
+      "start-new",
+    );
+    expect(followUpWhenNotLive(session, agentProcess(EARLIER, "agent-pty", "c-1", true))).toBe(
+      "out-of-reach",
+    );
+    expect(
+      followUpWhenNotLive(
+        { ...session, harness: "codex" },
+        agentProcess(EARLIER, "agent-protocol", "c-1", false),
+      ),
+    ).toBe("start-new");
+    expect(followUpWhenNotLive(session, null)).toBe("start-new");
+    expect(followUpWhenNotLive({ ...session, status: "starting" }, null)).toBe("starting");
+  });
+});
+
+/** Alice's mention of a command, in a channel or in her direct message with Mend. */
+const command = (w: ReturnType<typeof world>, text: string, channel = "C-general") =>
+  w.mention("Ev1", {
+    user: "U-alice",
+    text: `<@U-bot> ${text}`,
+    ts: "1700000500.000100",
+    channel,
+    ...(channel.startsWith("D") ? { type: "message", channel_type: "im" } : {}),
+  });
+
+describe("the Slack runner, for `settings` and `list`", () => {
+  it("shows the channel default and the shared projects the member can pick, only to them", async () => {
+    const w = world({ channelDefault: web.id, channelDefaultSetBy: "alice" });
+    await w.deliver(command(w, "settings"));
+
+    const [reply] = posts(w, "postEphemeral");
+    expect(reply).toMatchObject({ user: "U-alice" });
+    expect(reply?.text).toBe("channel default · web · set by you on 2026-09-23");
+    const blocks = JSON.stringify(reply?.blocks);
+    expect(blocks).toContain(`"value":"${billing.id}"`);
+    expect(blocks).not.toContain(notes.id);
+    expect(blocks).toContain(SLACK_ACTIONS.clearChannelDefault);
+    expect(blocks).toContain(channelSettingsBlockId("1700000500.000100"));
+  });
+
+  it("sets the channel default on a click, audits it, and does it once per click", async () => {
+    const w = world();
+    const click = {
+      user: "U-alice",
+      threadTs: "1700000500.000100",
+      projectId: billing.id,
+      actionTs: "1700000600.000001",
+    };
+    await w.deliver(
+      w.settingsClick({ ...click, envelopeId: "i1" }),
+      w.settingsClick({ ...click, envelopeId: "i2" }),
+    );
+
+    expect(w.effects.filter((entry) => entry.startsWith("defaults."))).toEqual([
+      `defaults.setChannelDefault:C-general:${billing.id}:alice`,
+    ]);
+    expect(w.audited).toMatchObject([
+      {
+        organizationId: ACME,
+        actorUserId: "alice",
+        action: "slack.channel_default_set",
+        subjectType: "project",
+        subjectId: billing.id,
+        data: {
+          teamId: "T-acme",
+          channelId: "C-general",
+          slackUserId: "U-alice",
+          projectName: "billing-api",
+          previousProjectId: null,
+        },
+      },
+    ]);
+    expect(posts(w, "postEphemeral")).toMatchObject([
+      {
+        user: "U-alice",
+        threadTs: "1700000500.000100",
+        text: "channel default · billing-api · set by you",
+      },
+    ]);
+  });
+
+  it("clears it, refuses a private project in a channel, and asks the unlinked to link", async () => {
+    const w = world({ channelDefault: web.id });
+    await w.deliver(
+      w.settingsClick({ user: "U-alice", envelopeId: "i1", threadTs: "1.1", projectId: null }),
+      w.settingsClick({ user: "U-alice", envelopeId: "i2", threadTs: "1.1", projectId: notes.id }),
+      w.settingsClick({ user: "U-bob", envelopeId: "i3", threadTs: "1.1", projectId: web.id }),
+    );
+
+    expect(w.effects.filter((entry) => entry.startsWith("defaults."))).toEqual([
+      "defaults.clearChannelDefault:C-general",
+    ]);
+    expect(w.audited).toMatchObject([
+      {
+        action: "slack.channel_default_cleared",
+        subjectId: web.id,
+        data: { channelId: "C-general", projectName: "web" },
+      },
+    ]);
+    expect(posts(w, "postEphemeral").map((post) => post.text)).toEqual([
+      "channel default · cleared by you",
+      "not set · the project is not one you can pick here · a channel offers shared projects only",
+      "Mend acts only for a linked Mend account. Mention Mend to get a link only you see.",
+    ]);
+  });
+
+  it("points a direct message's `settings` at Mend's own settings", async () => {
+    const w = world();
+    await w.deliver(command(w, "settings", "D-alice"));
+    const [reply] = posts(w, "postEphemeral");
+    expect(reply?.text).toContain("https://mend.acme.test/settings#slack");
+    expect(w.effects.some((entry) => entry.startsWith("defaults."))).toBe(false);
+  });
+
+  it("lists the person's Slack sessions with state and links, leaving out projects they cannot see", async () => {
+    const row = (
+      sessionId: string,
+      projectId: ProjectId,
+      state: SlackOwnedSession["reportedState"],
+    ): SlackOwnedSession => ({
+      sessionId: SessionId.make(sessionId),
+      teamId: "T-acme",
+      channelId: "C-general",
+      threadTs: "1.1",
+      requestTs: "1.1",
+      statusTs: "1.2",
+      slackUserId: "U-alice",
+      projectSource: "picked",
+      external: false,
+      reportedState: state,
+      reportedStatus: null,
+      createdAt: NOW,
+      projectId,
+      label: null,
+      harness: "claude",
+      branch: `mend/${sessionId}`,
+      status: "running",
+    });
+    const w = world({
+      owned: [
+        row("s3", billing.id, "completed"),
+        row("s2", ProjectId.make("p-gone"), "running"),
+        row("s1", web.id, null),
+      ],
+    });
+    await w.deliver(command(w, "list"));
+
+    expect(w.effects).toContain("threads.listForOwner:T-acme:alice:11");
+    const [reply] = posts(w, "postEphemeral");
+    expect(reply).toMatchObject({ user: "U-alice" });
+    const body = JSON.stringify(reply?.blocks);
+    expect(body).toContain(
+      "• <https://mend.acme.test/sessions/s3|mend/s3> · billing-api · completed · <#C-general>",
+    );
+    expect(body).toContain("• <https://mend.acme.test/sessions/s1|mend/s1> · web · running");
+    expect(body).not.toContain("s2");
   });
 });
 

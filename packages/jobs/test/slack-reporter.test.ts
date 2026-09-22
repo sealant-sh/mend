@@ -676,7 +676,7 @@ describe("the Slack thread reporter", () => {
     await w.observe(reporter);
 
     expect(w.posts().map((post) => post.text)).toEqual([
-      "<@U-alice> the agent asked a question · it is answered in Mend",
+      "<@U-alice> the agent asked a question · answer it in Mend, or mention Mend here with the answer",
       "approval requested · a command · answered in Mend",
     ]);
     expect(w.updates()).toHaveLength(1);

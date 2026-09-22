@@ -1,11 +1,11 @@
-import type { SessionId } from "@mend/domain";
-import type { SlackProjectSource, SlackSessionState } from "@mend/domain/workbench";
-import { and, desc, eq, isNotNull, isNull } from "drizzle-orm";
+import type { ProjectId, SessionId } from "@mend/domain";
+import type { SessionStatus, SlackProjectSource, SlackSessionState } from "@mend/domain/workbench";
+import { and, desc, eq, getTableColumns, isNotNull, isNull } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
-import { slackThreadPosts, slackThreads } from "../schema/workbench.ts";
+import { agentSessions, slackThreadPosts, slackThreads } from "../schema/workbench.ts";
 
 /** Where in Slack a thread is: its workspace, its channel and its first message. */
 export interface SlackThreadRef {
@@ -37,6 +37,15 @@ export interface SlackThreadSession extends SlackThreadRef {
 export interface SlackReportedStatus {
   readonly state: SlackSessionState;
   readonly line: string;
+}
+
+/** A session its owner started from Slack, with what `@mend list` shows of it. */
+export interface SlackOwnedSession extends SlackThreadSession {
+  readonly projectId: ProjectId;
+  readonly label: string | null;
+  readonly harness: string;
+  readonly branch: string;
+  readonly status: SessionStatus;
 }
 
 export interface NewSlackThreadSession {
@@ -86,6 +95,15 @@ export class SlackThreadsRepo extends Context.Service<
     ) => Effect.Effect<boolean>;
     /** Claim a reply by key before posting it: true for exactly one caller, ever. */
     readonly claimPost: (sessionId: SessionId, key: string) => Effect.Effect<boolean>;
+    /**
+     * The sessions an account owns that were started from threads in one Slack workspace, newest
+     * first: what `@mend list` shows that person.
+     */
+    readonly listForOwner: (input: {
+      readonly teamId: string;
+      readonly ownerUserId: string;
+      readonly limit: number;
+    }) => Effect.Effect<ReadonlyArray<SlackOwnedSession>>;
   }
 >()("@mend/db/SlackThreadsRepo") {}
 
@@ -176,6 +194,41 @@ export const SlackThreadsRepoLive: Layer.Layer<SlackThreadsRepo, never, MendDB> 
       return inserted.length === 1;
     });
 
-    return { record, latestInThread, forSession, setStatusTs, claimStatus, claimPost };
+    const listForOwner = Effect.fn("SlackThreadsRepo.listForOwner")(function* (input: {
+      readonly teamId: string;
+      readonly ownerUserId: string;
+      readonly limit: number;
+    }) {
+      return yield* db
+        .select({
+          ...getTableColumns(slackThreads),
+          projectId: agentSessions.projectId,
+          label: agentSessions.label,
+          harness: agentSessions.harness,
+          branch: agentSessions.branch,
+          status: agentSessions.status,
+        })
+        .from(slackThreads)
+        .innerJoin(agentSessions, eq(agentSessions.id, slackThreads.sessionId))
+        .where(
+          and(
+            eq(slackThreads.teamId, input.teamId),
+            eq(agentSessions.ownerUserId, input.ownerUserId),
+          ),
+        )
+        .orderBy(desc(slackThreads.createdAt), desc(slackThreads.sessionId))
+        .limit(input.limit)
+        .pipe(Effect.orDie);
+    });
+
+    return {
+      record,
+      latestInThread,
+      forSession,
+      setStatusTs,
+      claimStatus,
+      claimPost,
+      listForOwner,
+    };
   }),
 );

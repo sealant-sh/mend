@@ -4,6 +4,10 @@ import {
   agentMessage,
   AGENT_MESSAGE_LIMIT,
   approvalMessage,
+  channelDefaultActionId,
+  channelDefaultChanged,
+  channelSettingsBlockId,
+  channelSettingsMessage,
   changeUrl,
   changeWords,
   clipAgentMessage,
@@ -21,11 +25,14 @@ import {
   reactionFor,
   requestKeyOfPicker,
   reviewMessage,
+  sessionListMessage,
+  setsChannelDefault,
   SLACK_ACTIONS,
   sessionUrl,
   statusLine,
   splitDiff,
   statusMessage,
+  threadOfChannelSettings,
   type StatusInput,
 } from "./format.ts";
 
@@ -329,13 +336,23 @@ describe("what the reporter posts", () => {
       "<@U-alice> the agent asks:\n*Retry* Keep &lt;3 retries?\n• Yes · as today\n• No",
     );
     expect(copyOf(shown)).toContain(`<${url}|open the session>`);
+    expect(copyOf(shown)).toContain("Mention Mend here with the answer, or answer in Mend");
+    const twice = questionMessage({
+      ownerSlackUserId: "U-alice",
+      questions: [...questions, { header: null, question: "Which branch?", options: [] }],
+      showText: true,
+      url,
+    });
+    expect(copyOf(twice)).toContain("one answer per line, in order");
     const hidden = questionMessage({
       ownerSlackUserId: "U-alice",
       questions,
       showText: false,
       url,
     });
-    expect(hidden.text).toBe("<@U-alice> the agent asked a question · it is answered in Mend");
+    expect(hidden.text).toBe(
+      "<@U-alice> the agent asked a question · answer it in Mend, or mention Mend here with the answer",
+    );
     expect(copyOf(hidden)).not.toContain("retries");
   });
 
@@ -437,5 +454,89 @@ describe("what the reporter posts", () => {
       reviewMessage({ drafts: 0, suggestions: 0, url }),
     ];
     for (const message of messages) expect(copyOf(message)).not.toMatch(VERDICTS);
+  });
+});
+
+describe("@mend settings", () => {
+  const projects = Array.from({ length: 7 }, (_, index) => ({
+    id: `p-${index}`,
+    name: `project-${index}`,
+  }));
+
+  it("shows the channel default, with a button per project, Other… and Clear", () => {
+    const message = channelSettingsMessage({
+      threadTs: "1.1",
+      current: { project: "billing-api", setBy: "<@U-bob>", setOn: "2026-09-23" },
+      projects,
+    });
+    expect(message.text).toBe("channel default · billing-api · set by <@U-bob> on 2026-09-23");
+    const actions = message.blocks[1];
+    expect(actions?.type === "actions" ? actions.block_id : null).toBe(
+      channelSettingsBlockId("1.1"),
+    );
+    const ids = actions?.type === "actions" ? actions.elements.map((e) => e.action_id) : [];
+    expect(ids).toEqual([
+      ...Array.from({ length: 5 }, (_, index) => channelDefaultActionId(index)),
+      SLACK_ACTIONS.otherChannelDefault,
+      SLACK_ACTIONS.clearChannelDefault,
+    ]);
+    expect(ids.filter(setsChannelDefault)).toHaveLength(6);
+    expect(setsChannelDefault(SLACK_ACTIONS.clearChannelDefault)).toBe(false);
+    expect(threadOfChannelSettings(channelSettingsBlockId("1.1"))).toBe("1.1");
+    expect(threadOfChannelSettings(projectPickerBlockId("1.1/1.1"))).toBeNull();
+  });
+
+  it("says when there is no default, hides a project the person cannot see, and offers no Clear then", () => {
+    const none = channelSettingsMessage({ threadTs: "1.1", current: null, projects: [] });
+    expect(none.text).toBe("channel default · none");
+    expect(none.blocks).toHaveLength(1);
+    expect(copyOf(none)).toContain("No shared projects you can see to set it to.");
+    const hidden = channelSettingsMessage({
+      threadTs: "1.1",
+      current: { project: null, setBy: "a member", setOn: "2026-09-23" },
+      projects: projects.slice(0, 2),
+    });
+    expect(hidden.text).toContain("a project you cannot see");
+    expect(copyOf(hidden)).not.toContain(SLACK_ACTIONS.otherChannelDefault);
+    expect(channelDefaultChanged("web").text).toBe("channel default · web · set by you");
+    expect(channelDefaultChanged(null).text).toBe("channel default · cleared by you");
+  });
+});
+
+describe("@mend list", () => {
+  it("lists each session with its state, channel and link, and says when there are older ones", () => {
+    const message = sessionListMessage({
+      sessions: [
+        {
+          project: "billing-api",
+          label: "retry | storm",
+          branch: "mend/retry",
+          state: "completed",
+          channelId: "C-general",
+          url: "https://mend.example/sessions/s2",
+        },
+        {
+          project: "web",
+          label: null,
+          branch: "mend/header",
+          state: "waiting",
+          channelId: "D-alice",
+          url: "https://mend.example/sessions/s1",
+        },
+      ],
+      more: true,
+    });
+    const body = message.blocks[0]?.type === "section" ? message.blocks[0].text.text : "";
+    expect(body.split("\n")).toEqual([
+      "Your sessions started from Slack, newest first:",
+      "• <https://mend.example/sessions/s2|retry   storm> · billing-api · completed · <#C-general>",
+      "• <https://mend.example/sessions/s1|mend/header> · web · waiting for input · <#D-alice>",
+      "Older sessions are in Mend.",
+    ]);
+    expect(message.text).toBe("2 sessions started from Slack");
+    expect(copyOf(message)).not.toMatch(VERDICTS);
+    expect(sessionListMessage({ sessions: [], more: false }).text).toBe(
+      "No sessions you started from Slack in this workspace.",
+    );
   });
 });

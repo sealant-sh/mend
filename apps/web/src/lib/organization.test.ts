@@ -74,6 +74,16 @@ describe("describeAudit for Slack (docs/adr/0006)", () => {
         }),
       ),
     ).toBe("started session carol from Slack in billing-api · channel default");
+    expect(
+      describeAudit(
+        event("slack.channel_default_set", { channelId: "C1", projectName: "billing-api" }),
+      ),
+    ).toBe("set the default project of Slack channel C1 to billing-api");
+    expect(
+      describeAudit(
+        event("slack.channel_default_cleared", { channelId: "C1", projectName: "billing-api" }),
+      ),
+    ).toBe("cleared the default project of Slack channel C1 (was billing-api)");
   });
 });
 
