@@ -756,11 +756,13 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     (selectedSession.status === "starting" || isPendingId(selectedSession.id));
   const snake = useSnake({
     width: Math.max(8, Math.min(40, detailWidth - 4)),
-    // The pane minus the facts, the rule, the starting line and the score line.
-    height: Math.max(4, Math.min(14, layout.detailRows - factRows - 5)),
+    // The pane minus the facts, the rule, the starting line, two lines of hints and the border.
+    height: Math.max(4, Math.min(14, layout.detailRows - factRows - 8)),
     enabled: waiting,
   });
-  const snakeSteers = waiting && focus === "detail";
+  // esc puts the game away for this session; space brings it back.
+  const [snakeAwayFor, setSnakeAwayFor] = useState<string | null>(null);
+  const snakeShown = waiting && snakeAwayFor !== selectedSession?.id;
   const previewRows = Math.max(1, layout.detailRows - factRows - (showFactRule ? 1 : 0));
   const previewView = previewWindow(preview, previewRows, previewOffset);
 
@@ -1571,17 +1573,25 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     if (reviewing !== null) return;
     if (lockRef.current) return;
     if (key.ctrl && key.name === "c") return onQuit();
-    if (
-      snakeSteers &&
-      picker === null &&
-      editing === null &&
-      creating === null &&
-      (key.name === "up" || key.name === "down" || key.name === "left" || key.name === "right")
-    ) {
-      // The arrows go to the snake while a starting session is in the focused detail pane;
-      // h j k l and tab still move the dashboard.
-      snake.steer(key.name);
-      return;
+    if (waiting && focus === "detail" && picker === null && editing === null && creating === null) {
+      // The snake, while a starting session is in the focused detail pane. The arrows steer it,
+      // space pauses it, esc puts it away and space brings it back; h j k l and tab still move
+      // the dashboard.
+      if (snakeShown) {
+        if (
+          key.name === "up" ||
+          key.name === "down" ||
+          key.name === "left" ||
+          key.name === "right"
+        ) {
+          snake.steer(key.name);
+          return;
+        }
+        if (key.name === "space") return snake.togglePause();
+        if (key.name === "escape") return setSnakeAwayFor(selectedSession?.id ?? null);
+      } else if (key.name === "space") {
+        return setSnakeAwayFor(null);
+      }
     }
     const verb = verbForKey(key.name ?? "", key.shift === true);
     if (verb !== "stop") setStopArmed(null);
@@ -2037,7 +2047,11 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
                     }
                   </span>
                 </text>
-                <SnakeBoard handle={snake} focused={focus === "detail"} />
+                {snakeShown ? (
+                  <SnakeBoard handle={snake} focused={focus === "detail"} />
+                ) : (
+                  <EmptyNote text="snake is put away · space brings it back" />
+                )}
               </>
             ) : previewSessionId === null ? (
               <EmptyNote text="provisioning — no record yet" />
