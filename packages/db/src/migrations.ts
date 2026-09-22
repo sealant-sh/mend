@@ -1825,6 +1825,114 @@ const upgradeTicketsMigration = Effect.gen(function* () {
   yield* sql`CREATE INDEX upgrade_tickets_expires_at_idx ON upgrade_tickets (expires_at)`;
 });
 
+/**
+ * docs/adr/0006-slack.md: an organization's Slack app, the Slack users linked to Mend accounts,
+ * the defaults that pick a project, the threads sessions report to, and the events already
+ * claimed. Tokens are stored sealed (`SecretCipher`) and link codes as their sha256 only.
+ * Removing an install removes its links, link codes and channel defaults; removing a member
+ * removes their link. Threads stay with their sessions, and a session keeps its origin.
+ */
+const slackMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE agent_sessions
+      ADD COLUMN origin text NOT NULL DEFAULT 'mend',
+      ADD CONSTRAINT agent_sessions_origin_check CHECK (origin IN ('mend', 'slack'))`;
+
+  // One app per organization, and a Slack workspace belongs to at most one organization. The
+  // (organization, team) key is what a link's composite reference points at.
+  yield* sql`
+    CREATE TABLE slack_installs (
+      organization_id text PRIMARY KEY REFERENCES organizations (id) ON DELETE CASCADE,
+      team_id text NOT NULL,
+      team_name text NOT NULL,
+      bot_user_id text NOT NULL,
+      app_id text NOT NULL,
+      sealed_app_token text NOT NULL,
+      sealed_bot_token text NOT NULL,
+      web_origin text NOT NULL,
+      default_harness text NOT NULL DEFAULT 'claude',
+      show_agent_messages boolean NOT NULL DEFAULT true,
+      show_diffs boolean NOT NULL DEFAULT false,
+      external_channels boolean NOT NULL DEFAULT false,
+      installed_by_user_id text NOT NULL REFERENCES "user" (id) ON DELETE RESTRICT,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT slack_installs_team_id_key UNIQUE (team_id),
+      CONSTRAINT slack_installs_organization_team_key UNIQUE (organization_id, team_id)
+    )`;
+
+  // One Slack user in one workspace to one Mend account in the install's organization, and back.
+  yield* sql`
+    CREATE TABLE slack_links (
+      organization_id text NOT NULL,
+      team_id text NOT NULL,
+      slack_user_id text NOT NULL,
+      user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (team_id, slack_user_id),
+      CONSTRAINT slack_links_team_user_key UNIQUE (team_id, user_id),
+      CONSTRAINT slack_links_install_fkey FOREIGN KEY (organization_id, team_id)
+        REFERENCES slack_installs (organization_id, team_id) ON DELETE CASCADE,
+      CONSTRAINT slack_links_member_fkey FOREIGN KEY (organization_id, user_id)
+        REFERENCES organization_members (organization_id, user_id) ON DELETE CASCADE
+    )`;
+  yield* sql`
+    CREATE TABLE slack_link_codes (
+      code_hash text PRIMARY KEY,
+      team_id text NOT NULL REFERENCES slack_installs (team_id) ON DELETE CASCADE,
+      slack_user_id text NOT NULL,
+      request jsonb NOT NULL,
+      expires_at timestamptz NOT NULL,
+      used_at timestamptz,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`CREATE INDEX slack_link_codes_expires_at_idx ON slack_link_codes (expires_at)`;
+
+  yield* sql`
+    CREATE TABLE slack_channel_defaults (
+      team_id text NOT NULL REFERENCES slack_installs (team_id) ON DELETE CASCADE,
+      channel_id text NOT NULL,
+      project_id text NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+      set_by_user_id text NOT NULL REFERENCES "user" (id) ON DELETE RESTRICT,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (team_id, channel_id)
+    )`;
+  yield* sql`
+    CREATE TABLE slack_user_defaults (
+      user_id text PRIMARY KEY REFERENCES "user" (id) ON DELETE CASCADE,
+      project_id text NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+
+  // A thread holds many sessions; a session belongs to at most one thread.
+  yield* sql`
+    CREATE TABLE slack_threads (
+      session_id text PRIMARY KEY REFERENCES agent_sessions (id) ON DELETE CASCADE,
+      team_id text NOT NULL,
+      channel_id text NOT NULL,
+      thread_ts text NOT NULL,
+      request_ts text NOT NULL,
+      status_ts text,
+      slack_user_id text NOT NULL,
+      project_source text NOT NULL,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE INDEX slack_threads_thread_idx
+    ON slack_threads (team_id, channel_id, thread_ts, created_at DESC)`;
+
+  // Slack may deliver an event twice, or to two workers: the first claim wins. Old claims are
+  // swept by age.
+  yield* sql`
+    CREATE TABLE slack_event_claims (
+      event_id text PRIMARY KEY,
+      team_id text NOT NULL,
+      claimed_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`CREATE INDEX slack_event_claims_claimed_at_idx ON slack_event_claims (claimed_at)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1888,4 +1996,5 @@ export const migrations = {
   "0059_audit_events": auditEventsMigration,
   "0060_shared_control": sharedControlMigration,
   "0061_upgrade_tickets": upgradeTicketsMigration,
+  "0062_slack": slackMigration,
 };

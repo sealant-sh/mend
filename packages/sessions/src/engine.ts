@@ -58,6 +58,7 @@ import type {
   HotWorkspace,
   Project,
   Session,
+  SessionOrigin,
   SessionProcess,
   SessionRun,
   Worktree,
@@ -410,6 +411,8 @@ export interface ProvisionInput {
   readonly base: string | null;
   /** Who is provisioning — whose dotfiles apply at launch. Null when the caller is unknown. */
   readonly ownerUserId: string | null;
+  /** Where the session was started from (docs/adr/0006-slack.md); absent is `mend`. */
+  readonly origin?: SessionOrigin;
 }
 
 /** Anonymous worktrees are keyed by their own id, named ones by the name. */
@@ -542,6 +545,7 @@ export class SessionEngine extends Context.Service<
         readonly harness: string;
         readonly label: string | null;
         readonly ownerUserId: string | null;
+        readonly origin?: SessionOrigin;
       },
     ) => Effect.Effect<Session, WorktreeNotFoundError | ProjectNotFoundError>;
     readonly attachRun: (
@@ -2005,6 +2009,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly harness: string;
           readonly label: string | null;
           readonly ownerUserId: string | null;
+          readonly origin?: SessionOrigin;
         },
       ) {
         const session = yield* sessions.create({
@@ -2014,6 +2019,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           harness: input.harness,
           label: input.label,
           ownerUserId: input.ownerUserId,
+          origin: input.origin ?? "mend",
           worktree: worktree.directory,
           branch: worktree.branch,
           baseSha: worktree.baseSha,
@@ -2038,6 +2044,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly harness: string;
           readonly label: string | null;
           readonly ownerUserId: string | null;
+          readonly origin?: SessionOrigin;
         },
       ) {
         if (project.hotSessions > 0) {
@@ -6824,6 +6831,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly harness: string;
           readonly label: string | null;
           readonly ownerUserId: string | null;
+          readonly origin?: SessionOrigin;
         },
       ) {
         // Capture mode: one executor per worktree (ADR-0002). A worktree another session's
@@ -6881,6 +6889,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           harness: input.harness,
           label: input.label,
           ownerUserId: input.ownerUserId,
+          origin: input.origin ?? "mend",
           worktree: worktree.directory,
           branch: worktree.branch,
           baseSha: worktree.baseSha,

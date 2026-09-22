@@ -2107,7 +2107,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           label: payload.label,
           name: payload.name,
           base: payload.base,
-          origin: null,
+          origin: "mend",
         });
       }),
     )

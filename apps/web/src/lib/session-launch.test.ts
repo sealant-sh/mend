@@ -36,6 +36,7 @@ const session: SessionDto = {
   workspaceImage: null,
   dotfiles: null,
   ownerUserId: null,
+  origin: "mend",
   sharedControlEnabledByUserId: null,
   sharedControlEnabledAt: null,
   hasTranscript: null,

@@ -64,6 +64,7 @@ import {
   ReviewCommentAnchor,
   SessionDotfiles,
   SkillFile,
+  SlackPendingMention,
   TourStop,
 } from "@mend/domain/workbench";
 import type {
@@ -105,12 +106,15 @@ import type {
   SessionProcessKind,
   SessionProcessStatus,
   SessionReferenceMount,
+  SessionOrigin,
   SessionStatus,
+  SlackProjectSource,
 } from "@mend/domain/workbench";
 import { sql } from "drizzle-orm";
 import {
   bigint,
   boolean,
+  foreignKey,
   index,
   integer,
   jsonb,
@@ -876,6 +880,164 @@ export const cliAuthRequests = pgTable("cli_auth_requests", {
   collectedAt: timestamp({ mode: "date", withTimezone: true }),
 });
 
+/**
+ * An organization's Slack app (docs/adr/0006-slack.md): one per organization, and a Slack workspace
+ * (`team_id`) belongs to at most one organization on the instance. Both tokens are sealed with
+ * `SecretCipher` before they reach this table. `web_origin` is the origin the owner connected
+ * from, and every link Mend posts into Slack is built from it.
+ */
+export const slackInstalls = pgTable(
+  "slack_installs",
+  {
+    organizationId: text()
+      .$type<OrganizationId>()
+      .primaryKey()
+      .references(() => organizations.id, { onDelete: "cascade" }),
+    teamId: text().notNull(),
+    teamName: text().notNull(),
+    botUserId: text().notNull(),
+    appId: text().notNull(),
+    sealedAppToken: text().notNull(),
+    sealedBotToken: text().notNull(),
+    webOrigin: text().notNull(),
+    defaultHarness: text().notNull().default("claude"),
+    showAgentMessages: boolean().notNull().default(true),
+    showDiffs: boolean().notNull().default(false),
+    externalChannels: boolean().notNull().default(false),
+    // FK to "user"(id) ON DELETE RESTRICT, declared in the migration.
+    installedByUserId: text().notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    unique("slack_installs_team_id_key").on(table.teamId),
+    unique("slack_installs_organization_team_key").on(table.organizationId, table.teamId),
+  ],
+);
+
+/**
+ * One Slack user in one Slack workspace, joined to one Mend account in the install's organization.
+ * Each side links once per workspace. Removing the install or the membership removes the link.
+ */
+export const slackLinks = pgTable(
+  "slack_links",
+  {
+    organizationId: text().$type<OrganizationId>().notNull(),
+    teamId: text().notNull(),
+    slackUserId: text().notNull(),
+    // FK to "user"(id) ON DELETE CASCADE, declared in the migration.
+    userId: text().notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.teamId, table.slackUserId] }),
+    unique("slack_links_team_user_key").on(table.teamId, table.userId),
+    foreignKey({
+      name: "slack_links_install_fkey",
+      columns: [table.organizationId, table.teamId],
+      foreignColumns: [slackInstalls.organizationId, slackInstalls.teamId],
+    }).onDelete("cascade"),
+    foreignKey({
+      name: "slack_links_member_fkey",
+      columns: [table.organizationId, table.userId],
+      foreignColumns: [organizationMembers.organizationId, organizationMembers.userId],
+    }).onDelete("cascade"),
+  ],
+);
+
+/**
+ * A single-use link code, valid for ten minutes. Only its sha256 is stored. `request` is the
+ * mention that asked, which runs once the link is made.
+ */
+export const slackLinkCodes = pgTable(
+  "slack_link_codes",
+  {
+    codeHash: text().primaryKey(),
+    teamId: text()
+      .notNull()
+      .references(() => slackInstalls.teamId, { onDelete: "cascade" }),
+    slackUserId: text().notNull(),
+    request: jsonbOf(SlackPendingMention).notNull(),
+    expiresAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    usedAt: timestamp({ mode: "date", withTimezone: true }),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("slack_link_codes_expires_at_idx").on(table.expiresAt)],
+);
+
+/** A channel's default project, set with `@mend settings` by any member of the channel. */
+export const slackChannelDefaults = pgTable(
+  "slack_channel_defaults",
+  {
+    teamId: text()
+      .notNull()
+      .references(() => slackInstalls.teamId, { onDelete: "cascade" }),
+    channelId: text().notNull(),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    // FK to "user"(id) ON DELETE RESTRICT, declared in the migration.
+    setByUserId: text().notNull(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.teamId, table.channelId] })],
+);
+
+/** A person's default project for Slack, set in Mend under Settings → Slack. */
+export const slackUserDefaults = pgTable("slack_user_defaults", {
+  // FK to "user"(id) ON DELETE CASCADE, declared in the migration.
+  userId: text().primaryKey(),
+  projectId: text()
+    .$type<ProjectId>()
+    .notNull()
+    .references(() => projects.id, { onDelete: "cascade" }),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * The Slack thread a session reports to. A thread holds many sessions, and a mention in it follows
+ * up the most recent one. `request_ts` is the mention that started the session, and `status_ts`
+ * the status message Mend edits in place (null until it is posted).
+ */
+export const slackThreads = pgTable(
+  "slack_threads",
+  {
+    sessionId: text()
+      .$type<SessionId>()
+      .primaryKey()
+      .references(() => agentSessions.id, { onDelete: "cascade" }),
+    teamId: text().notNull(),
+    channelId: text().notNull(),
+    threadTs: text().notNull(),
+    requestTs: text().notNull(),
+    statusTs: text(),
+    /** Who asked, in Slack. */
+    slackUserId: text().notNull(),
+    projectSource: text().$type<SlackProjectSource>().notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("slack_threads_thread_idx").on(
+      table.teamId,
+      table.channelId,
+      table.threadTs,
+      table.createdAt.desc(),
+    ),
+  ],
+);
+
+/** A Slack event some worker has claimed. The first claim acts; old claims are swept by age. */
+export const slackEventClaims = pgTable(
+  "slack_event_claims",
+  {
+    eventId: text().primaryKey(),
+    teamId: text().notNull(),
+    claimedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("slack_event_claims_claimed_at_idx").on(table.claimedAt)],
+);
+
 export const contextSnapshots = pgTable("context_snapshots", {
   id: text().$type<ContextSnapshotId>().primaryKey(),
   packName: text(),
@@ -937,6 +1099,8 @@ export const agentSessions = pgTable(
     dotfiles: jsonbOf(SessionDotfiles),
     // Who provisioned the session — whose dotfiles apply. NULL for pre-column rows.
     ownerUserId: text(),
+    // Where it was started from (0062): Mend's own surfaces, or a mention in Slack.
+    origin: text().$type<SessionOrigin>().notNull().default("mend"),
     // Shared control (0060): both set while the owner lets others steer, both null otherwise.
     sharedControlEnabledByUserId: text(),
     sharedControlEnabledAt: timestamp({ mode: "date", withTimezone: true }),

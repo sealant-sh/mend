@@ -15,6 +15,7 @@ import {
   SessionDotfiles,
   type NativeIngestCursor,
   type SessionExtraMount,
+  type SessionOrigin,
   type SessionReferenceMount,
   type SessionStatus,
 } from "@mend/domain/workbench";
@@ -52,6 +53,8 @@ export interface NewSession {
   readonly contextSnapshotId: ContextSnapshotId | null;
   /** Who provisioned the session — whose dotfiles apply at launch. */
   readonly ownerUserId: string | null;
+  /** Where it was started from. */
+  readonly origin: SessionOrigin;
 }
 
 /** Terminal session states; `stopped` is the user's stop, not a failure. */
