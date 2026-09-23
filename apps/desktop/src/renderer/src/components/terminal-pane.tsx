@@ -4,6 +4,7 @@ import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { LogsView } from "#/components/logs-view";
+import { RecordReplay, TranscriptView } from "#/components/record-replay";
 import { ReplayScrubber } from "#/components/replay-scrubber";
 import { StatusDot } from "#/components/status-dot";
 import { TtyTerminal } from "#/components/tty-terminal";
@@ -17,8 +18,15 @@ import {
   type SessionProcessDto,
   agentIsLive,
 } from "#/lib/api";
-import { queryClient, sessionDetailQuery } from "#/lib/queries";
+import { queryClient, sessionDetailQuery, sessionProcessesQuery } from "#/lib/queries";
+import { processEndFact } from "#/lib/record";
 import { reviewOpenKey, takeReplayCursor } from "#/lib/review";
+import {
+  livenessOfError,
+  processPtyLiveness,
+  sessionPtyLiveness,
+  type PtyLiveness,
+} from "#/lib/tty-attach";
 import { statusTone, statusWord } from "#/lib/words";
 import type { Tab } from "#/lib/workbench";
 
@@ -36,10 +44,39 @@ function Quiet({ className, ...props }: React.ComponentProps<typeof Button>) {
 }
 
 /**
+ * Whether the tab's PTY process still runs, read fresh from the server; the refetch also updates
+ * the cached detail, so an ended session's pane turns into its record without another round trip.
+ */
+const probeTab = (tab: Tab, projectId: string | null) => (): Promise<PtyLiveness> => {
+  if (tab.kind === "shell") {
+    return queryClient
+      .fetchQuery({ ...sessionProcessesQuery(tab.sessionId), staleTime: 0 })
+      .then((processes) => processPtyLiveness(processes, tab.processId), livenessOfError);
+  }
+  return queryClient
+    .fetchQuery({ ...sessionDetailQuery(tab.sessionId), staleTime: 0 })
+    .then((detail) => {
+      const liveness = sessionPtyLiveness(detail);
+      if (liveness === "ended" && projectId !== null) {
+        void queryClient.invalidateQueries({ queryKey: ["project", projectId] });
+      }
+      return liveness;
+    }, livenessOfError);
+};
+
+/** What an ended session's record says happened, as one terse line. */
+const sessionEndFact = (session: SessionDto, agent: SessionProcessDto | null): string =>
+  agent !== null && agent.exitedAt !== null
+    ? processEndFact(agent)
+    : `${session.status} · observed`;
+
+/**
  * The terminal (BRIEF.md): one dominant PTY for the focused tab, with a slim
  * header strip of facts and the two Mend actions. Session tabs show the agent
- * session's terminal — settled ones dim and grow the replay scrubber. Shell
- * tabs attach the mend shell's PTY in the bench workspace.
+ * session's terminal while its agent runs. An ended agent has no PTY to
+ * attach: its tab replays the record (#/components/record-replay) with the
+ * scrubber beneath, or reads the conversation. Shell tabs attach the
+ * supporting shell's PTY in the session's workspace.
  */
 export function TerminalPane({
   tab,
@@ -72,6 +109,7 @@ export function TerminalPane({
     enabled: isSessionTab,
   });
   const [from, setFrom] = useState(() => takeReplayCursor(tab.sessionId));
+  const [recordFace, setRecordFace] = useState<"replay" | "transcript">("replay");
   const mark = useMutation({
     mutationFn: () => checkpointSession(tab.sessionId, "user-mark"),
     onSuccess: () => queryClient.invalidateQueries({ queryKey: ["session", tab.sessionId] }),
@@ -111,6 +149,10 @@ export function TerminalPane({
   const live = session !== null && agentIsLive(session, currentAgent);
   const agentPty = currentAgent?.sealantSessionId ?? session?.sealantSessionId ?? null;
   const change = detail.data?.change ?? null;
+  // The ended agent's record: its PTY output replays when the process had a platform PTY.
+  const recordProcess =
+    currentAgent !== null && currentAgent.sealantSessionId !== null ? currentAgent : null;
+  const face = recordProcess === null ? "transcript" : recordFace;
   const review = useMutation({
     mutationFn: (changeId: string) => openReview(changeId, reviewOpenKey(changeId)),
     onSuccess: (opened) => onReview(opened.slice.changeId, opened.slice.id),
@@ -234,6 +276,14 @@ export function TerminalPane({
             provisioning workspace — the terminal attaches the moment the PTY is live (a first
             launch can take minutes)…
           </p>
+        ) : isSessionTab && session !== null && !live ? (
+          detail.isPending ? (
+            <p className="p-4 font-mono text-[11.5px] text-term-faint">reading the session…</p>
+          ) : face === "replay" && recordProcess !== null ? (
+            <RecordReplay key={recordProcess.id} processId={recordProcess.id} from={from} />
+          ) : (
+            <TranscriptView sessionId={tab.sessionId} />
+          )
         ) : (
           <TtyTerminal
             // The PTY handle is the attach identity: a session that was provisioning
@@ -246,15 +296,23 @@ export function TerminalPane({
             }
             sessionId={tab.sessionId}
             from={isSessionTab ? from : "0"}
-            dim={isSessionTab && !live}
+            probe={probeTab(tab, session?.projectId ?? null)}
             focus
             focusRequest={terminalFocusRequest}
           />
         )}
       </div>
 
-      {isSessionTab && session !== null && !live && (
-        <ReplayScrubber checkpoints={detail.data?.checkpoints ?? []} from={from} onSeek={setFrom} />
+      {isSessionTab && session !== null && !live && !detail.isPending && (
+        <ReplayScrubber
+          checkpoints={detail.data?.checkpoints ?? []}
+          from={from}
+          onSeek={setFrom}
+          seekable={face === "replay"}
+          fact={sessionEndFact(session, currentAgent)}
+          face={recordProcess === null ? null : face}
+          onFace={setRecordFace}
+        />
       )}
     </div>
   );

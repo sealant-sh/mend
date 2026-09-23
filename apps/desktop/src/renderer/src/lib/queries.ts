@@ -14,6 +14,7 @@ import {
   projectPullRequests,
   reviewDiff,
   sessionDetail,
+  sessionTranscript,
 } from "#/lib/api";
 
 /**
@@ -67,6 +68,13 @@ export const sessionRecipesQuery = (id: string) =>
   queryOptions({
     queryKey: ["session", id, "recipes"],
     queryFn: () => listSessionRecipes(id),
+  });
+
+export const sessionTranscriptQuery = (id: string) =>
+  queryOptions({
+    queryKey: ["session", id, "transcript"],
+    queryFn: () => sessionTranscript(id),
+    staleTime: Number.POSITIVE_INFINITY,
   });
 
 export const processOutputQuery = (id: string) =>
