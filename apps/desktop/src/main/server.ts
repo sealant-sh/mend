@@ -1,13 +1,22 @@
+import os from "node:os";
+
 import type {
   ApiRequest,
   ApiResponse,
+  AuthorizeOpened,
+  AuthorizeResult,
   EventsState,
-  SignInInput,
-  SignInResult,
+  SignOutResult,
   TtyTarget,
   WorkbenchEvent,
 } from "../shared/bridge";
 import { loadConfig, saveConfig } from "./config";
+import {
+  awaitDeviceApproval,
+  openDeviceRequest,
+  type DeviceLoginDeps,
+  type OpenedRequest,
+} from "./device-login";
 
 /**
  * Main's side of the wire: plain fetch with the bearer, the same shapes the
@@ -50,49 +59,82 @@ export const request = async (input: ApiRequest): Promise<ApiResponse> => {
   return { status: response.status, ok: response.ok, body };
 };
 
+// ─── sign-in: the CLI's authorize walk (./device-login) ─────────────────────
+
+const deviceDeps = (): DeviceLoginDeps => ({
+  fetch,
+  sleep: (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  now: Date.now,
+  name: `${os.hostname()} · desktop`,
+});
+
+/** The one open authorize request; opening another abandons it. */
+let pending: {
+  readonly base: string;
+  readonly request: OpenedRequest;
+  cancelled: boolean;
+} | null = null;
+
+/** Open an authorize request; the caller sends the human to `authorizeUrl`. */
+export const startAuthorize = async (url: string): Promise<AuthorizeOpened> => {
+  if (pending !== null) pending.cancelled = true;
+  pending = null;
+  const opened = await openDeviceRequest(url, deviceDeps());
+  if (!opened.ok) return opened;
+  pending = { base: opened.view.url, request: opened.request, cancelled: false };
+  return { ok: true, ...opened.view };
+};
+
 /**
- * Email + password against better-auth's sign-in route; the bearer plugin
- * answers with `set-auth-token`. Saved to the shared credential file, so the
- * CLI is signed in too.
+ * Wait for the open request's decision. An approval is saved to the shared credential file with
+ * its device id, exactly as `mend login` saves it, so `mend logout` can revoke it too.
  */
-export const signIn = async (input: SignInInput): Promise<SignInResult> => {
-  const url = normalizeUrl(input.url);
-  if (url === "") return { ok: false, reason: "a server URL is required" };
-  let response: Response;
-  try {
-    response = await fetch(`${url}/api/auth/sign-in/email`, {
-      method: "POST",
-      // Sign-in must name one of the server's explicitly configured public origins.
-      headers: { "content-type": "application/json", origin: url },
-      body: JSON.stringify({ email: input.email, password: input.password }),
-    });
-  } catch {
-    return { ok: false, reason: `cannot reach the Mend server at ${url} — is it running?` };
-  }
-  if (response.status === 400 || response.status === 401 || response.status === 403) {
-    return { ok: false, reason: `sign-in refused for ${input.email} at ${url}` };
-  }
-  if (!response.ok) {
-    return { ok: false, reason: `sign-in failed: ${url} responded ${response.status}` };
-  }
-  const token = response.headers.get("set-auth-token");
-  if (token === null || token === "") {
-    return {
-      ok: false,
-      reason: "the server signed you in but returned no bearer token (bearer plugin missing?)",
-    };
-  }
-  saveConfig({ url, token });
-  return { ok: true, url };
+export const awaitAuthorize = async (): Promise<AuthorizeResult> => {
+  const flow = pending;
+  if (flow === null) return { ok: false, reason: "no authorize request is open" };
+  const result = await awaitDeviceApproval(
+    flow.base,
+    flow.request,
+    deviceDeps(),
+    () => flow.cancelled,
+  );
+  if (pending === flow) pending = null;
+  if (!result.ok) return result;
+  saveConfig({ url: result.url, token: result.token, deviceId: result.deviceId });
+  return { ok: true, url: result.url, email: result.email, deviceName: result.deviceName };
 };
 
+export const cancelAuthorize = (): void => {
+  if (pending !== null) pending.cancelled = true;
+  pending = null;
+};
+
+/** A pasted token: kept as given, with no device id (it may not be a device at all). */
 export const setToken = (input: { readonly url: string; readonly token: string }): void => {
-  saveConfig({ url: normalizeUrl(input.url), token: input.token.trim() });
+  saveConfig({ url: normalizeUrl(input.url), token: input.token.trim(), deviceId: null });
 };
 
-export const signOut = (): void => {
+/**
+ * Signing out revokes the device on the server when the saved token is one (`mend logout` does
+ * the same): merely forgetting a live token would leave it valid until someone found it under
+ * Settings → Devices. The local copy goes either way.
+ */
+export const signOut = async (): Promise<SignOutResult> => {
   const config = loadConfig();
-  saveConfig({ url: config.url, token: null });
+  let revoke: SignOutResult["revoke"] = "no-device";
+  if (config.token !== null && config.deviceId !== null) {
+    try {
+      const response = await fetch(
+        `${normalizeUrl(config.url)}/api/me/devices/${encodeURIComponent(config.deviceId)}`,
+        { method: "DELETE", headers: { authorization: `Bearer ${config.token}` } },
+      );
+      revoke = response.ok ? "revoked" : "not-revoked";
+    } catch {
+      revoke = "not-revoked";
+    }
+  }
+  saveConfig({ url: config.url, token: null, deviceId: null });
+  return { revoke };
 };
 
 /** Whether `/health` says this server mints upgrade tickets (absent on a server older than them). */

@@ -17,12 +17,20 @@ import {
   type ApiRequest,
   type ConnectionInfo,
   type EventsState,
-  type SignInInput,
   type TtyTarget,
   type WorkbenchEvent,
 } from "../shared/bridge";
 import { configPath, loadConfig, watchConfig } from "./config";
-import { request, setToken, signIn, signOut, subscribeEvents, ttyUrl } from "./server";
+import {
+  awaitAuthorize,
+  cancelAuthorize,
+  request,
+  setToken,
+  signOut,
+  startAuthorize,
+  subscribeEvents,
+  ttyUrl,
+} from "./server";
 import { isMendSocket, SOCKET_URL_PATTERNS, withoutBrowserCredentials } from "./socket-headers";
 
 /**
@@ -144,11 +152,19 @@ const connectionChanged = () => {
 
 const registerIpc = () => {
   ipcMain.handle(IPC.connectionGet, () => connectionInfo());
-  ipcMain.handle(IPC.connectionSignIn, async (_event, input: SignInInput) => {
-    const result = await signIn(input);
+  ipcMain.handle(IPC.connectionAuthorize, async (_event, url: string) => {
+    const opened = await startAuthorize(url);
+    // The browser opens on the approve page, as `mend login` opens it; the page shows the URL
+    // too, for a browser that does not open.
+    if (opened.ok) void shell.openExternal(opened.authorizeUrl).catch(() => undefined);
+    return opened;
+  });
+  ipcMain.handle(IPC.connectionAwaitAuthorize, async () => {
+    const result = await awaitAuthorize();
     if (result.ok) connectionChanged();
     return result;
   });
+  ipcMain.handle(IPC.connectionCancelAuthorize, () => cancelAuthorize());
   ipcMain.handle(
     IPC.connectionSetToken,
     (_event, input: { readonly url: string; readonly token: string }) => {
@@ -156,9 +172,10 @@ const registerIpc = () => {
       connectionChanged();
     },
   );
-  ipcMain.handle(IPC.connectionSignOut, () => {
-    signOut();
+  ipcMain.handle(IPC.connectionSignOut, async () => {
+    const result = await signOut();
     connectionChanged();
+    return result;
   });
   ipcMain.handle(IPC.apiRequest, (_event, input: ApiRequest) => request(input));
   ipcMain.handle(IPC.ttyUrl, (_event, target: TtyTarget, from: string) => ttyUrl(target, from));

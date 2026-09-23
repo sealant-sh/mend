@@ -2,22 +2,45 @@ import { Button } from "@mend/ui/components/ui/button";
 import { Input } from "@mend/ui/components/ui/input";
 import { Label } from "@mend/ui/components/ui/label";
 import { createFileRoute, useNavigate } from "@tanstack/react-router";
-import { useState } from "react";
+import { useRef, useState } from "react";
 
 import { Titlebar } from "#/components/titlebar";
 import { useConnection } from "#/lib/connection";
 import { queryClient } from "#/lib/queries";
 
 /**
- * Where the desktop points, and who it is. Sign in once here or with
- * `mend login` in a terminal — both write the same credential file, so the
- * CLI and the cockpit are signed in together. Nothing asks for a password
- * again until the token is rejected.
+ * Where the desktop points, and who it is. Signing in is `mend login`'s walk: the app opens an
+ * authorize request, the browser shows the code, someone signed in there approves it, and this
+ * machine becomes a listed device (Settings → Devices on the web) with its own revocable token.
+ * The token and its device id land in the credential file the CLI shares, so either side signs
+ * both in. A pasted token is the fallback for a server without a browser in reach.
  */
 
 interface ConnectSearch {
   readonly reason?: "signed-out" | "unauthorized";
 }
+
+type Authorize =
+  | { readonly kind: "idle" }
+  | { readonly kind: "opening" }
+  | {
+      readonly kind: "waiting";
+      readonly code: string;
+      readonly authorizeUrl: string;
+      readonly expiresAt: string;
+    };
+
+const expiryLine = (expiresAt: string): string => {
+  const at = Date.parse(expiresAt);
+  return Number.isNaN(at) ? "" : ` · open until ${new Date(at).toLocaleTimeString()}`;
+};
+
+const revokeLine = (revoke: "revoked" | "not-revoked" | "no-device"): string =>
+  revoke === "revoked"
+    ? "Signed out · the device was revoked on the server."
+    : revoke === "not-revoked"
+      ? "Signed out here · the server did not revoke the device; end it under Settings → Devices on the web."
+      : "Signed out · the token was removed from the credential file.";
 
 export const Route = createFileRoute("/connect")({
   validateSearch: (search: Record<string, unknown>): ConnectSearch => {
@@ -35,12 +58,14 @@ function Connect() {
   const navigate = useNavigate();
   const connection = useConnection();
   const [url, setUrl] = useState<string | null>(null);
-  const [email, setEmail] = useState("");
-  const [password, setPassword] = useState("");
   const [token, setToken] = useState("");
-  const [mode, setMode] = useState<"password" | "token">("password");
+  const [mode, setMode] = useState<"browser" | "token">("browser");
+  const [authorize, setAuthorize] = useState<Authorize>({ kind: "idle" });
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  /** Bumped per walk and on cancel: an answer for an abandoned walk changes nothing. */
+  const walk = useRef(0);
 
   const serverUrl = url ?? connection?.url ?? "";
 
@@ -49,23 +74,48 @@ function Connect() {
     await navigate({ to: "/" });
   };
 
+  const signInWithBrowser = async () => {
+    walk.current += 1;
+    const mine = walk.current;
+    setAuthorize({ kind: "opening" });
+    const opened = await window.mend.connection.authorize(serverUrl);
+    if (mine !== walk.current) return;
+    if (!opened.ok) {
+      setAuthorize({ kind: "idle" });
+      setError(opened.reason);
+      return;
+    }
+    setUrl(opened.url);
+    setAuthorize({
+      kind: "waiting",
+      code: opened.code,
+      authorizeUrl: opened.authorizeUrl,
+      expiresAt: opened.expiresAt,
+    });
+    const result = await window.mend.connection.awaitAuthorize();
+    if (mine !== walk.current) return;
+    setAuthorize({ kind: "idle" });
+    if (!result.ok) {
+      setError(result.reason);
+      return;
+    }
+    await finish();
+  };
+
   const submit = async () => {
-    setPending(true);
     setError(null);
+    setNotice(null);
+    if (mode === "browser") {
+      await signInWithBrowser();
+      return;
+    }
+    if (token.trim() === "") {
+      setError("paste the token first");
+      return;
+    }
+    setPending(true);
     try {
-      if (mode === "password") {
-        const result = await window.mend.connection.signIn({ url: serverUrl, email, password });
-        if (!result.ok) {
-          setError(result.reason);
-          return;
-        }
-      } else {
-        if (token.trim() === "") {
-          setError("paste the token first");
-          return;
-        }
-        await window.mend.connection.setToken({ url: serverUrl, token });
-      }
+      await window.mend.connection.setToken({ url: serverUrl, token });
       await finish();
     } finally {
       setPending(false);
@@ -78,6 +128,8 @@ function Connect() {
       : reason === "signed-out"
         ? "Not signed in to a Mend server yet."
         : null;
+
+  const busy = pending || authorize.kind !== "idle";
 
   return (
     <>
@@ -108,35 +160,40 @@ function Connect() {
               placeholder="http://localhost:3105"
               spellCheck={false}
               autoCapitalize="off"
+              disabled={authorize.kind !== "idle"}
             />
           </div>
 
-          {mode === "password" ? (
-            <>
-              <div className="mt-4 grid gap-1.5">
-                <Label htmlFor="connect-email">Email</Label>
-                <Input
-                  id="connect-email"
-                  className={field}
-                  type="email"
-                  value={email}
-                  onChange={(event) => setEmail(event.target.value)}
-                  autoComplete="username"
-                  autoFocus
-                />
+          {mode === "browser" ? (
+            authorize.kind === "waiting" ? (
+              <div className="mt-4 rounded-xl border border-rule bg-canvas px-4 py-3">
+                <p className="font-sans text-[12.5px] text-label">
+                  Approve in the browser if it shows this code
+                </p>
+                <p className="mt-1 font-mono text-[22px] tracking-[0.12em] text-foreground">
+                  {authorize.code}
+                </p>
+                <p className="mt-2 font-mono text-[11.5px] break-all text-label">
+                  <button
+                    type="button"
+                    className="text-left text-primary underline-offset-2 hover:underline"
+                    onClick={() => void window.mend.shell.openExternal(authorize.authorizeUrl)}
+                  >
+                    {authorize.authorizeUrl}
+                  </button>
+                </p>
+                <p className="mt-2 font-mono text-[11.5px] text-muted-foreground">
+                  waiting for approval{expiryLine(authorize.expiresAt)} · nothing is granted until
+                  someone approves
+                </p>
               </div>
-              <div className="mt-4 grid gap-1.5">
-                <Label htmlFor="connect-password">Password</Label>
-                <Input
-                  id="connect-password"
-                  className={field}
-                  type="password"
-                  value={password}
-                  onChange={(event) => setPassword(event.target.value)}
-                  autoComplete="current-password"
-                />
-              </div>
-            </>
+            ) : (
+              <p className="mt-4 font-sans text-[13px] leading-relaxed text-label">
+                Your browser opens on the server&apos;s approve page. Sign in there if asked, check
+                the code matches, and approve. This machine is then a device you can revoke under
+                Settings → Devices.
+              </p>
+            )
           ) : (
             <div className="mt-4 grid gap-1.5">
               <Label htmlFor="connect-token">Bearer token</Label>
@@ -155,22 +212,51 @@ function Connect() {
 
           {error !== null && <p className="mt-3 font-sans text-[12.5px] text-danger">{error}</p>}
 
+          {notice !== null && <p className="mt-3 font-sans text-[12.5px] text-label">{notice}</p>}
+
           <div className="mt-6 flex items-center gap-3">
-            <Button type="submit" size="lg" disabled={pending || serverUrl === ""}>
-              {pending ? "Signing in…" : mode === "password" ? "Sign in" : "Use this token"}
-            </Button>
-            <Button
-              type="button"
-              variant="ghost"
-              onClick={() => {
-                setError(null);
-                setMode(mode === "password" ? "token" : "password");
-              }}
-            >
-              {mode === "password" ? "Paste a token instead" : "Sign in with a password"}
-            </Button>
+            {authorize.kind === "waiting" ? (
+              <Button
+                key="cancel"
+                type="button"
+                variant="outline"
+                size="lg"
+                onClick={(event) => {
+                  // The submit button takes this spot on the same render: keep the click from
+                  // submitting the form it lands in.
+                  event.preventDefault();
+                  walk.current += 1;
+                  setAuthorize({ kind: "idle" });
+                  void window.mend.connection.cancelAuthorize();
+                }}
+              >
+                Cancel
+              </Button>
+            ) : (
+              <Button key="submit" type="submit" size="lg" disabled={busy || serverUrl === ""}>
+                {mode === "token"
+                  ? pending
+                    ? "Saving…"
+                    : "Use this token"
+                  : authorize.kind === "opening"
+                    ? "Opening…"
+                    : "Sign in with the browser"}
+              </Button>
+            )}
+            {authorize.kind === "idle" && (
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => {
+                  setError(null);
+                  setMode(mode === "browser" ? "token" : "browser");
+                }}
+              >
+                {mode === "browser" ? "Paste a token instead" : "Sign in with the browser"}
+              </Button>
+            )}
             <span className="flex-1" />
-            {connection?.signedIn === true && (
+            {connection?.signedIn === true && authorize.kind === "idle" && (
               <Button type="button" variant="ghost" onClick={() => void finish()}>
                 Back to the cockpit
               </Button>
@@ -189,13 +275,14 @@ function Connect() {
               size="sm"
               className="mt-2"
               onClick={() => {
-                void window.mend.connection.signOut().then(() => {
+                void window.mend.connection.signOut().then((result) => {
                   queryClient.clear();
+                  setNotice(revokeLine(result.revoke));
                   return null;
                 });
               }}
             >
-              sign out · removes the token from that file
+              sign out · revokes this device when it is one, removes the token
             </Button>
           )}
         </form>

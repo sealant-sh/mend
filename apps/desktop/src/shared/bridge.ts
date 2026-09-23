@@ -7,7 +7,7 @@
  * HTTP rides IPC (Node's fetch has no CORS to negotiate). The workbench event
  * stream is read in main and relayed as `onEvent`. The terminal is the one
  * held duplex the renderer opens itself: a WebSocket to `/api/tty`, the same
- * data plane the CLI uses, with the bearer folded into `?token=` by main.
+ * data plane the CLI uses, carrying a single-use upgrade ticket main mints.
  */
 
 export interface ConnectionInfo {
@@ -32,15 +32,32 @@ export interface ApiResponse {
   readonly body: unknown;
 }
 
-export interface SignInInput {
-  readonly url: string;
-  readonly email: string;
-  readonly password: string;
-}
-
-export type SignInResult =
-  | { readonly ok: true; readonly url: string }
+/** An authorize request is open: the human approves `code` at `authorizeUrl` in a browser. */
+export type AuthorizeOpened =
+  | {
+      readonly ok: true;
+      /** The server URL as normalized for dialing. */
+      readonly url: string;
+      readonly code: string;
+      readonly authorizeUrl: string;
+      readonly expiresAt: string;
+    }
   | { readonly ok: false; readonly reason: string };
+
+/** The request's decision. Approved means saved: this machine is now a listed device. */
+export type AuthorizeResult =
+  | {
+      readonly ok: true;
+      readonly url: string;
+      readonly email: string;
+      readonly deviceName: string;
+    }
+  | { readonly ok: false; readonly reason: string };
+
+/** What signing out did on the server; the local token is removed in every case. */
+export interface SignOutResult {
+  readonly revoke: "revoked" | "not-revoked" | "no-device";
+}
 
 /** One line from `/api/events` (plan §9.4 — payloads are pointers). */
 export interface WorkbenchEvent {
@@ -62,9 +79,14 @@ export interface MendBridge {
   readonly platform: "darwin" | "linux" | "win32";
   readonly connection: {
     readonly get: () => Promise<ConnectionInfo>;
-    readonly signIn: (input: SignInInput) => Promise<SignInResult>;
+    /** Open an authorize request and send the browser to it (`mend login`'s walk). */
+    readonly authorize: (url: string) => Promise<AuthorizeOpened>;
+    /** Resolves when the open request is approved, denied, expired or cancelled. */
+    readonly awaitAuthorize: () => Promise<AuthorizeResult>;
+    readonly cancelAuthorize: () => Promise<void>;
     readonly setToken: (input: { readonly url: string; readonly token: string }) => Promise<void>;
-    readonly signOut: () => Promise<void>;
+    /** Revokes this machine's device on the server when it is one, then forgets the token. */
+    readonly signOut: () => Promise<SignOutResult>;
     /** Fires after any change to the connection (sign-in, sign-out, file edit). */
     readonly onChange: (listener: (info: ConnectionInfo) => void) => () => void;
   };
@@ -91,7 +113,9 @@ export interface MendBridge {
 
 export const IPC = {
   connectionGet: "mend:connection:get",
-  connectionSignIn: "mend:connection:sign-in",
+  connectionAuthorize: "mend:connection:authorize",
+  connectionAwaitAuthorize: "mend:connection:await-authorize",
+  connectionCancelAuthorize: "mend:connection:cancel-authorize",
   connectionSetToken: "mend:connection:set-token",
   connectionSignOut: "mend:connection:sign-out",
   connectionChanged: "mend:connection:changed",

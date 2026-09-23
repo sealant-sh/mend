@@ -6,7 +6,6 @@ import {
   type ConnectionInfo,
   type EventsState,
   type MendBridge,
-  type SignInInput,
   type TtyTarget,
   type WorkbenchEvent,
 } from "../shared/bridge";
@@ -34,7 +33,9 @@ const bridge: MendBridge = {
   platform,
   connection: {
     get: () => ipcRenderer.invoke(IPC.connectionGet),
-    signIn: (input: SignInInput) => ipcRenderer.invoke(IPC.connectionSignIn, input),
+    authorize: (url: string) => ipcRenderer.invoke(IPC.connectionAuthorize, url),
+    awaitAuthorize: () => ipcRenderer.invoke(IPC.connectionAwaitAuthorize),
+    cancelAuthorize: () => ipcRenderer.invoke(IPC.connectionCancelAuthorize),
     setToken: (input) => ipcRenderer.invoke(IPC.connectionSetToken, input),
     signOut: () => ipcRenderer.invoke(IPC.connectionSignOut),
     onChange: subscribe<ConnectionInfo>(IPC.connectionChanged),
