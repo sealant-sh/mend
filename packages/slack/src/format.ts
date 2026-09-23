@@ -3,6 +3,7 @@ import {
   type SlackProjectSource,
   type SlackSessionState,
 } from "@mend/domain/workbench";
+import { Option, Schema } from "effect";
 
 import type {
   ActionsBlock,
@@ -263,6 +264,57 @@ export const agentMessage = (text: string, url: string): SlackMessage => {
   };
 };
 
+/** Claude's `TodoWrite` call, as the adapter records it: the tool-use block with its todo list. */
+const TodoWriteCall = Schema.Struct({
+  input: Schema.Struct({
+    todos: Schema.Array(Schema.Struct({ content: Schema.String, status: Schema.String })),
+  }),
+});
+
+/** Codex's todo list item: its entries and whether each is done. */
+const CodexTodoList = Schema.Struct({
+  items: Schema.Array(Schema.Struct({ text: Schema.String, completed: Schema.Boolean })),
+});
+
+const decodeTodoWrite = Schema.decodeUnknownOption(TodoWriteCall);
+const decodeCodexTodoList = Schema.decodeUnknownOption(CodexTodoList);
+
+const checklist = (entries: ReadonlyArray<{ readonly text: string; readonly mark: string }>) =>
+  entries.length === 0
+    ? null
+    : ["**Plan**", ...entries.map((entry) => `- ${entry.mark} ${entry.text.trim()}`)].join("\n");
+
+/**
+ * A plan item as text: its own text when the agent wrote one (Codex's plan), or its todo list as a
+ * short checklist (Claude's `TodoWrite`, Codex's todo list), ☑ for done and ☐ for the rest. Null
+ * when the item carries neither.
+ */
+export const planText = (item: {
+  readonly text: string | null;
+  readonly data: unknown;
+}): string | null => {
+  if (item.text !== null && item.text.trim() !== "") return item.text;
+  const claude = decodeTodoWrite(item.data);
+  if (Option.isSome(claude)) {
+    return checklist(
+      claude.value.input.todos.map((todo) => ({
+        text: todo.status === "in_progress" ? `${todo.content} · in progress` : todo.content,
+        mark: todo.status === "completed" ? "☑" : "☐",
+      })),
+    );
+  }
+  const codex = decodeCodexTodoList(item.data);
+  if (Option.isSome(codex)) {
+    return checklist(
+      codex.value.items.map((entry) => ({
+        text: entry.text,
+        mark: entry.completed ? "☑" : "☐",
+      })),
+    );
+  }
+  return null;
+};
+
 // ---------------------------------------------------------------------------
 // What the reporter posts as the session moves.
 // ---------------------------------------------------------------------------
@@ -395,26 +447,64 @@ export const approvalMessage = (input: {
   );
 };
 
-/**
- * After the machine review pass (Mend reads the change): what it drafted, with a "Review in Mend"
- * button. Zero is said out loud; it is an outcome, not silence.
- */
-export const reviewMessage = (input: {
+/** The review tour's own words, as Mend wrote them with inference from the diff and the record. */
+export interface TourSummary {
+  readonly summary: string;
+  readonly approach: string | null;
+}
+
+/** What the machine review pass drafted over the change. */
+export interface DraftCounts {
   readonly drafts: number;
   readonly suggestions: number;
+}
+
+/** Says where the summary came from, under it. */
+export const SUMMARY_PROVENANCE =
+  "summary · written by Mend using inference on the diff and the session record";
+
+/**
+ * The end-of-session reply, once Mend's passes over the change have run: the review tour's summary
+ * and approach, then what the review pass drafted, with a "Review in Mend" button. Either part may
+ * be missing: the summary where agent messages are not shown or the tour did not run, the count
+ * where no review pass ran. Zero drafts is said out loud; it is an outcome, not silence. Null when
+ * there is neither.
+ */
+export const reviewMessage = (input: {
+  readonly summary: TourSummary | null;
+  readonly drafts: DraftCounts | null;
   readonly url: string;
-}): SlackMessage => {
-  const drafted =
-    input.drafts === 0
-      ? "no draft comments"
-      : `${input.drafts} draft ${input.drafts === 1 ? "comment" : "comments"}`;
-  const suggested = input.suggestions === 0 ? "" : ` · ${input.suggestions} with a suggested edit`;
-  return lineWithButton(`Mend read the change · ${drafted}${suggested}`, {
+}): SlackMessage | null => {
+  const { summary, drafts } = input;
+  if (summary === null && drafts === null) return null;
+  const counted =
+    drafts === null
+      ? ""
+      : ` · ${
+          drafts.drafts === 0
+            ? "no draft comments"
+            : `${drafts.drafts} draft ${drafts.drafts === 1 ? "comment" : "comments"}`
+        }${drafts.suggestions === 0 ? "" : ` · ${drafts.suggestions} with a suggested edit`}`;
+  const review = lineWithButton(`Mend read the change${counted}`, {
     type: "button",
     action_id: SLACK_ACTIONS.reviewChange,
     text: plain("Review in Mend"),
     url: input.url,
   });
+  if (summary === null) return review;
+  const approach = summary.approach?.trim() ?? "";
+  const body = [
+    `**Summary**\n${summary.summary.trim()}`,
+    ...(approach === "" ? [] : [`**Approach**\n${approach}`]),
+  ].join("\n\n");
+  return {
+    text: review.text,
+    blocks: [
+      { type: "markdown", text: clip(body, AGENT_MESSAGE_LIMIT) },
+      { type: "context", elements: [{ type: "mrkdwn", text: SUMMARY_PROVENANCE }] },
+      ...review.blocks,
+    ],
+  };
 };
 
 /** Each changed file's diff is cut at this many characters. */

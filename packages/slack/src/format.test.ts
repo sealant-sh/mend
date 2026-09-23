@@ -19,6 +19,7 @@ import {
   linkUrl,
   outsiderMessage,
   pickProjectActionId,
+  planText,
   projectPicker,
   projectPickerBlockId,
   questionMessage,
@@ -32,6 +33,7 @@ import {
   statusLine,
   splitDiff,
   statusMessage,
+  SUMMARY_PROVENANCE,
   threadOfChannelSettings,
   type StatusInput,
 } from "./format.ts";
@@ -373,21 +375,110 @@ describe("what the reporter posts", () => {
   it("counts what the review pass drafted, zero included, with a Review in Mend button", () => {
     const review = changeUrl("https://mend.example/", "chg 1");
     expect(review).toBe("https://mend.example/changes/chg%201");
-    const message = reviewMessage({ drafts: 3, suggestions: 1, url: review });
-    expect(message.text).toBe("Mend read the change · 3 draft comments · 1 with a suggested edit");
-    expect(message.blocks[0]).toMatchObject({
+    const message = reviewMessage({
+      summary: null,
+      drafts: { drafts: 3, suggestions: 1 },
+      url: review,
+    });
+    expect(message?.text).toBe("Mend read the change · 3 draft comments · 1 with a suggested edit");
+    expect(message?.blocks).toHaveLength(1);
+    expect(message?.blocks[0]).toMatchObject({
       accessory: {
         action_id: SLACK_ACTIONS.reviewChange,
         text: { text: "Review in Mend" },
         url: review,
       },
     });
-    expect(reviewMessage({ drafts: 0, suggestions: 0, url: review }).text).toBe(
-      "Mend read the change · no draft comments",
+    const counted = (drafts: number, suggestions: number) =>
+      reviewMessage({ summary: null, drafts: { drafts, suggestions }, url: review })?.text;
+    expect(counted(0, 0)).toBe("Mend read the change · no draft comments");
+    expect(counted(1, 0)).toBe("Mend read the change · 1 draft comment");
+  });
+
+  it("leads with the tour's summary and approach, says where they came from, and ends on the count", () => {
+    const review = changeUrl("https://mend.example", "chg-1");
+    const message = reviewMessage({
+      summary: {
+        summary: "Bounds the login retry at three attempts.",
+        approach: "Read the flaky test, then ran it 20 times.",
+      },
+      drafts: { drafts: 2, suggestions: 0 },
+      url: review,
+    });
+    expect(message?.text).toBe("Mend read the change · 2 draft comments");
+    expect(message?.blocks).toEqual([
+      {
+        type: "markdown",
+        text: "**Summary**\nBounds the login retry at three attempts.\n\n**Approach**\nRead the flaky test, then ran it 20 times.",
+      },
+      {
+        type: "context",
+        elements: [{ type: "mrkdwn", text: SUMMARY_PROVENANCE }],
+      },
+      {
+        type: "section",
+        text: { type: "mrkdwn", text: "Mend read the change · 2 draft comments" },
+        accessory: {
+          type: "button",
+          action_id: SLACK_ACTIONS.reviewChange,
+          text: { type: "plain_text", text: "Review in Mend", emoji: true },
+          url: review,
+        },
+      },
+    ]);
+
+    // A tour with no approach, and no review pass: the summary and the button.
+    const tourOnly = reviewMessage({
+      summary: { summary: "Bounds the retry.", approach: null },
+      drafts: null,
+      url: review,
+    });
+    expect(tourOnly?.text).toBe("Mend read the change");
+    expect(tourOnly?.blocks[0]).toEqual({
+      type: "markdown",
+      text: "**Summary**\nBounds the retry.",
+    });
+    expect(tourOnly?.blocks.at(-1)).toMatchObject({ accessory: { url: review } });
+
+    // Nothing to say: no reply.
+    expect(reviewMessage({ summary: null, drafts: null, url: review })).toBeNull();
+  });
+
+  it("writes a plan's todo list as a short checklist, and keeps a plan's own text", () => {
+    const todoWrite = {
+      type: "tool_use",
+      id: "toolu_1",
+      name: "TodoWrite",
+      input: {
+        todos: [
+          { content: "Read the flaky test", status: "completed", activeForm: "Reading the test" },
+          { content: "Bound the retry", status: "in_progress", activeForm: "Bounding the retry" },
+          { content: "Run the suite", status: "pending", activeForm: "Running the suite" },
+        ],
+      },
+    };
+    expect(planText({ text: null, data: todoWrite })).toBe(
+      "**Plan**\n- ☑ Read the flaky test\n- ☐ Bound the retry · in progress\n- ☐ Run the suite",
     );
-    expect(reviewMessage({ drafts: 1, suggestions: 0, url: review }).text).toBe(
-      "Mend read the change · 1 draft comment",
-    );
+    expect(
+      planText({
+        text: null,
+        data: {
+          type: "todo_list",
+          items: [
+            { text: "read the test", completed: true },
+            { text: "fix it", completed: false },
+          ],
+        },
+      }),
+    ).toBe("**Plan**\n- ☑ read the test\n- ☐ fix it");
+    expect(planText({ text: "1. read the test", data: todoWrite })).toBe("1. read the test");
+    // A plan-kind item with nothing to show: a subagent's Task call, an empty list, no data.
+    expect(
+      planText({ text: null, data: { name: "Task", input: { prompt: "look around" } } }),
+    ).toBeNull();
+    expect(planText({ text: " ", data: { input: { todos: [] } } })).toBeNull();
+    expect(planText({ text: null, data: null })).toBeNull();
   });
 
   it("splits a diff per file and cuts each at 3,000 characters", () => {
@@ -451,8 +542,13 @@ describe("what the reporter posts", () => {
     const messages = [
       questionMessage({ ownerSlackUserId: "U1", questions: [], showText: true, url }),
       approvalMessage({ kind: "tool-permission", title: null, showText: true, url }),
-      reviewMessage({ drafts: 0, suggestions: 0, url }),
-    ];
+      reviewMessage({
+        summary: { summary: "Bounds the retry.", approach: "Ran the test." },
+        drafts: { drafts: 0, suggestions: 0 },
+        url,
+      }),
+    ].flatMap((message) => (message === null ? [] : [message]));
+    expect(messages).toHaveLength(3);
     for (const message of messages) expect(copyOf(message)).not.toMatch(VERDICTS);
   });
 });

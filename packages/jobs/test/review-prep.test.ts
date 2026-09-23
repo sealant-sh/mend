@@ -1,7 +1,8 @@
+import type { AutomationChoice } from "@mend/domain/workbench";
 import { GitError } from "@mend/store";
 import { describe, expect, it } from "vitest";
 
-import { readFailureAnnotations } from "../src/review-prep.ts";
+import { readFailureAnnotations, reviewPassesFor } from "../src/review-prep.ts";
 
 /**
  * The review-prep warning must be diagnosable from the log line alone (observed facts, never a
@@ -49,5 +50,41 @@ describe("review prep: read failure annotations", () => {
     expect(annotations["captureId"]).toBeNull();
     expect(annotations["gitFsck"]).toBeNull();
     expect(annotations["git"]).toBe("git status");
+  });
+});
+
+describe("review prep: which passes a settled session queues", () => {
+  const off: { readonly autoTour: AutomationChoice; readonly autoSuggest: AutomationChoice } = {
+    autoTour: "off",
+    autoSuggest: "off",
+  };
+  const settingsOff = { autoTour: false, autoSuggest: false };
+
+  it("resolves each switch, the project's choice first and Settings under inherit", () => {
+    expect(reviewPassesFor({ origin: "mend", project: off, settings: settingsOff })).toEqual({
+      tour: false,
+      suggest: false,
+    });
+    expect(
+      reviewPassesFor({
+        origin: "mend",
+        project: { autoTour: "inherit", autoSuggest: "on" },
+        settings: { autoTour: true, autoSuggest: false },
+      }),
+    ).toEqual({ tour: true, suggest: true });
+    expect(
+      reviewPassesFor({
+        origin: "mend",
+        project: { autoTour: "off", autoSuggest: "inherit" },
+        settings: { autoTour: true, autoSuggest: true },
+      }),
+    ).toEqual({ tour: false, suggest: true });
+  });
+
+  it("queues the tour for a session started from Slack even with the switch off", () => {
+    expect(reviewPassesFor({ origin: "slack", project: off, settings: settingsOff })).toEqual({
+      tour: true,
+      suggest: false,
+    });
   });
 });

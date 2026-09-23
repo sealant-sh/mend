@@ -2,6 +2,7 @@ import { PgClient } from "@effect/sql-pg";
 import {
   AgentConversationRepo,
   ChangePassesRepo,
+  ChangeToursRepo,
   MEND_EVENTS_CHANNEL,
   MendEvent,
   ProjectsRepo,
@@ -33,6 +34,7 @@ import {
   disclosureFor,
   isDirectMessage,
   isSettledState,
+  planText,
   privateProjectStatusMessage,
   questionMessage,
   reactionFor,
@@ -59,7 +61,8 @@ import { Cause, Effect, Layer, Queue, Schema, Stream } from "effect";
  * - the one status message, edited in place, and the reaction on the request (⏳ → ✅ / ❌);
  * - the agent's first message when it is a plan, and each turn's closing message;
  * - a question the agent asks, naming the owner, and an approval as a status line with a link;
- * - once the machine review pass has run, what it drafted, with "Review in Mend";
+ * - once Mend's passes over the change have run, one reply: the review tour's summary and
+ *   approach, what the review pass drafted, and "Review in Mend";
  * - on completion, the change's line counts in the status line; and when the owner turned diffs
  *   on, each file's diff, once, the first time the session settles with a change.
  *
@@ -107,31 +110,44 @@ const sessionOf = (event: MendEvent): string | null => {
 };
 
 /** The machine passes whose drafts the thread hears about: the read and the suggestions. */
-const REVIEW_PASSES: ReadonlySet<string> = new Set(["read", "suggest"]);
+const DRAFT_PASSES: ReadonlySet<string> = new Set(["read", "suggest"]);
 
 /**
- * The review pass the thread would announce: the latest completed read or suggestion pass since
- * the thread began, once no pass over the change is running. Its key names the change and when
- * the pass finished, so a later pass is news again.
+ * The end-of-session reply's moment: Mend's passes over the change since the thread began, once
+ * none of them is running. Its key names the change and when the latest finished, so a later pass
+ * is news again. `tourAt` is when the tour finished, when it completed in that time; `drafted`
+ * says a read or suggestion pass did. A failed pass is not waited for and adds nothing: the thread
+ * keeps the agent's closing message.
  */
+export interface ReviewMoment {
+  readonly key: string;
+  readonly finishedAt: Date;
+  readonly tourAt: Date | null;
+  readonly drafted: boolean;
+}
+
 export const reviewMoment = (
   change: Pick<Change, "id"> | null,
   passes: ReadonlyArray<Pick<ChangePass, "kind" | "status" | "finishedAt">>,
   since: Date,
-): { readonly key: string; readonly finishedAt: Date } | null => {
+): ReviewMoment | null => {
   if (change === null) return null;
-  const review = passes.filter((pass) => REVIEW_PASSES.has(pass.kind));
-  if (review.some((pass) => pass.status === "running")) return null;
-  const latest = review
-    .flatMap((pass) =>
-      pass.status === "completed" && pass.finishedAt !== null && pass.finishedAt >= since
-        ? [pass.finishedAt]
-        : [],
-    )
+  if (passes.some((pass) => pass.status === "running")) return null;
+  const completed = passes.flatMap((pass) =>
+    pass.status === "completed" && pass.finishedAt !== null && pass.finishedAt >= since
+      ? [{ kind: pass.kind, finishedAt: pass.finishedAt }]
+      : [],
+  );
+  const latest = completed
+    .map((pass) => pass.finishedAt)
     .toSorted((a, b) => b.getTime() - a.getTime())[0];
-  return latest === undefined
-    ? null
-    : { key: `review:${change.id}:${latest.getTime()}`, finishedAt: latest };
+  if (latest === undefined) return null;
+  return {
+    key: `review:${change.id}:${latest.getTime()}`,
+    finishedAt: latest,
+    tourAt: completed.find((pass) => pass.kind === "tour")?.finishedAt ?? null,
+    drafted: completed.some((pass) => DRAFT_PASSES.has(pass.kind)),
+  };
 };
 
 /**
@@ -173,7 +189,7 @@ interface Look {
   readonly pending: ReadonlyArray<AgentRequest>;
   readonly opening: AgentItem | null | undefined;
   readonly change: Change | null;
-  readonly review: { readonly key: string; readonly finishedAt: Date } | null;
+  readonly review: ReviewMoment | null;
 }
 
 /** Nothing seen yet: every reply is news. */
@@ -224,6 +240,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
     const conversations = yield* AgentConversationRepo;
     const changes = yield* WorktreeChangesRepo;
     const passes = yield* ChangePassesRepo;
+    const tours = yield* ChangeToursRepo;
     const comments = yield* ReviewCommentsRepo;
     const reads = yield* WorktreeReads;
     const cipher = yield* SecretCipher;
@@ -429,6 +446,52 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         ),
       );
 
+    /**
+     * The end-of-session reply: the tour's summary where agent messages are shown, then what the
+     * review pass drafted. A summary is posted once per composed tour (its id and when its pass
+     * finished), so a reply for a pass that finished after it does not repeat it.
+     */
+    const reviewReply = (
+      thread: SlackThreadSession,
+      change: Change,
+      review: ReviewMoment,
+      showSummary: boolean,
+      webOrigin: string,
+    ) =>
+      Effect.gen(function* () {
+        const tour =
+          showSummary && review.tourAt !== null ? yield* tours.byChange(change.id) : null;
+        const summary =
+          tour !== null &&
+          review.tourAt !== null &&
+          tour.createdAt >= thread.createdAt &&
+          (yield* threads.claimPost(
+            thread.sessionId,
+            `summary:${tour.id}:${review.tourAt.getTime()}`,
+          ))
+            ? { summary: tour.summary, approach: tour.approach }
+            : null;
+        const drafts = review.drafted
+          ? yield* comments.listForChange(change.id).pipe(
+              Effect.map((list) => {
+                const drafted = list.filter(
+                  (comment) => comment.authorKind === "mend" && comment.state === "draft",
+                );
+                return {
+                  drafts: drafted.length,
+                  suggestions: drafted.filter((comment) => comment.kind === "suggestion").length,
+                };
+              }),
+            )
+          : null;
+        const message = reviewMessage({
+          summary,
+          drafts,
+          url: changeUrl(webOrigin, change.id),
+        });
+        return message === null ? [] : [message];
+      });
+
     /** The replies this look has that the last one did not: what is news. */
     const reportReplies = Effect.fn("SlackReporter.reportReplies")(function* (
       install: SealedSlackInstall,
@@ -440,19 +503,20 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       const shown = disclosureFor(install.settings, thread.external);
       const url = sessionUrl(install.webOrigin, session.id);
 
-      // The agent's first message, when it is a plan.
+      // The agent's first message, when it is a plan: its text, or its todo list as a checklist.
       const opening = look.opening;
       if (
         !before.opening &&
         opening !== undefined &&
         opening !== null &&
         opening.kind === "plan" &&
-        opening.text !== null &&
-        opening.text.trim() !== "" &&
         shown.agentMessages &&
         fresh(opening.updatedAt)
       ) {
-        yield* postOnce(token, thread, "plan", Effect.succeed([agentMessage(opening.text, url)]));
+        const plan = planText(opening);
+        if (plan !== null) {
+          yield* postOnce(token, thread, "plan", Effect.succeed([agentMessage(plan, url)]));
+        }
       }
 
       // Each turn that ended since the last look: its closing message.
@@ -498,7 +562,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         yield* postOnce(token, thread, `request:${request.id}`, Effect.succeed([message]));
       }
 
-      // The machine review pass, once it has run.
+      // Mend's passes over the change, once they have run: one reply.
       const review = look.review;
       const change = look.change;
       if (
@@ -511,20 +575,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
           token,
           thread,
           review.key,
-          comments.listForChange(change.id).pipe(
-            Effect.map((list) => {
-              const drafts = list.filter(
-                (comment) => comment.authorKind === "mend" && comment.state === "draft",
-              );
-              return [
-                reviewMessage({
-                  drafts: drafts.length,
-                  suggestions: drafts.filter((comment) => comment.kind === "suggestion").length,
-                  url: changeUrl(install.webOrigin, change.id),
-                }),
-              ];
-            }),
-          ),
+          reviewReply(thread, change, review, shown.agentMessages, install.webOrigin),
         );
       }
     });
@@ -591,6 +642,7 @@ export const SlackReporterLive: Layer.Layer<
   | PgClient.PgClient
   | AgentConversationRepo
   | ChangePassesRepo
+  | ChangeToursRepo
   | ProjectsRepo
   | ReviewCommentsRepo
   | SecretCipher
