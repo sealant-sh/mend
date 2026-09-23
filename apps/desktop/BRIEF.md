@@ -102,11 +102,21 @@ has no tabs open, so an empty cockpit starts with a prompt, not a hint.
 ### The terminal
 
 One ghostty-web surface rides `/api/tty` (`?session=` for a coding-agent PTY, `?process=` for a
-supporting shell), with binary frames, JSON resize, and reconnect backoff. Live attachment resumes
-from the last acknowledged decimal cursor once the server exposes one. Durable replay after a
-workspace is reaped uses a separate read-only record path; `/api/tty` must not pretend a dead PTY is
-still attachable. The existing scrubber remains UI groundwork, not proof that record-backed replay
-has shipped.
+supporting shell), with binary frames, JSON resize, and reconnect backoff. Main mints a single-use
+upgrade ticket per connect and strips the page's `Origin` (and any `Cookie`) from sockets to the
+configured server (`src/main/socket-headers.ts`), so the upgrade reaches authentication as a token
+client, the way the CLI and the phone do.
+
+A browser socket cannot see why an upgrade failed: a refusal and a dropped network both close 1006.
+After an attach that never opened, the terminal asks the server whether the PTY's process still runs
+(`lib/tty-attach.ts`): live or no answer climbs the ladder; ended stops it; a refusal stops with
+"the server refused the attach".
+
+An ended agent is never attached. Its session tab replays the record read-only from
+`GET /api/processes/:id/logs` (`components/record-replay.tsx`); the scrubber's checkpoint ticks seek
+by record sequence, a toggle reads the conversation from `GET /api/sessions/:id/transcript`, and the
+fact line says how the process ended (`exited · observed`). A session that never ran supervised
+shows its own summary instead.
 
 ### Inbox (bottom of the left rail, herdr's agents slot)
 
@@ -170,6 +180,14 @@ nothing writes to the server.
 - Workbench: default harness, what a project's composer starts with. Supporting shells follow the
   focused session workspace's configured login shell.
 - Connection: signed-in fact + the shared credential path, Manage → /connect, sign out.
+
+Signing in (`/connect`) is `mend login`'s authorize walk (`src/main/device-login.ts`): the app opens
+a `cliAuth` request, the browser opens on the approve page with the code to compare, and an approval
+saves `{url, token, deviceId}` to the shared `cli.json`, keeping every other field there. The
+desktop is then a listed device, named `<hostname> · desktop`. Sign-out revokes it
+(`DELETE /api/me/devices/:id`) before forgetting the token, as `mend logout` does. Pasting a token
+stays as the fallback; email + password is gone.
+
 - Keyboard: the keymap, read-only for now.
 
 Still to come here: automation defaults (autoTour/autoSuggest) once project settings land in M3.
@@ -192,9 +210,9 @@ One capture-phase listener on the window, so the combos work while the terminal 
 ## What survives, what goes, what's new
 
 Survives from the prototypes: the ghostty terminal component (+ font-ready gate), the replay
-scrubber, the data layer (`lib/api.ts`, queries, SSE invalidation), the connect screen and shared
-credential file, the titlebar with native-feeling window controls, the Wayland scale pin
-(`MEND_DEVICE_SCALE`, default 1 on Linux).
+scrubber (now reading the record), the data layer (`lib/api.ts`, queries, SSE invalidation), the
+connect screen and shared credential file, the titlebar with native-feeling window controls, the
+Wayland scale pin (`MEND_DEVICE_SCALE`, default 1 on Linux).
 
 Goes: `src/main/herdr.ts` (socket client), `src/pty-broker/` and `src/main/pty.ts` (node:ffi PTY
 broker — no local PTYs are needed when every terminal is a server attach), the herdr/pty halves of
@@ -206,6 +224,11 @@ after its hidden worktrees and changes are surfaced for migration.
 
 ## Milestones
 
+- **M0: connect (2026-09-24, branch `desktop/01-connect`).** Terminal sockets leave without the
+  page's Origin, ended sessions replay their record and stop reconnecting, sign-in is the device
+  flow with revocable sign-out. Live typing into a fresh PTY on alpha is still unproven: the proof
+  session's workspace reached "failed" before becoming ready on the linear-cli project, as an
+  earlier claude session there did.
 - **M1: honest ownership.** Tree, visible sessions, session-owned shells, terminal, inbox, launcher,
   keybindings, legacy-bench migration, and retained-workspace controls.
 - **M2: Review in-app.** Immutable checkpoint-pair diff, P0 controls, comments, minimum evidence,
@@ -216,6 +239,18 @@ after its hidden worktrees and changes are surfaced for migration.
   and keybinding configuration.
 
 ## Decision log
+
+- 2026-09-24: the terminal socket drops `Origin` and `Cookie` in main
+  (`session.webRequest.onBeforeSendHeaders`, sockets to the configured server only) instead of
+  asking operators to list `file://` as a public origin. The upgrade ticket is the credential; the
+  public-network policy already admits origin-less token clients. Relaying the socket through main
+  over IPC was rejected: it adds a hop to every keystroke.
+- 2026-09-24: an ended PTY replays from the process record (`/api/processes/:id/logs`), not from
+  `/api/tty`, which answers 502 for a settled session. Checkpoint `seq` and log chunk sequences
+  share the run's record sequence, so the scrubber seeks the log cursor.
+- 2026-09-24: sign-in is the CLI's device flow and sign-out revokes the device; the desktop keeps
+  hand-parsing the `cliAuth` answers the way `apps/cli/src/login.ts` does until the DTO move to
+  `@mend/api-contracts` lands.
 
 - 2026-08-20: hidden project benches are retired. Supporting shells belong to a focused visible
   session and its change. The old default-shell and per-project bench decisions below are
