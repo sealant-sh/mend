@@ -67,7 +67,19 @@ export const readServiceRecipes = (
     if (raw === null) {
       return [];
     }
+    return yield* parseServiceRecipes(raw, filePath);
+  });
 
+/**
+ * Validate `mend.toml` text wherever it was read from — the co-located worktree, or the
+ * session's live workspace when Mend is not beside the files. `filePath` only names the file in
+ * the error.
+ */
+export const parseServiceRecipes = (
+  raw: string,
+  filePath: string,
+): Effect.Effect<ReadonlyArray<ServiceRecipe>, RecipeFileError> =>
+  Effect.gen(function* () {
     let parsed: unknown;
     try {
       parsed = parseToml(raw);

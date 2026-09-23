@@ -46,9 +46,10 @@ const api = (seen: unknown[]): SessionSocketApi => ({
         latestObservation: null,
       };
     }),
-  runService: (argv, port, name) =>
+  runService: (argv, port, name, protocol, browserScheme) =>
     Effect.sync(() => {
       seen.push({ argv, port, name });
+      seen.push({ run: name, protocol, browserScheme });
       return {
         service: {
           id: "svc-1",
@@ -62,13 +63,23 @@ const api = (seen: unknown[]): SessionSocketApi => ({
         latestObservation: null,
       };
     }),
-  addService: (port, name) =>
-    Effect.succeed({
-      service: { id: "svc-2", name, workspacePort: port, transport: "tcp", currentAttemptId: null },
-      attempts: [],
-      currentForward: null,
-      latestObservation: null,
-    }),
+  addService: (port, name, protocol, browserScheme) =>
+    Effect.sync(() => {
+      seen.push({ add: name, protocol, browserScheme });
+    }).pipe(
+      Effect.as({
+        service: {
+          id: "svc-2",
+          name,
+          workspacePort: port,
+          transport: "tcp",
+          currentAttemptId: null,
+        },
+        attempts: [],
+        currentForward: null,
+        latestObservation: null,
+      }),
+    ),
   stopService: (id) =>
     Effect.succeed({
       service: { id, name: "x", currentAttemptId: null },
@@ -442,6 +453,83 @@ describe("SessionChannelNetworkHost", () => {
           );
           expect(bad.code).toBe(1);
           expect(bad.stderr).toContain("was not accepted");
+        }).pipe(
+          Effect.provide(
+            layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
+          ),
+        ),
+      ),
+    );
+  });
+  it("carries a browser scheme from the helper's --http/--https to run and add, and refuses it on UDP", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const network = yield* SessionChannelNetworkHost;
+          const sockets = yield* SessionSocketHost;
+          const tokens = yield* SessionChannelTokensRepo;
+          const address = network.address ?? "";
+          const seen: unknown[] = [];
+          const dir = yield* sockets.start(SESSION, api(seen));
+          const token = yield* tokens.issue(SESSION);
+          const auth = { authorization: `Bearer ${token}`, "x-mend-session-id": SESSION };
+          const env = {
+            MEND_SESSION_ENDPOINT: `http://${address}`,
+            MEND_SESSION_ID: SESSION,
+            MEND_SESSION_TOKEN: token,
+          };
+          const helper = (args: string[]) =>
+            Effect.promise(() => runScript(path.join(dir, "bin", "mend"), args, env));
+
+          const web = yield* helper([
+            "service",
+            "run",
+            "--port",
+            "5173",
+            "--name",
+            "web",
+            "--http",
+            "--",
+            "pnpm",
+            "dev",
+          ]);
+          expect(web.code).toBe(0);
+          expect(seen).toContainEqual({ run: "web", protocol: "tcp", browserScheme: "http" });
+
+          const adopted = yield* helper(["service", "add", "8443", "--name", "api", "--https"]);
+          expect(adopted.code).toBe(0);
+          expect(seen).toContainEqual({ add: "api", protocol: "tcp", browserScheme: "https" });
+
+          // No flag is no scheme: a port to copy, not a page to open.
+          yield* helper(["service", "add", "5432", "--name", "db"]);
+          expect(seen).toContainEqual({ add: "db", protocol: "tcp", browserScheme: null });
+
+          // The helper refuses a scheme on UDP before any request; the route refuses it too.
+          const udp = yield* helper(["service", "add", "9000", "--udp", "--http"]);
+          expect(udp.code).toBe(1);
+          expect(udp.stderr).toContain("TCP only");
+          const refusedUdp = yield* Effect.promise(() =>
+            call(address, "POST", "/services/add", auth, {
+              port: 9000,
+              name: "stats",
+              protocol: "udp",
+              browserScheme: "http",
+            }),
+          );
+          expect(refusedUdp).toEqual({
+            status: 400,
+            json: { message: "browserScheme applies to TCP Services only" },
+          });
+          const refusedScheme = yield* Effect.promise(() =>
+            call(address, "POST", "/services/run", auth, {
+              argv: ["pnpm", "dev"],
+              port: 3000,
+              name: "web",
+              browserScheme: "ftp",
+            }),
+          );
+          expect(refusedScheme.status).toBe(400);
+          expect(seen).not.toContainEqual(expect.objectContaining({ add: "stats" }));
         }).pipe(
           Effect.provide(
             layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
