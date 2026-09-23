@@ -4,6 +4,7 @@ import type * as net from "node:net";
 import * as path from "node:path";
 
 import type { SessionId } from "@mend/domain";
+import type { ServiceBrowserScheme } from "@mend/domain/workbench";
 import { DeploymentConfig, StoreConfig } from "@mend/store";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
@@ -59,11 +60,13 @@ export interface SessionSocketApi {
     port: number,
     name: string | null,
     protocol?: "tcp" | "udp",
+    browserScheme?: ServiceBrowserScheme,
   ) => Effect.Effect<unknown>;
   readonly addService: (
     port: number,
     name: string | null,
     protocol?: "tcp" | "udp",
+    browserScheme?: ServiceBrowserScheme,
   ) => Effect.Effect<unknown>;
   readonly stopService: (processId: string) => Effect.Effect<unknown>;
   readonly restartService: (processId: string) => Effect.Effect<unknown>;
@@ -169,6 +172,15 @@ const flattenService = (view) => {
   };
 };
 
+// --http / --https: the Service is something to open in a browser. UDP has no browser scheme.
+const browserSchemeOf = (flags, protocol) => {
+  const http = flags.includes("--http");
+  const https = flags.includes("--https");
+  if (http && https) fail("pass one of --http or --https");
+  if ((http || https) && protocol === "udp") fail("--http and --https are TCP only; drop --udp");
+  return https ? "https" : http ? "http" : null;
+};
+
 const printService = (s) =>
   console.log(
     (s.label ?? s.id.slice(0, 8)).padEnd(12) +
@@ -220,10 +232,13 @@ const main = async () => {
         const nameFlag = head.indexOf("--name");
         const name = nameFlag === -1 ? null : (head[nameFlag + 1] ?? null);
         const protocol = head.includes("--udp") ? "udp" : "tcp";
+        const browserScheme = browserSchemeOf(head, protocol);
         if (!Number.isInteger(port) || argv.length === 0) {
-          fail("usage: mend service run --port <p> [--name <n>] [--udp] -- <command...>");
+          fail("usage: mend service run --port <p> [--name <n>] [--http|--https|--udp] -- <command...>");
         }
-        const service = await request("POST", "/services/run", { argv, port, name, protocol });
+        const service = await request("POST", "/services/run", {
+          argv, port, name, protocol, browserScheme,
+        });
         const shown = flattenService(service);
         console.log("Service " + shown.label + " · " + shown.status + " · reachable from the user's machine");
         return;
@@ -233,8 +248,13 @@ const main = async () => {
         const nameFlag = rest.indexOf("--name");
         const name = nameFlag === -1 ? null : (rest[nameFlag + 1] ?? null);
         const protocol = rest.includes("--udp") ? "udp" : "tcp";
-        if (!Number.isInteger(port)) fail("usage: mend service add <port> [--name <n>] [--udp]");
-        const service = await request("POST", "/services/add", { port, name, protocol });
+        const browserScheme = browserSchemeOf(rest, protocol);
+        if (!Number.isInteger(port)) {
+          fail("usage: mend service add <port> [--name <n>] [--http|--https|--udp]");
+        }
+        const service = await request("POST", "/services/add", {
+          port, name, protocol, browserScheme,
+        });
         const shown = flattenService(service);
         console.log("Service " + shown.label + " · " + shown.status);
         return;

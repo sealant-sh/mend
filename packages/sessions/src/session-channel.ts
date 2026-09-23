@@ -6,6 +6,7 @@ import type * as net from "node:net";
 
 import { SessionChannelTokensRepo } from "@mend/db";
 import { SessionId } from "@mend/domain";
+import type { ServiceBrowserScheme } from "@mend/domain/workbench";
 import { DeploymentConfig } from "@mend/store";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
@@ -101,6 +102,27 @@ const readBody = (
 const asRecord = (value: unknown): Record<string, unknown> =>
   typeof value === "object" && value !== null ? (value as Record<string, unknown>) : {};
 
+/**
+ * The optional `browserScheme` of a run/add body: absent or null is none; `http | https` is a
+ * Service to open in a browser; anything else, or any scheme on UDP, is refused.
+ */
+export const browserSchemeOf = (
+  body: Record<string, unknown>,
+  protocol: "tcp" | "udp",
+):
+  | { readonly ok: true; readonly value: ServiceBrowserScheme }
+  | { readonly ok: false; readonly message: string } => {
+  const raw = body["browserScheme"];
+  if (raw === undefined || raw === null) return { ok: true, value: null };
+  if (raw !== "http" && raw !== "https") {
+    return { ok: false, message: 'browserScheme must be "http" or "https"' };
+  }
+  if (protocol === "udp") {
+    return { ok: false, message: "browserScheme applies to TCP Services only" };
+  }
+  return { ok: true, value: raw };
+};
+
 /** Route one helper request to the session-scoped closures. Transport-neutral. */
 export const handleSessionRequest = async (
   api: SessionSocketApi,
@@ -140,7 +162,12 @@ export const handleSessionRequest = async (
       if (argv.length === 0 || !Number.isInteger(port)) {
         return respond(400, { message: "argv and port are required" });
       }
-      return respond(200, await Effect.runPromise(api.runService(argv, port, name, protocol)));
+      const scheme = browserSchemeOf(body, protocol);
+      if (!scheme.ok) return respond(400, { message: scheme.message });
+      return respond(
+        200,
+        await Effect.runPromise(api.runService(argv, port, name, protocol, scheme.value)),
+      );
     }
     if (route === "POST /services/add") {
       const body = asRecord(await readBody(request));
@@ -148,7 +175,12 @@ export const handleSessionRequest = async (
       const name = typeof body["name"] === "string" ? body["name"] : null;
       const protocol = body["protocol"] === "udp" ? ("udp" as const) : ("tcp" as const);
       if (!Number.isInteger(port)) return respond(400, { message: "port is required" });
-      return respond(200, await Effect.runPromise(api.addService(port, name, protocol)));
+      const scheme = browserSchemeOf(body, protocol);
+      if (!scheme.ok) return respond(400, { message: scheme.message });
+      return respond(
+        200,
+        await Effect.runPromise(api.addService(port, name, protocol, scheme.value)),
+      );
     }
     const action = /^POST \/services\/([^/]+)\/(stop|restart)$/.exec(route);
     if (action?.[1] !== undefined) {

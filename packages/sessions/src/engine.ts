@@ -57,6 +57,7 @@ import type {
   CheckpointTrigger,
   HotWorkspace,
   Project,
+  ServiceRecipe,
   Session,
   SessionOrigin,
   SessionProcess,
@@ -172,7 +173,12 @@ import {
   type ProtocolHostHooks,
   type ProtocolHostNotLiveError,
 } from "./protocol-host.ts";
-import { mergeRecipes, readServiceRecipes } from "./recipes.ts";
+import {
+  mergeRecipes,
+  parseServiceRecipes,
+  readServiceRecipes,
+  RecipeFileError,
+} from "./recipes.ts";
 import {
   HOT_POOL_MAX_OWNERS,
   HOT_POOL_RECENT_OWNER_WINDOW,
@@ -418,6 +424,10 @@ export interface ProvisionInput {
 /** Anonymous worktrees are keyed by their own id, named ones by the name. */
 /** Where a linked project is bound inside the workspace (ADR-0001). */
 export const linkedProjectMountPath = (name: string) => `/workspace/repos/${name}`;
+/** The worktree's `mend.toml` as a workspace sees it. */
+export const WORKSPACE_MEND_TOML = "/workspace/repo/mend.toml";
+/** The read script's exit code for "no mend.toml": distinct from `cat`'s own failures. */
+const WORKSPACE_MEND_TOML_ABSENT = 44;
 const isLinkedProjectMountPath = (mountPath: string) => mountPath.startsWith("/workspace/repos/");
 
 const worktreeIdentityFor = (worktreeId: WorktreeId, name: string | null) =>
@@ -731,6 +741,18 @@ export class SessionEngine extends Context.Service<
       | ServiceBindError
       | ServiceStartError
     >;
+    /**
+     * The session's declared Services: its worktree's `mend.toml` plus the project's recipes.
+     * The file is read beside the worktree when this deployment co-locates it, else from the
+     * session's live workspace (capture mode); with no live workspace there the file is not
+     * observable and only the project's recipes answer.
+     */
+    readonly listServiceRecipes: (
+      sessionId: SessionId,
+    ) => Effect.Effect<
+      ReadonlyArray<ServiceRecipe>,
+      SessionNotFoundError | ProjectNotFoundError | RecipeFileError | SealantPlatformError
+    >;
     /** Resolve and launch a declared recipe on the server so its provenance cannot be forged. */
     readonly runServiceRecipe: (
       sessionId: SessionId,
@@ -892,10 +914,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         recipes: () => owned(sessionId)(api.recipes()),
         listServices: () => owned(sessionId)(api.listServices()),
         runServiceRecipe: (name) => owned(sessionId)(api.runServiceRecipe(name)),
-        runService: (argv, port, name, protocol) =>
-          owned(sessionId)(api.runService(argv, port, name, protocol)),
-        addService: (port, name, protocol) =>
-          owned(sessionId)(api.addService(port, name, protocol)),
+        runService: (argv, port, name, protocol, browserScheme) =>
+          owned(sessionId)(api.runService(argv, port, name, protocol, browserScheme)),
+        addService: (port, name, protocol, browserScheme) =>
+          owned(sessionId)(api.addService(port, name, protocol, browserScheme)),
         stopService: (reference) => owned(sessionId)(api.stopService(reference)),
         restartService: (reference) => owned(sessionId)(api.restartService(reference)),
         stopSession: () => owned(sessionId)(api.stopSession()),
@@ -1612,17 +1634,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           endpoints: resolveServiceEndpoints(service, currentForward),
           previousEndpoints: resolveServiceEndpoints(service, previousForward),
         });
-      });
-
-      /** The session's worktree MOUNT path — a co-location capability, derived, never stored. */
-      const worktreeOf = Effect.fn("SessionEngine.worktreeOf")(function* (session: Session) {
-        const mount = yield* sessionRepo.worktreeMount(session.projectId, session.worktree);
-        if (mount === undefined) {
-          return yield* Effect.die(
-            "This deployment does not co-locate Mend with the session worktree; launching mounted workspaces requires the local or kubernetes strategy.",
-          );
-        }
-        return mount;
       });
 
       /**
@@ -3964,6 +3975,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * `mend.toml` read from inside a workspace — the worktree sits at `/workspace/repo` in
+       * every workspace (the executor's working directory in capture mode, the bound mount
+       * otherwise). An absent file is no declarations; an unreadable one is a typed error.
+       */
+      const readWorkspaceRecipes = Effect.fn("SessionEngine.readWorkspaceRecipes")(function* (
+        workspace: Workspace,
+      ) {
+        const result = yield* sealant.exec(workspace, [
+          "sh",
+          "-c",
+          `[ -e "$1" ] || exit ${WORKSPACE_MEND_TOML_ABSENT}; cat -- "$1"`,
+          "sh",
+          WORKSPACE_MEND_TOML,
+        ]);
+        if (result.exitCode === WORKSPACE_MEND_TOML_ABSENT) return [];
+        if (result.exitCode !== 0) {
+          return yield* new RecipeFileError({
+            path: WORKSPACE_MEND_TOML,
+            message: `mend.toml could not be read in the session workspace (exit ${result.exitCode}): ${result.stderr.trim()}`,
+          });
+        }
+        return yield* parseServiceRecipes(result.stdout, WORKSPACE_MEND_TOML);
+      });
+
+      /**
        * Tell the harness what rides beside the repo — appended to each harness's global memory
        * file in the workspace $HOME (never the worktree: the note is not review content). A cold
        * launch runs this after state restore, which rewrites $HOME; a prewarm runs it at
@@ -4013,7 +4049,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const declaredRecipes = mergeRecipes(
           yield* worktree === null
             ? Effect.succeed([])
-            : readServiceRecipes(worktree).pipe(Effect.orElseSucceed(() => [])),
+            : (capture === null
+                ? readServiceRecipes(worktree)
+                : readWorkspaceRecipes(workspace)
+              ).pipe(Effect.orElseSucceed(() => [])),
           yield* projectRecipes.listForProject(project.id).pipe(Effect.orElseSucceed(() => [])),
         );
         const recipesLine =
@@ -4025,16 +4064,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const servicesSection =
           `## Mend Services\n\n` +
           `For any long-running server (dev server, database), use ` +
-          `\`mend service run --port <port> [--name <n>] -- <command...>\` — it runs the ` +
-          `command supervised in this workspace, waits for the port, and makes it reachable ` +
-          `from the user's own machine. NEVER background a server inside a tool call. ` +
+          `\`mend service run --port <port> [--name <n>] [--http|--https] -- <command...>\` — ` +
+          `it runs the command supervised in this workspace, waits for the port, and makes it ` +
+          `reachable from the user's own machine. Pass \`--http\` (or \`--https\`) when the ` +
+          `server is something to open in a browser: the user then gets an Open link. NEVER ` +
+          `background a server inside a tool call. ` +
           `Listen on IPv4 — \`127.0.0.1\` or \`0.0.0.0\`: the forward dials the workspace's ` +
           `\`127.0.0.1\`, so a server bound only to \`::1\` reports healthy and answers ` +
           `nothing (Vite and friends: pass \`--host\`). In a monorepo, run the ONE app's own ` +
           `dev command (\`pnpm --dir apps/<app> dev\`): a root-level dev script fans out to ` +
           `every app and hands each the same \`--port\`, so they collide and drift onto ports ` +
           `nobody asked for. ` +
-          `\`mend service add <port>\` adopts something already listening; ` +
+          `\`mend service add <port> [--http|--https]\` adopts something already listening; ` +
           `\`mend service list\` shows what runs.\n\n` +
           recipesLine;
         const note =
@@ -4648,21 +4689,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             ),
           );
-          // State restore can rewrite $HOME, while a hot claim can freshen mend.toml after prewarm.
-          // Rewrite the managed note after both paths so it reflects the claimed worktree now.
-          yield* appendWorkspaceNote(
-            workspace,
-            project,
-            worktree,
-            provisioned.referenceMounts,
-            provisioned.extraMounts,
-          );
         } else {
           yield* relocation.pipe(
             Effect.tapError(() => sealant.stopWorkspace(workspace).pipe(Effect.ignore)),
             settleOnFailure,
           );
         }
+        // State restore can rewrite $HOME, while a hot claim can freshen mend.toml after prewarm.
+        // Rewrite the managed note after both paths so it reflects the claimed worktree now. It
+        // is written through exec in either store, so a captured executor's agent reads the same
+        // Mend Services instructions (its mend.toml read from the workspace's own worktree).
+        yield* appendWorkspaceNote(
+          workspace,
+          project,
+          worktree,
+          provisioned.referenceMounts,
+          provisioned.extraMounts,
+        );
 
         // Capture mode: the dependency tree for THIS executor's platform, before the harness.
         if (capture !== null) {
@@ -5684,6 +5727,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return workspace;
       });
 
+      /**
+       * The worktree's `mend.toml` recipes, wherever the worktree is: beside this process when
+       * the deployment co-locates it, else in the session's live workspace — the only copy
+       * capture mode has that includes the agent's latest edit. No live workspace there is a
+       * typed `SessionNotLiveError`, never a defect.
+       */
+      const fileRecipesOf = Effect.fn("SessionEngine.fileRecipesOf")(function* (session: Session) {
+        const mount = yield* sessionRepo.worktreeMount(session.projectId, session.worktree);
+        if (mount !== undefined) return yield* readServiceRecipes(mount);
+        const workspace = yield* workspaceForSupportingProcess(session);
+        return yield* readWorkspaceRecipes(workspace);
+      });
+
+      const listServiceRecipes = Effect.fn("SessionEngine.listServiceRecipes")(function* (
+        sessionId: SessionId,
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        const fromFile = yield* fileRecipesOf(session).pipe(
+          Effect.catchTag("SessionNotLiveError", () =>
+            Effect.succeed<ReadonlyArray<ServiceRecipe>>([]),
+          ),
+        );
+        return mergeRecipes(fromFile, yield* projectRecipes.listForProject(session.projectId));
+      });
+
       const openShell = Effect.fn("SessionEngine.openShell")(function* (sessionId: SessionId) {
         const session = yield* sessions.byId(sessionId);
         if (isLegacyBench(session)) {
@@ -6121,13 +6189,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         name: string,
       ) {
         const session = yield* sessions.byId(sessionId);
-        const worktree = yield* worktreeOf(session).pipe(
-          Effect.mapError(
-            () => new ServiceStartError({ message: "The recipe's project no longer exists." }),
-          ),
-        );
-        const fromFile = yield* readServiceRecipes(worktree).pipe(
-          Effect.mapError((error) => new ServiceStartError({ message: error.message })),
+        const fromFile = yield* fileRecipesOf(session).pipe(
+          Effect.catchTags({
+            ProjectNotFoundError: () =>
+              Effect.fail(
+                new ServiceStartError({ message: "The recipe's project no longer exists." }),
+              ),
+            SessionNotLiveError: () =>
+              Effect.fail(
+                new ServiceStartError({
+                  message:
+                    "This session has no live workspace, so its mend.toml cannot be read. Resume it, then run the recipe.",
+                }),
+              ),
+            RecipeFileError: (error) =>
+              Effect.fail(new ServiceStartError({ message: error.message })),
+          }),
         );
         const recipes = mergeRecipes(
           fromFile,
@@ -6251,15 +6328,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ownedSocketApi(sessionId, {
           ...(capture === null ? {} : { capture: captureApiFor(sessionId) }),
           recipes: () =>
-            Effect.gen(function* () {
-              const session = yield* sessions.byId(sessionId);
-              const fromFile =
-                capture !== null ? [] : yield* readServiceRecipes(yield* worktreeOf(session));
-              return mergeRecipes(
-                fromFile,
-                yield* projectRecipes.listForProject(session.projectId),
-              );
-            }).pipe(
+            listServiceRecipes(sessionId).pipe(
               Effect.mapError((error) => new Error(String(error.message))),
               Effect.orDie,
             ),
@@ -6274,13 +6343,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.mapError((error) => new Error(error.message)),
               Effect.orDie,
             ),
-          runService: (argv, port, name, protocol) =>
-            runService(sessionId, argv, port, name, protocol).pipe(
+          runService: (argv, port, name, protocol, browserScheme) =>
+            runService(sessionId, argv, port, name, protocol, browserScheme ?? null).pipe(
               Effect.mapError((error) => new Error(error.message)),
               Effect.orDie,
             ),
-          addService: (port, name, protocol) =>
-            addService(sessionId, port, name, protocol).pipe(
+          addService: (port, name, protocol, browserScheme) =>
+            addService(sessionId, port, name, protocol, browserScheme ?? null).pipe(
               Effect.mapError((error) => new Error(error.message)),
               Effect.orDie,
             ),
@@ -6626,15 +6695,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ownerUserId,
             onFailure: (message) => hotWorkspaces.setFailed(sessionId, message),
           });
-          if (capture === null) {
-            yield* appendWorkspaceNote(
-              provisioned.workspace,
-              project,
-              null,
-              provisioned.referenceMounts,
-              provisioned.extraMounts,
-            );
-          }
+          yield* appendWorkspaceNote(
+            provisioned.workspace,
+            project,
+            null,
+            provisioned.referenceMounts,
+            provisioned.extraMounts,
+          );
           yield* hotWorkspaces.setReady(sessionId, {
             sealantWorkspaceId: SealantWorkspaceId.make(provisioned.workspace.id),
             workspaceImage: provisioned.workspaceImage,
@@ -7479,6 +7546,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         renameShell: (processId, label) => ownedByProcess(processId)(renameShell(processId, label)),
         addService: (sessionId, ...rest) => owned(sessionId)(addService(sessionId, ...rest)),
         runService: (sessionId, ...rest) => owned(sessionId)(runService(sessionId, ...rest)),
+        listServiceRecipes: (sessionId) => owned(sessionId)(listServiceRecipes(sessionId)),
         runServiceRecipe: (sessionId, name) => owned(sessionId)(runServiceRecipe(sessionId, name)),
         restartService: (serviceId) => ownedByService(serviceId)(restartService(serviceId)),
         stopService: (serviceId) => ownedByService(serviceId)(stopService(serviceId)),

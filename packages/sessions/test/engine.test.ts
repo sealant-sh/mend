@@ -115,6 +115,7 @@ import {
   SessionNotLiveError,
   type SessionSocketApi,
   SessionSocketHost,
+  WORKSPACE_MEND_TOML,
 } from "@mend/sessions";
 import {
   AgentBridge,
@@ -295,6 +296,15 @@ const sealantLaunchLayer = (
     readonly replan?: (
       workspace: Workspace,
     ) => Effect.Effect<WorkspaceCaptureReplanned, SealantPlatformError>;
+    /**
+     * Stands in for a command inside the executor: an answer here wins over the defaults below
+     * (undefined falls through), so a test can put files where only the workspace has them.
+     */
+    readonly exec?: (
+      argv: ReadonlyArray<string>,
+    ) =>
+      | { readonly exitCode: number; readonly stdout: string; readonly stderr: string }
+      | undefined;
   },
 ) => {
   let nextPty = 0;
@@ -443,6 +453,8 @@ const sealantLaunchLayer = (
     exec: (_workspace, argv) =>
       Effect.suspend(() => {
         execCalls?.push(argv);
+        const answered = captureOps?.exec?.(argv);
+        if (answered !== undefined) return Effect.succeed({ ...answered, run: fakeExecRun });
         const script = argv[0] === "sh" && argv[1] === "-c" ? argv[2] : undefined;
         const relocation = captureOps?.relocation;
         if (script !== undefined && script.includes(HARNESS_HOME_MOUNT_PATH)) {
@@ -5232,6 +5244,9 @@ const verifyDeferredFinalHarvest = async (pathKind: "stop" | "handoff" | "sweep"
 const failureText = (exit: Exit.Exit<unknown, unknown>) =>
   Exit.isFailure(exit) ? Cause.pretty(exit.cause) : "";
 
+/** The engine's read of the worktree's `mend.toml` inside a workspace. */
+const readsToml = (argv: ReadonlyArray<string>) => argv.at(-1) === WORKSPACE_MEND_TOML;
+
 describe("SessionEngine capture mode", () => {
   it("tells the daemon only what the deployment stated about its transport", async () => {
     // Without a statement the source names no transport: the daemon then requires verified
@@ -5521,6 +5536,93 @@ describe("SessionEngine capture mode", () => {
     { timeout: 20_000 },
     () => verifyDeferredFinalHarvest("sweep"),
   );
+
+  it("reads mend.toml from the live executor, not the host: lists and runs a recipe, and tells the agent about it", async () => {
+    const created: Array<CreateOptions> = [];
+    const execCalls: Array<ReadonlyArray<string>> = [];
+    const memory = makeMemoryCaptureStore();
+    /** The executor's own copy of the worktree file; null is no file. */
+    let workspaceToml: string | null =
+      '[service.web]\ncommand = "pnpm dev --host"\nport = 5173\nbrowserScheme = "http"\n';
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+
+          // No workspace yet: the file is unobservable, which is a typed refusal, never a defect.
+          expect(yield* engine.listServiceRecipes(session.id)).toEqual([]);
+          const refused = yield* engine.runServiceRecipe(session.id, "web").pipe(Effect.flip);
+          expect(refused._tag).toBe("ServiceStartError");
+          expect(refused.message).toContain("no live workspace");
+          expect(execCalls.filter(readsToml)).toHaveLength(0);
+
+          yield* engine.launch(session.id, ["codex"]);
+
+          // The workspace note is written in capture mode too, naming the declared recipe.
+          const note = execCalls.find((argv) =>
+            argv.some((part) => part.includes("<!-- mend:mounts -->")),
+          );
+          expect(note?.at(-1)).toContain("## Mend Services");
+          expect(note?.at(-1)).toContain("[--http|--https]");
+          expect(note?.at(-1)).toContain("Declared Services (mend.toml + project): web");
+
+          const listed = yield* engine.listServiceRecipes(session.id);
+          expect(listed.map((recipe) => [recipe.name, recipe.port, recipe.browserScheme])).toEqual([
+            ["web", 5173, "http"],
+          ]);
+
+          const service = yield* engine.runServiceRecipe(session.id, "web");
+          expect(service.service.declarationSource).toBe("recipe-file");
+          expect(service.service.browserScheme).toBe("http");
+          expect(service.attempts[0]?.argv).toEqual(["sh", "-c", "pnpm dev --host"]);
+
+          // A malformed file is a readable refusal naming the problem.
+          workspaceToml = "[service.web\n";
+          const malformed = yield* engine.runServiceRecipe(session.id, "web").pipe(Effect.flip);
+          expect(malformed._tag).toBe("ServiceStartError");
+          expect(malformed.message).toContain("not valid TOML");
+          const listFailure = yield* engine.listServiceRecipes(session.id).pipe(Effect.flip);
+          expect(listFailure._tag).toBe("RecipeFileError");
+
+          // No file in the executor: no declarations.
+          workspaceToml = null;
+          expect(yield* engine.listServiceRecipes(session.id)).toEqual([]);
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
+          undefined,
+          {
+            exec: (argv) =>
+              !readsToml(argv)
+                ? undefined
+                : workspaceToml === null
+                  ? { exitCode: 44, stdout: "", stderr: "" }
+                  : { exitCode: 0, stdout: workspaceToml, stderr: "" },
+          },
+        ),
+      },
+    );
+  });
 
   it("provisions capture 0 and launches a capture-sourced workspace: no mounts, no bind, a launch-claimed lease; a user stop flushes the executor before its workspace goes", async () => {
     const created: Array<CreateOptions> = [];

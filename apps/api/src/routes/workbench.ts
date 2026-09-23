@@ -134,8 +134,6 @@ import {
   SessionEngine,
   WorktreeReads,
   type WorktreeReadError,
-  mergeRecipes,
-  readServiceRecipes,
   stampLabel,
   storePastedImage,
 } from "@mend/sessions";
@@ -2396,21 +2394,19 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
     )
     .handle("listRecipes", ({ params }) =>
       Effect.gen(function* () {
-        const projects = yield* ProjectsRepo;
         const session = yield* (yield* ProjectAccess).session(params.id);
-        const project = yield* projects
-          .byId(session.projectId)
-          .pipe(Effect.mapError(() => new NotFound({ id: session.projectId })));
-        // The session's own worktree copy wins — an agent's edit counts.
-        const fromFile = yield* readServiceRecipes(
-          worktreePathOf(project.storePath, session.worktree),
-        ).pipe(
-          Effect.catchTag("RecipeFileError", (error) =>
-            Effect.fail(new StoreFailure({ message: error.message })),
-          ),
+        // The session's own worktree copy wins — an agent's edit counts. The engine reads it
+        // beside the worktree when co-located, else from the session's live workspace.
+        const engine = yield* SessionEngine;
+        return yield* engine.listServiceRecipes(session.id).pipe(
+          Effect.catchTags({
+            SessionNotFoundError: () => Effect.fail(new NotFound({ id: params.id })),
+            ProjectNotFoundError: () => Effect.fail(new NotFound({ id: session.projectId })),
+            RecipeFileError: (error) => Effect.fail(new StoreFailure({ message: error.message })),
+            SealantPlatformError: (error) =>
+              Effect.fail(new StoreFailure({ message: error.message })),
+          }),
         );
-        const recipes = yield* ProjectServiceRecipesRepo;
-        return mergeRecipes(fromFile, yield* recipes.listForProject(session.projectId));
       }),
     )
     .handle("listServices", ({ query }) =>
