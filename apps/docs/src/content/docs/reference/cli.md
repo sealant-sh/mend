@@ -99,6 +99,7 @@ Agent options:
 | `--detach`, `-d`                         | Launch without attaching; reattach anywhere with `mend attach`       |
 | `--foreground`                           | Stop the session when this CLI exits (the detach key still detaches) |
 | `--no-tunnel`                            | Do not tunnel the session's browser Services to this machine         |
+| `--land`, `--no-land`                    | Land, or do not land, when a turn completes — this session only      |
 | `--project <name>`                       | Select an adopted project instead of matching the current directory  |
 
 A quoted prompt becomes the first message and supplies the initial session name. Interactive
@@ -120,6 +121,11 @@ without attaching, and browser or phone clients never stop a session by disconne
 
 Inside a session workspace, the staged helper accepts `mend stop` too, so a workspace shell (or the
 agent itself) can end its own session.
+
+`--land` and `--no-land` override the project's "Land when a turn completes" setting for one session
+(see [Landing commands](#landing-commands)); a project set to off wins over `--land`. Mend lands
+after turns it runs itself, so an agent attached to a terminal lands on its own only once the
+session is picked up on the phone. From the terminal, land it with `mend land`.
 
 Codex uses model, effort, permission, and speed options. Claude uses model, effort, and permission
 options. OpenCode currently uses only the prompt; the other harness flags are accepted but ignored.
@@ -150,8 +156,46 @@ improves.
 
 Deleting a session removes only the conversation record; the worktree — with its change and
 checkpoints — remains. Removing a worktree is its own explicit act (dashboard `Shift+D`, or the
-API): refused while any session is live, and refused while the worktree still holds any change
-against its base unless forced.
+API): refused while any session is live, and refused while the worktree holds work that is not on
+origin — a change never landed, or one changed since its last landing — unless forced. The refusal
+names the files and line counts that are not on origin.
+
+## Landing commands
+
+```text
+mend land <session> [--branch <name>] [--no-pr] [--title <text>] [--project <name>]
+mend pull <session> [--force] [--project <name>]
+```
+
+`<session>` is a prefix of the session ID or the worktree's name; settled sessions count.
+
+`mend land` publishes a session's change. Only the session's owner lands it. Mend takes a
+checkpoint, commits what the agent left uncommitted on top of the agent's own commits (never
+squashing or rewriting them), and pushes the branch to origin with the project's git access, as
+`mend/<name>` unless `--branch` names another. The push only fast-forwards: when origin's branch has
+commits Mend has not seen, or origin refuses, nothing is pushed and the command prints the remote's
+own words. When origin is on GitHub, Mend then opens a pull request into the session's base branch
+or updates the one it opened before, through your connected GitHub account; `--no-pr` skips it. The
+command prints the landing and what Mend observed, and exits 1 when the push was refused or a step
+failed:
+
+```text
+✓ pushed · mend/fix-login · 3f2a1c0 · pull request #412 · opened
+  checkpoint 9e8d7c6
+  commit 1a2b3c4 · Mend's, for the work left uncommitted
+  pull request https://github.com/acme/api/pull/412
+  observed
+    pushed · mend/fix-login · 3f2a1c0 · observed
+    pull request #412 · open · observed 0 s ago
+```
+
+`mend pull` fetches a change into the local clone you run it in, as a branch of the same name. Mend
+commits the latest checkpoint the way `mend land` does, without pushing, and sends the commits from
+the session's base as a git bundle, so it works before landing and without origin. One of the
+clone's remotes must be the project's origin (ssh and https spellings match; `--force` skips the
+check), and the clone needs the session's base commit. The working tree, the index and the current
+branch are not touched, and an existing local branch only fast-forwards. A bundle over the server's
+`MEND_BUDGET_BUNDLE_BYTES` limit is refused with its size.
 
 ## Dashboard keys
 

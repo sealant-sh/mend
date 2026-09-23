@@ -137,6 +137,9 @@ mend resume [session-id] [--with h]   rejoin a settled session (state restored; 
 mend rejoin [session-id] [--harness h] attach if live, otherwise resume; newest live wins
 mend sessions [--all] [--project p] [--json]
 mend status                           active sessions (alias of mend sessions)
+mend land <session> [--branch b] [--no-pr] [--title t]
+                                      push the change to origin, open or update its pull request
+mend pull <session> [--force]         fetch the change into this clone as mend/<name>
 mend pair [--url <base url>]          pair a phone or a second machine: QR + code + URL
 mend doctor                           read-only checklist of this machine's setup
 mend skills [--project [p]]           your skill library on the server (or a project's)

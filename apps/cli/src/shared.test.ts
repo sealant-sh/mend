@@ -88,6 +88,7 @@ describe("parseLaunchArgs", () => {
       detach: false,
       foreground: false,
       noTunnel: false,
+      autoLand: null,
       custom: [],
       error: null,
     });
@@ -120,6 +121,7 @@ describe("parseLaunchArgs", () => {
       detach: false,
       foreground: false,
       noTunnel: false,
+      autoLand: null,
       custom: [],
       error: null,
     });
@@ -139,6 +141,13 @@ describe("parseLaunchArgs", () => {
       prompt: "fix it",
       error: null,
     });
+  });
+
+  it("takes --land and --no-land as this session's override, refusing both at once", () => {
+    expect(parseLaunchArgs(["--land"]).autoLand).toBe(true);
+    expect(parseLaunchArgs(["--no-land"]).autoLand).toBe(false);
+    expect(parseLaunchArgs(["fix it", "-d"]).autoLand).toBeNull();
+    expect(parseLaunchArgs(["--land", "--no-land"]).error).toContain("contradict");
   });
 
   it("rejects a second positional so a forgotten quote fails loudly", () => {

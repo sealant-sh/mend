@@ -42,6 +42,7 @@ import {
   renderManPage,
   usageOf,
 } from "./help.ts";
+import { type Download, landCommand, pullCommand } from "./landing.ts";
 import { loginCommand } from "./login.ts";
 import {
   folderCommand,
@@ -116,6 +117,8 @@ import { cliVersion, fetchServerVersion, versionLines } from "./version.ts";
  *   mend run -- <command...>              same, arbitrary command
  *   mend projects                         adopted projects
  *   mend sessions [--all]                 sessions with their review facts
+ *   mend land <session>                   push the change to origin, open its pull request
+ *   mend pull <session>                   fetch the change into this clone as mend/<name>
  *
  * The CLI talks to the Mend server API; the server owns the store, the
  * engine, and the database. Every launch — including `mend continue` — runs
@@ -149,6 +152,8 @@ interface ProjectDto {
   readonly gitAuthMode: "ambient" | "mend-key" | "bridge";
   /** Optional: an older server predates the background-sessions cascade. */
   readonly backgroundSessions?: "inherit" | "on" | "off";
+  /** "Land when a turn completes"; optional: an older server predates landing. */
+  readonly autoLand?: "inherit" | "on" | "off";
 }
 
 /** The account's dotfiles: repository knob + store snapshot (see `mend dotfiles`). */
@@ -363,6 +368,33 @@ const api = async <T>(
     return fail(error instanceof Error ? error.message : String(error));
   }
 };
+
+/**
+ * A raw GET for a body that is not JSON (`mend pull`'s git bundle): the status, the headers and
+ * the bytes come back for the caller to read. Only an unreachable server or a rejected sign-in
+ * fails here, the way `request` words them.
+ */
+const download =
+  (config: CliConfig): Download =>
+  async (route) => {
+    const headers: Record<string, string> = {};
+    if (config.token !== null) headers["authorization"] = `Bearer ${config.token}`;
+    let response: Response;
+    try {
+      response = await fetch(`${config.url}/api${route}`, { headers });
+    } catch {
+      return fail(`cannot reach the Mend server at ${config.url} — is it running?`);
+    }
+    if (response.status === 401) {
+      return fail(
+        config.token === null
+          ? `not signed in to ${config.url} — run: mend login`
+          : `unauthorized at ${config.url} — the saved token was rejected; run: mend login`,
+      );
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    return { status: response.status, header: (name) => response.headers.get(name), bytes };
+  };
 
 /**
  * One upgrade ticket for a WebSocket this process is about to open (upgrade-url.ts). The saved
@@ -580,6 +612,11 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   if (harness === "run" && structured) {
     return fail(`mend run takes no prompt or harness flags · ${usageOf("run")}`);
   }
+  if (harness === "run" && parsed.autoLand !== null) {
+    return fail(
+      "mend run takes no landing flags — a command has no turns to land after; land it with mend land",
+    );
+  }
   if (harness === "run" && (parsed.detach || parsed.foreground)) {
     return fail(
       "mend run takes no lifecycle flags — it tails the record; Ctrl+C stops watching, not the command",
@@ -667,9 +704,12 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
     label: null,
     name: worktreeName,
     base: parsed.base,
+    ...(parsed.autoLand === null ? {} : { autoLand: parsed.autoLand }),
   });
   createdSessionId = session.id;
   say(`${green("✓")} worktree ${session.worktree} ${dim(`· branch ${session.branch}`)}`);
+  const landing = autoLandLine(parsed.autoLand, project);
+  if (landing !== null) say(landing);
   const baseWord = session.baseRef === null ? "" : `${session.baseRef} `;
   say(
     `${green("✓")} base ${baseWord}${dim(session.baseSha.slice(0, 12))} · session ${dim(session.id.slice(0, 8))}`,
@@ -710,6 +750,18 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
   attachOwnsSignals = true;
   await attachOrExit(config, session.id, session.harness, lifecycle, tunnels);
   exitAfterSessionEnd(config, session.id);
+};
+
+/**
+ * What `--land` / `--no-land` did, said once at launch; null without either flag. A project set
+ * to off wins over the session's own override (docs/adr/0007, "When it is on").
+ */
+const autoLandLine = (override: boolean | null, project: ProjectDto): string | null => {
+  if (override === null) return null;
+  if (override && project.autoLand === "off") {
+    return `${amber("·")} automatic landing · off for ${project.name} · the project's setting wins over --land`;
+  }
+  return `${green("✓")} automatic landing · ${override ? "on" : "off"} for this session ${dim("· from this terminal, land with mend land")}`;
 };
 
 // ─── the terminal bridge: raw stdin/stdout against the platform PTY ─────────
@@ -2997,6 +3049,8 @@ _mend() {
     'connect:send this machine'"'"'s claude/codex/github credential to the platform'
     'continue:resume with the pending follow-up' 'resume:rejoin a settled session'
     'rejoin:attach if live, otherwise resume'
+    'land:push a session change to origin and open its pull request'
+    'pull:fetch a session change into this clone'
     'refresh:fetch origin branches into the store' 'projects:adopted projects' 'sessions:sessions with review facts' 'status:active sessions'
     'ui:the dashboard' 'help:help'
   )
@@ -3017,7 +3071,7 @@ _mend() {
         esac
       fi
       ;;
-    shell|attach|stop|continue|resume|rejoin)
+    shell|attach|stop|continue|resume|rejoin|land|pull)
       local -a sessions
       sessions=(\${(f)"$(command mend __complete session 2>/dev/null | tr '\\t' ':')"})
       (( \${#sessions} )) && _describe 'session' sessions
@@ -3030,7 +3084,7 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach stop shell service server uninstall keys skills pair doctor continue resume rejoin refresh projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach stop shell service server uninstall keys skills pair doctor continue resume rejoin land pull refresh projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
@@ -3048,7 +3102,7 @@ const BASH_COMPLETIONS = `_mend() {
       fi
       COMPREPLY=( $(compgen -W "$options" -- "$cur") )
       ;;
-    shell|attach|stop|continue|resume|rejoin)
+    shell|attach|stop|continue|resume|rejoin|land|pull)
       COMPREPLY=( $(compgen -W "$(command mend __complete session 2>/dev/null | cut -f1)" -- "$cur") )
       ;;
   esac
@@ -4035,6 +4089,11 @@ const main = async () => {
       return projectsCommand(config);
     case "refresh":
       return refreshCommand(config, rest);
+    case "land":
+      // Bridge mode signs the push with this machine's ssh-agent, so the share runs meanwhile.
+      return withAgentShare(config, () => landCommand(boundApi(config), rest));
+    case "pull":
+      return pullCommand(boundApi(config), download(config), rest);
     case "sessions":
     case "status":
       return sessionsCommand(config, rest);

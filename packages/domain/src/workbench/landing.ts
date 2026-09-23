@@ -262,6 +262,15 @@ export const LandingFact = Schema.Union([
 ]);
 export type LandingFact = typeof LandingFact.Type;
 
+const decodeWireFacts = Schema.decodeUnknownSync(Schema.toCodecJson(Schema.Array(LandingFact)));
+
+/**
+ * Landing facts as a client reads them off the JSON wire, for clients that render with
+ * `landingFactLine` and keep no schema of their own (the CLI). Throws on a shape it cannot read.
+ */
+export const landingFactsFromWire = (wire: unknown): ReadonlyArray<LandingFact> =>
+  decodeWireFacts(wire);
+
 /** What the landing facts are derived from: the record, and what the last looks observed. */
 export interface LandingObservations {
   /** The change's landings, newest first. */
