@@ -388,6 +388,13 @@ Publication is optional output from an already useful local workflow. Examples i
 
 Publication is not a prerequisite for context, session management, or local review.
 
+### 5.10 Slack
+
+A session can start from Slack ([ADR 0006](docs/adr/0006-slack.md)). `@mend <prompt>` in a thread
+starts a session owned by the person's linked account, in the project the message, the thread or a
+default names. The session reports into that thread (a status, the agent's messages, a review link)
+and a later `@mend` there is a follow-up. Review stays in Mend.
+
 ---
 
 ## 6. Primary user experience
