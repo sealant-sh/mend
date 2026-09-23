@@ -71,6 +71,7 @@ const settings: SlackInstallSettings = {
   showAgentMessages: true,
   showDiffs: false,
   externalChannels: false,
+  landAutomatically: true,
 };
 
 const installWith = (overrides: Partial<SlackInstallSettings> = {}): SealedSlackInstall => ({
@@ -100,6 +101,7 @@ const project = new Project({
   adoptedSha: Sha.make("0".repeat(40)),
   autoTour: "inherit",
   autoName: "inherit",
+  autoLand: "inherit",
   autoSuggest: "inherit",
   backgroundSessions: "inherit",
   gitAuthMode: "ambient",

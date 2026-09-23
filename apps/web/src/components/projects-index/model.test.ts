@@ -18,6 +18,7 @@ const project: ProjectDto = {
   autoTour: "inherit",
   autoSuggest: "inherit",
   autoName: "inherit",
+  autoLand: "inherit",
   backgroundSessions: "inherit",
   gitAuthMode: "ambient",
   workspaceImage: null,

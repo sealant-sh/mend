@@ -113,6 +113,9 @@ export const changedSettings = (
   if (before.externalChannels !== after.externalChannels) {
     changed["externalChannels"] = after.externalChannels;
   }
+  if (before.landAutomatically !== after.landAutomatically) {
+    changed["landAutomatically"] = after.landAutomatically;
+  }
   return changed;
 };
 

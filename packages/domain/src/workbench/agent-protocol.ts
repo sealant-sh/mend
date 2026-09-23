@@ -1,7 +1,8 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import { AgentItemId, AgentRequestId, AgentTurnId, SessionId, SessionProcessId } from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
+import { RequestIntent, RequestIntentSource } from "./landing.ts";
 
 /** How Mend launches and records a coding-agent process. */
 export const AgentLaunchMode = Schema.Literals(["pty", "protocol"]);
@@ -42,6 +43,14 @@ export class AgentTurn extends Schema.Class<AgentTurn>("AgentTurn")({
   providerTurnId: Schema.NullOr(Schema.String),
   error: Schema.NullOr(Schema.String),
   usage: Schema.NullOr(AgentTurnUsage),
+  /**
+   * What the request asked for (docs/adr/0007-landing.md, "Questions do not open pull requests"):
+   * null until Mend reads it, and null with source `unread` when it could not.
+   */
+  intent: Schema.NullOr(RequestIntent).pipe(Schema.withConstructorDefault(Effect.succeed(null))),
+  intentSource: Schema.NullOr(RequestIntentSource).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
   createdAt: Timestamp,
   startedAt: Schema.NullOr(Timestamp),
   endedAt: Schema.NullOr(Timestamp),

@@ -1957,6 +1957,75 @@ const slackReportsMigration = Effect.gen(function* () {
     )`;
 });
 
+/**
+ * docs/adr/0007-landing.md: the record of each landing, the project's "Land when a turn
+ * completes", a session's own override, the Slack app's "Land automatically", and what each
+ * turn's request asked for. A landing keeps its row when its session or checkpoint is removed,
+ * and goes with its change. The pull request's number, url, state and observation time are set
+ * together or not at all; a turn's intent is null exactly when it was never read or could not be.
+ */
+const landingMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE projects
+      ADD COLUMN auto_land text NOT NULL DEFAULT 'inherit',
+      ADD CONSTRAINT projects_auto_land_check CHECK (auto_land IN ('inherit', 'on', 'off'))`;
+  yield* sql`ALTER TABLE agent_sessions ADD COLUMN auto_land boolean`;
+  yield* sql`ALTER TABLE slack_installs ADD COLUMN land_automatically boolean NOT NULL DEFAULT true`;
+  yield* sql`
+    ALTER TABLE agent_turns
+      ADD COLUMN intent text,
+      ADD COLUMN intent_source text,
+      ADD CONSTRAINT agent_turns_intent_check CHECK (
+        CASE
+          WHEN intent_source IS NULL OR intent_source = 'unread' THEN intent IS NULL
+          WHEN intent_source IN ('read', 'option') THEN
+            intent IS NOT NULL AND intent IN ('change', 'question')
+          ELSE false
+        END
+      )`;
+  yield* sql`
+    CREATE TABLE change_landings (
+      id text PRIMARY KEY,
+      change_id text NOT NULL REFERENCES worktree_changes (id) ON DELETE CASCADE,
+      session_id text REFERENCES agent_sessions (id) ON DELETE SET NULL,
+      project_id text NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+      checkpoint_id text REFERENCES checkpoints (id) ON DELETE SET NULL,
+      checkpoint_ref text,
+      checkpoint_sha text,
+      commit_sha text,
+      remote_branch text NOT NULL,
+      pushed_sha text,
+      trigger text NOT NULL CHECK (trigger IN ('manual', 'automatic')),
+      pull_request_number integer,
+      pull_request_url text,
+      pull_request_state text CHECK (pull_request_state IN ('open', 'closed', 'merged')),
+      pr_observed_at timestamptz,
+      outcome text NOT NULL CHECK (outcome IN ('pushed', 'pull-request', 'refused', 'failed')),
+      message text,
+      user_id text NOT NULL REFERENCES "user" (id) ON DELETE RESTRICT,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      CONSTRAINT change_landings_checkpoint_check
+        CHECK ((checkpoint_ref IS NULL) = (checkpoint_sha IS NULL)),
+      CONSTRAINT change_landings_pull_request_check CHECK (
+        (pull_request_number IS NULL AND pull_request_url IS NULL
+          AND pull_request_state IS NULL AND pr_observed_at IS NULL)
+        OR (pull_request_number IS NOT NULL AND pull_request_url IS NOT NULL
+          AND pull_request_state IS NOT NULL AND pr_observed_at IS NOT NULL)
+      ),
+      CONSTRAINT change_landings_outcome_facts_check CHECK (
+        (outcome = 'pushed' AND pushed_sha IS NOT NULL)
+        OR (outcome = 'pull-request' AND pushed_sha IS NOT NULL AND pull_request_number IS NOT NULL)
+        OR (outcome = 'refused' AND pushed_sha IS NULL)
+        OR outcome = 'failed'
+      )
+    )`;
+  yield* sql`
+    CREATE INDEX change_landings_change_created_idx
+    ON change_landings (change_id, created_at DESC)`;
+  yield* sql`CREATE INDEX change_landings_session_idx ON change_landings (session_id, created_at)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2022,4 +2091,5 @@ export const migrations = {
   "0061_upgrade_tickets": upgradeTicketsMigration,
   "0062_slack": slackMigration,
   "0063_slack_reports": slackReportsMigration,
+  "0064_landing": landingMigration,
 };

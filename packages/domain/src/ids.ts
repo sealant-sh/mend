@@ -123,3 +123,8 @@ export type AuditEventId = typeof AuditEventId.Type;
 
 export const SessionControlEventId = Schema.String.pipe(Schema.brand("SessionControlEventId"));
 export type SessionControlEventId = typeof SessionControlEventId.Type;
+
+// ── Landing (docs/adr/0007-landing.md) ───────────────────────────────────────
+
+export const ChangeLandingId = Schema.String.pipe(Schema.brand("ChangeLandingId"));
+export type ChangeLandingId = typeof ChangeLandingId.Type;

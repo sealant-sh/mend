@@ -181,6 +181,7 @@ export const projectFor = (storePath: string, baseSha: string) =>
     adoptedSha: Sha.make(baseSha),
     autoTour: "inherit",
     autoName: "inherit",
+    autoLand: "inherit",
     autoSuggest: "inherit",
     backgroundSessions: "inherit",
     gitAuthMode: "ambient",
@@ -212,6 +213,7 @@ export const projectsFor = (project: Project): Layer.Layer<ProjectsRepo> =>
     byName: () => Effect.succeed(null),
     listAll: () => Effect.succeed([project]),
     setAutomation: () => Effect.die("not in test"),
+    setAutoLand: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),
   });
 

@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import { OrganizationId } from "../ids.ts";
 
@@ -20,6 +20,12 @@ export const SlackInstallSettings = Schema.Struct({
   showDiffs: Schema.Boolean,
   /** Whether the two settings above also apply in Slack Connect channels. */
   externalChannels: Schema.Boolean,
+  /**
+   * "Land automatically" (docs/adr/0007-landing.md): a session started from Slack pushes its
+   * branch and opens its pull request when a turn completes. On unless an owner turned it off;
+   * a request's `autopr=` and the project's own `off` win over it.
+   */
+  landAutomatically: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
 });
 export type SlackInstallSettings = typeof SlackInstallSettings.Type;
 

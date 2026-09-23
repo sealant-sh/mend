@@ -37,6 +37,7 @@ const session: SessionDto = {
   dotfiles: null,
   ownerUserId: null,
   origin: "mend",
+  autoLand: null,
   sharedControlEnabledByUserId: null,
   sharedControlEnabledAt: null,
   hasTranscript: null,

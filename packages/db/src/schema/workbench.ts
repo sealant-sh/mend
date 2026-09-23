@@ -22,6 +22,7 @@ import type {
   ReviewSliceId,
   BriefId,
   ChangeId,
+  ChangeLandingId,
   CheckpointId,
   CommentAuthorKind,
   ContextSnapshotId,
@@ -88,11 +89,16 @@ import type {
   CommentKind,
   CommentState,
   HotWorkspaceStatus,
+  LandingOutcome,
+  LandingTrigger,
   NativeIngestCursor,
   OrganizationRole,
   ProjectVisibility,
   PassKind,
   PassStatus,
+  PullRequestState,
+  RequestIntent,
+  RequestIntentSource,
   DiffDigest,
   ProtocolLaunchOptions,
   SessionControlKind,
@@ -411,6 +417,8 @@ export const projects = pgTable(
     autoTour: text().$type<AutomationChoice>().notNull().default("inherit"),
     autoSuggest: text().$type<AutomationChoice>().notNull().default("inherit"),
     autoName: text().$type<AutomationChoice>().notNull().default("inherit"),
+    // Land when a turn completes (0064, docs/adr/0007-landing.md).
+    autoLand: text().$type<AutomationChoice>().notNull().default("inherit"),
     backgroundSessions: text().$type<AutomationChoice>().notNull().default("inherit"),
     gitAuthMode: text().$type<GitAuthMode>().notNull().default("ambient"),
     // NULL inherits the global settings.workspaceImage default.
@@ -905,6 +913,8 @@ export const slackInstalls = pgTable(
     showAgentMessages: boolean().notNull().default(true),
     showDiffs: boolean().notNull().default(false),
     externalChannels: boolean().notNull().default(false),
+    // "Land automatically" (0064, docs/adr/0007-landing.md).
+    landAutomatically: boolean().notNull().default(true),
     // FK to "user"(id) ON DELETE RESTRICT, declared in the migration.
     installedByUserId: text().notNull(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
@@ -1121,6 +1131,8 @@ export const agentSessions = pgTable(
     ownerUserId: text(),
     // Where it was started from (0062): Mend's own surfaces, or a mention in Slack.
     origin: text().$type<SessionOrigin>().notNull().default("mend"),
+    // Automatic landing for this session alone (0064): null follows the project and Settings.
+    autoLand: boolean(),
     // Shared control (0060): both set while the owner lets others steer, both null otherwise.
     sharedControlEnabledByUserId: text(),
     sharedControlEnabledAt: timestamp({ mode: "date", withTimezone: true }),
@@ -1292,6 +1304,9 @@ export const agentTurns = pgTable(
     launchCorrelationId: text(),
     error: text(),
     usage: jsonb().$type<AgentTurnUsage>(),
+    // What the request asked for (0064, docs/adr/0007-landing.md); CHECKed as a pair.
+    intent: text().$type<RequestIntent>(),
+    intentSource: text().$type<RequestIntentSource>(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp({ mode: "date", withTimezone: true }),
     endedAt: timestamp({ mode: "date", withTimezone: true }),
@@ -1658,6 +1673,52 @@ export const checkpoints = pgTable(
     index("checkpoints_worktree_created_idx").on(table.worktreeId, table.createdAt),
     index("checkpoints_session_idx").on(table.sessionId, table.seq),
     index("checkpoints_session_created_idx").on(table.sessionId, table.createdAt),
+  ],
+);
+
+/**
+ * One landing of a change (docs/adr/0007-landing.md, "What Mend records and shows"): the
+ * checkpoint landed, the commit Mend wrote, what was pushed where, the pull request as `gh` last
+ * reported it, and how it ended. The session and checkpoint go null when they are removed, so the
+ * record of a push outlives them; the pull request's four columns are set together or not at all.
+ */
+export const changeLandings = pgTable(
+  "change_landings",
+  {
+    id: text().$type<ChangeLandingId>().primaryKey(),
+    changeId: text()
+      .$type<ChangeId>()
+      .notNull()
+      .references(() => worktreeChanges.id, { onDelete: "cascade" }),
+    sessionId: text()
+      .$type<SessionId>()
+      .references(() => agentSessions.id, { onDelete: "set null" }),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    checkpointId: text()
+      .$type<CheckpointId>()
+      .references(() => checkpoints.id, { onDelete: "set null" }),
+    checkpointRef: text(),
+    checkpointSha: text().$type<Sha>(),
+    commitSha: text().$type<Sha>(),
+    remoteBranch: text().notNull(),
+    pushedSha: text().$type<Sha>(),
+    trigger: text().$type<LandingTrigger>().notNull(),
+    pullRequestNumber: integer(),
+    pullRequestUrl: text(),
+    pullRequestState: text().$type<PullRequestState>(),
+    prObservedAt: timestamp({ mode: "date", withTimezone: true }),
+    outcome: text().$type<LandingOutcome>().notNull(),
+    message: text(),
+    // FK to "user"(id) ON DELETE RESTRICT, declared in the migration: the owner who landed.
+    userId: text().notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    index("change_landings_change_created_idx").on(table.changeId, table.createdAt.desc()),
+    index("change_landings_session_idx").on(table.sessionId, table.createdAt),
   ],
 );
 

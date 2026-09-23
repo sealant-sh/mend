@@ -130,6 +130,7 @@ const install: SealedSlackInstall = {
     showAgentMessages: true,
     showDiffs: false,
     externalChannels: false,
+    landAutomatically: true,
   },
   installedByUserId: "alice",
   createdAt: NOW,

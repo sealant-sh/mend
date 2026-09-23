@@ -530,6 +530,7 @@ const agentConversationStubLayer = Layer.succeed(AgentConversationRepo, {
   setProviderTurnId: () => Effect.die("not in test"),
   bindRunningProviderTurn: () => Effect.succeed(null),
   failTurn: () => Effect.die("not in test"),
+  setTurnIntent: () => Effect.die("not in test"),
   completeTurn: () => Effect.succeed(null),
   upsertItem: () => Effect.die("not in test"),
   listItems: () => Effect.succeed([]),
@@ -1351,6 +1352,7 @@ const projectsLayer = (world: World) =>
     byName: () => Effect.succeed(null),
     listAll: () => Effect.succeed([...world.projects.values()]),
     setAutomation: () => Effect.die("not in test"),
+    setAutoLand: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),
   });
 
@@ -1814,6 +1816,7 @@ const setup = (tmp: string, world: World) => {
       adoptedSha: Sha.make(adopted.headSha),
       autoTour: "inherit",
       autoName: "inherit",
+      autoLand: "inherit",
       autoSuggest: "inherit",
       backgroundSessions: "inherit",
       gitAuthMode: "ambient",
@@ -5856,6 +5859,7 @@ describe("SessionEngine capture mode", () => {
               adoptedSha: Sha.make("base-sha"),
               autoTour: "inherit",
               autoName: "inherit",
+              autoLand: "inherit",
               autoSuggest: "inherit",
               backgroundSessions: "inherit",
               gitAuthMode: "ambient",

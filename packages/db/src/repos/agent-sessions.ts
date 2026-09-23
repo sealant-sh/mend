@@ -55,6 +55,11 @@ export interface NewSession {
   readonly ownerUserId: string | null;
   /** Where it was started from. */
   readonly origin: SessionOrigin;
+  /**
+   * Automatic landing for this session alone (docs/adr/0007-landing.md): `--land` / `--no-land`,
+   * the composer's override, or a Slack request's `autopr=`. Absent or null follows the project.
+   */
+  readonly autoLand?: boolean | null;
 }
 
 /** Terminal session states; `stopped` is the user's stop, not a failure. */

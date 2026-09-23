@@ -16,6 +16,7 @@ const SLACK_SETTING_WORDS: Readonly<Record<string, string>> = {
   showAgentMessages: "show agent messages",
   showDiffs: "show diffs",
   externalChannels: "external channels",
+  landAutomatically: "land automatically",
 };
 
 /** How a Slack-started session's project was chosen, as the status message in Slack words it. */

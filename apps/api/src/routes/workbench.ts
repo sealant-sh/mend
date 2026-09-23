@@ -63,6 +63,7 @@ import {
   AuditEventsRepo,
   SessionControlEventsRepo,
   ChangePassesRepo,
+  ChangeLandingsRepo,
   ChangeToursRepo,
   CheckpointsRepo,
   FollowUpsRepo,
@@ -2139,6 +2140,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const checkpoints = yield* CheckpointsRepo;
         const changes = yield* WorktreeChangesRepo;
+        const landings = yield* ChangeLandingsRepo;
         const session = yield* (yield* ProjectAccess).session(params.id);
         // The chain and the change belong to the worktree: this is what makes
         // slices spanning several conversations reviewable from any of them.
@@ -2160,6 +2162,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           }),
           checkpoints: sessionCheckpoints,
           change,
+          landings: change === null ? [] : yield* landings.listForChange(change.id),
           processes: rows,
           currentAgent: currentAgentProcess(rows),
         });

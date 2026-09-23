@@ -24,6 +24,7 @@ const installOf = (organization: string, appToken: string): SealedSlackInstall =
     showAgentMessages: true,
     showDiffs: false,
     externalChannels: false,
+    landAutomatically: true,
   },
   installedByUserId: "alice",
   createdAt: NOW,

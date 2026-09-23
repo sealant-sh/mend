@@ -142,6 +142,12 @@ export class Session extends Schema.Class<Session>("Session")({
   /** Where it was started from (docs/adr/0006-slack.md). */
   origin: SessionOrigin.pipe(Schema.withConstructorDefault(Effect.succeed("mend"))),
   /**
+   * The session's own automatic-landing override (docs/adr/0007-landing.md), set at start: the
+   * composer's or `mend`'s `--land` / `--no-land`, or a Slack request's `autopr=`. Null follows the
+   * project and Settings.
+   */
+  autoLand: Schema.NullOr(Schema.Boolean).pipe(Schema.withConstructorDefault(Effect.succeed(null))),
+  /**
    * Shared control (docs/adr/0003-organizations-and-tenancy.md): when set, anyone who can see the
    * session may steer it, still on the owner's credentials. Who turned it on, and when.
    */

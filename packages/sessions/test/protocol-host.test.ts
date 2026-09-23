@@ -92,6 +92,7 @@ const makeConversationWorld = () => {
     bindRunningProviderTurn: () => Effect.succeed(null),
     failTurn: (id, error) =>
       Effect.sync(() => update(id, { status: "failed", error, endedAt: now() })),
+    setTurnIntent: () => Effect.die("not in test"),
     completeTurn: () => Effect.succeed(null),
     upsertItem: () => Effect.die("not in test"),
     listItems: () => Effect.succeed([]),
