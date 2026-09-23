@@ -1,6 +1,7 @@
 import {
   AgentConversationRepo,
   ChangePassesRepo,
+  ChangeToursRepo,
   ProjectsRepo,
   ReviewCommentsRepo,
   SessionNotFoundError,
@@ -33,6 +34,7 @@ import {
   AgentTurn,
   Change,
   ChangePass,
+  ChangeTour,
   Project,
   ReviewComment,
   Session,
@@ -43,7 +45,7 @@ import {
   type SlackInstallSettings,
 } from "@mend/domain/workbench";
 import { WORKTREE_STAMP, WorktreeReads } from "@mend/sessions";
-import { PRIVATE_PROJECT_STATUS, SLACK_ACTIONS, statusLine } from "@mend/slack";
+import { PRIVATE_PROJECT_STATUS, SLACK_ACTIONS, statusLine, SUMMARY_PROVENANCE } from "@mend/slack";
 import { makeFakeSlack, type FakeSlackCall } from "@mend/slack/client";
 import { SecretCipher } from "@mend/store";
 import { Effect, Layer } from "effect";
@@ -279,6 +281,38 @@ const draft = (id: string, kind: "note" | "suggestion") =>
     updatedAt: NOW,
   });
 
+/** A machine pass over the change, finished at `at` unless it is running. */
+const passOf = (
+  kind: ChangePass["kind"],
+  status: ChangePass["status"],
+  at: Date = NOW,
+  findings: number | null = null,
+) =>
+  new ChangePass({
+    changeId: CHANGE,
+    kind,
+    status,
+    detail: status === "failed" ? "the provider refused the request" : null,
+    findings,
+    startedAt: at,
+    finishedAt: status === "running" ? null : at,
+  });
+
+const tourOf = (createdAt: Date = NOW) =>
+  new ChangeTour({
+    id: "tour-1",
+    changeId: CHANGE,
+    sessionId: SESSION,
+    summary: "Bounds the login retry at three attempts and logs each one.",
+    approach: "Read the flaky test, reproduced the failure, then ran the suite.",
+    stops: [],
+    diffDigest: "d".repeat(64),
+    createdAt,
+  });
+
+const SUMMARY_BLOCK =
+  "**Summary**\nBounds the login retry at three attempts and logs each one.\n\n**Approach**\nRead the flaky test, reproduced the failure, then ran the suite.";
+
 const DIFF = [
   "diff --git a/src/login.ts b/src/login.ts",
   "--- a/src/login.ts",
@@ -356,6 +390,7 @@ const world = (options: WorldOptions = {}) => {
     requests: [] as ReadonlyArray<AgentRequest>,
     change: null as Change | null,
     passes: [] as ReadonlyArray<ChangePass>,
+    tour: null as ChangeTour | null,
     comments: [] as ReadonlyArray<ReviewComment>,
     posted: new Set<string>(),
     project,
@@ -423,6 +458,7 @@ const world = (options: WorldOptions = {}) => {
     }),
     Layer.mock(WorktreeChangesRepo, { byWorktree: () => Effect.sync(() => state.change) }),
     Layer.mock(ChangePassesRepo, { listForChange: () => Effect.sync(() => state.passes) }),
+    Layer.mock(ChangeToursRepo, { byChange: () => Effect.sync(() => state.tour) }),
     Layer.mock(ReviewCommentsRepo, { listForChange: () => Effect.sync(() => state.comments) }),
     Layer.mock(WorktreeReads, {
       changedFiles: () =>
@@ -664,6 +700,146 @@ describe("the Slack thread reporter", () => {
     });
   });
 
+  it("posts one end-of-session reply: the tour's summary and approach, the draft count, and Review in Mend", async () => {
+    const w = world();
+    const reporter = w.worker();
+    w.state.session = sessionWith("completed");
+    w.state.change = change;
+    w.state.passes = [passOf("tour", "completed"), passOf("suggest", "running")];
+    w.state.tour = tourOf();
+    await w.observe(reporter);
+    // The suggestion pass is still running: the reply waits for it.
+    expect(w.posts()).toEqual([]);
+
+    w.state.passes = [passOf("tour", "completed", minutesAgo(1)), passOf("suggest", "completed")];
+    w.state.comments = [draft("c1", "note"), draft("c2", "suggestion")];
+    await Promise.all([w.observe(reporter), w.observe(w.worker())]);
+    await w.observe(w.worker());
+
+    expect(w.posts()).toHaveLength(1);
+    const [reply] = w.posts();
+    expect(reply?.threadTs).toBe(THREAD);
+    expect(reply?.text).toBe("Mend read the change · 2 draft comments · 1 with a suggested edit");
+    expect(reply?.blocks).toEqual([
+      { type: "markdown", text: SUMMARY_BLOCK },
+      { type: "context", elements: [{ type: "mrkdwn", text: SUMMARY_PROVENANCE }] },
+      expect.objectContaining({
+        type: "section",
+        accessory: expect.objectContaining({
+          action_id: SLACK_ACTIONS.reviewChange,
+          url: "https://mend.acme.test/changes/chg-1",
+        }),
+      }),
+    ]);
+  });
+
+  it("posts the summary alone when only the tour ran, and does not repeat it for a later pass", async () => {
+    const w = world();
+    const reporter = w.worker();
+    w.state.session = sessionWith("completed");
+    w.state.change = change;
+    w.state.passes = [passOf("tour", "running")];
+    await w.observe(reporter);
+    w.state.passes = [passOf("tour", "completed", minutesAgo(1))];
+    w.state.tour = tourOf(minutesAgo(1));
+    await w.observe(reporter);
+    expect(w.posts().map((post) => post.text)).toEqual(["Mend read the change"]);
+    expect(w.posts()[0]?.blocks?.[0]).toEqual({ type: "markdown", text: SUMMARY_BLOCK });
+
+    // Someone asks for suggestions from the review page: the count is news, the summary is not.
+    w.state.passes = [passOf("tour", "completed", minutesAgo(1)), passOf("suggest", "completed")];
+    await w.observe(reporter);
+    expect(w.posts().map((post) => post.text)).toEqual([
+      "Mend read the change",
+      "Mend read the change · no draft comments",
+    ]);
+    expect(blockText(w.posts()[1] ?? {})).not.toContain("**Summary**");
+  });
+
+  it("keeps the summary out where agent messages are not shown, and out of a Slack Connect channel", async () => {
+    const finish = async (options: WorldOptions, passes: ReadonlyArray<ChangePass>) => {
+      const w = world({ ...options, threadCreatedAt: minutesAgo(1) });
+      w.state.session = sessionWith("completed");
+      w.state.change = change;
+      w.state.passes = passes;
+      w.state.tour = tourOf();
+      await w.observe(w.worker());
+      return w.posts();
+    };
+    const both = [passOf("tour", "completed"), passOf("suggest", "completed")];
+
+    const off = await finish({ settings: { showAgentMessages: false } }, both);
+    expect(off.map((post) => post.text)).toEqual(["Mend read the change · no draft comments"]);
+    expect(blockText(off[0] ?? {})).not.toContain("Bounds the login retry");
+
+    const external = await finish({ external: true }, both);
+    expect(external.map((post) => post.text)).toEqual(["Mend read the change · no draft comments"]);
+    expect(blockText(external[0] ?? {})).not.toContain("Bounds the login retry");
+
+    const opened = await finish({ external: true, settings: { externalChannels: true } }, both);
+    expect(blockText(opened[0] ?? {})).toContain("Bounds the login retry");
+
+    // A tour alone, not shown: nothing to say beyond the status message.
+    expect(
+      await finish({ settings: { showAgentMessages: false } }, [passOf("tour", "completed")]),
+    ).toEqual([]);
+  });
+
+  it("falls back to the closing message when the tour fails, and says nothing more for no change", async () => {
+    const failed = world({ threadCreatedAt: NOW });
+    failed.state.session = sessionWith("completed");
+    failed.state.turns = [turn(1, "completed", NOW)];
+    failed.state.items = [item("i1", 1, "assistant-message", "Fixed the retry.")];
+    failed.state.change = change;
+    failed.state.passes = [passOf("tour", "failed")];
+    await failed.observe(failed.worker());
+    expect(failed.posts().map((post) => post.text)).toEqual(["Fixed the retry."]);
+
+    // The tour failed and the suggestion pass ran: the count, without a summary.
+    failed.state.passes = [passOf("tour", "failed"), passOf("suggest", "completed")];
+    await failed.observe(failed.worker());
+    expect(failed.posts().map((post) => post.text)).toEqual([
+      "Fixed the retry.",
+      "Mend read the change · no draft comments",
+    ]);
+
+    const nothing = world({ threadCreatedAt: NOW });
+    nothing.state.session = sessionWith("completed");
+    nothing.state.turns = [turn(1, "completed", NOW)];
+    nothing.state.items = [item("i1", 1, "assistant-message", "Nothing to change.")];
+    await nothing.observe(nothing.worker());
+    expect(nothing.posts().map((post) => post.text)).toEqual(["Nothing to change."]);
+  });
+
+  it("posts a Claude plan's todo list as a checklist", async () => {
+    const w = world({ threadCreatedAt: NOW });
+    const reporter = w.worker();
+    w.state.turns = [turn(1, "running")];
+    const todoWrite = {
+      type: "tool_use",
+      id: "toolu_1",
+      name: "TodoWrite",
+      input: {
+        todos: [
+          { content: "Read the flaky test", status: "in_progress", activeForm: "Reading" },
+          { content: "Bound the retry", status: "pending", activeForm: "Bounding" },
+        ],
+      },
+    };
+    w.state.items = [
+      new AgentItem({ ...item("p1", 1, "plan", null, "in-progress"), data: todoWrite }),
+    ];
+    await w.observe(reporter);
+    expect(w.posts()).toEqual([]);
+
+    w.state.items = [new AgentItem({ ...item("p1", 1, "plan", null), data: todoWrite })];
+    await w.observe(reporter);
+    await w.observe(reporter);
+    expect(w.posts().map((post) => post.text)).toEqual([
+      "**Plan**\n- ☐ Read the flaky test · in progress\n- ☐ Bound the retry",
+    ]);
+  });
+
   it("keeps to status, reactions and links when agent messages are off", async () => {
     const w = world({ settings: { showAgentMessages: false }, threadCreatedAt: NOW });
     const reporter = w.worker();
@@ -865,34 +1041,41 @@ describe("what the reporter reads", () => {
   });
 
   it("names a review once no pass is running, keyed by when the latest finished", () => {
-    const pass = (kind: "read" | "suggest" | "tour", status: "running" | "completed", at: Date) =>
-      new ChangePass({
-        changeId: CHANGE,
-        kind,
-        status,
-        detail: null,
-        findings: 0,
-        startedAt: at,
-        finishedAt: status === "completed" ? at : null,
-      });
     const since = minutesAgo(10);
-    expect(reviewMoment(null, [pass("read", "completed", NOW)], since)).toBeNull();
-    expect(reviewMoment(change, [pass("tour", "completed", NOW)], since)).toBeNull();
+    expect(reviewMoment(null, [passOf("read", "completed")], since)).toBeNull();
     expect(
-      reviewMoment(
-        change,
-        [pass("read", "completed", NOW), pass("suggest", "running", NOW)],
-        since,
-      ),
+      reviewMoment(change, [passOf("read", "completed"), passOf("suggest", "running")], since),
+    ).toBeNull();
+    // The tour is waited for too: the reply carries its summary.
+    expect(
+      reviewMoment(change, [passOf("suggest", "completed"), passOf("tour", "running")], since),
     ).toBeNull();
     expect(
       reviewMoment(
         change,
-        [pass("read", "completed", minutesAgo(1)), pass("suggest", "completed", NOW)],
+        [passOf("read", "completed", minutesAgo(1)), passOf("suggest", "completed")],
         since,
       ),
-    ).toEqual({ key: `review:chg-1:${NOW.getTime()}`, finishedAt: NOW });
-    // A pass over the worktree from before the thread began is not this thread's.
-    expect(reviewMoment(change, [pass("read", "completed", minutesAgo(20))], since)).toBeNull();
+    ).toEqual({
+      key: `review:chg-1:${NOW.getTime()}`,
+      finishedAt: NOW,
+      tourAt: null,
+      drafted: true,
+    });
+    expect(
+      reviewMoment(
+        change,
+        [passOf("tour", "completed", minutesAgo(2)), passOf("suggest", "failed")],
+        since,
+      ),
+    ).toEqual({
+      key: `review:chg-1:${minutesAgo(2).getTime()}`,
+      finishedAt: minutesAgo(2),
+      tourAt: minutesAgo(2),
+      drafted: false,
+    });
+    // A failed pass adds nothing, and a pass from before the thread began is not this thread's.
+    expect(reviewMoment(change, [passOf("tour", "failed")], since)).toBeNull();
+    expect(reviewMoment(change, [passOf("read", "completed", minutesAgo(20))], since)).toBeNull();
   });
 });

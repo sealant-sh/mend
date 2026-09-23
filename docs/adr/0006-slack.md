@@ -262,17 +262,29 @@ Mend posts only into the thread the request came from.
   then `completed · observed · 4 files · +120 −30`.
 - **The agent's plan and closing message** for each turn, as replies, each cut at 3,000 characters
   with a link to the rest. Cursor posts a plan before it changes code. Mend posts the agent's first
-  message when it is one, and does not write a plan of its own.
+  message when it is one, and does not write a plan of its own. A plan with no text of its own, such
+  as Claude's `TodoWrite` list, is posted as a short checklist of its items.
 - **A question the agent asks**, as a reply that names the owner.
 - **Approvals** as a status line with a link. They are answered in Mend.
-- **Once the machine review has run**, the count of draft comments and suggested edits, with a
-  "Review in Mend" button. Mend has no proposed-check entity yet, so the count names none.
+- **One end-of-session reply**, once Mend's passes over the change have run. It carries the summary
+  and the approach from the change's review tour, then the count of draft comments and suggested
+  edits, and a "Review in Mend" button. This is Mend's counterpart to Cursor's agent summary. The
+  summary is not the agent's account of itself: Mend writes it using inference on the diff and the
+  session record, and the reply says so. It describes what changed and how the session went about
+  it, and gives no verdict. Mend has no proposed-check entity yet, so the count names none.
+
+A session started from Slack always gets a review tour when it settles with a change, even where the
+project's automatic tour is off, since the summary comes from it. The tour is the same
+`compose-tour` job the review page queues. A session that settles with no change gets no tour and no
+reply beyond its status line. If the tour fails, the thread keeps the agent's closing message as its
+last word, and the reply carries only the count when a review pass ran. Each summary is posted once
+for each tour Mend composes, so a pass that finishes after the reply does not repeat it.
 
 An organization owner decides how much goes into Slack, as Cursor's admins do:
 
 | Setting             | Off                                                       | On                                                                                               |
 | ------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Show agent messages | Status, reactions and links only                          | Also the plan, closing messages and questions (default)                                          |
+| Show agent messages | Status, reactions and links only                          | Also the plan, closing messages, questions and the summary (default)                             |
 | Show diffs          | Changed files and line counts only (default)              | Also the diff of each changed file, up to 3,000 characters, once, when the session first settles |
 | External channels   | Only status and links in Slack Connect channels (default) | The two settings above apply there too                                                           |
 
@@ -364,6 +376,7 @@ One ready-for-review PR per step, stacked:
 | 8   | Project inference from the thread, in `@mend/inference`, with "Switch project".                                                                                                               |
 | 9   | Follow-ups, `new`, answers and resume in a thread, and `help`, `settings` and `list`.                                                                                                         |
 | 10  | Screenshots from the thread.                                                                                                                                                                  |
+| 11  | The session summary in the thread, from the review tour, and Claude's plans as a checklist.                                                                                                   |
 
 PRs 2 and 4 depend on nothing else. PR 6 needs 2, 3 and 5. After PR 7, `@mend <prompt>` in a thread
 that links a repository, or in a channel with a default, starts a session and reports back. That is

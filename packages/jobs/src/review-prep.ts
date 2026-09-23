@@ -8,7 +8,11 @@ import {
   SettingsRepo,
 } from "@mend/db";
 import { SessionId } from "@mend/domain";
-import { resolveAutomation } from "@mend/domain/workbench";
+import {
+  resolveAutomation,
+  type AutomationChoice,
+  type SessionOrigin,
+} from "@mend/domain/workbench";
 import { CaptureRuntime, WorktreeReads } from "@mend/sessions";
 import type { GitError } from "@mend/store";
 import { Cause, Effect, Layer, Schema, Stream } from "effect";
@@ -30,11 +34,33 @@ import { JobRunner } from "./job-runner.ts";
  *   review page still offers both passes on demand.
  * - an empty change queues nothing: no diff, no tour, no suggestions — an
  *   inference pass over nothing is spend without evidence.
+ * - a session started from Slack always queues the tour, whatever the switch
+ *   says: its summary is the thread's end-of-session reply (docs/adr/0006-slack.md).
  */
 
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(MendEvent));
 
 const SETTLED = new Set(["completed", "failed", "stopped"]);
+
+/** The passes a settled session queues over a non-empty change. */
+export interface ReviewPasses {
+  readonly tour: boolean;
+  readonly suggest: boolean;
+}
+
+/**
+ * Resolve each switch, the project's choice first and Settings under `inherit`. A session started
+ * from Slack gets the tour even with the switch off: the thread's summary is the tour's.
+ */
+export const reviewPassesFor = (input: {
+  readonly origin: SessionOrigin;
+  readonly project: { readonly autoTour: AutomationChoice; readonly autoSuggest: AutomationChoice };
+  readonly settings: { readonly autoTour: boolean; readonly autoSuggest: boolean };
+}): ReviewPasses => ({
+  tour:
+    input.origin === "slack" || resolveAutomation(input.project.autoTour, input.settings.autoTour),
+  suggest: resolveAutomation(input.project.autoSuggest, input.settings.autoSuggest),
+});
 
 /** The chain head as the log names it: which capture the read would have come from. */
 export interface ReviewPrepHead {
@@ -114,9 +140,11 @@ export const ReviewPrepLive: Layer.Layer<
           });
         }
       }
-      const settings = yield* settingsRepo.get();
-      const autoTour = resolveAutomation(project.autoTour, settings.autoTour);
-      const autoSuggest = resolveAutomation(project.autoSuggest, settings.autoSuggest);
+      const { tour: autoTour, suggest: autoSuggest } = reviewPassesFor({
+        origin: session.origin,
+        project,
+        settings: yield* settingsRepo.get(),
+      });
       if (!autoTour && !autoSuggest) return;
 
       // The passes read worktree-versus-base themselves; this is only the
