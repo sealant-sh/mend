@@ -7,6 +7,7 @@ export * from "./folder-store.ts";
 export * from "./git.ts";
 export * from "./paths.ts";
 export * from "./git-auth.ts";
+export * from "./landing.ts";
 export * from "./remote-env.ts";
 export * from "./runner.ts";
 export * from "./secret-cipher.ts";

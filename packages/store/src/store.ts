@@ -8,6 +8,26 @@ import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { git, GitError } from "./git.ts";
+import {
+  type BundleEmptyError,
+  type BundleInput,
+  type BundleTooLargeError,
+  type ChangeBundle,
+  checkBranch,
+  createChangeBundle,
+  type InvalidBranchError,
+  type LandingAuthor,
+  LandingBranchMovedError,
+  type LandingCommit,
+  type ProbeInput,
+  probeRemoteBranch,
+  pushBranch,
+  type PushInput,
+  type Pushed,
+  type PushRefusedError,
+  type RemoteBranchState,
+  writeLandingCommit,
+} from "./landing.ts";
 import { mendHome } from "./paths.ts";
 
 /** Where the store lives on disk. One root, one directory per project. */
@@ -57,6 +77,22 @@ export interface AdoptedRepo {
   readonly storePath: string;
   readonly defaultBranch: string;
   readonly headSha: Sha;
+}
+
+/** Landing's commit in the project store: the session branch moves, the worktree does not. */
+export interface StoreLandingCommitInput {
+  /** The session branch, without `refs/heads/` (`mend/fix-login`). */
+  readonly branch: string;
+  /** The checkpoint whose tree is landed (a ref or a sha). */
+  readonly checkpoint: string;
+  readonly author: LandingAuthor;
+  readonly message: string;
+  /**
+   * The branch head the caller observed when it took the checkpoint. When the branch has moved
+   * since (the agent committed after the checkpoint), nothing is written: a commit of the older
+   * checkpoint's tree would undo the newer commit.
+   */
+  readonly expectedHead?: string | undefined;
 }
 
 /** A flat, sorted path list — the client nests it; `truncated` when the cap bit. */
@@ -473,6 +509,35 @@ export class Store extends Context.Service<
     ) => Effect.Effect<ReferenceClone, GitError>;
     /** Delete the clone directory. Selection rows are the caller's concern. */
     readonly removeReference: (clonePath: string) => Effect.Effect<void>;
+    /**
+     * Landing step 2 (docs/adr/0007-landing.md) in the project store: when the checkpoint's tree
+     * differs from the session branch head's, write one commit of that tree on the head as the
+     * owner and move `refs/heads/<branch>` to it by compare-and-swap; otherwise write nothing.
+     * `commit-tree` and `update-ref` in the bare store only, so the worktree's files, index and
+     * HEAD file are never touched.
+     */
+    readonly landingCommit: (
+      storePath: string,
+      input: StoreLandingCommitInput,
+    ) => Effect.Effect<LandingCommit, GitError | InvalidBranchError | LandingBranchMovedError>;
+    /** Landing step 3: fast-forward-only push; a refusal is typed and in the remote's words. */
+    readonly push: (
+      storePath: string,
+      input: PushInput,
+    ) => Effect.Effect<Pushed, GitError | InvalidBranchError | PushRefusedError>;
+    /** Origin's branch against a local commit: "origin has moved", "the landed commit is on origin". */
+    readonly probeRemote: (
+      storePath: string,
+      input: ProbeInput,
+    ) => Effect.Effect<RemoteBranchState, GitError | InvalidBranchError>;
+    /** A git bundle of `base..tip` naming the branch, for `mend pull`; refused over the limit. */
+    readonly bundle: (
+      storePath: string,
+      input: BundleInput,
+    ) => Effect.Effect<
+      ChangeBundle,
+      GitError | InvalidBranchError | BundleTooLargeError | BundleEmptyError
+    >;
   }
 >()("@mend/store/Store") {
   static readonly layer = Layer.effect(
@@ -1008,7 +1073,75 @@ export class Store extends Context.Service<
         yield* Effect.sync(() => fs.rmSync(clonePath, { recursive: true, force: true }));
       });
 
+      const landingCommit = Effect.fn("Store.landingCommit")(function* (
+        storePath: string,
+        input: StoreLandingCommitInput,
+      ) {
+        const ref = yield* checkBranch(input.branch);
+        const head = yield* git(["rev-parse", "--verify", "--end-of-options", ref], storePath);
+        if (input.expectedHead !== undefined) {
+          const expected = yield* git(
+            ["rev-parse", "--verify", "--end-of-options", `${input.expectedHead}^{commit}`],
+            storePath,
+          );
+          if (expected !== head) {
+            return yield* new LandingBranchMovedError({
+              branch: input.branch,
+              expected,
+              actual: head,
+            });
+          }
+        }
+        const landed = yield* writeLandingCommit(storePath, {
+          parent: head,
+          checkpoint: input.checkpoint,
+          author: input.author,
+          message: input.message,
+        });
+        if (landed.written === null) return landed;
+        // Compare-and-swap on the head read above: a commit the agent made meanwhile wins and
+        // Mend's commit is left unreferenced.
+        yield* git(
+          ["update-ref", "-m", "mend: landing", ref, landed.written.sha, head],
+          storePath,
+        ).pipe(
+          Effect.catch(() =>
+            git(["rev-parse", "--verify", "--quiet", "--end-of-options", ref], storePath).pipe(
+              Effect.catch(() => Effect.succeed("")),
+              Effect.flatMap(
+                (actual) =>
+                  new LandingBranchMovedError({
+                    branch: input.branch,
+                    expected: head,
+                    actual: actual === "" ? null : actual,
+                  }),
+              ),
+            ),
+          ),
+        );
+        return landed;
+      });
+
+      const push = Effect.fn("Store.push")(function* (storePath: string, input: PushInput) {
+        return yield* pushBranch(storePath, input);
+      });
+
+      const probeRemote = Effect.fn("Store.probeRemote")(function* (
+        storePath: string,
+        input: ProbeInput,
+      ) {
+        return yield* probeRemoteBranch(storePath, input);
+      });
+
+      const bundle = Effect.fn("Store.bundle")(function* (storePath: string, input: BundleInput) {
+        return yield* createChangeBundle(storePath, input);
+      });
+
       return {
+        landingCommit,
+        push,
+        probeRemote,
+        bundle,
         cloneReference,
         refreshReference,
         removeReference,

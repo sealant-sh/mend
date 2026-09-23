@@ -17,6 +17,16 @@ interface ExecFailure {
   readonly message?: string;
 }
 
+/** The pinned identity every store git call starts from; `env` overrides it (a landing's owner). */
+const gitProcessEnv = (env: Record<string, string> | undefined): NodeJS.ProcessEnv => ({
+  ...process.env,
+  GIT_AUTHOR_NAME: "mend",
+  GIT_AUTHOR_EMAIL: "mend@localhost",
+  GIT_COMMITTER_NAME: "mend",
+  GIT_COMMITTER_EMAIL: "mend@localhost",
+  ...env,
+});
+
 /**
  * Run git with args in cwd; resolve with trimmed stdout. Identity is pinned so
  * checkpoint commits never depend on the machine's git config. Deliberately
@@ -36,18 +46,7 @@ export const git = (
     const child = execFile(
       "git",
       [...args],
-      {
-        cwd,
-        maxBuffer: 64 * 1024 * 1024,
-        env: {
-          ...process.env,
-          GIT_AUTHOR_NAME: "mend",
-          GIT_AUTHOR_EMAIL: "mend@localhost",
-          GIT_COMMITTER_NAME: "mend",
-          GIT_COMMITTER_EMAIL: "mend@localhost",
-          ...env,
-        },
-      },
+      { cwd, maxBuffer: 64 * 1024 * 1024, env: gitProcessEnv(env) },
       (error, stdout) => {
         if (error === null) {
           resume(Effect.succeed(stdout.replace(/\n$/, "")));
@@ -74,5 +73,52 @@ export const git = (
       },
     );
     if (stdin !== undefined) child.stdin?.end(stdin);
+    return Effect.sync(() => child.kill());
+  });
+
+/** What one git call printed and how it exited, whatever the exit code. */
+export interface GitOutput {
+  readonly exitCode: number;
+  readonly stdout: string;
+  readonly stderr: string;
+}
+
+/**
+ * Run git and keep both streams and the exit code, failing only when git could not run at all.
+ * For the calls whose answer is on both streams even when git exits nonzero: `push --porcelain`
+ * prints each ref's status on stdout and the remote's own words (`remote: …`) on stderr.
+ */
+export const gitOutput = (
+  args: ReadonlyArray<string>,
+  cwd: string,
+  env?: Record<string, string>,
+): Effect.Effect<GitOutput, GitError> =>
+  Effect.callback<GitOutput, GitError>((resume) => {
+    const child = execFile(
+      "git",
+      [...args],
+      { cwd, maxBuffer: 64 * 1024 * 1024, env: gitProcessEnv(env) },
+      (error, stdout, stderr) => {
+        if (error === null) {
+          resume(Effect.succeed({ exitCode: 0, stdout, stderr }));
+          return;
+        }
+        const failure = error as ExecFailure;
+        if (typeof failure.code === "number") {
+          resume(Effect.succeed({ exitCode: failure.code, stdout, stderr }));
+          return;
+        }
+        resume(
+          Effect.fail(
+            new GitError({
+              args: [...args],
+              cwd,
+              exitCode: null,
+              stderr: (stderr === "" ? (failure.message ?? "") : stderr).trim(),
+            }),
+          ),
+        );
+      },
+    );
     return Effect.sync(() => child.kill());
   });
