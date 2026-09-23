@@ -1,6 +1,7 @@
 export * from "./answer.ts";
 export * from "./blocks.ts";
 export * from "./format.ts";
+export * from "./images.ts";
 export * from "./manifest.ts";
 export * from "./markup.ts";
 export * from "./mention.ts";

@@ -37,14 +37,22 @@ import {
 } from "@mend/inference";
 import { makeWindowLimiter } from "@mend/network";
 import { asSealantUser, SealantClients } from "@mend/sealant";
-import { SessionEngine } from "@mend/sessions";
+import {
+  PASTED_IMAGE_MAX_BYTES,
+  PASTED_IMAGE_TYPES,
+  SessionEngine,
+  storePastedImage,
+} from "@mend/sessions";
 import {
   answersFromMention,
   channelDefaultChanged,
   channelSettingsMessage,
   DEFAULT_MENTION_VOCABULARY,
   escapeSlack,
+  fetchLimit,
   helpMessage,
+  imageRefusal,
+  imagesNotAttached,
   isDirectMessage,
   LISTED_SESSIONS,
   linkPrompt,
@@ -55,29 +63,35 @@ import {
   projectsLinkedIn,
   projectsNamedBy,
   reactionFor,
+  renderFollowUpTurn,
   renderOpeningTurn,
   requestKeyOfPicker,
   sessionListMessage,
   sessionUrl,
   setsChannelDefault,
   settingsUrl,
+  skippedImage,
   SLACK_ACTIONS,
   slackToPlain,
   statusMessage,
   switchOffered,
   threadContext,
   threadOfChannelSettings,
+  turnImages,
   userMentionPattern,
   type ParsedMention,
   type SlackMessage,
   type SlackReaction,
   type SlackSessionState,
+  type SlackThreadFile,
   type SlackThreadMessage,
   type ThreadContext,
+  type ThreadImage,
+  type ThreadImageLimits,
 } from "@mend/slack";
 import { SlackApi, type SlackApiError } from "@mend/slack/client";
 import type { SlackEnvelope } from "@mend/slack/socket";
-import { SecretCipher, Store } from "@mend/store";
+import { harnessHomePathOf, SecretCipher, Store } from "@mend/store";
 import { Cause, Config, Effect, FiberSet, Layer, Option, Schema, type Fiber } from "effect";
 import * as Context from "effect/Context";
 
@@ -117,6 +131,11 @@ export interface SlackMention {
    * it, and treats null as external.
    */
   readonly external: boolean | null;
+  /**
+   * The files on the mention itself, as the event carried them: screenshots the request is about.
+   * Empty when nothing said, such as for a click.
+   */
+  readonly files: ReadonlyArray<SlackThreadFile>;
 }
 
 /** Where Mend answers a mention: its thread, or the thread the mention starts. */
@@ -136,6 +155,7 @@ const requestOf = (thread: SlackThreadSession, slackUserId: string): SlackMentio
   slackUserId,
   userTeamId: null,
   external: thread.external,
+  files: [],
 });
 
 const EventCallback = Schema.Struct({
@@ -154,6 +174,17 @@ const EventCallback = Schema.Struct({
     thread_ts: Schema.optional(Schema.String),
     team: Schema.optional(Schema.String),
     user_team: Schema.optional(Schema.String),
+    files: Schema.optional(
+      Schema.Array(
+        Schema.Struct({
+          id: Schema.String,
+          name: Schema.optional(Schema.NullOr(Schema.String)),
+          mimetype: Schema.optional(Schema.NullOr(Schema.String)),
+          url_private: Schema.optional(Schema.NullOr(Schema.String)),
+          size: Schema.optional(Schema.NullOr(Schema.Number)),
+        }),
+      ),
+    ),
   }),
 });
 type SlackEvent = (typeof EventCallback.Type)["event"];
@@ -204,6 +235,13 @@ export const mentionOf = (
     slackUserId: event.user,
     userTeamId: event.user_team ?? event.team ?? null,
     external,
+    files: (event.files ?? []).map((file) => ({
+      id: file.id,
+      name: file.name ?? null,
+      mimetype: file.mimetype ?? null,
+      urlPrivate: file.url_private ?? null,
+      size: file.size ?? null,
+    })),
   };
 };
 
@@ -462,6 +500,12 @@ interface SwitchedSession {
   readonly session: Session;
 }
 
+const answerLeavesImages = section(
+  escapeSlack(
+    "not attached · the images · an answer to the agent's question carries text only · mention Mend again with them once it has the answer",
+  ),
+);
+
 /** The session's state, as the status message words it until the reporter takes over. */
 export const slackStateOf = (session: Pick<Session, "status">): SlackSessionState => {
   switch (session.status) {
@@ -552,6 +596,17 @@ export const SLACK_EVENTS_PER_MINUTE = 120;
 export const SLACK_INFERENCES_PER_HOUR = 60;
 /** A link code lives ten minutes; a request waiting on it is stale a little after. */
 export const SLACK_LINKED_REQUEST_MAX_AGE_MS = 15 * 60_000;
+/**
+ * What one turn attaches from Slack. Each image follows the paste's own rules (its media types,
+ * checked again from the bytes, and its size limit); a turn takes at most ten of them and
+ * 24 MB, three pastes at the limit, which is also the most one paste request's body may carry.
+ */
+export const SLACK_TURN_IMAGE_LIMITS: ThreadImageLimits = {
+  mediaTypes: Object.keys(PASTED_IMAGE_TYPES),
+  maxBytes: PASTED_IMAGE_MAX_BYTES,
+  maxImages: 10,
+  maxTotalBytes: 3 * PASTED_IMAGE_MAX_BYTES,
+};
 
 export const makeSlackRunner = (options: SlackRunnerOptions) =>
   Effect.gen(function* () {
@@ -722,6 +777,88 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
               : message,
         );
       });
+
+    /**
+     * Attach a turn's images (`turnImages`) through the paste's path: fetch each from Slack with
+     * the bot token and store it as a pasted image in the session's harness home, which every
+     * workspace of the session mounts. In order, within `SLACK_TURN_IMAGE_LIMITS`; an image that
+     * cannot be attached is skipped with why, and nothing here fails the turn.
+     */
+    const attachImages = (
+      token: string,
+      storePath: string,
+      sessionId: SessionId,
+      files: ReadonlyArray<SlackThreadFile>,
+    ) =>
+      Effect.gen(function* () {
+        const limits = SLACK_TURN_IMAGE_LIMITS;
+        const harnessHome = harnessHomePathOf(storePath, sessionId);
+        const images: Array<ThreadImage> = [];
+        let taken = { count: 0, bytes: 0 };
+        for (const file of files) {
+          const refusal = imageRefusal(file, taken, limits);
+          if (refusal !== null || file.urlPrivate === null) {
+            images.push(skippedImage(file, refusal ?? "unreadable", limits));
+            continue;
+          }
+          const cap = fetchLimit(taken, limits);
+          const fetched = yield* slack
+            .filesDownload(token, file.urlPrivate, { maxBytes: cap.maxBytes })
+            .pipe(Effect.result);
+          if (fetched._tag === "Failure") {
+            if (fetched.failure.code !== "too_large") {
+              yield* Effect.logWarning("slack runner: image not fetched").pipe(
+                Effect.annotateLogs({ sessionId, fileId: file.id, code: fetched.failure.code }),
+              );
+            }
+            images.push(
+              skippedImage(
+                file,
+                fetched.failure.code === "too_large" ? cap.over : "unreadable",
+                limits,
+              ),
+            );
+            continue;
+          }
+          const stored = yield* storePastedImage(harnessHome, fetched.success.bytes).pipe(
+            Effect.result,
+          );
+          if (stored._tag === "Failure") {
+            const { reason } = stored.failure;
+            if (reason === "write-failed") {
+              yield* Effect.logWarning("slack runner: image not stored").pipe(
+                Effect.annotateLogs({ sessionId, fileId: file.id, cause: stored.failure.message }),
+              );
+            }
+            images.push(
+              skippedImage(
+                file,
+                reason === "not-an-image" ? "type" : reason === "too-large" ? "size" : "not-stored",
+                limits,
+              ),
+            );
+            continue;
+          }
+          images.push({
+            kind: "attached",
+            file,
+            path: stored.success.path,
+            bytes: stored.success.bytes,
+          });
+          taken = { count: taken.count + 1, bytes: taken.bytes + stored.success.bytes };
+        }
+        return images;
+      });
+
+    /** Tell the requester which images their turn left out, if any. */
+    const sayWhatWasLeftOut = (
+      token: string,
+      mention: SlackMention,
+      images: ReadonlyArray<ThreadImage>,
+    ) => {
+      const message = imagesNotAttached(images);
+      return message === null ? Effect.void : whisper(token, mention, message);
+    };
 
     /**
      * Why the owner cannot run this harness, or null. A harness needs the owner's own connected
@@ -1061,7 +1198,16 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         botUserId: install.botUserId,
         mentionTs: mention.messageTs,
       });
-      if (parsed.prompt === "" && context.messages.length === 0) {
+      // The mention as the thread read it is the latest word on its files; a click or a link that
+      // waited carries none of its own.
+      const requestFiles =
+        thread.value.find((message) => message.ts === mention.messageTs)?.files ?? mention.files;
+      const images = turnImages(requestFiles, context);
+      if (
+        parsed.prompt === "" &&
+        context.messages.length === 0 &&
+        turnImages(requestFiles).length === 0
+      ) {
         return yield* whisper(token, mention, emptyRequest);
       }
 
@@ -1238,10 +1384,14 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           return moved;
         });
 
+      const attached = yield* attachImages(token, choice.project.storePath, session.id, images);
+      yield* sayWhatWasLeftOut(token, mention, attached);
       const opening = renderOpeningTurn({
         prompt: parsed.prompt,
         context,
         requesterUserId: mention.slackUserId,
+        requestFiles,
+        images: new Map(attached.map((image) => [image.file.id, image])),
       });
       const launched = yield* start
         .launchAs(
@@ -1387,20 +1537,22 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           false,
         );
       }
+      const sessionProject = yield* access
+        .projectAs(userId, session.projectId)
+        .pipe(Effect.catchTag("NotFound", () => Effect.succeed(null)));
       // Everyone in a channel reads what the session posts: a project made private since is out.
-      if (!isDirectMessage(mention.channelId)) {
-        const shown = yield* access
-          .projectAs(userId, session.projectId)
-          .pipe(Effect.catchTag("NotFound", () => Effect.succeed(null)));
-        if (shown === null || shown.visibility !== "shared") {
-          return yield* refuse(
-            token,
-            mention,
-            notSent("the session's project is private · a channel offers shared projects only"),
-            false,
-          );
-        }
+      if (
+        !isDirectMessage(mention.channelId) &&
+        (sessionProject === null || sessionProject.visibility !== "shared")
+      ) {
+        return yield* refuse(
+          token,
+          mention,
+          notSent("the session's project is private · a channel offers shared projects only"),
+          false,
+        );
       }
+      const images = turnImages(mention.files);
 
       // The owner's mention answers the agent's question, when it asked one.
       if (session.ownerUserId === userId) {
@@ -1419,6 +1571,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
             .respondRequest(question.id, { answers: answer.answers }, userId)
             .pipe(Effect.result);
           if (answered._tag === "Success") {
+            if (images.length > 0) yield* whisper(token, mention, answerLeavesImages);
             if (unapplied) yield* whisper(token, mention, modelEffortNotApplied);
             return;
           }
@@ -1426,13 +1579,25 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         }
       }
 
-      if (parsed.prompt === "") {
+      if (parsed.prompt === "" && images.length === 0) {
         return yield* refuse(token, mention, notSent("the mention has no request"), false);
       }
-      const sent = yield* engine.submitTurn(session.id, parsed.prompt, userId).pipe(Effect.result);
+      // The images ride the paste's path into the session's harness home, and the turn names them.
+      const attached =
+        sessionProject === null
+          ? images.map((file) => skippedImage(file, "not-stored", SLACK_TURN_IMAGE_LIMITS))
+          : yield* attachImages(token, sessionProject.storePath, session.id, images);
+      const turn = renderFollowUpTurn({
+        prompt: parsed.prompt,
+        requestFiles: mention.files,
+        images: new Map(attached.map((image) => [image.file.id, image])),
+      });
+      const sent = yield* engine.submitTurn(session.id, turn, userId).pipe(Effect.result);
+      // A new session in the thread fetches the images again, and says what it left out itself.
       const delivered =
         sent._tag === "Success" ||
-        (yield* resumeOrStartAnew(install, token, mention, userId, session, parsed.prompt));
+        (yield* resumeOrStartAnew(install, token, mention, userId, session, turn));
+      if (delivered) yield* sayWhatWasLeftOut(token, mention, attached);
       if (delivered && unapplied) yield* whisper(token, mention, modelEffortNotApplied);
     });
 
@@ -1628,6 +1793,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
             threadTs: mention.threadTs,
             text: mention.text,
             ...(mention.external === null ? {} : { external: mention.external }),
+            ...(mention.files.length === 0 ? {} : { files: mention.files }),
           },
         });
         return yield* whisper(token, mention, linkPrompt(linkUrl(install.webOrigin, code)));
@@ -1736,6 +1902,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           slackUserId: payload.user.id,
           userTeamId: null,
           external: null,
+          files: [],
         };
         const link = yield* links.bySlackUser(install.teamId, payload.user.id);
         if (link === null) return yield* whisper(token, at, notLinkedYet);
@@ -1759,6 +1926,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         slackUserId: payload.user.id,
         userTeamId: null,
         external: key.external,
+        files: [],
       };
       const request = yield* slack
         .conversationsReplies(token, { channel, ts: key.parentTs, latest: key.messageTs })
@@ -1782,7 +1950,12 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         teamId: install.teamId,
       });
       if (!first) return;
-      const mention = { ...clicker, text: request.text, userTeamId: request.teamId };
+      const mention = {
+        ...clicker,
+        text: request.text,
+        userTeamId: request.teamId,
+        files: request.files,
+      };
       yield* Effect.gen(function* () {
         // A switch checks the session it replaces first; it is stopped only once the new one
         // exists, so a refusal on the way leaves the requester with the session they had.
@@ -1850,6 +2023,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           // The outsider check ran before the code was minted.
           userTeamId: null,
           external: job.request.external ?? null,
+          files: job.request.files ?? [],
         },
         job.userId,
       );

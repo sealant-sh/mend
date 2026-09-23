@@ -206,7 +206,11 @@ message up to the mention, up to fifty messages or 20,000 characters, whichever 
 first, keeping the newest. Each message is quoted with its author's display name and marked as Slack
 thread context, separate from the request. Screenshots and images in those messages are attached
 through the same path as an image pasted into a session: each is stored as a file in the session's
-harness home, and the turn text names its path. They are not sent as image content blocks.
+harness home, and the turn text names its path. They are not sent as image content blocks. Each
+image keeps the paste's rules (PNG, JPEG, GIF or WebP, up to 8 MB). A turn attaches the request's
+own images first, then the thread's, newest first, up to ten images and 24 MB. The turn names each
+image it skipped and why, and so does an ephemeral reply to the requester. A follow-up mention's
+images go with its turn.
 
 Thread text written by someone other than the requester is input from a third party, and it reaches
 an agent that runs with the requester's Git access. Mend keeps those messages so the request makes
