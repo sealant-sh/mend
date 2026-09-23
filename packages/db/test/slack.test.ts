@@ -509,6 +509,65 @@ describe.skipIf(!reachable)("slack in Postgres", () => {
     );
   });
 
+  it("lists the sessions a person started from one Slack workspace, newest first", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const threads = yield* SlackThreadsRepo;
+        const started = (id: string, owner: string, teamId: string, requestTs: string) =>
+          Effect.gen(function* () {
+            const session = yield* sessions.create({
+              id: SessionId.make(id),
+              projectId: PROJECT,
+              worktreeId: WORKTREE,
+              harness: "codex",
+              label: id === "s-list-2" ? "retry storm" : null,
+              worktree: "one",
+              branch: "mend/one",
+              baseSha: Sha.make("abc"),
+              baseRef: "main",
+              contextSnapshotId: null,
+              ownerUserId: owner,
+              origin: "slack",
+            });
+            yield* threads.record({
+              sessionId: session.id,
+              teamId,
+              channelId: "C-LIST",
+              threadTs: requestTs,
+              requestTs,
+              slackUserId: owner === "alice" ? "U-ALICE" : "U-BOB",
+              projectSource: "channel-default",
+              external: false,
+            });
+          });
+        yield* started("s-list-1", "alice", "T-LIST", "1726100000.000100");
+        yield* started("s-list-2", "alice", "T-LIST", "1726100100.000100");
+        yield* started("s-list-3", "bob", "T-LIST", "1726100200.000100");
+        yield* started("s-list-4", "alice", "T-ELSEWHERE", "1726100300.000100");
+
+        const listed = yield* threads.listForOwner({
+          teamId: "T-LIST",
+          ownerUserId: "alice",
+          limit: 10,
+        });
+        expect(listed.map((row) => row.sessionId)).toEqual(["s-list-2", "s-list-1"]);
+        expect(listed[0]).toMatchObject({
+          projectId: PROJECT,
+          label: "retry storm",
+          harness: "codex",
+          branch: "mend/one",
+          status: "starting",
+          channelId: "C-LIST",
+          requestTs: "1726100100.000100",
+        });
+        expect(
+          yield* threads.listForOwner({ teamId: "T-LIST", ownerUserId: "alice", limit: 1 }),
+        ).toHaveLength(1);
+      }),
+    );
+  });
+
   it("lets exactly one of many racing workers claim an event, and sweeps old claims", async () => {
     await run(
       Effect.gen(function* () {

@@ -35,6 +35,8 @@ export const AuditAction = Schema.Literals([
   "slack.link_created",
   "slack.link_removed",
   "slack.session_started",
+  "slack.channel_default_set",
+  "slack.channel_default_cleared",
 ]);
 export type AuditAction = typeof AuditAction.Type;
 

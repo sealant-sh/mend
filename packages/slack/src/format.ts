@@ -4,7 +4,13 @@ import {
   type SlackSessionState,
 } from "@mend/domain/workbench";
 
-import type { ActionsBlock, ButtonElement, PlainText, SlackMessage } from "./blocks.ts";
+import type {
+  ActionsBlock,
+  ButtonElement,
+  PlainText,
+  SlackMessage,
+  StaticSelectElement,
+} from "./blocks.ts";
 import { escapeSlack } from "./markup.ts";
 
 /**
@@ -21,6 +27,9 @@ export const SLACK_ACTIONS = {
   linkAccount: "mend_link_account",
   reviewChange: "mend_review_change",
   switchProject: "mend_switch_project",
+  setChannelDefault: "mend_set_channel_default",
+  otherChannelDefault: "mend_other_channel_default",
+  clearChannelDefault: "mend_clear_channel_default",
 } as const;
 
 /** A project button's `action_id`: unique within its block, and starts with `pickProject`. */
@@ -62,6 +71,9 @@ export const sessionUrl = (webOrigin: string, sessionId: string): string =>
 
 export const linkUrl = (webOrigin: string, code: string): string =>
   `${origin(webOrigin)}/slack/link/${encodeURIComponent(code)}`;
+
+/** Settings → Slack, where a person sets their own default project and links their account. */
+export const settingsUrl = (webOrigin: string): string => `${origin(webOrigin)}/settings#slack`;
 
 /** The change's review page. */
 export const changeUrl = (webOrigin: string, changeId: string): string =>
@@ -305,8 +317,9 @@ export interface AgentQuestion {
 }
 
 /**
- * A question the agent asked, as a reply that names the owner. Answers are given in Mend. With
- * agent messages off, the reply names the owner and says there is a question, without its text.
+ * A question the agent asked, as a reply that names the owner. The owner answers with their next
+ * mention in the thread, or in Mend. With agent messages off, the reply names the owner and says
+ * there is a question, without its text.
  */
 export const questionMessage = (input: {
   readonly ownerSlackUserId: string;
@@ -317,7 +330,7 @@ export const questionMessage = (input: {
   const owner = `<@${input.ownerSlackUserId}>`;
   if (!input.showText || input.questions.length === 0) {
     return lineWithButton(
-      `${owner} the agent asked a question · it is answered in Mend`,
+      `${owner} the agent asked a question · answer it in Mend, or mention Mend here with the answer`,
       openButton(input.url),
     );
   }
@@ -342,7 +355,10 @@ export const questionMessage = (input: {
       {
         type: "context",
         elements: [
-          { type: "mrkdwn", text: `It is answered in Mend: <${input.url}|open the session>` },
+          {
+            type: "mrkdwn",
+            text: `${input.questions.length > 1 ? "Mention Mend here with one answer per line, in order" : "Mention Mend here with the answer"}, or answer in Mend: <${input.url}|open the session>`,
+          },
         ],
       },
     ],
@@ -536,6 +552,162 @@ export const projectPicker = (input: {
     ],
   };
   return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }, actions] };
+};
+
+// ---------------------------------------------------------------------------
+// `@mend settings`: the channel's default project.
+// ---------------------------------------------------------------------------
+
+/** A channel-default button's `action_id`: unique within its block. */
+export const channelDefaultActionId = (index: number): string =>
+  `${SLACK_ACTIONS.setChannelDefault}_${index}`;
+
+/** Whether an `action_id` sets the channel default: a button, or the "Other…" select. */
+export const setsChannelDefault = (actionId: string): boolean =>
+  actionId === SLACK_ACTIONS.otherChannelDefault ||
+  actionId.startsWith(`${SLACK_ACTIONS.setChannelDefault}_`);
+
+const CHANNEL_SETTINGS_BLOCK_PREFIX = "mend_channel:";
+
+/**
+ * The settings reply's `block_id`, which carries the thread the command was made in, so the
+ * confirmation lands beside it: an interaction on an ephemeral message does not say.
+ */
+export const channelSettingsBlockId = (threadTs: string): string =>
+  `${CHANNEL_SETTINGS_BLOCK_PREFIX}${threadTs}`;
+
+/** The thread in a settings reply's `block_id`; null for any other block. */
+export const threadOfChannelSettings = (blockId: string): string | null =>
+  blockId.startsWith(CHANNEL_SETTINGS_BLOCK_PREFIX)
+    ? blockId.slice(CHANNEL_SETTINGS_BLOCK_PREFIX.length)
+    : null;
+
+export interface ChannelDefaultView {
+  /** The project's name; null when the person asking cannot see it. */
+  readonly project: string | null;
+  /** Who set it, as Slack markup (`<@U…>`) or plain words. */
+  readonly setBy: string;
+  /** When, as `YYYY-MM-DD`. */
+  readonly setOn: string;
+}
+
+/**
+ * `@mend settings` in a channel: its default project, and buttons to set or clear it. Any member
+ * may, and the choices are the shared projects that member can see.
+ */
+export const channelSettingsMessage = (input: {
+  readonly threadTs: string;
+  readonly current: ChannelDefaultView | null;
+  readonly projects: ReadonlyArray<PickableProject>;
+}): SlackMessage => {
+  const current =
+    input.current === null
+      ? "channel default · none"
+      : `channel default · ${input.current.project === null ? "a project you cannot see" : escapeSlack(input.current.project)} · set by ${input.current.setBy} on ${input.current.setOn}`;
+  const about =
+    "A mention here runs in the channel default when neither the request nor the thread names a project. Any member sets it, from the shared projects they can see.";
+  const clear: ReadonlyArray<ButtonElement> =
+    input.current === null
+      ? []
+      : [
+          {
+            type: "button",
+            action_id: SLACK_ACTIONS.clearChannelDefault,
+            text: plain("Clear"),
+            value: "clear",
+          },
+        ];
+  const buttons = input.projects.slice(0, PICKER_BUTTON_LIMIT).map(
+    (project, index): ButtonElement => ({
+      type: "button",
+      action_id: channelDefaultActionId(index),
+      text: plain(clip(project.name, 75)),
+      value: project.id,
+    }),
+  );
+  const other: ReadonlyArray<StaticSelectElement> =
+    input.projects.length > PICKER_BUTTON_LIMIT
+      ? [
+          {
+            type: "static_select",
+            action_id: SLACK_ACTIONS.otherChannelDefault,
+            placeholder: plain("Other…"),
+            options: input.projects.slice(0, PICKER_OPTION_LIMIT).map((project) => ({
+              text: plain(clip(project.name, 75)),
+              value: project.id,
+            })),
+          },
+        ]
+      : [];
+  const elements = [...buttons, ...other, ...clear];
+  const choices: ReadonlyArray<ActionsBlock> =
+    elements.length === 0
+      ? []
+      : [{ type: "actions", block_id: channelSettingsBlockId(input.threadTs), elements }];
+  const none = input.projects.length === 0 ? "\nNo shared projects you can see to set it to." : "";
+  return {
+    text: current,
+    blocks: [
+      { type: "section", text: { type: "mrkdwn", text: `${current}\n${about}${none}` } },
+      ...choices,
+    ],
+  };
+};
+
+/** The channel default after a click: set to a project, or cleared. */
+export const channelDefaultChanged = (project: string | null): SlackMessage => {
+  const text =
+    project === null
+      ? "channel default · cleared by you"
+      : `channel default · ${escapeSlack(project)} · set by you`;
+  return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
+};
+
+// ---------------------------------------------------------------------------
+// `@mend list`: the person's sessions started from Slack.
+// ---------------------------------------------------------------------------
+
+export interface ListedSession {
+  readonly project: string;
+  /** The session's label; its branch stands in until it has one. */
+  readonly label: string | null;
+  readonly branch: string;
+  readonly state: SlackSessionState;
+  /** The channel its thread is in. */
+  readonly channelId: string;
+  /** The session in Mend. */
+  readonly url: string;
+}
+
+/** How many sessions `@mend list` shows; the rest are in Mend. */
+export const LISTED_SESSIONS = 10;
+
+/** Link text Slack cannot misread: no `|` or `>`, and entities escaped. */
+const linkText = (text: string): string => escapeSlack(text.replace(/[|>]/g, " "));
+
+/** `@mend list`: newest first, each with its state, channel and a link to it in Mend. */
+export const sessionListMessage = (input: {
+  readonly sessions: ReadonlyArray<ListedSession>;
+  /** Whether there are older sessions than the listed ones. */
+  readonly more: boolean;
+}): SlackMessage => {
+  if (input.sessions.length === 0) {
+    const text = "No sessions you started from Slack in this workspace.";
+    return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
+  }
+  const lines = input.sessions.map(
+    (session) =>
+      `• <${session.url}|${linkText(session.label ?? session.branch)}> · ${escapeSlack(session.project)} · ${stateWords(session.state, false)} · <#${session.channelId}>`,
+  );
+  const more = input.more ? ["Older sessions are in Mend."] : [];
+  const text = clip(
+    ["Your sessions started from Slack, newest first:", ...lines, ...more].join("\n"),
+    AGENT_MESSAGE_LIMIT,
+  );
+  return {
+    text: `${input.sessions.length} ${input.sessions.length === 1 ? "session" : "sessions"} started from Slack`,
+    blocks: [{ type: "section", text: { type: "mrkdwn", text } }],
+  };
 };
 
 // ---------------------------------------------------------------------------
