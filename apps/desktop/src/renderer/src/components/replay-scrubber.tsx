@@ -35,7 +35,9 @@ export function ReplayScrubber({
   const position = Number.isFinite(current) ? Math.min(1, Math.max(0, current / max)) : 0;
   const index = checkpoints.findIndex((c) => c.seq === from);
   const label = !seekable
-    ? "conversation · read from the record"
+    ? face === null
+      ? "no terminal output recorded to replay"
+      : "conversation · read from the record"
     : checkpoints.length === 0
       ? "▶ replay · from seq 0 · no checkpoints"
       : index === -1

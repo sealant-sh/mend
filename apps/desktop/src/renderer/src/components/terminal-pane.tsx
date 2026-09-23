@@ -282,7 +282,20 @@ export function TerminalPane({
           ) : face === "replay" && recordProcess !== null ? (
             <RecordReplay key={recordProcess.id} processId={recordProcess.id} from={from} />
           ) : (
-            <TranscriptView sessionId={tab.sessionId} />
+            <div className="flex min-h-0 flex-1 flex-col">
+              {session.summary !== null && (
+                <p className="border-b border-term-rule px-4 py-2.5 font-mono text-[11.5px] leading-relaxed text-term-fg">
+                  {session.summary}
+                </p>
+              )}
+              {session.sealantRunId === null ? (
+                <p className="p-4 font-mono text-[11.5px] text-term-faint">
+                  no record · the session never ran supervised
+                </p>
+              ) : (
+                <TranscriptView sessionId={tab.sessionId} />
+              )}
+            </div>
           )
         ) : (
           <TtyTerminal
