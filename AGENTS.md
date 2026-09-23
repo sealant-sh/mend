@@ -56,6 +56,12 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
   user to one Mend account, explicitly, never by email. A `Slack thread` is a thread sessions report
   to; `@mend <prompt>` there is a follow-up. Mend picks a session's project from the message, then
   the thread, then the channel default, then the person's default, and says which one decided.
+- Landing nouns (`docs/adr/0007-landing.md`): `landing` is one push of a session's branch to origin,
+  plus its pull request, recorded against the `landed checkpoint` whose tree Mend committed. Only
+  the owner lands. `automatic landing` lands after a completed turn whose request asked for a change
+  (on by default from Slack, as Cursor does), never for a question. Mend never merges, never
+  force-pushes, and never writes "ready to merge": a landing reports what was pushed and what GitHub
+  last said (`pull request #412 · open · observed`).
 - The queue is gone: no triage/queued/mending stages, no issue intake, no kanban. Issues and PRs are
   optional references attached to work, never its identity.
 - Platform nouns follow Sealant: `workspace` (the live environment; sessions run in workspaces that

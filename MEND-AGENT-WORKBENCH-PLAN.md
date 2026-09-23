@@ -388,6 +388,12 @@ Publication is optional output from an already useful local workflow. Examples i
 
 Publication is not a prerequisite for context, session management, or local review.
 
+Landing is the first publication ([ADR 0007](docs/adr/0007-landing.md)): the owner commits the
+change from a checkpoint, pushes its branch to origin fast-forward only, and opens or updates a
+GitHub pull request whose description is the review tour. Sessions started from Slack land
+automatically after a turn that asked for a change, as Cursor does. `mend pull` fetches a change
+into the person's own checkout from a bundle, which settles open decision 8 in that direction.
+
 ### 5.10 Slack
 
 A session can start from Slack ([ADR 0006](docs/adr/0006-slack.md)). `@mend <prompt>` in a thread
