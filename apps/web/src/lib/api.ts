@@ -541,10 +541,6 @@ export const agentIsLive = (session: SessionDto, currentAgent: SessionProcessDto
 const preferredEndpoint = (view: ServiceViewDto): ServiceEndpointDto | null =>
   view.endpoints.find((endpoint) => endpoint.scope === "private") ?? view.endpoints[0] ?? null;
 
-/** Browser behavior is declared by the Service and resolved by the server. */
-export const serviceUrl = (view: ServiceViewDto) =>
-  view.endpoints.find((endpoint) => endpoint.browserUrl !== null)?.browserUrl ?? null;
-
 /** What a client would connect to, exactly as the server bound it. */
 export const serviceEndpoint = (view: ServiceViewDto) => preferredEndpoint(view)?.authority ?? null;
 

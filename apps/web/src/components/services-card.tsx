@@ -1,10 +1,11 @@
+import { isLoopbackHostname, serviceConnectCommand, serviceReach } from "@mend/domain/workbench";
 import { Button } from "@mend/ui/components/ui/button";
 import { Checkbox } from "@mend/ui/components/ui/checkbox";
 import { Input } from "@mend/ui/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@mend/ui/components/ui/native-select";
 import { cn } from "@mend/ui/lib/utils";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useState } from "react";
+import { useState, useSyncExternalStore } from "react";
 
 import { StatusDot } from "#/components/status";
 
@@ -29,7 +30,6 @@ import {
   runService,
   runServiceRecipe,
   serviceEndpoint,
-  serviceUrl,
   stopService,
   type ServiceRecipeDto,
   type ServiceViewDto,
@@ -90,6 +90,32 @@ function ServiceStatusDot({ status }: { readonly status: string }) {
 
 type ServiceVerb = "restart" | "stop" | "rerun";
 
+const noSubscription = () => () => {};
+
+/**
+ * Whether this page runs on the Mend host, where a loopback endpoint answers. The page's own
+ * host says so; the server render keeps today's answer (yes) and the client corrects it.
+ */
+const useOnMendHost = (): boolean =>
+  useSyncExternalStore(
+    noSubscription,
+    () => isLoopbackHostname(window.location.hostname),
+    () => true,
+  );
+
+/** Copy a value, flag it for a moment. */
+const useCopy = (): readonly [boolean, (value: string) => void] => {
+  const [copied, setCopied] = useState(false);
+  const copy = (value: string) => {
+    void navigator.clipboard.writeText(value).then(() => {
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+      return null;
+    });
+  };
+  return [copied, copy];
+};
+
 function ServiceRow({
   service,
   actionable,
@@ -103,14 +129,20 @@ function ServiceRow({
   readonly onAction: (verb: ServiceVerb, service: ServiceViewDto) => void;
   readonly first: boolean;
 }) {
-  const [copied, setCopied] = useState(false);
+  const [copied, copyValue] = useCopy();
+  const [commandCopied, copyCommand] = useCopy();
+  const onMendHost = useOnMendHost();
   const stable = service.service;
   const attempt = currentAttempt(service);
   const rerunAttempt = latestSupervisedAttempt(service);
   const displayAttempt = attempt ?? rerunAttempt;
   const status = serviceStatus(service);
-  const url = serviceUrl(service);
   const live = serviceIsLive(service);
+  // A loopback endpoint answers only on the Mend host: from anywhere else Open would be a dead
+  // link, so the row names the command that tunnels it here instead.
+  const reach = serviceReach(service.endpoints, onMendHost);
+  const url = reach.kind === "direct" ? reach.browserUrl : null;
+  const command = serviceConnectCommand(stable.name);
   // What a client would connect to — the copyable fact. Dead forwards are
   // not offered: an ended Service has no host port worth pasting anywhere.
   const endpoint = live ? serviceEndpoint(service) : null;
@@ -123,7 +155,7 @@ function ServiceRow({
     endpoint === null ? null : `→ ${endpoint}`,
     endpoint === null || exposedEndpoint === null
       ? null
-      : `${exposedEndpoint.scope === "private" ? "private network" : "this machine"} · Mend auth: ${exposedEndpoint.mendAuthentication}`,
+      : `${exposedEndpoint.scope === "private" ? "private network" : onMendHost ? "this machine" : "Mend host loopback"} · Mend auth: ${exposedEndpoint.mendAuthentication}`,
     !live && displayAttempt?.exitCode !== null && displayAttempt?.exitCode !== undefined
       ? `code ${displayAttempt.exitCode}`
       : null,
@@ -132,12 +164,7 @@ function ServiceRow({
     .join(" ");
 
   const copy = () => {
-    if (endpoint === null) return;
-    void navigator.clipboard.writeText(endpoint).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-      return null;
-    });
+    if (endpoint !== null) copyValue(endpoint);
   };
 
   return (
@@ -211,6 +238,36 @@ function ServiceRow({
           )}
         </span>
       </div>
+      {live && reach.kind === "tunnel" && (
+        <div className="mt-2">
+          <div className="flex items-center justify-between gap-3">
+            <button
+              type="button"
+              onClick={() => copyCommand(command)}
+              title={`Copy ${command}`}
+              className="min-w-0 cursor-pointer truncate text-left font-mono text-[11px] text-ink-2 transition-colors hover:text-ink"
+            >
+              {command}
+            </button>
+            <RowAction
+              onClick={() => copyCommand(command)}
+              className={commandCopied ? "text-success hover:text-success" : undefined}
+            >
+              {commandCopied ? "Copied" : "Copy"}
+            </RowAction>
+          </div>
+          <p className="mt-1 font-sans text-xs leading-relaxed text-muted-foreground">
+            The Mend CLI tunnels it to this machine&apos;s loopback, signed in as you.
+            {stable.browserScheme === null ? null : (
+              <>
+                {" "}
+                An open <span className="font-mono text-[11px]">mend attach</span> does this on its
+                own.
+              </>
+            )}
+          </p>
+        </div>
+      )}
       {live && exposedEndpoint?.scope === "private" && (
         <p className="mt-2 border-l-2 border-warning pl-2 font-sans text-xs leading-relaxed text-warning">
           No Mend sign-in protects this port. Anyone who can reach this private address can connect.

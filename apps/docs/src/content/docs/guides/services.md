@@ -48,6 +48,14 @@ running to hold the port locally and bridges the bytes over the authenticated co
 has to the server; Ctrl-C closes the bridge, not the Service. There is nothing to expose, nothing to
 firewall, and nothing ever touches the public internet.
 
+A Service the agent or the web started needs no command of yours. While `mend attach` (or
+`mend codex`, `mend rejoin`, the dashboard) is attached to a session on a remote server, every live
+Service of that session declared `--http` or `--https` is tunneled the same way, on its own port
+when that port is free here: `web → http://localhost:5173`. The tunnel closes when the Service stops
+or when you detach. `--no-tunnel` turns this off. The web and desktop apps, looking at a remote
+server, show `mend service connect <name>` where an Open link to the server's loopback would not
+load.
+
 ## Declaring
 
 You can declare a Service from three places, and the result is the same:
