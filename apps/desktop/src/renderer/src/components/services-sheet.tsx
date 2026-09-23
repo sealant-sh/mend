@@ -1,3 +1,4 @@
+import { isLoopbackHostname } from "@mend/domain/workbench";
 import { Button } from "@mend/ui/components/ui/button";
 import { Checkbox } from "@mend/ui/components/ui/checkbox";
 import { Input } from "@mend/ui/components/ui/input";
@@ -19,6 +20,7 @@ import {
   type SessionDto,
   stopService,
 } from "#/lib/api";
+import { useConnection } from "#/lib/connection";
 import { useEventsState } from "#/lib/events";
 import { useNow } from "#/lib/now";
 import { queryClient, sessionRecipesQuery } from "#/lib/queries";
@@ -29,6 +31,16 @@ import {
   servicesForSession,
 } from "#/lib/services";
 import { ago, clock } from "#/lib/words";
+
+/** Whether the server URL names this machine (an empty or unparsable one: assume so). */
+const serverIsThisMachine = (url: string): boolean => {
+  if (url === "") return true;
+  try {
+    return isLoopbackHostname(new URL(url).hostname);
+  } catch {
+    return true;
+  }
+};
 
 /**
  * The session Services sheet (plan §Services desktop journey): stable
@@ -43,6 +55,7 @@ import { ago, clock } from "#/lib/words";
 const actionLabel: Record<ServiceAction, string> = {
   open: "Open",
   copy: "Copy endpoint",
+  "copy-command": "Copy command",
   logs: "Logs",
   restart: "Restart",
   stop: "Stop",
@@ -161,6 +174,22 @@ function ServiceRow({
           Endpoint moved from {facts.movedFrom}
         </p>
       )}
+      {facts.reach.kind === "tunnel" && facts.view.currentForward?.state === "bound" && (
+        <div className="mt-2">
+          <p className="truncate font-mono text-[11.5px] text-ink-2">{facts.connectCommand}</p>
+          <p className="mt-1 font-sans text-[11.5px] leading-relaxed text-muted-foreground">
+            Its port answers on the Mend host only. The Mend CLI tunnels it to this machine&apos;s
+            loopback, signed in as you.
+            {service.browserScheme === null ? null : (
+              <>
+                {" "}
+                An open <span className="font-mono text-[10.5px]">mend attach</span> does this on
+                its own.
+              </>
+            )}
+          </p>
+        </div>
+      )}
       {facts.endpoint?.scope === "private" && (
         <p className="mt-2 border-l-2 border-[var(--sw-amber)] pl-2.5 font-sans text-[11.5px] leading-relaxed text-warning">
           No Mend sign-in protects this port. Anyone who can reach this private address can connect.
@@ -215,7 +244,10 @@ export function ServicesSheet({
   const recipes = useQuery(sessionRecipesQuery(session.id));
   const eventState = useEventsState();
   const now = useNow();
-  const facts = servicesForSession(views, session.id);
+  const connection = useConnection();
+  // A loopback endpoint answers on the Mend host only; a desktop pointed elsewhere cannot open it.
+  const onMendHost = connection === null || serverIsThisMachine(connection.url);
+  const facts = servicesForSession(views, session.id, onMendHost);
   const [pending, setPending] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [logsFor, setLogsFor] = useState<{
@@ -238,6 +270,10 @@ export function ServicesSheet({
     }
     if (action === "copy" && item.endpoint !== null) {
       void navigator.clipboard.writeText(item.endpoint.authority);
+      return;
+    }
+    if (action === "copy-command") {
+      void navigator.clipboard.writeText(item.connectCommand);
       return;
     }
     if (action === "logs" && item.logAttempt !== null) {

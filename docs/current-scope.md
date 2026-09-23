@@ -57,6 +57,14 @@ EKS cluster taken down (`cluster_enabled = false`). What the first day found:
 - [x] Workspace-scoped Docker on every family, proven live on 2026-09-20 (sealant#276).
       `SEALANT_MICROVM_DOCKER_ENABLED=true` is set on alpha.
 - [ ] A real capture session through Mend on alpha, with its flush at stop, has still not run.
+- [ ] Services on alpha, after the release that carries the stack `services/01-capture` →
+      `services/03-open-links`: in a capture-mode session, `mend service run web` finds the
+      worktree's `mend.toml` recipe (read from the live executor), the agent's own
+      `mend service run --http …` gets an Open URL, `mend attach` on a laptop prints
+      `web → http://localhost:<port>` and the page loads through it (HMR included), stopping the
+      Service closes the tunnel, and the web's Services card shows `mend service connect web`
+      instead of a dead Open link. Only alpha can prove the executor-side read and the tunnel
+      through the MicroVM forward.
 - [ ] The `reassessment` exposure item is open until someone records a reassessment of 0.29.0.
 - [ ] Remove the setup SSH key from the instance once the next pin bump has landed there.
 - [ ] Tailnet: remove the cluster's Tailscale operator device and OAuth client. Orphan captures from

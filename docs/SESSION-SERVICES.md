@@ -144,10 +144,14 @@ port = 5432
 ```
 
 A declaration is a recipe, never a running process. `mend service run web` starts one by name; the
-web, desktop, and phone Run Service forms offer the declared set. A port-only entry is an `add`
-recipe. Nothing autostarts: declaring, claiming a hot workspace, resuming, and reconnecting do not
-start a Service. The session's worktree copy is authoritative, so an agent can add a recipe as part
-of its change and Review shows that edit.
+web, desktop, and phone Run Service forms offer the declared set. Mend reads the file beside the
+worktree when the deployment co-locates it, and from the session's live workspace
+(`/workspace/repo/mend.toml`, through the SDK's exec) when it does not — the capture store's MicroVM
+executors. With no live workspace in that mode the file is not observable: the recipe list answers
+the project's recipes only, and running a file recipe is refused with a message that says so. A
+port-only entry is an `add` recipe. Nothing autostarts: declaring, claiming a hot workspace,
+resuming, and reconnecting do not start a Service. The session's worktree copy is authoritative, so
+an agent can add a recipe as part of its change and Review shows that edit.
 
 Transport and browser behavior are separate. `protocol` remains `tcp | udp`; `browserScheme` is
 optional `http | https`. Mend shows Open only when a browser scheme exists. Other Services show Copy
@@ -210,11 +214,13 @@ agent tool call.
 **The agent uses the same path.** The workspace contains a scoped `mend` helper, and the harness
 prompt includes one instruction:
 
-> Use `mend service run --port <port> -- <command>` for any long-running server. Do not background
-> it inside a tool call.
+> Use `mend service run --port <port> [--http|--https] -- <command>` for any long-running server. Do
+> not background it inside a tool call.
 
-The helper's credential permits only session-local actions (start a sibling process, declare a
-port); it is not an administrator token.
+`--http`/`--https` (on `run` and `add`) declares the browser scheme, refused with `--udp`; without
+one the Service gets no Open link and no attach tunnel. The note is written into every workspace,
+co-located or captured. The helper's credential permits only session-local actions (start a sibling
+process, declare a port); it is not an administrator token.
 
 ### Which session?
 
@@ -311,6 +317,7 @@ mend service run [session] <name>        start a declared Service (mend.toml rec
 mend service add [session] <port> [--name <n>]
 mend service init                        scaffold mend.toml from the project's manifests
 mend service list [session]
+mend service connect [name…] [--port <p>]   tunnel live Services to this machine's loopback
 mend service logs <service>       (supervised: attach to its PTY/record)
 mend service restart <service>
 mend service stop <service>
@@ -332,6 +339,33 @@ http://127.0.0.1:43127
 An adopted database port instead shows `Port only, no Mend process or logs` with Copy endpoint and
 Remove forward. The phone and desktop are control surfaces for the same runtime, not separate
 execution environments.
+
+**Reaching a Service from another machine.** A loopback endpoint answers on the Mend host only. On
+an instance declared `public` every Service forward stays on loopback, so a browser elsewhere cannot
+open it. The web and desktop then show no Open link; they show `mend service connect <name>`
+(copyable) and say that the CLI tunnels it to that machine's loopback. A private-interface endpoint
+keeps Open, since a client on that network reaches it.
+
+The CLI tunnel is one authenticated WebSocket per connection (`service-tunnel`, an upgrade ticket
+each). `mend service connect` opens it on request. `mend attach`, `mend codex|claude|opencode`,
+`mend rejoin`, and the dashboard open it without being asked, when the server is not the machine the
+CLI runs on:
+
+```text
+laptop (mend attach)                 Mend (alpha)                 MicroVM executor
+────────────────────                 ────────────                 ────────────────
+browser → localhost:5173 ── tunnel ── service-tunnel socket ── workspace.forward(5173) ──▶ :5173
+```
+
+- Which Services: the attached session's live TCP Services that declare `http` or `https`. The
+  dashboard's are those of the selected session, after a short dwell.
+- Which port: the Service's own port when it is free on this machine, else a free one. One line
+  each, `web → http://localhost:5173`. Mid-attach lines are drawn on the bottom row, and the cursor
+  is put back.
+- When: from `/api/events` (the session's `session-process` events), plus a re-read every 20 s. A
+  Service that stops closes its tunnel. Detaching closes all of them. The Services are never stopped
+  from here.
+- `--no-tunnel` opts out.
 
 `mend shell` — an interactive shell in the session's current workspace, the terminal that is not ssh
 — shares all of this plumbing (concurrent processes, plural records, leases, session resolution) and
@@ -390,6 +424,9 @@ runs that full stack and ships something usable on its own.
    (`Agent · completed`, `web · reachable`).
 7. A closed browser or detached CLI stops nothing; Mend restarts and reconciles the live Service.
 8. The same Service opens from a phone on the tailnet with no login step.
+9. On a `public` instance with MicroVM executors, `mend attach` on a laptop tunnels the agent's
+   `--http` Service to `localhost:<port>`; the web shows `mend service connect <name>` rather than
+   an Open link to the host's loopback.
 
 ## Open decisions
 

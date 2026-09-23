@@ -135,4 +135,29 @@ describe("desktop Service facts", () => {
     expect(facts.target).toBeNull();
     expect(facts.actions).not.toContain("open");
   });
+  it("gives a loopback-only Service the CLI's tunnel command when the server is elsewhere", () => {
+    const facts = serviceFacts(view(), false);
+    expect(facts.reach).toEqual({ kind: "tunnel" });
+    expect(facts.browserUrl).toBeNull();
+    expect(facts.actions).toEqual(["copy-command", "logs", "restart", "stop"]);
+    expect(facts.connectCommand).toBe("mend service connect web");
+    // A private-interface endpoint answers a remote desktop on that network: Open stays.
+    const reachable = serviceFacts(
+      view({
+        endpoints: [
+          ...view().endpoints,
+          {
+            ...view().endpoints[0]!,
+            address: "100.64.0.7",
+            authority: "100.64.0.7:43127",
+            scope: "private",
+            browserUrl: "http://100.64.0.7:43127/",
+          },
+        ],
+      }),
+      false,
+    );
+    expect(reachable.browserUrl).toBe("http://100.64.0.7:43127/");
+    expect(reachable.actions).toEqual(["open", "copy", "logs", "restart", "stop"]);
+  });
 });

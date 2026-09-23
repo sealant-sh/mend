@@ -1,9 +1,12 @@
+import { serviceConnectCommand, serviceReach, type ServiceReach } from "@mend/domain/workbench";
+
 import type { ServiceEndpointDto, ServiceViewDto, SessionProcessDto } from "#/lib/api";
 import type { Tone } from "#/lib/words";
 
 export type ServiceAction =
   | "open"
   | "copy"
+  | "copy-command"
   | "logs"
   | "restart"
   | "stop"
@@ -22,7 +25,12 @@ export interface ServiceFacts {
   readonly forward: ServiceFact;
   readonly target: (ServiceFact & { readonly observedAt: string }) | null;
   readonly endpoint: ServiceEndpointDto | null;
+  /** What Open opens — null when nothing answers where this desktop runs. */
   readonly browserUrl: string | null;
+  /** Where this desktop reaches it: directly, or only through the CLI's tunnel. */
+  readonly reach: ServiceReach;
+  /** `mend service connect <name>`: what brings a loopback-only Service here. */
+  readonly connectCommand: string;
   readonly logAttempt: SessionProcessDto | null;
   readonly movedFrom: string | null;
   readonly actions: ReadonlyArray<ServiceAction>;
@@ -62,7 +70,12 @@ const processFact = (attempt: SessionProcessDto | null): ServiceFact | null => {
   }
 };
 
-export const serviceFacts = (view: ServiceViewDto): ServiceFacts => {
+/**
+ * `clientOnMendHost`: whether this desktop runs on the Mend host (its server URL is loopback).
+ * Elsewhere a loopback endpoint is unreachable, so Open and Copy endpoint give way to the CLI
+ * command that tunnels it here.
+ */
+export const serviceFacts = (view: ServiceViewDto, clientOnMendHost = true): ServiceFacts => {
   const attempt = currentAttempt(view);
   const logAttempt = latestSupervisedAttempt(view);
   const endpoint = preferredEndpoint(view);
@@ -96,8 +109,8 @@ export const serviceFacts = (view: ServiceViewDto): ServiceFacts => {
           tone: observation.state === "reachable" ? ("green" as const) : ("amber" as const),
           observedAt: observation.lastObservedAt,
         };
-  const browserUrl =
-    view.endpoints.find((candidate) => candidate.browserUrl !== null)?.browserUrl ?? null;
+  const reach = serviceReach(view.endpoints, clientOnMendHost);
+  const browserUrl = reach.kind === "direct" ? reach.browserUrl : null;
   const previousEndpoint =
     view.previousEndpoints.find((candidate) => candidate.scope === "private") ??
     view.previousEndpoints[0] ??
@@ -110,7 +123,8 @@ export const serviceFacts = (view: ServiceViewDto): ServiceFacts => {
       : null;
   const actions: ServiceAction[] = [];
   if (bound && browserUrl !== null) actions.push("open");
-  if (bound && endpoint !== null) actions.push("copy");
+  if (bound && endpoint !== null && reach.kind === "direct") actions.push("copy");
+  if (bound && reach.kind === "tunnel") actions.push("copy-command");
   if (logAttempt !== null) actions.push("logs");
   if (attempt !== null && attempt.exitedAt === null && attempt.argv.length > 0) {
     actions.push("restart", "stop");
@@ -140,6 +154,8 @@ export const serviceFacts = (view: ServiceViewDto): ServiceFacts => {
     target,
     endpoint,
     browserUrl,
+    reach,
+    connectCommand: serviceConnectCommand(view.service.name),
     logAttempt,
     movedFrom,
     actions,
@@ -150,8 +166,11 @@ export const serviceFacts = (view: ServiceViewDto): ServiceFacts => {
 export const servicesForSession = (
   views: ReadonlyArray<ServiceViewDto>,
   sessionId: string,
+  clientOnMendHost = true,
 ): ReadonlyArray<ServiceFacts> =>
-  views.filter((view) => view.service.sessionId === sessionId).map(serviceFacts);
+  views
+    .filter((view) => view.service.sessionId === sessionId)
+    .map((view) => serviceFacts(view, clientOnMendHost));
 
 /** One sidebar line per Service: the attention word, or the tersest liveness fact. */
 export interface ServiceGlance {

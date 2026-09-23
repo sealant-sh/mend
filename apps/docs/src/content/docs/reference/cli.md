@@ -98,6 +98,7 @@ Agent options:
 | `--fast`                                 | Request the Codex priority service tier                              |
 | `--detach`, `-d`                         | Launch without attaching; reattach anywhere with `mend attach`       |
 | `--foreground`                           | Stop the session when this CLI exits (the detach key still detaches) |
+| `--no-tunnel`                            | Do not tunnel the session's browser Services to this machine         |
 | `--project <name>`                       | Select an adopted project instead of matching the current directory  |
 
 A quoted prompt becomes the first message and supplies the initial session name. Interactive
@@ -125,18 +126,18 @@ options. OpenCode currently uses only the prompt; the other harness flags are ac
 
 ## Session commands
 
-| Command                                                     | Purpose                                                        |
-| ----------------------------------------------------------- | -------------------------------------------------------------- |
-| `mend` or `mend ui`                                         | Open the terminal dashboard of projects and worktrees          |
-| `mend worktrees [--project <name>] [--json]`                | List worktrees and the sessions inside them                    |
-| `mend sessions [--all] [--project <name>] [--json]`         | List active sessions, or include settled sessions with `--all` |
-| `mend status`                                               | Alias for the active-session list                              |
-| `mend attach <session-id-prefix>`                           | Reattach to a running agent PTY                                |
-| `mend stop <session-id-prefix> \| --all [--project <name>]` | Stop the agent — the record and review remain                  |
-| `mend shell [session-id-prefix]`                            | Open a shell in a live session workspace                       |
-| `mend continue [session-id]`                                | Resume a session with its pending review follow-up             |
-| `mend resume [session-id] [--with <harness>]`               | Restore provider state and resume a settled session            |
-| `mend rejoin [session-id] [--harness <harness>]`            | Attach when live, otherwise resume                             |
+| Command                                                        | Purpose                                                        |
+| -------------------------------------------------------------- | -------------------------------------------------------------- |
+| `mend` or `mend ui`                                            | Open the terminal dashboard of projects and worktrees          |
+| `mend worktrees [--project <name>] [--json]`                   | List worktrees and the sessions inside them                    |
+| `mend sessions [--all] [--project <name>] [--json]`            | List active sessions, or include settled sessions with `--all` |
+| `mend status`                                                  | Alias for the active-session list                              |
+| `mend attach <session-id-prefix> [--no-tunnel]`                | Reattach to a running agent PTY                                |
+| `mend stop <session-id-prefix> \| --all [--project <name>]`    | Stop the agent — the record and review remain                  |
+| `mend shell [session-id-prefix]`                               | Open a shell in a live session workspace                       |
+| `mend continue [session-id]`                                   | Resume a session with its pending review follow-up             |
+| `mend resume [session-id] [--with <harness>]`                  | Restore provider state and resume a settled session            |
+| `mend rejoin [session-id] [--harness <harness>] [--no-tunnel]` | Attach when live, otherwise resume                             |
 
 When no session ID is given, commands narrow candidates by the current project and then use an
 interactive picker when needed.
@@ -236,7 +237,13 @@ selection and host-key verification.
 | `mend service restart <name-or-id>`                                           | Start another attempt for a supervised Service                              |
 | `mend service stop <name-or-id>`                                              | Stop the process and close its host port                                    |
 
-`mend service run` accepts `--name`, `--port`, `--udp`, `--http`, `--https`, and `--no-connect`.
+`mend service run` accepts `--name`, `--port`, `--udp`, `--http`, `--https`, and `--no-connect`. On
+a server that is not this machine, `mend attach`, `mend codex|claude|opencode`, `mend rejoin`, and
+the dashboard tunnel the session's live Services declared `--http` or `--https` to this machine's
+loopback while attached, on the Service's own port when it is free. One line each says where it
+opens (`web → http://localhost:5173`); a Service that stops closes its tunnel, and detaching closes
+them all. `--no-tunnel` opts out.
+
 Read [Development services](/guides/services/) for network and authentication boundaries.
 
 ### `mend` inside the workspace
@@ -247,18 +254,19 @@ mounted read-only at `/run/mend` and linked to `/usr/local/bin/mend`, so it is a
 to the server. It talks only to its own session, over the session socket (or the authenticated
 session endpoint on Kubernetes), and it speaks Services only:
 
-| Command                                                               | Purpose                              |
-| --------------------------------------------------------------------- | ------------------------------------ |
-| `mend service` or `mend service list`                                 | List this session's live Services    |
-| `mend service run --port <port> [--name <n>] [--udp] -- <command...>` | Start and supervise a Service        |
-| `mend service run <name>` or `mend service <name>`                    | Start a recipe from `mend.toml`      |
-| `mend service add <port> [--name <n>] [--udp]`                        | Adopt an existing workspace listener |
-| `mend service stop <name-or-id>`                                      | Stop a Service                       |
-| `mend service restart <name-or-id>`                                   | Start another attempt                |
+| Command                                                                                 | Purpose                              |
+| --------------------------------------------------------------------------------------- | ------------------------------------ |
+| `mend service` or `mend service list`                                                   | List this session's live Services    |
+| `mend service run --port <port> [--name <n>] [--udp] [--http\|--https] -- <command...>` | Start and supervise a Service        |
+| `mend service run <name>` or `mend service <name>`                                      | Start a recipe from `mend.toml`      |
+| `mend service add <port> [--name <n>] [--udp] [--http\|--https]`                        | Adopt an existing workspace listener |
+| `mend service stop <name-or-id>`                                                        | Stop a Service                       |
+| `mend service restart <name-or-id>`                                                     | Start another attempt                |
 
-The helper has no `--http`/`--https`, no `init`, no `logs`, and no `connect` — browser schemes,
-history, and reaching the endpoint stay on your side. Its job is declaration: an agent that starts a
-dev server can register it as a real Service instead of leaving an unobserved listener.
+The helper has no `init`, no `logs`, and no `connect`: history and reaching the endpoint stay on
+your side. Its job is declaration: an agent that starts a dev server can register it as a real
+Service instead of leaving an unobserved listener, and `--http`/`--https` says it is something to
+open in a browser (refused with `--udp`).
 
 ## Shell completion
 

@@ -151,3 +151,45 @@ export const resolveServiceEndpoints = (
     });
   });
 };
+
+/** Whether a URL's host names the machine it runs on — where a loopback endpoint answers. */
+export const isLoopbackHostname = (hostname: string): boolean => {
+  const bare = hostname.replace(/^\[|\]$/g, "").toLowerCase();
+  return (
+    bare === "localhost" || bare.endsWith(".localhost") || bare === "::1" || bare.startsWith("127.")
+  );
+};
+
+/**
+ * How one client reaches a Service (docs/SESSION-SERVICES.md "Surfaces"):
+ *
+ * - `direct`: an endpoint answers where the client is — any endpoint when the client runs on the
+ *   Mend host, a private-interface one otherwise. `browserUrl` is what Open opens, if declared.
+ * - `tunnel`: every endpoint is on the Mend host's loopback and the client is elsewhere (a public
+ *   instance, a remote desktop). Nothing on the client answers until the CLI tunnels it there.
+ * - `none`: no endpoint, or a UDP one out of reach (the tunnel carries TCP only).
+ */
+export type ServiceReach =
+  | { readonly kind: "direct"; readonly browserUrl: string | null }
+  | { readonly kind: "tunnel" }
+  | { readonly kind: "none" };
+
+export const serviceReach = (
+  endpoints: ReadonlyArray<Pick<ServiceEndpoint, "scope" | "browserUrl" | "transport">>,
+  clientOnMendHost: boolean,
+): ServiceReach => {
+  const usable = clientOnMendHost
+    ? endpoints
+    : endpoints.filter((endpoint) => endpoint.scope === "private");
+  if (usable.length > 0) {
+    const preferred =
+      usable.find((endpoint) => endpoint.scope === "private" && endpoint.browserUrl !== null) ??
+      usable.find((endpoint) => endpoint.browserUrl !== null);
+    return { kind: "direct", browserUrl: preferred?.browserUrl ?? null };
+  }
+  if (endpoints.some((endpoint) => endpoint.transport === "tcp")) return { kind: "tunnel" };
+  return { kind: "none" };
+};
+
+/** The CLI command that brings a Service to the client's own loopback. */
+export const serviceConnectCommand = (name: string): string => `mend service connect ${name}`;
