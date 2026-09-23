@@ -5,7 +5,9 @@ import {
   type StoreFailure,
 } from "@mend/api-contracts";
 import {
+  AgentConversationRepo,
   AuditEventsRepo,
+  SessionControlEventsRepo,
   SessionsRepo,
   SlackDefaultsRepo,
   SlackEventClaimsRepo,
@@ -13,16 +15,25 @@ import {
   SlackLinksRepo,
   SlackThreadsRepo,
   type SealedSlackInstall,
+  type SlackThreadSession,
 } from "@mend/db";
-import { ProjectId, type OrganizationId } from "@mend/domain";
+import { ProjectId, SessionId, type OrganizationId } from "@mend/domain";
 import type {
   Project,
   Session,
   SlackLinkedMentionJob,
   SlackProjectSource,
 } from "@mend/domain/workbench";
+import {
+  NO_THREAD_PROJECT,
+  THREAD_PROJECT_CANDIDATE_LIMIT,
+  THREAD_PROJECT_ENTRY_LIMIT,
+  ThreadProjectReader,
+  type ThreadProjectOptions,
+} from "@mend/inference";
 import { makeWindowLimiter } from "@mend/network";
-import { SealantClients } from "@mend/sealant";
+import { asSealantUser, SealantClients } from "@mend/sealant";
+import { SessionEngine } from "@mend/sessions";
 import {
   DEFAULT_MENTION_VOCABULARY,
   escapeSlack,
@@ -42,20 +53,24 @@ import {
   SLACK_ACTIONS,
   slackToPlain,
   statusMessage,
+  switchOffered,
   threadContext,
+  type ParsedMention,
   type SlackMessage,
   type SlackReaction,
   type SlackSessionState,
   type SlackThreadMessage,
+  type ThreadContext,
 } from "@mend/slack";
 import { SlackApi, type SlackApiError } from "@mend/slack/client";
 import type { SlackEnvelope } from "@mend/slack/socket";
-import { SecretCipher } from "@mend/store";
+import { SecretCipher, Store } from "@mend/store";
 import { Cause, Config, Effect, FiberSet, Layer, Option, Schema, type Fiber } from "effect";
 import * as Context from "effect/Context";
 
 import { ProjectAccess } from "./access.ts";
 import { SessionStart } from "./session-start.ts";
+import { SessionSteering } from "./session-steering.ts";
 
 /**
  * The Slack runner (docs/adr/0006-slack.md): what the worker does with each envelope a Slack
@@ -93,6 +108,18 @@ export interface SlackMention {
 
 /** Where Mend answers a mention: its thread, or the thread the mention starts. */
 const replyThreadOf = (mention: SlackMention): string => mention.threadTs ?? mention.messageTs;
+
+/** The request a session answers, as a mention the requester made: for its thread's replies. */
+const requestOf = (thread: SlackThreadSession, slackUserId: string): SlackMention => ({
+  teamId: thread.teamId,
+  channelId: thread.channelId,
+  messageTs: thread.requestTs,
+  threadTs: thread.threadTs === thread.requestTs ? null : thread.threadTs,
+  text: "",
+  slackUserId,
+  userTeamId: null,
+  external: thread.external,
+});
 
 const EventCallback = Schema.Struct({
   team_id: Schema.String,
@@ -165,12 +192,14 @@ export const mentionOf = (
 /**
  * The picker's request key: the thread's first message and the mention, so a click on any worker
  * reads the mention back from Slack instead of from memory. A trailing `/e` marks a channel that
- * is, or may be, a Slack Connect channel: a click does not say.
+ * is, or may be, a Slack Connect channel: a click does not say. A picker from "Switch project"
+ * also names the session the pick stops, as `/s:<session id>`.
  */
 export const pickerRequestKey = (
   mention: Pick<SlackMention, "threadTs" | "messageTs" | "external">,
+  switchFrom: SessionId | null = null,
 ): string =>
-  `${mention.threadTs ?? mention.messageTs}/${mention.messageTs}${mention.external === false ? "" : "/e"}`;
+  `${mention.threadTs ?? mention.messageTs}/${mention.messageTs}${mention.external === false ? "" : "/e"}${switchFrom === null ? "" : `/s:${switchFrom}`}`;
 
 export const parsePickerRequestKey = (
   key: string,
@@ -178,19 +207,33 @@ export const parsePickerRequestKey = (
   readonly parentTs: string;
   readonly messageTs: string;
   readonly external: boolean;
+  readonly switchFrom: SessionId | null;
 } | null => {
-  const match = /^(\d+\.\d+)\/(\d+\.\d+)(\/e)?$/.exec(key);
+  const match = /^(\d+\.\d+)\/(\d+\.\d+)(\/e)?(?:\/s:([A-Za-z0-9_-]{1,64}))?$/.exec(key);
   return match === null || match[1] === undefined || match[2] === undefined
     ? null
-    : { parentTs: match[1], messageTs: match[2], external: match[3] !== undefined };
+    : {
+        parentTs: match[1],
+        messageTs: match[2],
+        external: match[3] !== undefined,
+        switchFrom: match[4] === undefined ? null : SessionId.make(match[4]),
+      };
 };
 
 // ─── Which project a mention runs in ────────────────────────────────────────
 
 type Candidate = Pick<Project, "id" | "name" | "originUrl">;
 
+/** What inference read from the thread: one candidate or none, and the likeliest for the picker. */
+export interface InferredProject {
+  readonly projectId: ProjectId | null;
+  readonly likeliest: ReadonlyArray<ProjectId>;
+}
+
 export type ProjectChoice<P extends Candidate> =
   | { readonly kind: "chosen"; readonly project: P; readonly source: SlackProjectSource }
+  /** The rules before inference did not answer: ask inference, then choose again with its answer. */
+  | { readonly kind: "infer" }
   /** Nothing answered, or several projects did: Mend asks with buttons, and never guesses. */
   | {
       readonly kind: "ask";
@@ -211,15 +254,22 @@ export interface ProjectChoiceInput<P extends Candidate> {
   readonly threadSession: ProjectId | null;
   /** The thread's text, the mention included, as plain text. */
   readonly threadText: string;
+  /**
+   * What inference read from the thread; null when it was not run or could not answer, and
+   * `not-asked` before the runner has asked it.
+   */
+  readonly inferred: InferredProject | null | "not-asked";
   readonly channelDefault: ProjectId | null;
   readonly personalDefault: ProjectId | null;
 }
 
 /**
  * The project, from the first rule that answers (docs/adr/0006-slack.md, "Which project a mention
- * runs in"): the message, the thread's session, the repositories the thread links, the channel
- * default, then the person's default. Every answer is a candidate. Inference over the thread
- * (PR 8) slots in after the links and before the defaults, as source `thread-inference`.
+ * runs in"): the message, the thread's session, the repositories the thread links, inference over
+ * the thread, the channel default, then the person's default. Every answer is a candidate.
+ * Inference costs a model call, so the rules before it are tried first: until the runner has
+ * asked (`inferred: "not-asked"`), reaching that step answers `infer`. When nothing answers,
+ * Mend asks, with the projects inference found likeliest first.
  */
 export const chooseProject = <P extends Candidate>(
   input: ProjectChoiceInput<P>,
@@ -253,9 +303,11 @@ export const chooseProject = <P extends Candidate>(
     return { kind: "chosen", project: onlyLinked, source: "thread-link" };
   }
   if (linked.length > 1) return { kind: "ask", reason: "several", likeliest: linked };
-  // PR 8: inference over the thread's text and the candidates answers here, as
-  // `thread-inference`, before the defaults. Until then a thread that links nothing falls
-  // through to them.
+  if (input.inferred === "not-asked") return { kind: "infer" };
+  const inferred = candidate(input.inferred?.projectId ?? null);
+  if (inferred !== null) {
+    return { kind: "chosen", project: inferred, source: "thread-inference" };
+  }
   const channelDefault = candidate(input.channelDefault);
   if (channelDefault !== null) {
     return { kind: "chosen", project: channelDefault, source: "channel-default" };
@@ -264,7 +316,11 @@ export const chooseProject = <P extends Candidate>(
   if (personalDefault !== null) {
     return { kind: "chosen", project: personalDefault, source: "personal-default" };
   }
-  return { kind: "ask", reason: "none", likeliest: [] };
+  const likeliest = (input.inferred?.likeliest ?? []).flatMap((id) => {
+    const project = candidate(id);
+    return project === null ? [] : [project];
+  });
+  return { kind: "ask", reason: "none", likeliest };
 };
 
 // ─── What Mend says ─────────────────────────────────────────────────────────
@@ -339,7 +395,24 @@ const emptyRequest = section(
 
 const onlyRequester = section("Only the person who made the request picks its project.");
 
+const onlySwitcher = section("Only the person who made the request switches its project.");
+
+/** "Switch project" refused, in the reason's own words. */
+export const notSwitched = (reason: string): SlackMessage =>
+  section(escapeSlack(`not switched · ${reason} · mention Mend again to start another session`));
+
+/** The new session started, and the one it replaces could not be stopped. */
+export const earlierNotStopped = section(
+  "switched · the earlier session could not be stopped · stop it in Mend",
+);
+
 const requestGone = section("The request is no longer in the thread.");
+
+/** A session "Switch project" replaces, checked and still running until its replacement exists. */
+interface SwitchedSession {
+  readonly thread: SlackThreadSession;
+  readonly session: Session;
+}
 
 /** The session's state, as the status message words it until the reporter takes over. */
 export const slackStateOf = (session: Pick<Session, "status">): SlackSessionState => {
@@ -394,10 +467,16 @@ export interface SlackRunnerOptions {
   readonly eventsPerMinute: number;
   /** A linked request older than this is left alone: the thread has moved on. */
   readonly linkedRequestMaxAgeMs: number;
+  /**
+   * Thread inferences one organization may run per hour, per worker process; 0 turns the ceiling
+   * off. Past it, the choice goes on to the defaults and the picker without inference.
+   */
+  readonly inferencesPerHour: number;
   readonly now?: () => number;
 }
 
 export const SLACK_EVENTS_PER_MINUTE = 120;
+export const SLACK_INFERENCES_PER_HOUR = 60;
 /** A link code lives ten minutes; a request waiting on it is stale a little after. */
 export const SLACK_LINKED_REQUEST_MAX_AGE_MS = 15 * 60_000;
 
@@ -415,8 +494,15 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
     const access = yield* ProjectAccess;
     const start = yield* SessionStart;
     const sealant = yield* SealantClients;
+    const reader = yield* ThreadProjectReader;
+    const store = yield* Store;
+    const engine = yield* SessionEngine;
+    const steering = yield* SessionSteering;
+    const conversations = yield* AgentConversationRepo;
+    const controls = yield* SessionControlEventsRepo;
     const now = options.now ?? Date.now;
     const ceiling = makeWindowLimiter();
+    const inferenceCeiling = makeWindowLimiter(60 * 60_000);
     const work = yield* FiberSet.make<void>();
 
     /** The bot token, or null (logged) when it cannot be unsealed. */
@@ -588,6 +674,273 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
             )
         : Effect.succeed(null);
 
+    /**
+     * The projects a person may start in here (docs/adr/0006-slack.md): the ones they can see,
+     * and in a channel only the shared ones, since everyone in it reads what Mend posts.
+     */
+    const candidatesFor = (userId: string, channelId: string) =>
+      access
+        .visibleProjectsOf(userId)
+        .pipe(
+          Effect.map((visible) =>
+            isDirectMessage(channelId)
+              ? visible
+              : visible.filter((project) => project.visibility === "shared"),
+          ),
+        );
+
+    /**
+     * Ask inference which candidate the thread is about, as the requester, on their subscription
+     * and within their organization's hourly ceiling. Each candidate is described by its name,
+     * origin, default branch and the root of that branch's tree; no code is sent. A failure is
+     * logged and answers nothing, so the choice goes on to the defaults and the picker.
+     */
+    const inferProject = (
+      install: SealedSlackInstall,
+      userId: string,
+      candidates: ReadonlyArray<Project>,
+      parsed: ParsedMention,
+      context: ThreadContext,
+    ) =>
+      Effect.gen(function* () {
+        if (candidates.length === 0) return NO_THREAD_PROJECT;
+        const over = inferenceCeiling.take(
+          install.organizationId,
+          options.inferencesPerHour,
+          now(),
+        );
+        if (over !== null) {
+          yield* Effect.logWarning(
+            "slack runner: over the organization's thread inferences per hour, skipped",
+          ).pipe(Effect.annotateLogs({ organizationId: install.organizationId }));
+          return NO_THREAD_PROJECT;
+        }
+        const shown = candidates
+          .toSorted((a, b) => a.name.localeCompare(b.name))
+          .slice(0, THREAD_PROJECT_CANDIDATE_LIMIT);
+        const described = yield* Effect.forEach(
+          shown,
+          (project) =>
+            store
+              .listTopLevel(project.storePath, project.defaultBranch, THREAD_PROJECT_ENTRY_LIMIT)
+              .pipe(
+                Effect.map((listing) => listing.files),
+                Effect.catch(() => Effect.succeed([])),
+                Effect.map((topLevel) => ({
+                  id: project.id,
+                  name: project.name,
+                  originUrl: project.originUrl,
+                  defaultBranch: project.defaultBranch,
+                  topLevel,
+                })),
+              ),
+          { concurrency: 4 },
+        );
+        const { harness, model, effort, branch } = parsed.options;
+        return yield* reader
+          .read({
+            request: parsed.prompt,
+            thread: context.messages.map((message) => ({
+              author: message.author,
+              text: message.text,
+            })),
+            candidates: described,
+            settled: {
+              // A model the request named belongs to the harness the session runs.
+              harness: harness?.value ?? (model === null ? null : install.settings.defaultHarness),
+              model: model !== null,
+              effort: effort !== null,
+              branch: branch !== null,
+            },
+            harnesses: Object.fromEntries(
+              DEFAULT_MENTION_VOCABULARY.harnesses.map((name) => [
+                name,
+                DEFAULT_MENTION_VOCABULARY.models[name] ?? [],
+              ]),
+            ),
+          })
+          .pipe(
+            asSealantUser(userId),
+            Effect.catch((error) =>
+              Effect.logWarning("slack runner: thread inference failed").pipe(
+                Effect.annotateLogs({
+                  organizationId: install.organizationId,
+                  cause: error.message,
+                }),
+                Effect.as(NO_THREAD_PROJECT),
+              ),
+            ),
+          );
+      });
+
+    /**
+     * Why "Switch project" is no longer offered for a session, or null while it is: only until
+     * its first turn completes, and not once it is stopped.
+     */
+    const switchRefusal = (thread: SlackThreadSession) =>
+      Effect.gen(function* () {
+        if (thread.reportedState === "stopped") return "the session is stopped";
+        const turns = yield* conversations.listTurns(thread.sessionId);
+        return switchOffered(thread.reportedState ?? "starting", turns)
+          ? null
+          : "the session's first turn has completed";
+      });
+
+    /**
+     * "Switch project" on a status message: the requester gets a picker of the other projects
+     * they can start in here. The pick stops the session and restarts the request (`onInteraction`).
+     */
+    const offerSwitch = Effect.fn("SlackRunner.offerSwitch")(function* (
+      install: SealedSlackInstall,
+      token: string,
+      channel: string,
+      slackUserId: string,
+      sessionId: SessionId,
+    ) {
+      const thread = yield* threads.forSession(sessionId);
+      if (thread === null || thread.teamId !== install.teamId || thread.channelId !== channel) {
+        return;
+      }
+      const request = requestOf(thread, slackUserId);
+      if (thread.slackUserId !== slackUserId) return yield* whisper(token, request, onlySwitcher);
+      const refusal = yield* switchRefusal(thread);
+      if (refusal !== null) return yield* whisper(token, request, notSwitched(refusal));
+      const link = yield* links.bySlackUser(install.teamId, slackUserId);
+      if (link === null) return;
+      const session = yield* sessions
+        .byId(sessionId)
+        .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+      if (session === null) return;
+      const others = (yield* candidatesFor(link.userId, channel)).filter(
+        (project) => project.id !== session.projectId,
+      );
+      yield* whisper(
+        token,
+        request,
+        projectPicker({
+          requestKey: pickerRequestKey(request, sessionId),
+          reason: "switch",
+          likeliest: pickable(others),
+          all: pickable(others),
+        }),
+      );
+    });
+
+    /**
+     * The session a switch replaces, when the requester may still switch it: the same thread and
+     * request, before its first turn completes, and through the same steering check as the web
+     * app. Null, after saying why, when not. Nothing is stopped here: the session keeps running
+     * until its replacement has been created (`stopSwitched`).
+     */
+    const switchable = Effect.fn("SlackRunner.switchable")(function* (
+      install: SealedSlackInstall,
+      token: string,
+      mention: SlackMention,
+      userId: string,
+      sessionId: SessionId,
+    ) {
+      const thread = yield* threads.forSession(sessionId);
+      if (
+        thread === null ||
+        thread.teamId !== install.teamId ||
+        thread.channelId !== mention.channelId ||
+        thread.requestTs !== mention.messageTs ||
+        thread.slackUserId !== mention.slackUserId
+      ) {
+        yield* whisper(token, mention, requestGone);
+        return null;
+      }
+      const refusal = yield* switchRefusal(thread);
+      if (refusal !== null) {
+        yield* whisper(token, mention, notSwitched(refusal));
+        return null;
+      }
+      const session = yield* sessions
+        .byId(sessionId)
+        .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+      if (session === null) {
+        yield* whisper(token, mention, requestGone);
+        return null;
+      }
+      const allowed = yield* steering.authorizeUser(session, userId).pipe(Effect.result);
+      if (allowed._tag === "Failure") {
+        yield* whisper(
+          token,
+          mention,
+          notSwitched(
+            allowed.failure._tag === "NotFound"
+              ? "the session is not available to you"
+              : allowed.failure.message,
+          ),
+        );
+        return null;
+      }
+      return { thread, session } satisfies SwitchedSession;
+    });
+
+    /**
+     * Stop the session a switch replaced, once its replacement exists, as the requester, and show
+     * it stopped. The stop is recorded as a control event only when the engine stopped it; when it
+     * could not, the requester is told, and the thread is left as it reads. The status message
+     * moves by the reporter's own compare-and-set, so the reporter finds `stopped` already shown
+     * and leaves the request's reaction to the session that replaces it.
+     */
+    const stopSwitched = Effect.fn("SlackRunner.stopSwitched")(function* (
+      install: SealedSlackInstall,
+      token: string,
+      mention: SlackMention,
+      userId: string,
+      { thread, session }: SwitchedSession,
+    ) {
+      const stoppedByEngine = yield* engine.stop(session.id).pipe(Effect.exit);
+      if (stoppedByEngine._tag === "Failure") {
+        yield* Effect.logWarning("slack runner: the switched session was not stopped").pipe(
+          Effect.annotateLogs({ sessionId: session.id, cause: String(stoppedByEngine.cause) }),
+        );
+        return yield* whisper(token, mention, earlierNotStopped);
+      }
+      yield* controls.record({
+        sessionId: session.id,
+        actorUserId: userId,
+        kind: "stop",
+        refId: null,
+      });
+
+      const project = yield* access
+        .projectAs(userId, session.projectId)
+        .pipe(Effect.catchTag("NotFound", () => Effect.succeed(null)));
+      const stopped = statusMessage({
+        project: project?.name ?? session.projectId,
+        source: thread.projectSource,
+        harness: session.harness,
+        branch: session.branch,
+        state: "stopped",
+        recorded: session.sealantRunId !== null,
+        change: null,
+        url: sessionUrl(install.webOrigin, session.id),
+      });
+      // The reporter may be moving the message too: claim from what it shows, a few times over.
+      let shown = (yield* threads.forSession(session.id)) ?? thread;
+      for (let attempt = 0; attempt < 3; attempt++) {
+        if (shown.statusTs === null || shown.reportedState === "stopped") break;
+        const moved = yield* threads.claimStatus(session.id, shown.reportedStatus, {
+          state: "stopped",
+          line: stopped.text,
+        });
+        if (moved) {
+          yield* quietly(
+            "chat.update",
+            slack.update(token, { channel: thread.channelId, ts: shown.statusTs, ...stopped }),
+          );
+          yield* react(token, mention, null, reactionFor(shown.reportedState ?? "starting"));
+          break;
+        }
+        const again = yield* threads.forSession(session.id);
+        if (again === null) break;
+        shown = again;
+      }
+    });
+
     /** Start a session for a linked person, or say why not. */
     const startFor = Effect.fn("SlackRunner.startFor")(function* (
       install: SealedSlackInstall,
@@ -595,12 +948,14 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       mention: SlackMention,
       userId: string,
       picked: ProjectId | null,
+      /**
+       * The session this one replaces, when the requester switched its project. It is stopped
+       * only once this one is created: every check before that leaves it running.
+       */
+      replacing: SwitchedSession | null = null,
     ) {
       const direct = isDirectMessage(mention.channelId);
-      const visible = yield* access.visibleProjectsOf(userId);
-      const candidates = direct
-        ? visible
-        : visible.filter((project) => project.visibility === "shared");
+      const candidates = yield* candidatesFor(userId, mention.channelId);
       const parsed = parseMention(mention.text, install.botUserId, {
         ...DEFAULT_MENTION_VOCABULARY,
         projects: candidates,
@@ -652,7 +1007,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
               Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)),
             );
       const names = (id: string) => (id === install.botUserId ? "mend" : undefined);
-      const choice = chooseProject({
+      const choiceInput = {
         candidates,
         picked,
         named: parsed.options.project?.value ?? null,
@@ -663,24 +1018,51 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         channelDefault:
           (yield* defaults.channelDefault(install.teamId, mention.channelId))?.projectId ?? null,
         personalDefault: yield* defaults.personalDefault(userId),
-      });
+      };
+      const first = chooseProject({ ...choiceInput, inferred: "not-asked" });
+      // Inference runs only when the message, the thread's session and its links left the
+      // choice open, and it also reads the natural options the parser left in the request.
+      const inference =
+        first.kind === "infer"
+          ? yield* inferProject(install, userId, candidates, parsed, context)
+          : NO_THREAD_PROJECT;
+      const choice =
+        first.kind === "infer"
+          ? chooseProject({
+              ...choiceInput,
+              inferred: {
+                projectId:
+                  inference.projectId === null ? null : ProjectId.make(inference.projectId),
+                likeliest: inference.likeliest.map((id) => ProjectId.make(id)),
+              },
+            })
+          : first;
       if (choice.kind === "unknown") {
         return yield* refuse(token, mention, notStarted(unknownProject(choice, direct)), false);
       }
-      if (choice.kind === "ask") {
+      if (choice.kind === "ask" || choice.kind === "infer") {
+        const likeliest = choice.kind === "ask" ? choice.likeliest : [];
+        const rest = candidates.filter((project) => !likeliest.includes(project));
         return yield* whisper(
           token,
           mention,
           projectPicker({
             requestKey: pickerRequestKey(mention),
-            reason: choice.reason,
-            likeliest: pickable(choice.likeliest.length > 0 ? choice.likeliest : candidates),
-            all: pickable(candidates),
+            reason: choice.kind === "ask" ? choice.reason : "none",
+            likeliest: pickable(likeliest.length > 0 ? likeliest : candidates),
+            all: pickable([...likeliest, ...rest]),
           }),
         );
       }
 
-      const harness = parsed.options.harness?.value ?? install.settings.defaultHarness;
+      // What the request said wins over what inference read in it.
+      const chosen: ThreadProjectOptions = {
+        harness: parsed.options.harness?.value ?? inference.options.harness,
+        model: parsed.options.model?.value ?? inference.options.model,
+        effort: parsed.options.effort?.value ?? inference.options.effort,
+        branch: parsed.options.branch?.value ?? inference.options.branch,
+      };
+      const harness = chosen.harness ?? install.settings.defaultHarness;
       const noCredential = yield* credentialProblem(userId, harness);
       if (noCredential !== null) {
         return yield* refuse(token, mention, notStarted(noCredential), true);
@@ -693,7 +1075,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           harness,
           label: null,
           name: null,
-          base: parsed.options.branch?.value ?? null,
+          base: chosen.branch,
           origin: "slack",
         })
         .pipe(Effect.result);
@@ -707,6 +1089,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         );
       }
       const session = created.success;
+      if (replacing !== null) yield* stopSwitched(install, token, mention, userId, replacing);
       yield* threads.record({
         sessionId: session.id,
         teamId: install.teamId,
@@ -731,6 +1114,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           projectId: choice.project.id,
           projectName: choice.project.name,
           projectSource: choice.source,
+          ...(replacing === null ? {} : { switchedFrom: replacing.session.id }),
         },
       });
       yield* react(token, mention, reactionFor("starting"));
@@ -747,6 +1131,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           recorded: current.sealantRunId !== null,
           change: null,
           url: sessionUrl(install.webOrigin, current.id),
+          switchSession: switchOffered(state, []) ? current.id : null,
         });
       const shown = status("starting", session);
       const posted = yield* say(token, mention, shown).pipe(
@@ -791,8 +1176,8 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           new LaunchRequest({
             mode: "protocol",
             prompt: opening,
-            ...(parsed.options.model === null ? {} : { model: parsed.options.model.value }),
-            ...(parsed.options.effort === null ? {} : { effort: parsed.options.effort.value }),
+            ...(chosen.model === null ? {} : { model: chosen.model }),
+            ...(chosen.effort === null ? {} : { effort: chosen.effort }),
           }),
         )
         .pipe(Effect.result);
@@ -906,15 +1291,28 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       if (Option.isNone(decoded) || decoded.value.team.id !== install.teamId) return;
       const payload = decoded.value;
       const [action] = payload.actions;
-      // "Open in Mend" and "Link your Mend account" are links: the acknowledgement is all.
+      // "Open in Mend", "Review in Mend" and "Link your Mend account" are links: the
+      // acknowledgement is all.
       if (action === undefined) return;
+      const channel = payload.channel?.id ?? payload.container?.channel_id;
+      if (action.action_id === SLACK_ACTIONS.switchProject) {
+        if (action.value === undefined || channel === undefined) return;
+        const token = yield* botTokenOf(install);
+        if (token === null) return;
+        return yield* offerSwitch(
+          install,
+          token,
+          channel,
+          payload.user.id,
+          SessionId.make(action.value),
+        );
+      }
       const picking =
         action.action_id === SLACK_ACTIONS.otherProject ||
         action.action_id.startsWith(SLACK_ACTIONS.pickProject);
       if (!picking) return;
       const key = parsePickerRequestKey(requestKeyOfPicker(action.block_id ?? "") ?? "");
       const projectId = action.value ?? action.selected_option?.value;
-      const channel = payload.channel?.id ?? payload.container?.channel_id;
       if (key === null || projectId === undefined || channel === undefined) return;
       const token = yield* botTokenOf(install);
       if (token === null) return;
@@ -941,16 +1339,26 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       // The link before the claim: a click from someone unlinked since leaves the pick open.
       const link = yield* links.bySlackUser(install.teamId, payload.user.id);
       if (link === null) return yield* whisper(token, clicker, pickNotLinked);
-      // One pick per request, however many clicks or workers.
+      // One pick per request, and one switch per session, however many clicks or workers.
       const first = yield* claims.claim({
-        eventId: `pick:${install.teamId}:${channel}:${key.messageTs}`,
+        eventId:
+          key.switchFrom === null
+            ? `pick:${install.teamId}:${channel}:${key.messageTs}`
+            : `switch:${install.teamId}:${key.switchFrom}`,
         teamId: install.teamId,
       });
       if (!first) return;
-      const picked = { ...clicker, text: request.text, userTeamId: request.teamId };
-      yield* startFor(install, token, picked, link.userId, ProjectId.make(projectId)).pipe(
-        reportingFailure(install, picked),
-      );
+      const mention = { ...clicker, text: request.text, userTeamId: request.teamId };
+      yield* Effect.gen(function* () {
+        // A switch checks the session it replaces first; it is stopped only once the new one
+        // exists, so a refusal on the way leaves the requester with the session they had.
+        const replacing =
+          key.switchFrom === null
+            ? null
+            : yield* switchable(install, token, mention, link.userId, key.switchFrom);
+        if (key.switchFrom !== null && replacing === null) return;
+        yield* startFor(install, token, mention, link.userId, ProjectId.make(projectId), replacing);
+      }).pipe(reportingFailure(install, mention));
     });
 
     const handle = (organizationId: OrganizationId, envelope: SlackEnvelope) =>
@@ -1021,16 +1429,23 @@ const runnerOptions = Config.all({
     Config.withDefault(SLACK_EVENTS_PER_MINUTE),
   ),
   linkedRequestMaxAgeMs: Config.succeed(SLACK_LINKED_REQUEST_MAX_AGE_MS),
+  inferencesPerHour: Config.int("MEND_SLACK_INFERENCES_PER_HOUR").pipe(
+    Config.withDefault(SLACK_INFERENCES_PER_HOUR),
+  ),
 });
 
 export const SlackRunnerLive: Layer.Layer<
   SlackRunner,
   Config.ConfigError,
+  | AgentConversationRepo
   | AuditEventsRepo
   | ProjectAccess
   | SealantClients
   | SecretCipher
+  | SessionControlEventsRepo
+  | SessionEngine
   | SessionStart
+  | SessionSteering
   | SessionsRepo
   | SlackApi
   | SlackDefaultsRepo
@@ -1038,6 +1453,8 @@ export const SlackRunnerLive: Layer.Layer<
   | SlackInstallsRepo
   | SlackLinksRepo
   | SlackThreadsRepo
+  | Store
+  | ThreadProjectReader
 > = Layer.effect(
   SlackRunner,
   Effect.gen(function* () {

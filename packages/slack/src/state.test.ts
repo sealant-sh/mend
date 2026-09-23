@@ -2,7 +2,7 @@ import { SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
 import { SessionProcess, type AgentTurnStatus } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
-import { isSettledState, slackSessionState, statusMayMove } from "./state.ts";
+import { isSettledState, slackSessionState, statusMayMove, switchOffered } from "./state.ts";
 
 const agent = (patch: Partial<SessionProcess> = {}) =>
   new SessionProcess({
@@ -89,5 +89,14 @@ describe("the state a thread hears", () => {
     expect(statusMayMove("running", "starting")).toBe(false);
     expect(isSettledState("completed")).toBe(true);
     expect(isSettledState("waiting")).toBe(false);
+  });
+
+  it("offers Switch project until the first turn completes, and never on a stopped session", () => {
+    expect(switchOffered("starting", [])).toBe(true);
+    expect(switchOffered("running", [turn(1, "running")])).toBe(true);
+    expect(switchOffered("failed", [turn(1, "failed")])).toBe(true);
+    expect(switchOffered("completed", [turn(1, "completed")])).toBe(false);
+    expect(switchOffered("running", [turn(1, "completed"), turn(2, "running")])).toBe(false);
+    expect(switchOffered("stopped", [])).toBe(false);
   });
 });

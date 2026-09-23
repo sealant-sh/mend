@@ -42,6 +42,7 @@ import {
   splitDiff,
   statusMayMove,
   statusMessage,
+  switchOffered,
   type ChangeCounts,
   type SlackMessage,
   type SlackSessionState,
@@ -371,6 +372,9 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         recorded: session.sealantRunId !== null,
         change,
         url: sessionUrl(install.webOrigin, session.id),
+        // Offered until the first turn completes, which also moves the line, so the button
+        // leaves with the edit that says so. The runner checks again on a click.
+        switchSession: switchOffered(state, look.turns) ? session.id : null,
       });
       yield* moveStatus(token, look, message);
     });

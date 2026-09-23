@@ -91,6 +91,7 @@ import {
   SessionNamerLive,
   SuggestChangeJob,
   SummarizeFailureJob,
+  ThreadProjectReaderLive,
   TourComposer,
 } from "@mend/inference";
 import {
@@ -581,7 +582,8 @@ const WorkerLive = Layer.mergeAll(
   Layer.provide(ChangeReader.layer),
   Layer.provide(TourComposer.layer),
   Layer.provide(ChangeSuggesterLive),
-  Layer.provide(SessionNamerLive),
+  // The session namer, and the Slack runner's reading of a thread for its project.
+  Layer.provide(Layer.merge(SessionNamerLive, ThreadProjectReaderLive)),
   Layer.provide(liveToolsLayer),
   // start_run: the one tool that reaches the run machinery.
   Layer.provide(startRunToolLayer),

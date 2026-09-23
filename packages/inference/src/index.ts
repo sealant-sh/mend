@@ -11,4 +11,5 @@ export * from "./session-namer.ts";
 export * from "./toolset.ts";
 export * from "./tools.ts";
 export * from "./session-tools.ts";
+export * from "./thread-project-reader.ts";
 export * from "./tour-composer.ts";

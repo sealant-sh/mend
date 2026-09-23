@@ -22,6 +22,8 @@ export const InferenceContext = Schema.Literals([
   "change-suggesting",
   // The session auto-namer — a label from the session's first prompt.
   "session-naming",
+  // Slack (docs/adr/0006-slack.md): which project a thread is about, when nothing names one.
+  "slack-project",
 ]);
 export type InferenceContext = typeof InferenceContext.Type;
 

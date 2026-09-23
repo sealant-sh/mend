@@ -96,6 +96,21 @@ describe("the status message", () => {
     ]);
   });
 
+  it("offers Switch project for the session it names, and no button otherwise", () => {
+    expect(statusMessage({ ...status, switchSession: null }).blocks).toHaveLength(1);
+    expect(statusMessage({ ...status, switchSession: "s1" }).blocks[1]).toEqual({
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          action_id: SLACK_ACTIONS.switchProject,
+          text: { type: "plain_text", text: "Switch project", emoji: true },
+          value: "s1",
+        },
+      ],
+    });
+  });
+
   it("builds links from the install's web origin", () => {
     expect(sessionUrl("https://mend.example/", "s 1")).toBe("https://mend.example/sessions/s%201");
     expect(linkUrl("http://100.64.0.1:3000", "msl_abc")).toBe(
@@ -185,6 +200,9 @@ describe("asking for a project", () => {
     expect(projectPicker({ requestKey: "k", reason: "several", likeliest, all }).text).toBe(
       "More than one project matches. Pick one to start the session.",
     );
+    expect(projectPicker({ requestKey: "k", reason: "switch", likeliest, all }).text).toBe(
+      "Pick the project to restart this request in. The session already started for it is stopped once the new one is created.",
+    );
     expect(
       projectPicker({ requestKey: "k", reason: "none", likeliest: [], all: [] }).blocks,
     ).toHaveLength(1);
@@ -248,10 +266,17 @@ describe("replies only the person sees", () => {
         ...status,
         state: "completed",
         change: { files: 2, additions: 1, deletions: 1 },
+        switchSession: "s1",
       }),
       projectPicker({
         requestKey: "k",
         reason: "none",
+        likeliest: [],
+        all: [{ id: "p", name: "p" }],
+      }),
+      projectPicker({
+        requestKey: "k",
+        reason: "switch",
         likeliest: [],
         all: [{ id: "p", name: "p" }],
       }),
