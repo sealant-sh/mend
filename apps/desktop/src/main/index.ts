@@ -23,6 +23,7 @@ import {
 } from "../shared/bridge";
 import { configPath, loadConfig, watchConfig } from "./config";
 import { request, setToken, signIn, signOut, subscribeEvents, ttyUrl } from "./server";
+import { isMendSocket, SOCKET_URL_PATTERNS, withoutBrowserCredentials } from "./socket-headers";
 
 /**
  * The cockpit window. One window, one credential, one event stream: main
@@ -255,6 +256,26 @@ const installContentSecurityPolicy = () => {
   });
 };
 
+// ─── the terminal socket leaves as a token client ───────────────────────────
+
+/**
+ * The renderer opens `/api/tty` itself, and Chromium stamps the upgrade with the page's Origin,
+ * which the server refuses (src/main/socket-headers.ts). The server URL is read per request, so a
+ * `mend login --url` elsewhere or a changed MEND_URL applies to the next socket without a restart.
+ */
+const installSocketHeaders = () => {
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: [...SOCKET_URL_PATTERNS] },
+    (details, callback) => {
+      if (!isMendSocket(details.url, loadConfig().url)) {
+        callback({});
+        return;
+      }
+      callback({ requestHeaders: withoutBrowserCredentials(details.requestHeaders) });
+    },
+  );
+};
+
 // ─── lifecycle ──────────────────────────────────────────────────────────────
 
 const summon = () => {
@@ -276,6 +297,7 @@ if (!app.requestSingleInstanceLock()) {
     await app.whenReady();
     app.setAppUserModelId("sh.sealant.mend");
     installContentSecurityPolicy();
+    installSocketHeaders();
     registerIpc();
     buildMenu();
     mainWindow = createWindow();
