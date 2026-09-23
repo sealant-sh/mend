@@ -368,6 +368,66 @@ export function ReviewAutomationSection({ project }: { readonly project: Project
 }
 
 /**
+ * "Land when a turn completes" (docs/adr/0007-landing.md): a web or CLI session here pushes its
+ * change and opens or updates its pull request after each completed turn whose request asked for
+ * a change. Inherit follows Settings; off also stops sessions started from Slack.
+ */
+export function LandingSection({ project }: { readonly project: ProjectDto }) {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const [busy, setBusy] = useState(false);
+
+  const choose = (value: AutomationChoiceDto) => {
+    if (project.autoLand === value || busy) return;
+    setBusy(true);
+    void setProjectAutomation(project.id, {
+      autoTour: project.autoTour,
+      autoSuggest: project.autoSuggest,
+      autoName: project.autoName,
+      backgroundSessions: project.backgroundSessions,
+      autoLand: value,
+    })
+      .then(() => queryClient.invalidateQueries(trpc.projects.pathFilter()))
+      .finally(() => setBusy(false));
+  };
+
+  return (
+    <section id="landing" className="project-setup-card">
+      <h2 className="font-sans text-sm font-semibold">Landing</h2>
+      <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
+        On, a session here pushes its change to origin and opens or updates its pull request after
+        each completed turn that asked for a change, as its owner. A request read as a question does
+        not land. Inherit follows the default in Settings; off also covers sessions started from
+        Slack. A session can override inherit or on when it starts.
+      </p>
+      <div className="mt-3 flex items-center justify-between gap-2">
+        <p className="min-w-0 truncate font-sans text-[13px] font-medium text-foreground">
+          Land when a turn completes
+        </p>
+        <div className="flex shrink-0 gap-1">
+          {AUTOMATION_CHOICES.map((choice) => (
+            <button
+              key={choice.value}
+              type="button"
+              disabled={busy}
+              aria-pressed={project.autoLand === choice.value}
+              onClick={() => choose(choice.value)}
+              className={`rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
+                project.autoLand === choice.value
+                  ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                  : "border-border bg-card text-muted-foreground hover:text-foreground"
+              }`}
+            >
+              {choice.label}
+            </button>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+/**
  * The project's stance on the session lifecycle: inherit follows Settings.
  * Resolved by the launching CLI (flag → project → settings) — only the client
  * that would stop the session can enforce foreground.

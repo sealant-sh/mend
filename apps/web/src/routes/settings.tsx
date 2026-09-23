@@ -88,6 +88,7 @@ function SettingsPage() {
         <GitAccessSettingsPanel />
         <SessionLifecyclePanel />
         <ReviewAutomationPanel />
+        <LandingPanel />
         <ConnectedAccountsPanel />
         <DevicesPanel />
         <OrganizationSettings />
@@ -1018,6 +1019,70 @@ function ReviewAutomationPanel() {
             </div>
           </div>
         ))}
+      </div>
+    </section>
+  );
+}
+
+/**
+ * The default for "Land when a turn completes" (docs/adr/0007-landing.md). Projects on inherit
+ * follow it; a project can set on or off, and a session can override it when it starts. Sessions
+ * started from Slack follow the Slack app's own setting.
+ */
+function LandingPanel() {
+  const trpc = useTRPC();
+  const queryClient = useQueryClient();
+  const settings = useSuspenseQuery(trpc.settings.get.queryOptions()).data;
+  const [pending, setPending] = useState(false);
+
+  const toggle = (value: boolean) => {
+    if (settings.autoLand === value) return;
+    setPending(true);
+    const next: SettingsDto = { ...settings, autoLand: value };
+    void putSettings(next)
+      .then(() => queryClient.invalidateQueries(trpc.settings.pathFilter()))
+      .finally(() => setPending(false));
+  };
+
+  return (
+    <section id="landing" className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
+      <h2 className="font-sans text-sm font-semibold">Landing</h2>
+      <p className="mt-1 text-sm text-muted-foreground">
+        Pushing a session&apos;s change to origin and opening its pull request, as the
+        session&apos;s owner.
+      </p>
+      <div className="mt-5 space-y-5 border-t border-[var(--sw-faint-rule)] pt-5">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <p className="font-sans text-sm font-medium text-foreground">
+              Land when a turn completes
+            </p>
+            <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+              After each completed turn whose request asked for a change, Mend pushes the change and
+              opens or updates its pull request. A request read as a question does not land. The
+              default for every project; a project can override it on its setup page, and a session
+              when it starts. Sessions started from Slack follow the Slack app&apos;s setting.
+            </p>
+          </div>
+          <div className="flex shrink-0 gap-2">
+            {[true, false].map((value) => (
+              <button
+                key={String(value)}
+                type="button"
+                disabled={pending}
+                aria-pressed={settings.autoLand === value}
+                onClick={() => toggle(value)}
+                className={`rounded-xl border px-3.5 py-1.5 font-sans text-xs font-medium shadow-xs transition-colors disabled:opacity-60 ${
+                  settings.autoLand === value
+                    ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+                    : "border-border bg-card text-muted-foreground hover:text-foreground"
+                }`}
+              >
+                {value ? "On" : "Off"}
+              </button>
+            ))}
+          </div>
+        </div>
       </div>
     </section>
   );

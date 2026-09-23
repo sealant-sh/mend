@@ -134,6 +134,12 @@ export type FolderDto = Outputs["folders"]["list"][number];
 export type FolderListingDto = Outputs["folders"]["files"];
 export type ProjectFolderViewDto = Outputs["projects"]["folders"][number];
 
+export type ChangeLandingsDto = Outputs["landings"]["forChange"];
+export type ChangeLandingDto = ChangeLandingsDto["landings"][number];
+export type LandingFactDto = ChangeLandingsDto["facts"][number];
+export type LandingReportDto = Outputs["landings"]["land"];
+export type PullRequestStepDto = LandingReportDto["pullRequest"];
+
 export type DeviceDto = Outputs["devices"]["list"][number];
 export type PairingDto = Outputs["devices"]["createPairing"];
 
@@ -220,6 +226,8 @@ export const setProjectAutomation = (
     readonly autoSuggest: AutomationChoiceDto;
     readonly autoName: AutomationChoiceDto;
     readonly backgroundSessions: AutomationChoiceDto;
+    /** "Land when a turn completes"; left out, the project keeps its stance. */
+    readonly autoLand?: AutomationChoiceDto;
   },
 ) => orLogin(trpcClient.projects.setAutomation.mutate({ id: projectId, choices }));
 export const setProjectWorkspaceImage = (
@@ -310,9 +318,13 @@ export const createSession = (
   harness: string,
   base: string | null = null,
   name: string | null = null,
+  autoLand: boolean | null = null,
 ) =>
   orLogin(
-    trpcClient.sessions.create.mutate({ projectId, session: { harness, label: null, name, base } }),
+    trpcClient.sessions.create.mutate({
+      projectId,
+      session: { harness, label: null, name, base, ...(autoLand === null ? {} : { autoLand }) },
+    }),
   );
 export const launchSession = (id: string, argv: ReadonlyArray<string>) =>
   orLogin(trpcClient.sessions.launch.mutate({ id, request: { argv } }));
@@ -348,8 +360,18 @@ export const createWorktree = (
 export const removeWorktree = (id: string, force?: boolean) =>
   orLogin(trpcClient.worktrees.remove.mutate(force === true ? { id, force: true } : { id }));
 
-export const createSessionInWorktree = (id: string, harness: string) =>
-  orLogin(trpcClient.worktrees.createSession.mutate({ id, session: { harness, label: null } }));
+/** `autoLand` is this session's own "Land when a turn completes"; null follows the project. */
+export const createSessionInWorktree = (
+  id: string,
+  harness: string,
+  autoLand: boolean | null = null,
+) =>
+  orLogin(
+    trpcClient.worktrees.createSession.mutate({
+      id,
+      session: { harness, label: null, ...(autoLand === null ? {} : { autoLand }) },
+    }),
+  );
 export const setSessionLabel = (id: string, label: string | null) =>
   orLogin(trpcClient.sessions.setLabel.mutate({ id, label }));
 export const checkpointSession = (id: string, trigger: "review-open" | "user-mark") =>
@@ -431,6 +453,28 @@ export const composeTour = (changeId: string) =>
   orLogin(trpcClient.changes.queueTour.mutate({ id: changeId }));
 export const suggestChange = (changeId: string) =>
   orLogin(trpcClient.changes.queueSuggest.mutate({ id: changeId }));
+
+// ─── Landing (docs/adr/0007-landing.md) ─────────────────────────────────────
+
+/** The owner's land: push the change's branch, and open or update its pull request. */
+export const landSession = (
+  sessionId: string,
+  request: {
+    readonly branch: string | null;
+    readonly pullRequest: boolean;
+    readonly title: string | null;
+    readonly body: string | null;
+  },
+) => orLogin(trpcClient.landings.land.mutate({ id: sessionId, request }));
+/**
+ * The landing record with one fetch of origin's branch, under the caller's own git access. A
+ * plain read never fetches; this runs only when someone asks.
+ */
+export const probeLandings = (changeId: string) =>
+  orLogin(trpcClient.landings.forChange.query({ id: changeId, probe: true }));
+/** Ask `gh` for the pull request's state now; Mend does not poll GitHub. */
+export const refreshLanding = (landingId: ChangeLandingDto["id"]) =>
+  orLogin(trpcClient.landings.refresh.mutate({ id: landingId }));
 
 // ─── Settings · dotfiles · devices ──────────────────────────────────────────
 

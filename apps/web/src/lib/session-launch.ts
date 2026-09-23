@@ -26,6 +26,11 @@ export interface SessionStartSpec {
   readonly effort?: EffortLevel;
   readonly permissionMode?: PermissionMode;
   readonly speed?: SpeedMode;
+  /**
+   * The session's own "Land when a turn completes" (docs/adr/0007-landing.md); null or absent
+   * follows the project.
+   */
+  readonly autoLand?: boolean | null;
 }
 
 /** A project quick-start also provisions a worktree. The composer uses an existing worktree. */
@@ -74,9 +79,13 @@ export const startComposedSession = (
   projectId: string,
   spec: LaunchSpec,
 ): Promise<void> =>
-  createSession(projectId, spec.harness, spec.base ?? null, spec.name ?? null).then((session) =>
-    launchCreatedSession(navigate, context, session, spec),
-  );
+  createSession(
+    projectId,
+    spec.harness,
+    spec.base ?? null,
+    spec.name ?? null,
+    spec.autoLand ?? null,
+  ).then((session) => launchCreatedSession(navigate, context, session, spec));
 
 /** Start inside the explicitly selected worktree. This operation never creates a worktree. */
 export const startComposedSessionInWorktree = (
@@ -85,6 +94,6 @@ export const startComposedSessionInWorktree = (
   worktreeId: WorktreeDto["id"],
   spec: SessionStartSpec,
 ): Promise<void> =>
-  createSessionInWorktree(worktreeId, spec.harness).then((session) =>
+  createSessionInWorktree(worktreeId, spec.harness, spec.autoLand ?? null).then((session) =>
     launchCreatedSession(navigate, context, session, spec),
   );

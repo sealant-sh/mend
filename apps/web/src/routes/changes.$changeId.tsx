@@ -6,6 +6,7 @@ import { ProjectCrumbs } from "#/components/breadcrumb";
 import { CommentStateActions, EvidenceLines, SuggestionBlock } from "#/components/comment-state";
 import { WorkbenchDiff } from "#/components/diff";
 import { FollowUpBanner } from "#/components/follow-up";
+import { LandPanel } from "#/components/land-panel";
 import { AppShell } from "#/components/shell";
 import {
   composeTour,
@@ -58,6 +59,9 @@ export const Route = createFileRoute("/changes/$changeId")({
       // the page so the description heads the review instead of arriving late.
       queryClient.ensureQueryData(trpc.changes.tour.queryOptions({ id: params.changeId })),
       queryClient.ensureQueryData(trpc.changes.passes.queryOptions({ id: params.changeId })),
+      // The Land panel is a `#land` target from the session page; load it with the page so the
+      // anchor exists when the router scrolls. A prefetch never fails the page.
+      queryClient.prefetchQuery(trpc.landings.forChange.queryOptions({ id: params.changeId })),
     ]);
     return { sliceId: opened.slice.id };
   },
@@ -120,6 +124,10 @@ function ChangeReview({
     trpc.sessions.pendingFollowUp.queryOptions({ id: sessionId }),
   ).data;
   const sessionDetail = useQuery(trpc.sessions.detail.queryOptions({ id: sessionId })).data;
+  const projectDetail = useQuery({
+    ...trpc.projects.detail.queryOptions({ id: sessionDetail?.session.projectId ?? "" }),
+    enabled: sessionDetail !== undefined,
+  }).data;
   const [sendOpen, setSendOpen] = useState(false);
   const [focusFile, setFocusFile] = useState<{
     readonly path: string;
@@ -279,6 +287,17 @@ function ChangeReview({
             void composeTour(changeId).catch(() => setComposing(false));
           }}
           onStartTour={() => goToStop(0)}
+        />
+
+        <LandPanel
+          changeId={changeId}
+          sessionId={sessionId}
+          worktreeBranch={change.branch}
+          baseRef={sessionDetail?.session.baseRef ?? null}
+          defaultBranch={projectDetail?.project.defaultBranch ?? null}
+          sessionLabel={sessionDetail?.session.label ?? null}
+          tour={tour}
+          files={review.files}
         />
 
         {tour !== null && tourIndex !== null && (

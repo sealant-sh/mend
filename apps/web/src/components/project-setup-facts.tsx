@@ -1,6 +1,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { Link } from "@tanstack/react-router";
 
+import { autoLandFact } from "#/lib/landing";
 import { useTRPC } from "#/lib/trpc";
 import { OS_LABELS } from "#/lib/workspace-environment";
 
@@ -51,6 +52,7 @@ export function useSetupFactValues(projectId: string) {
         : `${hotSessions?.ready ?? 0} of ${project.hotSessions} ready`,
     git: project.gitAuthMode === "mend-key" ? "mend key" : project.gitAuthMode,
     review: `tour ${project.autoTour} · suggest ${project.autoSuggest} · name ${project.autoName}`,
+    landing: autoLandFact(project.autoLand, settings?.autoLand),
   };
 }
 
@@ -71,6 +73,7 @@ const FACT_ROWS: ReadonlyArray<{
   { anchor: "hot-sessions", label: "Hot sessions", key: "hot" },
   { anchor: "git", label: "Git access", key: "git" },
   { anchor: "review", label: "Review automation", key: "review" },
+  { anchor: "landing", label: "Land on turn", key: "landing" },
 ];
 
 /**
@@ -94,6 +97,8 @@ const EXPLANATIONS: Record<FactKey, string> = {
     "Whether sessions in this project receive your dotfiles (repo plus synced home files, set up in Settings) at launch.",
   hot: "How many workspaces this project keeps ready for new sessions. A new session claims one and attaches immediately; each ready workspace is a live container on this machine.",
   git: "How Mend reaches this project's remote: ambient uses your login user's git and ssh setup; mend key is this machine's own deploy key; bridge signs through an ssh-agent shared from another machine.",
+  landing:
+    "Whether a session here pushes its change and opens or updates its pull request after each completed turn that asked for a change. Inherit follows Settings.",
   review:
     "What Mend runs when a session settles here — a description and tour of the change, and drafted fix suggestions. Draft comments, never verdicts; inherit follows Settings.",
 };
@@ -150,7 +155,7 @@ const INDEX_GROUPS: ReadonlyArray<{
 }> = [
   { label: "environment", rows: FACT_ROWS.slice(0, 3) },
   { label: "sources", rows: FACT_ROWS.slice(3, 7) },
-  { label: "policy", rows: FACT_ROWS.slice(7, 10) },
+  { label: "policy", rows: FACT_ROWS.slice(7, 11) },
 ];
 
 /**

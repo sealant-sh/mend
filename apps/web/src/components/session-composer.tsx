@@ -22,6 +22,7 @@ import {
   setComposerProject,
   useComposerPrefs,
 } from "#/lib/composer-prefs";
+import { autoLandItems } from "#/lib/landing";
 import { HARNESSES, startComposedSessionInWorktree, type Harness } from "#/lib/session-launch";
 import { useTRPC } from "#/lib/trpc";
 
@@ -48,6 +49,10 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
+  // "Land when a turn completes" for this one session; null follows the project. Not sticky: a
+  // push speaks as you on GitHub, so each session starts from the project's stance.
+  const [autoLand, setAutoLand] = useState<boolean | null>(null);
+  const settingsQuery = useQuery(trpc.settings.get.queryOptions());
 
   const preferredProjectId = pickedProjectId ?? prefs.lastProjectId;
   const project = projects.find((row) => row.id === preferredProjectId) ?? projects[0];
@@ -93,16 +98,23 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
       ...(harnessPrefs.effort === null ? {} : { effort: harnessPrefs.effort }),
       ...(harnessPrefs.permission === null ? {} : { permissionMode: harnessPrefs.permission }),
       ...(harnessPrefs.speed === null ? {} : { speed: harnessPrefs.speed }),
+      autoLand: project.autoLand === "off" ? null : autoLand,
     }).catch((cause: unknown) => {
       setBusy(false);
       setError(cause instanceof Error ? `Could not start — ${cause.message}` : "Could not start.");
     });
   };
 
+  const landing = autoLandItems({
+    override: autoLand,
+    project: project.autoLand,
+    settings: settingsQuery.data?.autoLand ?? null,
+  });
   const settingsSummary = [
     harnessPrefs.effort,
     harnessPrefs.speed === "fast" ? "fast" : null,
     harnessPrefs.permission === "ask" ? "ask" : null,
+    landing.summary,
   ].filter((part): part is string => part !== null);
 
   return (
@@ -131,6 +143,7 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
               setPickedProjectId(chosen.id);
               setComposerProject(chosen.id);
               setPickedWorktreeId(null);
+              setAutoLand(null);
               setError(null);
               setMenu(null);
             }}
@@ -329,6 +342,16 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
                       setComposerHarnessPrefs(projectId, harness, {
                         permission: mode === "bypass" ? null : mode,
                       }),
+                  }))}
+                />
+                <MenuRadioGroup
+                  label="Land when a turn completes"
+                  items={landing.items.map((item) => ({
+                    key: item.key,
+                    label: item.label,
+                    ...(item.detail === null ? {} : { detail: item.detail }),
+                    selected: item.selected,
+                    onSelect: () => setAutoLand(item.override),
                   }))}
                 />
               </>
