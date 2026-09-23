@@ -1,5 +1,7 @@
 import { Schema } from "effect";
 
+import { OrganizationId } from "../ids.ts";
+
 /**
  * Slack (docs/adr/0006-slack.md): what Mend keeps about an organization's Slack app and the
  * sessions started from it. Tokens never appear here. The database holds them sealed, and no API
@@ -57,3 +59,24 @@ export const SlackPendingMention = Schema.Struct({
   text: Schema.String,
 });
 export type SlackPendingMention = typeof SlackPendingMention.Type;
+
+/**
+ * The pg-boss queue a confirmed link feeds ("Mend then runs the request they originally made").
+ * Confirming a link enqueues one `SlackLinkedMentionJob`, once per code, and the Slack runner in
+ * the worker takes it from there, as if the mention had just arrived from a linked user.
+ */
+export const SLACK_LINKED_MENTION_JOB = "slack-linked-mention";
+
+/** A mention that waited for its author to link, and the account it now runs as. */
+export const SlackLinkedMentionJob = Schema.Struct({
+  organizationId: OrganizationId,
+  teamId: Schema.String,
+  /** The mention's author in Slack. */
+  slackUserId: Schema.String,
+  /** The Mend account they linked, the session's owner. */
+  userId: Schema.String,
+  request: SlackPendingMention,
+  /** ISO time of the link, so the runner can leave a stale request alone. */
+  linkedAt: Schema.String,
+});
+export type SlackLinkedMentionJob = typeof SlackLinkedMentionJob.Type;

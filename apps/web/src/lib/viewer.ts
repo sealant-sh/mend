@@ -2,6 +2,7 @@ import {
   canRemoveProject,
   canSteerSession,
   type ProjectTenancy,
+  type SessionOrigin,
   type SteeringFacts,
   type Viewer,
 } from "@mend/domain/workbench";
@@ -47,19 +48,31 @@ export const sessionActions = (
 export const canRemove = (project: ProjectTenancy, viewer: Viewer | null): boolean =>
   viewer !== null && canRemoveProject(project, viewer);
 
+/** Where a session was started from, when that was not Mend itself (docs/adr/0006-slack.md). */
+const originWords = (origin: SessionOrigin): string | null =>
+  origin === "slack" ? "from Slack" : null;
+
 /**
- * The line a session page shows when it runs on someone else's credentials, or null when it is
- * the viewer's own. Names come from the roster; an unknown owner is "another account".
+ * The line a session page shows beside its owner: whose credentials it runs on when they are not
+ * the viewer's, where it was started from when that was not Mend (`from Slack`), and whether
+ * control is shared. Null when there is nothing to say. Names come from the roster; an unknown
+ * owner is "another account".
  */
 export const runsAsLine = (
-  session: SteeringFacts,
+  session: SteeringFacts & { readonly origin: SessionOrigin },
   viewerUserId: string | null,
   names: ReadonlyMap<string, string>,
 ): string | null => {
-  if (session.ownerUserId === null) return "no owner · nobody steers it";
-  if (session.ownerUserId === viewerUserId) {
-    return session.sharedControlEnabledAt === null ? null : "shared control on";
-  }
-  const owner = names.get(session.ownerUserId) ?? "another account";
-  return `runs as ${owner}${session.sharedControlEnabledAt === null ? "" : " · shared control on"}`;
+  const origin = originWords(session.origin);
+  const shared = session.sharedControlEnabledAt === null ? null : "shared control on";
+  const owner =
+    session.ownerUserId === null
+      ? "no owner · nobody steers it"
+      : session.ownerUserId === viewerUserId
+        ? null
+        : `runs as ${names.get(session.ownerUserId) ?? "another account"}`;
+  const parts = [owner, origin, session.ownerUserId === null ? null : shared].filter(
+    (part) => part !== null,
+  );
+  return parts.length === 0 ? null : parts.join(" · ");
 };

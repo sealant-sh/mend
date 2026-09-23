@@ -59,6 +59,7 @@ import { MachineGroupLive } from "./machine.ts";
 import { OperatorGroupLive } from "./operator.ts";
 import { InvitationsGroupLive, OrganizationGroupLive } from "./organization.ts";
 import { SkillsGroupLive } from "./skills.ts";
+import { SlackGroupLive } from "./slack.ts";
 import { UpgradeTicketExchangeGroupLive, UpgradeTicketsGroupLive } from "./upgrade-tickets.ts";
 import {
   DotfilesGroupLive,
@@ -646,6 +647,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
       WorkspaceSshGroupLive,
       OrganizationGroupLive,
       InvitationsGroupLive,
+      SlackGroupLive,
       FoldersGroupLive,
       OperatorGroupLive,
     ),

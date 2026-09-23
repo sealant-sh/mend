@@ -112,5 +112,5 @@ export const SLACK_SETUP_STEPS: ReadonlyArray<string> = [
   "Create an app in Slack from this manifest (api.slack.com/apps → Create New App → From a manifest).",
   `Under Basic Information → App-Level Tokens, generate a token with the ${SLACK_APP_TOKEN_SCOPE} scope. It starts with xapp-.`,
   "Install the app to your workspace, then copy the Bot User OAuth Token from OAuth & Permissions. It starts with xoxb-.",
-  "Paste both tokens here. Mend checks each with auth.test before it saves them.",
+  "Paste both tokens here. Before it saves them, Mend checks the bot token with auth.test and the app-level token with apps.connections.open, and that both belong to the same app.",
 ];

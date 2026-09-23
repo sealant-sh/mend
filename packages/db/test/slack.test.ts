@@ -335,11 +335,17 @@ describe.skipIf(!reachable)("slack in Postgres", () => {
             .mintCode({ teamId: "T-ACME", slackUserId, request: mention("hi") })
             .pipe(Effect.flatMap(({ code }) => links.redeemCode({ code, userId })));
 
-        yield* linkAs("U-1", "bob");
-        // Bob links another Slack user: his first link goes.
-        yield* linkAs("U-2", "bob");
-        // Alice links the Slack user Bob had: it is hers now.
-        yield* linkAs("U-2", "alice");
+        expect((yield* linkAs("U-1", "bob"))?.replaced).toEqual([]);
+        // Bob links another Slack user: his first link goes, and the redeem names it.
+        const again = yield* linkAs("U-2", "bob");
+        expect(again?.replaced.map((link) => `${link.slackUserId}:${link.userId}`)).toEqual([
+          "U-1:bob",
+        ]);
+        // Alice links the Slack user Bob had: it is hers now, and Bob's link is named as replaced.
+        const taken = yield* linkAs("U-2", "alice");
+        expect(taken?.replaced).toMatchObject([
+          { organizationId: ACME, teamId: "T-ACME", slackUserId: "U-2", userId: "bob" },
+        ]);
         yield* linkAs("U-3", "bob");
         const pairs = (yield* links.listForOrganization(ACME))
           .map((link) => `${link.slackUserId}:${link.userId}`)

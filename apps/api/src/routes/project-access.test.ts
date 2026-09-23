@@ -27,7 +27,7 @@ import {
 
 type Target = HarnessProject;
 interface Call {
-  readonly method: "GET" | "POST" | "PUT" | "DELETE";
+  readonly method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
   readonly path: string;
   readonly body?: unknown;
   /** The id a refusal must name. */
@@ -90,6 +90,11 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "organization.audit",
   "organization.issuePasswordReset",
   "invitations.preview",
+  // The caller's own Slack link and a link code from a mention: slack.test.ts.
+  "slack.me",
+  "slack.unlink",
+  "slack.previewLink",
+  "slack.confirmLink",
   // Minting authorizes nothing: the socket route authorizes the ticket's account against the
   // session or service when the ticket is spent (upgrade-tickets.test.ts).
   "upgradeTickets.mint",
@@ -251,6 +256,35 @@ const CASES: ReadonlyArray<AccessCase> = [
   })("operator.issuePasswordReset"),
   fixed("operator", "GET", "/api/runs/run-1/trace", "queue")("runs.trace"),
   fixed("operator", "GET", "/api/runs/run-1/sources", "queue")("runs.sources"),
+
+  // ── Slack: the organization's app is its owners'; a default project must be visible ──
+  fixed("owner", "GET", "/api/organization/slack", "slack")("slack.app"),
+  fixed("owner", "PUT", "/api/organization/slack", "slack", {
+    appToken: "xapp-1",
+    botToken: "xoxb-1",
+  })("slack.connect"),
+  fixed("owner", "DELETE", "/api/organization/slack", "slack")("slack.disconnect"),
+  fixed("owner", "PATCH", "/api/organization/slack/settings", "slack", {
+    settings: {
+      defaultHarness: "claude",
+      showAgentMessages: true,
+      showDiffs: false,
+      externalChannels: false,
+    },
+  })("slack.setSettings"),
+  fixed("owner", "GET", "/api/organization/slack/manifest", "slack")("slack.manifest"),
+  fixed("owner", "GET", "/api/organization/slack/links", "slack")("slack.links"),
+  fixed("owner", "DELETE", "/api/organization/slack/links/U123", "U123")("slack.removeLink"),
+  {
+    endpoint: "slack.setDefaultProject",
+    rule: "project-read",
+    call: (target) => ({
+      method: "PUT",
+      path: "/api/slack/me/default-project",
+      body: { projectId: ids(target).project },
+      id: ids(target).project,
+    }),
+  },
 
   // ── References: instance-wide until they belong to organizations ──
   fixed("owner", "POST", "/api/references", "references", {

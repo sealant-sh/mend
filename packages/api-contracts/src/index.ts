@@ -16,5 +16,6 @@ export * from "./upgrade-tickets.ts";
 export * from "./folders.ts";
 export * from "./operator.ts";
 export * from "./organization.ts";
+export * from "./slack.ts";
 export * from "./api.ts";
 export * from "./client.ts";
