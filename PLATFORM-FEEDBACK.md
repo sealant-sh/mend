@@ -7,6 +7,26 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-24 · 0.37.0 · A workspace with one credential and nothing else
+
+- **Needed:** landing's pull request step (docs/adr/0007-landing.md, "Where each step runs") runs
+  `gh` for a session whose workspace is gone, in a short-lived workspace for the owner that holds
+  their GitHub account and nothing else: no harness, no source, no dotfiles. It lives for a few
+  seconds and runs three `exec` calls.
+- **Today:** `workspaces.create` requires a `harness` and exactly one of `repository` or `source`
+  (`buildCreateWorkspaceRequest`, `invalid_create_options`). A `repository` clones through the
+  GitHub App, which private repositories on a Mend install usually lack, and a clone is more than
+  the call needs. So `@mend/landing` mounts an empty directory it makes under the store root
+  (`<store>/_landing/<id>`, inside `SEALANT_MOUNT_ALLOWED_STORE_ROOTS`) and names `opencode()`,
+  which never starts. That works where the runtime takes host mounts (Docker, the Kubernetes claim)
+  and fails on a runtime that takes none (MicroVM executors), where the landing records the
+  platform's refusal as the pull request step's failure. `exec` also takes no stdin and no env, so
+  the description travels base64-encoded in argv and `gh`'s settings ride `env VAR=… gh …`.
+- **Suggested:** a source-less, harness-less create (`source: { kind: "empty" }`, `harness`
+  optional) that every runtime accepts, for workspaces that only run `exec`. Better still, the
+  user-scoped provider request of the entry below, which removes this workspace altogether. An
+  `exec` option for stdin would let the body skip argv.
+
 ## 2026-09-23 · 0.37.0 · A GitHub call as a user, from the host
 
 - **Needed:** Mend's landing (docs/adr/0007-landing.md) opens and updates a pull request as the
