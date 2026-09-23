@@ -1,7 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
+import { UserFacts } from "@mend/db";
 import { SessionId, Sha } from "@mend/domain";
 import type { CheckpointTrigger, LandedPullRequest } from "@mend/domain/workbench";
-import { PushRefusedError } from "@mend/store";
+import { BundleTooLargeError, PushRefusedError } from "@mend/store";
 import { Effect, Layer } from "effect";
 
 import { DESCRIPTION_START } from "../src/description.ts";
@@ -30,6 +31,7 @@ const input = (overrides: Partial<LandInput> = {}): LandInput => ({
   remoteBranch: null,
   pullRequest: true,
   title: null,
+  body: null,
   webOrigin: "https://mend.test",
   remoteEnv: Effect.succeed({ GIT_SSH_COMMAND: "ssh" }),
   ...overrides,
@@ -45,6 +47,7 @@ interface Script {
   readonly push?: "ok" | PushRefusedError | LandingStepError;
   readonly publish?: "opened" | "updated" | PullRequestStepError;
   readonly observed?: LandedPullRequest;
+  readonly bundle?: "ok" | BundleTooLargeError;
 }
 
 const PR: LandedPullRequest = {
@@ -71,6 +74,8 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
     readonly env: unknown;
   }> = [];
   const published: Array<PublishInput> = [];
+  const bundles: Array<{ readonly base: string; readonly tip: string; readonly branch: string }> =
+    [];
   const git = Layer.succeed(LandingGit, {
     checkpoint: (_scope, trigger) =>
       Effect.suspend(() => {
@@ -122,6 +127,32 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
             })
           : Effect.fail(outcome);
       }),
+    probe: (_place, probe) =>
+      Effect.sync(() => {
+        calls.push("probe");
+        return {
+          remoteBranch: probe.remoteBranch,
+          remoteSha: probe.sha,
+          unseen: 0,
+          ahead: 0,
+          holds: true,
+        };
+      }),
+    bundle: (_scope, bundle) =>
+      Effect.suspend(() => {
+        calls.push("bundle");
+        bundles.push({ base: bundle.base, tip: bundle.tip, branch: bundle.branch });
+        const outcome = script.bundle ?? "ok";
+        return outcome === "ok"
+          ? Effect.succeed({
+              branch: bundle.branch,
+              base: bundle.base,
+              tip: bundle.tip,
+              commits: 1,
+              bytes: new Uint8Array([1, 2, 3]),
+            })
+          : Effect.fail(outcome);
+      }),
     changedFiles: () =>
       Effect.sync(() => {
         calls.push("files");
@@ -154,7 +185,7 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
       }),
   });
   const layer = LandingLive.pipe(Layer.provide(Layer.mergeAll(world.repos, git, pullRequests)));
-  return { world, calls, triggers, commits, pushes, published, observed, layer };
+  return { world, calls, triggers, commits, pushes, published, observed, bundles, layer };
 };
 
 describe("Landing.land", () => {
@@ -583,6 +614,73 @@ describe("Landing.refreshPullRequest", () => {
       const first = yield* landing.land(input({ pullRequest: false }));
       const refreshed = yield* landing.refreshPullRequest(first.landing.id);
       expect(refreshed).toEqual(first.landing);
+    }).pipe(Effect.provide(h.layer));
+  });
+});
+
+describe("Landing.bundle", () => {
+  const bundleInput = {
+    sessionId: makeWorld().session.id,
+    actorUserId: "bob",
+    webOrigin: "https://mend.test",
+    limitBytes: 1024,
+  };
+
+  it.effect(
+    "checkpoints and commits as the owner, then bundles from the base, and records no landing",
+    () => {
+      const h = harness();
+      return Effect.gen(function* () {
+        const bundle = yield* (yield* Landing).bundle(bundleInput);
+        expect(h.calls).toEqual(["checkpoint", "commit", "bundle"]);
+        expect(h.triggers).toEqual(["user-mark"]);
+        // The commit is the owner's work, whoever asked for the bundle.
+        expect(h.commits[0]?.author).toEqual({ name: "Ada Owner", email: "ada@example.com" });
+        expect(h.bundles).toEqual([{ base: BASE_SHA, tip: MEND_COMMIT, branch: "mend/fix-login" }]);
+        expect(bundle.commits).toBe(1);
+        expect(h.world.landings).toEqual([]);
+      }).pipe(Effect.provide(h.layer));
+    },
+  );
+
+  it.effect("bundles the agent's own head when there was nothing left to commit", () => {
+    const h = harness({ nothingToCommit: true });
+    return Effect.gen(function* () {
+      yield* (yield* Landing).bundle(bundleInput);
+      expect(h.bundles[0]?.tip).toBe(HEAD_SHA);
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("is by the asker when the session has no owner", () => {
+    const h = harness(
+      {},
+      {
+        ownerUserId: null,
+        users: [new UserFacts({ id: "bob", name: "Bob", email: "bob@example.com" })],
+      },
+    );
+    return Effect.gen(function* () {
+      yield* (yield* Landing).bundle(bundleInput);
+      expect(h.commits[0]?.author).toEqual({ name: "Bob", email: "bob@example.com" });
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("passes a bundle over the limit through with its size", () => {
+    const h = harness({
+      bundle: new BundleTooLargeError({ branch: "mend/fix-login", size: 4096, limit: 1024 }),
+    });
+    return Effect.gen(function* () {
+      const error = yield* (yield* Landing).bundle(bundleInput).pipe(Effect.flip);
+      expect(error).toMatchObject({ _tag: "BundleTooLargeError", size: 4096, limit: 1024 });
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("stops at a failed checkpoint in git's words", () => {
+    const h = harness({ checkpointFails: "fatal: bad object" });
+    return Effect.gen(function* () {
+      const error = yield* (yield* Landing).bundle(bundleInput).pipe(Effect.flip);
+      expect(error).toMatchObject({ _tag: "LandingStepError", message: "fatal: bad object" });
+      expect(h.calls).toEqual(["checkpoint"]);
     }).pipe(Effect.provide(h.layer));
   });
 });

@@ -23,6 +23,7 @@ const publishInput = (overrides: Partial<PublishInput> = {}): PublishInput => ({
   title: "login loop",
   titleGiven: false,
   section: SECTION,
+  body: null,
   previous: null,
   ...overrides,
 });
@@ -173,6 +174,19 @@ describe("PullRequests.publish", () => {
       expect(updated?.body).toBe(`Closes #12\n\n${SECTION}\n\nDeploy after Friday.`);
       // No title was given for this landing, so the edited one stays.
       expect(updated?.title).toBe("Fix login (edited on GitHub)");
+    }).pipe(Effect.provide(github.layer));
+  });
+
+  it.effect("writes the owner's own description above the section in place of the rest", () => {
+    const earlier = `${DESCRIPTION_START}\nNo summary.\n${DESCRIPTION_END}`;
+    const github = fakeGitHub({
+      pullRequests: [pr(412, { body: `Closes #12\n\n${earlier}\n\nDeploy after Friday.` })],
+    });
+    return Effect.gen(function* () {
+      yield* (yield* PullRequests).publish(
+        publishInput({ previous: 412, body: "  Fixes the login loop for SSO users.\n" }),
+      );
+      expect(github.pulls.get(412)?.body).toBe(`Fixes the login loop for SSO users.\n\n${SECTION}`);
     }).pipe(Effect.provide(github.layer));
   });
 

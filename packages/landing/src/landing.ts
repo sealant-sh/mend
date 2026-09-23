@@ -20,7 +20,16 @@ import {
   type Session,
   type Worktree,
 } from "@mend/domain/workbench";
-import type { DiffFileFact, LandingAuthor, Pushed, PushRefusedError } from "@mend/store";
+import type {
+  BundleEmptyError,
+  BundleTooLargeError,
+  ChangeBundle,
+  DiffFileFact,
+  LandingAuthor,
+  Pushed,
+  PushRefusedError,
+  RemoteBranchState,
+} from "@mend/store";
 import { Effect, Layer, Result, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -52,16 +61,20 @@ import { PullRequests, PullRequestStepError } from "./pull-requests.ts";
 export class LandingStepError extends Schema.TaggedErrorClass<LandingStepError>()(
   "LandingStepError",
   {
-    step: Schema.Literals(["checkpoint", "commit", "push", "files"]),
+    step: Schema.Literals(["checkpoint", "commit", "push", "files", "probe", "bundle"]),
     message: Schema.String,
   },
 ) {}
 
-/** What a landing acts on, resolved once. */
-export interface LandingScope {
-  readonly session: Session;
+/** Where a change lives: its project and worktree. */
+export interface LandingPlace {
   readonly project: Project;
   readonly worktree: Worktree;
+}
+
+/** What a landing acts on, resolved once. */
+export interface LandingScope extends LandingPlace {
+  readonly session: Session;
 }
 
 /**
@@ -116,6 +129,28 @@ export class LandingGit extends Context.Service<
       scope: LandingScope,
       input: { readonly base: Sha; readonly head: Sha },
     ) => Effect.Effect<ReadonlyArray<DiffFileFact>, LandingStepError>;
+    /**
+     * Origin's branch against a landed commit, as a fetch observes it: "origin has moved" and
+     * "the landed commit is on origin". Nothing is written to the store or the cache.
+     */
+    readonly probe: (
+      place: LandingPlace,
+      input: {
+        readonly sha: Sha;
+        readonly remoteBranch: string;
+        readonly remoteEnv: Readonly<Record<string, string>>;
+      },
+    ) => Effect.Effect<RemoteBranchState, LandingStepError>;
+    /** The `mend pull` bundle of `base..tip`, naming the branch; refused over the limit. */
+    readonly bundle: (
+      scope: LandingScope,
+      input: {
+        readonly base: Sha;
+        readonly tip: Sha;
+        readonly branch: string;
+        readonly limitBytes: number;
+      },
+    ) => Effect.Effect<ChangeBundle, LandingStepError | BundleTooLargeError | BundleEmptyError>;
   }
 >()("@mend/landing/LandingGit") {}
 
@@ -153,6 +188,12 @@ export interface LandInput {
   readonly pullRequest: boolean;
   /** The owner's own title. Null opens with the session's label and keeps a title edited since. */
   readonly title: string | null;
+  /**
+   * The owner's own words for the description, written above Mend's section in place of
+   * whatever sat outside it. Null keeps what people wrote on GitHub and replaces only the
+   * section.
+   */
+  readonly body: string | null;
   /** The web origin the description's and the commit's links are built from; null writes none. */
   readonly webOrigin: string | null;
   /**
@@ -179,10 +220,30 @@ export interface LandingReport {
   readonly pullRequest: PullRequestStep;
 }
 
+/** A `mend pull` bundle of a session's change (docs/adr/0007-landing.md, "Pulling a change"). */
+export interface BundleChangeInput {
+  readonly sessionId: SessionId;
+  /** Who asked. The commit Mend writes is by the session's owner, or by them when it has none. */
+  readonly actorUserId: string;
+  readonly webOrigin: string | null;
+  /** The largest bundle handed back; a larger one is refused with its size. */
+  readonly limitBytes: number;
+}
+
 export class Landing extends Context.Service<
   Landing,
   {
     readonly land: (input: LandInput) => Effect.Effect<LandingReport, LandingNotStartedError>;
+    /**
+     * Checkpoint and commit exactly as a landing's steps 1 and 2 do, without pushing, and bundle
+     * the commits from the session's base to that head. Nothing is recorded as a landing.
+     */
+    readonly bundle: (
+      input: BundleChangeInput,
+    ) => Effect.Effect<
+      ChangeBundle,
+      LandingNotStartedError | LandingStepError | BundleTooLargeError | BundleEmptyError
+    >;
     /**
      * Ask `gh` for the landing's pull request now and record what it said. A landing with no pull
      * request comes back unchanged.
@@ -206,6 +267,15 @@ export const reviewLink = (webOrigin: string, changeId: string): string =>
 /** The session page lists its checkpoints; the fragment names the landed one. */
 export const checkpointLink = (webOrigin: string, sessionId: string, ordinal: number): string =>
   `${sessionLink(webOrigin, sessionId)}#checkpoint-${ordinal}`;
+
+const linksOf = (webOrigin: string | null, sessionId: string, changeId: string, ordinal: number) =>
+  webOrigin === null
+    ? { session: null, review: null, checkpoint: null }
+    : {
+        session: sessionLink(webOrigin, sessionId),
+        review: reviewLink(webOrigin, changeId),
+        checkpoint: checkpointLink(webOrigin, sessionId, ordinal),
+      };
 
 // ─── Live ───────────────────────────────────────────────────────────────────
 
@@ -260,6 +330,40 @@ export const LandingLive: Layer.Layer<
           notStarted("not-found", `landing not started · ${error._tag} · ${sessionId}`),
         ),
       );
+
+    /** Step 2: the checkpoint's tree as the owner's commit on the branch head, when it differs. */
+    const commitWork = (
+      scope: LandingScope,
+      input: {
+        readonly checkpoint: Checkpoint;
+        readonly agentHead: Sha;
+        readonly lastLanded: Sha | null;
+        readonly authorUserId: string;
+        readonly tourSummary: string | null;
+        readonly sessionUrl: string | null;
+      },
+    ) =>
+      Effect.gen(function* () {
+        const author = yield* users.byId(input.authorUserId);
+        if (author === null) {
+          return yield* new LandingStepError({
+            step: "commit",
+            message: "the owner's account no longer exists",
+          });
+        }
+        return yield* git.commit(scope, {
+          checkpoint: input.checkpoint,
+          agentHead: input.agentHead,
+          lastLanded: input.lastLanded,
+          author: { name: author.name, email: author.email },
+          message: landingCommitMessage({
+            tourSummary: input.tourSummary,
+            label: scope.session.label,
+            sessionId: scope.session.id,
+            sessionUrl: input.sessionUrl,
+          }),
+        });
+      });
 
     const land = Effect.fn("Landing.land")(function* (input: LandInput) {
       const scope = yield* scopeOf(input.sessionId);
@@ -335,33 +439,16 @@ export const LandingLive: Layer.Layer<
       const { checkpoint, agentHead } = taken.success;
 
       // 2. Commit what the agent left uncommitted, as the owner.
-      const author = yield* users.byId(owner);
-      if (author === null) {
-        return yield* failed(checkpoint, null, "the owner's account no longer exists");
-      }
       const tour = yield* tours.byChange(change.id);
-      const links =
-        input.webOrigin === null
-          ? { session: null, review: null, checkpoint: null }
-          : {
-              session: sessionLink(input.webOrigin, session.id),
-              review: reviewLink(input.webOrigin, change.id),
-              checkpoint: checkpointLink(input.webOrigin, session.id, checkpoint.ordinal),
-            };
-      const committed = yield* git
-        .commit(scope, {
-          checkpoint,
-          agentHead,
-          lastLanded: lastPush?.pushedSha ?? null,
-          author: { name: author.name, email: author.email },
-          message: landingCommitMessage({
-            tourSummary: tour?.summary ?? null,
-            label: session.label,
-            sessionId: session.id,
-            sessionUrl: links.session,
-          }),
-        })
-        .pipe(Effect.result);
+      const links = linksOf(input.webOrigin, session.id, change.id, checkpoint.ordinal);
+      const committed = yield* commitWork(scope, {
+        checkpoint,
+        agentHead,
+        lastLanded: lastPush?.pushedSha ?? null,
+        authorUserId: owner,
+        tourSummary: tour?.summary ?? null,
+        sessionUrl: links.session,
+      }).pipe(Effect.result);
       if (Result.isFailure(committed)) {
         return yield* failed(checkpoint, null, committed.failure.message);
       }
@@ -435,6 +522,7 @@ export const LandingLive: Layer.Layer<
             sessionId: session.id,
           }),
           titleGiven,
+          body: input.body,
           section: describePullRequest({
             tour: tour === null ? null : { summary: tour.summary, approach: tour.approach },
             files,
@@ -498,6 +586,31 @@ export const LandingLive: Layer.Layer<
       return updated ?? landing;
     });
 
-    return { land, refreshPullRequest };
+    const bundle = Effect.fn("Landing.bundle")(function* (input: BundleChangeInput) {
+      const scope = yield* scopeOf(input.sessionId);
+      const { session, worktree } = scope;
+      const change = yield* changes.byWorktree(worktree.id);
+      if (change === null) {
+        return yield* notStarted("no-change", "bundle not made · the session has no change");
+      }
+      const { checkpoint, agentHead } = yield* git.checkpoint(scope, "user-mark");
+      const tour = yield* tours.byChange(change.id);
+      const { head } = yield* commitWork(scope, {
+        checkpoint,
+        agentHead,
+        lastLanded: null,
+        authorUserId: session.ownerUserId ?? input.actorUserId,
+        tourSummary: tour?.summary ?? null,
+        sessionUrl: linksOf(input.webOrigin, session.id, change.id, checkpoint.ordinal).session,
+      });
+      return yield* git.bundle(scope, {
+        base: worktree.baseSha,
+        tip: head,
+        branch: worktree.branch,
+        limitBytes: input.limitBytes,
+      });
+    });
+
+    return { land, bundle, refreshPullRequest };
   }),
 );

@@ -1,15 +1,9 @@
-import type { GitAuthMode } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
-import {
-  describeGitRemoteFailure,
-  type GitError,
-  type InvalidBranchError,
-  Store,
-  worktreePathOf,
-} from "@mend/store";
+import { Store, worktreePathOf } from "@mend/store";
 import { Effect, Layer } from "effect";
 
-import { LandingGit, LandingStepError, type LandingScope } from "./landing.ts";
+import { branchWords, gitWords } from "./git-words.ts";
+import { LandingGit, LandingStepError, type LandingPlace } from "./landing.ts";
 
 /**
  * `LandingGit` for a co-located session: the worktree is a linked worktree of the project's bare
@@ -17,21 +11,10 @@ import { LandingGit, LandingStepError, type LandingScope } from "./landing.ts";
  * (docs/adr/0007-landing.md, "Where each step runs"). Mend's commit is written in the bare store
  * and kept under `refs/mend/landed/<worktree>`; `mend/<name>` never moves, so the worktree's
  * files, index and HEAD are never touched and the agent's next commit reverts nothing. A
- * capture-backed session (ADR 0002) needs the runner cache instead.
+ * capture-backed session (ADR 0002) uses the runner cache instead (`LandingGitCapturedLive`).
  */
 
-/** A git failure in the remote's words when a known shape matched, verbatim otherwise. */
-const gitWords = (error: GitError, mode: GitAuthMode | null): string => {
-  const described = mode === null ? null : describeGitRemoteFailure(error.stderr, mode);
-  if (described !== null) return described;
-  if (error.stderr.trim() !== "") return error.stderr.trim();
-  return `git ${error.args[0] ?? ""} exited ${error.exitCode ?? "without a code"}`;
-};
-
-const branchWords = (error: InvalidBranchError): string =>
-  `${error.branch} is not a branch name git accepts`;
-
-const worktreeDir = (scope: LandingScope) =>
+const worktreeDir = (scope: LandingPlace) =>
   worktreePathOf(scope.project.storePath, scope.worktree.directory);
 
 export const LandingGitColocatedLive: Layer.Layer<LandingGit, never, Store | SessionEngine> =
@@ -110,6 +93,37 @@ export const LandingGitColocatedLive: Layer.Layer<LandingGit, never, Store | Ses
                 (error) => new LandingStepError({ step: "files", message: gitWords(error, null) }),
               ),
             ),
+        probe: (place, input) =>
+          store
+            .probeRemote(place.project.storePath, {
+              remote: "origin",
+              sha: input.sha,
+              remoteBranch: input.remoteBranch,
+              remoteEnv: { ...input.remoteEnv },
+            })
+            .pipe(
+              Effect.mapError(
+                (error) =>
+                  new LandingStepError({
+                    step: "probe",
+                    message:
+                      error._tag === "GitError"
+                        ? gitWords(error, place.project.gitAuthMode)
+                        : branchWords(error),
+                  }),
+              ),
+            ),
+        bundle: (scope, input) =>
+          store.bundle(scope.project.storePath, input).pipe(
+            Effect.catchTags({
+              GitError: (error) =>
+                Effect.fail(
+                  new LandingStepError({ step: "bundle", message: gitWords(error, null) }),
+                ),
+              InvalidBranchError: (error) =>
+                Effect.fail(new LandingStepError({ step: "bundle", message: branchWords(error) })),
+            }),
+          ),
       };
     }),
   );
