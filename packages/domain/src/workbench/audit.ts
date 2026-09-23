@@ -34,6 +34,7 @@ export const AuditAction = Schema.Literals([
   "slack.settings_changed",
   "slack.link_created",
   "slack.link_removed",
+  "slack.session_started",
 ]);
 export type AuditAction = typeof AuditAction.Type;
 

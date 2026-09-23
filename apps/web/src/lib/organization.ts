@@ -18,6 +18,17 @@ const SLACK_SETTING_WORDS: Readonly<Record<string, string>> = {
   externalChannels: "external channels",
 };
 
+/** How a Slack-started session's project was chosen, as the status message in Slack words it. */
+const SLACK_PROJECT_SOURCE_WORDS: Readonly<Record<string, string>> = {
+  message: "named in the request",
+  "thread-session": "the thread's session",
+  "thread-link": "from a link in the thread",
+  "thread-inference": "from the thread",
+  "channel-default": "channel default",
+  "personal-default": "personal default",
+  picked: "picked",
+};
+
 /**
  * One audit event as a plain sentence, without the actor or time (the row shows those). Member
  * events name the account the server resolved, removed members included.
@@ -83,6 +94,12 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       return event.data["memberRemoved"] === true
         ? `removed the Slack link of ${subject} with their membership`
         : `removed the Slack link of ${subject} (${text(event.data["slackUserId"]) ?? "?"})`;
+    case "slack.session_started": {
+      const project = text(event.data["projectName"]) ?? text(event.data["projectId"]) ?? "?";
+      const source = text(event.data["projectSource"]);
+      const why = source === null ? "" : ` · ${SLACK_PROJECT_SOURCE_WORDS[source] ?? source}`;
+      return `started session ${event.subjectId} from Slack in ${project}${why}`;
+    }
   }
 };
 

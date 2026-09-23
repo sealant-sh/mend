@@ -27,8 +27,11 @@ export const SLACK_BOT_SCOPES = [
   "users:read",
 ] as const;
 
-/** The only event Mend subscribes to. A reply without a mention never reaches Mend. */
-export const SLACK_BOT_EVENTS = ["app_mention"] as const;
+/**
+ * The events Mend subscribes to: a mention in a channel, and a direct message to the app, which
+ * Slack does not send as `app_mention`. A reply in a channel without a mention never reaches Mend.
+ */
+export const SLACK_BOT_EVENTS = ["app_mention", "message.im"] as const;
 
 /**
  * The scope of the app-level token (`xapp-…`) that opens the socket. A manifest cannot ask for

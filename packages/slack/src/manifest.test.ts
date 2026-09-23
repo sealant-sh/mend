@@ -25,10 +25,10 @@ describe("the Slack app manifest", () => {
     );
   });
 
-  it("connects over Socket Mode, with interactivity and the app_mention event only", () => {
+  it("connects over Socket Mode, with interactivity, mentions and direct messages only", () => {
     const manifest = slackManifest();
     expect(manifest.settings).toEqual({
-      event_subscriptions: { bot_events: ["app_mention"] },
+      event_subscriptions: { bot_events: ["app_mention", "message.im"] },
       interactivity: { is_enabled: true },
       org_deploy_enabled: false,
       socket_mode_enabled: true,
