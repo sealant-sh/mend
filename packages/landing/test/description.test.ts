@@ -102,6 +102,14 @@ describe("describePullRequest", () => {
     expect(section).not.toContain("](");
   });
 
+  it("says the checkpoint is taken on landing in a preview, which has none yet", () => {
+    const section = describePullRequest(
+      input({ checkpoint: null, links: { session: null, review: null, checkpoint: null } }),
+    );
+    expect(section).toContain("- Landed checkpoint: taken when this lands");
+    expect(section).not.toContain("checkpoint 4");
+  });
+
   it("counts the files past the limit instead of listing them", () => {
     const many = Array.from({ length: DESCRIPTION_FILE_LIMIT + 5 }, (_, index) =>
       file(`src/file-${index}.ts`, 1, 0),

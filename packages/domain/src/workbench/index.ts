@@ -32,6 +32,7 @@ export * from "./follow-up.ts";
 export * from "./harness-launch.ts";
 export * from "./hot-workspace.ts";
 export * from "./landing.ts";
+export * from "./landing-description.ts";
 export * from "./mount.ts";
 export * from "./link.ts";
 export * from "./organization.ts";
