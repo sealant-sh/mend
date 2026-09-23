@@ -55,6 +55,8 @@ export interface LaunchArgs {
   readonly detach: boolean;
   /** Foreground semantics for this launch — the session stops when this CLI exits. */
   readonly foreground: boolean;
+  /** Keep the session's browser Services off this machine's loopback while attached. */
+  readonly noTunnel: boolean;
   /** Everything after `--` (mend run's command). */
   readonly custom: ReadonlyArray<string>;
   readonly error: string | null;
@@ -72,12 +74,13 @@ const LAUNCH_ERROR: Omit<LaunchArgs, "error"> = {
   fast: false,
   detach: false,
   foreground: false,
+  noTunnel: false,
   custom: [],
 };
 
 /**
  * `mend claude|codex|opencode ["prompt"] [--model <id>] [--effort <level>]
- * [--base <ref>] [--ask] [--detach|-d] [--foreground] [--project <p>]`, plus
+ * [--base <ref>] [--ask] [--detach|-d] [--foreground] [--no-tunnel] [--project <p>]`, plus
  * `mend run … -- <command...>`.
  * The first non-flag positional is the prompt; a second one is an error so a
  * forgotten quote fails loudly instead of launching with half a sentence.
@@ -97,6 +100,7 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
   let fast = false;
   let detach = false;
   let foreground = false;
+  let noTunnel = false;
   for (let index = 0; index < flagArgs.length; index += 1) {
     const arg = flagArgs[index] ?? "";
     if (arg === "--ask") {
@@ -113,6 +117,10 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
     }
     if (arg === "--foreground") {
       foreground = true;
+      continue;
+    }
+    if (arg === "--no-tunnel") {
+      noTunnel = true;
       continue;
     }
     if (
@@ -174,6 +182,7 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
     fast,
     detach,
     foreground,
+    noTunnel,
     custom,
     error: null,
   };

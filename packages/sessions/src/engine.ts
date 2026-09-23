@@ -4067,7 +4067,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           `\`mend service run --port <port> [--name <n>] [--http|--https] -- <command...>\` — ` +
           `it runs the command supervised in this workspace, waits for the port, and makes it ` +
           `reachable from the user's own machine. Pass \`--http\` (or \`--https\`) when the ` +
-          `server is something to open in a browser: the user then gets an Open link. NEVER ` +
+          `server is something to open in a browser: the user then gets an Open link, and an ` +
+          `attached \`mend\` terminal on their machine tunnels it to their localhost. NEVER ` +
           `background a server inside a tool call. ` +
           `Listen on IPv4 — \`127.0.0.1\` or \`0.0.0.0\`: the forward dials the workspace's ` +
           `\`127.0.0.1\`, so a server bound only to \`::1\` reports healthy and answers ` +
