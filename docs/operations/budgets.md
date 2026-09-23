@@ -19,6 +19,7 @@ refusal never says whether something you may not see exists).
 | `MEND_BUDGET_ACCOUNT_LIVE_SESSIONS`          | `24`       | Unsettled sessions one account holds.                                                                                 |
 | `MEND_BUDGET_ORGANIZATION_LIVE_SESSIONS`     | `120`      | Unsettled sessions one organization holds.                                                                            |
 | `MEND_BUDGET_ACCOUNT_LAUNCHES_IN_FLIGHT`     | `4`        | Launches one account has starting at once.                                                                            |
+| `MEND_BUDGET_BUNDLE_BYTES`                   | `67108864` | One `mend pull` bundle (`GET /changes/:id/bundle`). A larger one is refused with 413 and its size.                    |
 | `MEND_BUDGET_ACCOUNT_EVENT_STREAMS`          | `12`       | Open event streams (one per browser tab or client) for one account.                                                   |
 | `MEND_BUDGET_ACCOUNT_TERMINALS`              | `24`       | Open terminal sockets for one account.                                                                                |
 | `MEND_BUDGET_ACCOUNT_TUNNELS`                | `24`       | Open service tunnels for one account.                                                                                 |

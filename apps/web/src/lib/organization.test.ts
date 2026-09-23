@@ -88,6 +88,39 @@ describe("describeAudit for Slack (docs/adr/0006)", () => {
       ),
     ).toBe("cleared the default project of Slack channel C1 (was billing-api)");
   });
+
+  it("words a landing by what origin and GitHub answered", () => {
+    const onChange = (action: AuditEvent["action"], data: AuditEvent["data"]) => ({
+      subjectName: null,
+      event: new AuditEvent({
+        ...event(action, data).event,
+        subjectType: "change",
+        subjectId: "change-1",
+      }),
+    });
+    const landed = (data: AuditEvent["data"]) => describeAudit(onChange("change.landed", data));
+    expect(
+      landed({ outcome: "pull-request", remoteBranch: "mend/fix-login", pullRequest: 412 }),
+    ).toBe("pushed change change-1 to mend/fix-login · pull request #412");
+    expect(
+      landed({
+        outcome: "pushed",
+        remoteBranch: "mend/fix-login",
+        pushedSha: "3f2a1c0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      }),
+    ).toBe("pushed change change-1 to mend/fix-login · 3f2a1c0");
+    expect(landed({ outcome: "refused", remoteBranch: "mend/fix-login" })).toBe(
+      "landing of change change-1 refused by origin · mend/fix-login",
+    );
+    expect(landed({ outcome: "failed", remoteBranch: "mend/fix-login" })).toBe(
+      "landing of change change-1 failed · mend/fix-login",
+    );
+    expect(
+      describeAudit(
+        onChange("change.pull_request_refreshed", { pullRequest: 412, state: "merged" }),
+      ),
+    ).toBe("read pull request #412 of change change-1 · merged");
+  });
 });
 
 describe("joinState", () => {

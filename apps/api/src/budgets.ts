@@ -29,6 +29,8 @@ export interface BudgetLimits {
   readonly organizationLiveSessions: number;
   /** Launches one account may have starting at once. */
   readonly accountLaunchesInFlight: number;
+  /** Largest `mend pull` bundle a change answers with, refused with its size above it. */
+  readonly bundleBytes: number;
   /** Open long-lived connections one account may hold, by kind. */
   readonly accountEventStreams: number;
   readonly accountTerminals: number;
@@ -49,6 +51,7 @@ export const DEFAULT_BUDGET_LIMITS: BudgetLimits = {
   accountLiveSessions: 24,
   organizationLiveSessions: 120,
   accountLaunchesInFlight: 4,
+  bundleBytes: 64 * 1024 * 1024,
   accountEventStreams: 12,
   accountTerminals: 24,
   accountTunnels: 24,
@@ -65,6 +68,7 @@ const ENV: Readonly<Record<BudgetName, string>> = {
   accountLiveSessions: "MEND_BUDGET_ACCOUNT_LIVE_SESSIONS",
   organizationLiveSessions: "MEND_BUDGET_ORGANIZATION_LIVE_SESSIONS",
   accountLaunchesInFlight: "MEND_BUDGET_ACCOUNT_LAUNCHES_IN_FLIGHT",
+  bundleBytes: "MEND_BUDGET_BUNDLE_BYTES",
   accountEventStreams: "MEND_BUDGET_ACCOUNT_EVENT_STREAMS",
   accountTerminals: "MEND_BUDGET_ACCOUNT_TERMINALS",
   accountTunnels: "MEND_BUDGET_ACCOUNT_TUNNELS",
@@ -83,6 +87,7 @@ const WORDS: Readonly<Record<BudgetName, string>> = {
   accountLiveSessions: "unsettled sessions for one account",
   organizationLiveSessions: "unsettled sessions for one organization",
   accountLaunchesInFlight: "launches starting at once for one account",
+  bundleBytes: "bytes in one change bundle",
   accountEventStreams: "open event streams for one account",
   accountTerminals: "open terminals for one account",
   accountTunnels: "open service tunnels for one account",
@@ -162,6 +167,7 @@ export const budgetLimitsConfig = Config.all({
   accountLiveSessions: limit("accountLiveSessions"),
   organizationLiveSessions: limit("organizationLiveSessions"),
   accountLaunchesInFlight: limit("accountLaunchesInFlight"),
+  bundleBytes: limit("bundleBytes"),
   accountEventStreams: limit("accountEventStreams"),
   accountTerminals: limit("accountTerminals"),
   accountTunnels: limit("accountTunnels"),

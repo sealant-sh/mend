@@ -156,6 +156,8 @@ export const AUTHORIZATION_READS: ReadonlySet<string> = new Set([
   "sessions.listForWorktree",
   "worktrees.byId",
   "changes.byId",
+  // A landing's change decides who may see it, so a refresh reads the landing first.
+  "landings.byId",
   "processes.byId",
   // The terminal route picks a session's current agent process before it attaches.
   "processes.listForSession",
@@ -715,6 +717,10 @@ export const createTenancyWorld = async (): Promise<TenancyWorld> => {
       "changes",
       {
         byId: (id) => found(changes, id, () => new SessionChangeNotFoundError({ id })),
+        byWorktree: (worktreeId) =>
+          Effect.succeed(
+            [...changes.values()].find((change) => change.worktreeId === worktreeId) ?? null,
+          ),
       },
       calls,
     ),

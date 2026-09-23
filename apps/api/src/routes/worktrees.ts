@@ -23,13 +23,14 @@ import {
   WorktreesRepo,
 } from "@mend/db";
 import { currentAgentProcess } from "@mend/domain/workbench";
-import { SessionEngine, WorktreeReads } from "@mend/sessions";
+import { SessionEngine } from "@mend/sessions";
 import { Store } from "@mend/store";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
-import { LIVE_STATES } from "./workbench.ts";
+import { unlandedWork } from "../landing-state.ts";
+import { LIVE_STATES, readFailure } from "./workbench.ts";
 
 /**
  * The worktree container's own verbs (plan §5.5/§5.6): provision the durable
@@ -190,25 +191,19 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         const project = yield* projects
           .byId(worktree.projectId)
           .pipe(Effect.mapError(() => new WorktreeNotFound({ id: worktree.projectId })));
-        // An unreviewed diff refuses (evidence, not verdicts: the facts are
-        // stated; `force=true` is the human's explicit override).
+        // A change not on origin refuses (docs/adr/0007-landing.md, "Worktree removal"): the
+        // refusal names the files and line counts that are not landed, and `force=true` is the
+        // human's explicit override. A change whose last landing holds it, and whose commit
+        // origin's branch still has, goes without one.
         if (query.force !== "true") {
-          const reads = yield* WorktreeReads;
-          const diff = (yield* reads.diffWorktree(project.id, worktree.id, worktree.baseSha).pipe(
-            Effect.mapError(
-              (error) =>
-                new StoreFailure({
-                  message:
-                    error._tag === "GitError" ? error.stderr : String(error.message ?? error._tag),
-                }),
-            ),
-          )).value;
-          if (diff.trim() !== "") {
-            return yield* new StoreFailure({
-              message:
-                "This worktree still contains a reviewable change. Review, export, commit, or discard it before removal — or pass force=true.",
-            });
-          }
+          const change = yield* (yield* WorktreeChangesRepo).byWorktree(worktree.id);
+          const refusal = yield* unlandedWork({
+            change,
+            project,
+            worktree,
+            userId: caller.user.id,
+          }).pipe(Effect.mapError(readFailure));
+          if (refusal !== null) return yield* new StoreFailure({ message: refusal });
         }
         const { leftover } = yield* store.removeWorktreeForce(
           project.storePath,

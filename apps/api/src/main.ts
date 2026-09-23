@@ -20,6 +20,7 @@ import {
   SealantIdentityStoreLive,
   SettingsRepo,
   ChangesRepoLive,
+  type ChangeLandingsRepo,
   ChangeLandingsRepoLive,
   ChangeToursRepoLive,
   CheckpointsRepoLive,
@@ -60,6 +61,7 @@ import {
   WorktreeChangesRepoLive,
   WorktreesRepoLive,
   SessionGitOpsRepoLive,
+  type SessionProcessesRepo,
   SessionProcessesRepoLive,
   SessionRunsRepoLive,
   SessionChannelTokensRepoLive,
@@ -111,8 +113,17 @@ import {
   SummaryObserverLive,
   SummaryObserveWorkerLive,
 } from "@mend/jobs";
+import {
+  type LandingGit,
+  LandingGitCapturedLive,
+  LandingGitColocatedLive,
+  LandingLive,
+  type PullRequests,
+  PullRequestsLive,
+  PullRequestWorkspacesLive,
+} from "@mend/landing";
 import { NetworkConfig, NetworkConfigLive, trustedProxyCidrs } from "@mend/network";
-import { asSealantUser, SealantLiveFromEnv } from "@mend/sealant";
+import { asSealantUser, type SealantClients, SealantLiveFromEnv } from "@mend/sealant";
 import {
   CaptureChannelLive,
   CaptureGitVerifierLive,
@@ -315,6 +326,13 @@ const CaptureStoreLayer: Layer.Layer<
   StoreRefsRepoLive,
 );
 const FollowUpLauncherLayer = FollowUpLauncherLive.pipe(Layer.provide(SessionEngineLayer));
+// Landing's pull request step (docs/adr/0007-landing.md, "Where each step runs"): `gh` in the
+// session's live workspace, or in a short-lived one with the owner's GitHub credential only.
+const PullRequestsLayer: Layer.Layer<
+  PullRequests,
+  never,
+  SealantClients | SessionProcessesRepo | StoreConfig
+> = PullRequestsLive.pipe(Layer.provide(PullRequestWorkspacesLive));
 const FollowUpDeliveryLayer = FollowUpDeliveryLive.pipe(Layer.provide(FollowUpLauncherLayer));
 
 // ─── better-auth mounted under /api/auth ────────────────────────────────────
@@ -647,6 +665,19 @@ const MainLive = Layer.unwrap(
     const worktreeReads = captured
       ? WorktreeReadsCapturedLive.pipe(Layer.provide(captureStore))
       : WorktreeReadsColocatedLive.pipe(Layer.provide(StoreLive), Layer.provide(DatabaseLive));
+    // Landing's git half by store kind: the runner cache for a capture-backed worktree, the
+    // project's bare store beside Mend for a co-located one. The routes read it too (the probe).
+    const landingGit: Layer.Layer<
+      LandingGit,
+      Layer.Error<typeof captureStore>,
+      SessionEngine | Store | ChangeLandingsRepo | WorktreeChangesRepo
+    > = captured
+      ? LandingGitCapturedLive.pipe(Layer.provide(captureStore))
+      : LandingGitColocatedLive;
+    const landing = LandingLive.pipe(
+      Layer.provide(PullRequestsLayer),
+      Layer.provideMerge(landingGit),
+    );
     const parts =
       mode === "api"
         ? ServerLive
@@ -656,7 +687,8 @@ const MainLive = Layer.unwrap(
     // The network session channel is a sibling service: it serves workspaces, nothing depends
     // on it, so it must be launched explicitly rather than provided.
     return Layer.merge(parts, SessionChannelNetworkLayer).pipe(
-      Layer.provide(SessionSteeringLive),
+      // Session steering, and landing (docs/adr/0007-landing.md) for the landing routes.
+      Layer.provide(Layer.merge(SessionSteeringLive, landing)),
       // Who may see what (docs/adr/0003), and whose GitHub identity calls to GitHub may use.
       Layer.provide(Layer.merge(ProjectAccessLive, GithubIdentityLive)),
       // MEND_TENANCY: refuses to build (so nothing serves) when the mode may not run here.
