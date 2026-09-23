@@ -69,6 +69,7 @@ import {
 } from "./dashboard-preview.ts";
 import { reviewTargetForSession } from "./review-workflow.ts";
 import { ReviewScreen } from "./review.tsx";
+import type { OpenTunnel, ServiceTunnels } from "./service-tunnels.ts";
 import {
   cwdFacts,
   HARNESS_COMMANDS,
@@ -175,6 +176,11 @@ export interface DashboardContext {
   ) => Promise<"detached" | "ended" | "dropped" | "interrupted" | "unavailable">;
   /** The ssh-agent share running alongside; null when off or no agent. */
   readonly agentShare: AgentShareHandle | null;
+  /**
+   * The selected session's browser Services on this machine's loopback (a remote server);
+   * null on a local server or with --no-tunnel.
+   */
+  readonly tunnels: ServiceTunnels | null;
   /** `mend snake`: open with the game over the dashboard. */
   readonly openSnake?: boolean;
 }
@@ -454,10 +460,13 @@ const SessionFacts = ({
   group,
   item,
   rows,
+  tunnels,
 }: {
   readonly group: WorktreeGroup | null;
   readonly item: SessionItem;
   readonly rows: number;
+  /** Tunnels open on this machine; a tunneled Service shows where it opens here. */
+  readonly tunnels: ReadonlyArray<OpenTunnel>;
 }) => {
   const { session, annotation, services } = item;
   const color = STATUS_COLOR[session.status] ?? MUTED;
@@ -486,14 +495,19 @@ const SessionFacts = ({
       {services.length === 0 ? (
         <span fg={FAINT}>no services running</span>
       ) : (
-        services.slice(0, 2).map((service, index) => (
-          <span key={service.id}>
-            {index > 0 ? <span fg={FAINT}>{" · "}</span> : null}
-            <span fg={service.status === "reachable" ? INK_2 : MUTED}>
-              {`${service.label ?? service.id.slice(0, 6)} :${service.workspacePort ?? "?"}${service.protocol === "udp" ? "u" : ""}→${service.hostPort ?? "?"} ${service.status}`}
+        services.slice(0, 2).map((service, index) => {
+          const tunnel = tunnels.find((candidate) => candidate.service.id === service.id);
+          return (
+            <span key={service.id}>
+              {index > 0 ? <span fg={FAINT}>{" · "}</span> : null}
+              <span fg={service.status === "reachable" ? INK_2 : MUTED}>
+                {tunnel === undefined
+                  ? `${service.label ?? service.id.slice(0, 6)} :${service.workspacePort ?? "?"}${service.protocol === "udp" ? "u" : ""}→${service.hostPort ?? "?"} ${service.status}`
+                  : tunnel.line}
+              </span>
             </span>
-          </span>
-        ))
+          );
+        })
       )}
       {services.length > 2 ? <span fg={FAINT}>{` · +${services.length - 2} more`}</span> : null}
     </text>,
@@ -605,6 +619,8 @@ const SESSION_FACT_ROWS = 6;
 
 /** The header's share fact when no share runs. */
 const noShare = (): "off" => "off";
+const NO_TUNNELS: ReadonlyArray<OpenTunnel> = [];
+const noTunnels = (): ReadonlyArray<OpenTunnel> => NO_TUNNELS;
 
 const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit: () => void }) => {
   const renderer = useRenderer();
@@ -638,6 +654,10 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const shareState = useSyncExternalStore(
     (onChange) => ctx.agentShare?.subscribe(() => onChange()) ?? (() => {}),
     ctx.agentShare === null ? noShare : ctx.agentShare.snapshot,
+  );
+  const openTunnels = useSyncExternalStore(
+    (onChange) => ctx.tunnels?.subscribe(onChange) ?? (() => {}),
+    ctx.tunnels === null ? noTunnels : ctx.tunnels.current,
   );
   const [editing, setEditing] = useState<SessionDto | null>(null);
   /** Session id a stop is armed against; the second press fires it. */
@@ -718,6 +738,14 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const previewSessionId =
     selectedSession !== null && !isPendingId(selectedSession.id) ? selectedSession.id : null;
   const previewLive = selectedSession !== null && LIVE_STATUSES.has(selectedSession.status);
+  // The selected session's browser Services follow the selection onto this machine's loopback,
+  // after a short dwell so walking the list does not bind and release ports per keystroke.
+  useEffect(() => {
+    const tunnels = ctx.tunnels;
+    if (tunnels === null) return;
+    const timer = setTimeout(() => void tunnels.focus(previewSessionId), 600);
+    return () => clearTimeout(timer);
+  }, [ctx.tunnels, previewSessionId]);
   const transcript = useQuery({
     queryKey: TRANSCRIPT_KEY(previewSessionId ?? "none"),
     queryFn: () => fetchTranscript(ctx.api, previewSessionId ?? ""),
@@ -847,7 +875,13 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     const short = session.id.slice(0, 8);
     lockRef.current = true;
     renderer.suspend();
-    process.stdout.write(`\nattached · ${session.harness} · ${short} · detach: Ctrl+]\n\n`);
+    const tunneled = openTunnels
+      .filter((tunnel) => tunnel.service.sessionId === session.id)
+      .map((tunnel) => `● ${tunnel.line} · tunnel\n`)
+      .join("");
+    process.stdout.write(
+      `\nattached · ${session.harness} · ${short} · detach: Ctrl+]\n${tunneled}\n`,
+    );
     let outcome: "detached" | "ended" | "dropped" | "interrupted" | "unavailable";
     try {
       outcome = await ctx.attachTty(session.id, session.harness);
@@ -2051,7 +2085,12 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         <EmptyNote text="no session selected — n starts one" />
       ) : (
         <>
-          <SessionFacts group={selectedGroup} item={selectedItem} rows={factRows} />
+          <SessionFacts
+            group={selectedGroup}
+            item={selectedItem}
+            rows={factRows}
+            tunnels={openTunnels}
+          />
           {showFactRule ? (
             <text height={1} bg="transparent" fg={FAINT}>
               {`  ${"─".repeat(Math.max(4, detailWidth - 4))}`}

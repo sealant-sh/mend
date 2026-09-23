@@ -61,6 +61,14 @@ const project = (what = "the project"): OptionDoc => ({
 const sessionArg =
   "With no id, the one live session is taken; with several, a picker opens. A prefix of the id is enough.";
 
+const tunnelText =
+  "On a server that is not this machine, the session's live Services declared --http or --https are tunneled to this machine's loopback while this terminal is attached, on the Service's own port when it is free and on a free one when it is not. One line per tunnel says where it opens, for example web → http://localhost:5173. A Service that stops closes its tunnel, and detaching closes them all. The Services keep running.";
+
+const noTunnel: OptionDoc = {
+  flag: "--no-tunnel",
+  text: "do not tunnel the session's Services to this machine",
+};
+
 export const COMMANDS: ReadonlyArray<CommandDoc> = [
   // ── start ──────────────────────────────────────────────────────────────
   {
@@ -135,12 +143,13 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "start",
     summary: "launch codex, claude, or opencode in a recorded worktree",
     synopsis: [
-      '["prompt"] [--name <worktree>] [--worktree <existing>] [--model <id>] [--effort <level>] [--base <ref>] [--ask] [--fast] [--detach|-d] [--foreground] [--project <p>]',
+      '["prompt"] [--name <worktree>] [--worktree <existing>] [--model <id>] [--effort <level>] [--base <ref>] [--ask] [--fast] [--detach|-d] [--foreground] [--no-tunnel] [--project <p>]',
     ],
     description: [
       "mend codex, mend claude, and mend opencode are the same command with a different harness. The session runs in a workspace on the platform, in its own git worktree, and everything it does is recorded. This terminal attaches to it.",
       "The worktree's name is asked first. --name skips the ask; an existing name joins that worktree as a new session. --worktree joins only and fails if the name is unknown. A quoted prompt becomes the first message.",
       "Detach with Ctrl+] and the session keeps running. Reattach from any terminal with mend attach, or from the phone.",
+      tunnelText,
       "Ctrl+V with an image on this machine's clipboard sends the image to the session and pastes its path; codex and claude read it. Needs wl-paste on Wayland, xclip on X11, nothing extra on macOS.",
     ],
     options: [
@@ -153,6 +162,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { flag: "--fast", text: "priority processing where the harness offers it (codex)" },
       { flag: "--detach, -d", text: "launch without attaching" },
       { flag: "--foreground", text: "stop the session when this CLI exits" },
+      noTunnel,
       project(),
     ],
     examples: [
@@ -197,13 +207,15 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "ui",
     section: "sessions",
     summary: "the dashboard: every project and session, live",
-    synopsis: [],
+    synopsis: ["[--no-tunnel]"],
     description: [
       "A full-screen view of every project and session, updating live. The session pane takes three quarters of the screen: a read-only detail for the selected session with the conversation record it has written so far. The remaining quarter is a sidebar of three stacked sections, projects then worktrees then sessions, where the section you are in stands open and the other two fold to the line that says what is selected. Bare mend with no command opens the same thing.",
       "Moving the selection only ever navigates: arrows or j/k move inside the open section, enter and the arrows move between the sidebar and the session pane, and nothing takes this terminal until you ask. Reading the record leaves the sidebar as it was. The verbs are a to attach a live session, r to resume a settled one, n for another session in the selected worktree, w for a new worktree, e to rename, v to review the change, o to open it in the browser, Shift+K to stop, Shift+D to remove, and Shift+R to refresh.",
       "Nothing is ever squeezed. A terminal too narrow for both gives the whole width to the side you are on, a terminal too short for three drawn panes shows the open section alone, and a one-line breadcrumb states whatever did not fit.",
+      "On a server that is not this machine, the selected session's live Services declared --http or --https are tunneled to this machine's loopback while it stays selected, and the session pane shows where each one opens, for example web → http://localhost:5173.",
       "The dashboard needs Node 26 or newer for its terminal. Every other command works on Node 22.",
     ],
+    options: [noTunnel],
     see: ["sessions", "attach"],
   },
   {
@@ -221,13 +233,15 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "attach",
     section: "sessions",
     summary: "reattach this terminal to a running session",
-    synopsis: ["[session-id-prefix]"],
+    synopsis: ["[session-id-prefix] [--no-tunnel]"],
     description: [
       sessionArg,
       "A session that was picked up on the phone is taken back into this terminal: the phone's agent ends and the same conversation continues here.",
+      tunnelText,
       "Ctrl+V with an image on this machine's clipboard sends the image to the session and pastes its path; codex and claude read it. Needs wl-paste on Wayland, xclip on X11, nothing extra on macOS.",
     ],
-    see: ["stop", "rejoin", "shell"],
+    options: [noTunnel],
+    see: ["stop", "rejoin", "shell", "service connect"],
   },
   {
     name: "stop",
@@ -291,11 +305,15 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "rejoin",
     section: "sessions",
     summary: "attach if live, otherwise resume",
-    synopsis: ["[session-id] [--harness <h>]"],
+    synopsis: ["[session-id] [--harness <h>] [--no-tunnel]"],
     description: [
       "With no id, the newest live session wins; failing that, the newest settled one.",
+      "Tunnels the session's browser Services to this machine while attached, as mend attach does.",
     ],
-    options: [{ flag: "--harness <h>", text: "the harness to resume with, when resuming" }],
+    options: [
+      { flag: "--harness <h>", text: "the harness to resume with, when resuming" },
+      noTunnel,
+    ],
     see: ["attach", "resume"],
   },
   {
@@ -392,6 +410,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     synopsis: ["[name...] [--port <p>]"],
     description: [
       "Each connection tunnels through the server, authenticated as you. With no names, every live Service. Ctrl-C closes them.",
+      "mend attach, mend codex, and the dashboard already do this for the attached session's Services declared --http or --https. This command is for the rest: a Service with no browser scheme, one in another session, or a terminal that is not attached.",
     ],
     options: [{ flag: "--port <p>", text: "the local port, when connecting one Service" }],
     see: ["service list"],

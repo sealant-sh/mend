@@ -87,6 +87,7 @@ describe("parseLaunchArgs", () => {
       fast: false,
       detach: false,
       foreground: false,
+      noTunnel: false,
       custom: [],
       error: null,
     });
@@ -118,6 +119,7 @@ describe("parseLaunchArgs", () => {
       fast: true,
       detach: false,
       foreground: false,
+      noTunnel: false,
       custom: [],
       error: null,
     });
@@ -128,6 +130,15 @@ describe("parseLaunchArgs", () => {
     expect(parseLaunchArgs(["-d"]).detach).toBe(true);
     expect(parseLaunchArgs(["--foreground"]).foreground).toBe(true);
     expect(parseLaunchArgs(["-d", "--foreground"]).error).toContain("contradict");
+  });
+
+  it("takes --no-tunnel as the opt-out from attach tunnels", () => {
+    expect(parseLaunchArgs([]).noTunnel).toBe(false);
+    expect(parseLaunchArgs(["--no-tunnel", "fix it"])).toMatchObject({
+      noTunnel: true,
+      prompt: "fix it",
+      error: null,
+    });
   });
 
   it("rejects a second positional so a forgotten quote fails loudly", () => {

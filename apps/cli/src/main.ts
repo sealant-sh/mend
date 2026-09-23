@@ -55,6 +55,13 @@ import {
   workspaceGlobs,
 } from "./service-init.ts";
 import {
+  createServiceTunnels,
+  listenLocal,
+  pumpConnection,
+  serverEvents,
+  type ServiceTunnels,
+} from "./service-tunnels.ts";
+import {
   agentIsLive,
   agentOutcome,
   type AgentProcessLike,
@@ -695,9 +702,12 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
     return;
   }
   say(`${green("✓ recording")} · workspace mounts the worktree${detachHint()}`);
+  // A new session has no Services yet; the agent's appear as it starts them.
+  const tunnels = attachTunnels(config, parsed.noTunnel);
+  await tunnels?.start(session.id);
   say("");
   attachOwnsSignals = true;
-  await attachOrExit(config, session.id, session.harness, lifecycle);
+  await attachOrExit(config, session.id, session.harness, lifecycle, tunnels);
   exitAfterSessionEnd(config, session.id);
 };
 
@@ -987,13 +997,22 @@ const attachOrExit = async (
   sessionId: string,
   harness: string,
   mode: LifecycleMode = "background",
+  tunnels: AttachTunnels | null = null,
 ) =>
   finishAttach(
     config,
     sessionId,
-    await attachTty(config, sessionId, harness, 0n, undefined, { handleSignals: true }),
+    await attachWithTunnels(tunnels, () =>
+      attachTty(config, sessionId, harness, 0n, undefined, { handleSignals: true }),
+    ),
     mode,
   );
+
+/** The attach itself, with the session's tunnels (when any) stated on the bottom row meanwhile. */
+const attachWithTunnels = (
+  tunnels: AttachTunnels | null,
+  work: () => Promise<AttachOutcome>,
+): Promise<AttachOutcome> => (tunnels === null ? work() : tunnels.attached(work));
 
 /** Return terminal control as soon as the terminal reports the observed end. */
 const exitAfterSessionEnd = (config: CliConfig, sessionId: string): never => {
@@ -1006,27 +1025,35 @@ const exitAfterSessionEnd = (config: CliConfig, sessionId: string): never => {
 /** Reattach a terminal to a running session (full scrollback replay, then live). */
 const attach = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const prefix = args.find((a) => !a.startsWith("--"));
+  const tunnels = attachTunnels(config, args.includes("--no-tunnel"));
   // No id: the picker IS the selection surface (the resolution `mend shell`
   // already uses), so attaching never demands an id the user must go look up.
   if (prefix === undefined) {
     const picked = await resolveLiveSession(config, undefined, "attach");
-    return attachPicked(config, picked);
+    return attachPicked(config, picked, tunnels);
   }
   const sessions = await api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions");
   const match = sessions.find((s) => s.id.startsWith(prefix));
   if (match === undefined) return fail(`no active session matches "${prefix}"`);
-  return attachPicked(config, match);
+  return attachPicked(config, match, tunnels);
 };
 
 /** Attach to one resolved session — the tail both `mend attach` paths share. */
-const attachPicked = async (config: CliConfig, session: SessionDto): Promise<never> => {
+const attachPicked = async (
+  config: CliConfig,
+  session: SessionDto,
+  tunnels: AttachTunnels | null,
+): Promise<never> => {
   say(
     `${green("✓")} attaching to ${sessionDisplayName(session)} · ${session.harness} ${dim(session.id.slice(0, 8))}${detachHint()}`,
   );
+  await tunnels?.start(session.id);
   say("");
-  const outcome = await attachTty(config, session.id, session.harness, 0n, undefined, {
-    handleSignals: true,
-  });
+  const outcome = await attachWithTunnels(tunnels, () =>
+    attachTty(config, session.id, session.harness, 0n, undefined, {
+      handleSignals: true,
+    }),
+  );
   // A live protocol agent (a phone pickup) has no PTY behind it — the attach
   // reports "unavailable" with nothing wrong. Take the session over: end the
   // protocol agent, resume the same conversation as a TUI, then attach to it.
@@ -1042,7 +1069,7 @@ const attachPicked = async (config: CliConfig, session: SessionDto): Promise<nev
         api<SessionDto>(config, "POST", `/sessions/${session.id}/handoff`, { to: "pty" }),
       );
       say("");
-      await attachOrExit(config, session.id, session.harness);
+      await attachOrExit(config, session.id, session.harness, "background", tunnels);
       return exitAfterSessionEnd(config, session.id);
     }
   }
@@ -1246,6 +1273,7 @@ interface ServiceViewDto {
     readonly name: string;
     readonly workspacePort: number;
     readonly transport: "tcp" | "udp";
+    readonly browserScheme: "http" | "https" | null;
     readonly currentAttemptId: string | null;
   };
   readonly attempts: ReadonlyArray<{
@@ -1301,6 +1329,7 @@ interface ServiceDto {
   readonly exposureScope: "loopback" | "private" | null;
   readonly mendAuthentication: "none" | null;
   readonly protocol: "tcp" | "udp";
+  readonly browserScheme: "http" | "https" | null;
   readonly sealantSessionId: string | null;
   readonly attemptExitedAt: string | null;
   readonly argv: ReadonlyArray<string>;
@@ -1336,6 +1365,7 @@ const flattenService = (view: ServiceViewDto): ServiceDto => {
     exposureScope: endpoint?.scope ?? null,
     mendAuthentication: endpoint?.mendAuthentication ?? null,
     protocol: view.service.transport,
+    browserScheme: view.service.browserScheme,
     sealantSessionId: attempt?.sealantSessionId ?? null,
     attemptExitedAt: attempt?.exitedAt ?? null,
     argv: attempt?.argv ?? [],
@@ -1802,53 +1832,19 @@ const tunnelServices = async (
   services: ReadonlyArray<ServiceDto>,
   portOverride: number | null,
 ): Promise<void> => {
-  // One ticket per local connection: a ticket opens one tunnel once.
-  const tunnelUrl = (serviceId: string): Promise<URL> =>
-    socketUrl(config, "service-tunnel", { service: serviceId });
-
   for (const service of services) {
     const port = portOverride ?? service.hostPort ?? service.workspacePort;
-    const server = net.createServer((socket) => {
-      // Hold local bytes until the tunnel is open; loopback buffers are tiny.
-      socket.pause();
-      void tunnelUrl(service.id).then(
-        (url) => {
-          if (socket.destroyed) return null;
-          const ws = new WebSocket(url);
-          ws.binaryType = "arraybuffer";
-          ws.addEventListener("open", () => socket.resume(), { once: true });
-          ws.addEventListener("message", (event) => {
-            if (typeof event.data === "string") return; // no text frames come down
-            socket.write(Buffer.from(event.data as ArrayBuffer));
-          });
-          ws.addEventListener("close", () => socket.end(), { once: true });
-          ws.addEventListener("error", () => socket.destroy(), { once: true });
-          // Copy per chunk: the WS client wants an ArrayBuffer-backed view, and
-          // Buffer pools share their backing store.
-          socket.on("data", (chunk: Buffer) => ws.send(new Uint8Array(chunk)));
-          socket.on("end", () => {
-            if (ws.readyState === WebSocket.OPEN) ws.send(JSON.stringify({ t: "eof" }));
-          });
-          socket.on("close", () => ws.close());
-          socket.on("error", () => ws.close());
-          return null;
-        },
-        // No ticket, no tunnel: the local connection ends the way a refused one would.
-        () => socket.destroy(),
-      );
-    });
-    await new Promise<void>((resolve, reject) => {
-      server.once("error", (error: NodeJS.ErrnoException) => {
-        reject(
-          new Error(
-            error.code === "EADDRINUSE"
-              ? `127.0.0.1:${port} is already in use here — pick one with: mend service connect ${service.label} --port <n>`
-              : error.message,
-          ),
-        );
-      });
-      server.listen(port, "127.0.0.1", () => resolve());
-    }).catch((error: Error) => fail(error.message));
+    // One ticket per local connection: a ticket opens one tunnel once.
+    const server = net.createServer((socket) =>
+      pumpConnection(socket, tunnelUrlFor(config, service.id)),
+    );
+    await listenLocal(server, port, false).catch((error: NodeJS.ErrnoException) =>
+      fail(
+        error.code === "EADDRINUSE"
+          ? `127.0.0.1:${port} is already in use here — pick one with: mend service connect ${service.label} --port <n>`
+          : error.message,
+      ),
+    );
     say(
       `${green("●")} ${service.label ?? service.id.slice(0, 8)} → 127.0.0.1:${port} ${dim(`(tunnel to ${config.url})`)}`,
     );
@@ -1857,6 +1853,64 @@ const tunnelServices = async (
   // The listeners keep the process alive until the user stops it.
   await new Promise(() => {});
 };
+
+/** A fresh single-use URL for one connection through the Service tunnel. */
+const tunnelUrlFor = (config: CliConfig, serviceId: string): Promise<URL> =>
+  socketUrl(config, "service-tunnel", { service: serviceId });
+
+/**
+ * Attach tunnels: the session's live browser Services on this machine's loopback for as long as
+ * this terminal is attached (service-tunnels.ts). Null on a local server — the bound authority
+ * already answers here — or when the caller opted out with --no-tunnel.
+ */
+const attachTunnels = (config: CliConfig, optOut: boolean): AttachTunnels | null => {
+  if (optOut || serverIsLocal(config)) return null;
+  let attached = false;
+  const tell = (line: string): void => {
+    if (!attached) {
+      say(line);
+      return;
+    }
+    // The agent's TUI owns the screen: state it on the bottom row and put the cursor back,
+    // so the TUI's own drawing stays where it left it. Its next repaint of that row wins.
+    const rows = process.stdout.rows ?? 24;
+    process.stdout.write(`\x1b7\x1b[${rows};1H\x1b[2K${line}\x1b8`);
+  };
+  const tunnels = createServiceTunnels({
+    listServices: () => fetchServices(config),
+    tunnelUrl: (serviceId) => tunnelUrlFor(config, serviceId),
+    events: serverEvents(config),
+    onOpen: (tunnel) => tell(`${green("●")} ${tunnel.line} ${dim("· tunnel, closes on detach")}`),
+    onClose: (tunnel, reason) => {
+      if (reason === "stopped") tell(dim(`○ ${tunnel.service.label} stopped · tunnel closed`));
+    },
+    onError: (service, message) => tell(amber(`${service.label} not tunneled · ${message}`)),
+  });
+  return {
+    start: async (sessionId) => {
+      // A slow server must not hold the terminal: whatever is not open yet opens mid-attach.
+      await Promise.race([
+        tunnels.focus(sessionId),
+        new Promise((resolve) => setTimeout(resolve, 3000)),
+      ]);
+    },
+    attached: <A>(work: () => Promise<A>): Promise<A> => {
+      attached = process.stdout.isTTY === true;
+      return work().finally(() => {
+        attached = false;
+      });
+    },
+    close: () => tunnels.close(),
+  };
+};
+
+interface AttachTunnels {
+  /** Open the session's tunnels now, printing one line each. */
+  readonly start: (sessionId: string) => Promise<void>;
+  /** Run an attach; tunnels opening or closing meanwhile are stated on the bottom row. */
+  readonly attached: <A>(work: () => Promise<A>) => Promise<A>;
+  readonly close: () => void;
+}
 
 /**
  * `mend service connect [name…] [--port <n>]`: the standalone entry to the
@@ -3266,6 +3320,7 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
       ? String(args[harnessFlag + 1])
       : null;
   const prefix = args.find((arg, index) => !arg.startsWith("--") && index !== harnessFlag + 1);
+  const tunnels = attachTunnels(config, args.includes("--no-tunnel"));
 
   const project = await findProject(config, null);
   const detail = await api<ProjectDetailDto>(config, "GET", `/projects/${project.id}`);
@@ -3327,10 +3382,13 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
       ? `${green("✓ recording")} · same worktree, conversation restored${detachHint()}`
       : `${green("✓ recording")} · attached to the live session${detachHint()}`,
   );
+  await tunnels?.start(session.id);
   say("");
-  let outcome = await attachTty(config, session.id, session.harness, 0n, undefined, {
-    handleSignals: true,
-  });
+  let outcome = await attachWithTunnels(tunnels, () =>
+    attachTty(config, session.id, session.harness, 0n, undefined, {
+      handleSignals: true,
+    }),
+  );
   if (outcome === "unavailable") {
     const refreshed = await api<SessionDetailLiteDto>(config, "GET", `/sessions/${session.id}`);
     if (!agentIsLive(refreshed.session, refreshed.currentAgent)) {
@@ -3340,9 +3398,11 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
         "session settled while attaching — restoring it once…",
       );
     }
-    outcome = await attachTty(config, session.id, session.harness, 0n, undefined, {
-      handleSignals: true,
-    });
+    outcome = await attachWithTunnels(tunnels, () =>
+      attachTty(config, session.id, session.harness, 0n, undefined, {
+        handleSignals: true,
+      }),
+    );
   }
   await finishAttach(config, session.id, outcome);
   exitAfterSessionEnd(config, session.id);
@@ -3733,7 +3793,10 @@ const hasNodeFfi = (): boolean => {
  * --experimental-ffi. Gate here and re-exec the same argv with the flag so
  * the user never types it; every other command stays on plain Node >= 22.
  */
-const dashboard = async (config: CliConfig, options: { readonly openSnake?: boolean } = {}) => {
+const dashboard = async (
+  config: CliConfig,
+  options: { readonly openSnake?: boolean; readonly noTunnel?: boolean } = {},
+) => {
   if (process.stdout.isTTY !== true) {
     say(renderIndex());
     return;
@@ -3754,6 +3817,16 @@ const dashboard = async (config: CliConfig, options: { readonly openSnake?: bool
   }
   const { runDashboard } = await import("./dashboard.tsx");
   const agentShare = await startShareIfBridge(config);
+  // The selected session's browser Services, tunneled here while it stays selected. The
+  // dashboard renders them in the session pane, so nothing prints.
+  const tunnels: ServiceTunnels | null =
+    options.noTunnel === true || serverIsLocal(config)
+      ? null
+      : createServiceTunnels({
+          listServices: () => fetchServices(config),
+          tunnelUrl: (serviceId) => tunnelUrlFor(config, serviceId),
+          events: serverEvents(config),
+        });
   try {
     await runDashboard({
       config,
@@ -3765,8 +3838,10 @@ const dashboard = async (config: CliConfig, options: { readonly openSnake?: bool
       attachTty: (sessionId: string, harness: string, processId?: string) =>
         attachTty(config, sessionId, harness, 0n, processId),
       agentShare,
+      tunnels,
     });
   } finally {
+    tunnels?.close();
     agentShare?.stop();
   }
 };
@@ -3948,9 +4023,9 @@ const main = async () => {
       return worktreesCommand(config, rest);
     case undefined:
     case "ui":
-      return dashboard(config);
+      return dashboard(config, { noTunnel: rest.includes("--no-tunnel") });
     case "snake":
-      return dashboard(config, { openSnake: true });
+      return dashboard(config, { openSnake: true, noTunnel: rest.includes("--no-tunnel") });
     case "help":
     case "--help":
     case "-h":
