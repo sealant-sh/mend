@@ -398,6 +398,8 @@ const testLayer = (world: TestWorld) => {
     bindRunningProviderTurn: () => Effect.succeed(null),
     failTurn: () => Effect.die("not in test"),
     setTurnIntent: () => Effect.die("not in test"),
+    claimTurnLanding: () => Effect.die("not in test"),
+    decideTurnLanding: () => Effect.die("not in test"),
     completeTurn: () => Effect.succeed(null),
     upsertItem: () => Effect.die("not in test"),
     listItems: () => Effect.succeed([]),

@@ -3,6 +3,7 @@ import {
   AgentItemId,
   AgentRequestId,
   AgentTurnId,
+  type ChangeLandingId,
   type SessionId,
   type SessionProcessId,
 } from "@mend/domain";
@@ -18,8 +19,9 @@ import {
   type AgentTurnStatus,
   type AgentTurnUsage,
   type RequestIntentReading,
+  type TurnLanding,
 } from "@mend/domain/workbench";
-import { and, asc, eq, gt, inArray, isNull, max, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, max, notInArray, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -136,6 +138,17 @@ export class AgentConversationRepo extends Context.Service<
     readonly setTurnIntent: (
       id: AgentTurnId,
       reading: RequestIntentReading,
+    ) => Effect.Effect<AgentTurn, AgentTurnNotFoundError>;
+    /**
+     * Claim an ended turn for the automatic-landing decision (docs/adr/0007-landing.md), once:
+     * the turn when this call claimed it, null when it is still open, already claimed, or gone.
+     */
+    readonly claimTurnLanding: (id: AgentTurnId) => Effect.Effect<AgentTurn | null>;
+    /** Record what Mend decided about a claimed turn, and the landing it started, if any. */
+    readonly decideTurnLanding: (
+      id: AgentTurnId,
+      landing: TurnLanding,
+      landingId: ChangeLandingId | null,
     ) => Effect.Effect<AgentTurn, AgentTurnNotFoundError>;
     readonly completeTurn: (
       providerTurnId: string,
@@ -478,6 +491,40 @@ export const AgentConversationRepoLive: Layer.Layer<
       const [row] = yield* db
         .update(agentTurns)
         .set({ intent: reading.intent, intentSource: reading.source })
+        .where(eq(agentTurns.id, id))
+        .returning()
+        .pipe(Effect.orDie);
+      if (row === undefined) return yield* new AgentTurnNotFoundError({ turnId: id });
+      yield* notify(row.sessionId);
+      return toTurn(row);
+    });
+
+    const claimTurnLanding = Effect.fn("AgentConversationRepo.claimTurnLanding")(function* (
+      id: AgentTurnId,
+    ) {
+      const [row] = yield* db
+        .update(agentTurns)
+        .set({ landingClaimedAt: new Date() })
+        .where(
+          and(
+            eq(agentTurns.id, id),
+            isNull(agentTurns.landingClaimedAt),
+            notInArray(agentTurns.status, [...OPEN_AGENT_TURN_STATUSES]),
+          ),
+        )
+        .returning()
+        .pipe(Effect.orDie);
+      return row === undefined ? null : toTurn(row);
+    });
+
+    const decideTurnLanding = Effect.fn("AgentConversationRepo.decideTurnLanding")(function* (
+      id: AgentTurnId,
+      landing: TurnLanding,
+      landingId: ChangeLandingId | null,
+    ) {
+      const [row] = yield* db
+        .update(agentTurns)
+        .set({ landing, landingId })
         .where(eq(agentTurns.id, id))
         .returning()
         .pipe(Effect.orDie);
@@ -1023,6 +1070,8 @@ export const AgentConversationRepoLive: Layer.Layer<
       bindRunningProviderTurn,
       failTurn,
       setTurnIntent,
+      claimTurnLanding,
+      decideTurnLanding,
       completeTurn,
       upsertItem,
       listItems,

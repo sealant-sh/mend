@@ -673,6 +673,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             autoSuggest: payload.autoSuggest,
             autoName: payload.autoName,
             backgroundSessions: payload.backgroundSessions,
+            ...(payload.autoLand === undefined ? {} : { autoLand: payload.autoLand }),
           })
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
       }),
@@ -2133,6 +2134,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           name: payload.name,
           base: payload.base,
           origin: "mend",
+          autoLand: payload.autoLand,
         });
       }),
     )

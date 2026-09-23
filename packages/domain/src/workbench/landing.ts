@@ -129,6 +129,30 @@ export type RequestIntentReading = typeof RequestIntentReading.Type;
 export const intentAllowsLanding = (turn: { readonly intent: RequestIntent | null }): boolean =>
   turn.intent !== "question";
 
+// ─── The prompt guard ───────────────────────────────────────────────────────
+
+/**
+ * What the opening turn Mend composes tells the agent when Mend publishes its work: every Slack
+ * request, and any session with automatic landing on ("Questions do not open pull requests").
+ * It rides after the request, so the request still reads first.
+ */
+export const LANDING_GUARD = [
+  "--- How this work is published ---",
+  "Mend publishes the changes this session makes: it pushes the branch and opens or updates the pull request.",
+  "- If the request is a question, answer it and change no files.",
+  "- Change code only when the request asks for a change.",
+  "- Never push and never open a pull request. Committing is fine.",
+  "--- End of how this work is published ---",
+].join("\n");
+
+/** The opening turn with the guard after it; an empty prompt stays empty. */
+export const withLandingGuard = (prompt: string): string =>
+  prompt.trim() === "" ? prompt : `${prompt.trimEnd()}\n\n${LANDING_GUARD}`;
+
+/** A turn's request without the guard Mend added to it: what the requester wrote. */
+export const requestOfTurn = (input: string): string =>
+  input.endsWith(LANDING_GUARD) ? input.slice(0, -LANDING_GUARD.length).trimEnd() : input;
+
 // ─── When a session lands by itself ─────────────────────────────────────────
 
 /** Everything that decides whether a session lands when a turn completes ("When it is on"). */
@@ -174,6 +198,39 @@ export const NotLandedReason = Schema.Literals([
 export type NotLandedReason = typeof NotLandedReason.Type;
 
 /**
+ * What Mend decided about a turn once it ended ("When a completed turn lands"), recorded on the
+ * turn so a second worker never decides it again:
+ *
+ * - `attempted`: an automatic landing ran; how it ended is on its `change_landings` row.
+ * - a `NotLandedReason`: the turn left changes that did not land, for that reason.
+ * - `skipped`: nothing to say. The turn did not complete, the agent is waiting on the owner,
+ *   another turn follows it, the change is empty or unchanged since its last landing, or
+ *   automatic landing is off for a session whose owner watches it.
+ */
+export const TurnLanding = Schema.Literals([
+  "attempted",
+  "question",
+  "option",
+  "off",
+  "not-owner",
+  "skipped",
+]);
+export type TurnLanding = typeof TurnLanding.Type;
+
+/** The reason a turn's decision names, when it is one; null for `attempted` and `skipped`. */
+export const notLandedReasonOf = (landing: TurnLanding | null): NotLandedReason | null => {
+  switch (landing) {
+    case "question":
+    case "option":
+    case "off":
+    case "not-owner":
+      return landing;
+    default:
+      return null;
+  }
+};
+
+/**
  * One observed fact about a change's landing, as the review page, the session page and a Slack
  * thread state it. Each is what Mend saw, with where it saw it; none says what to do next.
  */
@@ -215,6 +272,18 @@ export interface LandingObservations {
   readonly filesChangedSinceLanding: number | null;
   /** `session_git_ops.ref_updates` of the agent's own pushes: `<old-sha> <new-sha> <ref>`. */
   readonly agentRefUpdates: ReadonlyArray<string>;
+  /**
+   * The latest turn Mend decided about, in the change's worktree: what it decided, how the
+   * request's intent was read, and when the turn ended. Absent or null says nothing.
+   */
+  readonly latestTurn?: DecidedTurn | null;
+}
+
+/** A turn as the landing facts read it. */
+export interface DecidedTurn {
+  readonly landing: TurnLanding | null;
+  readonly intentSource: RequestIntentSource | null;
+  readonly endedAt: Date | null;
 }
 
 const ZERO_SHA = /^0+$/;
@@ -265,6 +334,18 @@ export const landingFacts = (observed: LandingObservations): ReadonlyArray<Landi
           ? { _tag: "failed", message }
           : { _tag: "pull-request-failed", message },
       );
+    }
+  }
+  const turn = observed.latestTurn ?? null;
+  if (turn !== null) {
+    const reason = notLandedReasonOf(turn.landing);
+    // A landing made since the turn ended (the owner's button) answers it.
+    const answered = observed.landings.some(
+      (landing) => turn.endedAt !== null && landing.createdAt >= turn.endedAt,
+    );
+    if (reason !== null && !answered) facts.push({ _tag: "not-landed", reason });
+    if (turn.landing === "attempted" && turn.intentSource === "unread") {
+      facts.push({ _tag: "intent-not-read" });
     }
   }
   for (const line of observed.agentRefUpdates) {

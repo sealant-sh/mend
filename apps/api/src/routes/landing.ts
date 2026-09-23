@@ -23,8 +23,7 @@ import {
   WorktreeChangesRepo,
   WorktreesRepo,
 } from "@mend/db";
-import type { OrganizationId } from "@mend/domain";
-import type { Change, ChangeLanding, Session } from "@mend/domain/workbench";
+import type { Change, Session } from "@mend/domain/workbench";
 import { Landing, type LandingNotStartedError, pullRequestAvailability } from "@mend/landing";
 import { NetworkConfig } from "@mend/network";
 import { Clock, Effect } from "effect";
@@ -33,7 +32,12 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
 import { budgetMessage, Budgets } from "../budgets.ts";
-import { changeOwnerOfWorktree, observeLandings, remoteEnvFor } from "../landing-state.ts";
+import {
+  auditLanding,
+  changeOwnerOfWorktree,
+  observeLandings,
+  remoteEnvFor,
+} from "../landing-state.ts";
 import { configuredOriginForRequest } from "./devices.ts";
 import { withSignerContext } from "./workbench.ts";
 
@@ -171,31 +175,6 @@ const sessionOfChange = (change: Change) =>
     const live = yield* (yield* WorktreesRepo).newestLiveSessionId(change.worktreeId);
     const members = yield* sessions.listForWorktree(change.worktreeId);
     return members.find((member) => member.id === live) ?? members[0] ?? null;
-  });
-
-/** Audit a landing, whatever its outcome: it acted with the owner's credentials. */
-const auditLanding = (
-  landing: ChangeLanding,
-  organizationId: OrganizationId,
-  actorUserId: string,
-) =>
-  Effect.gen(function* () {
-    yield* (yield* AuditEventsRepo).record({
-      organizationId,
-      actorUserId,
-      action: "change.landed",
-      subjectType: "change",
-      subjectId: landing.changeId,
-      data: {
-        sessionId: landing.sessionId,
-        landingId: landing.id,
-        outcome: landing.outcome,
-        trigger: landing.trigger,
-        remoteBranch: landing.remoteBranch,
-        pushedSha: landing.pushedSha,
-        pullRequest: landing.pullRequest?.number ?? null,
-      },
-    });
   });
 
 export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (handlers) =>

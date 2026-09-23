@@ -116,6 +116,7 @@ import type {
   SessionStatus,
   SlackProjectSource,
   SlackSessionState,
+  TurnLanding,
 } from "@mend/domain/workbench";
 import { sql } from "drizzle-orm";
 import {
@@ -1307,6 +1308,11 @@ export const agentTurns = pgTable(
     // What the request asked for (0064, docs/adr/0007-landing.md); CHECKed as a pair.
     intent: text().$type<RequestIntent>(),
     intentSource: text().$type<RequestIntentSource>(),
+    // Automatic landing's claim and decision (0065, docs/adr/0007-landing.md). `landingId` is a
+    // FK to change_landings ON DELETE SET NULL, declared in the migration.
+    landingClaimedAt: timestamp({ mode: "date", withTimezone: true }),
+    landing: text().$type<TurnLanding>(),
+    landingId: text().$type<ChangeLandingId>(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
     startedAt: timestamp({ mode: "date", withTimezone: true }),
     endedAt: timestamp({ mode: "date", withTimezone: true }),

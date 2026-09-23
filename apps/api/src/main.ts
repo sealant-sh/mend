@@ -88,6 +88,7 @@ import {
   liveToolsLayer,
   NameSessionJob,
   ReadChangeJob,
+  RequestIntentReaderLive,
   RouteCommentJob,
   sealantProviderLayer,
   SessionNamer,
@@ -177,6 +178,7 @@ import { Config, Effect, Layer, Option, Schema } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
 import { ProjectAccessLive } from "./access.ts";
+import { AutomaticLandingLive } from "./automatic-landing.ts";
 import { Budgets, BudgetsLive } from "./budgets.ts";
 import { ConnectionRegistryLive } from "./connections.ts";
 import { ErrorDetail, ErrorDetailLive } from "./error-boundary.ts";
@@ -585,6 +587,8 @@ const WorkerLive = Layer.mergeAll(
   SlackWorkerLive,
   // Sessions started from Slack report into their thread: status, reactions, agent messages.
   SlackReporterLive,
+  // Lands a change when a turn completes and automatic landing is on (docs/adr/0007-landing.md).
+  AutomaticLandingLive,
   // Queues tour + suggestion passes at settle, per the automation cascade.
   ReviewPrepLive,
   // Capture mode (ADR-0002 "Review", "Retention"): the observed pass over posted summaries,
@@ -603,8 +607,9 @@ const WorkerLive = Layer.mergeAll(
   Layer.provide(ChangeReader.layer),
   Layer.provide(TourComposer.layer),
   Layer.provide(ChangeSuggesterLive),
-  // The session namer, and the Slack runner's reading of a thread for its project.
-  Layer.provide(Layer.merge(SessionNamerLive, ThreadProjectReaderLive)),
+  // The session namer, the Slack runner's reading of a thread for its project, and the reading
+  // of a request's intent that automatic landing asks for.
+  Layer.provide(Layer.mergeAll(SessionNamerLive, ThreadProjectReaderLive, RequestIntentReaderLive)),
   Layer.provide(liveToolsLayer),
   // start_run: the one tool that reaches the run machinery.
   Layer.provide(startRunToolLayer),

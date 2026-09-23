@@ -138,6 +138,18 @@ describe.skipIf(!reachable)("landing in Postgres", () => {
         expect((yield* projects.setAutoLand(PROJECT, "off")).autoLand).toBe("off");
         expect((yield* projects.byId(PROJECT)).autoLand).toBe("off");
         yield* projects.setAutoLand(PROJECT, "inherit");
+        const cascade = {
+          autoTour: "inherit",
+          autoSuggest: "inherit",
+          autoName: "inherit",
+          backgroundSessions: "inherit",
+        } as const;
+        // The automation route writes it with the cascade, and leaves it when a client omits it.
+        expect(
+          (yield* projects.setAutomation(PROJECT, { ...cascade, autoLand: "on" })).autoLand,
+        ).toBe("on");
+        expect((yield* projects.setAutomation(PROJECT, cascade)).autoLand).toBe("on");
+        yield* projects.setAutoLand(PROJECT, "inherit");
 
         const base = {
           projectId: PROJECT,
@@ -192,6 +204,59 @@ describe.skipIf(!reachable)("landing in Postgres", () => {
             intent: "change",
             source: "option",
           })
+          .pipe(Effect.flip);
+        expect(missing._tag).toBe("AgentTurnNotFoundError");
+      }),
+    );
+  });
+
+  it("lets one worker claim an ended turn, and records what it decided", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const conversation = yield* AgentConversationRepo;
+        const landings = yield* ChangeLandingsRepo;
+        const turn = yield* conversation.submitTurn(
+          SESSION,
+          PROCESS,
+          "fix the login test",
+          "alice",
+        );
+        expect([turn.landing, turn.landingId]).toEqual([null, null]);
+
+        // An open turn is not claimed: its end has not happened.
+        expect(yield* conversation.claimTurnLanding(turn.id)).toBeNull();
+        yield* sql`UPDATE agent_turns SET status = 'completed', ended_at = now() WHERE id = ${turn.id}`;
+        const [first, second] = yield* Effect.all(
+          [conversation.claimTurnLanding(turn.id), conversation.claimTurnLanding(turn.id)],
+          { concurrency: 2 },
+        );
+        expect([first, second].filter((claimed) => claimed !== null)).toHaveLength(1);
+        expect(yield* conversation.claimTurnLanding(turn.id)).toBeNull();
+
+        const change = ChangeId.make("c-turn");
+        yield* sql`
+          INSERT INTO worktree_changes (id, project_id, worktree_id, session_id, branch, base_sha)
+          VALUES (${change}, ${PROJECT}, ${WORKTREE}, ${SESSION}, 'mend/fix-login', 'abc')`;
+        const landed = yield* landings.record({
+          ...landingWith({ outcome: "pushed", pushedSha: sha("e") }),
+          changeId: change,
+          checkpoint: null,
+        });
+        const decided = yield* conversation.decideTurnLanding(turn.id, "attempted", landed.id);
+        expect([decided.landing, decided.landingId]).toEqual(["attempted", landed.id]);
+
+        // The turn keeps its decision when the landing goes with its change.
+        yield* sql`DELETE FROM worktree_changes WHERE id = ${change}`;
+        const [kept] = (yield* conversation.listTurns(SESSION)).filter(
+          (listed) => listed.id === turn.id,
+        );
+        expect([kept?.landing, kept?.landingId]).toEqual(["attempted", null]);
+
+        const question = yield* conversation.decideTurnLanding(turn.id, "question", null);
+        expect(question.landing).toBe("question");
+        const missing = yield* conversation
+          .decideTurnLanding(AgentTurnId.make("t-missing"), "skipped", null)
           .pipe(Effect.flip);
         expect(missing._tag).toBe("AgentTurnNotFoundError");
       }),

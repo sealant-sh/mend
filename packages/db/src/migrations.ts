@@ -2026,6 +2026,30 @@ const landingMigration = Effect.gen(function* () {
   yield* sql`CREATE INDEX change_landings_session_idx ON change_landings (session_id, created_at)`;
 });
 
+/**
+ * Automatic landing (docs/adr/0007-landing.md, "When a completed turn lands"): what Mend decided
+ * about each turn once it ended, and the claim that makes one worker decide it. A turn that
+ * ended before this migration is decided already: it never lands by itself.
+ */
+const turnLandingMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE agent_turns
+      ADD COLUMN landing_claimed_at timestamptz,
+      ADD COLUMN landing text,
+      ADD COLUMN landing_id text REFERENCES change_landings (id) ON DELETE SET NULL,
+      ADD CONSTRAINT agent_turns_landing_check CHECK (
+        (landing IS NULL
+          OR landing IN ('attempted', 'question', 'option', 'off', 'not-owner', 'skipped'))
+        AND (landing IS NULL OR landing_claimed_at IS NOT NULL)
+        AND (landing_id IS NULL OR landing = 'attempted')
+      )`;
+  yield* sql`
+    UPDATE agent_turns
+    SET landing_claimed_at = coalesce(ended_at, created_at), landing = 'skipped'
+    WHERE status NOT IN ('queued', 'running')`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2092,4 +2116,5 @@ export const migrations = {
   "0062_slack": slackMigration,
   "0063_slack_reports": slackReportsMigration,
   "0064_landing": landingMigration,
+  "0065_turn_landing": turnLandingMigration,
 };

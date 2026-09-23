@@ -1,6 +1,14 @@
 import type { NewAuditEvent, SessionGitOpRow } from "@mend/db";
-import { ChangeLandingId, CheckpointId, SessionGitOpId, SessionId, Sha } from "@mend/domain";
-import { ChangeLanding, type LandedPullRequest, Session } from "@mend/domain/workbench";
+import {
+  AgentTurnId,
+  ChangeLandingId,
+  CheckpointId,
+  SessionGitOpId,
+  SessionId,
+  SessionProcessId,
+  Sha,
+} from "@mend/domain";
+import { AgentTurn, ChangeLanding, type LandedPullRequest, Session } from "@mend/domain/workbench";
 import {
   type BundleChangeInput,
   type LandInput,
@@ -104,6 +112,28 @@ const fresh = (): State => ({
   sinceLanding: [],
 });
 
+/** The one turn a test adds to the world, removed before every test. */
+const DECIDED_TURN = AgentTurnId.make("turn-landing");
+
+/** A turn of the shared session, as automatic landing decided it. */
+const turnRow = (overrides: Partial<AgentTurn> = {}) =>
+  new AgentTurn({
+    id: DECIDED_TURN,
+    sessionId: sharedA.session,
+    processId: SessionProcessId.make("process-1"),
+    ordinal: 0,
+    author: "alice",
+    input: "why does the login test flake?",
+    status: "completed",
+    providerTurnId: null,
+    error: null,
+    usage: null,
+    createdAt: NOW,
+    startedAt: NOW,
+    endedAt: NOW,
+    ...overrides,
+  });
+
 let state: State = fresh();
 
 describe("landing routes", () => {
@@ -206,8 +236,12 @@ describe("landing routes", () => {
   });
   beforeEach(() => {
     api.world.calls.splice(0, api.world.calls.length);
+    api.world.turns.delete(DECIDED_TURN);
     state = fresh();
   });
+
+  /** The turn automatic landing decided about, in the shared session. */
+  const decided = (turn: AgentTurn) => api.world.turns.set(turn.id, turn);
 
   const land = `/api/sessions/${sharedA.session}/land`;
 
@@ -457,6 +491,50 @@ describe("landing routes", () => {
         remoteFailure: expect.stringMatching(
           /^origin not checked · budget reached · 2 fetches of origin per minute for one account · nothing running was stopped · try again in \d+ s$/,
         ),
+      });
+    });
+
+    it("states a completed turn whose changes did not land, until a landing answers it", async () => {
+      decided(turnRow({ landing: "question", intent: "question", intentSource: "read" }));
+      const read = async () => {
+        const response = await api.request(
+          "carol",
+          "GET",
+          `/api/changes/${sharedA.change}/landings`,
+        );
+        expect(response.status).toBe(200);
+        const view: unknown = await response.json();
+        return view;
+      };
+      expect(await read()).toMatchObject({
+        landings: [],
+        facts: [
+          { _tag: "not-landed", reason: "question" },
+          { _tag: "agent-push", ref: "refs/heads/wip" },
+        ],
+      });
+
+      // The owner pressed the button after the turn ended: the fact is answered.
+      state.landings = [landingRow({ createdAt: new Date(NOW.getTime() + 60_000) })];
+      const answered = await read();
+      expect(answered).toMatchObject({ facts: expect.any(Array) });
+      expect(JSON.stringify(answered)).not.toContain("not-landed");
+    });
+
+    it("says an automatic landing's request intent was not read", async () => {
+      state.landings = [landingRow({ trigger: "automatic" })];
+      decided(
+        turnRow({
+          landing: "attempted",
+          landingId: ChangeLandingId.make("landing-1"),
+          intentSource: "unread",
+          endedAt: new Date(NOW.getTime() - 1_000),
+        }),
+      );
+      const response = await api.request("carol", "GET", `/api/changes/${sharedA.change}/landings`);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        facts: expect.arrayContaining([{ _tag: "intent-not-read" }]),
       });
     });
 

@@ -77,6 +77,8 @@ export class ProjectsRepo extends Context.Service<
         readonly autoSuggest: AutomationChoice;
         readonly autoName: AutomationChoice;
         readonly backgroundSessions: AutomationChoice;
+        /** "Land when a turn completes"; absent keeps the project's stance. */
+        readonly autoLand?: AutomationChoice;
       },
     ) => Effect.Effect<Project, ProjectNotFoundError>;
     /** "Land when a turn completes" (docs/adr/0007-landing.md), over the Settings default. */
@@ -236,11 +238,17 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
           readonly autoSuggest: AutomationChoice;
           readonly autoName: AutomationChoice;
           readonly backgroundSessions: AutomationChoice;
+          readonly autoLand?: AutomationChoice;
         },
       ) {
+        const { autoLand, ...cascade } = choices;
         const [row] = yield* db
           .update(projects)
-          .set({ ...choices, updatedAt: new Date() })
+          .set({
+            ...cascade,
+            ...(autoLand === undefined ? {} : { autoLand }),
+            updatedAt: new Date(),
+          })
           .where(eq(projects.id, id))
           .returning()
           .pipe(Effect.orDie);

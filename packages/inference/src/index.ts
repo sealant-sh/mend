@@ -6,6 +6,7 @@ export * from "./dev-provider.ts";
 export * from "./failure-summarizer.ts";
 export * from "./live-tools.ts";
 export * from "./provider.ts";
+export * from "./request-intent-reader.ts";
 export * from "./sealant-provider.ts";
 export * from "./session-namer.ts";
 export * from "./toolset.ts";

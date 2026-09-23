@@ -1,3 +1,4 @@
+export * from "./automatic.ts";
 export * from "./description.ts";
 export * from "./gh.ts";
 export * from "./github.ts";

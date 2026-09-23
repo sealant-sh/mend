@@ -24,6 +24,8 @@ export const InferenceContext = Schema.Literals([
   "session-naming",
   // Slack (docs/adr/0006-slack.md): which project a thread is about, when nothing names one.
   "slack-project",
+  // Landing (docs/adr/0007-landing.md): whether a turn's request asked for a change or a question.
+  "request-intent",
 ]);
 export type InferenceContext = typeof InferenceContext.Type;
 

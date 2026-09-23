@@ -420,6 +420,11 @@ export interface ProvisionInput {
   readonly ownerUserId: string | null;
   /** Where the session was started from (docs/adr/0006-slack.md); absent is `mend`. */
   readonly origin?: SessionOrigin;
+  /**
+   * The session's own "Land when a turn completes" (docs/adr/0007-landing.md); absent or null
+   * follows the project.
+   */
+  readonly autoLand?: boolean | null;
 }
 
 /** Anonymous worktrees are keyed by their own id, named ones by the name. */
@@ -557,6 +562,7 @@ export class SessionEngine extends Context.Service<
         readonly label: string | null;
         readonly ownerUserId: string | null;
         readonly origin?: SessionOrigin;
+        readonly autoLand?: boolean | null;
       },
     ) => Effect.Effect<Session, WorktreeNotFoundError | ProjectNotFoundError>;
     readonly attachRun: (
@@ -2024,6 +2030,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly label: string | null;
           readonly ownerUserId: string | null;
           readonly origin?: SessionOrigin;
+          readonly autoLand?: boolean | null;
         },
       ) {
         const session = yield* sessions.create({
@@ -2034,6 +2041,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           label: input.label,
           ownerUserId: input.ownerUserId,
           origin: input.origin ?? "mend",
+          autoLand: input.autoLand ?? null,
           worktree: worktree.directory,
           branch: worktree.branch,
           baseSha: worktree.baseSha,
@@ -2059,6 +2067,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly label: string | null;
           readonly ownerUserId: string | null;
           readonly origin?: SessionOrigin;
+          readonly autoLand?: boolean | null;
         },
       ) {
         if (project.hotSessions > 0) {
@@ -6943,6 +6952,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly label: string | null;
           readonly ownerUserId: string | null;
           readonly origin?: SessionOrigin;
+          readonly autoLand?: boolean | null;
         },
       ) {
         // Capture mode: one executor per worktree (ADR-0002). A worktree another session's
@@ -7001,6 +7011,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           label: input.label,
           ownerUserId: input.ownerUserId,
           origin: input.origin ?? "mend",
+          autoLand: input.autoLand ?? null,
           worktree: worktree.directory,
           branch: worktree.branch,
           baseSha: worktree.baseSha,

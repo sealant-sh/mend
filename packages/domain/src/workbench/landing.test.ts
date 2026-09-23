@@ -5,14 +5,19 @@ import { ChangeId, ChangeLandingId, ProjectId, SessionId, Sha } from "../ids.ts"
 import {
   ChangeLanding,
   changeOwnerOf,
+  type DecidedTurn,
   intentAllowsLanding,
   type LandingFact,
   landingFactLine,
+  LANDING_GUARD,
   landingFacts,
+  notLandedReasonOf,
   observedAgo,
   parseRefUpdate,
   RequestIntentReading,
+  requestOfTurn,
   resolveAutoLand,
+  withLandingGuard,
 } from "./landing.ts";
 
 const NOW = new Date("2026-09-24T12:00:00.000Z");
@@ -304,5 +309,70 @@ describe("resolveAutoLand (docs/adr/0007, When it is on)", () => {
     expect(resolveAutoLand({ ...slack, project: "inherit", settings: true, slack: false })).toBe(
       false,
     );
+  });
+});
+
+describe("a turn's landing decision, as facts (docs/adr/0007, Questions do not open pull requests)", () => {
+  const endedAt = new Date(NOW.getTime() - 60_000);
+  const observe = (latestTurn: DecidedTurn | null, landings: ReadonlyArray<ChangeLanding> = []) =>
+    lines(landingFacts({ landings, ...nothingObserved, agentRefUpdates: [], latestTurn }));
+
+  it("says a question's changes were not landed, until a landing after the turn answers it", () => {
+    const asked = { landing: "question", intentSource: "read", endedAt } as const;
+    expect(observe(asked)).toEqual(["changes not landed · the request read as a question"]);
+    const earlier = landing({ createdAt: new Date(endedAt.getTime() - 1_000) });
+    expect(observe(asked, [earlier])).toContain(
+      "changes not landed · the request read as a question",
+    );
+    const answered = landing({ createdAt: new Date(endedAt.getTime() + 1_000) });
+    expect(observe(asked, [answered])).not.toContain(
+      "changes not landed · the request read as a question",
+    );
+  });
+
+  it("names every reason a completed turn did not land", () => {
+    expect(observe({ landing: "option", intentSource: "option", endedAt })).toEqual([
+      "changes not landed · the request said autopr=false",
+    ]);
+    expect(observe({ landing: "off", intentSource: null, endedAt })).toEqual([
+      "changes not landed · automatic landing is off",
+    ]);
+    expect(observe({ landing: "not-owner", intentSource: null, endedAt })).toEqual([
+      "changes not landed · the turn was not sent by the owner",
+    ]);
+  });
+
+  it("says an automatic landing's request was not read, and nothing for a skipped turn", () => {
+    expect(observe({ landing: "attempted", intentSource: "unread", endedAt }, [landing()])).toEqual(
+      ["pushed · mend/fix-login · 3333333 · observed", "intent not read"],
+    );
+    expect(observe({ landing: "attempted", intentSource: "read", endedAt })).toEqual([]);
+    expect(observe({ landing: "skipped", intentSource: null, endedAt })).toEqual([]);
+    expect(observe(null)).toEqual([]);
+  });
+
+  it("reads a reason only from a not-landed decision", () => {
+    expect(notLandedReasonOf("question")).toBe("question");
+    expect(notLandedReasonOf("attempted")).toBeNull();
+    expect(notLandedReasonOf("skipped")).toBeNull();
+    expect(notLandedReasonOf(null)).toBeNull();
+  });
+});
+
+describe("the prompt guard (docs/adr/0007, Questions do not open pull requests)", () => {
+  it("rides after the request and says what the ADR says", () => {
+    const guarded = withLandingGuard("  why does the login test flake?  ");
+    expect(guarded).toBe(`  why does the login test flake?\n\n${LANDING_GUARD}`);
+    expect(LANDING_GUARD).toContain("answer it and change no files");
+    expect(LANDING_GUARD).toContain("Change code only when the request asks for a change.");
+    expect(LANDING_GUARD).toContain("Never push and never open a pull request.");
+    expect(LANDING_GUARD).toContain("Committing is fine.");
+    expect(LANDING_GUARD).not.toMatch(/ready to merge|safe|verified/i);
+  });
+
+  it("leaves an empty prompt empty, and gives back what the requester wrote", () => {
+    expect(withLandingGuard("")).toBe("");
+    expect(requestOfTurn(withLandingGuard("fix the flaky test"))).toBe("fix the flaky test");
+    expect(requestOfTurn("fix the flaky test")).toBe("fix the flaky test");
   });
 });
