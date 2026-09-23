@@ -35,6 +35,13 @@ import {
   sessionProcesses,
   sessionRuns,
   settings,
+  slackChannelDefaults,
+  slackEventClaims,
+  slackInstalls,
+  slackLinkCodes,
+  slackLinks,
+  slackThreads,
+  slackUserDefaults,
   worktreeChanges,
   worktrees,
 } from "../src/schema/workbench.ts";
@@ -168,6 +175,7 @@ describe("Mend Drizzle schema", () => {
       "workspace_image",
       "dotfiles",
       "owner_user_id",
+      "origin",
       "shared_control_enabled_by_user_id",
       "shared_control_enabled_at",
       "has_transcript",
@@ -338,6 +346,83 @@ describe("Mend Drizzle schema", () => {
     expect(projectColumns.find((column) => column.name === "secret_revision")?.notNull).toBe(true);
     const runColumns = getTableConfig(sessionRuns).columns;
     expect(runColumns.find((column) => column.name === "secret_names")?.getSQLType()).toBe("jsonb");
+  });
+
+  it("maps Slack installs with sealed tokens only, and the keys that tie links to one workspace", () => {
+    const installs = getTableConfig(slackInstalls);
+    expect(installs.name).toBe("slack_installs");
+    // No plaintext column exists to leak into: the only token columns are the sealed ones.
+    expect(
+      installs.columns.filter((column) => column.name.includes("token")).map((c) => c.name),
+    ).toEqual(["sealed_app_token", "sealed_bot_token"]);
+    expect(installs.uniqueConstraints.map((constraint) => constraint.name)).toEqual([
+      "slack_installs_team_id_key",
+      "slack_installs_organization_team_key",
+    ]);
+    for (const [name, value] of [
+      ["default_harness", "claude"],
+      ["show_agent_messages", true],
+      ["show_diffs", false],
+      ["external_channels", false],
+    ] as const) {
+      expect(installs.columns.find((column) => column.name === name)?.default, name).toBe(value);
+    }
+    const origin = getTableConfig(agentSessions).columns.find((column) => column.name === "origin");
+    expect(origin?.notNull).toBe(true);
+    expect(origin?.default).toBe("mend");
+
+    const links = getTableConfig(slackLinks);
+    expect(links.primaryKeys[0]?.columns.map((column) => column.name)).toEqual([
+      "team_id",
+      "slack_user_id",
+    ]);
+    expect(links.uniqueConstraints.map((constraint) => constraint.name)).toEqual([
+      "slack_links_team_user_key",
+    ]);
+    expect(
+      links.foreignKeys.map((foreignKey) => [foreignKey.getName(), foreignKey.onDelete]),
+    ).toEqual([
+      ["slack_links_install_fkey", "cascade"],
+      ["slack_links_member_fkey", "cascade"],
+    ]);
+    expect(getTableConfig(slackLinkCodes).columns.map((column) => column.name)).toEqual([
+      "code_hash",
+      "team_id",
+      "slack_user_id",
+      "request",
+      "expires_at",
+      "used_at",
+      "created_at",
+    ]);
+    for (const table of [slackLinkCodes, slackChannelDefaults]) {
+      expect(getTableConfig(table).foreignKeys[0]?.onDelete).toBe("cascade");
+    }
+    expect(
+      getTableConfig(slackChannelDefaults).primaryKeys[0]?.columns.map((column) => column.name),
+    ).toEqual(["team_id", "channel_id"]);
+    expect(getTableConfig(slackUserDefaults).columns[0]?.primary).toBe(true);
+  });
+
+  it("maps Slack threads one session each, many to a thread, and claims by event id", () => {
+    const threads = getTableConfig(slackThreads);
+    expect(threads.columns.map((column) => column.name)).toEqual([
+      "session_id",
+      "team_id",
+      "channel_id",
+      "thread_ts",
+      "request_ts",
+      "status_ts",
+      "slack_user_id",
+      "project_source",
+      "created_at",
+    ]);
+    expect(threads.columns[0]?.primary).toBe(true);
+    expect(threads.foreignKeys[0]?.onDelete).toBe("cascade");
+    expect(threads.indexes[0]?.config.name).toBe("slack_threads_thread_idx");
+    const claims = getTableConfig(slackEventClaims);
+    expect(claims.columns[0]?.name).toBe("event_id");
+    expect(claims.columns[0]?.primary).toBe(true);
+    expect(claims.indexes[0]?.config.name).toBe("slack_event_claims_claimed_at_idx");
   });
 
   it("matches project mount ownership and uniqueness constraints", () => {

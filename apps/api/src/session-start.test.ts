@@ -89,7 +89,7 @@ const startWorld = (
         }),
         Layer.mock(SessionEngine, {
           provision: (input) =>
-            note(`engine.provision:${input.projectId}:${input.ownerUserId}`).pipe(
+            note(`engine.provision:${input.projectId}:${input.ownerUserId}:${input.origin}`).pipe(
               Effect.as(provisioned(input.ownerUserId)),
             ),
           launchProtocol: (sessionId, start, author) =>
@@ -138,7 +138,7 @@ describe("SessionStart.startAs", () => {
       `access.projectAs:alice:${PROJECT}`,
       "sessions.listUnsettledForOwner:alice",
       `sessions.countUnsettledForOrganization:${ACME}`,
-      `engine.provision:${PROJECT}:alice`,
+      `engine.provision:${PROJECT}:alice:slack`,
       // A composed start knows its first prompt: the namer is queued before the launch.
       "jobs.enqueue:name-session:0",
       `engine.launchProtocol:${SESSION}:alice: fix the flaky test `,

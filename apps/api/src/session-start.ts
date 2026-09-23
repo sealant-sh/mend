@@ -6,6 +6,7 @@ import {
   PROMPTABLE_HARNESSES,
   resolveAutomation,
   type Session,
+  type SessionOrigin,
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import { SessionEngine } from "@mend/sessions";
@@ -16,13 +17,6 @@ import { ProjectAccess } from "./access.ts";
 import { Budgets } from "./budgets.ts";
 import { budgetExceeded, requireSessionRoom } from "./session-budgets.ts";
 
-/**
- * Where a session was started from (docs/adr/0006-slack.md, "Audit"). Null is the HTTP API: the
- * web app, the CLI and the phone. Carried on every start so it can be stamped at provision once
- * sessions have the column; nothing records it yet.
- */
-export type SessionOrigin = "slack";
-
 /** The worktree and conversation to provision: the create route's payload, plus its origin. */
 export interface CreateSessionInput {
   readonly harness: string;
@@ -31,7 +25,8 @@ export interface CreateSessionInput {
   readonly name: string | null;
   /** Branch or sha to base the worktree on; null = the project's default branch. */
   readonly base: string | null;
-  readonly origin: SessionOrigin | null;
+  /** `mend` for the HTTP API, `slack` for a mention. Stamped on the session at provision. */
+  readonly origin: SessionOrigin;
 }
 
 /** Provision, then launch: what Slack asks for in one step. */
@@ -107,6 +102,7 @@ export const makeSessionStart = Effect.gen(function* () {
         name: input.name,
         base: input.base,
         ownerUserId: userId,
+        origin: input.origin,
       })
       .pipe(
         Effect.catchTag("ProjectNotFoundError", () => Effect.fail(new NotFound({ id: projectId }))),

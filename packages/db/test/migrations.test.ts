@@ -955,3 +955,178 @@ describe.skipIf(!reachable)("0058 hot pool owners", () => {
     });
   });
 });
+
+describe.skipIf(!reachable)("0062 slack", () => {
+  const SLACK_DB = `${SCRATCH_DB}_slack`;
+  const slackLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${SLACK_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withSlackDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(slackLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${SLACK_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${SLACK_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("marks existing sessions as Mend's, and the keys hold the model: one workspace per organization, links inside it", async () => {
+    const result = await withSlackDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0061_upgrade_tickets");
+        yield* sql`
+          INSERT INTO "user" ("id", "name", "email", "createdAt") VALUES
+            ('u-alice', 'Alice', 'alice@example.com', '2026-01-01T00:00:00Z'),
+            ('u-bob', 'Bob', 'bob@example.com', '2026-02-01T00:00:00Z'),
+            ('u-carol', 'Carol', 'carol@example.com', '2026-03-01T00:00:00Z')`;
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        const acme = organization?.id ?? "";
+        yield* sql`INSERT INTO organizations (id, name) VALUES ('org-other', 'Other')`;
+        yield* sql`
+          INSERT INTO organization_members (organization_id, user_id, role) VALUES
+            (${acme}, 'u-alice', 'owner'),
+            (${acme}, 'u-bob', 'member'),
+            ('org-other', 'u-carol', 'owner')`;
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-1', 'api', '/store/p-1/repo.git', 'main', ${acme})`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc')`;
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, owner_user_id, harness, worktree, branch, base_sha, status)
+          VALUES ('s-old', 'p-1', 'wt-1', 'u-alice', 'codex', 'one', 'mend/one', 'abc', 'stopped')`;
+        yield* migrations["0062_slack"];
+
+        const origins = yield* sql<{
+          readonly id: string;
+          readonly origin: string;
+        }>`SELECT id, origin FROM agent_sessions`;
+        const unknownOrigin = yield* attempt(sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, origin)
+          VALUES ('s-teams', 'p-1', 'wt-1', 'codex', 'one', 'mend/one', 'abc', 'teams')`);
+
+        const install = (organizationId: string, teamId: string, by: string) => sql`
+          INSERT INTO slack_installs
+            (organization_id, team_id, team_name, bot_user_id, app_id, sealed_app_token,
+             sealed_bot_token, web_origin, installed_by_user_id)
+          VALUES (${organizationId}, ${teamId}, 'Acme', 'B1', 'A1', 'sealed-app', 'sealed-bot',
+                  'https://mend.example', ${by})`;
+        yield* install(acme, "T-ACME", "u-alice");
+        const [settings] = yield* sql<{
+          readonly default_harness: string;
+          readonly show_agent_messages: boolean;
+          readonly show_diffs: boolean;
+          readonly external_channels: boolean;
+        }>`SELECT default_harness, show_agent_messages, show_diffs, external_channels
+           FROM slack_installs`;
+        const sameTeamElsewhere = yield* attempt(install("org-other", "T-ACME", "u-carol"));
+        const secondInstall = yield* attempt(install(acme, "T-OTHER", "u-alice"));
+
+        const link = (organizationId: string, slackUserId: string, userId: string) => sql`
+          INSERT INTO slack_links (organization_id, team_id, slack_user_id, user_id)
+          VALUES (${organizationId}, 'T-ACME', ${slackUserId}, ${userId})`;
+        const aliceLinked = yield* attempt(link(acme, "U-ALICE", "u-alice"));
+        const bobLinked = yield* attempt(link(acme, "U-BOB", "u-bob"));
+        const slackUserTwice = yield* attempt(link(acme, "U-ALICE", "u-bob"));
+        const accountTwice = yield* attempt(link(acme, "U-ALICE-2", "u-alice"));
+        const outsider = yield* attempt(link(acme, "U-CAROL", "u-carol"));
+        const wrongOrganization = yield* attempt(link("org-other", "U-CAROL", "u-carol"));
+
+        yield* sql`
+          INSERT INTO slack_link_codes (code_hash, team_id, slack_user_id, request, expires_at)
+          VALUES ('hash-1', 'T-ACME', 'U-DAVE', '{}'::jsonb, now() + interval '10 minutes')`;
+        yield* sql`
+          INSERT INTO slack_channel_defaults (team_id, channel_id, project_id, set_by_user_id)
+          VALUES ('T-ACME', 'C-1', 'p-1', 'u-bob')`;
+        yield* sql`INSERT INTO slack_user_defaults (user_id, project_id) VALUES ('u-bob', 'p-1')`;
+        yield* sql`
+          INSERT INTO slack_threads
+            (session_id, team_id, channel_id, thread_ts, request_ts, slack_user_id, project_source)
+          VALUES ('s-old', 'T-ACME', 'C-1', '1.0', '1.1', 'U-ALICE', 'channel-default')`;
+        const sessionInTwoThreads = yield* attempt(sql`
+          INSERT INTO slack_threads
+            (session_id, team_id, channel_id, thread_ts, request_ts, slack_user_id, project_source)
+          VALUES ('s-old', 'T-ACME', 'C-2', '2.0', '2.1', 'U-ALICE', 'message')`);
+
+        // Removing a member removes their link; removing the install removes the rest.
+        yield* sql`DELETE FROM organization_members WHERE user_id = 'u-bob'`;
+        const linksAfterRemoval = yield* sql<{
+          readonly slack_user_id: string;
+        }>`SELECT slack_user_id FROM slack_links ORDER BY slack_user_id`;
+        yield* sql`DELETE FROM slack_installs WHERE organization_id = ${acme}`;
+        const count = (table: string) =>
+          sql<{ readonly n: number }>`SELECT count(*)::int AS n FROM ${sql(table)}`.pipe(
+            Effect.map((rows) => rows[0]?.n ?? -1),
+          );
+        const afterUninstall = {
+          links: yield* count("slack_links"),
+          codes: yield* count("slack_link_codes"),
+          channelDefaults: yield* count("slack_channel_defaults"),
+          userDefaults: yield* count("slack_user_defaults"),
+          threads: yield* count("slack_threads"),
+        };
+        yield* sql`DELETE FROM agent_sessions WHERE id = 's-old'`;
+        const threadsAfterSession = yield* count("slack_threads");
+
+        return {
+          origins,
+          unknownOrigin,
+          settings,
+          sameTeamElsewhere,
+          secondInstall,
+          aliceLinked,
+          bobLinked,
+          slackUserTwice,
+          accountTwice,
+          outsider,
+          wrongOrganization,
+          sessionInTwoThreads,
+          linksAfterRemoval,
+          afterUninstall,
+          threadsAfterSession,
+        };
+      }),
+    );
+    expect(result).toEqual({
+      origins: [{ id: "s-old", origin: "mend" }],
+      unknownOrigin: "refused",
+      settings: {
+        default_harness: "claude",
+        show_agent_messages: true,
+        show_diffs: false,
+        external_channels: false,
+      },
+      sameTeamElsewhere: "refused",
+      secondInstall: "refused",
+      aliceLinked: "inserted",
+      bobLinked: "inserted",
+      slackUserTwice: "refused",
+      accountTwice: "refused",
+      // Carol is not a member of the organization that installed the app.
+      outsider: "refused",
+      // Nor can a link claim another organization's workspace.
+      wrongOrganization: "refused",
+      sessionInTwoThreads: "refused",
+      linksAfterRemoval: [{ slack_user_id: "U-ALICE" }],
+      afterUninstall: { links: 0, codes: 0, channelDefaults: 0, userDefaults: 1, threads: 1 },
+      threadsAfterSession: 0,
+    });
+  });
+});

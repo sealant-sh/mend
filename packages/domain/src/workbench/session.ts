@@ -48,6 +48,14 @@ export const SessionStatus = Schema.Literals([
 export type SessionStatus = typeof SessionStatus.Type;
 
 /**
+ * Where a session was started from (docs/adr/0006-slack.md, "Audit"). `mend` is Mend's own
+ * surfaces: the web app, the CLI, the phone and Mend's own jobs. `slack` is a mention in Slack.
+ * Stamped at provision and never rewritten.
+ */
+export const SessionOrigin = Schema.Literals(["mend", "slack"]);
+export type SessionOrigin = typeof SessionOrigin.Type;
+
+/**
  * How far the session's native transcript has been ingested into the durable
  * conversation (the mode-handoff backfill). Claude entries carry stable uuids
  * and fork-on-resume preserves the copied prefix, so the last ingested uuid
@@ -115,6 +123,8 @@ export class Session extends Schema.Class<Session>("Session")({
   dotfiles: Schema.NullOr(SessionDotfiles),
   /** Who provisioned the session — whose dotfiles apply. Null for pre-column rows. */
   ownerUserId: Schema.NullOr(Schema.String),
+  /** Where it was started from (docs/adr/0006-slack.md). */
+  origin: SessionOrigin.pipe(Schema.withConstructorDefault(Effect.succeed("mend"))),
   /**
    * Shared control (docs/adr/0003-organizations-and-tenancy.md): when set, anyone who can see the
    * session may steer it, still on the owner's credentials. Who turned it on, and when.
