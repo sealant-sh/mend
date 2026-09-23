@@ -95,6 +95,7 @@ const makeConversationWorld = () => {
     completeTurn: () => Effect.succeed(null),
     upsertItem: () => Effect.die("not in test"),
     listItems: () => Effect.succeed([]),
+    turnMessages: () => Effect.succeed([]),
     openRequest: () => Effect.die("not in test"),
     byRequestId: () => Effect.succeed(null),
     listRequests: () => Effect.succeed([]),

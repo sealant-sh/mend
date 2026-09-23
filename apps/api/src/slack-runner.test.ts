@@ -174,6 +174,8 @@ interface WorldOptions {
   readonly channelDefault?: ProjectId;
   readonly personalDefault?: ProjectId;
   readonly threadSession?: { readonly threadTs: string; readonly projectId: ProjectId };
+  /** The reporter moved the status message before the launch returned. */
+  readonly reporterMovedFirst?: boolean;
 }
 
 /**
@@ -199,6 +201,8 @@ const world = (options: WorldOptions = {}) => {
       ];
   const minted: Array<{ readonly slackUserId: string; readonly request: SlackPendingMention }> = [];
   const recorded: Array<SlackThreadSession> = [];
+  /** The status line each session's message shows, as `slack_threads.reported_status`. */
+  const reported = new Map<string, string>();
   const audited: Array<NewAuditEvent> = [];
   const launches: Array<LaunchRequest> = [];
   const visible = [billing, web, notes];
@@ -251,7 +255,13 @@ const world = (options: WorldOptions = {}) => {
     Layer.mock(SlackThreadsRepo, {
       record: (input) =>
         Effect.sync(() => {
-          const row = { ...input, statusTs: null, createdAt: NOW };
+          const row = {
+            ...input,
+            statusTs: null,
+            reportedState: null,
+            reportedStatus: null,
+            createdAt: NOW,
+          };
           recorded.push(row);
           return row;
         }),
@@ -267,11 +277,27 @@ const world = (options: WorldOptions = {}) => {
                 statusTs: null,
                 slackUserId: "U-bob",
                 projectSource: "picked",
+                external: false,
+                reportedState: null,
+                reportedStatus: null,
                 createdAt: NOW,
               }
             : null,
         ),
-      setStatusTs: (sessionId, statusTs) => note(`threads.setStatusTs:${sessionId}:${statusTs}`),
+      setStatusTs: (sessionId, statusTs, shown) =>
+        note(`threads.setStatusTs:${sessionId}:${statusTs}`).pipe(
+          Effect.andThen(
+            Effect.sync(() =>
+              reported.set(sessionId, options.reporterMovedFirst === true ? "moved" : shown.line),
+            ),
+          ),
+        ),
+      claimStatus: (sessionId, from, to) =>
+        Effect.sync(() => {
+          if (reported.get(sessionId) !== from) return false;
+          reported.set(sessionId, to.line);
+          return true;
+        }),
     }),
     Layer.mock(SlackEventClaimsRepo, {
       claim: ({ eventId }) =>
@@ -374,10 +400,12 @@ const world = (options: WorldOptions = {}) => {
     eventId: string,
     event: Record<string, unknown>,
     teamId = "T-acme",
+    outer: Record<string, unknown> = {},
   ): SlackEnvelope =>
     envelope("events_api", `env-${eventId}`, {
       team_id: teamId,
       event_id: eventId,
+      ...outer,
       event: { type: "app_mention", channel: "C-general", ...event },
     });
 
@@ -803,6 +831,50 @@ describe("the Slack runner, when a start is refused", () => {
   });
 });
 
+/** A mention of "in web tidy up", with what the envelope says about the channel. */
+const sharedMention = (
+  w: ReturnType<typeof world>,
+  eventId: string,
+  ts: string,
+  user: string,
+  external?: boolean,
+) =>
+  w.mention(
+    eventId,
+    { user, text: "<@U-bot> in web tidy up", ts },
+    "T-acme",
+    external === undefined ? {} : { is_ext_shared_channel: external },
+  );
+
+describe("the Slack runner, for the thread reporter", () => {
+  it("records whether the channel is Slack Connect, and reads an unsaid one as external", async () => {
+    const w = world();
+    await w.deliver(
+      sharedMention(w, "Ev1", "1.1", "U-alice", false),
+      sharedMention(w, "Ev2", "1.2", "U-alice", true),
+      sharedMention(w, "Ev3", "1.3", "U-alice"),
+    );
+    expect(w.recorded.map((row) => [row.requestTs, row.external])).toEqual([
+      ["1.1", false],
+      ["1.2", true],
+      ["1.3", true],
+    ]);
+  });
+
+  it("carries the channel's kind through a link code", async () => {
+    const w = world();
+    await w.deliver(sharedMention(w, "Ev1", "1.1", "U-bob", false));
+    expect(w.minted[0]?.request).toMatchObject({ messageTs: "1.1", external: false });
+  });
+
+  it("leaves the status message alone once the reporter has moved it", async () => {
+    const w = world({ reporterMovedFirst: true });
+    await w.deliver(sharedMention(w, "Ev1", "1.1", "U-alice", false));
+    expect(w.effects).toContain("start.launchAs:alice:session-1");
+    expect(w.slack.calls.filter((call) => call.kind === "update")).toEqual([]);
+  });
+});
+
 describe("the Slack runner, after a link is confirmed", () => {
   const job = (overrides: Partial<SlackLinkedMentionJob> = {}): SlackLinkedMentionJob => ({
     organizationId: ACME,
@@ -915,8 +987,21 @@ describe("mentions and picker keys", () => {
         thread_ts: "2.2",
       }),
     ).toMatchObject({ threadTs: null, messageTs: "2.2" });
-    expect(pickerRequestKey({ threadTs: null, messageTs: "2.2" })).toBe("2.2/2.2");
-    expect(parsePickerRequestKey("1.1/2.2")).toEqual({ parentTs: "1.1", messageTs: "2.2" });
+    expect(pickerRequestKey({ threadTs: null, messageTs: "2.2", external: false })).toBe("2.2/2.2");
+    // A channel that is, or may be, Slack Connect is marked: a click does not say.
+    expect(pickerRequestKey({ threadTs: "1.1", messageTs: "2.2", external: null })).toBe(
+      "1.1/2.2/e",
+    );
+    expect(parsePickerRequestKey("1.1/2.2")).toEqual({
+      parentTs: "1.1",
+      messageTs: "2.2",
+      external: false,
+    });
+    expect(parsePickerRequestKey("1.1/2.2/e")).toEqual({
+      parentTs: "1.1",
+      messageTs: "2.2",
+      external: true,
+    });
     expect(parsePickerRequestKey("nope")).toBeNull();
   });
 });

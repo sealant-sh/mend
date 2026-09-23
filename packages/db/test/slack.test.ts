@@ -438,6 +438,7 @@ describe.skipIf(!reachable)("slack in Postgres", () => {
           requestTs: "1726000000.000100",
           slackUserId: "U-ALICE",
           projectSource: "thread-link",
+          external: false,
         });
         yield* threads.record({
           ...thread,
@@ -445,6 +446,7 @@ describe.skipIf(!reachable)("slack in Postgres", () => {
           requestTs: "1726000100.000200",
           slackUserId: "U-ALICE",
           projectSource: "thread-session",
+          external: true,
         });
         expect((yield* threads.latestInThread(thread))?.sessionId).toBe(second.id);
         expect(yield* threads.latestInThread({ ...thread, channelId: "C-2" })).toBeNull();
@@ -453,9 +455,44 @@ describe.skipIf(!reachable)("slack in Postgres", () => {
         expect(yield* threads.forSession(first.id)).toMatchObject({
           projectSource: "thread-link",
           statusTs: null,
+          external: false,
+          reportedState: null,
+          reportedStatus: null,
         });
-        yield* threads.setStatusTs(first.id, "1726000001.000300");
-        expect((yield* threads.forSession(first.id))?.statusTs).toBe("1726000001.000300");
+        // Nothing to move before the status message exists.
+        const running = { state: "running", line: "api · running" } as const;
+        expect(yield* threads.claimStatus(first.id, null, running)).toBe(false);
+        yield* threads.setStatusTs(first.id, "1726000001.000300", {
+          state: "starting",
+          line: "api · starting",
+        });
+        expect(yield* threads.forSession(first.id)).toMatchObject({
+          statusTs: "1726000001.000300",
+          reportedState: "starting",
+          reportedStatus: "api · starting",
+        });
+        // Two workers saw the same move: one edits the message.
+        const moves = yield* Effect.all(
+          Array.from({ length: 8 }, () => threads.claimStatus(first.id, "api · starting", running)),
+          { concurrency: "unbounded" },
+        );
+        expect(moves.filter(Boolean)).toHaveLength(1);
+        // A worker that read the old line cannot move it back.
+        expect(
+          yield* threads.claimStatus(first.id, "api · starting", {
+            state: "starting",
+            line: "api · starting",
+          }),
+        ).toBe(false);
+        expect((yield* threads.forSession(first.id))?.reportedState).toBe("running");
+
+        const posts = yield* Effect.all(
+          Array.from({ length: 8 }, () => threads.claimPost(first.id, "turn:t-1")),
+          { concurrency: "unbounded" },
+        );
+        expect(posts.filter(Boolean)).toHaveLength(1);
+        expect(yield* threads.claimPost(first.id, "turn:t-2")).toBe(true);
+        expect(yield* threads.claimPost(second.id, "turn:t-1")).toBe(true);
 
         const twice = yield* threads
           .record({
@@ -464,6 +501,7 @@ describe.skipIf(!reachable)("slack in Postgres", () => {
             requestTs: "1726000200.000100",
             slackUserId: "U-ALICE",
             projectSource: "message",
+            external: false,
           })
           .pipe(Effect.exit);
         expect(twice._tag).toBe("Failure");

@@ -40,6 +40,7 @@ import {
   slackInstalls,
   slackLinkCodes,
   slackLinks,
+  slackThreadPosts,
   slackThreads,
   slackUserDefaults,
   worktreeChanges,
@@ -414,11 +415,20 @@ describe("Mend Drizzle schema", () => {
       "status_ts",
       "slack_user_id",
       "project_source",
+      "external",
+      "reported_state",
+      "reported_status",
       "created_at",
     ]);
     expect(threads.columns[0]?.primary).toBe(true);
     expect(threads.foreignKeys[0]?.onDelete).toBe("cascade");
     expect(threads.indexes[0]?.config.name).toBe("slack_threads_thread_idx");
+    const posts = getTableConfig(slackThreadPosts);
+    expect(posts.primaryKeys[0]?.columns.map((column) => column.name)).toEqual([
+      "session_id",
+      "key",
+    ]);
+    expect(posts.foreignKeys[0]?.onDelete).toBe("cascade");
     const claims = getTableConfig(slackEventClaims);
     expect(claims.columns[0]?.name).toBe("event_id");
     expect(claims.columns[0]?.primary).toBe(true);

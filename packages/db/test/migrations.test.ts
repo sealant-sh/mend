@@ -349,6 +349,8 @@ describe.skipIf(!reachable)("0035 process kinds and 0036 agent conversation", ()
           replayedSystemTurn,
           page: yield* conversation.listItems(sessionId, first.seq, 100),
           after: yield* conversation.listItems(sessionId, updated.seq, 100),
+          turnMessages: yield* conversation.turnMessages(turn.id),
+          secondTurnMessages: yield* conversation.turnMessages(secondTurn.id),
         };
       }),
     );
@@ -372,6 +374,11 @@ describe.skipIf(!reachable)("0035 process kinds and 0036 agent conversation", ()
       result.page.filter((item) => item.providerItemId === "provider-item-repository"),
     ).toHaveLength(1);
     expect(result.after).toEqual([]);
+    // The turn's messages: the one message, once, at its latest text.
+    expect(result.turnMessages.map((item) => [item.kind, item.text])).toEqual([
+      ["assistant-message", "final"],
+    ]);
+    expect(result.secondTurnMessages).toEqual([]);
   });
 });
 
@@ -1127,6 +1134,84 @@ describe.skipIf(!reachable)("0062 slack", () => {
       linksAfterRemoval: [{ slack_user_id: "U-ALICE" }],
       afterUninstall: { links: 0, codes: 0, channelDefaults: 0, userDefaults: 1, threads: 1 },
       threadsAfterSession: 0,
+    });
+  });
+});
+
+describe.skipIf(!reachable)("0063 slack reports", () => {
+  const REPORTS_DB = `${SCRATCH_DB}_slack_reports`;
+  const reportsLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${REPORTS_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withReportsDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(reportsLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${REPORTS_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${REPORTS_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("reads an earlier thread as external with nothing reported, and posts go with the session", async () => {
+    const result = await withReportsDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0062_slack");
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-1', 'api', '/store/p-1/repo.git', 'main', ${organization?.id ?? ""})`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc')`;
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, status, origin)
+          VALUES ('s-1', 'p-1', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running', 'slack')`;
+        yield* sql`
+          INSERT INTO slack_threads
+            (session_id, team_id, channel_id, thread_ts, request_ts, slack_user_id, project_source)
+          VALUES ('s-1', 'T-ACME', 'C-1', '1.0', '1.1', 'U-ALICE', 'message')`;
+        yield* migrations["0063_slack_reports"];
+
+        const [thread] = yield* sql<{
+          readonly external: boolean;
+          readonly reported_state: string | null;
+          readonly reported_status: string | null;
+        }>`SELECT external, reported_state, reported_status FROM slack_threads`;
+        const post = () =>
+          attempt(sql`INSERT INTO slack_thread_posts (session_id, key) VALUES ('s-1', 'plan')`);
+        const first = yield* post();
+        const again = yield* post();
+        const orphan = yield* attempt(
+          sql`INSERT INTO slack_thread_posts (session_id, key) VALUES ('s-none', 'plan')`,
+        );
+        yield* sql`DELETE FROM agent_sessions WHERE id = 's-1'`;
+        const [left] = yield* sql<{
+          readonly n: number;
+        }>`SELECT count(*)::int AS n FROM slack_thread_posts`;
+        return { thread, first, again, orphan, postsAfterSession: left?.n ?? -1 };
+      }),
+    );
+    expect(result).toEqual({
+      thread: { external: true, reported_state: null, reported_status: null },
+      first: "inserted",
+      again: "refused",
+      orphan: "refused",
+      postsAfterSession: 0,
     });
   });
 });

@@ -1933,6 +1933,30 @@ const slackMigration = Effect.gen(function* () {
   yield* sql`CREATE INDEX slack_event_claims_claimed_at_idx ON slack_event_claims (claimed_at)`;
 });
 
+/**
+ * docs/adr/0006-slack.md, "What Mend posts, and where": what the thread reporter has shown, so
+ * that a restart or a second worker never posts twice. `reported_status` is the status line last
+ * written to the status message, moved only by a compare-and-set; `slack_thread_posts` holds a
+ * key per reply posted (a turn's closing message, a question, the review count). `external`
+ * records whether the thread is in a Slack Connect channel; a row from before it reads external,
+ * which shows the least.
+ */
+const slackReportsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE slack_threads
+      ADD COLUMN external boolean NOT NULL DEFAULT true,
+      ADD COLUMN reported_state text,
+      ADD COLUMN reported_status text`;
+  yield* sql`
+    CREATE TABLE slack_thread_posts (
+      session_id text NOT NULL REFERENCES slack_threads (session_id) ON DELETE CASCADE,
+      key text NOT NULL,
+      posted_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (session_id, key)
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -1997,4 +2021,5 @@ export const migrations = {
   "0060_shared_control": sharedControlMigration,
   "0061_upgrade_tickets": upgradeTicketsMigration,
   "0062_slack": slackMigration,
+  "0063_slack_reports": slackReportsMigration,
 };

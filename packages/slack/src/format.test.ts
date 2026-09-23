@@ -3,8 +3,13 @@ import { describe, expect, it } from "vitest";
 import {
   agentMessage,
   AGENT_MESSAGE_LIMIT,
+  approvalMessage,
+  changeUrl,
   changeWords,
   clipAgentMessage,
+  DIFF_FILE_LIMIT,
+  diffMessages,
+  disclosureFor,
   helpMessage,
   linkPrompt,
   linkUrl,
@@ -12,11 +17,14 @@ import {
   pickProjectActionId,
   projectPicker,
   projectPickerBlockId,
+  questionMessage,
   reactionFor,
   requestKeyOfPicker,
+  reviewMessage,
   SLACK_ACTIONS,
   sessionUrl,
   statusLine,
+  splitDiff,
   statusMessage,
   type StatusInput,
 } from "./format.ts";
@@ -250,6 +258,158 @@ describe("replies only the person sees", () => {
       helpMessage({ botName: "mend", harnesses: ["claude"] }),
       linkPrompt("https://mend.example/slack/link/x"),
       outsiderMessage("Acme"),
+    ];
+    for (const message of messages) expect(copyOf(message)).not.toMatch(VERDICTS);
+  });
+});
+
+describe("what the reporter posts", () => {
+  const url = "https://mend.example/sessions/s1";
+  const settings = { showAgentMessages: true, showDiffs: false, externalChannels: false };
+
+  it("keeps a Slack Connect channel to status and links unless the owner opens it", () => {
+    expect(disclosureFor(settings, false)).toEqual({ agentMessages: true, diffs: false });
+    expect(disclosureFor({ ...settings, showDiffs: true }, false)).toEqual({
+      agentMessages: true,
+      diffs: true,
+    });
+    expect(disclosureFor({ ...settings, showDiffs: true }, true)).toEqual({
+      agentMessages: false,
+      diffs: false,
+    });
+    expect(disclosureFor({ ...settings, showDiffs: true, externalChannels: true }, true)).toEqual({
+      agentMessages: true,
+      diffs: true,
+    });
+    expect(disclosureFor({ ...settings, showAgentMessages: false }, false)).toEqual({
+      agentMessages: false,
+      diffs: false,
+    });
+  });
+
+  it("names the owner in a question, and leaves its text out where agent messages are off", () => {
+    const questions = [
+      {
+        header: "Retry",
+        question: "Keep <3 retries?",
+        options: [
+          { label: "Yes", description: "as today" },
+          { label: "No", description: null },
+        ],
+      },
+    ];
+    const shown = questionMessage({ ownerSlackUserId: "U-alice", questions, showText: true, url });
+    const body = shown.blocks[0]?.type === "section" ? shown.blocks[0].text.text : "";
+    expect(body).toBe(
+      "<@U-alice> the agent asks:\n*Retry* Keep &lt;3 retries?\n• Yes · as today\n• No",
+    );
+    expect(copyOf(shown)).toContain(`<${url}|open the session>`);
+    const hidden = questionMessage({
+      ownerSlackUserId: "U-alice",
+      questions,
+      showText: false,
+      url,
+    });
+    expect(hidden.text).toBe("<@U-alice> the agent asked a question · it is answered in Mend");
+    expect(copyOf(hidden)).not.toContain("retries");
+  });
+
+  it("words an approval as a status line with a link, its title only where allowed", () => {
+    expect(
+      approvalMessage({ kind: "command-approval", title: "pnpm test", showText: true, url }).text,
+    ).toBe("approval requested · a command · `pnpm test` · answered in Mend");
+    const hidden = approvalMessage({
+      kind: "file-change-approval",
+      title: "src/secret.ts",
+      showText: false,
+      url,
+    });
+    expect(hidden.text).toBe("approval requested · a file change · answered in Mend");
+    expect(hidden.blocks[0]).toMatchObject({ accessory: { url } });
+  });
+
+  it("counts what the review pass drafted, zero included, with a Review in Mend button", () => {
+    const review = changeUrl("https://mend.example/", "chg 1");
+    expect(review).toBe("https://mend.example/changes/chg%201");
+    const message = reviewMessage({ drafts: 3, suggestions: 1, url: review });
+    expect(message.text).toBe("Mend read the change · 3 draft comments · 1 with a suggested edit");
+    expect(message.blocks[0]).toMatchObject({
+      accessory: {
+        action_id: SLACK_ACTIONS.reviewChange,
+        text: { text: "Review in Mend" },
+        url: review,
+      },
+    });
+    expect(reviewMessage({ drafts: 0, suggestions: 0, url: review }).text).toBe(
+      "Mend read the change · no draft comments",
+    );
+    expect(reviewMessage({ drafts: 1, suggestions: 0, url: review }).text).toBe(
+      "Mend read the change · 1 draft comment",
+    );
+  });
+
+  it("splits a diff per file and cuts each at 3,000 characters", () => {
+    const diff = [
+      "diff --git a/src/a.ts b/src/a.ts",
+      "--- a/src/a.ts",
+      "+++ b/src/a.ts",
+      "@@ -1 +1 @@",
+      "-old",
+      "+new",
+      "diff --git a/gone.ts b/gone.ts",
+      "deleted file mode 100644",
+      "--- a/gone.ts",
+      "+++ /dev/null",
+      "@@ -1 +0,0 @@",
+      "-bye",
+      "",
+    ].join("\n");
+    const split = splitDiff(diff);
+    expect([...split.keys()]).toEqual(["src/a.ts", "gone.ts"]);
+    expect(split.get("src/a.ts")?.endsWith("+new")).toBe(true);
+
+    const big = `diff --git a/big.ts b/big.ts\n${"+x\n".repeat(3_000)}`;
+    const [message, ...more] = diffMessages(
+      [
+        { path: "src/a.ts", additions: 1, deletions: 1, diff: split.get("src/a.ts") ?? null },
+        { path: "big.ts", additions: 3_000, deletions: 0, diff: big },
+        { path: "logo.png", additions: 0, deletions: 0, diff: null },
+      ],
+      url,
+    );
+    expect(more).toEqual([]);
+    expect(message?.text).toBe("diff · 3 files");
+    const text = message?.blocks[0]?.type === "markdown" ? message.blocks[0].text : "";
+    expect(text).toContain("**src/a.ts** · +1 −1\n\n```diff\ndiff --git a/src/a.ts");
+    expect(text).toContain(`[The rest of this file's diff is in Mend](${url})`);
+    expect(text).toContain("**logo.png** · +0 −0\n\nNo text diff.");
+    const bigSection = text.split("**big.ts**")[1] ?? "";
+    expect(bigSection.length).toBeLessThan(DIFF_FILE_LIMIT + 200);
+  });
+
+  it("names the files past the first twenty by count, and splits at Slack's limit", () => {
+    const files = Array.from({ length: 23 }, (_, index) => ({
+      path: `f${index}.ts`,
+      additions: 1,
+      deletions: 0,
+      diff: `diff --git a/f${index}.ts b/f${index}.ts\n${"+y\n".repeat(1_400)}`,
+    }));
+    const messages = diffMessages(files, url);
+    expect(messages.length).toBeGreaterThan(1);
+    for (const message of messages) {
+      const text = message.blocks[0]?.type === "markdown" ? message.blocks[0].text : "";
+      expect(text.length).toBeLessThanOrEqual(12_000);
+    }
+    const last = messages.at(-1);
+    const text = last?.blocks[0]?.type === "markdown" ? last.blocks[0].text : "";
+    expect(text.endsWith(`3 more files are in [Mend](${url}).`)).toBe(true);
+  });
+
+  it("gives no verdicts", () => {
+    const messages = [
+      questionMessage({ ownerSlackUserId: "U1", questions: [], showText: true, url }),
+      approvalMessage({ kind: "tool-permission", title: null, showText: true, url }),
+      reviewMessage({ drafts: 0, suggestions: 0, url }),
     ];
     for (const message of messages) expect(copyOf(message)).not.toMatch(VERDICTS);
   });
