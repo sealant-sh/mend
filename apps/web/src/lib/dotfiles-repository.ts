@@ -30,7 +30,8 @@ export const DOTFILES_MANAGER_OPTIONS: ReadonlyArray<{
   {
     value: "auto",
     label: "Auto",
-    detail: "Chezmoi for a chezmoi source, stow for package directories only, otherwise copy.",
+    detail:
+      "Chezmoi for a chezmoi source, stow for package directories with no dotfiles beside them, otherwise copy.",
   },
   { value: "copy", label: "Copy", detail: "Copies the tree into the home directory as it is." },
   {

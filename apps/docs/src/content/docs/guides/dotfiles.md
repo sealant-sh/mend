@@ -113,8 +113,9 @@ The manager decides how the repository's tree lands in the workspace home direct
 
 `auto` uses chezmoi when the top level is a chezmoi source (`.chezmoi*`, `dot_*`, `private_*` or
 `*.tmpl` entries). It uses stow only for a pure stow layout: package directories at the top level
-and no dot entries beside them. Plain files such as `README.md` or a `Brewfile` do not count. Any
-other tree is copied, including a home mirror that holds `.config/` and `.zshenv` beside `bin/`.
+and no dot entries beside them. Plain files such as `README.md` or a `Brewfile` do not count, and
+neither do Git's and stow's own files (`.gitignore`, `.github/`, `.stow-local-ignore`). Any other
+tree is copied, including a home mirror that holds `.config/` and `.zshenv` beside `bin/`.
 
 Pick a manager explicitly when `auto` would choose differently from what you intend. A repository
 whose top level mirrors your home directory wants `copy`. For stow packages kept beside other files,

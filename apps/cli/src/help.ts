@@ -557,7 +557,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     description: [
       "The server clones the repository as you at every launch and sends its tree to the workspace. Saving tries that clone once; a repository it cannot clone is not saved, and the reason is printed.",
       "This sets the whole repository: an option left out takes its default. --clear removes it.",
-      "The manager decides how the tree lands in the home directory. auto uses chezmoi for a chezmoi source and stow only when the top level holds nothing but package directories; any other tree is copied. copy copies the tree as it is, stow links each top-level directory as a stow package, and chezmoi runs chezmoi apply with the tree as its source.",
+      "The manager decides how the tree lands in the home directory. auto uses chezmoi for a chezmoi source and stow only for package directories with no dotfiles beside them; any other tree is copied. copy copies the tree as it is, stow links each top-level directory as a stow package, and chezmoi runs chezmoi apply with the tree as its source.",
     ],
     options: [
       { flag: "--ref <r>", text: "the branch to clone. Default: the remote's default branch" },
