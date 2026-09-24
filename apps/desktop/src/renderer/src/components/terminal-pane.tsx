@@ -23,7 +23,6 @@ import {
   resumeSession,
   stopSession,
   type AgentLaunchModeDto,
-  type ChangeLandingDto,
   type SessionDto,
   type SessionProcessDto,
 } from "#/lib/api";
@@ -219,8 +218,6 @@ export function TerminalPane({
     enabled: landOpen && session !== null,
   });
   const nowMs = useNow();
-  // A server from before landing omits the detail's landings.
-  const detailLandings: ReadonlyArray<ChangeLandingDto> | undefined = detail.data?.landings;
   // The ended agent's record: its PTY output replays when the process had a platform PTY.
   const recordProcess =
     currentAgent !== null && currentAgent.sealantSessionId !== null ? currentAgent : null;
@@ -446,7 +443,6 @@ export function TerminalPane({
               ? null
               : pullRequestBase(session.baseRef, projectRead.data.project.defaultBranch)
           }
-          landings={detailLandings ?? []}
           onClose={() => setLandOpen(false)}
         />
       )}

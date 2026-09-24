@@ -1,7 +1,7 @@
 import { useEffect, useSyncExternalStore } from "react";
 
 import { refreshConversation } from "#/lib/conversation";
-import { queryClient } from "#/lib/queries";
+import { invalidateLandings, queryClient } from "#/lib/queries";
 
 import type { EventsState, WorkbenchEvent } from "../../../shared/bridge";
 
@@ -27,6 +27,9 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEvent) => void) =>
             if (event.sessionId !== undefined) {
               void queryClient.invalidateQueries({ queryKey: ["session", event.sessionId] });
             }
+            // A turn's landing decision ("changes not landed · …") is the change's fact, read
+            // by every session in the worktree.
+            void invalidateLandings();
             if (event.projectId !== undefined) {
               void queryClient.invalidateQueries({ queryKey: ["project", event.projectId] });
             } else {
@@ -71,6 +74,8 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEvent) => void) =>
             if (event.sessionId !== undefined) {
               void queryClient.invalidateQueries({ queryKey: ["session", event.sessionId] });
             }
+            // A landing is recorded against the change, and names only the session that landed.
+            void invalidateLandings();
             break;
           default:
             break;

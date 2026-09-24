@@ -14,7 +14,6 @@ const render = (patch: Partial<LandPanelViewProps> = {}): string =>
   renderToStaticMarkup(
     createElement(LandPanelView, {
       view: landingsFixture(),
-      landings: [],
       probed: null,
       worktreeBranch: "mend/fix-login",
       base: "main",
@@ -52,7 +51,7 @@ describe("the Land panel", () => {
   });
 
   it("states what was pushed and what GitHub last said, and updates the same pull request", () => {
-    const markup = render({ view: LANDED, landings: LANDED.landings });
+    const markup = render({ view: LANDED });
     expect(markup).toContain("pushed · mend/fix-login · 3f2a1c0 · observed");
     expect(markup).toContain("pull request #412 · open · observed 2 min ago");
     expect(markup).toContain("Push and update pull request");
@@ -62,13 +61,13 @@ describe("the Land panel", () => {
   });
 
   it("never gives a verdict, and never offers to merge", () => {
-    const markup = render({ view: LANDED, landings: LANDED.landings });
+    const markup = render({ view: LANDED });
     expect(markup).not.toMatch(/ready to merge|safe to|approve|merge now/i);
     expect(markup).toContain("merging stays on GitHub");
   });
 
   it("shows anyone else the facts and not the form", () => {
-    const markup = render({ view: { ...LANDED, land: false }, landings: LANDED.landings });
+    const markup = render({ view: { ...LANDED, land: false } });
     expect(markup).toContain("pull request #412 · open · observed 2 min ago");
     expect(markup).toContain("only the change&#x27;s owner lands it");
     expect(markup).not.toContain("Push and");
@@ -111,7 +110,6 @@ describe("the Land panel", () => {
         landings: [refused],
         facts: [{ _tag: "refused", branch: "mend/fix-login", message: "non-fast-forward" }],
       }),
-      landings: [refused],
     });
     expect(markup).toContain("push refused · mend/fix-login · non-fast-forward");
     expect(markup).toContain("Push and open pull request");

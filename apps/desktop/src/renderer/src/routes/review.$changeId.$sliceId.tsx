@@ -12,7 +12,6 @@ import {
   openReview,
   postSliceReviewComment,
   setReviewCommentState,
-  type ChangeLandingDto,
   type ReviewCommentDto,
   type ReviewDiffFileDto,
   type SliceCommentTargetDto,
@@ -114,8 +113,6 @@ function ReviewPage({
     ...projectDetailQuery(reviewedSession?.projectId ?? ""),
     enabled: landOpen && reviewedSession !== null,
   });
-  // A server from before landing omits the detail's landings.
-  const detailLandings: ReadonlyArray<ChangeLandingDto> | undefined = sessionControl.data?.landings;
   const processes = useQuery({
     ...sessionProcessesQuery(sessionId),
     enabled: sessionId !== "",
@@ -471,7 +468,6 @@ function ReviewPage({
                   ? null
                   : pullRequestBase(reviewedSession.baseRef, landProject.data.project.defaultBranch)
               }
-              landings={detailLandings ?? []}
               onClose={() => setLandOpen(false)}
             />
           )}

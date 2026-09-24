@@ -201,9 +201,8 @@ stays on GitHub; nothing in the app says a change is ready.
   opens the same sheet, as the web shows its Land panel on the change's review.
 - **The sheet.** Where the change goes (`push mend/fix-login to origin · pull request into main`),
   the observed facts, Check origin (a fetch with the viewer's own git access), Refresh pull request
-  (the owner; Mend does not poll GitHub), Open #412 on GitHub, and the landings from
-  `SessionDetail.landings`, newest first
-  (`pushed · mend/fix-login · 3f2a1c0 · pull request #412 · open · observed`,
+  (the owner; Mend does not poll GitHub), Open #412 on GitHub, and the landing record's own
+  landings, newest first (`pushed · mend/fix-login · 3f2a1c0 · pull request #412 · open · observed`,
   `automatic · 2 min ago`). The owner also gets the title, their own description above Mend's
   section, and one button: Push and open pull request, Push and update pull request, or Push to
   origin where origin is not on GitHub (with the reason).
@@ -358,6 +357,12 @@ change in view.
 - 2026-09-24: a server from before landing is read as having none. The landing read answers 404 and
   the session shows nothing; the project's missing `autoLand` hides the composer's override, since
   the server would ignore it.
+- 2026-09-24 (review): the landing record is the change's, read by every session in its worktree,
+  while a landing or a turn's event names only the session that landed or ran it. Every `session`
+  and `session-change` event and every land, check and refresh therefore re-reads all open landing
+  reads, as the web invalidates all of its; keyed under one session, a sibling session's strip and
+  Review's button kept a stale fact. The sheet reads its history, the button's words and the facts
+  from that one record rather than `SessionDetail.landings`, which a sibling's event left stale.
 
 - 2026-09-24: packaging ships the electron-vite output alone. Every runtime import is bundled (main
   and preload need only electron and node builtins), so the desktop's former `dependencies` moved to

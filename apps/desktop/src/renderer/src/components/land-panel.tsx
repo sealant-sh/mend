@@ -7,7 +7,6 @@ import {
   landSession,
   refreshLanding,
   sessionLandings,
-  type ChangeLandingDto,
   type ChangeLandingsDto,
   type LandingFactDto,
   type LandingReportDto,
@@ -29,7 +28,7 @@ import {
   type FactTone,
 } from "#/lib/landing";
 import { useNow } from "#/lib/now";
-import { queryClient, sessionLandingsQuery } from "#/lib/queries";
+import { invalidateLandings, queryClient, sessionLandingsQuery } from "#/lib/queries";
 
 /**
  * Landing (docs/adr/0007-landing.md), the desktop's half of the web's Land panel: where the
@@ -90,9 +89,8 @@ export interface LandDraft {
 export type LandPending = "land" | "probe" | "refresh" | null;
 
 export interface LandPanelViewProps {
+  /** The change's landing record: its landings newest first, and the facts observed of them. */
   readonly view: ChangeLandingsDto;
-  /** The session detail's landings, newest first: the history this change has. */
-  readonly landings: ReadonlyArray<ChangeLandingDto>;
   /** The last "Check origin": the same record, with one fetch of origin's branch. */
   readonly probed: ChangeLandingsDto | null;
   readonly worktreeBranch: string;
@@ -126,8 +124,8 @@ function TextAction({ children, className = "", ...props }: React.ComponentProps
 
 export function LandPanelView(props: LandPanelViewProps) {
   const { view, draft, pending, now } = props;
-  // The detail's list answers first; the landing read carries the same rows once it answers.
-  const landings = props.landings.length > 0 ? props.landings : view.landings;
+  // The record's own rows, so the history, the button and the facts read one answer.
+  const landings = view.landings;
   const facts = factsWithProbe(view.facts, props.probed);
   const updates = pullRequestToUpdate(landings);
   const branch = nextRemoteBranch(landings, props.worktreeBranch);
@@ -292,22 +290,20 @@ export function LandPanelView(props: LandPanelViewProps) {
 
 /**
  * The Land panel for one session's change, wired to the server: the landing record from
- * `GET /api/sessions/:id/landings`, the history from the session detail, and the owner's land,
- * check and refresh. A server from before landing answers the read with 404, and the panel says
- * so instead of offering a button that would fail.
+ * `GET /api/sessions/:id/landings` (its history included), and the owner's land, check and
+ * refresh. A server from before landing answers the read with 404, and the panel says so
+ * instead of offering a button that would fail.
  */
 export function LandPanel({
   sessionId,
   sessionLabel,
   worktreeBranch,
   base,
-  landings,
 }: {
   readonly sessionId: string;
   readonly sessionLabel: string | null;
   readonly worktreeBranch: string;
   readonly base: string | null;
-  readonly landings: ReadonlyArray<ChangeLandingDto>;
 }) {
   const view = useQuery(sessionLandingsQuery(sessionId));
   const now = new Date(useNow());
@@ -340,12 +336,13 @@ export function LandPanel({
         if (landingSession !== sessionId) {
           void queryClient.invalidateQueries({ queryKey: ["session", landingSession] });
         }
+        // Every session in the worktree reads this change's record.
+        void invalidateLandings();
       });
 
   return (
     <LandPanelView
       view={data}
-      landings={landings}
       probed={probed}
       worktreeBranch={worktreeBranch}
       base={base}
@@ -391,14 +388,12 @@ export function LandSheet({
   sessionLabel,
   worktreeBranch,
   base,
-  landings,
   onClose,
 }: {
   readonly sessionId: string;
   readonly sessionLabel: string | null;
   readonly worktreeBranch: string;
   readonly base: string | null;
-  readonly landings: ReadonlyArray<ChangeLandingDto>;
   readonly onClose: () => void;
 }) {
   return (
@@ -415,7 +410,6 @@ export function LandSheet({
         sessionLabel={sessionLabel}
         worktreeBranch={worktreeBranch}
         base={base}
-        landings={landings}
       />
     </Sheet>
   );
