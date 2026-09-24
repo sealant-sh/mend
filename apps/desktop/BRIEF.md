@@ -318,6 +318,12 @@ change in view.
   `~/.config/@mend/desktop` in dev and packaged runs, and the credential stays in the CLI's
   `~/.config/mend/cli.json`. `desktopName` (`mend-desktop.desktop`, added through `extraMetadata`)
   with `linux.syncDesktopName` gives the Wayland app_id and the AppImage's desktop entry one name.
+- 2026-09-24 (review): the package name is not the name people read. Electron takes `app.name` from
+  it, and macOS spells the app menu's About, Hide and Quit items from `app.name`, so the packaged
+  Mac build said "Quit @mend/desktop". Main now pins `userData` to the path the package name gives,
+  then calls `app.setName("Mend")`: the rename alone would have moved the profile to
+  `~/.config/Mend`. The X11 WM_CLASS was already `mend-desktop` (checked with xprop): Electron takes
+  it from `desktopName`, not from the app name.
 
 - 2026-09-24: the phone's platform-free conversation logic moved into `@mend/agent-conversation`
   (ordering, item cursor paging, request words, answer composition) instead of being copied. The

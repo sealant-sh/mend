@@ -73,10 +73,19 @@ if (process.platform === "linux") {
 // A second, isolated instance for testing/diagnostics: MEND_USER_DATA moves
 // the profile (and with it the single-instance lock), so a probe instance can
 // run beside the daily one. Must be set before the lock is requested.
+//
+// Otherwise the profile stays where the package name puts it
+// (~/.config/@mend/desktop), in dev and packaged runs alike. It is pinned
+// before the rename below, because app.setName also moves a userData path that
+// nothing has pinned yet (to ~/.config/Mend).
 const userData = process.env["MEND_USER_DATA"];
-if (userData !== undefined && userData !== "") {
-  app.setPath("userData", userData);
-}
+app.setPath(
+  "userData",
+  userData !== undefined && userData !== "" ? userData : app.getPath("userData"),
+);
+// Electron names the app after package.json's `name` (`@mend/desktop`), and
+// macOS spells the app menu's About, Hide and Quit items from app.name.
+app.setName("Mend");
 
 let mainWindow: BrowserWindow | null = null;
 
