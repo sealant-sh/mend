@@ -286,7 +286,9 @@ function ReviewPage({
                 )}
               </div>
             </div>
+            {/* The sheet needs the session's branch and base, so the button waits for its detail. */}
             {landingsRead.data !== undefined &&
+              reviewedSession !== null &&
               (landingsRead.data.land || landingsRead.data.facts.length > 0) && (
                 <button
                   type="button"
