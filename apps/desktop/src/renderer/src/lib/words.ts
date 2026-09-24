@@ -56,11 +56,9 @@ export const statusWord = (session: SessionDto): string => {
   }
 };
 
-/** A visible session title, including the migration warning for a retired hidden bench. */
+/** A session's title: its harness and its label, else its branch. */
 export const sessionTitle = (session: SessionDto): string =>
-  session.harness === "shell" && session.label === "bench"
-    ? `legacy bench · ${session.branch} · review before removal`
-    : `${session.harness} · ${session.label ?? session.branch}`;
+  `${session.harness} · ${session.label ?? session.branch}`;
 
 /** Minutes and hours only — the inbox is a glance, not a log. */
 export const ago = (iso: string | null, now: number): string | null => {

@@ -118,7 +118,7 @@ function Main() {
     queries: sessionList.map((session) => sessionProcessesQuery(session.id)),
   });
 
-  const tree = useMemo(() => buildTree(data), [data]);
+  const tree = useMemo(() => buildTree(data, visited), [data, visited]);
   /** Global order for the palette and the inbox face; per-project rows for the tree. */
   const inbox = useMemo(
     () => buildInbox(data, visited, snoozes, now),
@@ -140,14 +140,10 @@ function Main() {
     );
     return () => window.clearTimeout(timer);
   }, [snoozes, wakeTick]);
-  const rowsByProject = useMemo(() => {
-    const map = new Map<string, ReadonlyArray<InboxRow>>();
-    for (const entry of data) {
-      const scoped = buildInbox([entry], visited);
-      map.set(entry.project.id, [...scoped.active, ...scoped.settled]);
-    }
-    return map;
-  }, [data, visited]);
+  const rowsByProject = useMemo(
+    () => new Map(tree.map((entry) => [entry.project.id, entry.rows])),
+    [tree],
+  );
   const serviceGlances = useMemo(() => {
     const map = new Map<string, Array<ServiceGlance>>();
     for (const view of serviceViews.data ?? []) {

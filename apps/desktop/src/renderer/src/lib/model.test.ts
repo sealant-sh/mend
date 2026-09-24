@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import type { ProjectDto, SessionDto, SessionProcessDto } from "./api.ts";
 import { annotationFixture, processFixture, projectFixture, sessionFixture } from "./fixtures.ts";
 import { SETTLED_INITIAL } from "./inbox-shelves.ts";
-import { buildInbox, scopeInbox, visibleInboxRows } from "./model.ts";
+import { buildInbox, buildTree, scopeInbox, visibleInboxRows } from "./model.ts";
 
 const project = (id: string): ProjectDto => projectFixture({ id, name: id });
 
@@ -197,5 +197,19 @@ describe("scopeInbox + visibleInboxRows", () => {
       "old-running",
       "done-late",
     ]);
+  });
+});
+
+describe("buildTree", () => {
+  it("keeps every session, shell sessions included: live newest first, then settled", () => {
+    const tree = buildTree(data, {}, now);
+    expect(tree[0]?.rows.map((row) => row.session.id)).toEqual([
+      "shell",
+      "new-idle",
+      "old-running",
+      "done-late",
+      "done-early",
+    ]);
+    expect(tree[0]?.rows[0]?.title).toBe("shell · shell");
   });
 });

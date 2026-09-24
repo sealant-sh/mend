@@ -55,7 +55,7 @@ describe("desktop workbench layout", () => {
     vi.resetModules();
   });
 
-  it("drops legacy bench tabs and restores live server-owned shells", async () => {
+  it("drops a shell tab without a process id and restores live server-owned shells", async () => {
     localStorage.setItem(
       "mend-workbench",
       JSON.stringify({
@@ -64,7 +64,7 @@ describe("desktop workbench layout", () => {
           "project-1": {
             focused: 0,
             tabs: [
-              { kind: "shell", sessionId: "legacy-bench", processId: null },
+              { kind: "shell", sessionId: "session-0", processId: null },
               { kind: "session", sessionId: "session-1" },
             ],
           },

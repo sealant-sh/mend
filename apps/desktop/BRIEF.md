@@ -1,8 +1,5 @@
 # Mend Desktop — brief
 
-> **Amended 2026-08-20:** hidden project benches are retired. The implementation still contains the
-> legacy bench path until the migration described below lands.
-
 The desktop app is a herdr rebuilt as a GUI, with Mend as the engine. Herdr's layout is the part
 worth keeping. Yiannis lives in it all day and its shape is proven: a tree of places on the left,
 tabs across the top, one dominant terminal, an agents list that tells you where to look next. What
@@ -52,8 +49,9 @@ Ctrl+Shift+B (or the toggle at the top of the rail) switches faces; the choice p
 
 - **Tree.** Projects from `/api/projects`, any number open at once (`mend-sidebar-expanded`). Each
   session is a worktree and opens into what runs in it: the harness process, every live supporting
-  shell, and its Services — a shell is never hidden behind a closed tab. Row = dot + name + the
-  status word; clicking a shell child raises its tab.
+  shell, and its Services. Every session is listed, `shell` sessions included — a shell is never
+  hidden behind a closed tab. Row = dot + name + the status word; clicking a shell child raises its
+  tab.
 - **Inbox.** t3code's flat cross-project list: static creation order (activity never reorders a
   row), a collapsed Snoozed shelf, a Settled tail with show-more paging, attention by contrast
   (done-unseen / input / failed prominent, working receded). Snooze is client-local with t3's
@@ -221,8 +219,9 @@ broker — no local PTYs are needed when every terminal is a server attach), the
 the bridge, the tile grid, the cockpit model that merged two sources.
 
 New: project tree rail, server-discovered session and shell tabs, the inbox, the launcher, native
-Review, Services drawer, and store/settings screens. The legacy bench mechanism is removed only
-after its hidden worktrees and changes are surfaced for migration.
+Review, Services drawer, and store/settings screens. The legacy bench path is gone (2026-09-24): the
+tree lists every session, so a former bench is an ordinary `shell` session with its worktree and
+change in view.
 
 ## Milestones
 
@@ -232,7 +231,9 @@ after its hidden worktrees and changes are surfaced for migration.
   session's workspace reached "failed" before becoming ready on the linear-cli project, as an
   earlier claude session there did.
 - **M1: honest ownership.** Tree, visible sessions, session-owned shells, terminal, inbox, launcher,
-  keybindings, legacy-bench migration, and retained-workspace controls.
+  keybindings, and retained-workspace controls. Clean base (2026-09-24, branch
+  `desktop/02-contracts`): wire shapes and routes from `@mend/api-contracts`, the bench path
+  removed, controls gated on what the server says the caller may do.
 - **M2: Review in-app.** Immutable checkpoint-pair diff, P0 controls, comments, minimum evidence,
   and recoverable send-back.
 - **M3: Services in-app.** Stable Services, attempt history, private forwards, read-only logs, and
@@ -266,6 +267,11 @@ after its hidden worktrees and changes are surfaced for migration.
   mint or liveness probe answering for an older attempt changes nothing, and a window focus leaves a
   socket that is still opening alone. Before, a focus during a probe could leave two sockets on one
   PTY.
+- 2026-09-24: the bench path is deleted. It never surfaced anything: the tree's rows came from the
+  agent-only inbox, so a `shell` session (a former bench among them) was hidden either way. Alpha
+  had no `bench`-labelled session and one hidden `shell` session on the mend project; the tree now
+  builds its rows from every session and shows it (`shell · mend/test-alph`). The inbox still lists
+  agents only.
 
 - 2026-08-20: hidden project benches are retired. Supporting shells belong to a focused visible
   session and its change. The old default-shell and per-project bench decisions below are

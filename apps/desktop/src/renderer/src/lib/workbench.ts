@@ -53,7 +53,7 @@ const parseTab = (value: unknown): Tab | null => {
       name: typeof value.name === "string" ? value.name : "logs",
     };
   }
-  // Legacy bench tabs used a null process id for the hidden session's primary PTY.
+  // Anything else (an older layout's shape, a shell tab with no process id) is dropped.
   return null;
 };
 
