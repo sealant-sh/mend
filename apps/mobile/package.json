@@ -20,6 +20,7 @@
     "@expo-google-fonts/jetbrains-mono": "^0.4.1",
     "@expo-google-fonts/space-grotesk": "^0.4.1",
     "@legendapp/list": "3.3.3",
+    "@mend/agent-conversation": "workspace:*",
     "@mend/domain": "workspace:*",
     "@mend/network": "workspace:*",
     "@mend/ui": "workspace:*",

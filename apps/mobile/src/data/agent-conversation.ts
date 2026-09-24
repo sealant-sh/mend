@@ -1,30 +1,19 @@
+import {
+  AgentItemCursorStalled,
+  latestItemSeq,
+  mergeAgentItems,
+  readAgentItemsAfter,
+  type AgentConversationDto,
+  type AgentInputOptionDto,
+  type AgentInputQuestionDto,
+  type AgentItemDto,
+  type AgentRequestDto,
+  type AgentRequestResponse,
+  type AgentTurnDto,
+} from "@mend/agent-conversation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { ApiError, api } from "@/data/live";
-
-import { mergeAgentItems } from "./agent-conversation-feed";
-import type {
-  AgentConversationDto,
-  AgentInputOptionDto,
-  AgentInputQuestionDto,
-  AgentItemDto,
-  AgentRequestDto,
-  AgentTurnDto,
-} from "./agent-conversation-feed";
-
-export { buildAgentConversation } from "./agent-conversation-feed";
-export type {
-  AgentConversationDto,
-  AgentConversationEntry,
-  AgentItemDto,
-  AgentRequestDto,
-  AgentTurnDto,
-} from "./agent-conversation-feed";
-
-type AgentApprovalDecision = "accept" | "accept-for-session" | "decline" | "cancel";
-export type AgentRequestResponse =
-  | { readonly decision: AgentApprovalDecision }
-  | { readonly answers: Readonly<Record<string, ReadonlyArray<string>>> };
 
 const malformed = (subject: string): ApiError =>
   new ApiError(`The server returned malformed ${subject} data.`, 0);
@@ -166,33 +155,18 @@ const parseArray = <T>(
   return value.map(parse);
 };
 
-const ITEM_PAGE_SIZE = 500;
-
-const loadAgentItems = async (
-  sessionId: string,
-  initialAfter: number,
-): Promise<ReadonlyArray<AgentItemDto>> => {
-  const items = new Map<string, AgentItemDto>();
-  let after = initialAfter;
-  while (true) {
-    const raw = await api<unknown>(
-      "GET",
-      `/sessions/${sessionId}/items?after=${after}&limit=${ITEM_PAGE_SIZE}`,
-    );
-    const page = parseArray(raw, "agent items", parseItem);
-    for (const item of page) {
-      items.set(item.id, item);
-    }
-    if (page.length < ITEM_PAGE_SIZE) {
-      return [...items.values()];
-    }
-    const next = Math.max(...page.map((item) => item.seq));
-    if (next <= after) {
-      throw malformed("agent item cursor");
-    }
-    after = next;
-  }
-};
+const loadAgentItems = (sessionId: string, initialAfter: number) =>
+  readAgentItemsAfter(
+    async (after, limit) =>
+      parseArray(
+        await api<unknown>("GET", `/sessions/${sessionId}/items?after=${after}&limit=${limit}`),
+        "agent items",
+        parseItem,
+      ),
+    initialAfter,
+  ).catch((error: unknown) => {
+    throw error instanceof AgentItemCursorStalled ? malformed("agent item cursor") : error;
+  });
 
 export const useAgentConversation = (sessionId: string, enabled: boolean, live: boolean) => {
   const queryClient = useQueryClient();
@@ -202,7 +176,7 @@ export const useAgentConversation = (sessionId: string, enabled: boolean, live: 
     enabled,
     queryFn: async (): Promise<AgentConversationDto> => {
       const previous = queryClient.getQueryData<AgentConversationDto>(queryKey);
-      const after = previous?.items.reduce((latest, item) => Math.max(latest, item.seq), 0) ?? 0;
+      const after = latestItemSeq(previous?.items ?? []);
       const [turns, updates, requests] = await Promise.all([
         api<unknown>("GET", `/sessions/${sessionId}/turns`),
         loadAgentItems(sessionId, after),

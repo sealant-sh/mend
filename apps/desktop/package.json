@@ -17,6 +17,7 @@
     "@fontsource/inter": "catalog:",
     "@fontsource/jetbrains-mono": "catalog:",
     "@fontsource/space-grotesk": "catalog:",
+    "@mend/agent-conversation": "workspace:*",
     "@mend/api-contracts": "workspace:*",
     "@mend/domain": "workspace:*",
     "@mend/ui": "workspace:*",

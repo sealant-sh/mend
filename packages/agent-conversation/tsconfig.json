@@ -1,0 +1,7 @@
+{
+  "extends": "@mend/typescript/core.json",
+  "compilerOptions": {
+    "types": []
+  },
+  "include": ["src/**/*.ts"]
+}
