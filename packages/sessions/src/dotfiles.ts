@@ -3,16 +3,21 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { type GitAccessMode, InstanceRolesRepo, UserGitAccessRepo } from "@mend/db";
 import type { DotfilesRepository } from "@mend/domain";
-import { Duration, Effect, Schema } from "effect";
+import { gitRemoteLocation, TenancyMode } from "@mend/domain/workbench";
+import { AgentBridge, describeGitRemoteFailure, MendKeys, resolveRemoteEnv } from "@mend/store";
+import { Config, Duration, Effect, Layer, Schema } from "effect";
+import * as Context from "effect/Context";
 
 /**
  * Launch-side dotfiles resolution. The platform applies dotfiles from archives the caller ships
  * with the create call, so nothing sensitive reaches the container — only file trees. Two
  * sources, in apply order, each resolved on its own (one failing never takes the other along):
  *
- * 1. the user's dotfiles REPOSITORY — cloned by the Mend server at launch, so every session gets
- *    the branch tip as of that moment;
+ * 1. the user's dotfiles REPOSITORY — cloned by the Mend server at launch, as its owner (never
+ *    with the host's identity, except for the operator of a single-tenant install), so every
+ *    session gets the branch tip as of that moment;
  * 2. the user's dotfiles STORE snapshot — home files synced from wherever the user actually
  *    works, packed by the store as an exact, sha-named commit. Applied second, so the explicit
  *    selection wins over same-named repo files.
@@ -65,14 +70,117 @@ export interface ResolvedDotfilesArchive {
 }
 
 /**
- * The clone's git environment. A daemon cannot answer a prompt, so neither git nor ssh may ask:
- * auth failures surface as readable errors instead of hangs. `pin` (the source policy's
- * `pinnedEnv`) composes over these defaults, so a pinned ssh command keeps `BatchMode=yes`.
+ * Whose credential a dotfiles clone uses (docs/GIT-ACCESS.md, "Dotfiles"):
+ *
+ * - `host`: this machine's own git and ssh setup, as a shell here would clone. Only for the
+ *   operator of a single-tenant install, the one account the host's setup belongs to (the same
+ *   rule as the host's `gh` login for GitHub API calls).
+ * - `owner-ssh`: an ssh URL, signed with the owner's git access: their Mend key, or their
+ *   connected signer when their git access is the bridge.
+ * - `none`: an HTTPS (or git://) URL for anyone else. Mend holds no HTTPS credential of theirs
+ *   (a connected GitHub account's token lives in Sealant, which never returns it), so only a
+ *   public repository clones that way.
+ *
+ * Every kind but `host` clones with nothing of the host's: see {@link DOTFILES_OWNER_ENV}.
+ */
+export type DotfilesCloneIdentity =
+  | { readonly kind: "host" }
+  | { readonly kind: "owner-ssh"; readonly mode: GitAccessMode }
+  | { readonly kind: "none" };
+
+export const dotfilesCloneIdentity = (input: {
+  readonly url: string;
+  readonly tenancy: TenancyMode;
+  /** Whether the owner holds the instance's operator role. */
+  readonly ownerIsOperator: boolean;
+  /** The owner's git access choice; null (never chose) is the Mend key. */
+  readonly ownerGitAccess: GitAccessMode | null;
+}): DotfilesCloneIdentity => {
+  if (input.tenancy === "single" && input.ownerIsOperator) return { kind: "host" };
+  if (gitRemoteLocation(input.url)?.scheme === "ssh") {
+    return { kind: "owner-ssh", mode: input.ownerGitAccess ?? "mend-key" };
+  }
+  return { kind: "none" };
+};
+
+/** The identity and the git environment a clone runs with, before the source policy's pin. */
+export interface DotfilesCloneAccess {
+  readonly identity: DotfilesCloneIdentity;
+  readonly env: Readonly<Record<string, string>>;
+}
+
+/**
+ * The host kind's git environment. A daemon cannot answer a prompt, so neither git nor ssh may
+ * ask: auth failures surface as readable errors instead of hangs.
+ */
+export const DOTFILES_HOST_ENV: Readonly<Record<string, string>> = {
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_SSH_COMMAND: "ssh -o BatchMode=yes",
+};
+
+/**
+ * Every other kind's base: nothing of the host's git or ssh setup reaches the clone. No system
+ * or global git config (credential helpers, `insteadOf` rewrites, extra headers), none injected
+ * through the environment, no askpass program, no ssh agent, and no ssh config, whose
+ * `IdentityFile` entries would otherwise be offered beside the owner's key. The clone also runs
+ * with HOME set to an empty directory made for it, so curl finds no `.netrc`.
+ */
+export const DOTFILES_OWNER_ENV: Readonly<Record<string, string>> = {
+  GIT_TERMINAL_PROMPT: "0",
+  GIT_ASKPASS: "",
+  SSH_ASKPASS: "",
+  GIT_CONFIG_NOSYSTEM: "1",
+  GIT_CONFIG_GLOBAL: "/dev/null",
+  GIT_CONFIG_COUNT: "0",
+  GIT_CONFIG_PARAMETERS: "",
+  SSH_AUTH_SOCK: "",
+  GIT_SSH_COMMAND: "ssh -F /dev/null -o BatchMode=yes",
+};
+
+/** The host kind; `resolveRepositoryArchive` clones with it unless given another access. */
+export const HOST_DOTFILES_ACCESS: DotfilesCloneAccess = {
+  identity: { kind: "host" },
+  env: DOTFILES_HOST_ENV,
+};
+
+/**
+ * The clone's git environment: `access` (the host kind unless given), then `pin` (the source
+ * policy's `pinnedEnv`) composed over it, so a pinned ssh command keeps `BatchMode=yes` and the
+ * owner's key.
  */
 export const dotfilesCloneEnv = (
   pin: (env: Readonly<Record<string, string>>) => Record<string, string> = (env) => ({ ...env }),
-): Record<string, string> =>
-  pin({ GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -o BatchMode=yes" });
+  access: DotfilesCloneAccess = HOST_DOTFILES_ACCESS,
+): Record<string, string> => pin(access.env);
+
+/** Refused HTTPS credentials, as git reports them with prompts off. */
+const HTTPS_AUTH_FAILURE =
+  /could not read (?:Username|Password)|terminal prompts disabled|Authentication failed|Repository not found|returned error: 40[13]/i;
+
+/**
+ * git's reason a clone failed, in the terms of the identity it ran as: the owner's refused key
+ * says which key to add where, and a refused HTTPS clone says why Mend had no credential.
+ */
+const describeCloneFailure = (
+  identity: DotfilesCloneIdentity,
+  url: string,
+  stderr: string,
+): string => {
+  if (identity.kind === "owner-ssh") {
+    return describeGitRemoteFailure(stderr, identity.mode) ?? stderr;
+  }
+  const scheme = gitRemoteLocation(url)?.scheme;
+  if (identity.kind === "none" && (scheme === "https" || scheme === "http")) {
+    const line = stderr
+      .split("\n")
+      .map((candidate) => candidate.trim())
+      .find((candidate) => HTTPS_AUTH_FAILURE.test(candidate));
+    if (line !== undefined) {
+      return `Mend clones your HTTPS dotfiles repository without a credential, so only a public one clones. For a private repository, save its SSH URL (git@host:owner/repo.git): Mend clones that as you, with your Mend key or your connected signer. (observed: ${line})`;
+    }
+  }
+  return stderr;
+};
 
 /**
  * The environment of every git command after the clone: none of them may reach the network. A
@@ -205,6 +313,7 @@ const directoryBytes = (dir: string): number => {
  */
 const buildRepositoryArchive = (
   repository: DotfilesRepository,
+  identity: DotfilesCloneIdentity,
   cloneEnv: Readonly<Record<string, string>>,
   bounds: DotfilesCloneBounds,
 ): Effect.Effect<ResolvedDotfilesArchive, DotfilesResolveError> =>
@@ -212,8 +321,16 @@ const buildRepositoryArchive = (
     const checkout = yield* Effect.sync(() =>
       fs.mkdtempSync(path.join(os.tmpdir(), "mend-dotfiles-")),
     );
+    // An owner's clone gets an empty HOME of its own: nothing the host keeps there (`.netrc`,
+    // git's global config) can lend the clone the host's credentials.
+    const home =
+      identity.kind === "host"
+        ? null
+        : yield* Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "mend-dotfiles-home-")));
+    const cloneEnvironment = home === null ? cloneEnv : { ...cloneEnv, HOME: home };
     const cleanup = Effect.sync(() => {
       fs.rmSync(checkout, { recursive: true, force: true });
+      if (home !== null) fs.rmSync(home, { recursive: true, force: true });
     });
     const label = `the dotfiles repo ${repository.url}`;
     const cloneTooLarge = new DotfilesResolveError({
@@ -246,8 +363,9 @@ const buildRepositoryArchive = (
             repository.url,
             checkout,
           ],
-          { cwd: os.tmpdir(), env: cloneEnv },
-          ({ stderr }) => `dotfiles clone of ${repository.url} failed: ${stderr}`,
+          { cwd: os.tmpdir(), env: cloneEnvironment },
+          ({ stderr }) =>
+            `dotfiles clone of ${repository.url} failed: ${describeCloneFailure(identity, repository.url, stderr)}`,
         ),
         watchCloneSize,
       );
@@ -328,25 +446,149 @@ const buildRepositoryArchive = (
   });
 
 /**
- * The owner's dotfiles REPOSITORY as a launch archive: the bounded clone and pack above, with the
- * clone's git environment (`pinCloneEnv`, the source policy's pin, composes over the defaults).
- * The launch and the save-time probe both come through here, so a repository that saved is one
- * this exact path packed, with the same bounds and credentials.
+ * A dotfiles REPOSITORY as a launch archive: the bounded clone and pack above, as `access` (the
+ * host kind unless given; the owner's comes from {@link DotfilesCloner}), with the source
+ * policy's pin composed over its environment. The launch and the save-time probe both come
+ * through {@link DotfilesCloner}, so a repository that saved is one this exact path packed, with
+ * the same bounds and the same credentials.
  */
 export const resolveRepositoryArchive = (
   repository: DotfilesRepository,
   options: {
-    /** Pins the clone to the address the source policy checked; composes over the defaults. */
+    /** Whose credentials the clone uses and its git environment. */
+    readonly access?: DotfilesCloneAccess;
+    /** Pins the clone to the address the source policy checked; composes over the access env. */
     readonly pinCloneEnv?: (env: Readonly<Record<string, string>>) => Record<string, string>;
     /** Tests shrink these; production uses {@link DOTFILES_CLONE_BOUNDS}. */
     readonly bounds?: DotfilesCloneBounds;
   } = {},
-): Effect.Effect<ResolvedDotfilesArchive, DotfilesResolveError> =>
-  buildRepositoryArchive(
+): Effect.Effect<ResolvedDotfilesArchive, DotfilesResolveError> => {
+  const access = options.access ?? HOST_DOTFILES_ACCESS;
+  return buildRepositoryArchive(
     repository,
-    dotfilesCloneEnv(options.pinCloneEnv),
+    access.identity,
+    dotfilesCloneEnv(options.pinCloneEnv, access),
     options.bounds ?? DOTFILES_CLONE_BOUNDS,
   );
+};
+
+/**
+ * The owner's clone access for `url` under the rule of {@link dotfilesCloneIdentity}, with their
+ * signer resolved through the one seam every host-side remote op uses (`resolveRemoteEnv`). A
+ * bridge with nobody sharing, or a key that cannot be made, fails readable; it never falls back
+ * to the host's identity or anyone else's.
+ */
+export const dotfilesCloneAccess = (
+  identity: DotfilesCloneIdentity,
+  ownerUserId: string,
+): Effect.Effect<DotfilesCloneAccess, DotfilesResolveError, MendKeys | AgentBridge> =>
+  Effect.gen(function* () {
+    if (identity.kind === "host") return HOST_DOTFILES_ACCESS;
+    if (identity.kind === "none") return { identity, env: DOTFILES_OWNER_ENV };
+    const signer = yield* resolveRemoteEnv(identity.mode, ownerUserId).pipe(
+      Effect.catchTag(
+        "NoSignerError",
+        (error) =>
+          new DotfilesResolveError({
+            message: `the dotfiles repository signs with your connected signer: ${error.message}`,
+          }),
+      ),
+      Effect.catchTag(
+        "KeygenError",
+        (error) =>
+          new DotfilesResolveError({
+            message: `the dotfiles repository signs with your Mend key, which could not be created: ${error.stderr}`,
+          }),
+      ),
+    );
+    return {
+      identity,
+      env: {
+        ...DOTFILES_OWNER_ENV,
+        ...signer,
+        // No ssh config: its IdentityFile entries would be offered beside the owner's key.
+        GIT_SSH_COMMAND: `${signer["GIT_SSH_COMMAND"] ?? "ssh -o BatchMode=yes"} -F /dev/null`,
+      },
+    };
+  });
+
+/**
+ * Clones an owner's dotfiles repository as that owner (docs/GIT-ACCESS.md, "Dotfiles"): the
+ * launch and the save-time probe both clone through it, so they use the same credentials.
+ */
+export class DotfilesCloner extends Context.Service<
+  DotfilesCloner,
+  {
+    readonly archive: (
+      ownerUserId: string,
+      repository: DotfilesRepository,
+      options?: {
+        /** The source policy's pin for the address it checked. */
+        readonly pinCloneEnv?: (env: Readonly<Record<string, string>>) => Record<string, string>;
+      },
+    ) => Effect.Effect<ResolvedDotfilesArchive, DotfilesResolveError>;
+  }
+>()("@mend/sessions/DotfilesCloner") {}
+
+/** The cloner under a given tenancy; {@link DotfilesClonerLive} reads it from `MEND_TENANCY`. */
+export const makeDotfilesClonerLayer = (
+  tenancy: TenancyMode,
+): Layer.Layer<
+  DotfilesCloner,
+  never,
+  MendKeys | AgentBridge | UserGitAccessRepo | InstanceRolesRepo
+> =>
+  Layer.effect(
+    DotfilesCloner,
+    Effect.gen(function* () {
+      const keys = yield* MendKeys;
+      const bridge = yield* AgentBridge;
+      const gitAccess = yield* UserGitAccessRepo;
+      const roles = yield* InstanceRolesRepo;
+      const archive = Effect.fn("DotfilesCloner.archive")(function* (
+        ownerUserId: string,
+        repository: DotfilesRepository,
+        options: {
+          readonly pinCloneEnv?: (env: Readonly<Record<string, string>>) => Record<string, string>;
+        } = {},
+      ) {
+        const identity = dotfilesCloneIdentity({
+          url: repository.url,
+          tenancy,
+          // Only single tenancy has a host identity to lend, so only it asks for the role.
+          ownerIsOperator: tenancy === "single" && (yield* roles.isOperator(ownerUserId)),
+          ownerGitAccess: yield* gitAccess.mode(ownerUserId),
+        });
+        const access = yield* dotfilesCloneAccess(identity, ownerUserId).pipe(
+          Effect.provideService(MendKeys, keys),
+          Effect.provideService(AgentBridge, bridge),
+        );
+        const clone = resolveRepositoryArchive(repository, {
+          access,
+          ...(options.pinCloneEnv === undefined ? {} : { pinCloneEnv: options.pinCloneEnv }),
+        });
+        if (identity.kind !== "owner-ssh" || identity.mode !== "bridge") return yield* clone;
+        // The share client says what asked for the signature.
+        const end = yield* bridge.begin(ownerUserId, `dotfiles clone → ${repository.url}`);
+        return yield* clone.pipe(Effect.ensuring(Effect.sync(() => end())));
+      });
+      return { archive };
+    }),
+  );
+
+export const DotfilesClonerLive: Layer.Layer<
+  DotfilesCloner,
+  Config.ConfigError,
+  MendKeys | AgentBridge | UserGitAccessRepo | InstanceRolesRepo
+> = Layer.unwrap(
+  Effect.gen(function* () {
+    // The same variable the tenancy gate reads; that gate refuses to start a mode it may not run.
+    const tenancy = yield* Config.schema(TenancyMode, "MEND_TENANCY").pipe(
+      Config.withDefault("single"),
+    );
+    return makeDotfilesClonerLayer(tenancy);
+  }),
+);
 
 /**
  * The dotfiles STORE snapshot as a launch archive. It is already a packed `.tar.gz` from the

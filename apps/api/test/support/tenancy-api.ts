@@ -39,7 +39,13 @@ import {
 import { JobRunner } from "@mend/jobs";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { SealantClient, SealantClients } from "@mend/sealant";
-import { CaptureRuntime, FollowUpDelivery, SessionEngine, WorktreeReads } from "@mend/sessions";
+import {
+  CaptureRuntime,
+  DotfilesCloner,
+  FollowUpDelivery,
+  SessionEngine,
+  WorktreeReads,
+} from "@mend/sessions";
 import { SlackApi } from "@mend/slack/client";
 import {
   AgentBridge,
@@ -216,6 +222,7 @@ export const createTenancyApi = async (
       recording(WorktreeReads, "reads", {}, calls),
       recording(AgentBridge, "agentBridge", { socketPath: () => "/unused/agent.sock" }, calls),
       recording(DotfilesStore, "dotfilesStore", {}, calls),
+      recording(DotfilesCloner, "dotfilesCloner", {}, calls),
       recording(FolderStore, "folderStore", {}, calls),
       recording(MendKeys, "keys", {}, calls),
       recording(SecretCipher, "cipher", {}, calls),
