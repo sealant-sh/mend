@@ -121,8 +121,10 @@ export const DOTFILES_HOST_ENV: Readonly<Record<string, string>> = {
 /**
  * Every other kind's base: nothing of the host's git or ssh setup reaches the clone. No system
  * or global git config (credential helpers, `insteadOf` rewrites, extra headers), none injected
- * through the environment, no askpass program, no ssh agent, and no ssh config, whose
- * `IdentityFile` entries would otherwise be offered beside the owner's key. The clone also runs
+ * through the environment, no askpass program, no ssh agent, no ssh config, whose
+ * `IdentityFile` entries would otherwise be offered beside the owner's key, and none of ssh's
+ * default key files (`IdentityFile=none`): ssh finds `~/.ssh/id_*` through the passwd entry, not
+ * HOME, and offers them whenever no `-i` names a key, as on the bridge. The clone also runs
  * with HOME set to an empty directory made for it, so curl finds no `.netrc`.
  */
 export const DOTFILES_OWNER_ENV: Readonly<Record<string, string>> = {
@@ -134,7 +136,7 @@ export const DOTFILES_OWNER_ENV: Readonly<Record<string, string>> = {
   GIT_CONFIG_COUNT: "0",
   GIT_CONFIG_PARAMETERS: "",
   SSH_AUTH_SOCK: "",
-  GIT_SSH_COMMAND: "ssh -F /dev/null -o BatchMode=yes",
+  GIT_SSH_COMMAND: "ssh -F /dev/null -o IdentityFile=none -o BatchMode=yes",
 };
 
 /** The host kind; `resolveRepositoryArchive` clones with it unless given another access. */
@@ -506,8 +508,9 @@ export const dotfilesCloneAccess = (
       env: {
         ...DOTFILES_OWNER_ENV,
         ...signer,
-        // No ssh config: its IdentityFile entries would be offered beside the owner's key.
-        GIT_SSH_COMMAND: `${signer["GIT_SSH_COMMAND"] ?? "ssh -o BatchMode=yes"} -F /dev/null`,
+        // No ssh config and no default key files: either would offer the host's keys beside the
+        // owner's (see DOTFILES_OWNER_ENV).
+        GIT_SSH_COMMAND: `${signer["GIT_SSH_COMMAND"] ?? "ssh -o BatchMode=yes"} -F /dev/null -o IdentityFile=none`,
       },
     };
   });

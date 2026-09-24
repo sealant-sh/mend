@@ -505,7 +505,7 @@ describe("whose git access a dotfiles clone uses", () => {
       GIT_CONFIG_COUNT: "0",
       GIT_CONFIG_PARAMETERS: "",
       SSH_AUTH_SOCK: "",
-      GIT_SSH_COMMAND: "ssh -F /dev/null -o BatchMode=yes",
+      GIT_SSH_COMMAND: "ssh -F /dev/null -o IdentityFile=none -o BatchMode=yes",
     });
   });
 
@@ -521,7 +521,7 @@ describe("whose git access a dotfiles clone uses", () => {
         identity: { kind: "owner-ssh", mode: "mend-key" },
         env: {
           ...DOTFILES_OWNER_ENV,
-          GIT_SSH_COMMAND: `ssh -i '${KEY_PATH}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes -F /dev/null`,
+          GIT_SSH_COMMAND: `ssh -i '${KEY_PATH}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes -F /dev/null -o IdentityFile=none`,
           SSH_AUTH_SOCK: "",
         },
       }),
@@ -535,9 +535,38 @@ describe("whose git access a dotfiles clone uses", () => {
     );
     expect(Result.isSuccess(result) ? result.success.env : null).toMatchObject({
       SSH_AUTH_SOCK: "/bridge/owner-1.sock",
-      GIT_SSH_COMMAND: "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -F /dev/null",
+      GIT_SSH_COMMAND:
+        "ssh -o StrictHostKeyChecking=accept-new -o BatchMode=yes -F /dev/null -o IdentityFile=none",
       GIT_CONFIG_GLOBAL: "/dev/null",
     });
+  });
+
+  it("offers none of the host's default key files, through the Mend key or the bridge", async () => {
+    // ssh finds its default keys (~/.ssh/id_*) through the passwd entry, not HOME, and adds
+    // them whenever no -i is given: a bridge clone would offer the host's own key after the
+    // owner's agent. `ssh -G` prints the identities a connection would offer, without one.
+    const home = os.userInfo().homedir;
+    for (const mode of ["mend-key", "bridge"] as const) {
+      const result = await accessOf(
+        { kind: "owner-ssh", mode },
+        { bridge: agentBridgeLayer(true) },
+      );
+      if (!Result.isSuccess(result)) throw new Error(`the ${mode} access resolved`);
+      const env = result.success.env;
+      const printed = execFileSync(
+        "sh",
+        ["-c", `${env["GIT_SSH_COMMAND"] ?? ""} -G git.example.test`],
+        { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "ignore"] },
+      ).toString("utf8");
+      const identities = printed
+        .split("\n")
+        .filter((line) => line.startsWith("identityfile "))
+        .map((line) => line.slice("identityfile ".length));
+      expect(identities.length).toBeGreaterThan(0);
+      expect(
+        identities.filter((identity) => identity.startsWith("~") || identity.startsWith(home)),
+      ).toEqual([]);
+    }
   });
 
   it("refuses, readable, when the owner's bridge has nobody sharing; it never falls back", async () => {
@@ -559,7 +588,7 @@ describe("whose git access a dotfiles clone uses", () => {
     if (!Result.isSuccess(result)) throw new Error("the Mend key resolved");
     const env = dotfilesCloneEnv((base) => tenant.pinnedEnv(clearance, base), result.success);
     expect(env["GIT_SSH_COMMAND"]).toBe(
-      `ssh -i '${KEY_PATH}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes -F /dev/null -o HostName=140.82.112.3 -o HostKeyAlias=github.com`,
+      `ssh -i '${KEY_PATH}' -o IdentitiesOnly=yes -o StrictHostKeyChecking=accept-new -o BatchMode=yes -F /dev/null -o IdentityFile=none -o HostName=140.82.112.3 -o HostKeyAlias=github.com`,
     );
   });
 });

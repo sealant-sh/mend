@@ -121,9 +121,11 @@ the account saving it. An SSH URL signs with that account's git access (its Mend
 when that is its choice). An HTTPS or `git://` URL clones with no credential: Mend holds no HTTPS
 token of the account's (a connected GitHub account's token lives in Sealant, which never returns
 it). Neither reads the host's git or ssh setup: no system or global git config, no askpass, no
-agent, no ssh config (`-F /dev/null`), and an empty HOME, so no `.netrc`. Only the operator of a
-`single` tenancy install clones with the host's own setup, the same rule as the host's `gh` login
-below (`packages/sessions/src/dotfiles.ts`, `DotfilesCloner`).
+agent, no ssh config (`-F /dev/null`), none of ssh's default key files (`-o IdentityFile=none`; ssh
+finds `~/.ssh/id_*` through the passwd entry, not HOME, and would offer them on the bridge), and an
+empty HOME, so no `.netrc`. Only the operator of a `single` tenancy install clones with the host's
+own setup, the same rule as the host's `gh` login below (`packages/sessions/src/dotfiles.ts`,
+`DotfilesCloner`).
 
 Calls to the GitHub API (repository discovery, pull request lists) have no per-account credential
 yet. On a single-organization install the operator may use the host's `gh` login; everyone else sees
