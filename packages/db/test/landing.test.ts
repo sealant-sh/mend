@@ -347,6 +347,14 @@ describe.skipIf(!reachable)("landing in Postgres", () => {
           }),
         ).toBeNull();
 
+        // A completed tour updates the pull request once, whichever worker claims it first.
+        expect(yield* landings.claimTourDescription(first.id, "tour-1")).toBe(true);
+        expect(yield* landings.claimTourDescription(first.id, "tour-1")).toBe(false);
+        expect(yield* landings.claimTourDescription(first.id, "tour-2")).toBe(true);
+        expect(yield* landings.claimTourDescription(ChangeLandingId.make("l-none"), "tour-2")).toBe(
+          false,
+        );
+
         // A failure before the checkpoint existed records no checkpoint and nothing pushed.
         const early = yield* landings.record({
           ...landingWith({ outcome: "failed", pushedSha: null, message: "checkpoint failed" }),

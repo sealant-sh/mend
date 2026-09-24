@@ -8,7 +8,7 @@ import {
   WorktreeChangesRepo,
   WorktreesRepo,
 } from "@mend/db";
-import type { ChangeLandingId, SessionId, Sha } from "@mend/domain";
+import type { ChangeId, ChangeLandingId, SessionId, Sha } from "@mend/domain";
 import {
   type ChangeLanding,
   changeOwnerOf,
@@ -142,7 +142,7 @@ export class LandingGit extends Context.Service<
     ) => Effect.Effect<Pushed, PushRefusedError | LandingStepError>;
     /** The landed range's files with their line counts, for the description. */
     readonly changedFiles: (
-      scope: LandingScope,
+      place: LandingPlace,
       input: { readonly base: Sha; readonly head: Sha },
     ) => Effect.Effect<ReadonlyArray<DiffFileFact>, LandingStepError>;
     /**
@@ -169,6 +169,25 @@ export class LandingGit extends Context.Service<
     ) => Effect.Effect<ChangeBundle, LandingStepError | BundleTooLargeError | BundleEmptyError>;
   }
 >()("@mend/landing/LandingGit") {}
+
+// ─── The tour a landing asks for ────────────────────────────────────────────
+
+/**
+ * Asks for a change's review tour when a landing opens or updates its pull request and finds
+ * none (docs/adr/0007-landing.md, "The pull request's description"). The landing does not wait:
+ * the pull request opens with the file list, and `LandingDescriptions` writes the tour in once it
+ * completes. Asking twice for the same state asks once. Never fails a landing.
+ */
+export class TourRequests extends Context.Service<
+  TourRequests,
+  {
+    readonly request: (input: {
+      readonly changeId: ChangeId;
+      /** The change's state the tour is for, which keys the request. */
+      readonly head: Sha;
+    }) => Effect.Effect<void>;
+  }
+>()("@mend/landing/TourRequests") {}
 
 // ─── The service ────────────────────────────────────────────────────────────
 
@@ -289,7 +308,13 @@ export const reviewLink = (webOrigin: string, changeId: string): string =>
 export const checkpointLink = (webOrigin: string, sessionId: string, ordinal: number): string =>
   `${sessionLink(webOrigin, sessionId)}#checkpoint-${ordinal}`;
 
-const linksOf = (webOrigin: string | null, sessionId: string, changeId: string, ordinal: number) =>
+/** The description's links back to Mend; none without a web origin to build them from. */
+export const linksOf = (
+  webOrigin: string | null,
+  sessionId: string,
+  changeId: string,
+  ordinal: number,
+) =>
   webOrigin === null
     ? { session: null, review: null, checkpoint: null }
     : {
@@ -327,6 +352,7 @@ export const LandingLive: Layer.Layer<
   | UsersRepo
   | LandingGit
   | PullRequests
+  | TourRequests
 > = Layer.effect(
   Landing,
   Effect.gen(function* () {
@@ -339,6 +365,7 @@ export const LandingLive: Layer.Layer<
     const users = yield* UsersRepo;
     const git = yield* LandingGit;
     const pullRequests = yield* PullRequests;
+    const tourRequests = yield* TourRequests;
 
     const scopeOf = (sessionId: SessionId) =>
       Effect.gen(function* () {
@@ -568,6 +595,14 @@ export const LandingLive: Layer.Layer<
         );
       }
       const { action, pullRequest } = published.success;
+      // No tour yet: the pull request opened with the file list, and gains the tour when it
+      // completes (`LandingDescriptions`).
+      if (tour === null) {
+        yield* tourRequests.request({
+          changeId: change.id,
+          head: change.headSha ?? change.baseSha,
+        });
+      }
       return yield* finish(
         checkpoint,
         commitSha,

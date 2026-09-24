@@ -8,7 +8,7 @@ import {
   type Sha,
 } from "@mend/domain";
 import { ChangeLanding, type LandedPullRequest, type LandingTrigger } from "@mend/domain/workbench";
-import { desc, eq } from "drizzle-orm";
+import { and, desc, eq, isNull, ne, or } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -69,6 +69,12 @@ export class ChangeLandingsRepo extends Context.Service<
       id: ChangeLandingId,
       pullRequest: LandedPullRequest,
     ) => Effect.Effect<ChangeLanding | null>;
+    /**
+     * Claim writing `tourId`'s summary into the landing's pull request ("What the thread sees").
+     * True for the one caller that moved the claim to this tour; false when it already was, or
+     * there is no such landing, so each tour updates a pull request once.
+     */
+    readonly claimTourDescription: (id: ChangeLandingId, tourId: string) => Effect.Effect<boolean>;
   }
 >()("@mend/db/ChangeLandingsRepo") {}
 
@@ -231,6 +237,31 @@ export const ChangeLandingsRepoLive: Layer.Layer<
       return observed;
     });
 
-    return { record, byId, listForChange, latestForChange, observePullRequest };
+    const claimTourDescription = Effect.fn("ChangeLandingsRepo.claimTourDescription")(function* (
+      id: ChangeLandingId,
+      tourId: string,
+    ) {
+      const rows = yield* db
+        .update(changeLandings)
+        .set({ describedTourId: tourId })
+        .where(
+          and(
+            eq(changeLandings.id, id),
+            or(isNull(changeLandings.describedTourId), ne(changeLandings.describedTourId, tourId)),
+          ),
+        )
+        .returning({ id: changeLandings.id })
+        .pipe(Effect.orDie);
+      return rows.length > 0;
+    });
+
+    return {
+      record,
+      byId,
+      listForChange,
+      latestForChange,
+      observePullRequest,
+      claimTourDescription,
+    };
   }),
 );

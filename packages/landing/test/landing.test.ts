@@ -13,6 +13,7 @@ import {
   LandingLive,
   LandingNotStartedError,
   LandingStepError,
+  TourRequests,
 } from "../src/landing.ts";
 import { type PublishInput, PullRequests, PullRequestStepError } from "../src/pull-requests.ts";
 import { BASE_SHA, checkpointOf, makeWorld, OWNER, type WorldOptions } from "./world.ts";
@@ -205,8 +206,28 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
         return script.observed ?? PR;
       }),
   });
-  const layer = LandingLive.pipe(Layer.provide(Layer.mergeAll(world.repos, git, pullRequests)));
-  return { world, calls, triggers, commits, pushes, published, observed, bundles, layer };
+  const tourRequests: Array<{ readonly changeId: string; readonly head: string }> = [];
+  const tours = Layer.succeed(TourRequests, {
+    request: (request) =>
+      Effect.sync(() => {
+        tourRequests.push(request);
+      }),
+  });
+  const layer = LandingLive.pipe(
+    Layer.provide(Layer.mergeAll(world.repos, git, pullRequests, tours)),
+  );
+  return {
+    world,
+    calls,
+    triggers,
+    commits,
+    pushes,
+    published,
+    observed,
+    bundles,
+    tourRequests,
+    layer,
+  };
 };
 
 describe("Landing.land", () => {
@@ -263,6 +284,26 @@ describe("Landing.land", () => {
       expect(publish?.section).toContain("- `src/login.ts` · +12 −3");
       expect(publish?.section).toContain(`/changes/${h.world.change.id}`);
       expect(publish?.section).toContain(`#checkpoint-3`);
+      // The tour existed, so none is asked for.
+      expect(h.tourRequests).toEqual([]);
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("opens with the file list and asks for the tour when there is none yet", () => {
+    const h = harness({}, { tour: null });
+    return Effect.gen(function* () {
+      const report = yield* (yield* Landing).land(input());
+      expect(report.pullRequest._tag).toBe("opened");
+      expect(h.published[0]?.section).toContain("- `src/login.ts` · +12 −3");
+      expect(h.tourRequests).toEqual([{ changeId: h.world.change.id, head: BASE_SHA }]);
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("asks for no tour when the pull request step did not run", () => {
+    const h = harness({}, { tour: null });
+    return Effect.gen(function* () {
+      yield* (yield* Landing).land(input({ pullRequest: false }));
+      expect(h.tourRequests).toEqual([]);
     }).pipe(Effect.provide(h.layer));
   });
 

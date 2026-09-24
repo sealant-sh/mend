@@ -115,6 +115,8 @@ import {
   SummaryObserveWorkerLive,
 } from "@mend/jobs";
 import {
+  LandingDescriptions,
+  LandingDescriptionsLive,
   type LandingGit,
   LandingGitCapturedLive,
   LandingGitColocatedLive,
@@ -174,7 +176,7 @@ import {
   DeploymentConfigLive,
   SourcePolicyLive,
 } from "@mend/store";
-import { Config, Effect, Layer, Option, Schema } from "effect";
+import { Cause, Config, Effect, Layer, Option, Schema } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 
 import { ProjectAccessLive } from "./access.ts";
@@ -186,6 +188,7 @@ import { EventBusLive } from "./events-bus.ts";
 import { ExposureConfigLive } from "./exposure.ts";
 import { GithubIdentityLive } from "./github-identity.ts";
 import { apiMiddleware } from "./http-middleware.ts";
+import { TourRequestsLive } from "./landing-tours.ts";
 import { MemberRemovalLive } from "./member-removal.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
 import { boundedWebRequest } from "./request-budgets.ts";
@@ -454,10 +457,32 @@ const InferenceWorkersLive = Layer.effectDiscard(
         Effect.orDie,
       ),
     );
+    // A completed tour reaches the pull request Mend opened without one (docs/adr/0007-landing.md,
+    // "What the thread sees"), once per tour. Its failure is logged and never fails the tour.
+    const descriptions = yield* LandingDescriptions;
+    const webOrigin = (yield* NetworkConfig).appUrl;
+    const describeAfterTour = (changeId: ChangeId) =>
+      descriptions.afterTour({ changeId, webOrigin }).pipe(
+        Effect.tap((described) =>
+          described._tag === "updated"
+            ? Effect.logInfo("landing: the pull request gained its tour").pipe(
+                Effect.annotateLogs({ changeId, pullRequest: described.number }),
+              )
+            : Effect.void,
+        ),
+        Effect.catchCause((cause) =>
+          Effect.logWarning("landing: the pull request did not gain its tour").pipe(
+            Effect.annotateLogs({ changeId, cause: Cause.pretty(cause) }),
+          ),
+        ),
+        Effect.asVoid,
+      );
     yield* jobs.work("compose-tour", (payload) =>
       decodeComposeTourJob(payload).pipe(
         Effect.flatMap((job) =>
-          asChangeOwner(job.changeId)(recorded("tour", job.changeId, tourComposer.compose(job))),
+          asChangeOwner(job.changeId)(
+            recorded("tour", job.changeId, tourComposer.compose(job)),
+          ).pipe(Effect.andThen(describeAfterTour(job.changeId))),
         ),
         Effect.orDie,
       ),
@@ -679,10 +704,11 @@ const MainLive = Layer.unwrap(
     > = captured
       ? LandingGitCapturedLive.pipe(Layer.provide(captureStore))
       : LandingGitColocatedLive;
-    const landing = LandingLive.pipe(
-      Layer.provide(PullRequestsLayer),
-      Layer.provideMerge(landingGit),
-    );
+    // Landing, and the worker's description of a pull request once its tour completes.
+    const landing = Layer.mergeAll(
+      LandingLive.pipe(Layer.provide(TourRequestsLive)),
+      LandingDescriptionsLive,
+    ).pipe(Layer.provide(PullRequestsLayer), Layer.provideMerge(landingGit));
     const parts =
       mode === "api"
         ? ServerLive

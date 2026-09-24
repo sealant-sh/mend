@@ -2050,6 +2050,16 @@ const turnLandingMigration = Effect.gen(function* () {
     WHERE status NOT IN ('queued', 'running')`;
 });
 
+/**
+ * docs/adr/0007-landing.md, "What the thread sees": a pull request Mend opened before its tour
+ * existed gains the tour once the tour completes. The column is the claim that makes each tour
+ * update a landing's pull request once, whichever worker finishes the tour.
+ */
+const landingDescriptionMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE change_landings ADD COLUMN described_tour_id text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2117,4 +2127,5 @@ export const migrations = {
   "0063_slack_reports": slackReportsMigration,
   "0064_landing": landingMigration,
   "0065_turn_landing": turnLandingMigration,
+  "0066_landing_description": landingDescriptionMigration,
 };

@@ -1720,6 +1720,9 @@ export const changeLandings = pgTable(
     message: text(),
     // FK to "user"(id) ON DELETE RESTRICT, declared in the migration: the owner who landed.
     userId: text().notNull(),
+    // The tour whose summary Mend last wrote into this landing's pull request after the tour
+    // completed (0066): the claim that makes each tour update a pull request once.
+    describedTourId: text(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [

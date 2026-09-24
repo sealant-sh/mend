@@ -1527,3 +1527,46 @@ describe.skipIf(!reachable)("0065 turn landing", () => {
     });
   });
 });
+
+describe.skipIf(!reachable)("0066 landing description", () => {
+  const DESCRIPTION_DB = `${SCRATCH_DB}_landing_description`;
+  const descriptionLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DESCRIPTION_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDescriptionDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(descriptionLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DESCRIPTION_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DESCRIPTION_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("adds the tour claim to every landing, unclaimed", async () => {
+    const columns = await withDescriptionDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0065_turn_landing");
+        yield* migrations["0066_landing_description"];
+        const rows = yield* sql<{ readonly column_name: string; readonly is_nullable: string }>`
+          SELECT column_name, is_nullable FROM information_schema.columns
+          WHERE table_name = 'change_landings' AND column_name = 'described_tour_id'`;
+        return rows.map((row) => ({ ...row }));
+      }),
+    );
+    expect(columns).toEqual([{ column_name: "described_tour_id", is_nullable: "YES" }]);
+  });
+});

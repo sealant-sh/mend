@@ -12,7 +12,7 @@ import { Effect, Layer } from "effect";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
 import { LandingGitColocatedLive } from "../src/landing-git.ts";
-import { type LandInput, Landing, LandingGit, LandingLive } from "../src/landing.ts";
+import { type LandInput, Landing, LandingGit, LandingLive, TourRequests } from "../src/landing.ts";
 import { type PublishInput, PullRequests } from "../src/pull-requests.ts";
 import { checkpointOf, makeWorld, OWNER, type World } from "./world.ts";
 
@@ -141,7 +141,13 @@ describe("landing a co-located session", () => {
       observe: () => Effect.die("not in this test"),
     });
     return LandingLive.pipe(
-      Layer.provide(Layer.mergeAll(world.repos, pullRequests)),
+      Layer.provide(
+        Layer.mergeAll(
+          world.repos,
+          pullRequests,
+          Layer.succeed(TourRequests, { request: () => Effect.void }),
+        ),
+      ),
       Layer.provideMerge(
         LandingGitColocatedLive.pipe(Layer.provide(Layer.mergeAll(engine, checkpointRows))),
       ),
