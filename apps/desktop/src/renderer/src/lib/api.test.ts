@@ -1,44 +1,12 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { processLogPage, processOutput, stopService } from "#/lib/api";
+import { bridgeFixture } from "#/lib/fixtures";
 
-import type { ApiRequest, MendBridge } from "../../../shared/bridge";
+import type { ApiRequest } from "../../../shared/bridge";
 
 const base64 = (bytes: Uint8Array): string =>
   btoa(Array.from(bytes, (byte) => String.fromCharCode(byte)).join(""));
-
-const bridgeWith = (
-  request: (
-    input: ApiRequest,
-  ) => Promise<{ readonly status: number; readonly ok: boolean; readonly body: unknown }>,
-): MendBridge => ({
-  platform: "linux",
-  connection: {
-    get: async () => ({
-      url: "http://localhost:3105",
-      signedIn: true,
-      configPath: "/tmp/cli.json",
-    }),
-    authorize: async () => ({ ok: false, reason: "not in test" }),
-    awaitAuthorize: async () => ({ ok: false, reason: "not in test" }),
-    cancelAuthorize: async () => undefined,
-    setToken: async () => undefined,
-    signOut: async () => ({ revoke: "no-device" }),
-    onChange: () => () => {},
-  },
-  api: { request },
-  tty: { url: async () => "ws://localhost/tty" },
-  events: {
-    onEvent: () => () => {},
-    onState: () => () => {},
-  },
-  shell: { openExternal: async () => undefined },
-  window: {
-    minimize: () => {},
-    toggleMaximize: () => {},
-    close: () => {},
-  },
-});
 
 describe("desktop process logs", () => {
   beforeEach(() => {
@@ -64,7 +32,7 @@ describe("desktop process logs", () => {
     let page = 0;
     Object.defineProperty(window, "mend", {
       configurable: true,
-      value: bridgeWith(async (input) => {
+      value: bridgeFixture(async (input) => {
         requested.push(input.path);
         const body = pages[page];
         page += 1;
@@ -84,7 +52,7 @@ describe("desktop process logs", () => {
     const nextFrom = "900719925474099312345";
     Object.defineProperty(window, "mend", {
       configurable: true,
-      value: bridgeWith(async () => ({
+      value: bridgeFixture(async () => ({
         status: 200,
         ok: true,
         body: {
@@ -114,7 +82,7 @@ describe("desktop process logs", () => {
     const requests: ApiRequest[] = [];
     Object.defineProperty(window, "mend", {
       configurable: true,
-      value: bridgeWith(async (input) => {
+      value: bridgeFixture(async (input) => {
         requests.push(input);
         return { status: 200, ok: true, body: {} };
       }),

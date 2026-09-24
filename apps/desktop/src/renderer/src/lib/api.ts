@@ -1,3 +1,4 @@
+import type { AgentRequestResponse } from "@mend/agent-conversation";
 import type {
   ConnectedAccount,
   OpenReviewResult,
@@ -22,6 +23,10 @@ import type {
 import {
   isAgentProcessKind as isAgentKind,
   LIVE_PROCESS_STATUSES,
+  type AgentItem,
+  type AgentLaunchMode,
+  type AgentRequest,
+  type AgentTurn,
   type Change,
   type Checkpoint,
   type FollowUp,
@@ -34,6 +39,7 @@ import {
   type ServiceRecipe,
   type ServiceView,
   type Session,
+  type SessionControlEvent,
   type SessionProcess,
   type Worktree,
 } from "@mend/domain/workbench";
@@ -107,6 +113,16 @@ export type SealantIdentityDto = Wire<SealantIdentity>;
 export type PastedImageDto = Wire<PastedImage>;
 /** The outcome of a destructive removal — what went, what would not delete. */
 export type RemovalReportDto = Wire<RemovalReport>;
+/** One authored input to a protocol-mode agent and its observed lifecycle. */
+export type AgentTurnDto = Wire<AgentTurn>;
+/** One thing a protocol-mode agent said or did during a turn. */
+export type AgentItemDto = Wire<AgentItem>;
+/** What a protocol-mode agent asked a person, and the recorded answer. */
+export type AgentRequestDto = Wire<AgentRequest>;
+/** How an agent process is launched: a PTY, or the harness's structured protocol. */
+export type AgentLaunchModeDto = AgentLaunchMode;
+/** Who interrupted, attached, opened a shell, stopped or shared control. */
+export type SessionControlEventDto = Wire<SessionControlEvent>;
 /** A composed start — the server turns this into the harness's own argv. */
 export type LaunchStartDto = Omit<Payload<"POST", "/api/sessions/:id/launch">, "argv">;
 
@@ -145,6 +161,17 @@ export const agentProcessOutcome = (
   if (process.harness === "shell") return "completed";
   return process.exitCode === null || process.exitCode === 0 ? "completed" : "failed";
 };
+
+/**
+ * Whether the session's agent runs as a conversation (protocol mode: codex app-server, claude
+ * stream-json) rather than a PTY. Before the first agent row exists, the launch's own intent
+ * answers; a session with neither reads as a terminal, as every older session is.
+ */
+export const agentRunsAsConversation = (
+  currentAgent: SessionProcessDto | null,
+  launchedAs: AgentLaunchModeDto | null,
+): boolean =>
+  currentAgent === null ? launchedAs === "protocol" : currentAgent.kind === "agent-protocol";
 
 /**
  * Whether the session's AGENT is live. Session status is a fold over every process (a session
@@ -307,6 +334,25 @@ export const processOutput = async (id: string): Promise<{ readonly text: string
 export const sessionTranscript = (id: string) =>
   call("GET", "/api/sessions/:id/transcript", { params: { id } });
 
+// ─── protocol-mode conversation ─────────────────────────────────────────────
+
+export const listAgentTurns = (sessionId: string) =>
+  call("GET", "/api/sessions/:id/turns", { params: { id: sessionId } });
+
+/** Item updates after the session-wide cursor `after` (not conversation order). */
+export const listAgentItems = (sessionId: string, after: number, limit: number) =>
+  call("GET", "/api/sessions/:id/items", {
+    params: { id: sessionId },
+    query: { after: String(after), limit: String(limit) },
+  });
+
+export const listAgentRequests = (sessionId: string) =>
+  call("GET", "/api/sessions/:id/requests", { params: { id: sessionId } });
+
+/** Oldest first: who interrupted, attached, opened a shell, stopped or shared control. */
+export const sessionControlEvents = (sessionId: string) =>
+  call("GET", "/api/sessions/:id/control-events", { params: { id: sessionId } });
+
 export const reviewDiff = (
   changeId: string,
   sliceId: string,
@@ -343,12 +389,41 @@ export const createSession = (
   label: string | null,
   base: string | null = null,
   name: string | null = null,
+  mode: AgentLaunchModeDto | null = null,
 ) =>
   call("POST", "/api/projects/:id/sessions", {
     params: { id: projectId },
     // autoLand null follows the project (docs/adr/0007-landing.md).
-    body: { harness, label, name, base, autoLand: null },
+    body:
+      mode === null
+        ? { harness, label, name, base, autoLand: null }
+        : { harness, mode, label, name, base, autoLand: null },
   });
+
+/** One authored input to the live protocol agent; it queues behind a running turn. */
+export const submitAgentTurn = (sessionId: string, input: string) =>
+  call("POST", "/api/sessions/:id/turns", { params: { id: sessionId }, body: { input } });
+
+/** A queued turn is cancelled outright; a running one reaches the harness's own interrupt. */
+export const interruptAgentTurn = (turnId: string) =>
+  call("POST", "/api/turns/:id/interrupt", { params: { id: turnId } });
+
+export const respondAgentRequest = (requestId: string, response: AgentRequestResponse) =>
+  call("POST", "/api/requests/:id/respond", { params: { id: requestId }, body: response });
+
+/**
+ * Rejoin a settled session in a fresh workspace (or the one its shells and Services retain):
+ * same worktree, restored harness state, the same mode its agent last ran in.
+ */
+export const resumeSession = (sessionId: string) =>
+  call("POST", "/api/sessions/:id/resume", { params: { id: sessionId }, body: { harness: null } });
+
+/**
+ * Continue the same provider session in the other mode — PTY ⇄ conversation (claude and codex).
+ * A live agent in the other mode ends gracefully first; one agent process at a time.
+ */
+export const handoffSession = (sessionId: string, to: AgentLaunchModeDto) =>
+  call("POST", "/api/sessions/:id/handoff", { params: { id: sessionId }, body: { to } });
 
 export const pasteSessionImage = (sessionId: string, contentsBase64: string) =>
   call("POST", "/api/sessions/:id/images", {
