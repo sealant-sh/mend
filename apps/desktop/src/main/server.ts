@@ -10,7 +10,7 @@ import type {
   TtyTarget,
   WorkbenchEvent,
 } from "../shared/bridge";
-import { loadConfig, saveConfig } from "./config";
+import { forgetToken, loadConfig, saveConfig, tokenFromEnvironment } from "./config";
 import {
   awaitDeviceApproval,
   openDeviceRequest,
@@ -121,6 +121,9 @@ export const setToken = (input: { readonly url: string; readonly token: string }
  * Settings → Devices. The local copy goes either way.
  */
 export const signOut = async (): Promise<SignOutResult> => {
+  // MEND_TOKEN outranks the file for this run: clearing the file would neither sign this app out
+  // nor revoke anything, and would strand the device token the CLI saved there.
+  if (tokenFromEnvironment()) return { revoke: "environment" };
   const config = loadConfig();
   let revoke: SignOutResult["revoke"] = "no-device";
   if (config.token !== null && config.deviceId !== null) {
@@ -132,7 +135,7 @@ export const signOut = async (): Promise<SignOutResult> => {
     );
     revoke = revoked ? "revoked" : "not-revoked";
   }
-  saveConfig({ url: config.url, token: null, deviceId: null });
+  forgetToken();
   return { revoke };
 };
 

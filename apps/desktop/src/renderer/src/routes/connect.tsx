@@ -8,6 +8,8 @@ import { Titlebar } from "#/components/titlebar";
 import { useConnection } from "#/lib/connection";
 import { queryClient } from "#/lib/queries";
 
+import type { SignOutResult } from "../../../shared/bridge";
+
 /**
  * Where the desktop points, and who it is. Signing in is `mend login`'s walk: the app opens an
  * authorize request, the browser shows the code, someone signed in there approves it, and this
@@ -35,12 +37,14 @@ const expiryLine = (expiresAt: string): string => {
   return Number.isNaN(at) ? "" : ` · open until ${new Date(at).toLocaleTimeString()}`;
 };
 
-const revokeLine = (revoke: "revoked" | "not-revoked" | "no-device"): string =>
+const revokeLine = (revoke: SignOutResult["revoke"]): string =>
   revoke === "revoked"
     ? "Signed out · the device was revoked on the server."
     : revoke === "not-revoked"
       ? "Signed out here · the server did not revoke the device; end it under Settings → Devices on the web."
-      : "Signed out · the token was removed from the credential file.";
+      : revoke === "environment"
+        ? "Still signed in · MEND_TOKEN supplies this app's token. Unset it and restart to sign out; the credential file was left as it was."
+        : "Signed out · the token was removed from the credential file.";
 
 export const Route = createFileRoute("/connect")({
   validateSearch: (search: Record<string, unknown>): ConnectSearch => {
@@ -276,7 +280,7 @@ function Connect() {
               className="mt-2"
               onClick={() => {
                 void window.mend.connection.signOut().then((result) => {
-                  queryClient.clear();
+                  if (result.revoke !== "environment") queryClient.clear();
                   setNotice(revokeLine(result.revoke));
                   return null;
                 });

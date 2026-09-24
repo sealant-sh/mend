@@ -5,7 +5,14 @@ import path from "node:path";
 
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 
-import { configPath, loadConfig, mergeConfig, saveConfig } from "./config";
+import {
+  configPath,
+  forgetToken,
+  loadConfig,
+  mergeConfig,
+  saveConfig,
+  tokenFromEnvironment,
+} from "./config";
 
 const saved = {
   xdg: process.env["XDG_CONFIG_HOME"],
@@ -74,12 +81,32 @@ describe("the shared credential file", () => {
 
   it("signs out to nulls, as mend logout does", () => {
     writeFile({ url: "https://alpha.example", token: "t", deviceId: "dev-1" });
-    saveConfig({ url: "https://alpha.example", token: null, deviceId: null });
+    forgetToken();
     expect(JSON.parse(fs.readFileSync(configPath(), "utf8"))).toEqual({
       url: "https://alpha.example",
       token: null,
       deviceId: null,
     });
+  });
+
+  it("keeps the file's own url and fields when signing out under MEND_URL", () => {
+    writeFile({ url: "https://alpha.example", token: "t", deviceId: "dev-1", future: 1 });
+    fs.chmodSync(configPath(), 0o644);
+    process.env["MEND_URL"] = "http://localhost:3105";
+    forgetToken();
+    expect(JSON.parse(fs.readFileSync(configPath(), "utf8"))).toEqual({
+      url: "https://alpha.example",
+      token: null,
+      deviceId: null,
+      future: 1,
+    });
+    expect(fs.statSync(configPath()).mode & 0o777).toBe(0o600);
+  });
+
+  it("says when MEND_TOKEN supplies the token", () => {
+    expect(tokenFromEnvironment()).toBe(false);
+    process.env["MEND_TOKEN"] = "from-env";
+    expect(tokenFromEnvironment()).toBe(true);
   });
 
   it("merges without mutating what it read", () => {

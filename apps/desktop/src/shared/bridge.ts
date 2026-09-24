@@ -54,9 +54,12 @@ export type AuthorizeResult =
     }
   | { readonly ok: false; readonly reason: string };
 
-/** What signing out did on the server; the local token is removed in every case. */
+/**
+ * What signing out did on the server. The file's token is removed in every case but
+ * `environment`: MEND_TOKEN supplies the token then, and nothing is changed.
+ */
 export interface SignOutResult {
-  readonly revoke: "revoked" | "not-revoked" | "no-device";
+  readonly revoke: "revoked" | "not-revoked" | "no-device" | "environment";
 }
 
 /** One line from `/api/events` (plan §9.4 — payloads are pointers). */

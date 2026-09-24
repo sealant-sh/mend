@@ -54,14 +54,22 @@ const readRecord = (): Readonly<Record<string, unknown>> => {
 
 const stringOrNull = (value: unknown): string | null => (typeof value === "string" ? value : null);
 
+/** The token MEND_TOKEN supplies, when it replaces the file's. */
+const environmentToken = (): string | null => {
+  const envToken = process.env["MEND_TOKEN"];
+  return envToken !== undefined && envToken !== "" ? envToken : null;
+};
+
+/** Whether the token in use comes from MEND_TOKEN rather than the file. */
+export const tokenFromEnvironment = (): boolean => environmentToken() !== null;
+
 export const loadConfig = (): StoredConfig => {
   const file = readRecord();
-  const envToken = process.env["MEND_TOKEN"];
-  const fromEnv = envToken !== undefined && envToken !== "";
+  const envToken = environmentToken();
   return {
     url: process.env["MEND_URL"] ?? stringOrNull(file["url"]) ?? DEFAULT_URL,
-    token: fromEnv ? envToken : stringOrNull(file["token"]),
-    deviceId: fromEnv ? null : stringOrNull(file["deviceId"]),
+    token: envToken ?? stringOrNull(file["token"]),
+    deviceId: envToken !== null ? null : stringOrNull(file["deviceId"]),
   };
 };
 
@@ -80,12 +88,23 @@ export const mergeConfig = (
 });
 
 /** 0600, like the CLI: the token is the only credential this machine holds. */
-export const saveConfig = (next: StoredConfig): void => {
+const writeRecord = (record: Readonly<Record<string, unknown>>): void => {
   const file = configPath();
-  const merged = mergeConfig(readRecord(), next);
   fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-  fs.writeFileSync(file, `${JSON.stringify(merged, null, 2)}\n`, { mode: 0o600 });
+  fs.writeFileSync(file, `${JSON.stringify(record, null, 2)}\n`, { mode: 0o600 });
   fs.chmodSync(file, 0o600);
+};
+
+export const saveConfig = (next: StoredConfig): void => {
+  writeRecord(mergeConfig(readRecord(), next));
+};
+
+/**
+ * Sign-out's write: the token and its device id go, everything else stays as the file had it —
+ * its own url too, never one MEND_URL supplied for this run.
+ */
+export const forgetToken = (): void => {
+  writeRecord({ ...readRecord(), token: null, deviceId: null });
 };
 
 /**
