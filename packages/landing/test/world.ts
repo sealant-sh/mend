@@ -52,6 +52,15 @@ export interface WorldOptions {
   readonly baseRef?: string | null;
   readonly tour?: { readonly summary: string; readonly approach: string | null } | null;
   readonly users?: ReadonlyArray<UserFacts>;
+  /**
+   * Other sessions in the same worktree, as a teammate who joined it starts them. The change's
+   * owner is whoever owns the earliest session.
+   */
+  readonly siblings?: ReadonlyArray<{
+    readonly id: string;
+    readonly ownerUserId: string | null;
+    readonly createdAt: Date;
+  }>;
 }
 
 export const makeWorld = (options: WorldOptions = {}) => {
@@ -130,6 +139,19 @@ export const makeWorld = (options: WorldOptions = {}) => {
     createdAt: NOW,
     updatedAt: NOW,
   });
+  const siblings = (options.siblings ?? []).map(
+    (sibling) =>
+      new Session({
+        ...session,
+        id: SessionId.make(sibling.id),
+        ownerUserId: sibling.ownerUserId,
+        createdAt: sibling.createdAt,
+      }),
+  );
+  /** Every session in the worktree, newest first, as `listForWorktree` returns them. */
+  const worktreeSessions = [session, ...siblings].toSorted(
+    (a, b) => b.createdAt.getTime() - a.createdAt.getTime(),
+  );
   const change = new Change({
     id: changeId,
     projectId,
@@ -185,7 +207,11 @@ export const makeWorld = (options: WorldOptions = {}) => {
   };
 
   const repos = Layer.mergeAll(
-    Layer.mock(SessionsRepo, { byId: () => Effect.succeed(session) }),
+    Layer.mock(SessionsRepo, {
+      byId: (id) =>
+        Effect.succeed(worktreeSessions.find((candidate) => candidate.id === id) ?? session),
+      listForWorktree: () => Effect.succeed(worktreeSessions),
+    }),
     Layer.mock(ProjectsRepo, { byId: () => Effect.succeed(project) }),
     Layer.mock(WorktreesRepo, { byId: () => Effect.succeed(worktree) }),
     Layer.mock(WorktreeChangesRepo, { byWorktree: () => Effect.succeed(change) }),
@@ -213,7 +239,7 @@ export const makeWorld = (options: WorldOptions = {}) => {
     }),
   );
 
-  return { project, worktree, session, change, landings, repos };
+  return { project, worktree, session, siblings, change, landings, repos };
 };
 
 export type World = ReturnType<typeof makeWorld>;

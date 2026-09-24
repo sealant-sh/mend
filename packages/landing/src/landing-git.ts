@@ -4,7 +4,6 @@ import {
   describeGitRemoteFailure,
   type GitError,
   type InvalidBranchError,
-  type LandingBranchMovedError,
   Store,
   worktreePathOf,
 } from "@mend/store";
@@ -15,12 +14,11 @@ import { LandingGit, LandingStepError, type LandingScope } from "./landing.ts";
 /**
  * `LandingGit` for a co-located session: the worktree is a linked worktree of the project's bare
  * store on this machine, so every step runs against the store with `Store`
- * (docs/adr/0007-landing.md, "Where each step runs"). Mend's commit moves `mend/<name>` by
- * compare-and-swap in the bare store, so the worktree's files, index and HEAD file are never
- * touched. A capture-backed session (ADR 0002) needs the runner cache instead.
+ * (docs/adr/0007-landing.md, "Where each step runs"). Mend's commit is written in the bare store
+ * and kept under `refs/mend/landed/<worktree>`; `mend/<name>` never moves, so the worktree's
+ * files, index and HEAD are never touched and the agent's next commit reverts nothing. A
+ * capture-backed session (ADR 0002) needs the runner cache instead.
  */
-
-const shortSha = (sha: string | null) => (sha === null ? "none" : sha.slice(0, 7));
 
 /** A git failure in the remote's words when a known shape matched, verbatim otherwise. */
 const gitWords = (error: GitError, mode: GitAuthMode | null): string => {
@@ -30,10 +28,8 @@ const gitWords = (error: GitError, mode: GitAuthMode | null): string => {
   return `git ${error.args[0] ?? ""} exited ${error.exitCode ?? "without a code"}`;
 };
 
-const branchWords = (error: InvalidBranchError | LandingBranchMovedError): string =>
-  error._tag === "InvalidBranchError"
-    ? `${error.branch} is not a branch name git accepts`
-    : `${error.branch} moved while landing · expected ${shortSha(error.expected)} · found ${shortSha(error.actual)}`;
+const branchWords = (error: InvalidBranchError): string =>
+  `${error.branch} is not a branch name git accepts`;
 
 const worktreeDir = (scope: LandingScope) =>
   worktreePathOf(scope.project.storePath, scope.worktree.directory);
@@ -48,11 +44,11 @@ export const LandingGitColocatedLive: Layer.Layer<LandingGit, never, Store | Ses
       return {
         checkpoint: (scope, trigger) =>
           Effect.gen(function* () {
-            // Read before the snapshot: a commit the agent makes in between moves the branch
-            // past this head, and step 2's compare-and-swap then writes nothing.
-            const branchHead = yield* store.headSha(worktreeDir(scope));
+            // Read before the snapshot, so everything H holds is in the checkpoint's tree: a
+            // commit the agent makes in between is in the tree and joins at the next landing.
+            const agentHead = yield* store.headSha(worktreeDir(scope));
             const checkpoint = yield* engine.checkpointNow(scope.session.id, trigger);
-            return { checkpoint, branchHead };
+            return { checkpoint, agentHead };
           }).pipe(
             Effect.mapError(
               (error) =>
@@ -68,23 +64,21 @@ export const LandingGitColocatedLive: Layer.Layer<LandingGit, never, Store | Ses
         commit: (scope, input) =>
           store
             .landingCommit(scope.project.storePath, {
-              branch: scope.worktree.branch,
+              agentHead: input.agentHead,
+              lastLanded: input.lastLanded,
               checkpoint: input.checkpoint.sha,
               author: input.author,
               message: input.message,
-              expectedHead: input.branchHead,
+              keepFor: scope.worktree.id,
             })
             .pipe(
               Effect.map((landed) => ({
                 head: landed.head,
                 commitSha: landed.written?.sha ?? null,
+                nothingNew: landed.nothingNew,
               })),
               Effect.mapError(
-                (error) =>
-                  new LandingStepError({
-                    step: "commit",
-                    message: error._tag === "GitError" ? gitWords(error, null) : branchWords(error),
-                  }),
+                (error) => new LandingStepError({ step: "commit", message: gitWords(error, null) }),
               ),
             ),
         push: (scope, input) =>

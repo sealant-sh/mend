@@ -210,6 +210,63 @@ describe("landing a co-located session", () => {
     expect(originHead()).toBe(agentCommit);
   });
 
+  it("joins the landing and the agent's later commit, fast-forwards, and never moves the branch", async () => {
+    fs.writeFileSync(path.join(repos.worktree, "app.ts"), "export const answer = 42\n");
+    const first = await land();
+    const landed = first.landing.pushedSha ?? "";
+    // The session branch is where the agent left it; Mend's commit is under its own ref.
+    expect(sh(repos.storePath, ["rev-parse", `refs/heads/${BRANCH}`])).toBe(repos.baseSha);
+    expect(sh(repos.storePath, ["rev-parse", "refs/mend/landed/wt-1"])).toBe(landed);
+
+    // The agent commits everything with its own index, which never saw Mend's commit, and
+    // leaves one more edit. Its commit reverts nothing: it is the base plus its work.
+    fs.writeFileSync(path.join(repos.worktree, "notes.md"), "agent notes\n");
+    sh(repos.worktree, ["add", "-A"]);
+    sh(repos.worktree, ["commit", "-q", "-m", "agent: commit it all"]);
+    const agentCommit = sh(repos.worktree, ["rev-parse", "HEAD"]);
+    expect(sh(repos.worktree, ["show", "HEAD:app.ts"])).toBe("export const answer = 42");
+    fs.writeFileSync(path.join(repos.worktree, "left.md"), "leftover\n");
+
+    const second = await land({ trigger: "automatic" });
+
+    expect(second.landing.outcome).toBe("pull-request");
+    const merge = second.landing.pushedSha ?? "";
+    expect(originHead()).toBe(merge);
+    expect(sh(repos.origin, ["log", "-1", "--format=%P", merge])).toBe(`${landed} ${agentCommit}`);
+    expect(sh(repos.origin, ["log", "-1", "--format=%an", merge])).toBe("Ada Owner");
+    expect(sh(repos.origin, ["ls-tree", "--name-only", merge]).split("\n")).toEqual([
+      "app.ts",
+      "left.md",
+      "notes.md",
+    ]);
+    expect(sh(repos.storePath, ["rev-parse", `refs/heads/${BRANCH}`])).toBe(agentCommit);
+    expect(published[1]?.previous).toBe(7);
+  });
+
+  it("says nothing is new when nothing moved since the last landing, and pushes nothing", async () => {
+    fs.writeFileSync(path.join(repos.worktree, "app.ts"), "export const answer = 42\n");
+    const first = await land();
+    const error = await Effect.runPromise(
+      Effect.gen(function* () {
+        return yield* (yield* Landing)
+          .land({
+            sessionId: world.session.id,
+            actorUserId: OWNER,
+            trigger: "manual",
+            remoteBranch: null,
+            pullRequest: true,
+            title: null,
+            webOrigin: "https://mend.test",
+            remoteEnv: Effect.succeed({}),
+          })
+          .pipe(Effect.flip);
+      }).pipe(Effect.provide(layer())),
+    );
+    expect(error.reason).toBe("nothing-new");
+    expect(originHead()).toBe(first.landing.pushedSha);
+    expect(published).toHaveLength(1);
+  });
+
   it("adds follow-up work on the same branch and updates the same pull request", async () => {
     fs.writeFileSync(path.join(repos.worktree, "app.ts"), "export const answer = 42\n");
     const first = await land();

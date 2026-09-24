@@ -9,15 +9,16 @@ import {
   WorktreesRepo,
 } from "@mend/db";
 import type { ChangeLandingId, SessionId, Sha } from "@mend/domain";
-import type {
-  ChangeLanding,
-  Checkpoint,
-  CheckpointTrigger,
-  LandedPullRequest,
-  LandingTrigger,
-  Project,
-  Session,
-  Worktree,
+import {
+  type ChangeLanding,
+  changeOwnerOf,
+  type Checkpoint,
+  type CheckpointTrigger,
+  type LandedPullRequest,
+  type LandingTrigger,
+  type Project,
+  type Session,
+  type Worktree,
 } from "@mend/domain/workbench";
 import type { DiffFileFact, LandingAuthor, Pushed, PushRefusedError } from "@mend/store";
 import { Effect, Layer, Result, Schema } from "effect";
@@ -39,9 +40,10 @@ import { PullRequests, PullRequestStepError } from "./pull-requests.ts";
  * `change_landings` row with its outcome and, when it did not finish, the words of whatever
  * stopped it. Nothing retries.
  *
- * Only the session's owner lands: the push signs with their key and the pull request speaks as
- * them on GitHub. Callers that serve other people refuse before calling here, and `land` checks
- * again.
+ * Only the change's owner lands (`changeOwnerOf`: the owner of the worktree's first session), not
+ * whoever owns the session that asked: the push signs with their key, Mend's commit is theirs, and
+ * the pull request speaks as them on GitHub. Callers that serve other people refuse before
+ * calling here, and `land` checks again.
  */
 
 // ─── The git half, per store kind ───────────────────────────────────────────
@@ -71,29 +73,35 @@ export class LandingGit extends Context.Service<
   LandingGit,
   {
     /**
-     * Step 1: a checkpoint of what the worktree holds now, with the session branch's head as it
-     * was just before, which step 2 parents on and guards against moving.
+     * Step 1: a checkpoint of what the worktree holds now, with the agent's branch head as the
+     * checkpoint saw it (H), which step 2 parents on. The branch itself is never moved.
      */
     readonly checkpoint: (
       scope: LandingScope,
       trigger: CheckpointTrigger,
     ) => Effect.Effect<
-      { readonly checkpoint: Checkpoint; readonly branchHead: Sha },
+      { readonly checkpoint: Checkpoint; readonly agentHead: Sha },
       LandingStepError
     >;
     /**
-     * Step 2: a commit of the checkpoint's tree on the branch head when it differs, by the owner.
-     * `head` is what step 3 pushes; `commitSha` is null when the agent's commits already hold it.
+     * Step 2: Mend's commit of the checkpoint's tree, by the change's owner, parented on the last
+     * landing (L) and the agent's head (H) by `planLanding`, and kept under
+     * `refs/mend/landed/<worktree>`. `head` is what step 3 pushes; `commitSha` is null when an
+     * existing commit already is what lands; `nothingNew` says the last landing already pushed it.
      */
     readonly commit: (
       scope: LandingScope,
       input: {
         readonly checkpoint: Checkpoint;
-        readonly branchHead: Sha;
+        readonly agentHead: Sha;
+        readonly lastLanded: Sha | null;
         readonly author: LandingAuthor;
         readonly message: string;
       },
-    ) => Effect.Effect<{ readonly head: Sha; readonly commitSha: Sha | null }, LandingStepError>;
+    ) => Effect.Effect<
+      { readonly head: Sha; readonly commitSha: Sha | null; readonly nothingNew: boolean },
+      LandingStepError
+    >;
     /** Step 3: a fast-forward-only push; a refusal is typed and in the remote's words. */
     readonly push: (
       scope: LandingScope,
@@ -117,17 +125,29 @@ export class LandingGit extends Context.Service<
 export class LandingNotStartedError extends Schema.TaggedErrorClass<LandingNotStartedError>()(
   "LandingNotStartedError",
   {
-    reason: Schema.Literals(["not-found", "no-owner", "not-owner", "no-change"]),
+    reason: Schema.Literals([
+      "not-found",
+      "no-owner",
+      "not-owner",
+      "no-change",
+      /** The branch named is the project's default branch or the pull request's base. */
+      "branch",
+      /** The worktree and the agent's branch hold nothing the last landing did not push. */
+      "nothing-new",
+    ]),
     message: Schema.String,
   },
 ) {}
 
 export interface LandInput {
   readonly sessionId: SessionId;
-  /** Who asked. Only the session's owner lands. */
+  /** Who asked. Only the change's owner lands. */
   readonly actorUserId: string;
   readonly trigger: LandingTrigger;
-  /** The branch on origin. Null keeps the branch the change landed on before, else the session's. */
+  /**
+   * The branch on origin. Null keeps the branch the change last pushed to, else the session's.
+   * Never the project's default branch or the pull request's base.
+   */
   readonly remoteBranch: string | null;
   /** False skips step 4, as `mend land --no-pr` does. */
   readonly pullRequest: boolean;
@@ -192,6 +212,12 @@ export const checkpointLink = (webOrigin: string, sessionId: string, ordinal: nu
 const notStarted = (reason: LandingNotStartedError["reason"], message: string) =>
   new LandingNotStartedError({ reason, message });
 
+/** Where the pull request step runs `gh`: the session's workspace only when it is the owner's. */
+const workspaceTarget = (session: Session, owner: string) => ({
+  ownerUserId: owner,
+  sessionId: session.ownerUserId === owner ? session.id : null,
+});
+
 /** A diverged refusal says what the probe counted before the remote's own words. */
 const refusalWords = (error: PushRefusedError): string =>
   error.reason === "diverged" && error.unseen !== null
@@ -238,14 +264,16 @@ export const LandingLive: Layer.Layer<
     const land = Effect.fn("Landing.land")(function* (input: LandInput) {
       const scope = yield* scopeOf(input.sessionId);
       const { session, project, worktree } = scope;
-      const owner = session.ownerUserId;
+      // The change's owner, not the calling session's: a teammate who started a session in
+      // this worktree, or steers one under shared control, never lands it.
+      const owner = changeOwnerOf(yield* sessions.listForWorktree(worktree.id));
       if (owner === null) {
-        return yield* notStarted("no-owner", "landing not started · the session has no owner");
+        return yield* notStarted("no-owner", "landing not started · the change has no owner");
       }
       if (owner !== input.actorUserId) {
         return yield* notStarted(
           "not-owner",
-          "landing not started · only the session's owner lands its change",
+          "landing not started · only the change's owner lands it",
         );
       }
       const change = yield* changes.byWorktree(worktree.id);
@@ -253,7 +281,21 @@ export const LandingLive: Layer.Layer<
         return yield* notStarted("no-change", "landing not started · the session has no change");
       }
       const history = yield* landings.listForChange(change.id);
-      const remoteBranch = input.remoteBranch ?? history[0]?.remoteBranch ?? worktree.branch;
+      // L: what the change's last landing pushed. A landing that pushed nothing leaves neither
+      // a commit to build on nor a branch name to reuse.
+      const lastPush = history.find((landing) => landing.pushedSha !== null);
+      const remoteBranch = input.remoteBranch ?? lastPush?.remoteBranch ?? worktree.branch;
+      const base = pullRequestBase(worktree.baseRef, project.defaultBranch);
+      if (remoteBranch === project.defaultBranch || remoteBranch === base) {
+        const which =
+          remoteBranch === project.defaultBranch
+            ? "the project's default branch"
+            : "the pull request's base";
+        return yield* notStarted(
+          "branch",
+          `landing not started · ${remoteBranch} is ${which} · name another branch`,
+        );
+      }
 
       const finish = (
         checkpoint: Checkpoint | null,
@@ -290,7 +332,7 @@ export const LandingLive: Layer.Layer<
         .checkpoint(scope, input.trigger === "manual" ? "user-mark" : "turn-boundary")
         .pipe(Effect.result);
       if (Result.isFailure(taken)) return yield* failed(null, null, taken.failure.message);
-      const { checkpoint, branchHead } = taken.success;
+      const { checkpoint, agentHead } = taken.success;
 
       // 2. Commit what the agent left uncommitted, as the owner.
       const author = yield* users.byId(owner);
@@ -309,7 +351,8 @@ export const LandingLive: Layer.Layer<
       const committed = yield* git
         .commit(scope, {
           checkpoint,
-          branchHead,
+          agentHead,
+          lastLanded: lastPush?.pushedSha ?? null,
           author: { name: author.name, email: author.email },
           message: landingCommitMessage({
             tourSummary: tour?.summary ?? null,
@@ -322,7 +365,25 @@ export const LandingLive: Layer.Layer<
       if (Result.isFailure(committed)) {
         return yield* failed(checkpoint, null, committed.failure.message);
       }
-      const { head, commitSha } = committed.success;
+      const { head, commitSha, nothingNew } = committed.success;
+      const titleGiven = input.title !== null && input.title.trim() !== "";
+      // Nothing new since a landing that finished what is asked now: no push, no row. A landing
+      // whose pull request step failed, or one asked to open a pull request or retitle it, goes on.
+      const latest = history[0];
+      const wantsPullRequest =
+        input.pullRequest && pullRequestAvailability(project.originUrl).available;
+      if (
+        nothingNew &&
+        !titleGiven &&
+        latest !== undefined &&
+        latest.pushedSha === head &&
+        (latest.outcome === "pull-request" || (latest.outcome === "pushed" && !wantsPullRequest))
+      ) {
+        return yield* notStarted(
+          "nothing-new",
+          "landing not started · nothing new since the last landing",
+        );
+      }
 
       // 3. Push, fast-forward only.
       const pushed = yield* input.remoteEnv.pipe(
@@ -364,16 +425,16 @@ export const LandingLive: Layer.Layer<
       const previous = history.find((landing) => landing.pullRequest !== null)?.pullRequest ?? null;
       const published = yield* pullRequests
         .publish({
-          target: { ownerUserId: owner, sessionId: session.id },
+          target: workspaceTarget(session, owner),
           repository: availability.repository,
           head: remoteBranch,
-          base: pullRequestBase(worktree.baseRef, project.defaultBranch),
+          base,
           title: pullRequestTitle({
             explicit: input.title,
             label: session.label,
             sessionId: session.id,
           }),
-          titleGiven: input.title !== null && input.title.trim() !== "",
+          titleGiven,
           section: describePullRequest({
             tour: tour === null ? null : { summary: tour.summary, approach: tour.approach },
             files,
@@ -417,8 +478,19 @@ export const LandingLive: Layer.Layer<
       if (!availability.available) {
         return yield* new PullRequestStepError({ message: availability.reason });
       }
+      // `gh` speaks as the landing's owner, in the landing session's workspace only when that
+      // session is theirs.
+      const session =
+        landing.sessionId === null
+          ? null
+          : yield* sessions
+              .byId(landing.sessionId)
+              .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
       const observed = yield* pullRequests.observe({
-        target: { ownerUserId: landing.userId, sessionId: landing.sessionId },
+        target:
+          session === null
+            ? { ownerUserId: landing.userId, sessionId: null }
+            : workspaceTarget(session, landing.userId),
         repository: availability.repository,
         number: landing.pullRequest.number,
       });

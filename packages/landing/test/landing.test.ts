@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Sha } from "@mend/domain";
+import { SessionId, Sha } from "@mend/domain";
 import type { CheckpointTrigger, LandedPullRequest } from "@mend/domain/workbench";
 import { PushRefusedError } from "@mend/store";
 import { Effect, Layer } from "effect";
@@ -19,6 +19,9 @@ import { BASE_SHA, checkpointOf, makeWorld, OWNER, type WorldOptions } from "./w
 const CHECKPOINT_SHA = "cccccccccccccccccccccccccccccccccccccccc";
 const HEAD_SHA = Sha.make("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 const MEND_COMMIT = Sha.make("dddddddddddddddddddddddddddddddddddddddd");
+const BOB_SESSION = "33333333-3333-3333-3333-333333333333";
+const EARLIER = new Date("2026-09-24T09:00:00Z");
+const LATER = new Date("2026-09-24T11:00:00Z");
 
 const input = (overrides: Partial<LandInput> = {}): LandInput => ({
   sessionId: makeWorld().session.id,
@@ -37,6 +40,8 @@ interface Script {
   readonly commitFails?: string;
   /** Mend wrote no commit: the agent's own commits hold the checkpoint's tree. */
   readonly nothingToCommit?: boolean;
+  /** Once a landing pushed, the next finds nothing new since it. */
+  readonly nothingNew?: boolean;
   readonly push?: "ok" | PushRefusedError | LandingStepError;
   readonly publish?: "opened" | "updated" | PullRequestStepError;
   readonly observed?: LandedPullRequest;
@@ -54,7 +59,12 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
   const world = makeWorld(options);
   const calls: Array<string> = [];
   const triggers: Array<CheckpointTrigger> = [];
-  const commits: Array<{ readonly author: unknown; readonly message: string }> = [];
+  const commits: Array<{
+    readonly author: unknown;
+    readonly message: string;
+    readonly lastLanded: string | null;
+  }> = [];
+  const observed: Array<PublishInput["target"]> = [];
   const pushes: Array<{
     readonly sha: string;
     readonly remoteBranch: string;
@@ -69,7 +79,7 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
         return script.checkpointFails === undefined
           ? Effect.succeed({
               checkpoint: checkpointOf(world, 3, CHECKPOINT_SHA, trigger),
-              branchHead: HEAD_SHA,
+              agentHead: HEAD_SHA,
             })
           : Effect.fail(
               new LandingStepError({ step: "checkpoint", message: script.checkpointFails }),
@@ -78,15 +88,25 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
     commit: (_scope, commit) =>
       Effect.suspend(() => {
         calls.push("commit");
-        commits.push({ author: commit.author, message: commit.message });
+        commits.push({
+          author: commit.author,
+          message: commit.message,
+          lastLanded: commit.lastLanded,
+        });
         if (script.commitFails !== undefined) {
           return Effect.fail(new LandingStepError({ step: "commit", message: script.commitFails }));
         }
-        return Effect.succeed(
-          script.nothingToCommit === true
-            ? { head: commit.branchHead, commitSha: null }
-            : { head: MEND_COMMIT, commitSha: MEND_COMMIT },
-        );
+        const committed: {
+          readonly head: Sha;
+          readonly commitSha: Sha | null;
+          readonly nothingNew: boolean;
+        } =
+          script.nothingNew === true && commit.lastLanded !== null
+            ? { head: commit.lastLanded, commitSha: null, nothingNew: true }
+            : script.nothingToCommit === true
+              ? { head: commit.agentHead, commitSha: null, nothingNew: false }
+              : { head: MEND_COMMIT, commitSha: MEND_COMMIT, nothingNew: false };
+        return Effect.succeed(committed);
       }),
     push: (_scope, push) =>
       Effect.suspend(() => {
@@ -127,10 +147,14 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
           ? Effect.succeed({ action: outcome, pullRequest: PR, workspace: "short-lived" as const })
           : Effect.fail(outcome);
       }),
-    observe: () => Effect.succeed(script.observed ?? PR),
+    observe: (observe) =>
+      Effect.sync(() => {
+        observed.push(observe.target);
+        return script.observed ?? PR;
+      }),
   });
   const layer = LandingLive.pipe(Layer.provide(Layer.mergeAll(world.repos, git, pullRequests)));
-  return { world, calls, triggers, commits, pushes, published, layer };
+  return { world, calls, triggers, commits, pushes, published, observed, layer };
 };
 
 describe("Landing.land", () => {
@@ -164,6 +188,7 @@ describe("Landing.land", () => {
         {
           author: { name: "Ada Owner", email: "ada@example.com" },
           message: `Fix the login redirect\n\nMend-Session: https://mend.test/sessions/${h.world.session.id}\n`,
+          lastLanded: null,
         },
       ]);
       // The push is Mend's commit, with the env the caller resolved.
@@ -224,6 +249,125 @@ describe("Landing.land", () => {
     }).pipe(Effect.provide(h.layer));
   });
 
+  it.effect("builds each landing on what the last one pushed", () => {
+    const h = harness();
+    return Effect.gen(function* () {
+      const landing = yield* Landing;
+      yield* landing.land(input());
+      yield* landing.land(input({ trigger: "automatic" }));
+      expect(h.commits.map((commit) => commit.lastLanded)).toEqual([null, MEND_COMMIT]);
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("neither builds on nor reuses the branch of a landing that pushed nothing", () => {
+    const h = harness({
+      push: new PushRefusedError({
+        remoteBranch: "wip/login",
+        reason: "rejected",
+        message: "GH006: Protected branch update failed",
+        remoteSha: null,
+        unseen: null,
+      }),
+    });
+    return Effect.gen(function* () {
+      const landing = yield* Landing;
+      const refused = yield* landing.land(input({ remoteBranch: "wip/login" }));
+      expect(refused.landing.outcome).toBe("refused");
+      yield* landing.land(input());
+      expect(h.pushes.map((push) => push.remoteBranch)).toEqual(["wip/login", "mend/fix-login"]);
+      expect(h.commits.map((commit) => commit.lastLanded)).toEqual([null, null]);
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("says nothing is new since the last landing, and records nothing", () => {
+    const h = harness({ nothingNew: true });
+    return Effect.gen(function* () {
+      const landing = yield* Landing;
+      yield* landing.land(input());
+      const error = yield* landing.land(input()).pipe(Effect.flip);
+      expect(error.reason).toBe("nothing-new");
+      expect(error.message).toBe("landing not started · nothing new since the last landing");
+      expect(h.world.landings).toHaveLength(1);
+      expect(h.pushes).toHaveLength(1);
+      // A new title still reaches the pull request, pushing what already landed.
+      const retitled = yield* landing.land(input({ title: "Fix the login loop" }));
+      expect(retitled.landing.pushedSha).toBe(MEND_COMMIT);
+      expect(h.published[1]).toMatchObject({ title: "Fix the login loop", titleGiven: true });
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("goes on when nothing is new but the last pull request step failed", () => {
+    const h = harness({
+      nothingNew: true,
+      publish: new PullRequestStepError({ message: "gh: HTTP 502" }),
+    });
+    return Effect.gen(function* () {
+      const landing = yield* Landing;
+      const first = yield* landing.land(input());
+      expect(first.landing.outcome).toBe("failed");
+      const again = yield* landing.land(input());
+      expect(again.landing.pushedSha).toBe(MEND_COMMIT);
+      expect(h.published).toHaveLength(2);
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("refuses to push to the default branch or the pull request's base", () => {
+    const h = harness({}, { baseRef: "release/2" });
+    return Effect.gen(function* () {
+      const landing = yield* Landing;
+      const main = yield* landing.land(input({ remoteBranch: "main" })).pipe(Effect.flip);
+      expect(main.reason).toBe("branch");
+      expect(main.message).toBe(
+        "landing not started · main is the project's default branch · name another branch",
+      );
+      const base = yield* landing.land(input({ remoteBranch: "release/2" })).pipe(Effect.flip);
+      expect(base.message).toBe(
+        "landing not started · release/2 is the pull request's base · name another branch",
+      );
+      expect(h.calls).toEqual([]);
+      expect(h.world.landings).toEqual([]);
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect(
+    "lands only for the change's owner, never for a teammate who joined the worktree",
+    () => {
+      const h = harness(
+        {},
+        { siblings: [{ id: BOB_SESSION, ownerUserId: "bob", createdAt: LATER }] },
+      );
+      return Effect.gen(function* () {
+        const landing = yield* Landing;
+        // Bob owns a session in Ada's worktree; landing from it is still Ada's alone.
+        const error = yield* landing
+          .land(input({ sessionId: SessionId.make(BOB_SESSION), actorUserId: "bob" }))
+          .pipe(Effect.flip);
+        expect(error.reason).toBe("not-owner");
+        expect(error.message).toBe("landing not started · only the change's owner lands it");
+        expect(h.calls).toEqual([]);
+        // Ada lands through Bob's session: her key, her commit, and `gh` never in Bob's workspace.
+        const report = yield* landing.land(input({ sessionId: SessionId.make(BOB_SESSION) }));
+        expect(report.landing.userId).toBe(OWNER);
+        expect(h.commits[0]?.author).toEqual({ name: "Ada Owner", email: "ada@example.com" });
+        expect(h.published[0]?.target).toEqual({ ownerUserId: OWNER, sessionId: null });
+        yield* landing.refreshPullRequest(report.landing.id);
+        expect(h.observed).toEqual([{ ownerUserId: OWNER, sessionId: null }]);
+      }).pipe(Effect.provide(h.layer));
+    },
+  );
+
+  it.effect("takes the change's owner from the worktree's first session", () => {
+    // Carol started the worktree; Ada's session came later.
+    const h = harness(
+      {},
+      { siblings: [{ id: BOB_SESSION, ownerUserId: "carol", createdAt: EARLIER }] },
+    );
+    return Effect.gen(function* () {
+      const error = yield* (yield* Landing).land(input()).pipe(Effect.flip);
+      expect(error.reason).toBe("not-owner");
+    }).pipe(Effect.provide(h.layer));
+  });
+
   it.effect("lands only for the owner, and records nothing otherwise", () => {
     const h = harness();
     return Effect.gen(function* () {
@@ -235,7 +379,7 @@ describe("Landing.land", () => {
     }).pipe(Effect.provide(h.layer));
   });
 
-  it.effect("does not start for a session with no owner", () => {
+  it.effect("does not start for a change with no owner", () => {
     const h = harness({}, { ownerUserId: null });
     return Effect.gen(function* () {
       const error = yield* (yield* Landing).land(input()).pipe(Effect.flip);
@@ -262,7 +406,7 @@ describe("Landing.land", () => {
 
   it.effect("stops at a failed commit and records the checkpoint it took", () => {
     const h = harness({
-      commitFails: "mend/fix-login moved while landing · expected aaaaaaa · found bbbbbbb",
+      commitFails: "fatal: unable to read tree cccccccccccccccccccccccccccccccccccccccc",
     });
     return Effect.gen(function* () {
       const report = yield* (yield* Landing).land(input());
@@ -272,7 +416,7 @@ describe("Landing.land", () => {
         checkpointId: "cp-3",
         commitSha: null,
         pushedSha: null,
-        message: "mend/fix-login moved while landing · expected aaaaaaa · found bbbbbbb",
+        message: "fatal: unable to read tree cccccccccccccccccccccccccccccccccccccccc",
       });
     }).pipe(Effect.provide(h.layer));
   });
