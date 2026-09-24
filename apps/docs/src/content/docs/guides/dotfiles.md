@@ -60,6 +60,10 @@ Open **Settings → Dotfiles** and provide a repository URL. Optional fields con
 At each launch, the server clones or refreshes the repository with its own host Git and SSH setup,
 archives the selected tree, and sends the archive to the workspace.
 
+Saving the repository runs that same clone and archive once. If it fails (the server cannot reach
+the repository, the branch or subdirectory does not exist, or the tree is over the size limits),
+Mend does not save the repository and shows the reason.
+
 Automatic mode detects chezmoi and stow layouts. Other repositories are copied into the workspace
 home directory.
 
@@ -83,6 +87,11 @@ image and setup commands own the home environment.
 Dotfiles resolve at workspace creation. A running workspace does not change when you sync another
 snapshot or update the repository. Start a new session, or resume into a fresh workspace, to use the
 new tree.
+
+If a source fails at launch, for example because the clone was stopped at its time limit, the
+session still starts without that source. The other source still applies. The session page shows the
+source that was not applied and the reason, for example
+`dotfiles · repo not applied · the dotfiles repo … was stopped after 60s`.
 
 Each session receives the dotfiles of its owner. A collaborator reading or controlling that session
 does not replace them with another user's files.

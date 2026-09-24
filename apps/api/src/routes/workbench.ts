@@ -131,6 +131,7 @@ import {
   FollowUpDelivery,
   RECIPE_NAME,
   type ReadStamp,
+  resolveRepositoryArchive,
   SessionEngine,
   WorktreeReads,
   type WorktreeReadError,
@@ -987,9 +988,16 @@ export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (hand
         const caller = yield* CurrentUser;
         const userDotfiles = yield* UserDotfilesRepo;
         if (payload.repository !== null) {
-          yield* reachableSource(
+          const pinCloneEnv = yield* reachableSource(
             payload.repository.url,
             (message) => new SettingsFailure({ message }),
+          );
+          // Tried before it is saved, through the launch's own clone and pack (same bounds, same
+          // git environment): a repository that cannot be cloned, has no such branch or
+          // subdirectory, or packs past the cap is refused here with that reason, instead of
+          // being left out of every launch after it.
+          yield* resolveRepositoryArchive(payload.repository, { pinCloneEnv }).pipe(
+            Effect.mapError((error) => new SettingsFailure({ message: error.message })),
           );
         }
         yield* userDotfiles.setRepository(caller.user.id, payload.repository);
