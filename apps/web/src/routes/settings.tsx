@@ -694,7 +694,7 @@ function DotfilesPanel() {
                 are always copied.
               </p>
               <div
-                role="radiogroup"
+                role="group"
                 aria-labelledby="dotfiles-manager-label"
                 className="mt-2 grid gap-2 sm:grid-cols-2"
               >
@@ -702,8 +702,7 @@ function DotfilesPanel() {
                   <button
                     key={option.value}
                     type="button"
-                    role="radio"
-                    aria-checked={draft.manager === option.value}
+                    aria-pressed={draft.manager === option.value}
                     disabled={pending}
                     onClick={() => edit({ manager: option.value })}
                     className={`rounded-xl border p-3 text-left shadow-xs transition-colors disabled:opacity-60 ${

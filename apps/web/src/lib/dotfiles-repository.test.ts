@@ -1,4 +1,4 @@
-import type { DotfilesRepository } from "@mend/domain";
+import { DotfilesManager, type DotfilesRepository } from "@mend/domain";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -98,5 +98,11 @@ describe("DOTFILES_MANAGER_OPTIONS", () => {
       "stow",
       "chezmoi",
     ]);
+  });
+
+  it("offers every manager the server accepts", () => {
+    expect(DOTFILES_MANAGER_OPTIONS.map((option) => option.value).toSorted()).toEqual(
+      DotfilesManager.literals.toSorted(),
+    );
   });
 });

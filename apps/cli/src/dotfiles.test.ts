@@ -2,9 +2,11 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { DotfilesManager } from "@mend/domain";
 import { describe, expect, it } from "vitest";
 
 import {
+  DOTFILES_MANAGERS,
   dotfilesRepositoryFacts,
   parseDotfilesRepoArgs,
   readSyncFiles,
@@ -65,6 +67,11 @@ const errorOf = (args: ReadonlyArray<string>) => {
 };
 
 describe("parseDotfilesRepoArgs", () => {
+  it("offers exactly the managers the server accepts", () => {
+    // The CLI ships without @mend/domain at run time, so the list is a copy: this keeps it one.
+    expect(DOTFILES_MANAGERS.toSorted()).toEqual(DotfilesManager.literals.toSorted());
+  });
+
   it("takes a URL alone with every default", () => {
     expect(parseDotfilesRepoArgs(["https://github.com/me/dots.git"])).toEqual({
       kind: "set",
