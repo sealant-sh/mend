@@ -97,11 +97,13 @@ export interface DerivedCommit {
 /**
  * Landing's commit on a runner: what was written and its pack. The cache moves no ref (its refs
  * are rewritten on every `ensure`), so the caller stores the pack under the project's derived
- * prefix and records the ref, as it does for a derived checkpoint.
+ * prefix and keeps the landed head under `refs/mend/landed/<worktree>` in `store_refs`, as it
+ * does for a derived checkpoint. The executor's branch never sees Mend's commit.
  */
 export interface RunnerLandingCommit {
   readonly head: Sha;
   readonly written: (LandedCommit & { readonly derived: DerivedCommit }) | null;
+  readonly nothingNew: boolean;
 }
 
 export interface BlameLine {
@@ -181,9 +183,9 @@ export class GitOpsRunner extends Context.Service<
     ) => Effect.Effect<DerivedCommit, GitError | RunnerCacheError>;
     /**
      * Landing step 2 for a capture-backed session (docs/adr/0007-landing.md "Where each step
-     * runs"): the checkpoint's tree as one commit on `parent`, authored by the owner, or nothing
-     * when `parent` already holds that tree. `parent` and `checkpoint` resolve through the
-     * handle. The executor's branch never sees this commit, so the caller chooses `parent`.
+     * runs"): Mend's commit of the checkpoint's tree, parented by `planLanding` on the last
+     * landing and the agent's head, or nothing when an existing commit already is what lands.
+     * `agentHead`, `lastLanded` and `checkpoint` resolve through the handle.
      */
     readonly landingCommit: (
       cache: RunnerCache,
@@ -565,18 +567,30 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         cache: RunnerCache,
         input: LandingCommitInput,
       ) {
-        const [parent, checkpoint] = yield* Effect.all([
-          resolve(cache, input.parent),
+        const [agentHead, checkpoint] = yield* Effect.all([
+          resolve(cache, input.agentHead),
           resolve(cache, input.checkpoint),
         ]);
-        const landed = yield* writeLandingCommit(cache.path, { ...input, parent, checkpoint });
+        const lastLanded =
+          input.lastLanded === null ? null : yield* resolve(cache, input.lastLanded);
+        const landed = yield* writeLandingCommit(cache.path, {
+          ...input,
+          agentHead,
+          lastLanded,
+          checkpoint,
+        });
         if (landed.written === null) {
-          return { head: landed.head, written: null } satisfies RunnerLandingCommit;
+          return {
+            head: landed.head,
+            written: null,
+            nothingNew: landed.nothingNew,
+          } satisfies RunnerLandingCommit;
         }
         const derived = yield* packCommit(cache, landed.written.sha);
         return {
           head: landed.head,
           written: { ...landed.written, derived },
+          nothingNew: false,
         } satisfies RunnerLandingCommit;
       });
 

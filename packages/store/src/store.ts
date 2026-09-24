@@ -13,12 +13,11 @@ import {
   type BundleInput,
   type BundleTooLargeError,
   type ChangeBundle,
-  checkBranch,
   createChangeBundle,
   type InvalidBranchError,
-  type LandingAuthor,
-  LandingBranchMovedError,
+  landedRefOf,
   type LandingCommit,
+  type LandingCommitInput,
   type ProbeInput,
   probeRemoteBranch,
   pushBranch,
@@ -79,20 +78,13 @@ export interface AdoptedRepo {
   readonly headSha: Sha;
 }
 
-/** Landing's commit in the project store: the session branch moves, the worktree does not. */
-export interface StoreLandingCommitInput {
-  /** The session branch, without `refs/heads/` (`mend/fix-login`). */
-  readonly branch: string;
-  /** The checkpoint whose tree is landed (a ref or a sha). */
-  readonly checkpoint: string;
-  readonly author: LandingAuthor;
-  readonly message: string;
+/** Landing's commit in the project store: no branch moves, the worktree does not either. */
+export interface StoreLandingCommitInput extends LandingCommitInput {
   /**
-   * The branch head the caller observed when it took the checkpoint. When the branch has moved
-   * since (the agent committed after the checkpoint), nothing is written: a commit of the older
-   * checkpoint's tree would undo the newer commit.
+   * The worktree whose `refs/mend/landed/<id>` keeps the landed head reachable for later
+   * landings, probes and bundles. Null keeps nothing: a bundle's commit lives only in the bundle.
    */
-  readonly expectedHead?: string | undefined;
+  readonly keepFor: string | null;
 }
 
 /** A flat, sorted path list — the client nests it; `truncated` when the cap bit. */
@@ -234,6 +226,15 @@ const parseNameStatus = (
 };
 
 const sha = (value: string) => Sha.make(value);
+
+/**
+ * Every session branch Mend makes (`mend/<name>`, `mend/wt/<id>`, `mend/session/<id>`), and the
+ * name a landing pushes one under on origin (docs/adr/0007-landing.md).
+ */
+const SESSION_BRANCHES = "refs/heads/mend/*";
+
+/** A short branch name that is one of Mend's session branches, or a landed one. */
+export const isSessionBranch = (name: string): boolean => name.startsWith("mend/");
 
 /**
  * Make one tree group-writable with setgid directories — the filesystem half of
@@ -510,16 +511,17 @@ export class Store extends Context.Service<
     /** Delete the clone directory. Selection rows are the caller's concern. */
     readonly removeReference: (clonePath: string) => Effect.Effect<void>;
     /**
-     * Landing step 2 (docs/adr/0007-landing.md) in the project store: when the checkpoint's tree
-     * differs from the session branch head's, write one commit of that tree on the head as the
-     * owner and move `refs/heads/<branch>` to it by compare-and-swap; otherwise write nothing.
+     * Landing step 2 (docs/adr/0007-landing.md) in the project store: Mend's commit of the
+     * checkpoint's tree, parented by `planLanding` on the last landing and the agent's head, or
+     * nothing when an existing commit already is what lands. The session's branch never moves:
+     * the landed head is kept under `refs/mend/landed/<worktree>` when `keepFor` names one.
      * `commit-tree` and `update-ref` in the bare store only, so the worktree's files, index and
      * HEAD file are never touched.
      */
     readonly landingCommit: (
       storePath: string,
       input: StoreLandingCommitInput,
-    ) => Effect.Effect<LandingCommit, GitError | InvalidBranchError | LandingBranchMovedError>;
+    ) => Effect.Effect<LandingCommit, GitError>;
     /** Landing step 3: fast-forward-only push; a refusal is typed and in the remote's words. */
     readonly push: (
       storePath: string,
@@ -748,9 +750,18 @@ export class Store extends Context.Service<
       ) {
         // Both refspecs in one fetch: heads for the store's own tree reads (files listing,
         // default-branch resolution), remote-tracking for base resolution. Forced — the store
-        // holds no local work on origin's branches; sessions commit on `mend/session/*` only.
+        // holds no local work on origin's branches. Sessions commit on `mend/*` only, and
+        // landings push `mend/*` to origin (docs/adr/0007-landing.md), so the negative refspec
+        // keeps origin's `mend/*` from overwriting, or refusing to fetch into, a session branch a
+        // worktree has checked out.
         yield* git(
-          ["fetch", "origin", "+refs/heads/*:refs/heads/*", "+refs/heads/*:refs/remotes/origin/*"],
+          [
+            "fetch",
+            "origin",
+            "+refs/heads/*:refs/heads/*",
+            "+refs/heads/*:refs/remotes/origin/*",
+            `^${SESSION_BRANCHES}`,
+          ],
           storePath,
           remoteEnv,
         );
@@ -778,16 +789,16 @@ export class Store extends Context.Service<
           storePath,
         );
         const byName = new Map<string, { name: string; sha: Sha; committedAt: string }>();
+        // Session branches (`mend/<name>`, `mend/wt/<id>`, `mend/session/<id>`) and the branches
+        // landings push to origin under the same names are never a base.
         for (const line of local.split("\n")) {
           const parsed = branchLine(line);
-          if (parsed === null) continue;
-          if (parsed.name.startsWith("mend/session/")) continue;
-          if (parsed.name.startsWith("mend/wt/")) continue;
+          if (parsed === null || isSessionBranch(parsed.name)) continue;
           byName.set(parsed.name, parsed);
         }
         for (const line of remote.split("\n")) {
           const parsed = branchLine(line);
-          if (parsed === null || parsed.name === "HEAD") continue;
+          if (parsed === null || parsed.name === "HEAD" || isSessionBranch(parsed.name)) continue;
           byName.set(parsed.name, parsed);
         }
         return [...byName.values()]
@@ -1077,48 +1088,14 @@ export class Store extends Context.Service<
         storePath: string,
         input: StoreLandingCommitInput,
       ) {
-        const ref = yield* checkBranch(input.branch);
-        const head = yield* git(["rev-parse", "--verify", "--end-of-options", ref], storePath);
-        if (input.expectedHead !== undefined) {
-          const expected = yield* git(
-            ["rev-parse", "--verify", "--end-of-options", `${input.expectedHead}^{commit}`],
+        const landed = yield* writeLandingCommit(storePath, input);
+        if (input.keepFor !== null) {
+          // Mend's own namespace, never `refs/heads`: the agent's branch stays where it was.
+          yield* git(
+            ["update-ref", "-m", "mend: landing", landedRefOf(input.keepFor), landed.head],
             storePath,
           );
-          if (expected !== head) {
-            return yield* new LandingBranchMovedError({
-              branch: input.branch,
-              expected,
-              actual: head,
-            });
-          }
         }
-        const landed = yield* writeLandingCommit(storePath, {
-          parent: head,
-          checkpoint: input.checkpoint,
-          author: input.author,
-          message: input.message,
-        });
-        if (landed.written === null) return landed;
-        // Compare-and-swap on the head read above: a commit the agent made meanwhile wins and
-        // Mend's commit is left unreferenced.
-        yield* git(
-          ["update-ref", "-m", "mend: landing", ref, landed.written.sha, head],
-          storePath,
-        ).pipe(
-          Effect.catch(() =>
-            git(["rev-parse", "--verify", "--quiet", "--end-of-options", ref], storePath).pipe(
-              Effect.catch(() => Effect.succeed("")),
-              Effect.flatMap(
-                (actual) =>
-                  new LandingBranchMovedError({
-                    branch: input.branch,
-                    expected: head,
-                    actual: actual === "" ? null : actual,
-                  }),
-              ),
-            ),
-          ),
-        );
         return landed;
       });
 

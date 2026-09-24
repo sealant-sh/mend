@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -19,15 +20,22 @@ import { git, GitError, gitOutput } from "./git.ts";
 
 // ─── Types ──────────────────────────────────────────────────────────────────
 
-/** Who Mend's commit is by: the session's owner, as author and committer. */
+/** Who Mend's commit is by: the change's owner, as author and committer. */
 export interface LandingAuthor {
   readonly name: string;
   readonly email: string;
 }
 
+/**
+ * Step 2's three commits (docs/adr/0007-landing.md, "Mend never moves the session's branch"):
+ * `agentHead` (H), `lastLanded` (L) and the checkpoint whose tree (T) is landed. Mend's commit is
+ * parented from them by `planLanding`; the session's branch itself is never moved.
+ */
 export interface LandingCommitInput {
-  /** What Mend's commit is parented on: the session branch's head (a ref or a sha). */
-  readonly parent: string;
+  /** The agent's branch head as the checkpoint saw it (a ref or a sha). */
+  readonly agentHead: string;
+  /** What the change's last landing pushed; null before its first push. */
+  readonly lastLanded: string | null;
   /** The checkpoint whose tree is landed (a ref or a sha). */
   readonly checkpoint: string;
   readonly author: LandingAuthor;
@@ -38,15 +46,21 @@ export interface LandingCommitInput {
 export interface LandedCommit {
   readonly sha: Sha;
   readonly tree: Sha;
-  readonly parent: Sha;
+  /** The last landing's commit, the agent's head, or both (a merge), in that order. */
+  readonly parents: ReadonlyArray<Sha>;
 }
 
 export interface LandingCommit {
-  /** The branch head after landing: Mend's commit, or the parent when nothing was left over. */
+  /** What step 3 pushes: Mend's commit, the agent's head, or the last landing's commit. */
   readonly head: Sha;
-  /** Mend's commit, or null when the agent's own commits already hold the checkpoint's tree. */
+  /** Mend's commit, or null when an existing commit already has the checkpoint's tree. */
   readonly written: LandedCommit | null;
+  /** The checkpoint and the agent's branch add nothing to what the last landing pushed. */
+  readonly nothingNew: boolean;
 }
+
+/** Where Mend keeps a worktree's landed head reachable: never under `refs/heads`. */
+export const landedRefOf = (worktreeId: string): string => `refs/mend/landed/${worktreeId}`;
 
 export interface PushInput {
   /** Where to push: `origin` from the project's store, the origin URL from a runner cache. */
@@ -114,16 +128,6 @@ export interface ChangeBundle {
 export class InvalidBranchError extends Schema.TaggedErrorClass<InvalidBranchError>()(
   "InvalidBranchError",
   { branch: Schema.String },
-) {}
-
-/** The session branch is no longer where the caller observed it, so Mend wrote nothing. */
-export class LandingBranchMovedError extends Schema.TaggedErrorClass<LandingBranchMovedError>()(
-  "LandingBranchMovedError",
-  {
-    branch: Schema.String,
-    expected: Schema.String,
-    actual: Schema.NullOr(Schema.String),
-  },
 ) {}
 
 /**
@@ -221,24 +225,96 @@ export const deniedLines = (stderr: string): ReadonlyArray<string> =>
     .map((line) => line.replace(/^remote:\s*/, "").trim())
     .filter((line) => DENIED.test(line));
 
+/** `ancestor` is `descendant` or in its history. Any answer but yes or no is git's failure. */
+const isAncestor = (dir: string, ancestor: Sha, descendant: Sha) =>
+  Effect.gen(function* () {
+    const args = ["merge-base", "--is-ancestor", ancestor, descendant];
+    const out = yield* gitOutput(args, dir);
+    if (out.exitCode === 0) return true;
+    if (out.exitCode === 1) return false;
+    return yield* new GitError({
+      args,
+      cwd: dir,
+      exitCode: out.exitCode,
+      stderr: out.stderr.trim(),
+    });
+  });
+
+// ─── The plan ───────────────────────────────────────────────────────────────
+
+/** What step 2 knows about H, L and T once it has read them. */
+export interface LandingFacts {
+  /** T: the checkpoint's tree. */
+  readonly tree: Sha;
+  /** H and its tree. */
+  readonly agentHead: Sha;
+  readonly agentTree: Sha;
+  /** L and its tree; null before the change's first push. */
+  readonly lastLanded: { readonly sha: Sha; readonly tree: Sha } | null;
+  /** H is L or in L's history: the agent added nothing since the last landing. */
+  readonly agentInLanded: boolean;
+  /** L is H or in H's history: the agent's branch already builds on the last landing. */
+  readonly landedInAgent: boolean;
+}
+
+/** What step 3 pushes: an existing commit, or Mend's commit of T on these parents. */
+export type LandingPlan =
+  | { readonly _tag: "push"; readonly head: Sha; readonly nothingNew: boolean }
+  | { readonly _tag: "commit"; readonly parents: ReadonlyArray<Sha> };
+
+/**
+ * Step 2's rule (docs/adr/0007-landing.md). Before the first push, H goes as it is when it
+ * already has T, else T is committed on H. After a landing L: when the agent added nothing past
+ * L, T equal to L's tree is nothing new and anything else is committed on L; when H builds on L,
+ * H is treated as before a first push; otherwise the agent committed beside L, and T is committed
+ * on both, L first. Every push fast-forwards from L, and the agent's commits are never rewritten.
+ */
+export const planLanding = (facts: LandingFacts): LandingPlan => {
+  const fromAgent: LandingPlan =
+    facts.tree === facts.agentTree
+      ? { _tag: "push", head: facts.agentHead, nothingNew: false }
+      : { _tag: "commit", parents: [facts.agentHead] };
+  const landed = facts.lastLanded;
+  if (landed === null) return fromAgent;
+  if (facts.agentInLanded) {
+    return facts.tree === landed.tree
+      ? { _tag: "push", head: landed.sha, nothingNew: true }
+      : { _tag: "commit", parents: [landed.sha] };
+  }
+  if (facts.landedInAgent) return fromAgent;
+  return { _tag: "commit", parents: [landed.sha, facts.agentHead] };
+};
+
 // ─── Operations ─────────────────────────────────────────────────────────────
 
 /**
- * Step 2: one commit for the work the agent left uncommitted. When the checkpoint's tree is the
- * parent's tree the agent's commits already hold everything and nothing is written; otherwise
- * `commit-tree` writes the checkpoint's tree on the parent, authored and committed by the owner.
- * Moving a ref is the caller's: the store moves the session branch, a runner packs the commit.
+ * Step 2: read H, L and T, plan by `planLanding`, and write Mend's commit with `commit-tree`,
+ * authored and committed by the owner, when the plan needs one. No ref moves here: the session's
+ * branch never does, and keeping the result reachable (`landedRefOf`, a runner's pack) is the
+ * caller's.
  */
 export const writeLandingCommit = Effect.fn("writeLandingCommit")(function* (
   dir: string,
   input: LandingCommitInput,
 ) {
-  const parent = yield* commitOf(dir, input.parent);
-  const [parentTree, tree] = yield* Effect.all([
-    treeOf(dir, parent),
+  const agentHead = yield* commitOf(dir, input.agentHead);
+  const lastLanded = input.lastLanded === null ? null : yield* commitOf(dir, input.lastLanded);
+  const [tree, agentTree] = yield* Effect.all([
     treeOf(dir, input.checkpoint),
+    treeOf(dir, agentHead),
   ]);
-  if (parentTree === tree) return { head: parent, written: null } satisfies LandingCommit;
+  const plan = planLanding({
+    tree,
+    agentHead,
+    agentTree,
+    lastLanded:
+      lastLanded === null ? null : { sha: lastLanded, tree: yield* treeOf(dir, lastLanded) },
+    agentInLanded: lastLanded === null ? false : yield* isAncestor(dir, agentHead, lastLanded),
+    landedInAgent: lastLanded === null ? false : yield* isAncestor(dir, lastLanded, agentHead),
+  });
+  if (plan._tag === "push") {
+    return { head: plan.head, written: null, nothingNew: plan.nothingNew } satisfies LandingCommit;
+  }
   const identity = {
     GIT_AUTHOR_NAME: input.author.name,
     GIT_AUTHOR_EMAIL: input.author.email,
@@ -247,19 +323,25 @@ export const writeLandingCommit = Effect.fn("writeLandingCommit")(function* (
   };
   const sha = Sha.make(
     yield* git(
-      ["commit-tree", tree, "-p", parent, "-F", "-"],
+      ["commit-tree", tree, ...plan.parents.flatMap((parent) => ["-p", parent]), "-F", "-"],
       dir,
       identity,
       undefined,
       input.message,
     ),
   );
-  return { head: sha, written: { sha, tree, parent } } satisfies LandingCommit;
+  return {
+    head: sha,
+    written: { sha, tree, parents: plan.parents },
+    nothingNew: false,
+  } satisfies LandingCommit;
 });
 
 /**
  * Origin's branch against `sha`: `ls-remote` for its tip, a fetch of that branch when the tip is
- * not already here (no ref is written for it), then the commit counts both ways.
+ * not already here, then the commit counts both ways. The fetch names its own destination, a
+ * `refs/mend/probe/` ref deleted before returning, with an empty `--refmap` and no `FETCH_HEAD`,
+ * so the store's configured refspec never writes `refs/remotes` and no branch moves.
  */
 export const probeRemoteBranch = Effect.fn("probeRemoteBranch")(function* (
   dir: string,
@@ -286,9 +368,18 @@ export const probeRemoteBranch = Effect.fn("probeRemoteBranch")(function* (
     Effect.as(true),
     Effect.catch(() => Effect.succeed(false)),
   );
+  const probeRef = `refs/mend/probe/${crypto.randomUUID()}`;
   if (!present) {
     yield* git(
-      ["fetch", "--no-tags", "--no-write-fetch-head", "--", input.remote, ref],
+      [
+        "fetch",
+        "--no-tags",
+        "--no-write-fetch-head",
+        "--refmap=",
+        "--",
+        input.remote,
+        `+${ref}:${probeRef}`,
+      ],
       dir,
       input.remoteEnv,
     );
@@ -296,6 +387,12 @@ export const probeRemoteBranch = Effect.fn("probeRemoteBranch")(function* (
   const counts = yield* git(
     ["rev-list", "--count", "--left-right", `${local}...${remoteSha}`],
     dir,
+  ).pipe(
+    Effect.ensuring(
+      present
+        ? Effect.void
+        : git(["update-ref", "-d", probeRef], dir).pipe(Effect.catch(() => Effect.void)),
+    ),
   );
   const [ahead = "0", unseen = "0"] = counts.split("\t");
   return {
