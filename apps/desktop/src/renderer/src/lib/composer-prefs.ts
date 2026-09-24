@@ -20,12 +20,16 @@ import { HARNESSES, type Harness } from "#/lib/app-settings";
  * fallback when a project has not picked its own.
  */
 
-/** `effort`/`permission`/`speed` absent = harness default (no flag composed). */
+/**
+ * `effort`/`permission`/`speed` absent = harness default (no flag composed). `mode` null = the
+ * PTY launch every harness has; `protocol` runs the agent as a conversation (claude, codex).
+ */
 export interface HarnessPrefs {
   readonly model: string | null;
   readonly effort: EffortLevel | null;
   readonly permission: PermissionMode | null;
   readonly speed: SpeedMode | null;
+  readonly mode: "protocol" | null;
 }
 
 interface ProjectPrefs {
@@ -74,12 +78,14 @@ const revive = (raw: string): ComposerPrefs => {
             effort?: unknown;
             permission?: unknown;
             speed?: unknown;
+            mode?: unknown;
           };
           byHarness[harness] = {
             model: typeof p.model === "string" ? p.model : null,
             effort: isEffort(p.effort) ? p.effort : null,
             permission: isPermission(p.permission) ? p.permission : null,
             speed: isSpeed(p.speed) ? p.speed : null,
+            mode: p.mode === "protocol" ? "protocol" : null,
           };
         }
       }
@@ -125,6 +131,7 @@ export const setComposerHarnessPrefs = (
     effort: null,
     permission: null,
     speed: null,
+    mode: null,
     ...project.byHarness[harness],
     ...prefs,
   };
@@ -174,5 +181,6 @@ export const effectiveHarnessPrefs = (
     effort: sticky?.effort ?? null,
     permission: sticky?.permission ?? null,
     speed: sticky?.speed ?? null,
+    mode: sticky?.mode ?? null,
   };
 };

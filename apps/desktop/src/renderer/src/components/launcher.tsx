@@ -25,6 +25,7 @@ import {
   setComposerHarnessPrefs,
   useComposerPrefs,
 } from "#/lib/composer-prefs";
+import { CONVERSATION_HARNESSES, rememberLaunchMode } from "#/lib/conversation";
 import { queryClient } from "#/lib/queries";
 
 /**
@@ -123,6 +124,9 @@ export function SessionComposer({
   const harnessPrefs = effectiveHarnessPrefs(prefs, project.id, harness);
   /** Harnesses with a catalog take model/thinking/permission flags; the rest only a prompt. */
   const tunable = HARNESS_MODELS[harness] !== undefined;
+  /** claude and codex also run as a conversation (protocol mode) instead of a terminal. */
+  const conversable = CONVERSATION_HARNESSES.has(harness);
+  const runsAs = conversable ? harnessPrefs.mode : null;
 
   const openMenu = (kind: MenuKind) => (event: React.MouseEvent<HTMLButtonElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -138,7 +142,12 @@ export function SessionComposer({
    * settles the session server-side, so the tab shows it. Only a create
    * failure lands back here, with the prompt intact. `start` empty = bare harness.
    */
-  const launch = async (which: Pending, sessionHarness: string, start: LaunchStartDto) => {
+  const launch = async (
+    which: Pending,
+    sessionHarness: string,
+    start: LaunchStartDto,
+    launchMode: "protocol" | null = null,
+  ) => {
     if (busy !== null) return;
     setBusy(which);
     setError(null);
@@ -153,8 +162,13 @@ export function SessionComposer({
         null,
         base.trim() === "" ? null : base.trim(),
         cleanedName === "" ? null : cleanedName,
+        launchMode,
       );
-      void launchSessionStart(created.id, start)
+      if (launchMode !== null) rememberLaunchMode(created.id, launchMode);
+      void launchSessionStart(
+        created.id,
+        launchMode === null ? start : { ...start, mode: launchMode },
+      )
         .catch(() => undefined)
         .finally(() => {
           void queryClient.invalidateQueries({ queryKey: ["session", created.id] });
@@ -174,21 +188,27 @@ export function SessionComposer({
       setError("A prompt cannot start with “-” — the harness would read it as a flag.");
       return;
     }
-    void launch("start", harness, {
-      ...(body === "" ? {} : { prompt: body }),
-      ...(tunable && harnessPrefs.model !== null ? { model: harnessPrefs.model } : {}),
-      ...(tunable && harnessPrefs.effort !== null ? { effort: harnessPrefs.effort } : {}),
-      ...(tunable && harnessPrefs.permission !== null
-        ? { permissionMode: harnessPrefs.permission }
-        : {}),
-      ...(tunable && harnessPrefs.speed !== null ? { speed: harnessPrefs.speed } : {}),
-    });
+    void launch(
+      "start",
+      harness,
+      {
+        ...(body === "" ? {} : { prompt: body }),
+        ...(tunable && harnessPrefs.model !== null ? { model: harnessPrefs.model } : {}),
+        ...(tunable && harnessPrefs.effort !== null ? { effort: harnessPrefs.effort } : {}),
+        ...(tunable && harnessPrefs.permission !== null
+          ? { permissionMode: harnessPrefs.permission }
+          : {}),
+        ...(tunable && harnessPrefs.speed !== null ? { speed: harnessPrefs.speed } : {}),
+      },
+      runsAs,
+    );
   };
 
   /** A bare login shell in its own worktree — nothing to prompt, so it is not a composer harness. */
   const openShell = () => void launch("shell", "shell", {});
 
   const settingsSummary = [
+    runsAs === "protocol" ? "conversation" : null,
     tunable ? harnessPrefs.effort : null,
     tunable && harnessPrefs.speed === "fast" ? "fast" : null,
     tunable && harnessPrefs.permission === "ask" ? "ask" : null,
@@ -337,6 +357,28 @@ export function SessionComposer({
           )}
           {menu.kind === "settings" && (
             <>
+              {conversable && (
+                <MenuRadioGroup
+                  label="Runs as"
+                  items={[
+                    {
+                      key: "pty",
+                      label: "Terminal",
+                      detail: "PTY",
+                      selected: runsAs === null,
+                      onSelect: () => setComposerHarnessPrefs(project.id, harness, { mode: null }),
+                    },
+                    {
+                      key: "protocol",
+                      label: "Conversation",
+                      detail: "turns · approvals",
+                      selected: runsAs === "protocol",
+                      onSelect: () =>
+                        setComposerHarnessPrefs(project.id, harness, { mode: "protocol" }),
+                    },
+                  ]}
+                />
+              )}
               {tunable && (
                 <MenuRadioGroup
                   label="Thinking"
