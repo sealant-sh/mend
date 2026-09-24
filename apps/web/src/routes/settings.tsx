@@ -1048,8 +1048,8 @@ function LandingPanel() {
     <section id="landing" className="rounded-2xl bg-panel p-6 shadow-[var(--shadow-sm)]">
       <h2 className="font-sans text-sm font-semibold">Landing</h2>
       <p className="mt-1 text-sm text-muted-foreground">
-        Pushing a session&apos;s change to origin and opening its pull request, as the
-        session&apos;s owner.
+        Pushing a session&apos;s change to origin and opening its pull request, as the change&apos;s
+        owner.
       </p>
       <div className="mt-5 space-y-5 border-t border-[var(--sw-faint-rule)] pt-5">
         <div className="flex items-start justify-between gap-4">
@@ -1062,6 +1062,7 @@ function LandingPanel() {
               opens or updates its pull request. A request read as a question does not land. The
               default for every project; a project can override it on its setup page, and a session
               when it starts. Sessions started from Slack follow the Slack app&apos;s setting.
+              Terminal sessions never land by themselves; land them from the change page.
             </p>
           </div>
           <div className="flex shrink-0 gap-2">

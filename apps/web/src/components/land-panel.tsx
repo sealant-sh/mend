@@ -33,8 +33,9 @@ import { useTRPC } from "#/lib/trpc";
 /**
  * The Land panel (docs/adr/0007-landing.md, "Surfaces"): where the change goes, what its pull
  * request will say, what Mend observed about earlier landings, and the owner's one button.
- * Everyone who can see the change reads the facts; only the session's owner sees the form,
- * because landing pushes with their key and speaks as them on GitHub.
+ * Everyone who can see the change reads the facts; only the change's owner (the owner of its
+ * worktree's first session) sees the form, because landing pushes with their key and speaks as
+ * them on GitHub.
  */
 
 const errorWords = (cause: unknown): string =>
@@ -232,7 +233,7 @@ export function LandPanelView(props: LandPanelViewProps) {
         </div>
       ) : facts.length === 0 ? null : (
         <p className="mt-3 font-mono text-[10.5px] text-faint">
-          only the session&apos;s owner lands this change
+          only the change&apos;s owner lands it
         </p>
       )}
 

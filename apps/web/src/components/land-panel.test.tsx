@@ -124,7 +124,7 @@ describe("the Land panel", () => {
     expect(markup).toContain("pushed · mend/fix-login · 3f2a1c0 · observed");
     expect(markup).not.toContain("Push and");
     expect(markup).not.toContain("Refresh pull request");
-    expect(markup).toContain("only the session&#x27;s owner lands this change");
+    expect(markup).toContain("only the change&#x27;s owner lands it");
   });
 
   it("says a question was not landed, and keeps the button for the owner", () => {

@@ -396,9 +396,10 @@ export function LandingSection({ project }: { readonly project: ProjectDto }) {
       <h2 className="font-sans text-sm font-semibold">Landing</h2>
       <p className="mt-2.5 text-xs leading-relaxed text-muted-foreground">
         On, a session here pushes its change to origin and opens or updates its pull request after
-        each completed turn that asked for a change, as its owner. A request read as a question does
-        not land. Inherit follows the default in Settings; off also covers sessions started from
-        Slack. A session can override inherit or on when it starts.
+        each completed turn that asked for a change, as the change&apos;s owner. A request read as a
+        question does not land, and neither does a turn someone else sent. Inherit follows the
+        default in Settings; off also covers sessions started from Slack. A session can override
+        inherit or on when it starts. Terminal sessions never land by themselves.
       </p>
       <div className="mt-3 flex items-center justify-between gap-2">
         <p className="min-w-0 truncate font-sans text-[13px] font-medium text-foreground">
