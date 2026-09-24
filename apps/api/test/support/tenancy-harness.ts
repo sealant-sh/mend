@@ -660,6 +660,8 @@ export const createTenancyWorld = async (): Promise<TenancyWorld> => {
           Effect.succeed(
             [...projects.values()].filter((project) => project.organizationId === organizationId),
           ),
+        // A dotfiles change rewarms every project that keeps hot workspaces.
+        listAll: () => Effect.succeed([...projects.values()]),
       },
       calls,
     ),

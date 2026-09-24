@@ -36,6 +36,7 @@ import {
   makeUpgradeTicketsMemory,
   UpgradeTicketsRepo,
 } from "@mend/db";
+import type { DotfilesRepository } from "@mend/domain";
 import { JobRunner } from "@mend/jobs";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { SealantClient, SealantClients } from "@mend/sealant";
@@ -51,6 +52,7 @@ import {
   AgentBridge,
   DeploymentConfig,
   DotfilesStore,
+  DotfilesStoreLive,
   FolderStore,
   MendKeys,
   SecretCipher,
@@ -140,6 +142,13 @@ export const createTenancyApi = async (
     readonly exposure?: ExposureConfig["Service"];
     /** Credentials that no longer stand (`session:<account>`): add one to sign that account out. */
     readonly revokedCredentials?: ReadonlySet<string>;
+    /**
+     * The dotfiles routes past authorization: the real store over this world's store root, each
+     * account's repository kept in memory, and `cloner` for the clone a save tries first.
+     */
+    readonly dotfiles?: { readonly cloner: DotfilesCloner["Service"] };
+    /** `MEND_TENANCY` and the source policy profile it brings; single (operator) unless stated. */
+    readonly tenancy?: "single" | "multi";
   } = {},
 ): Promise<TenancyApi> => {
   const world = await createTenancyWorld();
@@ -153,6 +162,20 @@ export const createTenancyApi = async (
   const budgetsLayer = Layer.succeed(Budgets, makeBudgets({ ...DEFAULT_BUDGET_LIMITS, ...limits }));
   const calls = world.calls;
   const deviceWrites: Array<string> = [];
+  // Each account's saved dotfiles repository, when the world serves the dotfiles routes.
+  const repositories = new Map<string, DotfilesRepository>();
+  const userDotfiles: Layer.PartialEffectful<UserDotfilesRepo["Service"]> =
+    options.dotfiles === undefined
+      ? {}
+      : {
+          repository: (userId) => Effect.sync(() => repositories.get(userId) ?? null),
+          setRepository: (userId, repository) =>
+            Effect.sync(() => {
+              if (repository === null) repositories.delete(userId);
+              else repositories.set(userId, repository);
+              return repository;
+            }),
+        };
   const effects = Layer.mergeAll(
     Layer.mergeAll(
       recording(AuditEventsRepo, "audit", { record: () => Effect.void }, calls),
@@ -189,7 +212,7 @@ export const createTenancyApi = async (
         calls,
       ),
       recording(ReviewCommentsRepo, "comments", {}, calls),
-      recording(UserDotfilesRepo, "userDotfiles", {}, calls),
+      recording(UserDotfilesRepo, "userDotfiles", userDotfiles, calls),
     ),
     Layer.mergeAll(
       recording(ReviewSlicesRepo, "slices", {}, calls),
@@ -221,8 +244,10 @@ export const createTenancyApi = async (
       recording(SessionEngine, "engine", {}, calls),
       recording(WorktreeReads, "reads", {}, calls),
       recording(AgentBridge, "agentBridge", { socketPath: () => "/unused/agent.sock" }, calls),
-      recording(DotfilesStore, "dotfilesStore", {}, calls),
-      recording(DotfilesCloner, "dotfilesCloner", {}, calls),
+      options.dotfiles === undefined
+        ? recording(DotfilesStore, "dotfilesStore", {}, calls)
+        : DotfilesStoreLive.pipe(Layer.provide(Layer.succeed(StoreConfig, { root: world.root }))),
+      recording(DotfilesCloner, "dotfilesCloner", options.dotfiles?.cloner ?? {}, calls),
       recording(FolderStore, "folderStore", {}, calls),
       recording(MendKeys, "keys", {}, calls),
       recording(SecretCipher, "cipher", {}, calls),
@@ -248,13 +273,13 @@ export const createTenancyApi = async (
         sessionStore: "captured",
       }),
       Layer.succeed(StoreConfig, { root: world.root }),
-      Layer.succeed(TenancyConfig, { mode: "single", gate: [] }),
+      Layer.succeed(TenancyConfig, { mode: options.tenancy ?? "single", gate: [] }),
       Layer.succeed(ExposureConfig, options.exposure ?? { exposure: "loopback", gate: [] }),
       // Every remote in the harness is public; the policy's own tests cover the refusals.
       Layer.succeed(
         SourcePolicy,
         makeSourcePolicy({
-          profile: "operator",
+          profile: options.tenancy === "multi" ? "tenant" : "operator",
           allowedHosts: [],
           resolve: async () => ["140.82.112.3"],
         }),
