@@ -10,7 +10,7 @@ describe("sessionDotfilesLines", () => {
     );
   });
 
-  it("states what was applied", () => {
+  it("states what was sent with the launch", () => {
     expect(
       sessionDotfilesLines({
         repository: { url: "https://github.com/me/dots.git", ref: "main" },
@@ -19,13 +19,13 @@ describe("sessionDotfilesLines", () => {
       }),
     ).toEqual([
       {
-        text: "dotfiles · repo https://github.com/me/dots.git @ main · snapshot 5eed0f5 · applied",
+        text: "dotfiles · repo https://github.com/me/dots.git @ main · snapshot 5eed0f5 · sent at launch",
         notApplied: false,
       },
     ]);
   });
 
-  it("names a source the launch left out, with the reason, beside what still applied", () => {
+  it("names a source the launch left out, with the reason, beside what was still sent", () => {
     expect(
       sessionDotfilesLines({
         repository: { url: "https://github.com/me/dots.git", ref: null },
@@ -39,7 +39,7 @@ describe("sessionDotfilesLines", () => {
         ],
       }),
     ).toEqual([
-      { text: "dotfiles · snapshot 5eed0f5 · applied", notApplied: false },
+      { text: "dotfiles · snapshot 5eed0f5 · sent at launch", notApplied: false },
       {
         text: "dotfiles · repo not applied · the dotfiles repo https://github.com/me/dots.git was stopped after 60s — Mend gives a dotfiles repository 60s to clone and pack.",
         notApplied: true,

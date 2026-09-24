@@ -7628,6 +7628,42 @@ describe("SessionEngine dotfiles", () => {
     );
   });
 
+  it("launches without a repository the source policy refuses at launch, and records the refusal", async () => {
+    const created: CreateOptions[] = [];
+    // Saved under a policy that let it through; this launch's policy refuses the host.
+    const url = "https://metadata.google.internal/dots.git";
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+
+          expect(created).toHaveLength(1);
+          expect(created[0]?.dotfiles?.archives).toEqual([
+            { data: SNAPSHOT.data, manager: "copy", bootstrap: false },
+          ]);
+          const launched = world.sessions.get(session.id);
+          expect(launched?.status).toBe("running");
+          expect(launched?.dotfiles).toEqual({
+            repository: { url, ref: null },
+            snapshotSha: SNAPSHOT.sha,
+            notApplied: [
+              {
+                source: "repository",
+                reason:
+                  "dotfiles repository refused: metadata.google.internal is not a repository host.",
+              },
+            ],
+          });
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        userDotfilesLayer: userDotfilesLayer({ repository: repositoryOf(url) }),
+        dotfilesStoreLayer: dotfilesStoreLayer(() => Effect.succeed(SNAPSHOT)),
+      },
+    );
+  });
+
   it("never resolves dotfiles for a project that turned them off", async () => {
     const created: CreateOptions[] = [];
     const reads: Array<string> = [];
