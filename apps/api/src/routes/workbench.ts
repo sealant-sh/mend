@@ -94,6 +94,7 @@ import {
   UserGitAccessRepo,
 } from "@mend/db";
 import {
+  dotfilesRepositoryUrlCredentialIssue,
   MendSettings,
   workspaceImagesEqual,
   type ChangeId,
@@ -990,6 +991,10 @@ export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (hand
         const caller = yield* CurrentUser;
         const userDotfiles = yield* UserDotfilesRepo;
         if (payload.repository !== null) {
+          const credentialIssue = dotfilesRepositoryUrlCredentialIssue(payload.repository.url);
+          if (credentialIssue !== null) {
+            return yield* new SettingsFailure({ message: credentialIssue });
+          }
           const pinCloneEnv = yield* reachableSource(
             payload.repository.url,
             (message) => new SettingsFailure({ message }),
