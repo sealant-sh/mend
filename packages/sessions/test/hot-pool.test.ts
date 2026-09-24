@@ -12,7 +12,13 @@ const base: HotFingerprintInputs = {
     { id: "skill-project", name: "review", revision: 1 },
   ],
   dotfiles: {
-    repository: { url: "git@github.com:acme/dots.git", ref: null },
+    repository: {
+      url: "git@github.com:acme/dots.git",
+      ref: null,
+      subdirectory: "dots",
+      manager: "stow",
+      bootstrap: true,
+    },
     snapshotSha: "abc123",
   },
   environmentRevision: 3,
@@ -52,6 +58,25 @@ describe("hotFingerprint", () => {
       },
       { ...base, skills: base.skills.slice(1) },
       { ...base, dotfiles: { ...base.dotfiles, snapshotSha: "def456" } },
+      // Every saved field of the repository decides what a workspace applies.
+      ...(
+        [
+          { url: "git@github.com:acme/other-dots.git" },
+          { ref: "laptop" },
+          { subdirectory: null },
+          { manager: "chezmoi" },
+          { bootstrap: false },
+        ] as const
+      ).map(
+        (change): HotFingerprintInputs => ({
+          ...base,
+          dotfiles: {
+            ...base.dotfiles,
+            repository:
+              base.dotfiles.repository === null ? null : { ...base.dotfiles.repository, ...change },
+          },
+        }),
+      ),
       {
         ...base,
         dotfiles: { repository: null, snapshotSha: base.dotfiles.snapshotSha },
