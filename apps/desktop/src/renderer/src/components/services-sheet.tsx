@@ -25,11 +25,13 @@ import { useEventsState } from "#/lib/events";
 import { useNow } from "#/lib/now";
 import { queryClient, sessionRecipesQuery } from "#/lib/queries";
 import {
+  readOnlyActions,
   type ServiceAction,
   type ServiceFact,
   type ServiceFacts,
   servicesForSession,
 } from "#/lib/services";
+import { sessionActions, useViewer } from "#/lib/viewer";
 import { ago, clock } from "#/lib/words";
 
 /** Whether the server URL names this machine (an empty or unparsable one: assume so). */
@@ -135,11 +137,14 @@ function ServiceRow({
   now,
   pending,
   act,
+  steer,
 }: {
   readonly facts: ServiceFacts;
   readonly now: number;
   readonly pending: string | null;
   readonly act: (action: ServiceAction, facts: ServiceFacts) => void;
+  /** Whether the viewer steers the session: without it, a row reads and never runs. */
+  readonly steer: boolean;
 }) {
   const service = facts.view.service;
   const running = facts.process?.tone === "accent";
@@ -201,7 +206,7 @@ function ServiceRow({
         </p>
       )}
       <div className="-mx-1.5 mt-2 flex flex-wrap gap-x-1 gap-y-0.5">
-        {facts.actions.map((action) => (
+        {(steer ? facts.actions : readOnlyActions(facts.actions)).map((action) => (
           <Action
             key={action}
             tone={
@@ -242,6 +247,10 @@ export function ServicesSheet({
   readonly onOpenLogsTab: (processId: string, name: string) => void;
 }) {
   const recipes = useQuery(sessionRecipesQuery(session.id));
+  // Running, restarting and stopping Services steer the session (docs/adr/0003). An unknown
+  // viewer keeps the controls and the server decides.
+  const viewer = useViewer();
+  const steer = viewer === null || sessionActions(session, viewer).steer;
   const eventState = useEventsState();
   const now = useNow();
   const connection = useConnection();
@@ -391,6 +400,7 @@ export function ServicesSheet({
             now={now}
             pending={pending}
             act={act}
+            steer={steer}
           />
         ))
       )}
@@ -412,15 +422,20 @@ export function ServicesSheet({
                   )}
                 </p>
               </div>
-              <Action
-                tone="info"
-                disabled={pending !== null || recipe.shadowedBy !== null}
-                onClick={() =>
-                  performAction(`recipe:${recipe.name}`, runServiceRecipe(session.id, recipe.name))
-                }
-              >
-                {pending === `recipe:${recipe.name}` ? "Starting…" : "Run"}
-              </Action>
+              {steer && (
+                <Action
+                  tone="info"
+                  disabled={pending !== null || recipe.shadowedBy !== null}
+                  onClick={() =>
+                    performAction(
+                      `recipe:${recipe.name}`,
+                      runServiceRecipe(session.id, recipe.name),
+                    )
+                  }
+                >
+                  {pending === `recipe:${recipe.name}` ? "Starting…" : "Run"}
+                </Action>
+              )}
             </div>
           ))}
           {recipes.data !== undefined && recipes.data.length === 0 && (
@@ -430,45 +445,52 @@ export function ServicesSheet({
           )}
         </div>
       </section>
-      <form
-        className="border-t border-rule px-4 pt-4 pb-4"
-        onSubmit={(event) => {
-          event.preventDefault();
-          submit(event.currentTarget);
-        }}
-      >
-        <p className="ev-eyebrow">One-off</p>
-        <Input
-          name="command"
-          placeholder="command · leave empty to adopt a listening port"
-          className={`mt-2.5 w-full ${field}`}
-        />
-        <div className="mt-2 flex items-center gap-2">
+      {!steer && (
+        <p className="border-t border-rule px-4 py-3 font-sans text-[12.5px] text-ink-2">
+          Only this session&apos;s owner runs Services in it, unless they share control.
+        </p>
+      )}
+      {steer && (
+        <form
+          className="border-t border-rule px-4 pt-4 pb-4"
+          onSubmit={(event) => {
+            event.preventDefault();
+            submit(event.currentTarget);
+          }}
+        >
+          <p className="ev-eyebrow">One-off</p>
           <Input
-            required
-            name="port"
-            inputMode="numeric"
-            placeholder="port"
-            className={`w-[72px] ${field}`}
+            name="command"
+            placeholder="command · leave empty to adopt a listening port"
+            className={`mt-2.5 w-full ${field}`}
           />
-          <Input name="name" placeholder="name" className={`min-w-0 flex-1 ${field}`} />
-          <NativeSelect name="scheme" size="sm" className={`w-fit ${field}`}>
-            <NativeSelectOption value="">raw</NativeSelectOption>
-            <NativeSelectOption value="http">http</NativeSelectOption>
-            <NativeSelectOption value="https">https</NativeSelectOption>
-          </NativeSelect>
-          <label className="flex items-center gap-1.5 font-mono text-[10.5px] text-label">
-            <Checkbox name="udp" />
-            udp
-          </label>
-        </div>
-        <div className="mt-2.5 flex items-center">
-          <span className="flex-1" />
-          <Action tone="info" type="submit" disabled={pending !== null}>
-            {pending === "run:form" ? "Starting…" : "Run or adopt"}
-          </Action>
-        </div>
-      </form>
+          <div className="mt-2 flex items-center gap-2">
+            <Input
+              required
+              name="port"
+              inputMode="numeric"
+              placeholder="port"
+              className={`w-[72px] ${field}`}
+            />
+            <Input name="name" placeholder="name" className={`min-w-0 flex-1 ${field}`} />
+            <NativeSelect name="scheme" size="sm" className={`w-fit ${field}`}>
+              <NativeSelectOption value="">raw</NativeSelectOption>
+              <NativeSelectOption value="http">http</NativeSelectOption>
+              <NativeSelectOption value="https">https</NativeSelectOption>
+            </NativeSelect>
+            <label className="flex items-center gap-1.5 font-mono text-[10.5px] text-label">
+              <Checkbox name="udp" />
+              udp
+            </label>
+          </div>
+          <div className="mt-2.5 flex items-center">
+            <span className="flex-1" />
+            <Action tone="info" type="submit" disabled={pending !== null}>
+              {pending === "run:form" ? "Starting…" : "Run or adopt"}
+            </Action>
+          </div>
+        </form>
+      )}
     </Sheet>
   );
 }

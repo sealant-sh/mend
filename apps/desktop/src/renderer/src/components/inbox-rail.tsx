@@ -20,6 +20,7 @@ import type { Inbox, InboxRow } from "#/lib/model";
 import { queryClient } from "#/lib/queries";
 import { sidebarView, type ProjectSubView } from "#/lib/sidebar-view";
 import { canSnooze, describeWake, snooze, snoozePresets, wake, wakeLabel } from "#/lib/snooze";
+import { sessionActions, useViewer } from "#/lib/viewer";
 import { ago } from "#/lib/words";
 
 /**
@@ -82,6 +83,7 @@ export function InboxRail({
   readonly onScope: (projectId: string | null) => void;
 }) {
   const { openMenu, menuElement } = useContextMenu();
+  const viewer = useViewer();
   const [jumpHints, setJumpHints] = useState(false);
   const [scopeMenu, setScopeMenu] = useState<MenuState | null>(null);
   const [snoozeMenu, setSnoozeMenu] = useState<(MenuState & { readonly row: InboxRow }) | null>(
@@ -168,6 +170,27 @@ export function InboxRail({
               onSelect: () => park(row, preset.until),
             }))
           : [{ label: "Snooze", disabled: true, onSelect: () => undefined }];
+    // Only what the server would allow: stop for whoever may stop it, delete for its owner.
+    const actions = sessionActions(row.session, viewer);
+    const last: ContextMenuEntry | null =
+      row.section === "settled"
+        ? actions.own
+          ? {
+              label: "Delete",
+              confirm:
+                "Really delete this session? The worktree, its change, and checkpoints remain.",
+              danger: true,
+              onSelect: () => void deleteRow(row),
+            }
+          : null
+        : actions.stop
+          ? {
+              label: "Stop",
+              confirm: "Stop the coding agent?",
+              danger: true,
+              onSelect: () => void stopRow(row),
+            }
+          : null;
     return {
       title: row.session.branch,
       entries: [
@@ -185,21 +208,7 @@ export function InboxRail({
           flash: "Copied",
           onSelect: () => void navigator.clipboard.writeText(row.session.branch),
         },
-        "separator",
-        row.section === "settled"
-          ? {
-              label: "Delete",
-              confirm:
-                "Really delete this session? The worktree, its change, and checkpoints remain.",
-              danger: true,
-              onSelect: () => void deleteRow(row),
-            }
-          : {
-              label: "Stop",
-              confirm: "Stop the coding agent?",
-              danger: true,
-              onSelect: () => void stopRow(row),
-            },
+        ...(last === null ? [] : (["separator", last] as const)),
       ],
     };
   };
@@ -227,7 +236,11 @@ export function InboxRail({
       onMenu={(event) => openMenu(event, rowMenu(row))}
       onSnooze={row.section === "active" && canSnooze(row.session) ? openSnoozeMenu(row) : null}
       onWake={row.section === "snoozed" ? () => wake(row.session.id) : null}
-      onDelete={row.section === "settled" ? () => void deleteRow(row) : null}
+      onDelete={
+        row.section === "settled" && sessionActions(row.session, viewer).own
+          ? () => void deleteRow(row)
+          : null
+      }
     />
   );
 

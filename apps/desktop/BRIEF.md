@@ -105,6 +105,10 @@ upgrade ticket per connect and strips the page's `Origin` (and any `Cookie`) fro
 configured server (`src/main/socket-headers.ts`), so the upgrade reaches authentication as a token
 client, the way the CLI and the phone do.
 
+Only a caller who steers the session attaches (docs/adr/0003); anyone else reads the record of the
+live agent, and a line under the header says who steers. The owner's header carries the Shared
+control switch.
+
 A browser socket cannot see why an upgrade failed: a refusal and a dropped network both close 1006.
 After an attach that never opened, the terminal asks the server whether the PTY's process still runs
 (`lib/tty-attach.ts`): live or no answer climbs the ladder; ended stops it; a refusal stops with
@@ -267,6 +271,15 @@ change in view.
   mint or liveness probe answering for an older attempt changes nothing, and a window focus leaves a
   socket that is still opening alone. Before, a focus during a probe could leave two sockets on one
   PTY.
+- 2026-09-24: controls follow what the server says the caller may do (docs/adr/0003). A session pane
+  reads `SessionDetail.control`: delete is `own`; attach, open or stop a shell, rename a shell, run
+  Services and deliver a follow-up are `steer`; stop is `stop`. A caller who cannot steer a live
+  session reads its record instead of attaching, and a shell's logs instead of its PTY. Lists carry
+  no per-session control, so rows and menus apply the domain's steering rule to the viewer from
+  `GET /api/organization`, as the web app's lists do. The owner's pane carries the Shared control
+  switch, and turning it on confirms with the web app's sentence about lending provider logins and
+  Git access; anyone else is told, in the web app's words, who steers or that the owner shares
+  control (with Turn off for an organization owner).
 - 2026-09-24: the bench path is deleted. It never surfaced anything: the tree's rows came from the
   agent-only inbox, so a `shell` session (a former bench among them) was hidden either way. Alpha
   had no `bench`-labelled session and one hidden `shell` session on the mend project; the tree now

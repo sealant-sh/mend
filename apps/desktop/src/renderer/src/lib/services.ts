@@ -13,6 +13,19 @@ export type ServiceAction =
   | "remove-forward"
   | "run-again";
 
+/** The actions that steer the session (restart, stop, run): the owner's unless control is shared. */
+const STEERING: ReadonlySet<ServiceAction> = new Set<ServiceAction>([
+  "restart",
+  "stop",
+  "remove-forward",
+  "run-again",
+]);
+
+/** What a viewer who does not steer the session is left with: reading, never running. */
+export const readOnlyActions = (
+  actions: ReadonlyArray<ServiceAction>,
+): ReadonlyArray<ServiceAction> => actions.filter((action) => !STEERING.has(action));
+
 export interface ServiceFact {
   readonly word: string;
   readonly tone: Tone;

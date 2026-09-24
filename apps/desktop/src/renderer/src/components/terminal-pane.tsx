@@ -6,6 +6,7 @@ import { useState } from "react";
 import { LogsView } from "#/components/logs-view";
 import { RecordReplay, TranscriptView } from "#/components/record-replay";
 import { ReplayScrubber } from "#/components/replay-scrubber";
+import { SharedControlFact, SharedControlSwitch } from "#/components/shared-control";
 import { StatusDot } from "#/components/status-dot";
 import { TtyTerminal } from "#/components/tty-terminal";
 import {
@@ -27,6 +28,7 @@ import {
   sessionPtyLiveness,
   type PtyLiveness,
 } from "#/lib/tty-attach";
+import { NO_CONTROL, sessionActions, useOwnerName, useViewer } from "#/lib/viewer";
 import { statusTone, statusWord } from "#/lib/words";
 import type { Tab } from "#/lib/workbench";
 
@@ -104,10 +106,17 @@ export function TerminalPane({
   readonly onReview: (changeId: string, sliceId: string) => void;
 }) {
   const isSessionTab = tab.kind === "session";
-  const detail = useQuery({
-    ...sessionDetailQuery(tab.sessionId),
-    enabled: isSessionTab,
-  });
+  const detail = useQuery(sessionDetailQuery(tab.sessionId));
+  // What the caller may do here (docs/adr/0003): the detail's own answer, else the list rule
+  // for a viewer already known, so an owner's terminal attaches without waiting on the detail.
+  const viewer = useViewer();
+  const ownerName = useOwnerName(session);
+  const controlKnown = detail.data !== undefined || (session !== null && viewer !== null);
+  const control =
+    detail.data?.control ??
+    (session === null || viewer === null
+      ? NO_CONTROL
+      : { ...sessionActions(session, viewer), toggleSharedControl: false });
   const [from, setFrom] = useState(() => takeReplayCursor(tab.sessionId));
   const [recordFace, setRecordFace] = useState<"replay" | "transcript">("replay");
   const mark = useMutation({
@@ -196,30 +205,35 @@ export function TerminalPane({
             <Quiet disabled={!live || mark.isPending} onClick={() => mark.mutate()}>
               {mark.isPending ? "marking…" : "mark checkpoint"}
             </Quiet>
-            {live ? (
-              <Quiet
-                className="hover:text-danger"
-                disabled={stop.isPending}
-                onClick={() => stop.mutate()}
-              >
-                {stop.isPending ? "stopping…" : "stop"}
-              </Quiet>
-            ) : (
-              <Quiet
-                className="hover:text-danger"
-                disabled={remove.isPending}
-                onClick={() => {
-                  if (
-                    window.confirm(
-                      "Really delete this session? The worktree, its change, and checkpoints remain.",
-                    )
-                  )
-                    remove.mutate();
-                }}
-              >
-                {remove.isPending ? "deleting…" : "delete"}
-              </Quiet>
+            {session.ownerUserId !== null && control.own && (
+              <SharedControlSwitch session={session} />
             )}
+            {live
+              ? control.stop && (
+                  <Quiet
+                    className="hover:text-danger"
+                    disabled={stop.isPending}
+                    onClick={() => stop.mutate()}
+                  >
+                    {stop.isPending ? "stopping…" : "stop"}
+                  </Quiet>
+                )
+              : control.own && (
+                  <Quiet
+                    className="hover:text-danger"
+                    disabled={remove.isPending}
+                    onClick={() => {
+                      if (
+                        window.confirm(
+                          "Really delete this session? The worktree, its change, and checkpoints remain.",
+                        )
+                      )
+                        remove.mutate();
+                    }}
+                  >
+                    {remove.isPending ? "deleting…" : "delete"}
+                  </Quiet>
+                )}
             {remove.isError && (
               <span className="truncate font-mono text-[11.5px] text-danger">
                 {remove.error instanceof Error ? remove.error.message : "delete failed"}
@@ -254,23 +268,45 @@ export function TerminalPane({
                 {rename.error instanceof Error ? rename.error.message : "rename failed"}
               </span>
             )}
-            <Quiet
-              disabled={process === null || rename.isPending}
-              onClick={() => {
-                const next = window.prompt("Shell name", process?.label ?? "shell");
-                if (next !== null && next.trim() !== "") rename.mutate(next);
-              }}
-            >
-              {rename.isPending ? "renaming…" : "rename"}
-            </Quiet>
+            {!control.steer && (
+              <span className="shrink-0 font-mono text-[11.5px] text-faint">read-only</span>
+            )}
+            {control.steer && (
+              <Quiet
+                disabled={process === null || rename.isPending}
+                onClick={() => {
+                  const next = window.prompt("Shell name", process?.label ?? "shell");
+                  if (next !== null && next.trim() !== "") rename.mutate(next);
+                }}
+              >
+                {rename.isPending ? "renaming…" : "rename"}
+              </Quiet>
+            )}
             <Quiet onClick={onDetach}>detach tab</Quiet>
           </>
         )}
       </div>
 
+      {session !== null && tab.kind !== "logs" && (
+        <SharedControlFact session={session} control={control} ownerName={ownerName} />
+      )}
+
       <div className="relative flex min-h-0 flex-1 flex-col bg-term">
         {tab.kind === "logs" ? (
           <LogsView processId={tab.processId} />
+        ) : (tab.kind === "session" && session === null) || !controlKnown ? (
+          // Nothing is known yet (the lists are loading): attach nothing, and show nothing
+          // read-only, until the session and what this viewer may do with it are.
+          <p className="p-4 font-mono text-[11.5px] text-term-faint">reading the session…</p>
+        ) : tab.kind === "shell" && !control.steer ? (
+          // A shell is steered like the agent: without control, its output is read, not typed in.
+          <LogsView processId={tab.processId} />
+        ) : isSessionTab && session !== null && live && agentPty !== null && !control.steer ? (
+          recordProcess === null ? (
+            <p className="p-4 font-mono text-[11.5px] text-term-faint">reading the session…</p>
+          ) : (
+            <RecordReplay key={recordProcess.id} processId={recordProcess.id} from={from} />
+          )
         ) : isSessionTab && session !== null && agentPty === null && live ? (
           <p className="pointer-events-none absolute right-3 bottom-2 font-mono text-[11.5px] text-term-faint">
             provisioning workspace — the terminal attaches the moment the PTY is live (a first

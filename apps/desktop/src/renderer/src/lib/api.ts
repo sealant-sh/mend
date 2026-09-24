@@ -265,6 +265,14 @@ export const connectAccount = (input: {
 export const disconnectAccount = (id: string) =>
   call("DELETE", "/api/me/sealant/accounts/:id", { params: { id } });
 
+// ─── who is looking (docs/adr/0003) ─────────────────────────────────────────
+
+/** The caller's organization, their account id and their role in it. */
+export const currentOrganization = () => call("GET", "/api/organization");
+
+/** The roster, for naming whose credentials a session runs on. */
+export const organizationMembers = () => call("GET", "/api/organization/members");
+
 // ─── reads ──────────────────────────────────────────────────────────────────
 
 export const listProjects = () => call("GET", "/api/projects");
@@ -421,10 +429,6 @@ export const renameShell = (id: string, label: string) =>
 
 export const stopSession = (id: string) =>
   call("POST", "/api/sessions/:id/stop", { params: { id } });
-
-/** The owner's alone: a new label, or null to fall back to the branch. */
-export const renameSession = (id: string, label: string | null) =>
-  call("POST", "/api/sessions/:id/label", { params: { id }, body: { label } });
 
 /**
  * docs/adr/0003: the owner lends their credentials so everyone who can see the project may
