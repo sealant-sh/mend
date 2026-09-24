@@ -18,6 +18,7 @@ export function TabBar({
   onClose,
   onNewShell,
   onTabMenu,
+  stopsShell,
 }: {
   readonly tabs: ReadonlyArray<Tab>;
   readonly focused: number;
@@ -28,6 +29,8 @@ export function TabBar({
   readonly onClose: (index: number) => void;
   readonly onNewShell: () => void;
   readonly onTabMenu: (index: number, event: React.MouseEvent) => void;
+  /** Whether closing this shell tab stops the shell (the viewer steers) or only detaches it. */
+  readonly stopsShell: (tab: Tab) => boolean;
 }) {
   const title = (tab: Tab): string => {
     if (tab.kind === "shell") return processes.get(tab.processId)?.label ?? "shell";
@@ -70,7 +73,9 @@ export function TabBar({
               aria-label={`Close tab ${index + 1}`}
               title={
                 tab.kind === "shell"
-                  ? "Stop shell"
+                  ? stopsShell(tab)
+                    ? "Stop shell"
+                    : "Detach shell tab"
                   : tab.kind === "logs"
                     ? "Close logs"
                     : "Detach session tab"

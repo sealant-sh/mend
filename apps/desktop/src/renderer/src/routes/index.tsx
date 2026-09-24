@@ -561,6 +561,7 @@ function Main() {
               onClose={(index) => void closeTabAt(index)}
               onNewShell={requestShell}
               onTabMenu={openTabMenu}
+              stopsShell={(tab) => steers(tab.sessionId)}
             />
           )}
           {tabMenu.menuElement}
