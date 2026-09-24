@@ -1,6 +1,14 @@
 import { beforeEach, describe, expect, it } from "vitest";
 
-import { processLogPage, processOutput, stopService } from "#/lib/api";
+import {
+  createSession,
+  landSession,
+  processLogPage,
+  processOutput,
+  refreshLanding,
+  sessionLandings,
+  stopService,
+} from "#/lib/api";
 import { bridgeFixture } from "#/lib/fixtures";
 
 import type { ApiRequest } from "../../../shared/bridge";
@@ -91,5 +99,49 @@ describe("desktop process logs", () => {
     await stopService("service-1");
     // The contract declares no payload for stop, so none is sent (as the derived client sends none).
     expect(requests).toEqual([{ method: "POST", path: "/api/services/service-1/stop" }]);
+  });
+});
+
+describe("landing calls (docs/adr/0007-landing.md)", () => {
+  beforeEach(() => {
+    Reflect.deleteProperty(window, "mend");
+  });
+
+  it("reach the routes and bodies the contract declares", async () => {
+    const requests: Array<ApiRequest> = [];
+    Object.defineProperty(window, "mend", {
+      configurable: true,
+      value: bridgeFixture(async (input) => {
+        requests.push(input);
+        return { status: 200, ok: true, body: {} };
+      }),
+    });
+    await sessionLandings("session-1");
+    await sessionLandings("session-1", true);
+    await landSession("session-1", { branch: null, pullRequest: true, title: "Fix", body: null });
+    await refreshLanding("landing-1");
+    await createSession("project-1", "claude", null, null, null, "protocol", true);
+    expect(requests).toEqual([
+      { method: "GET", path: "/api/sessions/session-1/landings" },
+      { method: "GET", path: "/api/sessions/session-1/landings?probe=true" },
+      {
+        method: "POST",
+        path: "/api/sessions/session-1/land",
+        body: { branch: null, pullRequest: true, title: "Fix", body: null },
+      },
+      { method: "POST", path: "/api/landings/landing-1/refresh" },
+      {
+        method: "POST",
+        path: "/api/projects/project-1/sessions",
+        body: {
+          harness: "claude",
+          mode: "protocol",
+          label: null,
+          name: null,
+          base: null,
+          autoLand: true,
+        },
+      },
+    ]);
   });
 });

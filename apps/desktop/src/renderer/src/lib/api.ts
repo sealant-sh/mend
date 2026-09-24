@@ -428,14 +428,15 @@ export const createSession = (
   base: string | null = null,
   name: string | null = null,
   mode: AgentLaunchModeDto | null = null,
+  /** This session's own "Land when a turn completes"; null follows the project (ADR 0007). */
+  autoLand: boolean | null = null,
 ) =>
   call("POST", "/api/projects/:id/sessions", {
     params: { id: projectId },
-    // autoLand null follows the project (docs/adr/0007-landing.md).
     body:
       mode === null
-        ? { harness, label, name, base, autoLand: null }
-        : { harness, mode, label, name, base, autoLand: null },
+        ? { harness, label, name, base, autoLand }
+        : { harness, mode, label, name, base, autoLand },
   });
 
 /** One authored input to the live protocol agent; it queues behind a running turn. */

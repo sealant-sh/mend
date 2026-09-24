@@ -6,6 +6,7 @@ import {
   type PermissionMode,
 } from "@mend/domain/workbench";
 import { Button } from "@mend/ui/components/ui/button";
+import { useQuery } from "@tanstack/react-query";
 import { Check, ChevronDown } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
@@ -26,7 +27,8 @@ import {
   useComposerPrefs,
 } from "#/lib/composer-prefs";
 import { CONVERSATION_HARNESSES, rememberLaunchMode } from "#/lib/conversation";
-import { queryClient } from "#/lib/queries";
+import { autoLandItems, autoLandToSend, projectAutoLand, settingsAutoLand } from "#/lib/landing";
+import { queryClient, settingsQuery } from "#/lib/queries";
 
 /**
  * The launcher (BRIEF.md) as a composer, the same one the web app starts
@@ -115,6 +117,13 @@ export function SessionComposer({
   const [busy, setBusyState] = useState<Pending>(null);
   const [error, setError] = useState<string | null>(null);
   const [menu, setMenu] = useState<MenuState | null>(null);
+  // "Land when a turn completes" for this one session (docs/adr/0007-landing.md); null follows
+  // the project. Not sticky, as in the web composer: a push speaks as you on GitHub, so each
+  // session starts from the project's stance.
+  const [autoLand, setAutoLand] = useState<boolean | null>(null);
+  const settings = useQuery(settingsQuery);
+  // Null from a server that predates landing: it would ignore an override, so none is offered.
+  const landingStance = projectAutoLand(project);
   const setBusy = (next: Pending) => {
     setBusyState(next);
     onBusy?.(next !== null);
@@ -127,6 +136,15 @@ export function SessionComposer({
   /** claude and codex also run as a conversation (protocol mode) instead of a terminal. */
   const conversable = CONVERSATION_HARNESSES.has(harness);
   const runsAs = conversable ? harnessPrefs.mode : null;
+  // Only a conversation's turns land by themselves: a terminal agent has no turns Mend sees end.
+  const landing =
+    landingStance === null
+      ? null
+      : autoLandItems({
+          override: autoLand,
+          project: landingStance,
+          settings: settingsAutoLand(settings.data),
+        });
 
   const openMenu = (kind: MenuKind) => (event: React.MouseEvent<HTMLButtonElement>) => {
     const rect = event.currentTarget.getBoundingClientRect();
@@ -163,6 +181,13 @@ export function SessionComposer({
         base.trim() === "" ? null : base.trim(),
         cleanedName === "" ? null : cleanedName,
         launchMode,
+        landingStance === null
+          ? null
+          : autoLandToSend({
+              override: autoLand,
+              project: landingStance,
+              conversation: launchMode === "protocol",
+            }),
       );
       if (launchMode !== null) rememberLaunchMode(created.id, launchMode);
       void launchSessionStart(
@@ -212,6 +237,7 @@ export function SessionComposer({
     tunable ? harnessPrefs.effort : null,
     tunable && harnessPrefs.speed === "fast" ? "fast" : null,
     tunable && harnessPrefs.permission === "ask" ? "ask" : null,
+    runsAs === "protocol" ? (landing?.summary ?? null) : null,
     base.trim() === "" ? null : base.trim(),
   ].filter((part): part is string => part !== null);
 
@@ -450,9 +476,31 @@ export function SessionComposer({
                   }))}
                 />
               )}
+              {landing !== null &&
+                (runsAs === "protocol" ? (
+                  <MenuRadioGroup
+                    label="Land when a turn completes"
+                    items={landing.items.map((item) => ({
+                      key: item.key,
+                      label: item.label,
+                      detail: item.detail ?? undefined,
+                      selected: item.selected,
+                      onSelect: () => setAutoLand(item.override),
+                    }))}
+                  />
+                ) : (
+                  <div className="not-first:mt-1 not-first:border-t not-first:border-rule-faint not-first:pt-1">
+                    <p className="px-3.5 pb-1 pt-1.5 text-xs font-medium text-label">
+                      Land when a turn completes
+                    </p>
+                    <p className="px-3.5 pb-1.5 font-sans text-[12px] leading-relaxed text-muted-foreground">
+                      Terminal sessions never land by themselves. Land one from its header.
+                    </p>
+                  </div>
+                ))}
               <div
                 className={
-                  tunable
+                  tunable || landing !== null
                     ? "mt-1 border-t border-rule-faint px-3.5 pb-1.5 pt-2"
                     : "px-3.5 pb-1.5 pt-1"
                 }
