@@ -1,12 +1,13 @@
 # Landing: push a change and open its pull request
 
-Status: proposed 2026-09-23, amended 2026-09-24 with automatic landing. Commits Mend to one landing
-action. Mend commits what the worktree holds, pushes the session's branch to the project's origin,
-and opens or updates a GitHub pull request whose description is Mend's review tour. Like Cursor, it
-can do this automatically when the agent finishes a turn, and it does not do it for a request that
-asked a question rather than for a change. Merging stays on GitHub, and landing again after more
-work updates the same branch and pull request. The ADR also makes landing observable: what was
-pushed, by whom, and whether origin still has it.
+Status: proposed 2026-09-23, amended 2026-09-24 with automatic landing, and again the same day: Mend
+never moves the session's branch, the change's owner lands it, and pulling a change has no side
+effects. Commits Mend to one landing action. Mend commits what the worktree holds, pushes it to a
+branch on the project's origin, and opens or updates a GitHub pull request whose description is
+Mend's review tour. Like Cursor, it can do this automatically when the agent finishes a turn, and it
+does not do it for a request that asked a question rather than for a change. Merging stays on
+GitHub, and landing again after more work updates the same branch and pull request. The ADR also
+makes landing observable: what was pushed, by whom, and whether origin still has it.
 
 **What this ADR does not claim.** It does not make Mend decide whether a change should merge. There
 is no approve control, no merge button and no "ready" state. Landing is publication (plan §5.9): it
@@ -66,16 +67,41 @@ Landing a change runs these steps, in this order, and stops at the first that fa
    ```
 
    The third case is the usual one: Claude Code and Codex rarely commit unless asked. `M` has the
-   checkpoint's tree and is parented on the branch head. Its author and committer are the owner's
-   name and email. Its message comes from the tour's summary when a tour exists, and from the
-   session's label otherwise, with a `Mend-Session:` trailer that links to the session. Mend writes
-   it with `commit-tree` against the store and moves `mend/<name>` to it, so the worktree's files,
-   index and HEAD are never touched.
+   checkpoint's tree. Its author and committer are the change owner's name and email. Its message
+   comes from the tour's summary when a tour exists, and from the session's label otherwise, with a
+   `Mend-Session:` trailer that links to the session. Mend writes it with `commit-tree` against the
+   store, so the worktree's files, index and HEAD are never touched.
 
-3. **Push.** The host pushes `mend/<name>` to origin, as `refs/heads/mend/<name>` unless the owner
-   names another branch, using the project's `gitAuthMode`. The push only fast-forwards. If origin's
-   branch has commits that Mend's branch does not, landing stops and says so. Mend never
-   force-pushes.
+   **Mend never moves the session's branch.** `mend/<name>` in the store, and the executor's branch
+   for a capture-backed session, stay where the agent left them. `M` is a commit only Mend refers
+   to, kept reachable under `refs/mend/landed/<worktree>`, never under `refs/heads`. Moving the
+   agent's branch would leave the worktree's index behind a commit it never made, and an agent that
+   commits next would make that commit on top of `M` or beside it. What `M` is parented on follows
+   from three commits: `L`, the commit the change's last landing pushed; `H`, the agent's branch
+   head as the checkpoint saw it; and `T`, the checkpoint's tree.
+
+   ```
+   first landing, H has tree T            push H                 nothing written
+   first landing, otherwise               M = T on H             push M
+   landed before, T is L's tree and
+     the agent added nothing past L       nothing new            reported, nothing written
+   landed before, the agent added
+     nothing past L                       M = T on L             push M
+   landed before, H is built on L         as a first landing, from H
+   landed before, the agent committed     M = T on L and H       push M, a merge of both
+   ```
+
+   So the agent's commits keep their history, nothing is rewritten, and every push fast-forwards
+   from `L`. A landing that finds nothing new since the last one says
+   `nothing new since the last landing` and records nothing, unless the last landing did not finish
+   its pull request, or the owner gave a new title or description.
+
+3. **Push.** The host pushes the landed commit to origin, as `refs/heads/mend/<name>` unless the
+   owner names another branch, using the project's `gitAuthMode` and the change owner's key. The
+   push only fast-forwards. If origin's branch has commits that Mend's branch does not, landing
+   stops and says so. Mend never force-pushes. The branch is never the project's default branch or
+   the pull request's base, and a landing that did not push leaves no branch name for the next one
+   to reuse.
 4. **Pull request.** Optional, and on by default when origin is on GitHub. Mend opens a pull request
    from the pushed branch into the session's base branch, or updates the one it opened before. See
    below for where this step runs.
@@ -101,14 +127,18 @@ Mend lands the change, and the first landing opens the pull request while later 
   for one session (`--land` / `--no-land`).
 - A project can turn it off for every session, Slack included. The project's "off" wins over the
   Slack setting and over `autopr=true`.
+- Only protocol turns land by themselves. A terminal session (PTY) has no turns Mend sees end, so it
+  never lands automatically, whatever the settings say. `mend land` and the Land panel land it.
 
 **When a completed turn lands.** All of these must hold, and Mend checks them in this order:
 
 1. The turn completed. A turn that failed, was interrupted or was cancelled never lands.
 2. The agent is not waiting on a question or an approval.
-3. The turn was sent by the owner, or the session came from the owner's own request. A follow-up
-   sent by someone else under shared control does not land automatically, because landing pushes and
-   speaks as the owner. Mend offers the owner the button.
+3. The change owner sent the turn, in a session they own. A follow-up sent by someone else under
+   shared control does not land automatically, and neither does a turn in a session a teammate
+   started in the owner's worktree, because landing pushes and speaks as the change owner. Mend
+   offers the owner the button. A turn with no recorded sender never counts as the owner's: review
+   comments sent back to a session record the person who sent them.
 4. The change is not empty. The checkpoint's tree differs from the base branch's tree. A turn that
    touched nothing, or put every file back, lands nothing and says nothing about landing.
 5. The request asked for a change, as below.
@@ -137,7 +167,10 @@ notice.
 **What the thread sees.** The status line gains the branch and the pull request
 (`pushed · mend/fix-login · pull request #412 · opened`). Later landings update that line, and they
 do not add a new message each time. The pull request opens with the file list and the links. Its
-description gains the tour when the tour completes.
+description gains the tour when the tour completes: when a landing finds no tour, Mend queues the
+tour and does not wait for it, and when the tour completes for a change whose pull request Mend
+opened and GitHub last reported open, the worker updates Mend's section of the description through
+the same pull request step. Each tour updates a pull request once.
 
 **Failure is reported and does not retry.** If a push is refused (origin moved, branch protection,
 no write access) or the pull request step fails (no GitHub account connected, `gh` refused), the
@@ -155,8 +188,17 @@ Step 4 needs the owner's GitHub token, which only a workspace holds. So Mend run
 through the SDK (`exec`):
 
 - in the session's own workspace when it is live;
-- otherwise, in a short-lived workspace for the owner with the GitHub credential and nothing else:
-  no harness, no worktree mount and no dotfiles. It is destroyed when the call returns.
+- otherwise, in a short-lived workspace for the change owner with the GitHub credential and nothing
+  else: no worktree, no dotfiles and no secrets. It is destroyed when the call returns.
+
+The session's own workspace is used only when that session is the change owner's, so `gh` never runs
+with a teammate's token. The short-lived workspace is not as small as it should be. The SDK requires
+a harness and a source for every workspace, so Mend names a harness it never starts and mounts an
+empty directory from under the store root (PLATFORM-FEEDBACK.md, 2026-09-24). A runtime that takes
+no host mounts, such as the MicroVM executors of the AWS private beta, refuses that workspace.
+There, a pull request for a session whose workspace is gone fails, and the landing records the
+platform's own words as the pull request step's failure, until the platform half ships. The push has
+already happened by then and is recorded as such.
 
 The call is `gh pr create` or `gh pr edit`, reading the body from a file Mend writes, with the
 repository and branch given explicitly. Mend reads the pull request's number, URL and state from
@@ -178,19 +220,26 @@ an edited title is kept on later updates.
 
 The description is evidence, not a verdict. It says what changed and what the record shows, and
 never "ready to merge", "tested" or "safe". Checks that ran appear only as the record shows them
-(`npm test · exit 0 · observed`).
+(`npm test · exit 0 · observed`), and checks appear once Mend records them. Until then the
+description lists none.
 
-If no tour exists yet, Mend composes one first when the project's inference is available. Otherwise
-the description has only the file list and the links, and says it has no summary.
+If no tour exists yet, the pull request opens with the file list and the links, and says it has no
+summary. Mend queues the tour, and the description gains it when the tour completes, as above. When
+the project's inference is off, the tour does not complete and the description keeps the file list.
 
 ### Who lands
 
-Only the session's owner lands its change. Landing pushes with the owner's key and speaks on GitHub
-as the owner, so shared control does not extend to it and neither does being an organization owner.
-Anyone who can see the project can see the landing record.
+Only the change's owner lands it. A worktree holds one change and can hold many sessions, and a
+teammate can start a session in someone else's worktree. The change owner is the owner of the
+worktree's first session, the one that started the change. Landing pushes with the change owner's
+key, `gh` speaks on GitHub as them, and Mend's commit is authored by them. So shared control does
+not extend to landing, joining a teammate's worktree does not, and neither does being an
+organization owner. Manual landing and refreshing a pull request's state need the change owner.
+Automatic landing needs a turn the change owner sent in a session they own. Anyone who can see the
+project can see the landing record.
 
-A session with no owner, or whose owner has no GitHub account connected, cannot open a pull request
-from Mend. The push still works if the project's auth mode allows it.
+A change whose first session has no owner, or whose owner has no GitHub account connected, cannot
+open a pull request from Mend. The push still works if the project's auth mode allows it.
 
 ### What Mend records and shows
 
@@ -200,9 +249,10 @@ A `change_landings` row for each landing records:
 - the commit Mend wrote, or none;
 - the remote branch and the sha that was pushed;
 - the pull request's number, URL and state as `gh` last reported it;
-- the owner, the time and the outcome.
+- the change owner, the time and the outcome.
 
 It is audited like any other action with the owner's credentials.
+`nothing new since the last landing` is not a landing and records no row.
 
 The review page shows landing as observed facts:
 
@@ -217,27 +267,43 @@ Pushes the agent made itself come from `session_git_ops`:
 not treat them as landings. They did not go through this path, and the ADR 0002 lease does not fence
 them.
 
-A pull request's state is refreshed each time Mend runs step 4, and when someone asks for it from
-the review page. Refreshing needs a workspace for the same reason step 4 does. Mend does not poll
-GitHub.
+A pull request's state is refreshed each time Mend runs step 4, and when the change owner asks for
+it from the review page. Refreshing needs a workspace for the same reason step 4 does. Mend does not
+poll GitHub.
+
+"Check origin" fetches origin's branch as the person who asked, into a ref Mend deletes afterwards,
+so nothing lands under `refs/remotes`. Anyone who can see the change may ask, and each account's
+checks are bounded by a request budget like other calls to a remote.
 
 ### Worktree removal
 
 Removal stops asking for an export that does not exist. A worktree whose latest checkpoint's tree is
-on origin, according to the last landing and a fetch, is removable without `force`. Anything else is
-refused, as it is today, and the refusal names what is unlanded: files and line counts since the
-last landing.
+on origin, according to the last landing and a fetch, is removable without `force`. So is one whose
+last landing's pull request GitHub last reported merged, even after origin's branch was deleted,
+because a squash merge leaves no ancestry to fetch. Anything else is refused, as it is today, and
+the refusal names what is unlanded: files and line counts since the last landing.
+
+Landed branches are `mend/*` on origin, like the session branches in the store. Refreshing a project
+from origin skips `mend/*`, so a landed branch never collides with the session branch a worktree has
+checked out, and the base picker does not offer them.
 
 ### Pulling a change into your own checkout
 
 `mend pull <session>`, run inside a local clone of the same repository, fetches the change's branch
 into it as `mend/<name>`. The CLI downloads a git bundle from the API (`GET /changes/:id/bundle`),
 which contains the commits from the session's base to the latest checkpoint. Mend commits the
-checkpoint first, exactly as step 2 does, without pushing. So pulling works without origin, before
-landing, and for projects whose origin nobody can push to.
+checkpoint's leftovers exactly as step 2 does, without pushing. So pulling works without origin,
+before landing, and for projects whose origin nobody can push to.
 
-The bundle endpoint is authorized like the review diff. It is bounded by the request budgets and
-refuses a bundle over a size limit, with the size in the answer.
+A download has no side effects on the owner's history. It moves no branch and writes nothing under
+`refs/heads`: the bundle is built from a temporary ref in a scratch repository that is deleted
+afterwards, and Mend's commit for the leftovers, authored by the change owner, exists only in the
+bundle. When the change owner downloads it, Mend takes a checkpoint first. Anyone else gets the
+latest checkpoint that already exists, so pulling someone's change never adds to their record.
+
+The bundle endpoint is authorized like the review diff. It is bounded by the request budgets,
+refuses a bundle over a size limit with the size in the answer, and every download is audited
+(`change.bundle_downloaded`).
 
 This closes plan open decision #8 in one direction: the person pulls from Mend. Mend does not push
 into anyone's checkout.
@@ -251,21 +317,20 @@ into anyone's checkout.
 - **Slack (ADR 0006):** lands automatically as above, and the status line carries the branch and the
   pull request. When a request did not land (a question, automatic landing off, a follow-up from
   someone other than the owner), the end-of-session reply has a "Push and open pull request" button,
-  shown to everyone and acting only for the owner. Anyone else gets an ephemeral refusal. The Slack
-  app gains the "Land automatically" setting and the `autopr=` option, and ADR 0006's Cursor table
-  and its "No PR" row are corrected to match.
+  shown to everyone and acting only for the change owner. Anyone else gets an ephemeral refusal. The
+  Slack app gains the "Land automatically" setting and the `autopr=` option, and ADR 0006's Cursor
+  table and its "No PR" row are corrected to match.
 - **Web and CLI composer:** the per-session automatic-landing override, and the project setting
   "Land when a turn completes".
-- **Mobile and desktop:** the landing facts, read-only, in this ADR's scope. Their buttons come
-  later.
 
 ## Consequences
 
 - Product language gains `landing` (one push, plus its pull request, recorded against a checkpoint)
   and `landed checkpoint`. `AGENTS.md` and plan §5.9 need amending.
-- Mend writes commits on a session's visible branch for the first time. It does so only when it
-  lands or pulls, and only with `commit-tree` against the store, so nothing the agent sees in its
-  worktree changes.
+- Mend writes commits for a session for the first time. It does so only when it lands or pulls, only
+  with `commit-tree` against the store or the runner cache, and never on the session's branch, so
+  nothing the agent sees in its worktree changes. What origin's branch holds is the agent's commits
+  plus Mend's, sometimes joined by a merge commit when the agent committed after a landing.
 - With automatic landing, a Slack request that asks for a change produces a pull request on GitHub
   without anyone pressing a button. That is Cursor's default and the reason to copy it. The guards
   above decide when it happens, and the project setting can turn it off.
@@ -274,8 +339,9 @@ into anyone's checkout.
   automatically.
 - A pull request needs a workspace for a few seconds when the session is not live. That is paid in
   workspace start time on every such landing, until the platform half ships.
-- A pull request is authored as the owner. That is the honest identity: it is their credential and
-  their change.
+- A pull request is authored as the change owner. That is the honest identity: it is their
+  credential and their change. A teammate who joined their worktree lands nothing.
+- Mobile and desktop show no landing facts yet. That is outside this ADR.
 - Squash-merged pull requests are recognized only by the pull request's state, because a squash
   leaves no ancestry to follow. That state is only as fresh as the last refresh.
 
@@ -289,7 +355,7 @@ One ready-for-review PR per step, stacked:
 | 2   | Schema and domain: `change_landings`, landing outcomes, the observed landing facts.                                                                                                |
 | 3   | Store and runner: the landing commit from a checkpoint's tree, fast-forward-only push with the project's auth mode, divergence detection, and the git bundle.                      |
 | 4   | The pull request step: the workspace `exec` of `gh pr create` / `gh pr edit`, the short-lived workspace, the description with its markers, and reading back number, URL and state. |
-| 5   | API: land, landing record, bundle and refresh routes; owner-only authorization; audit; `session_git_ops` exposed; worktree removal that recognizes a landed change.                |
+| 5   | API: land, landing record, bundle and refresh routes; change-owner authorization; audit; `session_git_ops` exposed; worktree removal that recognizes a landed change.              |
 | 6   | Automatic landing: the per-turn trigger and its five checks, the intent reading in `@mend/inference`, the prompt guard, the project setting and the per-session override.          |
 | 7   | Web: the Land panel, the session page link, the project setting and the composer override.                                                                                         |
 | 8   | CLI: `mend land`, `mend pull`, and `--land` / `--no-land`.                                                                                                                         |
@@ -313,8 +379,10 @@ it. After PR 6, sessions land themselves. PR 9 is the Cursor experience end to e
    checkpoint is recorded, and the landing names it, so "what was landed" has one answer.
 5. **Fast-forward only.** A force push can destroy a teammate's commits on the branch, and Mend
    would be the one that did it.
-6. **Only the owner lands.** Landing speaks as the owner on GitHub and pushes with their key. Shared
-   control lets others steer an agent. It does not let them publish as someone else.
+6. **Only the change's owner lands.** Landing speaks as the owner on GitHub and pushes with their
+   key. Shared control lets others steer an agent, and a teammate may start a session in someone
+   else's worktree. Neither lets them publish as someone else. The change's owner, not the calling
+   session's, is the one identity a landing uses.
 7. **Pull from Mend with a bundle.** It works before landing and without origin, and it needs no git
    server in Mend.
 8. **Land automatically, as Cursor does.** A pull request the requester did not have to ask for is
@@ -326,6 +394,14 @@ it. After PR 6, sessions land themselves. PR 9 is the Cursor experience end to e
 10. **Push the agent's commits, add one for leftovers.** Squashing would destroy the agent's
     history. Asking the agent to commit would make landing depend on a live agent doing it
     correctly. Refusing would make the common case, an agent that never commits, fail.
+11. **Never move the session's branch.** The first version moved `mend/<name>` to Mend's commit. In
+    a co-located worktree that left the index behind a commit the agent never made. In a
+    capture-backed one the executor never saw the commit, so the next landing diverged from origin
+    as soon as the agent committed. Keeping Mend's commit under `refs/mend/landed/` and parenting
+    the next one on the last landing and the agent's head fixes both and still only fast-forwards.
+12. **Pulling is a read.** A bundle download by anyone who can read the review diff must not change
+    what the owner sees. So it moves nothing, writes no branch, and takes a checkpoint only for the
+    change owner.
 
 ## Open questions
 
