@@ -185,8 +185,10 @@ Signing in (`/connect`) is `mend login`'s authorize walk (`src/main/device-login
 a `cliAuth` request, the browser opens on the approve page with the code to compare, and an approval
 saves `{url, token, deviceId}` to the shared `cli.json`, keeping every other field there. The
 desktop is then a listed device, named `<hostname> · desktop`. Sign-out revokes it
-(`DELETE /api/me/devices/:id`) before forgetting the token, as `mend logout` does. Pasting a token
-stays as the fallback; email + password is gone.
+(`DELETE /api/me/devices/:id`) before forgetting the token, as `mend logout` does; it clears only
+the token and device id, keeping the file's own url. While `MEND_TOKEN` supplies the token, sign-out
+changes nothing and says so. An approval that lands on the poll a cancel interrupted is revoked with
+its own token, not dropped. Pasting a token stays as the fallback; email + password is gone.
 
 - Keyboard: the keymap, read-only for now.
 
@@ -251,6 +253,10 @@ after its hidden worktrees and changes are surfaced for migration.
 - 2026-09-24: sign-in is the CLI's device flow and sign-out revokes the device; the desktop keeps
   hand-parsing the `cliAuth` answers the way `apps/cli/src/login.ts` does until the DTO move to
   `@mend/api-contracts` lands.
+- 2026-09-24 (review): one terminal attach at a time. Each connect takes a generation, so a ticket
+  mint or liveness probe answering for an older attempt changes nothing, and a window focus leaves a
+  socket that is still opening alone. Before, a focus during a probe could leave two sockets on one
+  PTY.
 
 - 2026-08-20: hidden project benches are retired. Supporting shells belong to a focused visible
   session and its change. The old default-shell and per-project bench decisions below are
