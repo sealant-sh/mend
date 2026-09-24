@@ -137,6 +137,10 @@ export function TtyTerminal({
     let connectedAt: number | null = null;
     let settled = false;
     let disposed = false;
+    // One attach attempt at a time. Each connect takes the next generation; a ticket mint or a
+    // liveness probe that answers after a newer attempt began (a window focus skips the ladder)
+    // changes nothing, so two sockets never race for the same PTY.
+    let generation = 0;
 
     const sendResize = (cols: number, rows: number) => {
       if (ws !== null && ws.readyState === WebSocket.OPEN) {
@@ -154,11 +158,11 @@ export function TtyTerminal({
     };
 
     // The attach failed before a byte flowed: ask the server what the PTY's process is doing.
-    const afterFailedAttach = async () => {
+    const afterFailedAttach = async (owner: number) => {
       const ask = probeRef.current;
       const liveness: PtyLiveness =
         ask === undefined ? "unknown" : await ask().catch(() => "unknown" as const);
-      if (disposed || settled) return;
+      if (disposed || settled || owner !== generation) return;
       const verdict = afterUnopenedClose(liveness);
       if (verdict === "ended") {
         settled = true;
@@ -174,16 +178,22 @@ export function TtyTerminal({
 
     const connect = async () => {
       if (disposed || settled || surface === null) return;
+      generation += 1;
+      const mine = generation;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
       report(attempt === 0 ? "connecting" : "reconnecting");
       let url: string;
       try {
         url = await window.mend.tty.url(target, from);
       } catch {
         // The ticket mint failed: the same question as a refused upgrade.
-        if (!disposed) void afterFailedAttach();
+        if (!disposed && mine === generation) void afterFailedAttach(mine);
         return;
       }
-      if (disposed) return;
+      if (disposed || mine !== generation) return;
       const socket = new WebSocket(url);
       socket.binaryType = "arraybuffer";
       ws = socket;
@@ -226,7 +236,7 @@ export function TtyTerminal({
           return;
         }
         if (!opened) {
-          void afterFailedAttach();
+          void afterFailedAttach(mine);
           return;
         }
         reconnectLater();
@@ -237,11 +247,8 @@ export function TtyTerminal({
     // link: skip whatever backoff remains and try immediately.
     const onFocus = () => {
       if (disposed || settled) return;
-      if (ws !== null && ws.readyState === WebSocket.OPEN) return;
-      if (timer !== null) {
-        window.clearTimeout(timer);
-        timer = null;
-      }
+      // A socket still opening is the attempt in progress; an open one needs nothing.
+      if (ws !== null) return;
       attempt = 0;
       void connect();
     };
