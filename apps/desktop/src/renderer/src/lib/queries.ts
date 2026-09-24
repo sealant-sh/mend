@@ -3,6 +3,7 @@ import { QueryClient, queryOptions } from "@tanstack/react-query";
 import {
   changeComments,
   getSealantIdentity,
+  getSettings,
   isUnauthorized,
   listProjects,
   listServices,
@@ -14,6 +15,7 @@ import {
   projectPullRequests,
   reviewDiff,
   sessionDetail,
+  sessionLandings,
   sessionTranscript,
 } from "#/lib/api";
 
@@ -58,6 +60,25 @@ export const sessionProcessesQuery = (id: string) =>
     queryKey: ["session", id, "processes"],
     queryFn: () => listSessionProcesses(id),
   });
+
+/**
+ * The change's landing record as this session reads it. Keyed under the session, so a session
+ * or change event refreshes it; a server from before landing answers 404, which reads as
+ * nothing to show.
+ */
+export const sessionLandingsQuery = (id: string) =>
+  queryOptions({
+    queryKey: ["session", id, "landings"],
+    queryFn: () => sessionLandings(id),
+    retry: false,
+  });
+
+/** Instance settings change rarely, and only from the web app's Settings. */
+export const settingsQuery = queryOptions({
+  queryKey: ["settings"],
+  queryFn: getSettings,
+  staleTime: 60_000,
+});
 
 export const servicesQuery = queryOptions({
   queryKey: ["services"],

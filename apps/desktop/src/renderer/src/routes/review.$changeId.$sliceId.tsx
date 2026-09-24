@@ -1,7 +1,9 @@
+import { pullRequestBase } from "@mend/domain/workbench";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { createFileRoute, Navigate, useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
 
+import { LandSheet } from "#/components/land-panel";
 import { ReviewDiff } from "#/components/review-diff";
 import { Titlebar } from "#/components/titlebar";
 import {
@@ -10,6 +12,7 @@ import {
   openReview,
   postSliceReviewComment,
   setReviewCommentState,
+  type ChangeLandingDto,
   type ReviewCommentDto,
   type ReviewDiffFileDto,
   type SliceCommentTargetDto,
@@ -17,10 +20,12 @@ import {
 import { useWorkbenchEvents } from "#/lib/events";
 import {
   processOutputQuery,
+  projectDetailQuery,
   queryClient,
   reviewCommentsQuery,
   reviewDiffQuery,
   sessionDetailQuery,
+  sessionLandingsQuery,
   sessionProcessesQuery,
 } from "#/lib/queries";
 import {
@@ -100,6 +105,17 @@ function ReviewPage({
   const sessionControl = useQuery({ ...sessionDetailQuery(sessionId), enabled: sessionId !== "" });
   const steer: boolean | null =
     sessionControl.data?.control.steer ?? (sessionControl.isError ? true : null);
+  // Landing the change (docs/adr/0007-landing.md): the web shows its Land panel on the change's
+  // review, so Review offers the same sheet the session's terminal does.
+  const landingsRead = useQuery({ ...sessionLandingsQuery(sessionId), enabled: sessionId !== "" });
+  const [landOpen, setLandOpen] = useState(false);
+  const reviewedSession = sessionControl.data?.session ?? null;
+  const landProject = useQuery({
+    ...projectDetailQuery(reviewedSession?.projectId ?? ""),
+    enabled: landOpen && reviewedSession !== null,
+  });
+  // A server from before landing omits the detail's landings.
+  const detailLandings: ReadonlyArray<ChangeLandingDto> | undefined = sessionControl.data?.landings;
   const processes = useQuery({
     ...sessionProcessesQuery(sessionId),
     enabled: sessionId !== "",
@@ -273,6 +289,17 @@ function ReviewPage({
                 )}
               </div>
             </div>
+            {landingsRead.data !== undefined &&
+              (landingsRead.data.land || landingsRead.data.facts.length > 0) && (
+                <button
+                  type="button"
+                  aria-pressed={landOpen}
+                  className="rounded-lg border border-rule bg-panel px-3 py-1.5 font-sans text-xs font-medium shadow-xs hover:-translate-y-px hover:shadow-sm"
+                  onClick={() => setLandOpen((open) => !open)}
+                >
+                  {landingsRead.data.land ? "Land" : "Landing"}
+                </button>
+              )}
             <button
               type="button"
               disabled={refresh.isPending || diff.data === undefined}
@@ -434,6 +461,20 @@ function ReviewPage({
               void navigate({ to: "/" });
             }}
           />
+          {landOpen && reviewedSession !== null && (
+            <LandSheet
+              sessionId={sessionId}
+              sessionLabel={reviewedSession.label}
+              worktreeBranch={reviewedSession.branch}
+              base={
+                landProject.data === undefined
+                  ? null
+                  : pullRequestBase(reviewedSession.baseRef, landProject.data.project.defaultBranch)
+              }
+              landings={detailLandings ?? []}
+              onClose={() => setLandOpen(false)}
+            />
+          )}
         </div>
       </div>
     </>

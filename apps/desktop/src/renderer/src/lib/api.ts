@@ -123,6 +123,18 @@ export type AgentRequestDto = Wire<AgentRequest>;
 export type AgentLaunchModeDto = AgentLaunchMode;
 /** Who interrupted, attached, opened a shell, stopped or shared control. */
 export type SessionControlEventDto = Wire<SessionControlEvent>;
+/**
+ * A change's landing record with what Mend observed about it (docs/adr/0007-landing.md): the
+ * landings newest first, the facts in reading order, and whether the caller may land it.
+ */
+export type ChangeLandingsDto = Answer<"GET", "/api/sessions/:id/landings">;
+/** One push of a change's branch, plus its pull request, recorded against a checkpoint. */
+export type ChangeLandingDto = ChangeLandingsDto["landings"][number];
+/** One observed fact about a change's landing; never a verdict. */
+export type LandingFactDto = ChangeLandingsDto["facts"][number];
+/** What one landing did, with how its pull request step went. */
+export type LandingReportDto = Answer<"POST", "/api/sessions/:id/land">;
+export type LandRequestDto = Payload<"POST", "/api/sessions/:id/land">;
 /** A composed start — the server turns this into the harness's own argv. */
 export type LaunchStartDto = Omit<Payload<"POST", "/api/sessions/:id/launch">, "argv">;
 
@@ -333,6 +345,32 @@ export const processOutput = async (id: string): Promise<{ readonly text: string
 /** The session's conversation, read from its record — what a settled session said and did. */
 export const sessionTranscript = (id: string) =>
   call("GET", "/api/sessions/:id/transcript", { params: { id } });
+
+/** Instance settings; the composer reads "Land when a turn completes" from them. */
+export const getSettings = () => call("GET", "/api/settings");
+
+// ─── landing (docs/adr/0007-landing.md) ─────────────────────────────────────
+
+/**
+ * The change's landing record, from any of its sessions. `probe` fetches origin's branch with
+ * the caller's own git access and compares it with the landed commit; a plain read never does.
+ */
+export const sessionLandings = (sessionId: string, probe = false) =>
+  call("GET", "/api/sessions/:id/landings", {
+    params: { id: sessionId },
+    query: probe ? { probe: "true" } : {},
+  });
+
+/**
+ * The change's owner lands: checkpoint, commit what the agent left uncommitted, push fast-forward
+ * only, and open or update the pull request. Mend never merges.
+ */
+export const landSession = (sessionId: string, request: LandRequestDto) =>
+  call("POST", "/api/sessions/:id/land", { params: { id: sessionId }, body: request });
+
+/** Ask `gh` for the pull request's state now; Mend does not poll GitHub. */
+export const refreshLanding = (landingId: string) =>
+  call("POST", "/api/landings/:id/refresh", { params: { id: landingId } });
 
 // ─── protocol-mode conversation ─────────────────────────────────────────────
 
