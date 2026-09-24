@@ -250,9 +250,18 @@ after its hidden worktrees and changes are surfaced for migration.
 - 2026-09-24: an ended PTY replays from the process record (`/api/processes/:id/logs`), not from
   `/api/tty`, which answers 502 for a settled session. Checkpoint `seq` and log chunk sequences
   share the run's record sequence, so the scrubber seeks the log cursor.
-- 2026-09-24: sign-in is the CLI's device flow and sign-out revokes the device; the desktop keeps
-  hand-parsing the `cliAuth` answers the way `apps/cli/src/login.ts` does until the DTO move to
-  `@mend/api-contracts` lands.
+- 2026-09-24: sign-in is the CLI's device flow and sign-out revokes the device. Main still checks
+  the `cliAuth` answers by hand (a non-Mend server answering 200 must read as nothing), but the
+  shapes it returns are the contract's types.
+- 2026-09-24: the renderer's wire shapes come from `@mend/api-contracts`, at the type level only
+  (`lib/contract.ts`). A call names its endpoint by method and path template exactly as the contract
+  declares it (`"GET", "/api/sessions/:id"`), so a moved or dropped route fails the build, and
+  params, query, body and answer are read off that endpoint's schemas as JSON carries them (dates
+  and sequences as strings, no brands). The derived client (`makeMendApiClient`) over an
+  `HttpClient` riding the bridge was rejected: it would decode into `Date`/`bigint`/branded values
+  every screen then has to convert back, and load every schema into the page to re-check what the
+  server just encoded. The phone hand-rolls its DTOs and pins routes in a test; the desktop got both
+  checks from the compiler instead.
 - 2026-09-24 (review): one terminal attach at a time. Each connect takes a generation, so a ticket
   mint or liveness probe answering for an older attempt changes nothing, and a window focus leaves a
   socket that is still opening alone. Before, a focus during a probe could leave two sockets on one

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import { ApiError, type SessionDetailDto, type SessionProcessDto } from "#/lib/api";
+import { OWNER_CONTROL, processFixture, sessionFixture } from "#/lib/fixtures";
 import {
   afterUnopenedClose,
   livenessOfError,
@@ -8,51 +9,49 @@ import {
   sessionPtyLiveness,
 } from "#/lib/tty-attach";
 
-const process = (overrides: Partial<SessionProcessDto> = {}): SessionProcessDto => ({
-  id: "p1",
-  sessionId: "s1",
-  serviceId: null,
-  attemptOrdinal: null,
-  launchCorrelationId: null,
-  sealantWorkspaceId: "w1",
-  sealantSessionId: "sess_1",
-  sealantRunId: "run_1",
-  kind: "agent-pty",
-  harness: "codex",
-  providerSessionId: null,
-  label: "codex",
-  argv: ["codex"],
-  status: "running",
-  exitCode: null,
-  workspacePort: null,
-  protocol: "tcp",
-  hostPort: null,
-  createdAt: "2026-09-22T13:11:19.907Z",
-  exitedAt: null,
-  updatedAt: "2026-09-22T13:11:19.907Z",
-  ...overrides,
-});
+const process = (overrides: Partial<SessionProcessDto> = {}): SessionProcessDto =>
+  processFixture({
+    id: "p1",
+    sessionId: "s1",
+    serviceId: null,
+    attemptOrdinal: null,
+    launchCorrelationId: null,
+    sealantWorkspaceId: "w1",
+    sealantSessionId: "sess_1",
+    sealantRunId: "run_1",
+    kind: "agent-pty",
+    harness: "codex",
+    providerSessionId: null,
+    label: "codex",
+    argv: ["codex"],
+    status: "running",
+    exitCode: null,
+    workspacePort: null,
+    protocol: "tcp",
+    hostPort: null,
+    createdAt: "2026-09-22T13:11:19.907Z",
+    exitedAt: null,
+    updatedAt: "2026-09-22T13:11:19.907Z",
+    ...overrides,
+  });
 
 const detail = (
   agent: SessionProcessDto | null,
   status: "running" | "completed",
 ): SessionDetailDto => ({
-  session: {
+  session: sessionFixture({
     id: "s1",
     projectId: "proj",
     harness: "codex",
-    label: null,
     worktree: "w",
     branch: "mend/w",
     baseSha: "abc",
     sealantRunId: "run_1",
     sealantSessionId: "sess_1",
     status,
-    summary: null,
-    startedAt: null,
-    settledAt: null,
     createdAt: "2026-09-22T13:11:01.826Z",
-  },
+  }),
+  control: OWNER_CONTROL,
   checkpoints: [],
   change: null,
   processes: agent === null ? [] : [agent],

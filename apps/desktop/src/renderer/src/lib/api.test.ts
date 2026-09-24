@@ -121,6 +121,7 @@ describe("desktop process logs", () => {
     });
 
     await stopService("service-1");
-    expect(requests).toEqual([{ method: "POST", path: "/api/services/service-1/stop", body: {} }]);
+    // The contract declares no payload for stop, so none is sent (as the derived client sends none).
+    expect(requests).toEqual([{ method: "POST", path: "/api/services/service-1/stop" }]);
   });
 });

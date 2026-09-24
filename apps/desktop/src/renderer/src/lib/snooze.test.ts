@@ -1,24 +1,19 @@
 import { describe, expect, it } from "vitest";
 
 import type { SessionDto } from "./api.ts";
+import { sessionFixture } from "./fixtures.ts";
 import { describeWake, effectiveSnoozed, snoozePresets, wakeLabel } from "./snooze.ts";
 
-const session = (status: SessionDto["status"], settledAt: string | null): SessionDto => ({
-  id: "s",
-  projectId: "p",
-  harness: "claude",
-  label: null,
-  worktree: "w",
-  branch: "b",
-  baseSha: "0",
-  sealantRunId: null,
-  sealantSessionId: null,
-  status,
-  summary: null,
-  startedAt: null,
-  settledAt,
-  createdAt: "2026-08-21T08:00:00.000Z",
-});
+const session = (status: SessionDto["status"], settledAt: string | null): SessionDto =>
+  sessionFixture({
+    id: "s",
+    projectId: "p",
+    worktree: "w",
+    branch: "b",
+    status,
+    settledAt,
+    createdAt: "2026-08-21T08:00:00.000Z",
+  });
 
 describe("snoozePresets", () => {
   it("offers the five presets at the exact hours on a weekday morning", () => {

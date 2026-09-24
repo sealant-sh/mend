@@ -1,19 +1,11 @@
 import { describe, expect, it } from "vitest";
 
-import type { ProjectDto, SessionDto } from "./api.ts";
+import type { ProjectDto, SessionDto, SessionProcessDto } from "./api.ts";
+import { annotationFixture, processFixture, projectFixture, sessionFixture } from "./fixtures.ts";
 import { SETTLED_INITIAL } from "./inbox-shelves.ts";
 import { buildInbox, scopeInbox, visibleInboxRows } from "./model.ts";
 
-const project = (id: string): ProjectDto => ({
-  id,
-  name: id,
-  originUrl: null,
-  storePath: `/store/${id}`,
-  defaultBranch: "main",
-  adoptedSha: null,
-  workspaceImage: null,
-  createdAt: "2026-08-01T00:00:00.000Z",
-});
+const project = (id: string): ProjectDto => projectFixture({ id, name: id });
 
 const session = (
   id: string,
@@ -21,22 +13,18 @@ const session = (
   status: SessionDto["status"],
   createdAt: string,
   settledAt: string | null = null,
-): SessionDto => ({
-  id,
-  projectId,
-  harness: "claude",
-  label: id,
-  worktree: id,
-  branch: id,
-  baseSha: "0",
-  sealantRunId: null,
-  sealantSessionId: null,
-  status,
-  summary: null,
-  startedAt: createdAt,
-  settledAt,
-  createdAt,
-});
+): SessionDto =>
+  sessionFixture({
+    id,
+    projectId,
+    label: id,
+    worktree: id,
+    branch: id,
+    status,
+    startedAt: createdAt,
+    settledAt,
+    createdAt,
+  });
 
 const now = Date.parse("2026-08-21T12:00:00.000Z");
 const data = [
@@ -105,37 +93,20 @@ describe("buildInbox", () => {
   });
 });
 
-const agent = (exitedAt: string | null, exitCode: number | null) => ({
-  id: "agent-1",
-  sessionId: "idle-done",
-  serviceId: null,
-  attemptOrdinal: null,
-  launchCorrelationId: null,
-  sealantWorkspaceId: "ws-1",
-  sealantSessionId: "pty-1",
-  sealantRunId: "run-1",
-  kind: "agent-pty" as const,
-  harness: "claude",
-  providerSessionId: null,
-  label: "claude",
-  argv: ["claude"],
-  status: exitedAt === null ? ("running" as const) : ("exited" as const),
-  exitCode,
-  workspacePort: null,
-  protocol: "tcp" as const,
-  hostPort: null,
-  createdAt: "2026-08-21T10:00:00.000Z",
-  exitedAt,
-  updatedAt: exitedAt ?? "2026-08-21T10:00:00.000Z",
-});
-const annotation = (currentAgent: ReturnType<typeof agent> | null) => ({
-  sessionId: "idle-done",
-  changeId: null,
-  openComments: 0,
-  totalComments: 0,
-  pendingFollowUp: false,
-  currentAgent,
-});
+const agent = (exitedAt: string | null, exitCode: number | null): SessionProcessDto =>
+  processFixture({
+    id: "agent-1",
+    sessionId: "idle-done",
+    label: "claude",
+    argv: ["claude"],
+    status: exitedAt === null ? "running" : "exited",
+    exitCode,
+    createdAt: "2026-08-21T10:00:00.000Z",
+    exitedAt,
+    updatedAt: exitedAt ?? "2026-08-21T10:00:00.000Z",
+  });
+const annotation = (currentAgent: SessionProcessDto | null) =>
+  annotationFixture({ sessionId: "idle-done", currentAgent });
 
 describe("buildInbox with the current agent process", () => {
   it("shows an idle session whose agent ended by the agent's outcome — the shell is you", () => {

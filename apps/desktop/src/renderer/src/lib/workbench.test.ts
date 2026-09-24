@@ -1,30 +1,32 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { SessionProcessDto } from "./api";
+import { processFixture } from "./fixtures";
 
-const shell = (id: string, label: string): SessionProcessDto => ({
-  id,
-  sessionId: "session-1",
-  serviceId: null,
-  attemptOrdinal: null,
-  launchCorrelationId: null,
-  sealantWorkspaceId: "workspace-1",
-  sealantSessionId: `pty-${id}`,
-  sealantRunId: `run-${id}`,
-  kind: "shell",
-  harness: null,
-  providerSessionId: null,
-  label,
-  argv: ["bash"],
-  status: "running",
-  exitCode: null,
-  workspacePort: null,
-  protocol: "tcp",
-  hostPort: null,
-  createdAt: "2026-08-20T00:00:00.000Z",
-  exitedAt: null,
-  updatedAt: "2026-08-20T00:00:00.000Z",
-});
+const shell = (id: string, label: string): SessionProcessDto =>
+  processFixture({
+    id,
+    sessionId: "session-1",
+    serviceId: null,
+    attemptOrdinal: null,
+    launchCorrelationId: null,
+    sealantWorkspaceId: "workspace-1",
+    sealantSessionId: `pty-${id}`,
+    sealantRunId: `run-${id}`,
+    kind: "shell",
+    harness: null,
+    providerSessionId: null,
+    label,
+    argv: ["bash"],
+    status: "running",
+    exitCode: null,
+    workspacePort: null,
+    protocol: "tcp",
+    hostPort: null,
+    createdAt: "2026-08-20T00:00:00.000Z",
+    exitedAt: null,
+    updatedAt: "2026-08-20T00:00:00.000Z",
+  });
 
 const memoryStorage = (): Storage => {
   const entries = new Map<string, string>();
