@@ -1,4 +1,3 @@
-import { dotfilesRepositoriesEqual } from "@mend/domain";
 import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useReducer, useState } from "react";
@@ -27,7 +26,6 @@ import {
   revokeDevice,
   saveWorkspaceEnvironment,
   type DotfilesDto,
-  type DotfilesRepositoryDto,
   type HostEnvironmentSuggestionsDto,
   type PairingDto,
   type ConnectedAccountDto,
@@ -35,6 +33,13 @@ import {
   type SealantConnectionDto,
   type SettingsDto,
 } from "#/lib/api";
+import {
+  DOTFILES_MANAGER_OPTIONS,
+  repositoryDraft,
+  repositoryDraftDirty,
+  repositoryFromDraft,
+  type DotfilesRepositoryDraft,
+} from "#/lib/dotfiles-repository";
 import { setThemePreference, useThemePreference, type ThemePreference } from "#/lib/theme";
 import { orLogin, trpcClient, useTRPC } from "#/lib/trpc";
 import {
@@ -520,33 +525,22 @@ function DotfilesPanel() {
   const queryClient = useQueryClient();
   const dotfiles = useSuspenseQuery(trpc.settings.dotfiles.queryOptions()).data;
   const savedRepo = dotfiles.repository;
-  const [repoUrl, setRepoUrl] = useState(savedRepo?.url ?? "");
-  const [repoRef, setRepoRef] = useState(savedRepo?.ref ?? "");
-  const [repoSubdir, setRepoSubdir] = useState(savedRepo?.subdirectory ?? "");
-  const [bootstrap, setBootstrap] = useState(savedRepo?.bootstrap ?? true);
+  const [draft, setDraft] = useState(() => repositoryDraft(savedRepo));
   const [staged, setStaged] = useState<ReadonlyArray<StagedDotfile>>([]);
   const [busy, setBusy] = useState<"repo" | "snapshot" | null>(null);
   const [saved, setSaved] = useState<"repo" | "snapshot" | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  const repoDraft: DotfilesRepositoryDto | null =
-    repoUrl.trim() === ""
-      ? null
-      : {
-          url: repoUrl.trim(),
-          ref: repoRef.trim() === "" ? null : repoRef.trim(),
-          subdirectory: repoSubdir.trim() === "" ? null : repoSubdir.trim(),
-          manager: savedRepo?.manager ?? "auto",
-          bootstrap,
-        };
-  const repoDirty = !dotfilesRepositoriesEqual(savedRepo, repoDraft);
+  const repoDraft = repositoryFromDraft(draft);
+  const repoDirty = repositoryDraftDirty(savedRepo, draft);
+  const edit = (change: Partial<DotfilesRepositoryDraft>) => {
+    setSaved(null);
+    setDraft((current) => ({ ...current, ...change }));
+  };
 
   const applyResult = (next: DotfilesDto, which: "repo" | "snapshot") => {
     queryClient.setQueryData(trpc.settings.dotfiles.queryOptions().queryKey, next);
-    setRepoUrl(next.repository?.url ?? "");
-    setRepoRef(next.repository?.ref ?? "");
-    setRepoSubdir(next.repository?.subdirectory ?? "");
-    setBootstrap(next.repository?.bootstrap ?? true);
+    setDraft(repositoryDraft(next.repository));
     setSaved(which);
   };
 
@@ -633,39 +627,32 @@ function DotfilesPanel() {
         </label>
         <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
           Cloned by this server at every launch, and once when you save: one it cannot clone is not
-          saved, and the reason shows here. Chezmoi and stow layouts are detected, anything else is
-          copied into the home directory. If the home tree lives in a subfolder (a{" "}
+          saved, and the reason shows here. If the home tree lives in a subfolder (a{" "}
           <span className="font-mono text-xs text-ink-2">dots/</span> directory, a stow package),
           name it and only that subtree applies. Leave empty for none.
         </p>
         <input
           id="dotfiles-repo-url"
           type="text"
-          value={repoUrl}
+          value={draft.url}
           disabled={pending}
           placeholder="https://github.com/you/dotfiles.git"
           spellCheck={false}
-          onChange={(event) => {
-            setSaved(null);
-            setRepoUrl(event.target.value);
-          }}
+          onChange={(event) => edit({ url: event.target.value })}
           className="mt-2 w-full rounded-xl border border-input bg-card px-3.5 py-2.5 font-mono text-[12.5px] text-foreground outline-none transition-colors focus:border-[var(--sw-accent)] focus:ring-2 focus:ring-[color-mix(in_oklab,var(--sw-accent)_18%,transparent)] disabled:opacity-60"
         />
-        <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
-          {repoUrl.trim() === "" ? null : (
-            <>
+        {draft.url.trim() === "" ? null : (
+          <>
+            <div className="mt-3 flex flex-wrap items-center gap-x-6 gap-y-3">
               <label className="flex items-center gap-2 text-[13px] text-muted-foreground">
                 <span>Branch</span>
                 <input
                   type="text"
-                  value={repoRef}
+                  value={draft.ref}
                   disabled={pending}
                   placeholder="default"
                   spellCheck={false}
-                  onChange={(event) => {
-                    setSaved(null);
-                    setRepoRef(event.target.value);
-                  }}
+                  onChange={(event) => edit({ ref: event.target.value })}
                   className="w-36 rounded-lg border border-input bg-card px-2.5 py-1.5 font-mono text-xs text-foreground outline-none transition-colors focus:border-[var(--sw-accent)] disabled:opacity-60"
                 />
               </label>
@@ -673,26 +660,20 @@ function DotfilesPanel() {
                 <span>Subdirectory</span>
                 <input
                   type="text"
-                  value={repoSubdir}
+                  value={draft.subdirectory}
                   disabled={pending}
                   placeholder="repo root"
                   spellCheck={false}
-                  onChange={(event) => {
-                    setSaved(null);
-                    setRepoSubdir(event.target.value);
-                  }}
+                  onChange={(event) => edit({ subdirectory: event.target.value })}
                   className="w-36 rounded-lg border border-input bg-card px-2.5 py-1.5 font-mono text-xs text-foreground outline-none transition-colors focus:border-[var(--sw-accent)] disabled:opacity-60"
                 />
               </label>
               <label className="flex items-center gap-2 text-[13px] text-muted-foreground">
                 <input
                   type="checkbox"
-                  checked={bootstrap}
+                  checked={draft.bootstrap}
                   disabled={pending}
-                  onChange={() => {
-                    setSaved(null);
-                    setBootstrap((current) => !current);
-                  }}
+                  onChange={() => edit({ bootstrap: !draft.bootstrap })}
                   className="size-3.5 accent-[var(--sw-accent)]"
                 />
                 <span>
@@ -700,13 +681,55 @@ function DotfilesPanel() {
                   present
                 </span>
               </label>
-            </>
-          )}
+            </div>
+            <div className="mt-4">
+              <p
+                id="dotfiles-manager-label"
+                className="font-sans text-[13px] font-medium text-foreground"
+              >
+                Manager
+              </p>
+              <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
+                How the repository’s tree lands in the workspace home directory. Home files below
+                are always copied.
+              </p>
+              <div
+                role="radiogroup"
+                aria-labelledby="dotfiles-manager-label"
+                className="mt-2 grid gap-2 sm:grid-cols-2"
+              >
+                {DOTFILES_MANAGER_OPTIONS.map((option) => (
+                  <button
+                    key={option.value}
+                    type="button"
+                    role="radio"
+                    aria-checked={draft.manager === option.value}
+                    disabled={pending}
+                    onClick={() => edit({ manager: option.value })}
+                    className={`rounded-xl border p-3 text-left shadow-xs transition-colors disabled:opacity-60 ${
+                      draft.manager === option.value
+                        ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash"
+                        : "border-border bg-card hover:border-input"
+                    }`}
+                  >
+                    <span className="block font-sans text-sm font-medium text-foreground">
+                      {option.label}
+                    </span>
+                    <span className="mt-1 block text-xs leading-relaxed text-muted-foreground">
+                      {option.detail}
+                    </span>
+                  </button>
+                ))}
+              </div>
+            </div>
+          </>
+        )}
+        <div className="mt-4 flex justify-end">
           <button
             type="button"
             disabled={pending || !repoDirty}
             onClick={() => void saveRepository()}
-            className="ml-auto inline-flex min-h-8 shrink-0 items-center justify-center rounded-xl border border-border bg-panel px-3.5 font-sans text-[13px] font-medium text-foreground shadow-[var(--shadow-xs)] transition-[transform,border-color] hover:-translate-y-0.5 hover:border-input disabled:pointer-events-none disabled:opacity-60"
+            className="inline-flex min-h-8 shrink-0 items-center justify-center rounded-xl border border-border bg-panel px-3.5 font-sans text-[13px] font-medium text-foreground shadow-[var(--shadow-xs)] transition-[transform,border-color] hover:-translate-y-0.5 hover:border-input disabled:pointer-events-none disabled:opacity-60"
           >
             {busy === "repo" ? (repoDraft === null ? "Saving…" : "Cloning…") : "Save repository"}
           </button>
