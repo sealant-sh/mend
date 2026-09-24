@@ -32,6 +32,7 @@ import {
   useConversationActions,
   type ConversationEntry,
 } from "#/lib/conversation";
+import { sessionDetailQuery } from "#/lib/queries";
 import { membersQuery } from "#/lib/viewer";
 
 /**
@@ -296,6 +297,7 @@ export function ProtocolConversation({
   const conversation = useQuery(conversationQuery(sessionId, live));
   const control = useQuery(controlEventsQuery(sessionId));
   const members = useQuery(membersQuery);
+  const detail = useQuery(sessionDetailQuery(sessionId));
   const { submit, respond, interrupt } = useConversationActions(sessionId);
   const [draft, setDraft] = useState("");
   const scrollerRef = useRef<HTMLDivElement | null>(null);
@@ -306,6 +308,10 @@ export function ProtocolConversation({
   const names = useMemo(
     () => new Map((members.data ?? []).map((member) => [member.userId, member.name])),
     [members.data],
+  );
+  const processKinds = useMemo(
+    () => new Map((detail.data?.processes ?? []).map((process) => [process.id, process.kind])),
+    [detail.data],
   );
   const interrupters = useMemo(() => interruptersByTurn(control.data ?? []), [control.data]);
   const openTurn = openTurnOf(data.turns);
@@ -348,7 +354,7 @@ export function ProtocolConversation({
           <TurnRow
             key={entry.key}
             turn={entry.turn}
-            author={turnAuthorLine(entry.turn.author, viewerId, names)}
+            author={turnAuthorLine(entry.turn, viewerId, names, processKinds)}
             ending={turnEndWord(
               entry.turn,
               interrupters.get(entry.turn.id) ?? null,

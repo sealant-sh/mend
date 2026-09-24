@@ -21,6 +21,7 @@ import {
   type AgentRequestDto,
   type AgentTurnDto,
   type SessionControlEventDto,
+  type SessionProcessDto,
 } from "#/lib/api";
 import { queryClient } from "#/lib/queries";
 
@@ -91,14 +92,29 @@ export const interruptersByTurn = (
 
 /**
  * Who sent a turn, when that is worth saying: only when someone other than the viewer did, as
- * happens while control is shared. A null author is Mend itself (a Review follow-up).
+ * happens while control is shared. A null author is not one thing: on a conversation process it
+ * is Mend itself (a Review follow-up), but a handoff to conversation imports the terminal's
+ * history as turns of the terminal agent's process, also without an author, and those were typed
+ * in the terminal. `processKinds` maps the session's process ids to their kind; a null-author turn
+ * of a process not (yet) known says nothing rather than guess.
  */
 export const turnAuthorLine = (
-  author: string | null,
+  turn: Pick<AgentTurnDto, "author" | "processId">,
   viewerId: string | null,
   names: ReadonlyMap<string, string>,
+  processKinds: ReadonlyMap<string, SessionProcessDto["kind"]>,
 ): string | null => {
-  if (author === null) return "sent by Mend";
+  const { author } = turn;
+  if (author === null) {
+    switch (processKinds.get(turn.processId)) {
+      case "agent-protocol":
+        return "sent by Mend";
+      case "agent-pty":
+        return "from the terminal";
+      default:
+        return null;
+    }
+  }
   if (viewerId === null || author === viewerId) return null;
   return `sent by ${names.get(author) ?? "a member"}`;
 };

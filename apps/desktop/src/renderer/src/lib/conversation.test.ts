@@ -11,6 +11,7 @@ import {
   respondAgentRequest,
   resumeSession,
   type SessionControlEventDto,
+  type SessionProcessDto,
 } from "#/lib/api";
 import { HARNESSES } from "#/lib/app-settings";
 import {
@@ -101,6 +102,11 @@ describe("reading a conversation", () => {
     expect(requests[1]?.path).toBe("/api/sessions/session-1/items?after=0&limit=500");
   });
 });
+
+type ProcessKind = SessionProcessDto["kind"];
+
+/** A turn on the conversation's own process, sent by `author`. */
+const by = (author: string | null) => turnFixture({ author, processId: "process-1" });
 
 const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -217,10 +223,23 @@ describe("turn facts", () => {
   ]);
 
   it("names another sender, and Mend for a follow-up, but not the viewer", () => {
-    expect(turnAuthorLine("user-1", "user-1", names)).toBeNull();
-    expect(turnAuthorLine("user-2", "user-1", names)).toBe("sent by Maya");
-    expect(turnAuthorLine("user-3", "user-1", names)).toBe("sent by a member");
-    expect(turnAuthorLine(null, "user-1", names)).toBe("sent by Mend");
+    const kinds = new Map<string, ProcessKind>([["process-1", "agent-protocol"]]);
+    expect(turnAuthorLine(by("user-1"), "user-1", names, kinds)).toBeNull();
+    expect(turnAuthorLine(by("user-2"), "user-1", names, kinds)).toBe("sent by Maya");
+    expect(turnAuthorLine(by("user-3"), "user-1", names, kinds)).toBe("sent by a member");
+    expect(turnAuthorLine(by(null), "user-1", names, kinds)).toBe("sent by Mend");
+  });
+
+  it("does not credit Mend with the terminal history a handoff imported", () => {
+    // Backfilled turns carry no author and the terminal agent's process id.
+    const kinds = new Map<string, ProcessKind>([
+      ["pty-agent", "agent-pty"],
+      ["protocol-agent", "agent-protocol"],
+    ]);
+    const imported = turnFixture({ author: null, processId: "pty-agent" });
+    expect(turnAuthorLine(imported, "user-1", names, kinds)).toBe("from the terminal");
+    const unknown = turnFixture({ author: null, processId: "not-listed-yet" });
+    expect(turnAuthorLine(unknown, "user-1", names, kinds)).toBeNull();
   });
 
   it("says who interrupted a turn when the control record names them", () => {
