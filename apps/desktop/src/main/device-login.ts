@@ -188,6 +188,29 @@ const post = async (
   return { status: response.status, json };
 };
 
+/**
+ * Revoke one device with its own token (`DELETE /api/me/devices/:id`, what `mend logout` sends).
+ * True only when the server said it did.
+ */
+export const revokeDevice = async (
+  deps: Pick<DeviceLoginDeps, "fetch">,
+  base: string,
+  deviceId: string,
+  token: string,
+): Promise<boolean> => {
+  try {
+    const response = await deps.fetch(`${base}/api/me/devices/${encodeURIComponent(deviceId)}`, {
+      method: "DELETE",
+      headers: { authorization: `Bearer ${token}` },
+    });
+    return response.ok;
+  } catch {
+    return false;
+  }
+};
+
+const CANCELLED = "cancelled; nothing was granted";
+
 /** Open an authorize request at `input`. */
 export const openDeviceRequest = async (
   input: string,
@@ -244,11 +267,23 @@ export const awaitDeviceApproval = async (
   const delay = pollDelayMs(request.intervalSeconds);
   while (deps.now() < deadline) {
     await deps.sleep(delay);
-    if (cancelled()) return { ok: false, reason: "cancelled; nothing was granted" };
+    if (cancelled()) return { ok: false, reason: CANCELLED };
     const poll = await post(deps, `${base}/api/cli/auth/token`, {
       deviceCode: request.deviceCode,
     });
-    if (cancelled()) return { ok: false, reason: "cancelled; nothing was granted" };
+    if (cancelled()) {
+      // The approval can land on the very poll the walk was abandoned during. The server made a
+      // device for it and showed its token this once; dropping the token would leave a live
+      // device nobody holds, so it is revoked with its own token first.
+      const late = poll.status >= 200 && poll.status < 300 ? parsePollAnswer(poll.json) : null;
+      if (late?.status !== "approved") return { ok: false, reason: CANCELLED };
+      return (await revokeDevice(deps, base, late.device.id, late.token))
+        ? { ok: false, reason: "cancelled; the approval that arrived meanwhile was revoked" }
+        : {
+            ok: false,
+            reason: `cancelled, but the device ${late.device.name} was approved meanwhile and could not be revoked; end it under Settings → Devices`,
+          };
+    }
     // Nothing answered: the network, not the request. Keep waiting until the deadline.
     if (poll.status === 0) continue;
     if (poll.status === 429) {

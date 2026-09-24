@@ -169,6 +169,30 @@ describe("awaitDeviceApproval", () => {
     expect(sent).toEqual([]);
   });
 
+  it("revokes an approval that lands on the poll a cancel interrupted", async () => {
+    let cancel = false;
+    const { deps, sent } = scripted([
+      { status: 200, body: approved },
+      { status: 200, body: {} },
+    ]);
+    const wrapped: DeviceLoginDeps = {
+      ...deps,
+      fetch: async (input, init) => {
+        const answer = await deps.fetch(input, init);
+        cancel = true;
+        return answer;
+      },
+    };
+    expect(await awaitDeviceApproval("https://x", opened, wrapped, () => cancel)).toEqual({
+      ok: false,
+      reason: "cancelled; the approval that arrived meanwhile was revoked",
+    });
+    expect(sent.map((entry) => entry.url)).toEqual([
+      "https://x/api/cli/auth/token",
+      "https://x/api/me/devices/dev-1",
+    ]);
+  });
+
   it("gives up at the request's expiry", async () => {
     const { deps } = scripted([]);
     const result = await awaitDeviceApproval("https://x", opened, deps, () => false);

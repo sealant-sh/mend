@@ -14,6 +14,7 @@ import { loadConfig, saveConfig } from "./config";
 import {
   awaitDeviceApproval,
   openDeviceRequest,
+  revokeDevice,
   type DeviceLoginDeps,
   type OpenedRequest,
 } from "./device-login";
@@ -123,15 +124,13 @@ export const signOut = async (): Promise<SignOutResult> => {
   const config = loadConfig();
   let revoke: SignOutResult["revoke"] = "no-device";
   if (config.token !== null && config.deviceId !== null) {
-    try {
-      const response = await fetch(
-        `${normalizeUrl(config.url)}/api/me/devices/${encodeURIComponent(config.deviceId)}`,
-        { method: "DELETE", headers: { authorization: `Bearer ${config.token}` } },
-      );
-      revoke = response.ok ? "revoked" : "not-revoked";
-    } catch {
-      revoke = "not-revoked";
-    }
+    const revoked = await revokeDevice(
+      { fetch },
+      normalizeUrl(config.url),
+      config.deviceId,
+      config.token,
+    );
+    revoke = revoked ? "revoked" : "not-revoked";
   }
   saveConfig({ url: config.url, token: null, deviceId: null });
   return { revoke };
