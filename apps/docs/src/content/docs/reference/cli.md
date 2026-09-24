@@ -169,15 +169,17 @@ mend pull <session> [--force] [--project <name>]
 
 `<session>` is a prefix of the session ID or the worktree's name; settled sessions count.
 
-`mend land` publishes a session's change. Only the session's owner lands it. Mend takes a
-checkpoint, commits what the agent left uncommitted on top of the agent's own commits (never
-squashing or rewriting them), and pushes the branch to origin with the project's git access, as
-`mend/<name>` unless `--branch` names another. The push only fast-forwards: when origin's branch has
-commits Mend has not seen, or origin refuses, nothing is pushed and the command prints the remote's
-own words. When origin is on GitHub, Mend then opens a pull request into the session's base branch
-or updates the one it opened before, through your connected GitHub account; `--no-pr` skips it. The
-command prints the landing and what Mend observed, and exits 1 when the push was refused or a step
-failed:
+`mend land` publishes a session's change. Only the change's owner lands it: the owner of the
+worktree's first session. Mend takes a checkpoint, commits what the agent left uncommitted on top of
+the agent's own commits and the last landing (never squashing or rewriting them, and never moving
+the session's branch), and pushes that to origin with the project's git access, as `mend/<name>`
+unless `--branch` names another. The project's default branch and the pull request's base are
+refused, and a landing with nothing new since the last one pushes nothing and says so. The push only
+fast-forwards: when origin's branch has commits Mend has not seen, or origin refuses, nothing is
+pushed and the command prints the remote's own words. When origin is on GitHub, Mend then opens a
+pull request into the session's base branch or updates the one it opened before, through your
+connected GitHub account; `--no-pr` skips it. The command prints the landing and what Mend observed,
+and exits 1 when the push was refused or a step failed:
 
 ```text
 ✓ pushed · mend/fix-login · 3f2a1c0 · pull request #412 · opened
@@ -191,11 +193,12 @@ failed:
 
 `mend pull` fetches a change into the local clone you run it in, as a branch of the same name. Mend
 commits the latest checkpoint the way `mend land` does, without pushing, and sends the commits from
-the session's base as a git bundle, so it works before landing and without origin. One of the
-clone's remotes must be the project's origin (ssh and https spellings match; `--force` skips the
-check), and the clone needs the session's base commit. The working tree, the index and the current
-branch are not touched, and an existing local branch only fast-forwards. A bundle over the server's
-`MEND_BUDGET_BUNDLE_BYTES` limit is refused with its size.
+the session's base as a git bundle, so it works before landing and without origin. Only the change's
+owner gets a checkpoint taken first; anyone else gets the latest one, and pulling moves nothing on
+the server. One of the clone's remotes must be the project's origin (ssh and https spellings match;
+`--force` skips the check), and the clone needs the session's base commit. The working tree, the
+index and the current branch are not touched, and an existing local branch only fast-forwards. A
+bundle over the server's `MEND_BUDGET_BUNDLE_BYTES` limit is refused with its size.
 
 ## Dashboard keys
 

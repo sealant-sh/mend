@@ -141,7 +141,10 @@ describe("renderCommand", () => {
     );
     expect(usageOf("pull")).toBe("usage: mend pull <session> [--force] [--project <p>]");
     const land = renderCommand(findCommand(["land"])!, 80).replace(/\s+/g, " ");
-    expect(land).toContain("Only the session's owner lands its change.");
+    expect(land).toContain("Only the change's owner lands it");
+    expect(land).toContain(
+      "The session's branch, and the worktree's files, index and HEAD, are not touched.",
+    );
     expect(land).toContain("only fast-forwards");
     expect(land).not.toMatch(/ready to merge|safe to merge/);
     const pull = renderCommand(findCommand(["pull"])!, 80).replace(/\s+/g, " ");

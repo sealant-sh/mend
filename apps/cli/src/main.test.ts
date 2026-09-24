@@ -564,7 +564,7 @@ describe("mend land", () => {
       landingRoutes(
         () => ({
           status: 403,
-          body: { _tag: "LandingNotAllowed", message: "only the session's owner lands its change" },
+          body: { _tag: "LandingNotAllowed", message: "only the change's owner lands it" },
         }),
         [],
       ),
@@ -573,7 +573,7 @@ describe("mend land", () => {
 
     try {
       expect((await cli.exited).code).toBe(1);
-      expect(cli.stderr()).toContain("only the session's owner lands its change");
+      expect(cli.stderr()).toContain("only the change's owner lands it");
     } finally {
       cli.child.kill("SIGKILL");
       await fake.close();

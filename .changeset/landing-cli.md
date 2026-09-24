@@ -6,7 +6,8 @@
 left uncommitted, pushes the branch to origin (fast-forward only, never forced), and opens or
 updates its GitHub pull request. `--branch` names the branch on origin, `--no-pr` pushes only, and
 `--title` sets the pull request's title. It prints the landing and what Mend observed, in the
-remote's own words when a push is refused, and exits 1 then. Only the session's owner lands.
+remote's own words when a push is refused, and exits 1 then. Only the change's owner lands, and the
+session's branch is never moved.
 
 `mend pull <session>`, run in a local clone of the project, fetches the change as `mend/<name>` from
 a git bundle, before landing and without origin. It leaves the working tree and the current branch
