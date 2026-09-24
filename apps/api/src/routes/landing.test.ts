@@ -1,6 +1,6 @@
 import type { NewAuditEvent, SessionGitOpRow } from "@mend/db";
-import { ChangeLandingId, CheckpointId, SessionGitOpId, Sha } from "@mend/domain";
-import { ChangeLanding, type LandedPullRequest } from "@mend/domain/workbench";
+import { ChangeLandingId, CheckpointId, SessionGitOpId, SessionId, Sha } from "@mend/domain";
+import { ChangeLanding, type LandedPullRequest, Session } from "@mend/domain/workbench";
 import {
   type BundleChangeInput,
   type LandInput,
@@ -17,16 +17,23 @@ import {
   CAROL_SESSION_IN_SHARED_A,
   NULL_OWNER_SESSION,
   ids,
+  makeSession,
 } from "../../test/support/tenancy-harness.ts";
 
 /**
  * The landing routes (docs/adr/0007-landing.md) over the two-organization world: only the
- * session's owner lands or refreshes, anyone who can see the project reads the record and pulls
- * the bundle, and every landing is audited.
+ * change's owner lands or refreshes, anyone who can see the project reads the record and pulls
+ * the bundle, and every landing and download is audited.
  */
 
 const sharedA = ids("shared-a");
 const NOW = new Date("2026-09-24T10:00:00Z");
+/** Carol's session in alice's worktree, started after alice's: the change is still alice's. */
+const CAROL_JOINED = SessionId.make("session-shared-a-carol-joined");
+const carolJoined = new Session({
+  ...makeSession(CAROL_JOINED, sharedA.project, sharedA.worktree, "carol"),
+  createdAt: new Date("2026-09-18T10:00:00Z"),
+});
 const PUSHED = Sha.make("3f2a1c0000000000000000000000000000000000");
 const CHECKPOINT = Sha.make("cccccccccccccccccccccccccccccccccccccccc");
 const PR: LandedPullRequest = {
@@ -104,8 +111,9 @@ describe("landing routes", () => {
 
   beforeAll(async () => {
     api = await createTenancyApi(
-      { bundleBytes: 4096 },
+      { bundleBytes: 4096, accountOriginChecksPerMinute: 2 },
       {
+        sessions: [carolJoined],
         implement: {
           audit: {
             record: (event) =>
@@ -302,7 +310,7 @@ describe("landing routes", () => {
       });
       expect(await response.json()).toEqual({
         _tag: "LandingNotAllowed",
-        message: "only the session's owner lands its change",
+        message: "only the change's owner lands it",
       });
 
       await api.request("alice", "PUT", `/api/sessions/${sharedA.session}/shared-control`, {
@@ -323,17 +331,45 @@ describe("landing routes", () => {
       });
     });
 
-    it("refuses a session with no owner", async () => {
-      const response = await api.request(
-        "alice",
-        "POST",
-        `/api/sessions/${NULL_OWNER_SESSION}/land`,
-        {},
-      );
-      expect({ status: response.status, calls: api.world.calls }).toEqual({
-        status: 403,
-        calls: [],
+    it("refuses a teammate who started a session in the owner's worktree", async () => {
+      const response = await api.request("carol", "POST", `/api/sessions/${CAROL_JOINED}/land`, {});
+      expect({
+        status: response.status,
+        calls: api.world.calls.filter((call) => call.startsWith("landing")),
+        audited: state.audited,
+      }).toEqual({ status: 403, calls: [], audited: [] });
+      expect(await response.json()).toEqual({
+        _tag: "LandingNotAllowed",
+        message: "only the change's owner lands it",
       });
+    });
+
+    it("lands for the change's owner through any session in her worktree", async () => {
+      state.report = { landing: landingRow(), pullRequest: { _tag: "opened", pullRequest: PR } };
+      for (const sessionId of [CAROL_JOINED, NULL_OWNER_SESSION]) {
+        const response = await api.request("alice", "POST", `/api/sessions/${sessionId}/land`, {});
+        expect(response.status).toBe(200);
+      }
+      expect(state.lands.map((asked) => [asked.input.sessionId, asked.input.actorUserId])).toEqual([
+        [CAROL_JOINED, "alice"],
+        [NULL_OWNER_SESSION, "alice"],
+      ]);
+    });
+
+    it("answers 409 for a branch that is the base, and for nothing new", async () => {
+      for (const reason of ["branch", "nothing-new"] as const) {
+        state.report = new LandingNotStartedError({
+          reason,
+          message: `landing not started · ${reason}`,
+        });
+        const response = await api.request("alice", "POST", land, { branch: "main" });
+        expect(response.status).toBe(409);
+        expect(await response.json()).toEqual({
+          _tag: "LandingNotStarted",
+          message: `landing not started · ${reason}`,
+        });
+      }
+      expect(state.audited).toEqual([]);
     });
 
     it("answers 409 when the session has no change to land, and audits nothing", async () => {
@@ -396,6 +432,31 @@ describe("landing routes", () => {
         facts: expect.arrayContaining([
           { _tag: "origin-moved", branch: "mend/shared-a", commits: 2 },
         ]),
+      });
+    });
+
+    it("offers the button to the change's owner only, whichever session is asked about", async () => {
+      state.landings = [landingRow()];
+      const carol = await api.request("carol", "GET", `/api/sessions/${CAROL_JOINED}/landings`);
+      const alice = await api.request("alice", "GET", `/api/sessions/${CAROL_JOINED}/landings`);
+      expect(await carol.json()).toMatchObject({ sessionId: CAROL_JOINED, land: false });
+      expect(await alice.json()).toMatchObject({ sessionId: CAROL_JOINED, land: true });
+    });
+
+    it("bounds each account's fetches of origin, and says so instead of fetching", async () => {
+      state.landings = [landingRow()];
+      const probe = `/api/changes/${sharedA.change}/landings?probe=true`;
+      const views: Array<unknown> = [];
+      for (let attempt = 0; attempt < 3; attempt += 1) {
+        views.push(await (await api.request("carol", "GET", probe)).json());
+      }
+      expect(api.world.calls.filter((call) => call === "landingGit.probe")).toHaveLength(2);
+      expect(views[1]).toMatchObject({ remote: { unseen: 0 }, remoteFailure: null });
+      expect(views[2]).toMatchObject({
+        remote: null,
+        remoteFailure: expect.stringMatching(
+          /^origin not checked · budget reached · 2 fetches of origin per minute for one account · nothing running was stopped · try again in \d+ s$/,
+        ),
       });
     });
 
@@ -482,6 +543,24 @@ describe("landing routes", () => {
           limitBytes: 4096,
         },
       ]);
+      // Every download is audited, whoever asked.
+      expect(state.audited).toEqual([
+        {
+          organizationId: "org-A",
+          actorUserId: "carol",
+          action: "change.bundle_downloaded",
+          subjectType: "change",
+          subjectId: sharedA.change,
+          data: {
+            sessionId: sharedA.session,
+            branch: "mend/shared-a",
+            base: "0123456789abcdef",
+            tip: PUSHED,
+            commits: 2,
+            bytes: 4,
+          },
+        },
+      ]);
     });
 
     it("refuses a bundle over the limit with its size", async () => {
@@ -493,6 +572,7 @@ describe("landing routes", () => {
         size: 9000,
         limit: 4096,
       });
+      expect(state.audited).toEqual([]);
     });
 
     it("is hidden from another organization", async () => {

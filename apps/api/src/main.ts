@@ -20,7 +20,7 @@ import {
   SealantIdentityStoreLive,
   SettingsRepo,
   ChangesRepoLive,
-  type ChangeLandingsRepo,
+  type CheckpointsRepo,
   ChangeLandingsRepoLive,
   ChangeToursRepoLive,
   CheckpointsRepoLive,
@@ -670,7 +670,7 @@ const MainLive = Layer.unwrap(
     const landingGit: Layer.Layer<
       LandingGit,
       Layer.Error<typeof captureStore>,
-      SessionEngine | Store | ChangeLandingsRepo | WorktreeChangesRepo
+      SessionEngine | Store | CheckpointsRepo
     > = captured
       ? LandingGitCapturedLive.pipe(Layer.provide(captureStore))
       : LandingGitColocatedLive;

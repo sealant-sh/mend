@@ -120,6 +120,15 @@ describe("describeAudit for Slack (docs/adr/0006)", () => {
         onChange("change.pull_request_refreshed", { pullRequest: 412, state: "merged" }),
       ),
     ).toBe("read pull request #412 of change change-1 · merged");
+    expect(
+      describeAudit(
+        onChange("change.bundle_downloaded", {
+          branch: "mend/fix-login",
+          tip: "3f2a1c0aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+          commits: 2,
+        }),
+      ),
+    ).toBe("downloaded change change-1 as a bundle · mend/fix-login · 3f2a1c0");
   });
 });
 

@@ -319,7 +319,10 @@ export const makeSession = (
     updatedAt: NOW,
   });
 
-export const createTenancyWorld = async (): Promise<TenancyWorld> => {
+export const createTenancyWorld = async (
+  /** Sessions a test adds to the world, such as a teammate's in someone else's worktree. */
+  extraSessions: ReadonlyArray<Session> = [],
+): Promise<TenancyWorld> => {
   const root = await mkdtemp(join(tmpdir(), "mend-tenancy-harness-"));
   const calls: Array<string> = [];
 
@@ -522,6 +525,7 @@ export const createTenancyWorld = async (): Promise<TenancyWorld> => {
     NULL_OWNER_SESSION,
     makeSession(NULL_OWNER_SESSION, sharedA.project, sharedA.worktree, null),
   );
+  for (const extra of extraSessions) sessions.set(extra.id, extra);
   const aliceProcess = processes.get(sharedA.process);
   if (aliceProcess !== undefined) {
     processes.set(

@@ -201,6 +201,39 @@ describe("unlandedWork", () => {
     expect(rewritten.refusal).toContain("· it is at 9999999.");
   });
 
+  it("lets a change go whose pull request was last reported merged, though its branch is gone", async () => {
+    const merged = new ChangeLanding({
+      ...landed,
+      outcome: "pull-request",
+      pullRequest: {
+        number: 412,
+        url: "https://github.com/acme/api/pull/412",
+        state: "merged",
+        observedAt: NOW,
+      },
+    });
+    const { refusal, probes } = await refusalFor({
+      changedSince: { [BASE]: [file("src/login.ts", 12, 3)] },
+      landings: [merged],
+      probe: { remoteSha: null, holds: false },
+    });
+    expect(refusal).toBeNull();
+    // A squash merge leaves no ancestry to fetch: the recorded state answers.
+    expect(probes).toEqual([]);
+    // A later push the merged pull request does not hold is still asked about.
+    const later = new ChangeLanding({
+      ...landed,
+      id: ChangeLandingId.make("l-2"),
+      pushedSha: Sha.make("4444444000000000000000000000000000000000"),
+    });
+    const afterMerge = await refusalFor({
+      changedSince: { [BASE]: [file("src/login.ts", 12, 3)] },
+      landings: [later, merged],
+      probe: { remoteSha: null, holds: false },
+    });
+    expect(afterMerge.refusal).toContain("the branch is gone");
+  });
+
   it("refuses in the remote's words when origin cannot be checked", async () => {
     const { refusal } = await refusalFor({
       changedSince: { [BASE]: [file("src/login.ts", 12, 3)] },

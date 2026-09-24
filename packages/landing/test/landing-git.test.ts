@@ -3,7 +3,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { CheckpointsRepo } from "@mend/db";
 import { Sha } from "@mend/domain";
+import { Checkpoint } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
 import { Store, StoreConfig, worktreePathOf } from "@mend/store";
 import { Effect, Layer } from "effect";
@@ -78,6 +80,7 @@ describe("landing a co-located session", () => {
   let repos: Repos;
   let world: World;
   let published: Array<PublishInput>;
+  let checkpoints: Array<Checkpoint>;
   beforeEach(async () => {
     repos = await makeRepos();
     world = makeWorld({
@@ -88,6 +91,7 @@ describe("landing a co-located session", () => {
       tour: { summary: "Fix the answer", approach: null },
     });
     published = [];
+    checkpoints = [];
   });
   afterEach(() => {
     fs.rmSync(repos.tmp, { recursive: true, force: true });
@@ -105,11 +109,20 @@ describe("landing a co-located session", () => {
             Effect.gen(function* () {
               ordinal += 1;
               const snapshot = yield* git.checkpoint(repos.worktree, "wt-1", ordinal, null);
-              return checkpointOf(world, ordinal, snapshot.sha, trigger);
+              // Stamped with the real clock: the agent's commits are compared with it.
+              const taken = new Checkpoint({
+                ...checkpointOf(world, ordinal, snapshot.sha, trigger),
+                createdAt: new Date(),
+              });
+              checkpoints.push(taken);
+              return taken;
             }),
         });
       }),
     );
+    const checkpointRows = Layer.mock(CheckpointsRepo, {
+      latestForWorktree: () => Effect.sync(() => checkpoints.at(-1) ?? null),
+    });
     const pullRequests = Layer.succeed(PullRequests, {
       publish: (input) =>
         Effect.sync(() => {
@@ -129,7 +142,9 @@ describe("landing a co-located session", () => {
     });
     return LandingLive.pipe(
       Layer.provide(Layer.mergeAll(world.repos, pullRequests)),
-      Layer.provideMerge(LandingGitColocatedLive.pipe(Layer.provide(engine))),
+      Layer.provideMerge(
+        LandingGitColocatedLive.pipe(Layer.provide(Layer.mergeAll(engine, checkpointRows))),
+      ),
       Layer.provideMerge(store),
     );
   };
@@ -163,12 +178,12 @@ describe("landing a co-located session", () => {
       }).pipe(Effect.provide(layer())),
     );
 
-  const bundle = () =>
+  const bundle = (actorUserId = "bob") =>
     Effect.runPromise(
       Effect.gen(function* () {
         return yield* (yield* Landing).bundle({
           sessionId: world.session.id,
-          actorUserId: "bob",
+          actorUserId,
           webOrigin: null,
           limitBytes: 1024 * 1024,
         });
@@ -275,6 +290,7 @@ describe("landing a co-located session", () => {
             remoteBranch: null,
             pullRequest: true,
             title: null,
+            body: null,
             webOrigin: "https://mend.test",
             remoteEnv: Effect.succeed({}),
           })
@@ -344,8 +360,14 @@ describe("landing a co-located session", () => {
 
   it("bundles the change from its base as the owner's commit, without pushing", async () => {
     fs.writeFileSync(path.join(repos.worktree, "app.ts"), "export const answer = 42\n");
+    const heads = () => sh(repos.storePath, ["for-each-ref", "refs/heads", "refs/mend/landed"]);
+    const headsBefore = heads();
 
-    const made = await bundle();
+    const made = await bundle(OWNER);
+
+    // The change's owner gets a checkpoint first; no branch moved and nothing keeps the commit.
+    expect(checkpoints).toHaveLength(1);
+    expect(heads()).toBe(headsBefore);
 
     expect(made.branch).toBe(BRANCH);
     expect(made.base).toBe(repos.baseSha);
@@ -360,5 +382,45 @@ describe("landing a co-located session", () => {
     sh(repos.tmp, ["clone", "-q", repos.origin, mine]);
     sh(mine, ["fetch", "-q", file, `refs/heads/${BRANCH}:refs/heads/${BRANCH}`]);
     expect(sh(mine, ["show", `${BRANCH}:app.ts`])).toBe("export const answer = 42");
+  });
+
+  it("bundles the latest checkpoint for anyone else, taking none and writing no ref", async () => {
+    fs.writeFileSync(path.join(repos.worktree, "app.ts"), "export const answer = 42\n");
+    const landed = await land({ pullRequest: false });
+    // More work that no checkpoint holds yet.
+    fs.writeFileSync(path.join(repos.worktree, "later.ts"), "export const later = 1\n");
+    const refs = () => sh(repos.storePath, ["for-each-ref", "--format=%(refname) %(objectname)"]);
+    const refsBefore = refs();
+
+    const made = await bundle("bob");
+
+    expect(checkpoints).toHaveLength(1);
+    expect(refs()).toBe(refsBefore);
+    // Nothing is new since the landing, so the bundle is what origin holds.
+    expect(made.tip).toBe(landed.landing.pushedSha);
+    expect(sh(repos.storePath, ["ls-tree", "--name-only", made.tip])).toBe("app.ts");
+  });
+
+  it("never puts an older checkpoint on an agent commit made after it", async () => {
+    fs.writeFileSync(path.join(repos.worktree, "app.ts"), "export const answer = 42\n");
+    await bundle(OWNER);
+    const taken = checkpoints[0]?.sha ?? "";
+    // The agent commits after that checkpoint, then more work stays uncheckpointed.
+    fs.writeFileSync(path.join(repos.worktree, "agent.ts"), "export const agent = 1\n");
+    sh(repos.worktree, ["add", "-A"]);
+    const later = new Date(Date.now() + 3_600_000).toISOString();
+    execFileSync("git", ["commit", "-q", "-m", "agent: later"], {
+      cwd: repos.worktree,
+      env: { ...gitEnv, GIT_COMMITTER_DATE: later, GIT_AUTHOR_DATE: later },
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+
+    const made = await bundle("bob");
+
+    // The latest checkpoint's tree, on the agent's head as of that checkpoint: the base.
+    expect(sh(repos.storePath, ["rev-parse", `${made.tip}^{tree}`])).toBe(
+      sh(repos.storePath, ["rev-parse", `${taken}^{tree}`]),
+    );
+    expect(sh(repos.storePath, ["log", "-1", "--format=%P", made.tip])).toBe(repos.baseSha);
   });
 });

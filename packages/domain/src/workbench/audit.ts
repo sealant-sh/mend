@@ -41,6 +41,7 @@ export const AuditAction = Schema.Literals([
   // `gh` spoke as them.
   "change.landed",
   "change.pull_request_refreshed",
+  "change.bundle_downloaded",
 ]);
 export type AuditAction = typeof AuditAction.Type;
 

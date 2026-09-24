@@ -20,6 +20,7 @@ import { BASE_SHA, checkpointOf, makeWorld, OWNER, type WorldOptions } from "./w
 const CHECKPOINT_SHA = "cccccccccccccccccccccccccccccccccccccccc";
 const HEAD_SHA = Sha.make("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
 const MEND_COMMIT = Sha.make("dddddddddddddddddddddddddddddddddddddddd");
+const LATEST_CHECKPOINT_SHA = "2222222222222222222222222222222222222222";
 const BOB_SESSION = "33333333-3333-3333-3333-333333333333";
 const EARLIER = new Date("2026-09-24T09:00:00Z");
 const LATER = new Date("2026-09-24T11:00:00Z");
@@ -48,6 +49,8 @@ interface Script {
   readonly publish?: "opened" | "updated" | PullRequestStepError;
   readonly observed?: LandedPullRequest;
   readonly bundle?: "ok" | BundleTooLargeError;
+  /** The worktree has no checkpoint yet. */
+  readonly noCheckpoint?: boolean;
 }
 
 const PR: LandedPullRequest = {
@@ -66,6 +69,7 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
     readonly author: unknown;
     readonly message: string;
     readonly lastLanded: string | null;
+    readonly keep: boolean;
   }> = [];
   const observed: Array<PublishInput["target"]> = [];
   const pushes: Array<{
@@ -90,6 +94,22 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
               new LandingStepError({ step: "checkpoint", message: script.checkpointFails }),
             );
       }),
+    latest: () =>
+      Effect.suspend(() => {
+        calls.push("latest");
+        if (script.checkpointFails !== undefined) {
+          return Effect.fail(
+            new LandingStepError({ step: "checkpoint", message: script.checkpointFails }),
+          );
+        }
+        return Effect.succeed({
+          checkpoint:
+            script.noCheckpoint === true
+              ? null
+              : checkpointOf(world, 2, LATEST_CHECKPOINT_SHA, "turn-boundary"),
+          agentHead: HEAD_SHA,
+        });
+      }),
     commit: (_scope, commit) =>
       Effect.suspend(() => {
         calls.push("commit");
@@ -97,6 +117,7 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
           author: commit.author,
           message: commit.message,
           lastLanded: commit.lastLanded,
+          keep: commit.keep,
         });
         if (script.commitFails !== undefined) {
           return Effect.fail(new LandingStepError({ step: "commit", message: script.commitFails }));
@@ -220,6 +241,7 @@ describe("Landing.land", () => {
           author: { name: "Ada Owner", email: "ada@example.com" },
           message: `Fix the login redirect\n\nMend-Session: https://mend.test/sessions/${h.world.session.id}\n`,
           lastLanded: null,
+          keep: true,
         },
       ]);
       // The push is Mend's commit, with the env the caller resolved.
@@ -618,24 +640,31 @@ describe("Landing.refreshPullRequest", () => {
   });
 });
 
-describe("Landing.bundle", () => {
-  const bundleInput = {
-    sessionId: makeWorld().session.id,
-    actorUserId: "bob",
-    webOrigin: "https://mend.test",
-    limitBytes: 1024,
-  };
+const bundleInput = (actorUserId = "bob") => ({
+  sessionId: makeWorld().session.id,
+  actorUserId,
+  webOrigin: "https://mend.test",
+  limitBytes: 1024,
+});
 
+describe("Landing.bundle", () => {
   it.effect(
-    "checkpoints and commits as the owner, then bundles from the base, and records no landing",
+    "takes no checkpoint for someone other than the change's owner, and keeps nothing",
     () => {
       const h = harness();
       return Effect.gen(function* () {
-        const bundle = yield* (yield* Landing).bundle(bundleInput);
-        expect(h.calls).toEqual(["checkpoint", "commit", "bundle"]);
-        expect(h.triggers).toEqual(["user-mark"]);
-        // The commit is the owner's work, whoever asked for the bundle.
-        expect(h.commits[0]?.author).toEqual({ name: "Ada Owner", email: "ada@example.com" });
+        const bundle = yield* (yield* Landing).bundle(bundleInput());
+        // The latest checkpoint there is: pulling adds nothing to the owner's record.
+        expect(h.calls).toEqual(["latest", "commit", "bundle"]);
+        expect(h.triggers).toEqual([]);
+        // The commit is the owner's work, whoever asked, and no ref keeps it.
+        expect(h.commits).toMatchObject([
+          {
+            author: { name: "Ada Owner", email: "ada@example.com" },
+            lastLanded: null,
+            keep: false,
+          },
+        ]);
         expect(h.bundles).toEqual([{ base: BASE_SHA, tip: MEND_COMMIT, branch: "mend/fix-login" }]);
         expect(bundle.commits).toBe(1);
         expect(h.world.landings).toEqual([]);
@@ -643,15 +672,38 @@ describe("Landing.bundle", () => {
     },
   );
 
+  it.effect("checkpoints first when the change's owner pulls it", () => {
+    const h = harness();
+    return Effect.gen(function* () {
+      yield* (yield* Landing).bundle(bundleInput(OWNER));
+      expect(h.calls).toEqual(["checkpoint", "commit", "bundle"]);
+      expect(h.triggers).toEqual(["user-mark"]);
+      expect(h.commits[0]?.keep).toBe(false);
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("builds on what the last landing pushed", () => {
+    const h = harness();
+    return Effect.gen(function* () {
+      const landing = yield* Landing;
+      yield* landing.land(input());
+      yield* landing.bundle(bundleInput());
+      expect(h.commits.map((commit) => [commit.lastLanded, commit.keep])).toEqual([
+        [null, true],
+        [MEND_COMMIT, false],
+      ]);
+    }).pipe(Effect.provide(h.layer));
+  });
+
   it.effect("bundles the agent's own head when there was nothing left to commit", () => {
     const h = harness({ nothingToCommit: true });
     return Effect.gen(function* () {
-      yield* (yield* Landing).bundle(bundleInput);
+      yield* (yield* Landing).bundle(bundleInput());
       expect(h.bundles[0]?.tip).toBe(HEAD_SHA);
     }).pipe(Effect.provide(h.layer));
   });
 
-  it.effect("is by the asker when the session has no owner", () => {
+  it.effect("is by the asker when the change has no owner", () => {
     const h = harness(
       {},
       {
@@ -660,8 +712,20 @@ describe("Landing.bundle", () => {
       },
     );
     return Effect.gen(function* () {
-      yield* (yield* Landing).bundle(bundleInput);
+      yield* (yield* Landing).bundle(bundleInput());
       expect(h.commits[0]?.author).toEqual({ name: "Bob", email: "bob@example.com" });
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("makes none before the worktree has a checkpoint", () => {
+    const h = harness({ noCheckpoint: true });
+    return Effect.gen(function* () {
+      const error = yield* (yield* Landing).bundle(bundleInput()).pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "LandingNotStartedError",
+        message: "bundle not made · the worktree has no checkpoint yet",
+      });
+      expect(h.calls).toEqual(["latest"]);
     }).pipe(Effect.provide(h.layer));
   });
 
@@ -670,7 +734,7 @@ describe("Landing.bundle", () => {
       bundle: new BundleTooLargeError({ branch: "mend/fix-login", size: 4096, limit: 1024 }),
     });
     return Effect.gen(function* () {
-      const error = yield* (yield* Landing).bundle(bundleInput).pipe(Effect.flip);
+      const error = yield* (yield* Landing).bundle(bundleInput()).pipe(Effect.flip);
       expect(error).toMatchObject({ _tag: "BundleTooLargeError", size: 4096, limit: 1024 });
     }).pipe(Effect.provide(h.layer));
   });
@@ -678,7 +742,7 @@ describe("Landing.bundle", () => {
   it.effect("stops at a failed checkpoint in git's words", () => {
     const h = harness({ checkpointFails: "fatal: bad object" });
     return Effect.gen(function* () {
-      const error = yield* (yield* Landing).bundle(bundleInput).pipe(Effect.flip);
+      const error = yield* (yield* Landing).bundle(bundleInput(OWNER)).pipe(Effect.flip);
       expect(error).toMatchObject({ _tag: "LandingStepError", message: "fatal: bad object" });
       expect(h.calls).toEqual(["checkpoint"]);
     }).pipe(Effect.provide(h.layer));

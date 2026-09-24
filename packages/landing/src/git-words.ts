@@ -1,10 +1,5 @@
 import type { GitAuthMode } from "@mend/domain/workbench";
-import {
-  describeGitRemoteFailure,
-  type GitError,
-  type InvalidBranchError,
-  type LandingBranchMovedError,
-} from "@mend/store";
+import { describeGitRemoteFailure, type GitError, type InvalidBranchError } from "@mend/store";
 
 /**
  * How the git half of a landing words a failure, for both store kinds: a remote failure in the
@@ -22,7 +17,5 @@ export const gitWords = (error: GitError, mode: GitAuthMode | null): string => {
   return `git ${error.args[0] ?? ""} exited ${error.exitCode ?? "without a code"}`;
 };
 
-export const branchWords = (error: InvalidBranchError | LandingBranchMovedError): string =>
-  error._tag === "InvalidBranchError"
-    ? `${error.branch} is not a branch name git accepts`
-    : `${error.branch} moved while landing · expected ${shortSha(error.expected)} · found ${shortSha(error.actual)}`;
+export const branchWords = (error: InvalidBranchError): string =>
+  `${error.branch} is not a branch name git accepts`;

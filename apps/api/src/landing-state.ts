@@ -4,9 +4,11 @@ import {
   SessionsRepo,
   type SessionGitOpRow,
 } from "@mend/db";
+import type { WorktreeId } from "@mend/domain";
 import {
   type Change,
   type ChangeLanding,
+  changeOwnerOf,
   type LandingFact,
   landingFacts,
   type Project,
@@ -31,6 +33,15 @@ import { ProjectAccess } from "./access.ts";
  * shows", "Worktree removal"): the record, what moved since, the agent's own pushes, and origin's
  * branch when a fetch is asked for. Every answer is an observation; none is a verdict.
  */
+
+/**
+ * The change's owner (docs/adr/0007-landing.md, "Who lands"): the owner of the worktree's first
+ * session. Null when there is none, and then nobody lands the change.
+ */
+export const changeOwnerOfWorktree = (worktreeId: WorktreeId) =>
+  Effect.gen(function* () {
+    return changeOwnerOf(yield* (yield* SessionsRepo).listForWorktree(worktreeId));
+  });
 
 /**
  * The env a push or a fetch authenticates with: the project's `gitAuthMode` for `userId`, pinned
@@ -164,8 +175,9 @@ const OVERRIDE = "or pass force=true to remove it anyway";
 /**
  * Why a worktree may not be removed without `force`, or null when it may
  * (docs/adr/0007-landing.md, "Worktree removal"): it holds nothing past its base, or what it
- * holds is the last landing's checkpoint and origin's branch still has that landing's commit.
- * Anything else is refused, naming the files and line counts not on origin.
+ * holds is the last landing's checkpoint and either its pull request was last reported merged or
+ * origin's branch still has that landing's commit. Anything else is refused, naming the files
+ * and line counts not on origin.
  */
 export const unlandedWork = Effect.fn("unlandedWork")(function* (input: {
   readonly change: Change | null;
@@ -193,6 +205,13 @@ export const unlandedWork = Effect.fn("unlandedWork")(function* (input: {
   )).value;
   if (sinceLanding.length > 0) {
     return `This worktree changed since its last landing (${landed}) · ${describeUnlanded(sinceLanding)}. Land it again or discard it before removal, ${OVERRIDE}.`;
+  }
+  // A pull request GitHub last reported merged, with the last push in it, holds the change even
+  // once origin's branch is deleted: a squash merge leaves no ancestry for a fetch to find.
+  if (
+    landings.some((landing) => landing.pushedSha === sha && landing.pullRequest?.state === "merged")
+  ) {
+    return null;
   }
   const git = yield* LandingGit;
   const env = yield* remoteEnvFor(project, input.userId, "probe");

@@ -97,6 +97,17 @@ export class LandingGit extends Context.Service<
       LandingStepError
     >;
     /**
+     * The latest checkpoint the worktree already has, and the agent's head as of it, without
+     * taking one: what someone other than the change's owner pulls, so pulling adds nothing to
+     * the owner's record. Null when the worktree has no checkpoint yet.
+     */
+    readonly latest: (
+      scope: LandingScope,
+    ) => Effect.Effect<
+      { readonly checkpoint: Checkpoint | null; readonly agentHead: Sha },
+      LandingStepError
+    >;
+    /**
      * Step 2: Mend's commit of the checkpoint's tree, by the change's owner, parented on the last
      * landing (L) and the agent's head (H) by `planLanding`, and kept under
      * `refs/mend/landed/<worktree>`. `head` is what step 3 pushes; `commitSha` is null when an
@@ -110,6 +121,11 @@ export class LandingGit extends Context.Service<
         readonly lastLanded: Sha | null;
         readonly author: LandingAuthor;
         readonly message: string;
+        /**
+         * Keep the head under `refs/mend/landed/<worktree>` (a landing). False keeps nothing: a
+         * bundle's commit lives only in the bundle.
+         */
+        readonly keep: boolean;
       },
     ) => Effect.Effect<
       { readonly head: Sha; readonly commitSha: Sha | null; readonly nothingNew: boolean },
@@ -223,7 +239,10 @@ export interface LandingReport {
 /** A `mend pull` bundle of a session's change (docs/adr/0007-landing.md, "Pulling a change"). */
 export interface BundleChangeInput {
   readonly sessionId: SessionId;
-  /** Who asked. The commit Mend writes is by the session's owner, or by them when it has none. */
+  /**
+   * Who asked. Only the change's owner gets a fresh checkpoint; anyone else the latest one. The
+   * commit Mend writes for leftovers is by the change's owner, or by the asker when it has none.
+   */
   readonly actorUserId: string;
   readonly webOrigin: string | null;
   /** The largest bundle handed back; a larger one is refused with its size. */
@@ -235,8 +254,10 @@ export class Landing extends Context.Service<
   {
     readonly land: (input: LandInput) => Effect.Effect<LandingReport, LandingNotStartedError>;
     /**
-     * Checkpoint and commit exactly as a landing's steps 1 and 2 do, without pushing, and bundle
-     * the commits from the session's base to that head. Nothing is recorded as a landing.
+     * Commit the leftovers exactly as a landing's step 2 does, without pushing, and bundle the
+     * commits from the session's base to that head. No side effects on the owner's history: no
+     * branch moves, no ref is written, and only the change's owner gets a checkpoint taken; anyone
+     * else gets the latest one that exists. Nothing is recorded as a landing.
      */
     readonly bundle: (
       input: BundleChangeInput,
@@ -338,6 +359,7 @@ export const LandingLive: Layer.Layer<
         readonly checkpoint: Checkpoint;
         readonly agentHead: Sha;
         readonly lastLanded: Sha | null;
+        readonly keep: boolean;
         readonly authorUserId: string;
         readonly tourSummary: string | null;
         readonly sessionUrl: string | null;
@@ -355,6 +377,7 @@ export const LandingLive: Layer.Layer<
           checkpoint: input.checkpoint,
           agentHead: input.agentHead,
           lastLanded: input.lastLanded,
+          keep: input.keep,
           author: { name: author.name, email: author.email },
           message: landingCommitMessage({
             tourSummary: input.tourSummary,
@@ -445,6 +468,7 @@ export const LandingLive: Layer.Layer<
         checkpoint,
         agentHead,
         lastLanded: lastPush?.pushedSha ?? null,
+        keep: true,
         authorUserId: owner,
         tourSummary: tour?.summary ?? null,
         sessionUrl: links.session,
@@ -462,6 +486,7 @@ export const LandingLive: Layer.Layer<
       if (
         nothingNew &&
         !titleGiven &&
+        input.body === null &&
         latest !== undefined &&
         latest.pushedSha === head &&
         (latest.outcome === "pull-request" || (latest.outcome === "pushed" && !wantsPullRequest))
@@ -593,13 +618,30 @@ export const LandingLive: Layer.Layer<
       if (change === null) {
         return yield* notStarted("no-change", "bundle not made · the session has no change");
       }
-      const { checkpoint, agentHead } = yield* git.checkpoint(scope, "user-mark");
+      const owner = changeOwnerOf(yield* sessions.listForWorktree(worktree.id));
+      // Pulling someone's change never adds to their record: only the change's owner gets a
+      // checkpoint taken, anyone else the latest one there is.
+      const recorded =
+        owner !== null && owner === input.actorUserId
+          ? yield* git.checkpoint(scope, "user-mark")
+          : yield* git.latest(scope);
+      const { checkpoint, agentHead } = recorded;
+      if (checkpoint === null) {
+        return yield* notStarted(
+          "no-change",
+          "bundle not made · the worktree has no checkpoint yet",
+        );
+      }
+      const lastPush = (yield* landings.listForChange(change.id)).find(
+        (landing) => landing.pushedSha !== null,
+      );
       const tour = yield* tours.byChange(change.id);
       const { head } = yield* commitWork(scope, {
         checkpoint,
         agentHead,
-        lastLanded: null,
-        authorUserId: session.ownerUserId ?? input.actorUserId,
+        lastLanded: lastPush?.pushedSha ?? null,
+        keep: false,
+        authorUserId: owner ?? input.actorUserId,
         tourSummary: tour?.summary ?? null,
         sessionUrl: linksOf(input.webOrigin, session.id, change.id, checkpoint.ordinal).session,
       });

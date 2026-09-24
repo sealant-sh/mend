@@ -27,13 +27,13 @@ import type { OrganizationId } from "@mend/domain";
 import type { Change, ChangeLanding, Session } from "@mend/domain/workbench";
 import { Landing, type LandingNotStartedError, pullRequestAvailability } from "@mend/landing";
 import { NetworkConfig } from "@mend/network";
-import { Effect } from "effect";
+import { Clock, Effect } from "effect";
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
-import { Budgets } from "../budgets.ts";
-import { observeLandings, remoteEnvFor } from "../landing-state.ts";
+import { budgetMessage, Budgets } from "../budgets.ts";
+import { changeOwnerOfWorktree, observeLandings, remoteEnvFor } from "../landing-state.ts";
 import { configuredOriginForRequest } from "./devices.ts";
 import { withSignerContext } from "./workbench.ts";
 
@@ -42,13 +42,14 @@ import { withSignerContext } from "./workbench.ts";
  * the facts observed about it, refresh a pull request's state, pull the change as a bundle, and
  * read the pushes the agent made itself.
  *
- * Landing pushes with the owner's key and speaks as the owner on GitHub, so only the session's
- * owner lands or refreshes: not a teammate under shared control, not an organization owner.
- * Anyone who can see the project reads the record, and pulls the bundle as they would read the
- * review diff.
+ * Landing pushes with the owner's key and speaks as the owner on GitHub, so only the change's
+ * owner (the owner of its worktree's first session) lands or refreshes: not a teammate under
+ * shared control, not a teammate who started a session in the owner's worktree, not an
+ * organization owner. Anyone who can see the project reads the record, and pulls the bundle as
+ * they would read the review diff; every download is audited.
  */
 
-const ONLY_THE_OWNER = "only the session's owner lands its change";
+const ONLY_THE_OWNER = "only the change's owner lands it";
 
 const notAllowed = (message: string) => new LandingNotAllowed({ message });
 
@@ -63,6 +64,8 @@ const notStartedAs =
       case "not-owner":
         return notAllowed(error.message);
       case "no-change":
+      case "branch":
+      case "nothing-new":
         return new LandingNotStarted({ message: error.message });
     }
   };
@@ -80,11 +83,31 @@ const projectOf = (change: { readonly projectId: Change["projectId"] }) =>
       .pipe(Effect.mapError(() => new NotFound({ id: change.projectId })));
   });
 
+/**
+ * Whether this account may fetch origin now: "Check origin" is a call to a remote any viewer can
+ * ask for, so each account's are bounded (`MEND_BUDGET_ACCOUNT_ORIGIN_CHECKS_PER_MINUTE`). Null
+ * when it may; otherwise what the record says instead of the fetch.
+ */
+const originCheckRefusal = (userId: string) =>
+  Effect.gen(function* () {
+    const { limits, originChecks } = yield* Budgets;
+    const wait = originChecks.take(
+      userId,
+      limits.accountOriginChecksPerMinute,
+      yield* Clock.currentTimeMillis,
+    );
+    return wait === null
+      ? null
+      : `origin not checked · ${budgetMessage("accountOriginChecksPerMinute", limits.accountOriginChecksPerMinute)} · try again in ${wait} s`;
+  });
+
 /** The record and the observed facts for a change, as the Land panel reads them. */
 const landingsView = (change: Change | null, session: Session | null, probe: boolean) =>
   Effect.gen(function* () {
     const caller = yield* CurrentUser;
-    const land = session !== null && session.ownerUserId === caller.user.id;
+    const worktreeId = change?.worktreeId ?? session?.worktreeId ?? null;
+    const owner = worktreeId === null ? null : yield* changeOwnerOfWorktree(worktreeId);
+    const land = owner !== null && owner === caller.user.id;
     if (change === null) {
       return new ChangeLandingsView({
         changeId: null,
@@ -101,11 +124,12 @@ const landingsView = (change: Change | null, session: Session | null, probe: boo
     const worktree = yield* (yield* WorktreesRepo)
       .byId(change.worktreeId)
       .pipe(Effect.mapError(() => new NotFound({ id: change.id })));
+    const refused = probe ? yield* originCheckRefusal(caller.user.id) : null;
     const observed = yield* observeLandings({
       change,
       project,
       worktree,
-      probeAs: probe ? caller.user.id : null,
+      probeAs: probe && refused === null ? caller.user.id : null,
     });
     const availability = pullRequestAvailability(project.originUrl);
     return new ChangeLandingsView({
@@ -125,7 +149,7 @@ const landingsView = (change: Change | null, session: Session | null, probe: boo
               holds: observed.remote.holds,
               observedAt: observed.remote.observedAt,
             }),
-      remoteFailure: observed.remoteFailure,
+      remoteFailure: refused ?? observed.remoteFailure,
       pullRequest: new PullRequestAvailabilityView(
         availability.available
           ? { available: true, reason: null }
@@ -180,8 +204,10 @@ export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (hand
       Effect.gen(function* () {
         const session = yield* (yield* ProjectAccess).session(params.id);
         const caller = yield* CurrentUser;
-        // Refused before anything moves: shared control lends steering, not the owner's key.
-        if (session.ownerUserId === null || session.ownerUserId !== caller.user.id) {
+        // Refused before anything moves: shared control lends steering, and a session in the
+        // owner's worktree lends a place to work, never the change owner's key.
+        const owner = yield* changeOwnerOfWorktree(session.worktreeId);
+        if (owner === null || owner !== caller.user.id) {
           return yield* notAllowed(ONLY_THE_OWNER);
         }
         const project = yield* projectOf(session);
@@ -229,12 +255,15 @@ export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (hand
         const landing = yield* (yield* ChangeLandingsRepo).byId(params.id);
         if (landing === null) return yield* new NotFound({ id: params.id });
         // Visible exactly when its change is; the id in a refusal is the one asked for.
-        yield* (yield* ProjectAccess)
+        const change = yield* (yield* ProjectAccess)
           .change(landing.changeId)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         const caller = yield* CurrentUser;
-        // `gh` speaks as the landing's owner, so only they ask it.
-        if (landing.userId !== caller.user.id) return yield* notAllowed(ONLY_THE_OWNER);
+        // `gh` speaks as the change's owner, so only they ask it.
+        const owner = yield* changeOwnerOfWorktree(change.worktreeId);
+        if (owner === null || owner !== caller.user.id || landing.userId !== caller.user.id) {
+          return yield* notAllowed(ONLY_THE_OWNER);
+        }
         const refreshed = yield* (yield* Landing).refreshPullRequest(params.id).pipe(
           Effect.catchTags({
             LandingNotStartedError: () => Effect.fail(new NotFound({ id: params.id })),
@@ -305,6 +334,22 @@ export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (hand
                 ),
             }),
           );
+        const project = yield* projectOf(change);
+        yield* (yield* AuditEventsRepo).record({
+          organizationId: project.organizationId,
+          actorUserId: caller.user.id,
+          action: "change.bundle_downloaded",
+          subjectType: "change",
+          subjectId: change.id,
+          data: {
+            sessionId: session.id,
+            branch: bundle.branch,
+            base: bundle.base,
+            tip: bundle.tip,
+            commits: bundle.commits,
+            bytes: bundle.bytes.byteLength,
+          },
+        });
         return HttpServerResponse.uint8Array(bundle.bytes, {
           contentType: "application/x-git-bundle",
           headers: {

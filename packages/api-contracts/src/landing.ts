@@ -9,11 +9,14 @@ import { StoreFailure } from "./workbench-views.ts";
 
 // ─── Landing (docs/adr/0007-landing.md) ─────────────────────────────────────
 // One push of a change's branch to origin, plus its pull request, recorded against a
-// checkpoint. Only the session's owner lands; anyone who can see the project reads the record.
+// checkpoint. Only the change's owner lands; anyone who can see the project reads the record.
 
 /** Land a session's change: `mend land <session> [--branch …] [--no-pr] [--title …]`. */
 export class LandRequest extends Schema.Class<LandRequest>("LandRequest")({
-  /** The branch on origin; null keeps the one the change landed on before, else `mend/<name>`. */
+  /**
+   * The branch on origin; null keeps the one the change last pushed to, else `mend/<name>`.
+   * Never the project's default branch or the pull request's base.
+   */
   branch: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   /** False pushes only (`--no-pr`). */
   pullRequest: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
@@ -76,7 +79,7 @@ export class ChangeLandingsView extends Schema.Class<ChangeLandingsView>("Change
   changeId: Schema.NullOr(ChangeId),
   /** The session a landing runs as: the change's session. */
   sessionId: Schema.NullOr(SessionId),
-  /** Whether the caller may land it: they own that session. */
+  /** Whether the caller may land it: they own the change (its worktree's first session). */
   land: Schema.Boolean,
   /** Newest first. */
   landings: Schema.Array(ChangeLanding),
@@ -112,14 +115,17 @@ export class SessionGitOpView extends Schema.Class<SessionGitOpView>("SessionGit
   finishedAt: Schema.NullOr(Timestamp),
 }) {}
 
-/** Landing pushes with the owner's key and speaks as them on GitHub: only the owner lands. */
+/** Only the change's owner lands: it pushes with their key and speaks as them on GitHub. */
 export class LandingNotAllowed extends Schema.TaggedErrorClass<LandingNotAllowed>()(
   "LandingNotAllowed",
   { message: Schema.String },
   { httpApiStatus: 403 },
 ) {}
 
-/** The session has nothing to land yet: its worktree holds no change. */
+/**
+ * The landing did not start, in its own words: the worktree holds no change, nothing is new since
+ * the last landing, or the branch named is the default branch or the pull request's base.
+ */
 export class LandingNotStarted extends Schema.TaggedErrorClass<LandingNotStarted>()(
   "LandingNotStarted",
   { message: Schema.String },

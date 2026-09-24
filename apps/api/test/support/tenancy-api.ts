@@ -39,6 +39,7 @@ import {
   UpgradeTicketsRepo,
 } from "@mend/db";
 import type { DotfilesRepository } from "@mend/domain";
+import type { Session } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import { Landing, LandingGit } from "@mend/landing";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
@@ -145,6 +146,8 @@ export const createTenancyApi = async (
     readonly exposure?: ExposureConfig["Service"];
     /** Credentials that no longer stand (`session:<account>`): add one to sign that account out. */
     readonly revokedCredentials?: ReadonlySet<string>;
+    /** Sessions added to the world, such as a teammate's in someone else's worktree. */
+    readonly sessions?: ReadonlyArray<Session>;
     /**
      * The dotfiles routes past authorization: the real store over this world's store root, each
      * account's repository kept in memory, and `cloner` for the clone a save tries first.
@@ -166,7 +169,7 @@ export const createTenancyApi = async (
     };
   } = {},
 ): Promise<TenancyApi> => {
-  const world = await createTenancyWorld();
+  const world = await createTenancyWorld(options.sessions);
   const ticketsLayer = Layer.mergeAll(
     Layer.succeed(
       UpgradeTicketsRepo,
