@@ -67,10 +67,35 @@ export class ChangeLanding extends Schema.Class<ChangeLanding>("ChangeLanding")(
   outcome: LandingOutcome,
   /** The remote's or `gh`'s own words for a refusal or a failure; null otherwise. */
   message: Schema.NullOr(Schema.String),
-  /** The session's owner, whose key pushed and who speaks on GitHub. */
+  /** The change's owner (`changeOwnerOf`), whose key pushed and who speaks on GitHub. */
   userId: Schema.String,
   createdAt: Timestamp,
 }) {}
+
+// ─── Who lands ──────────────────────────────────────────────────────────────
+
+/**
+ * The change's owner ("Who lands"): the owner of the worktree's first session, the one that
+ * started the change. A teammate who starts a session in that worktree later, or steers one under
+ * shared control, is never the owner. Null when the worktree has no session, or its first has no
+ * owner: nobody lands it.
+ */
+export const changeOwnerOf = (
+  sessions: ReadonlyArray<{
+    readonly id: string;
+    readonly ownerUserId: string | null;
+    readonly createdAt: Date;
+  }>,
+): string | null =>
+  sessions.reduce<(typeof sessions)[number] | null>(
+    (first, session) =>
+      first === null ||
+      session.createdAt.getTime() < first.createdAt.getTime() ||
+      (session.createdAt.getTime() === first.createdAt.getTime() && session.id < first.id)
+        ? session
+        : first,
+    null,
+  )?.ownerUserId ?? null;
 
 // ─── Request intent ─────────────────────────────────────────────────────────
 

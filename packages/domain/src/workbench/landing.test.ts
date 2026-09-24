@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 import { ChangeId, ChangeLandingId, ProjectId, SessionId, Sha } from "../ids.ts";
 import {
   ChangeLanding,
+  changeOwnerOf,
   intentAllowsLanding,
   type LandingFact,
   landingFactLine,
@@ -42,6 +43,40 @@ const lines = (facts: ReadonlyArray<LandingFact>) =>
   facts.map((fact) => landingFactLine(fact, NOW));
 
 const nothingObserved = { originCommitsUnseen: null, filesChangedSinceLanding: null };
+
+describe("changeOwnerOf (docs/adr/0007, Who lands)", () => {
+  const session = (id: string, ownerUserId: string | null, at: string) => ({
+    id,
+    ownerUserId,
+    createdAt: new Date(at),
+  });
+
+  it("is the owner of the worktree's first session, whoever joined it since", () => {
+    expect(
+      changeOwnerOf([
+        session("s-3", "carol", "2026-09-24T12:05:00Z"),
+        session("s-1", "alice", "2026-09-24T12:00:00Z"),
+        session("s-2", "bob", "2026-09-24T12:01:00Z"),
+      ]),
+    ).toBe("alice");
+  });
+
+  it("breaks a tie by id, and is nobody for no session or an ownerless first one", () => {
+    expect(
+      changeOwnerOf([
+        session("s-b", "bob", "2026-09-24T12:00:00Z"),
+        session("s-a", "alice", "2026-09-24T12:00:00Z"),
+      ]),
+    ).toBe("alice");
+    expect(changeOwnerOf([])).toBeNull();
+    expect(
+      changeOwnerOf([
+        session("s-2", "bob", "2026-09-24T12:01:00Z"),
+        session("s-1", null, "2026-09-24T12:00:00Z"),
+      ]),
+    ).toBeNull();
+  });
+});
 
 describe("the landing facts (docs/adr/0007, What Mend records and shows)", () => {
   it("says nothing for a change that was never landed and never pushed", () => {
