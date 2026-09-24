@@ -151,6 +151,31 @@ export const useConversationActions = (sessionId: string) => {
   return { submit, respond, interrupt };
 };
 
+/** Sessions with a pointer read in flight, and whether another pointer arrived meanwhile. */
+const refreshing = new Map<string, boolean>();
+
+/**
+ * Re-read a session's conversation and detail for the stream's `agent-conversation` pointer.
+ * Pointers arrive per streamed delta, faster than a read completes, and a plain invalidation
+ * cancels the read in flight: the view would not move until the agent paused. So a read in
+ * flight is left to finish, and the pointers that land meanwhile coalesce into one read after it.
+ */
+export const refreshConversation = (sessionId: string): void => {
+  if (refreshing.has(sessionId)) {
+    refreshing.set(sessionId, true);
+    return;
+  }
+  refreshing.set(sessionId, false);
+  void Promise.all([
+    queryClient.invalidateQueries({ queryKey: conversationKey(sessionId) }),
+    queryClient.invalidateQueries({ queryKey: ["session", sessionId], exact: true }),
+  ]).finally(() => {
+    const again = refreshing.get(sessionId) === true;
+    refreshing.delete(sessionId);
+    if (again) refreshConversation(sessionId);
+  });
+};
+
 // ─── launch intent ──────────────────────────────────────────────────────────
 
 const launchModes = new Map<string, AgentLaunchModeDto>();

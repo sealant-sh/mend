@@ -111,8 +111,11 @@ caller who steers sends turns, answers approvals (allow once, allow for session,
 questions, and interrupts the open turn; anyone else reads it, and a request tells them it is
 waiting for an answer. A turn names who sent it when that was someone else, and who interrupted it
 when the control record (`/api/sessions/:id/control-events`) says. The stream's `agent-conversation`
-pointer re-reads the conversation (items from the held cursor on) and the detail; a 4-second poll
-covers a dropped stream while the agent runs.
+pointer re-reads the conversation (items from the held cursor on) and the detail. Pointers come per
+streamed delta, faster than a read completes, so a read in flight is left to finish and the pointers
+that land meanwhile coalesce into one read after it (cancelling the read in flight, the default
+invalidation, froze the view until the agent paused). A 4-second poll covers a dropped stream while
+the agent runs.
 
 The pane knows a conversation from the agent's own row (`kind: agent-protocol`), from the project
 list's annotation before the detail answers, and from the launcher's intent before any row exists.

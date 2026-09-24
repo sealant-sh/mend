@@ -1,5 +1,6 @@
 import { buildAgentConversation } from "@mend/agent-conversation";
 import { composeProtocolArgv, ProtocolHarnessUnsupportedError } from "@mend/domain/workbench";
+import { QueryObserver } from "@tanstack/react-query";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import {
@@ -14,8 +15,10 @@ import {
 import { HARNESSES } from "#/lib/app-settings";
 import {
   CONVERSATION_HARNESSES,
+  conversationQuery,
   interruptersByTurn,
   readConversation,
+  refreshConversation,
   turnAuthorLine,
   turnEndWord,
 } from "#/lib/conversation";
@@ -26,6 +29,7 @@ import {
   requestFixture,
   turnFixture,
 } from "#/lib/fixtures";
+import { queryClient } from "#/lib/queries";
 
 import type { ApiRequest, ApiResponse } from "../../../shared/bridge";
 
@@ -95,6 +99,45 @@ describe("reading a conversation", () => {
     const requests = serve(() => []);
     await readConversation("session-1", undefined);
     expect(requests[1]?.path).toBe("/api/sessions/session-1/items?after=0&limit=500");
+  });
+});
+
+const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+describe("stream pointers", () => {
+  it("keeps reading while pointers arrive faster than a read completes", async () => {
+    // The server grows one item per delta and answers each read after 30 ms; a pointer lands
+    // every 10 ms, as a streaming agent sends them.
+    let text = "a";
+    Object.defineProperty(window, "mend", {
+      configurable: true,
+      value: bridgeFixture(async (input): Promise<ApiResponse> => {
+        await wait(30);
+        let body: unknown = [];
+        if (input.path.includes("/items")) body = [itemFixture({ seq: text.length, text })];
+        if (input.path.endsWith("/turns")) body = [turnFixture()];
+        return { status: 200, ok: true, body };
+      }),
+    });
+    const observer = new QueryObserver(queryClient, conversationQuery("session-burst", false));
+    const seen: Array<number> = [];
+    const off = observer.subscribe((result) => {
+      const length = result.data?.items[0]?.text?.length;
+      if (length !== undefined && seen.at(-1) !== length) seen.push(length);
+    });
+    await wait(60);
+    for (let pointer = 0; pointer < 30; pointer += 1) {
+      text += "b";
+      refreshConversation("session-burst");
+      await wait(10);
+    }
+    const duringBurst = seen.length;
+    await wait(200);
+    off();
+    queryClient.removeQueries({ queryKey: ["session", "session-burst"] });
+
+    expect(duringBurst).toBeGreaterThan(3);
+    expect(seen.at(-1)).toBe(text.length);
   });
 });
 

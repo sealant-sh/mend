@@ -1,5 +1,6 @@
 import { useEffect, useSyncExternalStore } from "react";
 
+import { refreshConversation } from "#/lib/conversation";
 import { queryClient } from "#/lib/queries";
 
 import type { EventsState, WorkbenchEvent } from "../../../shared/bridge";
@@ -34,16 +35,9 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEvent) => void) =>
             break;
           case "agent-conversation":
             // Fires per streamed delta: re-read the conversation and the detail, not every
-            // query under the session (processes, recipes, the PTY-era transcript).
-            if (event.sessionId !== undefined) {
-              void queryClient.invalidateQueries({
-                queryKey: ["session", event.sessionId, "conversation"],
-              });
-              void queryClient.invalidateQueries({
-                queryKey: ["session", event.sessionId],
-                exact: true,
-              });
-            }
+            // query under the session (processes, recipes, the PTY-era transcript), and
+            // coalesce the pointers rather than cancel the read in flight.
+            if (event.sessionId !== undefined) refreshConversation(event.sessionId);
             break;
           case "session-process":
             void queryClient.invalidateQueries({ queryKey: ["services"] });
