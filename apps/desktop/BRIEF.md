@@ -280,6 +280,11 @@ change in view.
   switch, and turning it on confirms with the web app's sentence about lending provider logins and
   Git access; anyone else is told, in the web app's words, who steers or that the owner shares
   control (with Turn off for an organization owner).
+- 2026-09-24 (review): what a viewer is told about control never comes from a read that has not
+  answered. A non-steering viewer of a live agent with no PTY record of its own reads the
+  conversation instead of waiting on a record process that never comes; Review hides Deliver while
+  the session detail loads and leaves it to the server when the detail does not answer, rather than
+  telling the owner someone else steers; a shell tab's close says "Detach" when it only detaches.
 - 2026-09-24: the bench path is deleted. It never surfaced anything: the tree's rows came from the
   agent-only inbox, so a `shell` session (a former bench among them) was hidden either way. Alpha
   had no `bench`-labelled session and one hidden `shell` session on the mend project; the tree now
