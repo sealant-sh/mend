@@ -576,7 +576,7 @@ export const landButtonLabel = (offer: Pick<LandOffer, "updates">): string =>
 
 /**
  * The offer's blocks: why the change did not land, and "Push and open pull request". Everyone in
- * the thread sees the button; it lands only for the session's owner, as them, and tells anyone
+ * the thread sees the button; it lands only for the change's owner, as them, and tells anyone
  * else so where only they read it.
  */
 export const landOfferBlocks = (
@@ -607,7 +607,7 @@ export const landOfferBlocks = (
     elements: [
       {
         type: "mrkdwn",
-        text: `lands as the session's owner, <@${ownerSlackUserId}> · only they can use it`,
+        text: `lands as the change's owner, <@${ownerSlackUserId}> · only they can use it`,
       },
     ],
   },

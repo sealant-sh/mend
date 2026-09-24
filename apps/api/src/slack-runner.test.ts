@@ -89,6 +89,7 @@ import {
   intentOfRequest,
   makeSlackRunner,
   mentionOf,
+  ownerOnly,
   parsePickerRequestKey,
   pickerRequestKey,
   type SlackRunner,
@@ -600,6 +601,13 @@ const world = (options: WorldOptions = {}) => {
           ? Effect.succeed(earlierSession)
           : Effect.fail(new SessionNotFoundError({ sessionId: id }));
       },
+      listForWorktree: (worktreeId) =>
+        Effect.sync(() =>
+          [
+            ...sessionsCreated.values(),
+            ...(earlierSession === null ? [] : [earlierSession]),
+          ].filter((made) => made.worktreeId === worktreeId),
+        ),
     }),
     Layer.mock(AgentConversationRepo, {
       listTurns: (sessionId) =>
@@ -2618,7 +2626,7 @@ describe("the Slack runner, landing (docs/adr/0007-landing.md)", () => {
       {
         user: "U-bob",
         threadTs: THREAD,
-        text: "not pushed · only the session's owner, <@U-alice>, lands its change · it pushes with their key and speaks on GitHub as them",
+        text: "not pushed · only the change's owner, <@U-alice>, lands it · it pushes with their key and speaks on GitHub as them",
       },
       {
         user: "U-carol",
@@ -2629,6 +2637,11 @@ describe("the Slack runner, landing (docs/adr/0007-landing.md)", () => {
     expect(posts(w, "postMessage").map((post) => post.text)).toEqual([
       "billing-api · from a link in the thread · claude · starting · mend/wt-1",
     ]);
+    // When the change is not the thread's requester's (a session in someone else's worktree),
+    // nobody is named.
+    expect(ownerOnly(null).text).toBe(
+      "not pushed · only the change's owner lands it · it pushes with their key and speaks on GitHub as them",
+    );
   });
 
   it("says why a landing did not start, in its own words, only to the owner", async () => {

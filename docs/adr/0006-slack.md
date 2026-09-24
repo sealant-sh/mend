@@ -292,7 +292,7 @@ Mend posts only into the thread the request came from.
   than the owner sent the follow-up (ADR 0007). The button rides the end-of-session reply when that
   reply goes out in the same look; otherwise it is a reply of its own, posted when the turn is
   decided, since the review tour can come much later or not at all. Everyone in the thread sees it.
-  It lands only for the session's owner, as them and through the same landing as the web app's Land
+  It lands only for the change's owner, as them and through the same landing as the web app's Land
   panel, and tells anyone else so in an ephemeral reply. It reads "Push and update pull request"
   once an open pull request is recorded. The thread is offered each turn once, and a landing since
   the turn ended answers it.

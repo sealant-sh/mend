@@ -1180,7 +1180,7 @@ describe("landing in the thread (docs/adr/0007-landing.md)", () => {
         elements: [
           {
             type: "mrkdwn",
-            text: "lands as the session's owner, <@U-alice> · only they can use it",
+            text: "lands as the change's owner, <@U-alice> · only they can use it",
           },
         ],
       },

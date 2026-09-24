@@ -20,6 +20,7 @@ import {
 } from "@mend/db";
 import { ProjectId, SessionId, type OrganizationId } from "@mend/domain";
 import {
+  changeOwnerOf,
   currentAgentProcess,
   isLiveProcess,
   type AgentTurn,
@@ -538,10 +539,17 @@ export const intentOfRequest = (
   return read === null ? null : { intent: read, source: "read" };
 };
 
-/** A press of "Push and open pull request" from anyone but the session's owner. */
-export const ownerOnly = (ownerSlackUserId: string): SlackMessage =>
+/**
+ * A press of "Push and open pull request" from anyone but the change's owner (the owner of the
+ * worktree's first session), naming them when the thread knows their Slack account.
+ */
+export const ownerOnly = (ownerSlackUserId: string | null): SlackMessage =>
   section(
-    `${escapeSlack("not pushed · only the session's owner, ")}<@${escapeSlack(ownerSlackUserId)}>${escapeSlack(", lands its change · it pushes with their key and speaks on GitHub as them")}`,
+    ownerSlackUserId === null
+      ? escapeSlack(
+          "not pushed · only the change's owner lands it · it pushes with their key and speaks on GitHub as them",
+        )
+      : `${escapeSlack("not pushed · only the change's owner, ")}<@${escapeSlack(ownerSlackUserId)}>${escapeSlack(", lands it · it pushes with their key and speaks on GitHub as them")}`,
   );
 
 /** Said to the owner at once: the push and the pull request take a moment. */
@@ -1672,7 +1680,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
 
     /**
      * "Push and open pull request" on a turn whose change did not land (docs/adr/0007-landing.md,
-     * "Surfaces"): everyone in the thread sees the button, and it lands only for the session's
+     * "Surfaces"): everyone in the thread sees the button, and it lands only for the change's
      * owner, as them, through the same landing as the web app's Land panel. Anyone else is told
      * so where only they read it. The owner hears how it ended; the status message says it to
      * everyone.
@@ -1695,8 +1703,13 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         .byId(sessionId)
         .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
       if (session === null) return yield* whisper(token, at, notLanded("the session is gone"));
-      if (session.ownerUserId !== link.userId) {
-        return yield* whisper(token, at, ownerOnly(thread.slackUserId));
+      // The change's owner, not whoever owns this session: a teammate's session in the owner's
+      // worktree lends no key.
+      const owner = changeOwnerOf(yield* sessions.listForWorktree(session.worktreeId));
+      if (owner === null || owner !== link.userId) {
+        // The thread's requester is the session's owner; name them only when they own the change.
+        const named = owner !== null && owner === session.ownerUserId ? thread.slackUserId : null;
+        return yield* whisper(token, at, ownerOnly(named));
       }
       const project = yield* access
         .projectAs(link.userId, session.projectId)

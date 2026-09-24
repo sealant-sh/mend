@@ -24,7 +24,7 @@ import { withSignerContext } from "./routes/workbench.ts";
 export interface OwnerLandingInput {
   readonly session: Session;
   readonly project: Project;
-  /** The session's owner, who lands. */
+  /** The change's owner (`changeOwnerOfWorktree`), who lands: the caller has checked it. */
   readonly ownerUserId: string;
   readonly trigger: LandingTrigger;
   /** Where the pull request description's links point. */
