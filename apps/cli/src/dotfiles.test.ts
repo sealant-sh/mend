@@ -58,6 +58,37 @@ describe("readSyncFiles", () => {
     const result = readSyncFiles(home, [".big"]);
     expect("error" in result && result.error).toMatch(/over 1MB/);
   });
+
+  it("refuses a path outside home before reading it", () => {
+    const root = tmpHome();
+    const home = path.join(root, "home");
+    fs.mkdirSync(home);
+    fs.writeFileSync(path.join(root, "outside"), "not a dotfile\n");
+    for (const requested of ["../outside", path.join(root, "outside"), ".config/../../outside"]) {
+      const result = readSyncFiles(home, [requested]);
+      expect("error" in result && result.error, requested).toBe(
+        `${requested} is not under ${home} — only files in your home directory sync`,
+      );
+    }
+    // Home itself is not a file to sync either.
+    expect("error" in readSyncFiles(home, [home])).toBe(true);
+  });
+
+  it("stores an absolute or untidy path under home as its home-relative path", () => {
+    const home = tmpHome();
+    fs.mkdirSync(path.join(home, ".config"));
+    fs.writeFileSync(path.join(home, ".config", "starship.toml"), "add_newline = false\n");
+    fs.writeFileSync(path.join(home, "..zshrc"), "odd but inside\n");
+    const paths = (requested: ReadonlyArray<string>) => {
+      const result = readSyncFiles(home, requested);
+      return "files" in result ? result.files.map((entry) => entry.path) : result.error;
+    };
+    expect(paths([path.join(home, ".config", "starship.toml"), "./..zshrc"])).toEqual([
+      ".config/starship.toml",
+      "..zshrc",
+    ]);
+    expect(paths([".config//starship.toml"])).toEqual([".config/starship.toml"]);
+  });
 });
 
 /** The refusal a parse returns, or null when it parsed. */
