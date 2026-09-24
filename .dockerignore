@@ -10,3 +10,7 @@ core.*
 PRODUCT.html
 compose*.yaml
 Dockerfile
+# The desktop app is not in the server image: its build (out/) and its
+# packages (release/, hundreds of MB after `pnpm -F @mend/desktop package`).
+apps/desktop/out
+apps/desktop/release
