@@ -59,6 +59,7 @@ import type {
   Project,
   ServiceRecipe,
   Session,
+  SessionDotfilesNotApplied,
   SessionOrigin,
   SessionProcess,
   SessionRun,
@@ -137,7 +138,7 @@ import {
   REPLACEMENT_AGE_SECONDS,
 } from "./capture-runtime.ts";
 import { detectInstallCommand, PLATFORM_PROBE_SCRIPT, platformKeyOf } from "./dependency-cache.ts";
-import { DotfilesResolveError, resolveDotfilesArchives } from "./dotfiles.ts";
+import { DotfilesResolveError, resolveRepositoryArchive, snapshotArchive } from "./dotfiles.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
 import {
   HARNESS_HOME_MOUNT_PATH,
@@ -3555,18 +3556,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           dotfilesEnabled && ownerUserId !== null
             ? yield* userDotfilesRepo.repository(ownerUserId)
             : null;
-        const dotfilesSnapshot =
-          dotfilesEnabled && ownerUserId !== null
-            ? yield* dotfilesStore.archive(ownerUserId).pipe(
-                Effect.mapError((error) => new DotfilesResolveError({ message: error.message })),
-                report,
-              )
-            : null;
+        // A dotfiles source that cannot be resolved never costs the launch (it costs every
+        // launch of every project otherwise): the workspace launches without that archive, the
+        // other source still applies, and the session records what was left out and why.
+        const leftOut = (
+          source: SessionDotfilesNotApplied["source"],
+          error: { readonly message: string },
+        ): Effect.Effect<SessionDotfilesNotApplied> =>
+          Effect.logWarning("session engine: dotfiles source not applied").pipe(
+            Effect.annotateLogs({ sessionId, source, reason: error.message }),
+            Effect.as({ source, reason: error.message }),
+          );
         // The repository was checked when it was saved; checked again here, and the clone dials the
         // address just checked, because a name can answer differently at every launch. The owner's
         // actual role was applied at save; this recheck guards the tenant profile's networks.
         // The pin composes over the clone's own defaults, so a pinned ssh keeps BatchMode.
-        const dotfilesClearance =
+        const repositoryOutcome =
           dotfilesRepository === null
             ? null
             : yield* sourcePolicy.check(dotfilesRepository.url, { isOperator: true }).pipe(
@@ -3576,18 +3581,39 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                       message: `dotfiles repository refused: ${refused.message}`,
                     }),
                 ),
-                report,
+                Effect.flatMap((clearance) =>
+                  resolveRepositoryArchive(dotfilesRepository, {
+                    pinCloneEnv: (env) => sourcePolicy.pinnedEnv(clearance, env),
+                  }),
+                ),
+                Effect.map((archive) => ({ archive, notApplied: null })),
+                Effect.catchTag("DotfilesResolveError", (error) =>
+                  leftOut("repository", error).pipe(
+                    Effect.map((notApplied) => ({ archive: null, notApplied })),
+                  ),
+                ),
               );
-        const dotfilesArchives = yield* resolveDotfilesArchives({
-          repository: dotfilesRepository,
-          snapshot: dotfilesSnapshot,
-          ...(dotfilesClearance === null
-            ? {}
-            : {
-                pinCloneEnv: (env: Readonly<Record<string, string>>) =>
-                  sourcePolicy.pinnedEnv(dotfilesClearance, env),
-              }),
-        }).pipe(report);
+        const snapshotOutcome =
+          dotfilesEnabled && ownerUserId !== null
+            ? yield* dotfilesStore.archive(ownerUserId).pipe(
+                Effect.map((snapshot) => ({ snapshot, notApplied: null })),
+                Effect.catchTag("DotfilesStoreError", (error) =>
+                  leftOut("snapshot", error).pipe(
+                    Effect.map((notApplied) => ({ snapshot: null, notApplied })),
+                  ),
+                ),
+              )
+            : null;
+        const dotfilesSnapshot = snapshotOutcome?.snapshot ?? null;
+        // Apply order: the repository first, the snapshot after (the synced selection wins).
+        const dotfilesArchives = [
+          repositoryOutcome?.archive ?? null,
+          dotfilesSnapshot === null ? null : snapshotArchive(dotfilesSnapshot),
+        ].filter((archive) => archive !== null);
+        const dotfilesNotApplied = [
+          repositoryOutcome?.notApplied ?? null,
+          snapshotOutcome?.notApplied ?? null,
+        ].filter((entry) => entry !== null);
         // The project env store, read ONCE per fresh workspace (plan: one snapshot per launch, a
         // live workspace is never mutated). Configuration rides `env` (plaintext by contract);
         // Secrets are unsealed here — the only place Mend ever holds their plaintext — and ride
@@ -3837,6 +3863,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ? null
                 : { url: dotfilesRepository.url, ref: dotfilesRepository.ref },
             snapshotSha: dotfilesSnapshot?.sha ?? null,
+            notApplied: dotfilesNotApplied,
           },
           referenceMounts: selectedReferences.map(
             (reference) =>
@@ -4142,7 +4169,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return {
           workspace: live,
           workspaceImage: entry.workspaceImage,
-          dotfiles: entry.dotfiles ?? { repository: null, snapshotSha: null },
+          dotfiles: entry.dotfiles ?? { repository: null, snapshotSha: null, notApplied: [] },
           environmentManifest: entry.environment,
           referenceMounts: entry.referenceMounts,
           extraMounts: entry.extraMounts,

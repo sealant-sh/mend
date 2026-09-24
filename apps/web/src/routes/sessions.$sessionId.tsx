@@ -18,6 +18,7 @@ import {
   stopSession,
   type TranscriptEventDto,
 } from "#/lib/api";
+import { sessionDotfilesLines } from "#/lib/session-dotfiles";
 import { useResolvedDark } from "#/lib/theme";
 import { useTRPC } from "#/lib/trpc";
 import { runsAsLine, useViewer } from "#/lib/viewer";
@@ -211,6 +212,14 @@ function SessionPage() {
             : ` · started ${new Date(session.startedAt).toLocaleTimeString()}`}
           {runsAs === null ? "" : ` · ${runsAs}`}
         </p>
+        {sessionDotfilesLines(session.dotfiles).map((line) => (
+          <p
+            key={line.text}
+            className={`mt-1 font-mono text-xs break-words ${line.notApplied ? "text-warning" : "text-faint"}`}
+          >
+            {line.text}
+          </p>
+        ))}
         {session.summary !== null && (
           <p className="mt-3 max-w-[760px] text-[14.5px] leading-relaxed text-ink-2">
             {session.summary}

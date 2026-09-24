@@ -15,10 +15,22 @@ import { SessionExtraMount } from "./mount.ts";
 import { SessionReferenceMount } from "./reference.ts";
 
 /**
+ * A dotfiles source the launch resolved and could not apply. The workspace launched without that
+ * archive; `reason` is the resolver's own sentence (the clone that was stopped, the subdirectory
+ * that is not there, the policy that refused the host).
+ */
+export const SessionDotfilesNotApplied = Schema.Struct({
+  source: Schema.Literals(["repository", "snapshot"]),
+  reason: Schema.String,
+});
+export type SessionDotfilesNotApplied = typeof SessionDotfilesNotApplied.Type;
+
+/**
  * What a launch actually applied from the owner's dotfiles — recorded facts, never rewritten by
  * a later sync or config change. The snapshot sha names an exact commit in the user's dotfiles
  * store; the repository is the url+ref that was cloned (its content is not pinned — the clone
- * takes the branch tip at launch).
+ * takes the branch tip at launch). A source named in `notApplied` was tried and left out: the
+ * repository still names what was tried; a snapshot that could not be packed has no sha.
  */
 export const SessionDotfiles = Schema.Struct({
   repository: Schema.NullOr(
@@ -28,6 +40,10 @@ export const SessionDotfiles = Schema.Struct({
     }),
   ),
   snapshotSha: Schema.NullOr(Schema.String),
+  /** Rows stamped before this field decode as nothing left out. */
+  notApplied: Schema.Array(SessionDotfilesNotApplied).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed([])),
+  ),
 });
 export type SessionDotfiles = typeof SessionDotfiles.Type;
 

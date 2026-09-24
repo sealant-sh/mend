@@ -9,7 +9,7 @@ import { Duration, Effect, Schema } from "effect";
 /**
  * Launch-side dotfiles resolution. The platform applies dotfiles from archives the caller ships
  * with the create call, so nothing sensitive reaches the container — only file trees. Two
- * sources, in apply order:
+ * sources, in apply order, each resolved on its own (one failing never takes the other along):
  *
  * 1. the user's dotfiles REPOSITORY — cloned by the Mend server at launch, so every session gets
  *    the branch tip as of that moment;
@@ -20,7 +20,10 @@ import { Duration, Effect, Schema } from "effect";
  * The server's own home directory is deliberately never read (see @mend/store DotfilesStore).
  */
 
-/** Resolving the user's dotfiles failed; the message is readable, the launch fails loudly. */
+/**
+ * Resolving one dotfiles source failed; the message is readable. A launch goes on without that
+ * source and records the message on the session; saving a repository refuses with it.
+ */
 export class DotfilesResolveError extends Schema.TaggedErrorClass<DotfilesResolveError>()(
   "DotfilesResolveError",
   { message: Schema.String },
@@ -231,6 +234,8 @@ const buildRepositoryArchive = (
         runGit(
           [
             "clone",
+            // No "Cloning into <server tmp dir>" line: stderr becomes the reason a user reads.
+            "--quiet",
             "--no-checkout",
             "--depth",
             "1",
@@ -323,32 +328,33 @@ const buildRepositoryArchive = (
   });
 
 /**
- * Resolve the owner's dotfiles into launch archives: the repository first, the store snapshot
- * after (in-order apply means the synced selection wins). The snapshot is already a packed
- * `.tar.gz` from the dotfiles store; it applies with the copy manager and never a bootstrap.
- * Nothing configured resolves to no archives.
+ * The owner's dotfiles REPOSITORY as a launch archive: the bounded clone and pack above, with the
+ * clone's git environment (`pinCloneEnv`, the source policy's pin, composes over the defaults).
+ * The launch and the save-time probe both come through here, so a repository that saved is one
+ * this exact path packed, with the same bounds and credentials.
  */
-export const resolveDotfilesArchives = (input: {
-  readonly repository: DotfilesRepository | null;
-  readonly snapshot: { readonly sha: string; readonly data: string } | null;
-  /** Pins the clone to the address the source policy checked; composes over the defaults. */
-  readonly pinCloneEnv?: (env: Readonly<Record<string, string>>) => Record<string, string>;
-  /** Tests shrink these; production uses {@link DOTFILES_CLONE_BOUNDS}. */
-  readonly bounds?: DotfilesCloneBounds;
-}): Effect.Effect<ReadonlyArray<ResolvedDotfilesArchive>, DotfilesResolveError> =>
-  Effect.gen(function* () {
-    const archives: ResolvedDotfilesArchive[] = [];
-    if (input.repository !== null) {
-      archives.push(
-        yield* buildRepositoryArchive(
-          input.repository,
-          dotfilesCloneEnv(input.pinCloneEnv),
-          input.bounds ?? DOTFILES_CLONE_BOUNDS,
-        ),
-      );
-    }
-    if (input.snapshot !== null) {
-      archives.push({ data: input.snapshot.data, manager: "copy", bootstrap: false });
-    }
-    return archives;
-  });
+export const resolveRepositoryArchive = (
+  repository: DotfilesRepository,
+  options: {
+    /** Pins the clone to the address the source policy checked; composes over the defaults. */
+    readonly pinCloneEnv?: (env: Readonly<Record<string, string>>) => Record<string, string>;
+    /** Tests shrink these; production uses {@link DOTFILES_CLONE_BOUNDS}. */
+    readonly bounds?: DotfilesCloneBounds;
+  } = {},
+): Effect.Effect<ResolvedDotfilesArchive, DotfilesResolveError> =>
+  buildRepositoryArchive(
+    repository,
+    dotfilesCloneEnv(options.pinCloneEnv),
+    options.bounds ?? DOTFILES_CLONE_BOUNDS,
+  );
+
+/**
+ * The dotfiles STORE snapshot as a launch archive. It is already a packed `.tar.gz` from the
+ * store; it applies with the copy manager and never a bootstrap, AFTER the repository archive,
+ * so the synced selection wins over same-named repo files.
+ */
+export const snapshotArchive = (snapshot: { readonly data: string }): ResolvedDotfilesArchive => ({
+  data: snapshot.data,
+  manager: "copy",
+  bootstrap: false,
+});
