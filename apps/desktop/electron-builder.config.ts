@@ -38,8 +38,10 @@ const config: Configuration = {
     synopsis: "Mend desktop",
     syncDesktopName: true,
   },
-  // Unsigned and not notarized. Gatekeeper refuses the first open; right-click
-  // › Open, or `xattr -dr com.apple.quarantine /Applications/Mend.app`.
+  // Unsigned and not notarized, so Gatekeeper refuses a downloaded copy
+  // (usually as "damaged"). Right-click › Open no longer gets past it on
+  // macOS 15; clear the quarantine flag instead:
+  // `xattr -dr com.apple.quarantine /Applications/Mend.app`.
   // On a Linux host the .app and the zip build, and the dmg stops at `sips`
   // (a macOS tool), so the dmg needs a macOS machine or runner.
   mac: {
