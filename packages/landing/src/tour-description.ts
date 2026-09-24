@@ -47,6 +47,8 @@ export class LandingDescriptions extends Context.Service<
 
 const UNCHANGED: TourDescription = { _tag: "unchanged" };
 
+const unavailable = (message: string) => new PullRequestStepError({ message });
+
 export const LandingDescriptionsLive: Layer.Layer<
   LandingDescriptions,
   never,
@@ -91,7 +93,6 @@ export const LandingDescriptionsLive: Layer.Layer<
 
       const pushedSha = landing.pushedSha;
       const { number } = landing.pullRequest;
-      const unavailable = (message: string) => new PullRequestStepError({ message });
       const project = yield* projects
         .byId(landing.projectId)
         .pipe(Effect.mapError(() => unavailable(`no project ${landing.projectId}`)));
