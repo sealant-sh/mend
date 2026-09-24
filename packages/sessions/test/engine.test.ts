@@ -568,6 +568,7 @@ const protocolHostStubLayer = Layer.succeed(ProtocolHost, {
 const recordingProtocolHostLayer = (
   attached: Array<{ readonly process: SessionProcess; readonly mode: string }>,
   submitted: string[],
+  authors: Array<string | null> = [],
 ) =>
   Layer.succeed(ProtocolHost, {
     attach: (input) =>
@@ -581,6 +582,7 @@ const recordingProtocolHostLayer = (
     submitTurn: (sessionId, input, author) =>
       Effect.sync(() => {
         submitted.push(input);
+        authors.push(author);
         return new AgentTurn({
           id: AgentTurnId.make(`turn-${submitted.length}`),
           sessionId,
@@ -2208,6 +2210,7 @@ describe("SessionEngine", () => {
     const openedOptions: SessionOptions[] = [];
     const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
     const submitted: string[] = [];
+    const authors: Array<string | null> = [];
     await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
@@ -2256,10 +2259,12 @@ describe("SessionEngine", () => {
           expect(attached[1]?.process.kind).toBe("agent-protocol");
 
           yield* engine.stop(session.id);
-          yield* engine.launchFollowUp(session.id, "address the review", "follow-up-1");
+          yield* engine.launchFollowUp(session.id, "address the review", "follow-up-1", "user-2");
           expect(attached[2]?.process.kind).toBe("agent-protocol");
           expect(attached[2]?.process.launchCorrelationId).toBe("follow-up-1");
           expect(submitted).toEqual(["inspect replay", "address the review"]);
+          // The follow-up turn is the reviewer's, never an anonymous one.
+          expect(authors).toEqual(["user-1", "user-2"]);
         }),
       {
         sealantLayer: sealantLaunchLayer(
@@ -2272,7 +2277,7 @@ describe("SessionEngine", () => {
           undefined,
           openedOptions,
         ),
-        protocolHostLayer: recordingProtocolHostLayer(attached, submitted),
+        protocolHostLayer: recordingProtocolHostLayer(attached, submitted, authors),
       },
     );
   });
@@ -2845,6 +2850,7 @@ describe("SessionEngine", () => {
             session.id,
             instruction,
             "follow-up:delivery-1",
+            "user-fixture",
           );
           expect(resumed.status).toBe("running");
           expect(created).toHaveLength(1);
@@ -2906,6 +2912,7 @@ describe("SessionEngine", () => {
               session.id,
               "This launch cannot restore missing native state.",
               "follow-up:missing-state",
+              "user-fixture",
             )
             .pipe(Effect.flip);
           expect(failure).toBeInstanceOf(HarnessStateNotFoundError);
@@ -3168,7 +3175,7 @@ describe("SessionEngine", () => {
           yield* engine.launch(session.id, ["codex"]);
           yield* engine.openShell(session.id);
           const failure = yield* engine
-            .launchFollowUp(session.id, "Address the comments.", "follow-up:while-live")
+            .launchFollowUp(session.id, "Address the comments.", "follow-up:while-live", null)
             .pipe(Effect.flip);
           expect(failure).toBeInstanceOf(SealantPlatformError);
           expect(failure instanceof SealantPlatformError ? failure.code : null).toBe(

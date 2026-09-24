@@ -13,7 +13,8 @@ import type {
  *
  * 1. The turn completed. A turn that failed, was interrupted or was cancelled never lands.
  * 2. The agent is not waiting on a question or an approval, and no later turn is on its way.
- * 3. The turn was sent by the owner, or it is the session's opening request, which is theirs.
+ * 3. The change's owner sent the turn, in a session they own. A turn with no recorded sender is
+ *    never theirs, and neither is one in a session a teammate started in their worktree.
  * 4. The change is not empty, and not what the last landing already pushed.
  * 5. The request asked for a change.
  *
@@ -26,8 +27,13 @@ import type {
 /** What the worker knows about an ended turn before it reads the change. */
 export interface EndedTurnFacts {
   readonly turn: Pick<AgentTurn, "status" | "author" | "ordinal" | "intent" | "intentSource">;
-  /** The session's owner; a session with none has nobody to land as. */
-  readonly ownerUserId: string | null;
+  /**
+   * The change's owner (`changeOwnerOf`), whose key pushes and who speaks on GitHub; a change
+   * with none has nobody to land as.
+   */
+  readonly changeOwnerUserId: string | null;
+  /** The owner of the session the turn ran in. */
+  readonly sessionOwnerUserId: string | null;
   readonly origin: SessionOrigin;
   /** Whether automatic landing resolves on for the session (`resolveAutoLand`). */
   readonly on: boolean;
@@ -35,8 +41,6 @@ export interface EndedTurnFacts {
   readonly pending: boolean;
   /** Another turn follows this one in the session: its end decides instead. */
   readonly later: boolean;
-  /** This is the session's first turn: the request that started it. */
-  readonly opening: boolean;
 }
 
 /**
@@ -58,12 +62,15 @@ export const beforeTheChange = (facts: EndedTurnFacts): BeforeTheChange => {
   const { turn } = facts;
   if (turn.status !== "completed") return SKIPPED;
   if (facts.pending || facts.later) return SKIPPED;
-  if (facts.ownerUserId === null) return SKIPPED;
+  const owner = facts.changeOwnerUserId;
+  if (owner === null) return SKIPPED;
   if (!facts.on) {
     if (saidNoPullRequest(turn)) return { _tag: "check-change", next: "option" };
     return facts.origin === "slack" ? { _tag: "check-change", next: "off" } : SKIPPED;
   }
-  const owners = turn.author === facts.ownerUserId || (turn.author === null && facts.opening);
+  // Landing speaks as the change's owner: only a turn they sent, in a session of theirs, does.
+  const owners =
+    turn.author !== null && turn.author === owner && facts.sessionOwnerUserId === owner;
   if (!owners) return { _tag: "check-change", next: "not-owner" };
   return { _tag: "check-change", next: "read-intent" };
 };

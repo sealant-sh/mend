@@ -13,12 +13,12 @@ const facts = (
     readonly turn?: Partial<EndedTurnFacts["turn"]>;
   } = {},
 ): EndedTurnFacts => ({
-  ownerUserId: "alice",
+  changeOwnerUserId: "alice",
+  sessionOwnerUserId: "alice",
   origin: "mend",
   on: true,
   pending: false,
   later: false,
-  opening: false,
   ...overrides,
   turn: {
     status: "completed",
@@ -47,8 +47,8 @@ describe("when a completed turn lands (docs/adr/0007, Automatic landing)", () =>
     expect(beforeTheChange(facts({ later: true }))).toEqual({ _tag: "skipped" });
   });
 
-  it("has nobody to land as without an owner", () => {
-    expect(beforeTheChange(facts({ ownerUserId: null }))).toEqual({ _tag: "skipped" });
+  it("has nobody to land as when the change has no owner", () => {
+    expect(beforeTheChange(facts({ changeOwnerUserId: null }))).toEqual({ _tag: "skipped" });
   });
 
   it("does not land a follow-up someone else sent under shared control", () => {
@@ -63,10 +63,23 @@ describe("when a completed turn lands (docs/adr/0007, Automatic landing)", () =>
     });
   });
 
-  it("takes the session's opening request as the owner's own", () => {
-    expect(beforeTheChange(facts({ opening: true, turn: { author: null } }))).toEqual({
+  it("never counts a turn without a recorded sender as the owner's, even the opening one", () => {
+    expect(beforeTheChange(facts({ turn: { author: null, ordinal: 0 } }))).toEqual({
       _tag: "check-change",
-      next: "read-intent",
+      next: "not-owner",
+    });
+  });
+
+  it("does not land a turn in a session a teammate started in the owner's worktree", () => {
+    // Bob's own turn in his session: the change is still Alice's.
+    expect(beforeTheChange(facts({ sessionOwnerUserId: "bob", turn: { author: "bob" } }))).toEqual({
+      _tag: "check-change",
+      next: "not-owner",
+    });
+    // Alice steering Bob's session under shared control: it would not be her session's turn.
+    expect(beforeTheChange(facts({ sessionOwnerUserId: "bob" }))).toEqual({
+      _tag: "check-change",
+      next: "not-owner",
     });
   });
 

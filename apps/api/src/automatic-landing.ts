@@ -16,6 +16,7 @@ import {
 import { type ChangeLandingId, SessionId } from "@mend/domain";
 import {
   type AgentTurn,
+  changeOwnerOf,
   type Project,
   type RequestIntentReading,
   requestOfTurn,
@@ -212,21 +213,21 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
     ) {
       if (now() - (turn.endedAt ?? turn.createdAt).getTime() > TURN_FRESHNESS_MS) return SKIPPED;
       const project = yield* projects.byId(session.projectId);
-      const opening = turns.every((other) => other.ordinal >= turn.ordinal);
+      // The change's owner, who lands it: never a teammate who joined the worktree.
+      const owner = changeOwnerOf(yield* sessions.listForWorktree(session.worktreeId));
       const step = beforeTheChange({
         turn,
-        ownerUserId: session.ownerUserId,
+        changeOwnerUserId: owner,
+        sessionOwnerUserId: session.ownerUserId,
         origin: session.origin,
         on: yield* landsOn(session, project),
         pending: yield* conversations.hasPendingRequests(session.id),
         later: turns.some((other) => other.ordinal > turn.ordinal),
-        opening,
       });
       if (step._tag === "skipped") return SKIPPED;
       // A turn that touched nothing, or left what already landed, says nothing about landing.
       if (!(yield* holdsNewWork(session))) return SKIPPED;
       if (step.next !== "read-intent") return decided(step.next);
-      const owner = session.ownerUserId;
       if (owner === null) return SKIPPED;
       const reading = yield* intentOf(session, turn, turns);
       const next = afterTheIntent(reading);

@@ -84,6 +84,8 @@ interface World {
   turns: Array<AgentTurn>;
   origin: SessionOrigin;
   ownerUserId: string | null;
+  /** Other sessions in the worktree, such as the one that started it. */
+  siblings: Array<Session>;
   sessionAutoLand: boolean | null;
   projectAutoLand: AutomationChoice;
   settingsAutoLand: boolean;
@@ -105,6 +107,7 @@ const blankWorld = (): World => ({
   turns: [],
   origin: "mend",
   ownerUserId: "alice",
+  siblings: [],
   sessionAutoLand: null,
   projectAutoLand: "on",
   settingsAutoLand: false,
@@ -300,6 +303,7 @@ const layer = Layer.mergeAll(
         ? Effect.sync(session)
         : Effect.fail(new SessionNotFoundError({ sessionId: id })),
     listActive: () => Effect.sync(() => [session()]),
+    listForWorktree: () => Effect.sync(() => [session(), ...world.siblings]),
   }),
   Layer.mock(ProjectsRepo, { byId: () => Effect.sync(project) }),
   Layer.mock(SettingsRepo, {
@@ -500,6 +504,37 @@ describe("automatic landing (docs/adr/0007, When a completed turn lands)", () =>
     ]);
   });
 
+  it("does not land a turn with no recorded sender, even the opening one", async () => {
+    world.turns = [turn(0, { author: null })];
+    await look();
+    expect(world.lands).toEqual([]);
+    expect(decisions()).toEqual([[0, "not-owner"]]);
+  });
+
+  it("does not land a turn in a session a teammate started in the owner's worktree", async () => {
+    // Bob's session joined Alice's worktree; the change is hers, so Bob's turns never land it.
+    world.ownerUserId = "bob";
+    world.siblings = [
+      new Session({
+        ...makeSession(SessionId.make("session-0"), PROJECT, WORKTREE, "alice"),
+        // Before Bob's (the harness stamps sessions 2026-09-17).
+        createdAt: new Date("2026-09-01T00:00:00.000Z"),
+      }),
+    ];
+    world.turns = [turn(0, { author: "bob" })];
+    await look();
+    expect(world.lands).toEqual([]);
+    expect(world.reads).toEqual([]);
+    expect(decisions()).toEqual([[0, "not-owner"]]);
+
+    // Alice steering Bob's session under shared control does not land it either.
+    world.claimed = new Set();
+    world.turns = [turn(0, { author: "alice" })];
+    await look();
+    expect(world.lands).toEqual([]);
+    expect(decisions()).toEqual([[0, "not-owner"]]);
+  });
+
   it.each<AgentTurnStatus>(["failed", "interrupted", "cancelled"])(
     "never lands a %s turn",
     async (status) => {
@@ -598,7 +633,7 @@ describe("automatic landing (docs/adr/0007, When a completed turn lands)", () =>
   it("lands a Slack session by default, with the install's links", async () => {
     world.projectAutoLand = "inherit";
     world.origin = "slack";
-    world.turns = [turn(0, { author: null })];
+    world.turns = [turn(0)];
     await look();
     expect(world.lands).toHaveLength(1);
     expect(world.lands[0]?.webOrigin).toBe("https://slack-origin.acme.test");

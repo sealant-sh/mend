@@ -650,11 +650,16 @@ export class SessionEngine extends Context.Service<
       AgentRequest,
       ProtocolHostNotLiveError | AgentRequestNotFoundError | AgentRequestAlreadyResolvedError
     >;
-    /** Launch the exact approved Review instruction with a durable process correlation. */
+    /**
+     * Launch the exact approved Review instruction with a durable process correlation. `author`
+     * is who sent the review comments: the turn is theirs, so automatic landing (docs/adr/0007)
+     * never takes it for the owner's unless it is.
+     */
     readonly launchFollowUp: (
       sessionId: SessionId,
       instruction: string,
       launchCorrelationId: string,
+      author: string | null,
     ) => Effect.Effect<
       Session,
       | SessionNotFoundError
@@ -5304,6 +5309,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
         instruction: string,
         launchCorrelationId: string,
+        author: string | null,
       ) {
         const session = yield* sessions.byId(sessionId);
         if (isLegacyBench(session)) {
@@ -5314,17 +5320,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             (process) => process.kind === "agent-protocol" && isLiveProcess(process),
           );
           if (liveProtocol !== undefined && (yield* protocolHost.has(liveProtocol.id))) {
-            yield* protocolHost.submitTurn(sessionId, instruction, null, launchCorrelationId).pipe(
-              Effect.mapError(
-                (error) =>
-                  new SealantPlatformError({
-                    code: "agent_protocol_not_live",
-                    status: null,
-                    message: "The protocol process stopped before the follow-up was queued.",
-                    cause: error,
-                  }),
-              ),
-            );
+            yield* protocolHost
+              .submitTurn(sessionId, instruction, author, launchCorrelationId)
+              .pipe(
+                Effect.mapError(
+                  (error) =>
+                    new SealantPlatformError({
+                      code: "agent_protocol_not_live",
+                      status: null,
+                      message: "The protocol process stopped before the follow-up was queued.",
+                      cause: error,
+                    }),
+                ),
+              );
             return yield* sessions.byId(sessionId);
           }
           return yield* new SealantPlatformError({
@@ -5339,7 +5347,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return yield* launchProtocol(
             sessionId,
             { mode: "protocol", prompt: instruction, permissionMode: "bypass" },
-            null,
+            author,
             launchCorrelationId,
           ).pipe(
             Effect.catchTag("ProtocolHarnessUnsupportedError", (error) =>
@@ -7591,8 +7599,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           owned(sessionId)(submitTurn(sessionId, input, author)),
         interruptTurn,
         respondRequest,
-        launchFollowUp: (sessionId, instruction, launchCorrelationId) =>
-          owned(sessionId)(launchFollowUp(sessionId, instruction, launchCorrelationId)),
+        launchFollowUp: (sessionId, instruction, launchCorrelationId, author) =>
+          owned(sessionId)(launchFollowUp(sessionId, instruction, launchCorrelationId, author)),
         reconcileHotSessions: requestHotReconcile,
         checkpointNow: (sessionId, trigger) => owned(sessionId)(checkpointNow(sessionId, trigger)),
         stop: (sessionId) => owned(sessionId)(stop(sessionId)),

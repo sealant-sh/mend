@@ -61,6 +61,8 @@ interface TestWorld {
   session: Session;
   insideSessionLock: boolean;
   launches: number;
+  /** Who each launch said sent the review comments. */
+  launchAuthors: Array<string | null>;
   launcherMode: "success" | "failure" | "held";
   launchGate: Deferred.Deferred<void> | null;
   deliveryAttemptId: string | null;
@@ -125,6 +127,7 @@ const makeWorld = (launcherMode: TestWorld["launcherMode"] = "success"): TestWor
   }),
   insideSessionLock: false,
   launches: 0,
+  launchAuthors: [],
   launcherMode,
   launchGate: null,
   deliveryAttemptId: null,
@@ -481,8 +484,11 @@ const testLayer = (world: TestWorld) => {
   });
 
   const launcherLayer = Layer.succeed(FollowUpLauncher, {
-    launch: (_sessionId, instruction, correlationId) =>
-      launchForWorld(world, instruction, correlationId),
+    launch: (_sessionId, instruction, correlationId, author) =>
+      Effect.suspend(() => {
+        world.launchAuthors.push(author);
+        return launchForWorld(world, instruction, correlationId);
+      }),
   });
 
   return FollowUpDeliveryLive.pipe(
@@ -510,6 +516,7 @@ const deliveryInput = () => ({
   commentIds: [COMMENT_ID],
   instruction: "  Address only the selected comment.\nKeep this spacing.  ",
   idempotencyKey: "delivery-1",
+  author: "reviewer-1",
 });
 
 const seedFollowUp = (world: TestWorld, startedAt: Date): FollowUp => {
@@ -582,6 +589,8 @@ describe("FollowUpDelivery", () => {
         expect(replay.deliverySealantRunId).toBe("run-1");
         expect(world.comment.sentToSessionId).toBe(SESSION_ID);
         expect(world.launches).toBe(1);
+        // The turn is the reviewer's: automatic landing checks it against the change's owner.
+        expect(world.launchAuthors).toEqual(["reviewer-1"]);
         expect(world.insideSessionLock).toBe(false);
       }).pipe(Effect.provide(testLayer(world)));
     },
