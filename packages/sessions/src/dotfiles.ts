@@ -71,6 +71,20 @@ export const dotfilesCloneEnv = (
 ): Record<string, string> =>
   pin({ GIT_TERMINAL_PROMPT: "0", GIT_SSH_COMMAND: "ssh -o BatchMode=yes" });
 
+/**
+ * The environment of every git command after the clone: none of them may reach the network. A
+ * blob the filter left out would otherwise be fetched lazily, unbounded and without the clone's
+ * pinned address, by the first command that reads it (git 2.39, the Mend image's, fetches it for
+ * `cat-file -t`). git 2.45+ honours `GIT_NO_LAZY_FETCH`; `protocol.allow=never` refuses every
+ * transport on older git too.
+ */
+export const DOTFILES_LOCAL_GIT_ENV: Readonly<Record<string, string>> = {
+  GIT_NO_LAZY_FETCH: "1",
+  GIT_CONFIG_COUNT: "1",
+  GIT_CONFIG_KEY_0: "protocol.allow",
+  GIT_CONFIG_VALUE_0: "never",
+};
+
 const formatBytes = (bytes: number): string =>
   bytes >= 1024 * 1024
     ? `${Number((bytes / (1024 * 1024)).toFixed(1))}MB`
@@ -210,8 +224,8 @@ const buildRepositoryArchive = (
       Effect.forever,
     );
     // Nothing after the clone may reach the network: a blob the filter left out is refused
-    // below, never fetched (git 2.45+ honours GIT_NO_LAZY_FETCH; older git relies on the check).
-    const localEnv = { GIT_NO_LAZY_FETCH: "1" };
+    // below, never fetched.
+    const localEnv = DOTFILES_LOCAL_GIT_ENV;
     const pack = Effect.gen(function* () {
       yield* Effect.raceFirst(
         runGit(

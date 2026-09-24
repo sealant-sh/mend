@@ -10,6 +10,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   DOTFILES_CLONE_BOUNDS,
+  DOTFILES_LOCAL_GIT_ENV,
   dotfilesCloneEnv,
   resolveDotfilesArchives,
 } from "../src/dotfiles.ts";
@@ -264,6 +265,54 @@ describe("bounding the dotfiles clone", () => {
     );
     expect(message).toMatch(/has files larger than 32KB, which Mend does not download/);
     expect(message).toMatch(/dots\/Library\/cache\.bin/);
+  });
+
+  it("never fetches a left-out file after the clone, on git older than 2.45 too", async () => {
+    const origin = originWith({ ".vimrc": "x\n", "big.bin": noise(96 * 1024) });
+    const checkout = path.join(tmp("mend-dotfiles-lazy-"), "c");
+    execFileSync(
+      "git",
+      [
+        "clone",
+        "--no-checkout",
+        "--depth",
+        "1",
+        "--filter=blob:limit=32768",
+        `file://${origin}`,
+        checkout,
+      ],
+      { stdio: "pipe" },
+    );
+    const missing = () =>
+      execFileSync("git", ["rev-list", "--objects", "--missing=print", "HEAD"], {
+        cwd: checkout,
+        encoding: "utf8",
+      })
+        .split("\n")
+        .filter((line) => line.startsWith("?"));
+    expect(missing()).toHaveLength(1);
+    // git before 2.45 (the Mend image ships 2.39) ignores GIT_NO_LAZY_FETCH and would fetch the
+    // blob here, unbounded and past the pinned address; the rest of the env must refuse it.
+    const { GIT_NO_LAZY_FETCH: _ignoredByOldGit, ...olderGitEnv } = DOTFILES_LOCAL_GIT_ENV;
+    const { GIT_NO_LAZY_FETCH: _inherited, ...parentEnv } = process.env;
+    expect(() =>
+      execFileSync("git", ["cat-file", "-t", "HEAD:big.bin"], {
+        cwd: checkout,
+        env: { ...parentEnv, ...olderGitEnv },
+        stdio: "pipe",
+      }),
+    ).toThrow(/not allowed/);
+    expect(missing()).toHaveLength(1);
+
+    // Through the resolver: a subdirectory naming that file is refused with a readable message.
+    const message = await failureOf(
+      resolveDotfilesArchives({
+        repository: repository(`file://${origin}`, "big.bin"),
+        snapshot: null,
+        bounds: { ...DOTFILES_CLONE_BOUNDS, maxFileBytes: 32 * 1024 },
+      }),
+    );
+    expect(message).toMatch(/has no directory big\.bin/);
   });
 
   it("packs a tree whose large files sit outside the applied subdirectory", async () => {
