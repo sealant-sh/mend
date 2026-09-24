@@ -12,7 +12,7 @@ import {
   type SessionProcessDto,
   currentAgentProcess,
 } from "#/lib/api";
-import type { InboxRow, TreeProject } from "#/lib/model";
+import { isAgentSession, type InboxRow, type TreeProject } from "#/lib/model";
 import { queryClient } from "#/lib/queries";
 import type { ServiceGlance } from "#/lib/services";
 import { sessionActions, useViewer } from "#/lib/viewer";
@@ -352,7 +352,8 @@ export function Sidebar({
         ? actions.stop
           ? {
               label: "Stop",
-              confirm: "Stop the coding agent?",
+              // The tree lists `shell` sessions too, which run no coding agent.
+              confirm: isAgentSession(row.session) ? "Stop the coding agent?" : "Stop the shell?",
               danger: true,
               onSelect: () => void stopRow(row),
             }
