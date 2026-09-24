@@ -62,7 +62,9 @@ archives the selected tree, and sends the archive to the workspace.
 
 Saving the repository runs that same clone and archive once. If it fails (the server cannot reach
 the repository, the branch or subdirectory does not exist, or the tree is over the size limits),
-Mend does not save the repository and shows the reason.
+Mend does not save the repository and shows the reason. The check is a launch's clone, so it counts
+toward the account's launches starting at once (`MEND_BUDGET_ACCOUNT_LAUNCHES_IN_FLIGHT`); past that
+budget the save is refused until a launch settles.
 
 Automatic mode detects chezmoi and stow layouts. Other repositories are copied into the workspace
 home directory.

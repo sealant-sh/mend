@@ -159,12 +159,14 @@ import { Effect, Option, Result, Schema } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { ProjectAccess } from "../access.ts";
+import { Budgets } from "../budgets.ts";
 import { GithubIdentity } from "../github-identity.ts";
 import { HostEnvironment } from "../services/host-environment.ts";
 import {
   resolveWorkspaceEnvironment,
   saveResolvedWorkspaceEnvironment,
 } from "../services/workspace-environment.ts";
+import { budgetExceeded } from "../session-budgets.ts";
 import { makeSessionStart } from "../session-start.ts";
 import { SessionSteering } from "../session-steering.ts";
 import { TenancyConfig } from "../tenancy.ts";
@@ -995,10 +997,19 @@ export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (hand
           // Tried before it is saved, through the launch's own clone and pack (same bounds, same
           // git environment): a repository that cannot be cloned, has no such branch or
           // subdirectory, or packs past the cap is refused here with that reason, instead of
-          // being left out of every launch after it.
-          yield* resolveRepositoryArchive(payload.repository, { pinCloneEnv }).pipe(
-            Effect.mapError((error) => new SettingsFailure({ message: error.message })),
+          // being left out of every launch after it. The clone is a launch's clone, so it holds
+          // one of the account's launch slots: saves cannot start clones past that budget.
+          const budgets = yield* Budgets;
+          const tried = yield* budgets.withLaunchSlot(
+            caller.user.id,
+            resolveRepositoryArchive(payload.repository, { pinCloneEnv }).pipe(
+              Effect.mapError((error) => new SettingsFailure({ message: error.message })),
+              Effect.as(true),
+            ),
           );
+          if (tried === null) {
+            return yield* budgetExceeded("accountLaunchesInFlight", budgets.limits);
+          }
         }
         yield* userDotfiles.setRepository(caller.user.id, payload.repository);
         yield* rewarmAllHotSessions;

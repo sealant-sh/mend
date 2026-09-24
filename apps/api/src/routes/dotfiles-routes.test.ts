@@ -9,12 +9,13 @@ import { ProjectsRepo, UserDotfilesRepo } from "@mend/db";
 import type { DotfilesRepository } from "@mend/domain";
 import { SessionEngine } from "@mend/sessions";
 import { DotfilesStore, SourcePolicy } from "@mend/store";
-import { Effect, Layer, ManagedRuntime, Option } from "effect";
+import { Deferred, Effect, Fiber, Layer, ManagedRuntime, Option } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { ProjectAccess } from "../access.ts";
+import { Budgets, DEFAULT_BUDGET_LIMITS, makeBudgets } from "../budgets.ts";
 import { AuthMiddlewareLive } from "./api-live.ts";
 import { DotfilesGroupLive } from "./workbench.ts";
 
@@ -73,6 +74,7 @@ const authLayer: Layer.Layer<Auth> = Layer.succeed(Auth, {
 });
 
 type DotfilesRouteServices =
+  | Budgets
   | UserDotfilesRepo
   | DotfilesStore
   | SourcePolicy
@@ -83,6 +85,7 @@ type DotfilesRouteServices =
 /** PUT /api/dotfiles/repository; `saved` is every repository the handler wrote. */
 const putRepository = async (
   repository: Partial<DotfilesRepository> & { readonly url: string },
+  budgets: Budgets["Service"] = makeBudgets(DEFAULT_BUDGET_LIMITS),
 ): Promise<{
   readonly status: number;
   readonly body: unknown;
@@ -90,6 +93,7 @@ const putRepository = async (
 }> => {
   const saved: Array<DotfilesRepository | null> = [];
   const dependencies = Layer.mergeAll(
+    Layer.succeed(Budgets, budgets),
     Layer.succeed(UserDotfilesRepo, {
       repository: () => Effect.succeed(saved.at(-1) ?? null),
       setRepository: (_userId, value) =>
@@ -174,5 +178,31 @@ describe("PUT /api/dotfiles/repository", () => {
       message: expect.stringMatching(/no-such-branch/),
     });
     expect(result.saved).toEqual([]);
+  });
+
+  it("holds one of the account's launch slots while it clones, and refuses past the budget", async () => {
+    const url = originWith({ ".vimrc": "set nocompatible\n" });
+    const budgets = makeBudgets({ ...DEFAULT_BUDGET_LIMITS, accountLaunchesInFlight: 1 });
+    // The account's one slot is taken by a launch still starting.
+    const release = await Effect.runPromise(Deferred.make<void>());
+    const holding = Effect.runFork(
+      budgets.withLaunchSlot("user-dotfiles", Deferred.await(release)),
+    );
+    await Effect.runPromise(Effect.yieldNow);
+    const refused = await putRepository({ url }, budgets);
+    expect(refused.status).toBe(429);
+    expect(refused.body).toMatchObject({
+      _tag: "BudgetExceeded",
+      budget: "accountLaunchesInFlight",
+      limit: 1,
+    });
+    expect(refused.saved).toEqual([]);
+
+    // Once that launch settles, the slot is free again and the save clones and saves.
+    await Effect.runPromise(Deferred.succeed(release, undefined));
+    await Effect.runPromise(Fiber.join(holding));
+    const saved = await putRepository({ url }, budgets);
+    expect(saved.status).toBe(200);
+    expect(saved.saved).toHaveLength(1);
   });
 });

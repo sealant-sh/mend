@@ -10,4 +10,7 @@ session: the workspace starts without that source, the other source still applie
 records what was left out. The session page shows it, for example
 `dotfiles · repo not applied · <reason>`. Standby workspaces behave the same way. The server's clone
 of a dotfiles repository runs quietly, so a failure reason no longer includes the server's temporary
-directory.
+directory. The save's clone holds one of the account's launch slots, so saves cannot start more
+clones than the `accountLaunchesInFlight` budget allows; past it the save is refused with
+`BudgetExceeded`. The session page says the dotfiles it lists were `sent at launch`, since Mend
+observes what it shipped, not what the workspace applied.
