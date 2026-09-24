@@ -18,7 +18,7 @@ import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 
-import { gitFixtureServer } from "./packaged-git-fixture.mjs";
+import { cgiResponseHead, gitFixtureServer, uploadPackRequest } from "./packaged-git-fixture.mjs";
 import {
   assertFreshDocker,
   assertHealth,
@@ -1632,9 +1632,86 @@ test("fixture serves a real network Git clone without host sharing or traversal"
     });
     assert.equal(denied.status, 405);
     await denied.body?.cancel();
+    // Mend's dotfiles clone, flag for flag (packages/sessions/src/dotfiles.ts): shallow and
+    // partial, which dumb HTTP refuses, so the fixture must speak smart HTTP upload-pack.
+    const shallow = join(scratch, "shallow");
+    await git(
+      [
+        "clone",
+        "--quiet",
+        "--no-checkout",
+        "--depth",
+        "1",
+        "--single-branch",
+        "--no-tags",
+        "--filter=blob:limit=4194304",
+        "--branch",
+        "main",
+        `${origin}/repo.git`,
+        shallow,
+      ],
+      scratch,
+    );
+    assert.equal((await git(["rev-parse", "HEAD"], shallow)).stdout.trim(), sha);
+    assert.equal(
+      (await git(["rev-parse", "--is-shallow-repository"], shallow)).stdout.trim(),
+      "true",
+    );
+    assert.equal(
+      (await git(["config", "remote.origin.partialclonefilter"], shallow)).stdout.trim(),
+      "blob:limit=4194304",
+    );
+    assert.equal(
+      (await git(["archive", "--format=tar", "HEAD"], shallow)).stdout.includes("fixture content"),
+      true,
+    );
+    // Upload-pack only: nothing can push, and a smart request outside the root finds nothing.
+    for (const [path, method] of [
+      ["/repo.git/info/refs?service=git-receive-pack", "GET"],
+      ["/repo.git/git-receive-pack", "POST"],
+      ["/%2e%2e/info/refs?service=git-upload-pack", "GET"],
+      ["/missing.git/git-upload-pack", "POST"],
+    ]) {
+      const response = await fetch(`${origin}${path}`, {
+        method,
+        ...(method === "POST" ? { body: "0000" } : {}),
+      });
+      assert.ok([403, 404, 405].includes(response.status), `${method} ${path} must be refused`);
+      await response.body?.cancel();
+    }
   } finally {
     server.closeAllConnections();
     await new Promise((resolve) => server.close(resolve));
     await rm(scratch, { recursive: true, force: true });
   }
+});
+
+test("fixture routes only upload-pack to git http-backend and reads its CGI head", () => {
+  assert.equal(uploadPackRequest("GET", "/dots.git/info/refs", "git-upload-pack"), "/dots.git");
+  assert.equal(uploadPackRequest("POST", "/dots.git/git-upload-pack", null), "/dots.git");
+  for (const [method, path, service] of [
+    ["GET", "/dots.git/info/refs", "git-receive-pack"],
+    ["POST", "/dots.git/git-receive-pack", null],
+    ["GET", "/dots.git/info/refs", null],
+    ["GET", "/dots.git/git-upload-pack", null],
+    ["POST", "/dots.git/info/refs", "git-upload-pack"],
+  ])
+    assert.equal(uploadPackRequest(method, path, service), null, `${method} ${path} ${service}`);
+
+  assert.equal(cgiResponseHead(Buffer.from("Content-Type: text/plain\r\n")), null);
+  const ok = cgiResponseHead(
+    Buffer.from("Content-Type: application/x-git-upload-pack-result\r\n\r\n0008NAK\n"),
+  );
+  assert.equal(ok.status, 200);
+  assert.deepEqual(ok.headers, { "Content-Type": "application/x-git-upload-pack-result" });
+  assert.equal(ok.body.toString(), "0008NAK\n");
+  const refused = cgiResponseHead(Buffer.from("Status: 403 Forbidden\nExpires: 0\n\nno"));
+  assert.equal(refused.status, 403);
+  assert.deepEqual(refused.headers, { Expires: "0" });
+  assert.equal(refused.body.toString(), "no");
+  // A body that happens to hold a blank line never ends the head early.
+  assert.equal(
+    cgiResponseHead(Buffer.from("Status: 200 OK\r\n\r\nbody\n\nmore")).body.toString(),
+    "body\n\nmore",
+  );
 });
