@@ -44,12 +44,15 @@ const lines = (facts: ReadonlyArray<LandingFact>) =>
 
 const nothingObserved = { originCommitsUnseen: null, filesChangedSinceLanding: null };
 
+/** One session of a worktree, as `changeOwnerOf` reads it. */
+const worktreeSession = (id: string, ownerUserId: string | null, at: string) => ({
+  id,
+  ownerUserId,
+  createdAt: new Date(at),
+});
+
 describe("changeOwnerOf (docs/adr/0007, Who lands)", () => {
-  const session = (id: string, ownerUserId: string | null, at: string) => ({
-    id,
-    ownerUserId,
-    createdAt: new Date(at),
-  });
+  const session = worktreeSession;
 
   it("is the owner of the worktree's first session, whoever joined it since", () => {
     expect(
