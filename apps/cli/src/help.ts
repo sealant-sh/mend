@@ -542,9 +542,42 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "your dotfiles on the server: repo and synced files",
     synopsis: ["[show]"],
     description: [
-      "Workspaces apply your dotfiles at launch, from a repository you point the server at or from files mend dotfiles sync captured. This shows what is set.",
+      "Workspaces apply your dotfiles at launch, from a repository you point the server at or from files mend dotfiles sync captured. This shows what is set, including the manager the repository applies with.",
     ],
-    see: ["dotfiles sync"],
+    see: ["dotfiles repo", "dotfiles sync"],
+  },
+  {
+    name: "dotfiles repo",
+    section: "project setup",
+    summary: "set or clear the repository the server clones at launch",
+    synopsis: [
+      "<url> [--ref <r>] [--subdirectory <d>] [--manager <m>] [--no-bootstrap]",
+      "--clear",
+    ],
+    description: [
+      "The server clones the repository as you at every launch and sends its tree to the workspace. Saving tries that clone once; a repository it cannot clone is not saved, and the reason is printed.",
+      "This sets the whole repository: an option left out takes its default. --clear removes it.",
+      "The manager decides how the tree lands in the home directory. auto uses chezmoi for a chezmoi source and stow only when the top level holds nothing but package directories; any other tree is copied. copy copies the tree as it is, stow links each top-level directory as a stow package, and chezmoi runs chezmoi apply with the tree as its source.",
+    ],
+    options: [
+      { flag: "--ref <r>", text: "the branch to clone. Default: the remote's default branch" },
+      {
+        flag: "--subdirectory <d>",
+        text: "apply only this directory of the repository, e.g. dots. Default: the root",
+      },
+      { flag: "--manager <m>", text: "auto, copy, stow or chezmoi. Default: auto" },
+      { flag: "--no-bootstrap", text: "do not run ./install.sh when the tree has one" },
+      { flag: "--clear", text: "remove the repository" },
+    ],
+    examples: [
+      {
+        command:
+          "mend dotfiles repo git@github.com:you/dots.git --subdirectory dots --manager copy",
+        text: "",
+      },
+      { command: "mend dotfiles repo --clear", text: "" },
+    ],
+    see: ["dotfiles", "dotfiles sync"],
   },
   {
     name: "dotfiles sync",
@@ -555,7 +588,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "Copies the named files from your home directory into your store on the server. --all takes the known shell, git, and editor files. Setups that rely on ZDOTDIR do not transfer.",
     ],
     options: [{ flag: "--all", text: "every known config file" }],
-    see: ["dotfiles"],
+    see: ["dotfiles", "dotfiles repo"],
   },
   {
     name: "keys init",
