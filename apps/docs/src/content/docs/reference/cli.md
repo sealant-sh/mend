@@ -184,12 +184,14 @@ when tmux, Zellij, or another outer tool owns detaching.
 
 ## Dotfiles commands
 
-| Command                         | Purpose                                                 |
-| ------------------------------- | ------------------------------------------------------- |
-| `mend dotfiles`                 | Show the configured repository and synced file snapshot |
-| `mend dotfiles sync`            | Preview known dotfile candidates on this machine        |
-| `mend dotfiles sync --all`      | Replace the snapshot with all discovered candidates     |
-| `mend dotfiles sync <paths...>` | Replace the snapshot with selected home-relative paths  |
+| Command                                                                                      | Purpose                                                                                                                   |
+| -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------- |
+| `mend dotfiles`                                                                              | Show the configured repository, with its manager, and the synced file snapshot                                            |
+| `mend dotfiles repo <url> [--ref <r>] [--subdirectory <d>] [--manager <m>] [--no-bootstrap]` | Set the repository the server clones at launch; `<m>` is `auto`, `copy`, `stow` or `chezmoi`; saving tries the clone once |
+| `mend dotfiles repo --clear`                                                                 | Remove the repository                                                                                                     |
+| `mend dotfiles sync`                                                                         | Preview known dotfile candidates on this machine                                                                          |
+| `mend dotfiles sync --all`                                                                   | Replace the snapshot with all discovered candidates                                                                       |
+| `mend dotfiles sync <paths...>`                                                              | Replace the snapshot with selected home-relative paths                                                                    |
 
 Read [Dotfiles](/guides/dotfiles/) before syncing credentials or machine-specific files.
 
