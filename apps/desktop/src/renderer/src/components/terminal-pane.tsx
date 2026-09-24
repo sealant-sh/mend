@@ -302,10 +302,17 @@ export function TerminalPane({
           // A shell is steered like the agent: without control, its output is read, not typed in.
           <LogsView processId={tab.processId} />
         ) : isSessionTab && session !== null && live && agentPty !== null && !control.steer ? (
-          recordProcess === null ? (
+          // Without steering, the live agent is read from its record: its PTY output when the
+          // agent process holds one, else the conversation (a detail with no agent row, or an
+          // agent whose PTY handle sits on the session only, has no process output to replay).
+          detail.isPending ? (
             <p className="p-4 font-mono text-[11.5px] text-term-faint">reading the session…</p>
-          ) : (
+          ) : recordProcess !== null ? (
             <RecordReplay key={recordProcess.id} processId={recordProcess.id} from={from} />
+          ) : session.sealantRunId === null ? (
+            <p className="p-4 font-mono text-[11.5px] text-term-faint">no record yet</p>
+          ) : (
+            <TranscriptView sessionId={tab.sessionId} />
           )
         ) : isSessionTab && session !== null && agentPty === null && live ? (
           <p className="pointer-events-none absolute right-3 bottom-2 font-mono text-[11.5px] text-term-faint">
