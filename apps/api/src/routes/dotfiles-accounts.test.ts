@@ -166,6 +166,11 @@ describe("dotfiles routes on a single-tenant instance", () => {
       [0, 1, 2, 3, 4].map((index) => file(`.part${index}`, Buffer.alloc(1024 * 1024))),
       /^snapshot exceeds the 4MB cap/,
     ],
+    [
+      "a merge that would hold more than 4MB with the file already there",
+      [0, 1, 2, 3].map((index) => file(`.part${index}`, Buffer.alloc(1024 * 1024))),
+      /^snapshot exceeds the 4MB cap with the files it already holds/,
+    ],
     ["a path above home", [file("../outside", "x")], /non-home-relative path: \.\.\/outside$/],
     ["an absolute path", [file("/etc/profile", "x")], /non-home-relative path: \/etc\/profile$/],
     [

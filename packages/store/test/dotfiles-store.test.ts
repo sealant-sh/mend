@@ -167,4 +167,59 @@ describe("DotfilesStore", () => {
     );
     expect(Result.isFailure(hostileUser)).toBe(true);
   });
+
+  it("caps a merge at 4MB counting the files it keeps", async () => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-dotstore-"));
+    const mb = Buffer.alloc(1024 * 1024).toString("base64");
+    const result = await run(
+      root,
+      Effect.gen(function* () {
+        const store = yield* DotfilesStore;
+        yield* store.snapshot(
+          "user_a",
+          [0, 1, 2].map((index) => ({ path: `.part${index}`, contentsBase64: mb })),
+          { source: "t", merge: false },
+        );
+        // Replacing a kept file does not count it twice: 3MB → 4MB is still inside the cap.
+        const within = yield* store.snapshot(
+          "user_a",
+          [
+            { path: ".part0", contentsBase64: mb },
+            { path: ".part3", contentsBase64: mb },
+          ],
+          { source: "t", merge: true },
+        );
+        // One byte more than the 4MB the snapshot now holds.
+        const over = yield* store
+          .snapshot("user_a", [{ path: ".one", contentsBase64: b64("x") }], {
+            source: "t",
+            merge: true,
+          })
+          .pipe(Effect.result);
+        const afterRefusal = yield* store.current("user_a");
+        // A replace is measured on its own files only.
+        const replaced = yield* store.snapshot(
+          "user_a",
+          [{ path: ".one", contentsBase64: b64("x") }],
+          { source: "t", merge: false },
+        );
+        return { within, over, afterRefusal, replaced };
+      }),
+    );
+    expect(result.within.files.map((file) => file.path)).toEqual([
+      ".part0",
+      ".part1",
+      ".part2",
+      ".part3",
+    ]);
+    expect(Result.isFailure(result.over)).toBe(true);
+    if (Result.isFailure(result.over)) {
+      expect(result.over.failure.message).toBe(
+        "snapshot exceeds the 4MB cap with the files it already holds — trim the selection",
+      );
+    }
+    // The refused merge left the snapshot as it was.
+    expect(result.afterRefusal?.sha).toBe(result.within.sha);
+    expect(result.replaced.files.map((file) => file.path)).toEqual([".one"]);
+  });
 });
