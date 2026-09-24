@@ -212,9 +212,10 @@ export function TerminalPane({
     control.own &&
     detail.data !== undefined &&
     CONVERSATION_HARNESSES.has(session.harness) &&
-    // A settled session that left no conversation behind has nothing to continue.
-    session.hasTranscript !== false &&
-    (currentAgent !== null || !live)
+    // Only an agent that ran has a provider session to continue: not a launch that failed
+    // before its process existed, nor a settled one that left no conversation behind.
+    currentAgent !== null &&
+    session.hasTranscript !== false
       ? conversation
         ? "pty"
         : "protocol"
