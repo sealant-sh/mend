@@ -69,6 +69,20 @@ describe("the link page", () => {
   });
 });
 
+describe("Settings → Slack", () => {
+  it("offers every on-or-off setting, Land automatically included", () => {
+    expect(SLACK_DISPLAY_SETTINGS.map((setting) => setting.key)).toEqual([
+      "showAgentMessages",
+      "showDiffs",
+      "externalChannels",
+      "landAutomatically",
+    ]);
+    const land = SLACK_DISPLAY_SETTINGS.find((setting) => setting.key === "landAutomatically");
+    expect(land?.off).toContain("Push and open pull request");
+    expect(land?.on).toContain("A project set to off wins");
+  });
+});
+
 describe("Slack copy", () => {
   it("reports and never judges", () => {
     const copy = [

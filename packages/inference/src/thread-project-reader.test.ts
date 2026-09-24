@@ -80,6 +80,7 @@ describe("ThreadProjectReader", () => {
               projectId: "p-billing",
               likeliest: ["p-web", "p-billing"],
               options: { harness: "codex", model: null, effort: "high", branch: "release/2.3" },
+              intent: "change",
             }),
           ],
           requests,
@@ -89,6 +90,7 @@ describe("ThreadProjectReader", () => {
           projectId: "p-billing",
           likeliest: ["p-billing", "p-web"],
           options: { harness: "codex", model: null, effort: "high", branch: "release/2.3" },
+          intent: "change",
         });
         expect(requests).toHaveLength(1);
         expect(requests[0]).toEqual(
@@ -123,7 +125,29 @@ describe("ThreadProjectReader", () => {
         ],
         requests,
       );
-      expect(answer).toEqual({ projectId: null, likeliest: ["p-web"], options: none });
+      expect(answer).toEqual({
+        projectId: null,
+        likeliest: ["p-web"],
+        options: none,
+        intent: null,
+      });
+    });
+  });
+
+  it.effect("reads the request's intent in the same call, and drops one it cannot use", () => {
+    const requests: Array<InferenceRequest> = [];
+    return Effect.gen(function* () {
+      const question = yield* readWith(
+        [Effect.succeed({ projectId: "p-web", likeliest: [], options: none, intent: "question" })],
+        requests,
+      );
+      expect(question.intent).toBe("question");
+      expect(requests[0]?.system).toContain('"intent"');
+      const odd = yield* readWith(
+        [Effect.succeed({ projectId: "p-web", likeliest: [], options: none, intent: "both" })],
+        [],
+      );
+      expect(odd).toMatchObject({ projectId: "p-web", intent: null });
     });
   });
 

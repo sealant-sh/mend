@@ -1,5 +1,12 @@
 import {
   EFFORT_LEVELS,
+  landingFactLine,
+  landingFacts,
+  notLandedReasonOf,
+  type AgentTurn,
+  type ChangeLanding,
+  type DecidedTurn,
+  type NotLandedReason,
   type SlackProjectSource,
   type SlackSessionState,
 } from "@mend/domain/workbench";
@@ -9,6 +16,7 @@ import type {
   ActionsBlock,
   ButtonElement,
   PlainText,
+  SlackBlock,
   SlackMessage,
   StaticSelectElement,
 } from "./blocks.ts";
@@ -31,6 +39,8 @@ export const SLACK_ACTIONS = {
   setChannelDefault: "mend_set_channel_default",
   otherChannelDefault: "mend_other_channel_default",
   clearChannelDefault: "mend_clear_channel_default",
+  landChange: "mend_land_change",
+  openPullRequest: "mend_open_pull_request",
 } as const;
 
 /** A project button's `action_id`: unique within its block, and starts with `pickProject`. */
@@ -146,6 +156,11 @@ export interface StatusInput {
    * session's first turn completes; see `switchOffered`). Absent or null offers no button.
    */
   readonly switchSession?: string | null;
+  /**
+   * The change's landing as the thread reads it (`landingStatusLines`), each on a line of its own
+   * under the status line; absent or empty says nothing about landing.
+   */
+  readonly landing?: ReadonlyArray<string>;
 }
 
 /** `billing-api · from the thread · claude · running · mend/flaky-login-test`. */
@@ -162,10 +177,11 @@ export const statusLine = (input: StatusInput): string =>
 /**
  * The one status message, which Mend edits in place as the session moves. Until the first turn
  * completes it also offers "Switch project", which restarts the request in a project the
- * requester picks.
+ * requester picks. Once the change lands, or a turn's change does not, the lines under it say so
+ * (docs/adr/0007-landing.md, "What the thread sees"), and a later landing edits them in place.
  */
 export const statusMessage = (input: StatusInput): SlackMessage => {
-  const line = escapeSlack(statusLine(input));
+  const line = [statusLine(input), ...(input.landing ?? [])].map(escapeSlack).join("\n");
   const switchSession = input.switchSession ?? null;
   const switching: ReadonlyArray<ActionsBlock> =
     switchSession === null
@@ -447,6 +463,181 @@ export const approvalMessage = (input: {
   );
 };
 
+// ---------------------------------------------------------------------------
+// Landing (docs/adr/0007-landing.md): the status message's landing lines, and the offer to land a
+// change a completed turn did not.
+// ---------------------------------------------------------------------------
+
+/** The remote's or `gh`'s words run to a line of their own; the status message cuts them here. */
+const LANDING_WORDS_LIMIT = 300;
+
+/** The remote's own words for a refusal or a failure, on one line. */
+const remoteWords = (message: string | null): string => {
+  const words = (message ?? "").replace(/\s+/g, " ").trim();
+  return clip(words === "" ? "no reason given" : words, LANDING_WORDS_LIMIT);
+};
+
+type LandingSeen = Pick<
+  ChangeLanding,
+  "outcome" | "remoteBranch" | "pushedSha" | "pullRequest" | "message"
+>;
+
+/**
+ * One landing as the thread reads it: `pushed · mend/fix-login · pull request #412 · opened`,
+ * `… · updated` when an earlier landing recorded the same pull request, its state once it is
+ * merged or closed, or the refusal or failure in the remote's own words. `earlier` are the
+ * change's landings before this one; `how` is what the landing itself reported doing with the
+ * pull request, when the caller has it, and wins over what the record implies.
+ */
+export const landingLine = (
+  landing: LandingSeen,
+  earlier: ReadonlyArray<LandingSeen>,
+  how: "opened" | "updated" | null = null,
+): string => {
+  if (landing.outcome === "refused") {
+    return `push refused · ${landing.remoteBranch} · ${remoteWords(landing.message)}`;
+  }
+  if (landing.pushedSha === null) return `landing failed · ${remoteWords(landing.message)}`;
+  const pushed = `pushed · ${landing.remoteBranch}`;
+  if (landing.outcome === "failed") {
+    return `${pushed} · pull request step failed · ${remoteWords(landing.message)}`;
+  }
+  const pullRequest = landing.pullRequest;
+  if (pullRequest === null) return pushed;
+  const recorded = earlier.some((before) => before.pullRequest?.number === pullRequest.number);
+  const done =
+    pullRequest.state === "open" ? (how ?? (recorded ? "updated" : "opened")) : pullRequest.state;
+  return `${pushed} · pull request #${pullRequest.number} · ${done}`;
+};
+
+/**
+ * What the status message says about landing: the latest landing, then, when the latest turn Mend
+ * decided about left its change unlanded and nothing landed since, why (`changes not landed · the
+ * request read as a question`), or `intent not read` when a landing went ahead without a reading.
+ * `landings` are newest first.
+ */
+export const landingStatusLines = (input: {
+  readonly landings: ReadonlyArray<ChangeLanding>;
+  readonly latestTurn: DecidedTurn | null;
+}): ReadonlyArray<string> => {
+  const [latest, ...earlier] = input.landings;
+  const facts = landingFacts({
+    landings: input.landings,
+    originCommitsUnseen: null,
+    filesChangedSinceLanding: null,
+    agentRefUpdates: [],
+    latestTurn: input.latestTurn,
+  });
+  const turnLines = facts.flatMap((fact) =>
+    fact._tag === "not-landed" || fact._tag === "intent-not-read"
+      ? [landingFactLine(fact, new Date(0))]
+      : [],
+  );
+  return [...(latest === undefined ? [] : [landingLine(latest, earlier)]), ...turnLines];
+};
+
+/** A completed turn's change that did not land, which the owner can land from the thread. */
+export interface LandOffer {
+  readonly sessionId: string;
+  /** The turn whose change it is: the thread offers it once. */
+  readonly turnId: string;
+  readonly reason: NotLandedReason;
+  /** A pull request Mend opened is still open, and the landing updates it. */
+  readonly updates: boolean;
+}
+
+/**
+ * The offer for the latest turn Mend decided about, or null: only when the turn left its change
+ * unlanded (a question, `autopr=false`, automatic landing off, someone other than the owner) and
+ * no landing was made since it ended. `landings` are newest first.
+ */
+export const landOfferOf = (input: {
+  readonly sessionId: string;
+  readonly turn: Pick<AgentTurn, "id" | "landing" | "endedAt"> | null;
+  readonly landings: ReadonlyArray<Pick<ChangeLanding, "createdAt" | "pullRequest">>;
+}): LandOffer | null => {
+  const { turn } = input;
+  if (turn === null || turn.endedAt === null) return null;
+  const reason = notLandedReasonOf(turn.landing);
+  if (reason === null) return null;
+  const endedAt = turn.endedAt;
+  if (input.landings.some((landing) => landing.createdAt >= endedAt)) return null;
+  return {
+    sessionId: input.sessionId,
+    turnId: turn.id,
+    reason,
+    updates: input.landings.some((landing) => landing.pullRequest?.state === "open"),
+  };
+};
+
+/** The button's words: the ADR's, or "update" once an open pull request is recorded. */
+export const landButtonLabel = (offer: Pick<LandOffer, "updates">): string =>
+  offer.updates ? "Push and update pull request" : "Push and open pull request";
+
+/**
+ * The offer's blocks: why the change did not land, and "Push and open pull request". Everyone in
+ * the thread sees the button; it lands only for the session's owner, as them, and tells anyone
+ * else so where only they read it.
+ */
+export const landOfferBlocks = (
+  offer: LandOffer,
+  ownerSlackUserId: string,
+): ReadonlyArray<SlackBlock> => [
+  {
+    type: "section",
+    text: {
+      type: "mrkdwn",
+      text: escapeSlack(landingFactLine({ _tag: "not-landed", reason: offer.reason }, new Date(0))),
+    },
+  },
+  {
+    type: "actions",
+    elements: [
+      {
+        type: "button",
+        action_id: SLACK_ACTIONS.landChange,
+        text: plain(landButtonLabel(offer)),
+        value: offer.sessionId,
+        style: "primary",
+      },
+    ],
+  },
+  {
+    type: "context",
+    elements: [
+      {
+        type: "mrkdwn",
+        text: `lands as the session's owner, <@${ownerSlackUserId}> · only they can use it`,
+      },
+    ],
+  },
+];
+
+/** The offer as a reply of its own. */
+export const landOfferMessage = (offer: LandOffer, ownerSlackUserId: string): SlackMessage => ({
+  text: escapeSlack(landingFactLine({ _tag: "not-landed", reason: offer.reason }, new Date(0))),
+  blocks: landOfferBlocks(offer, ownerSlackUserId),
+});
+
+/** A press of the button that landed nothing, in the reason's own words; only the presser sees it. */
+export const notLanded = (reason: string): SlackMessage => {
+  const text = escapeSlack(`not pushed · ${reason}`);
+  return { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] };
+};
+
+/** What a landing from the button did, as its line; only the owner who pressed it sees this. */
+export const landedMessage = (line: string, pullRequestUrl: string | null): SlackMessage => {
+  const text = escapeSlack(line);
+  return pullRequestUrl === null
+    ? { text, blocks: [{ type: "section", text: { type: "mrkdwn", text } }] }
+    : lineWithButton(text, {
+        type: "button",
+        action_id: SLACK_ACTIONS.openPullRequest,
+        text: plain("Open the pull request"),
+        url: pullRequestUrl,
+      });
+};
+
 /** The review tour's own words, as Mend wrote them with inference from the diff and the record. */
 export interface TourSummary {
   readonly summary: string;
@@ -467,16 +658,22 @@ export const SUMMARY_PROVENANCE =
  * The end-of-session reply, once Mend's passes over the change have run: the review tour's summary
  * and approach, then what the review pass drafted, with a "Review in Mend" button. Either part may
  * be missing: the summary where agent messages are not shown or the tour did not run, the count
- * where no review pass ran. Zero drafts is said out loud; it is an outcome, not silence. Null when
- * there is neither.
+ * where no review pass ran. Zero drafts is said out loud; it is an outcome, not silence. When the
+ * turn's change did not land, the reply ends with the offer to land it (`landOfferBlocks`). Null
+ * when there is none of these.
  */
 export const reviewMessage = (input: {
   readonly summary: TourSummary | null;
   readonly drafts: DraftCounts | null;
   readonly url: string;
+  readonly offer?: { readonly offer: LandOffer; readonly ownerSlackUserId: string } | null;
 }): SlackMessage | null => {
   const { summary, drafts } = input;
-  if (summary === null && drafts === null) return null;
+  const offer = input.offer ?? null;
+  if (summary === null && drafts === null) {
+    return offer === null ? null : landOfferMessage(offer.offer, offer.ownerSlackUserId);
+  }
+  const offered = offer === null ? [] : landOfferBlocks(offer.offer, offer.ownerSlackUserId);
   const counted =
     drafts === null
       ? ""
@@ -491,7 +688,7 @@ export const reviewMessage = (input: {
     text: plain("Review in Mend"),
     url: input.url,
   });
-  if (summary === null) return review;
+  if (summary === null) return { text: review.text, blocks: [...review.blocks, ...offered] };
   const approach = summary.approach?.trim() ?? "";
   const body = [
     `**Summary**\n${summary.summary.trim()}`,
@@ -503,6 +700,7 @@ export const reviewMessage = (input: {
       { type: "markdown", text: clip(body, AGENT_MESSAGE_LIMIT) },
       { type: "context", elements: [{ type: "mrkdwn", text: SUMMARY_PROVENANCE }] },
       ...review.blocks,
+      ...offered,
     ],
   };
 };
@@ -823,6 +1021,7 @@ export const helpMessage = (input: {
     `• \`harness=\` or ${harnesses}: the harness; your default otherwise`,
     "• `model=` or `with <model>`: the harness's model",
     `• \`effort=\` or \`with high effort\`: ${EFFORT_LEVELS.join(", ")}`,
+    "• `autopr=true` or `autopr=false`: whether this request's change is pushed and its pull request opened when a turn completes; the Slack app's setting otherwise",
     "",
     "*Commands*",
     `• \`${at} new <request>\`: another session in this thread`,

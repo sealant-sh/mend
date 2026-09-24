@@ -1,32 +1,35 @@
 # Slack: start a session by mentioning Mend
 
-Status: proposed 2026-09-22. It commits Mend to working in Slack the way Cursor's Slack integration
-does. A person writes `@mend fix the flaky login test` in a thread. Mend reads the thread, works out
-which project the thread is about, and starts a session for that person. The session reports into
-the thread, and a later `@mend` in the same thread adds a follow-up to it. This ADR names the
-identity, transport, inference, storage and disclosure rules this needs, and one refactor: Slack
-must start sessions through the same checks as the web app, not a second, weaker path.
+Status: proposed 2026-09-22, amended 2026-09-24 by ADR 0007 (landing): a request that asks for a
+change now ends in a pushed branch and a pull request, as Cursor's does. It commits Mend to working
+in Slack the way Cursor's Slack integration does. A person writes `@mend fix the flaky login test`
+in a thread. Mend reads the thread, works out which project the thread is about, and starts a
+session for that person. The session reports into the thread, and a later `@mend` in the same thread
+adds a follow-up to it. This ADR names the identity, transport, inference, storage and disclosure
+rules this needs, and one refactor: Slack must start sessions through the same checks as the web
+app, not a second, weaker path.
 
 **What this ADR does not claim.** It does not make Slack a place to review a change. Review stays in
-Mend. Slack gets a status, the agent's summary and a link.
+Mend. Slack gets a status, the agent's summary, a link, and (ADR 0007) the branch and pull request
+the change landed as.
 
 ## The model: Cursor's Slack integration
 
 Cursor's integration is the behaviour people already expect from `@cursor`, so Mend copies its shape
 and changes it only where Mend's own model requires it:
 
-| Cursor                                                                                                       | Mend                                                                                                   |
-| ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------ |
-| `@Cursor <prompt>` starts a cloud agent                                                                      | `@mend <prompt>` starts a session                                                                      |
-| Natural options (`with opus`, `in acme/backend`) and inline ones (`model=opus`)                              | The same, with `project=`, `branch=`, `harness=`, `model=`, `effort=`                                  |
-| The repository is picked from the message, recent activity, routing rules, channel default, personal default | The project is picked from the message, **the thread**, the channel default and the personal default   |
-| It reads the whole thread as context                                                                         | The same                                                                                               |
-| `@Cursor <prompt>` in a thread with an agent is a follow-up; `@Cursor agent …` starts a new one              | The same, with `@mend new …`                                                                           |
-| Reactions ⏳ ✅ ❌, status in the thread, an "Open in Cursor" button, a PR link                              | Reactions, one status message edited in place, an "Open in Mend" button, the summary and a review link |
-| `@Cursor help`, `@Cursor settings`, `@Cursor list my agents`                                                 | `@mend help`, `@mend settings`, `@mend list`                                                           |
-| A setting for whether summaries and diffs appear in Slack, and in external channels                          | The same setting, owned by an organization owner                                                       |
-| The Slack account is linked to a Cursor account                                                              | The same, by an explicit link                                                                          |
-| It opens a PR by default (`autopr`)                                                                          | No PR. Landing a change is publication, and it is optional (plan §5)                                   |
+| Cursor                                                                                                       | Mend                                                                                                                                                                                                                                                                                        |
+| ------------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@Cursor <prompt>` starts a cloud agent                                                                      | `@mend <prompt>` starts a session                                                                                                                                                                                                                                                           |
+| Natural options (`with opus`, `in acme/backend`) and inline ones (`model=opus`)                              | The same, with `project=`, `branch=`, `harness=`, `model=`, `effort=`                                                                                                                                                                                                                       |
+| The repository is picked from the message, recent activity, routing rules, channel default, personal default | The project is picked from the message, **the thread**, the channel default and the personal default                                                                                                                                                                                        |
+| It reads the whole thread as context                                                                         | The same                                                                                                                                                                                                                                                                                    |
+| `@Cursor <prompt>` in a thread with an agent is a follow-up; `@Cursor agent …` starts a new one              | The same, with `@mend new …`                                                                                                                                                                                                                                                                |
+| Reactions ⏳ ✅ ❌, status in the thread, an "Open in Cursor" button, a PR link                              | Reactions, one status message edited in place with the branch and the pull request, an "Open in Mend" button, the summary and a review link                                                                                                                                                 |
+| `@Cursor help`, `@Cursor settings`, `@Cursor list my agents`                                                 | `@mend help`, `@mend settings`, `@mend list`                                                                                                                                                                                                                                                |
+| A setting for whether summaries and diffs appear in Slack, and in external channels                          | The same setting, owned by an organization owner                                                                                                                                                                                                                                            |
+| The Slack account is linked to a Cursor account                                                              | The same, by an explicit link                                                                                                                                                                                                                                                               |
+| It opens a PR by default (`autopr`)                                                                          | The same, by default and as the requester: a request that asks for a change is pushed and its pull request opened or updated when a turn completes (ADR 0007). `autopr=false`, the app's "Land automatically" setting or the project's setting turns it off, and a question never opens one |
 
 ## Context
 
@@ -151,13 +154,14 @@ inline options come first:
 @mend project="billing api" add a --dry-run flag
 ```
 
-| Option    | Natural form                   | Meaning                                            |
-| --------- | ------------------------------ | -------------------------------------------------- |
-| `project` | `in <project>`                 | The project, by name or by repository (`acme/api`) |
-| `branch`  | `from <branch>`, `on <branch>` | The base branch; the project's default otherwise   |
-| `harness` | `with claude`, `with codex`    | The harness; the person's default otherwise        |
-| `model`   | `with opus`                    | The harness's model                                |
-| `effort`  | `with high effort`             | The harness's effort                               |
+| Option    | Natural form                               | Meaning                                                   |
+| --------- | ------------------------------------------ | --------------------------------------------------------- |
+| `project` | `in <project>`                             | The project, by name or by repository (`acme/api`)        |
+| `branch`  | `from <branch>`, `on <branch>`             | The base branch; the project's default otherwise          |
+| `harness` | `with claude`, `with codex`                | The harness; the person's default otherwise               |
+| `model`   | `with opus`                                | The harness's model                                       |
+| `effort`  | `with high effort`                         | The harness's effort                                      |
+| `autopr`  | none: `autopr=true` or `autopr=false` only | Whether the change lands when a turn completes (ADR 0007) |
 
 Inline options are parsed exactly. Natural options are read by inference, together with the choice
 of project below. An inline option always wins over a natural one, and a later duplicate wins over
@@ -186,7 +190,11 @@ too.
 The inference step is given each candidate's name, its `originUrl`, its default branch, and the
 top-level entries of its default branch's tree. It returns one project, or none. It never returns a
 project that is not a candidate, and the result is checked against the list. The step runs when a
-session starts, never on every message in a channel.
+session starts, never on every message in a channel. The same call reads the request as a `change`
+or a `question` (ADR 0007, "Questions do not open pull requests"), and Mend records that reading on
+the opening turn, so automatic landing asks for no reading of its own. When the project was chosen
+without inference, and for follow-ups, automatic landing reads the turn's intent itself.
+`autopr=true` and `autopr=false` are recorded as the turn's intent and win over any reading.
 
 When the answer comes from inference or from a default, Mend says which project and why in the
 status message (`billing-api · from the thread`, `billing-api · channel default`). When nothing
@@ -221,6 +229,7 @@ The session is started like this:
 
 - as the linked user, who owns it;
 - in `protocol` mode, the one mode whose turns Mend can read back and submit to;
+- with `autopr=` as the session's own automatic-landing override, when the request gives it;
 - on a new worktree from the chosen base branch;
 - with the chosen harness, model and effort;
 - with the project's auto-naming settings.
@@ -259,7 +268,13 @@ Mend posts only into the thread the request came from.
 - **One status message**, which Mend edits in place (`chat.update`). It shows the project and why it
   was chosen, the harness, the worktree branch and the observed state, with an "Open in Mend"
   button. For example: `billing-api · from the thread · claude · running · mend/flaky-login-test`,
-  then `completed · observed · 4 files · +120 −30`.
+  then `completed · observed · 4 files · +120 −30`. Once the change lands (ADR 0007), a line under
+  it gives the branch and the pull request
+  (`pushed · mend/flaky-login-test · pull request #412 · opened`), and each later landing edits that
+  line (`… · updated`) instead of adding a message. A refused push or a failed pull request step
+  reads in the remote's own words (`push refused · mend/flaky-login-test · …`), and nothing retries.
+  A completed turn whose change did not land says why
+  (`changes not landed · the request read as a question`).
 - **The agent's plan and closing message** for each turn, as replies, each cut at 3,000 characters
   with a link to the rest. Cursor posts a plan before it changes code. Mend posts the agent's first
   message when it is one, and does not write a plan of its own. A plan with no text of its own, such
@@ -272,6 +287,15 @@ Mend posts only into the thread the request came from.
   summary is not the agent's account of itself: Mend writes it using inference on the diff and the
   session record, and the reply says so. It describes what changed and how the session went about
   it, and gives no verdict. Mend has no proposed-check entity yet, so the count names none.
+- **"Push and open pull request"**, when a completed turn left a change that did not land: the
+  request read as a question, it said `autopr=false`, automatic landing is off, or someone other
+  than the owner sent the follow-up (ADR 0007). The button rides the end-of-session reply when that
+  reply goes out in the same look; otherwise it is a reply of its own, posted when the turn is
+  decided, since the review tour can come much later or not at all. Everyone in the thread sees it.
+  It lands only for the session's owner, as them and through the same landing as the web app's Land
+  panel, and tells anyone else so in an ephemeral reply. It reads "Push and update pull request"
+  once an open pull request is recorded. The thread is offered each turn once, and a landing since
+  the turn ended answers it.
 
 A session started from Slack always gets a review tour when it settles with a change, even where the
 project's automatic tour is off, since the summary comes from it. The tour is the same
@@ -282,11 +306,12 @@ for each tour Mend composes, so a pass that finishes after the reply does not re
 
 An organization owner decides how much goes into Slack, as Cursor's admins do:
 
-| Setting             | Off                                                       | On                                                                                               |
-| ------------------- | --------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
-| Show agent messages | Status, reactions and links only                          | Also the plan, closing messages, questions and the summary (default)                             |
-| Show diffs          | Changed files and line counts only (default)              | Also the diff of each changed file, up to 3,000 characters, once, when the session first settles |
-| External channels   | Only status and links in Slack Connect channels (default) | The two settings above apply there too                                                           |
+| Setting             | Off                                                                     | On                                                                                                                                                  |
+| ------------------- | ----------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| Show agent messages | Status, reactions and links only                                        | Also the plan, closing messages, questions and the summary (default)                                                                                |
+| Show diffs          | Changed files and line counts only (default)                            | Also the diff of each changed file, up to 3,000 characters, once, when the session first settles                                                    |
+| External channels   | Only status and links in Slack Connect channels (default)               | The two settings above apply there too                                                                                                              |
+| Land automatically  | A completed turn pushes nothing; the thread offers the owner the button | A request that asked for a change lands when a turn completes (default, ADR 0007); a project set to off wins, and `autopr=` decides for one request |
 
 Status copy follows the product voice. It states what was observed and gives no verdict:
 `completed · observed`, never "done", "looks good" or "safe to merge".
@@ -385,8 +410,9 @@ the first slice worth using. PR 8 makes a thread that names no repository work t
 ## Decision log
 
 1. **Copy Cursor's shape.** People who use `@cursor` already know how it reads a thread, picks a
-   repository and takes follow-ups. Mend departs from it only for its own model: sessions and not
-   PRs, owners and shared control, private projects.
+   repository and takes follow-ups. Mend departs from it only for its own model: sessions, owners
+   and shared control, private projects. It first departed on PRs too; ADR 0007 made landing
+   Cursor's `autopr` default, with a question guard.
 2. **Socket Mode, not the Events API.** Most Mend instances are `loopback` or `private`, and Slack
    cannot reach them. A public events route would also have to pass the public exposure gate.
 3. **An app per organization, not a shared app.** A shared app needs a Marketplace listing or an
@@ -423,6 +449,9 @@ the first slice worth using. PR 8 makes a thread that names no repository work t
    them unnecessary. Add them if inference picks wrongly often enough to matter.
 4. **Publishing from Slack.** Cursor's `autopr` opens a PR. Mend could offer "Open a pull request"
    on a completed session, since landing is the person's decision and a button is an explicit one.
+   Answered by ADR 0007: a Slack request lands automatically, as Cursor's does, unless it read as a
+   question, said `autopr=false`, or the app or the project turns it off. When it does not land, the
+   thread offers "Push and open pull request", which acts only for the owner.
 5. **Enterprise Grid.** One app installed across several workspaces in an Enterprise Grid org has
    several `team_id`s under one `enterprise_id`. This ADR assumes one workspace per install.
 6. **Shared control from a channel.** ADR 0005 already leaves open whether one person steering on

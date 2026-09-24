@@ -14,6 +14,7 @@ import {
   changeOwnerOf,
   type LandingFact,
   landingFacts,
+  latestDecidedTurn as latestDecidedTurnOf,
   type Project,
   type Worktree,
 } from "@mend/domain/workbench";
@@ -103,19 +104,9 @@ export const auditLanding = (
     });
   });
 
-/**
- * The latest turn automatic landing decided about, among a worktree's sessions: the one whose
- * decision the facts state ("changes not landed · …", "intent not read").
- */
+/** The latest turn automatic landing decided about, among a worktree's sessions. */
 export const latestDecidedTurn = (turns: ReadonlyArray<AgentTurn>): AgentTurn | null =>
-  turns
-    .filter((turn) => turn.landing !== null)
-    .reduce<AgentTurn | null>(
-      (latest, turn) => (latest === null || endOf(turn) > endOf(latest) ? turn : latest),
-      null,
-    );
-
-const endOf = (turn: AgentTurn): number => (turn.endedAt ?? turn.createdAt).getTime();
+  latestDecidedTurnOf(turns);
 
 /** Origin's branch against the last landed commit, and when it was looked at. */
 export interface ObservedRemote extends RemoteBranchState {

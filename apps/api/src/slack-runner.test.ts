@@ -31,21 +31,26 @@ import {
 import {
   AgentRequestId,
   AgentTurnId,
+  ChangeId,
+  ChangeLandingId,
   OrganizationId,
   ProjectId,
   SealantWorkspaceId,
   SessionId,
   SessionProcessId,
+  Sha,
   WorktreeId,
 } from "@mend/domain";
 import {
   AgentRequest,
   AgentTurn,
+  ChangeLanding,
   Project,
   Session,
   SessionProcess,
   type AgentInputQuestion,
   type AgentTurnStatus,
+  type RequestIntentReading,
   type SessionStatus,
   type SlackLinkedMentionJob,
   type SlackPendingMention,
@@ -56,6 +61,7 @@ import {
   ThreadProjectReaderLive,
   type InferenceRequest,
 } from "@mend/inference";
+import { LandingNotStartedError } from "@mend/landing";
 import { SealantClients, SealantPrincipal } from "@mend/sealant";
 import { ProtocolHostNotLiveError, SessionEngine } from "@mend/sessions";
 import {
@@ -74,11 +80,13 @@ import { describe, expect, it } from "vitest";
 
 import { makeProject, makeSession } from "../test/support/tenancy-harness.ts";
 import { ProjectAccess } from "./access.ts";
-import { SessionStart } from "./session-start.ts";
+import { OwnerLanding, type OwnerLandingInput } from "./owner-landing.ts";
+import { SessionStart, type CreateSessionInput } from "./session-start.ts";
 import { SessionSteering } from "./session-steering.ts";
 import {
   chooseProject,
   followUpWhenNotLive,
+  intentOfRequest,
   makeSlackRunner,
   mentionOf,
   parsePickerRequestKey,
@@ -255,6 +263,8 @@ interface WorldOptions {
   /** More threads for the fake Slack, and the bytes of the files in them, by URL. */
   readonly threads?: Readonly<Record<string, ReadonlyArray<SlackThreadMessage>>>;
   readonly files?: Readonly<Record<string, Uint8Array>>;
+  /** The landing "Push and open pull request" starts refuses to start. */
+  readonly landRefused?: LandingNotStartedError;
 }
 
 const EARLIER = SessionId.make("session-earlier");
@@ -367,6 +377,14 @@ const world = (options: WorldOptions = {}) => {
   const reported = new Map<string, string>();
   const audited: Array<NewAuditEvent> = [];
   const launches: Array<LaunchRequest> = [];
+  /** What each create was asked, beyond what `effects` notes. */
+  const creates: Array<CreateSessionInput> = [];
+  /** The opening turn each launch submitted, by session. */
+  const opened = new Map<string, AgentTurn>();
+  /** Each intent recorded on a turn. */
+  const intents: Array<{ readonly turnId: string; readonly reading: RequestIntentReading }> = [];
+  /** Each landing "Push and open pull request" started. */
+  const lands: Array<OwnerLandingInput> = [];
   const inferences: Array<InferenceRequest> = [];
   /** Who each inference ran as. */
   const principals: Array<string> = [];
@@ -375,7 +393,7 @@ const world = (options: WorldOptions = {}) => {
   const shownState = new Map<string, string>();
   const statusTs = new Map<string, string>();
   const sessionsCreated = new Map<string, Session>();
-  let creates = 0;
+  let createCount = 0;
   const storeRoot = options.storeRoot;
   const visible = [billing, web, notes].map((candidate) =>
     storeRoot === undefined
@@ -585,9 +603,23 @@ const world = (options: WorldOptions = {}) => {
     }),
     Layer.mock(AgentConversationRepo, {
       listTurns: (sessionId) =>
-        Effect.succeed(
-          (options.turns ?? []).map((status, index) => agentTurn(sessionId, status, index + 1)),
-        ),
+        Effect.sync(() => {
+          if (options.turns !== undefined) {
+            return options.turns.map((status, index) => agentTurn(sessionId, status, index + 1));
+          }
+          const opening = opened.get(sessionId);
+          return opening === undefined ? [] : [opening];
+        }),
+      setTurnIntent: (turnId, reading) =>
+        Effect.sync(() => {
+          intents.push({ turnId, reading });
+          return new AgentTurn({
+            ...agentTurn(SessionId.make("unused"), "running", 1),
+            id: turnId,
+            intent: reading.intent,
+            intentSource: reading.source,
+          });
+        }),
       listRequests: (sessionId, pendingOnly) =>
         Effect.succeed(question !== null && sessionId === EARLIER && pendingOnly ? [question] : []),
     }),
@@ -689,10 +721,11 @@ const world = (options: WorldOptions = {}) => {
         note(
           `start.createAs:${userId}:${projectId}:${input.harness}:${input.base}:${input.origin}`,
         ).pipe(
+          Effect.andThen(Effect.sync(() => void creates.push(input))),
           Effect.andThen(
             options.createDies
               ? Effect.die(new Error("pg: connection reset at /srv/mend/store"))
-              : options.createFails === undefined || ++creates < (options.createFailsFrom ?? 1)
+              : options.createFails === undefined || ++createCount < (options.createFailsFrom ?? 1)
                 ? Effect.sync(() => {
                     const session = created(projectId, userId);
                     sessionsCreated.set(session.id, session);
@@ -706,10 +739,55 @@ const world = (options: WorldOptions = {}) => {
           Effect.andThen(Effect.sync(() => launches.push(request))),
           Effect.andThen(
             options.launchFails === undefined
-              ? Effect.succeed(new Session({ ...session, status: "running" }))
+              ? Effect.sync(() => {
+                  // A protocol launch submits its prompt as the opening turn.
+                  opened.set(session.id, agentTurn(session.id, "queued", 1));
+                  return new Session({ ...session, status: "running" });
+                })
               : Effect.fail(options.launchFails),
           ),
         ),
+    }),
+    Layer.mock(OwnerLanding, {
+      land: (input) =>
+        Effect.suspend(() => {
+          lands.push(input);
+          if (options.landRefused !== undefined) return Effect.fail(options.landRefused);
+          return Effect.succeed({
+            landing: new ChangeLanding({
+              id: ChangeLandingId.make(`landing-${lands.length}`),
+              changeId: ChangeId.make("change-1"),
+              sessionId: input.session.id,
+              projectId: input.project.id,
+              checkpointId: null,
+              checkpointRef: null,
+              checkpointSha: null,
+              commitSha: null,
+              remoteBranch: input.session.branch,
+              pushedSha: Sha.make("3f2a1c0".padEnd(40, "0")),
+              trigger: input.trigger,
+              pullRequest: {
+                number: 412,
+                url: "https://github.com/acme/billing-api/pull/412",
+                state: "open",
+                observedAt: NOW,
+              },
+              outcome: "pull-request",
+              message: null,
+              userId: input.ownerUserId,
+              createdAt: NOW,
+            }),
+            pullRequest: {
+              _tag: "opened" as const,
+              pullRequest: {
+                number: 412,
+                url: "https://github.com/acme/billing-api/pull/412",
+                state: "open" as const,
+                observedAt: NOW,
+              },
+            },
+          });
+        }),
     }),
     Layer.mock(SealantClients, {
       connectedAccounts: () => ({
@@ -838,6 +916,28 @@ const world = (options: WorldOptions = {}) => {
       ],
     });
 
+  /** A press of "Push and open pull request" on a session's offer. */
+  const landClick = (input: {
+    readonly user: string;
+    readonly sessionId: string;
+    readonly envelopeId: string;
+    readonly actionTs?: string;
+  }) =>
+    envelope("interactive", input.envelopeId, {
+      type: "block_actions",
+      team: { id: "T-acme" },
+      user: { id: input.user },
+      channel: { id: "C-general" },
+      container: { channel_id: "C-general", message_ts: "1700000000.000009" },
+      actions: [
+        {
+          action_id: SLACK_ACTIONS.landChange,
+          value: input.sessionId,
+          ...(input.actionTs === undefined ? {} : { action_ts: input.actionTs }),
+        },
+      ],
+    });
+
   return {
     effects,
     slack,
@@ -845,6 +945,10 @@ const world = (options: WorldOptions = {}) => {
     recorded,
     audited,
     launches,
+    creates,
+    intents,
+    lands,
+    landClick,
     inferences,
     principals,
     run,
@@ -2362,5 +2466,200 @@ describe("mentions and picker keys", () => {
       switchFrom: "session-1",
     });
     expect(parsePickerRequestKey("nope")).toBeNull();
+  });
+});
+
+describe("the Slack runner, landing (docs/adr/0007-landing.md)", () => {
+  const start = (w: ReturnType<typeof world>, text: string) =>
+    w.mention("Ev1", { user: "U-alice", text, ts: MENTION, thread_ts: THREAD });
+
+  it("takes autopr= as the session's own override and records it as the opening turn's intent", async () => {
+    const question = world();
+    await question.deliver(start(question, "<@U-bot> autopr=false why does the login test flake?"));
+    expect(question.creates).toMatchObject([{ origin: "slack", autoLand: false }]);
+    expect(question.intents).toEqual([
+      { turnId: "turn-1", reading: { intent: "question", source: "option" } },
+    ]);
+    expect(question.launches[0]?.prompt).toContain("why does the login test flake?");
+    expect(question.launches[0]?.prompt).not.toContain("autopr");
+
+    const change = world();
+    await change.deliver(start(change, "<@U-bot> fix the flaky login test autopr=true"));
+    expect(change.creates).toMatchObject([{ autoLand: true }]);
+    expect(change.intents).toEqual([
+      { turnId: "turn-1", reading: { intent: "change", source: "option" } },
+    ]);
+
+    // Without the option the Slack app's setting decides, and automatic landing reads the intent.
+    const plain = world();
+    await plain.deliver(start(plain, "<@U-bot> fix the flaky login test"));
+    expect(plain.creates).toMatchObject([{ autoLand: null }]);
+    expect(plain.intents).toEqual([]);
+  });
+
+  it("refuses an autopr= it cannot read, and starts nothing", async () => {
+    const w = world();
+    await w.deliver(start(w, "<@U-bot> autopr=maybe fix it"));
+    expect(w.creates).toEqual([]);
+    expect(posts(w, "postEphemeral").map((post) => post.text)).toEqual([
+      "not started · autopr=maybe · not one of true, false",
+    ]);
+  });
+
+  it("records the intent the thread reading answered, in the call that picked the project", async () => {
+    const w = world({ inference: [{ ...inferred(web.id), intent: "question" }] });
+    await w.deliver(
+      w.mention("Ev1", {
+        user: "U-alice",
+        text: "<@U-bot> look into it",
+        ts: RETRY_MENTION,
+        thread_ts: RETRY_THREAD,
+      }),
+    );
+    expect(w.inferences).toHaveLength(1);
+    expect(w.intents).toEqual([
+      { turnId: "turn-1", reading: { intent: "question", source: "read" } },
+    ]);
+
+    // `autopr=` wins over what the call read.
+    const option = world({ inference: [{ ...inferred(web.id), intent: "question" }] });
+    await option.deliver(
+      option.mention("Ev1", {
+        user: "U-alice",
+        text: "<@U-bot> look into it autopr=true",
+        ts: RETRY_MENTION,
+        thread_ts: RETRY_THREAD,
+      }),
+    );
+    expect(option.intents).toEqual([
+      { turnId: "turn-1", reading: { intent: "change", source: "option" } },
+    ]);
+  });
+
+  it("records a follow-up's autopr= on its own turn, and leaves an unmarked one to be read", async () => {
+    const followUp = (w: ReturnType<typeof world>, text: string) =>
+      w.mention("Ev9", {
+        user: "U-alice",
+        text: `<@U-bot> ${text}`,
+        ts: "1700000200.000900",
+        thread_ts: RETRY_THREAD,
+      });
+    const alices = (live = true) =>
+      world({
+        threadSession: {
+          threadTs: RETRY_THREAD,
+          projectId: web.id,
+          owner: "alice",
+          live,
+          ...(live ? {} : { status: "completed" as const }),
+        },
+      });
+
+    const marked = alices();
+    await marked.deliver(followUp(marked, "autopr=true now make the fix"));
+    expect(marked.effects).toContain("engine.submitTurn:session-earlier:alice:now make the fix");
+    expect(marked.intents).toEqual([
+      { turnId: "turn-2", reading: { intent: "change", source: "option" } },
+    ]);
+
+    const unmarked = alices();
+    await unmarked.deliver(followUp(unmarked, "now make the fix"));
+    expect(unmarked.intents).toEqual([]);
+
+    // A follow-up that resumes the session marks the turn the resume submitted.
+    const resumed = alices(false);
+    await resumed.deliver(followUp(resumed, "autopr=false what did you change?"));
+    expect(resumed.effects).toContain("start.launchAs:alice:session-earlier");
+    expect(resumed.intents).toEqual([
+      { turnId: "turn-1", reading: { intent: "question", source: "option" } },
+    ]);
+  });
+
+  it("lands for the owner who presses Push and open pull request, as them, once per press", async () => {
+    const w = world();
+    await w.deliver(start(w, "<@U-bot> why does the login test flake?"));
+    const press = w.landClick({
+      user: "U-alice",
+      sessionId: "session-1",
+      envelopeId: "env-land",
+      actionTs: "1700000400.000001",
+    });
+    await w.deliver(press, press);
+
+    expect(w.lands).toHaveLength(1);
+    expect(w.lands[0]).toMatchObject({
+      ownerUserId: "alice",
+      trigger: "manual",
+      webOrigin: "https://mend.acme.test",
+      session: { id: "session-1" },
+      project: { id: billing.id },
+    });
+    expect(w.effects).toContain("claim:land:T-acme:session-1:1700000400.000001");
+    const whispers = posts(w, "postEphemeral");
+    expect(whispers).toMatchObject([{ user: "U-alice" }, { user: "U-alice" }]);
+    expect(whispers.map((post) => post.text)).toEqual([
+      "landing · pushing to origin as you · the status message shows how it ends",
+      "pushed · mend/wt-1 · pull request #412 · opened",
+    ]);
+    expect(whispers[1]?.threadTs).toBe(THREAD);
+    expect(JSON.stringify(whispers[1])).toContain("https://github.com/acme/billing-api/pull/412");
+  });
+
+  it("tells anyone but the owner that only the owner lands, where only they read it", async () => {
+    const w = world({ bobLinked: true });
+    await w.deliver(start(w, "<@U-bot> why does the login test flake?"));
+    await w.deliver(
+      w.landClick({ user: "U-bob", sessionId: "session-1", envelopeId: "env-bob" }),
+      w.landClick({ user: "U-carol", sessionId: "session-1", envelopeId: "env-carol" }),
+    );
+
+    expect(w.lands).toEqual([]);
+    expect(posts(w, "postEphemeral")).toMatchObject([
+      {
+        user: "U-bob",
+        threadTs: THREAD,
+        text: "not pushed · only the session's owner, <@U-alice>, lands its change · it pushes with their key and speaks on GitHub as them",
+      },
+      {
+        user: "U-carol",
+        text: "Mend acts only for a linked Mend account. Mention Mend to get a link only you see.",
+      },
+    ]);
+    // Nothing is said to the channel.
+    expect(posts(w, "postMessage").map((post) => post.text)).toEqual([
+      "billing-api · from a link in the thread · claude · starting · mend/wt-1",
+    ]);
+  });
+
+  it("says why a landing did not start, in its own words, only to the owner", async () => {
+    const w = world({
+      landRefused: new LandingNotStartedError({
+        reason: "no-change",
+        message: "the session's change is empty against its base",
+      }),
+    });
+    await w.deliver(start(w, "<@U-bot> why does the login test flake?"));
+    await w.deliver(w.landClick({ user: "U-alice", sessionId: "session-1", envelopeId: "env-1" }));
+
+    expect(posts(w, "postEphemeral").map((post) => post.text)).toEqual([
+      "landing · pushing to origin as you · the status message shows how it ends",
+      "not pushed · the session's change is empty against its base",
+    ]);
+  });
+
+  it("ignores a press for a session that is not this thread's", async () => {
+    const w = world();
+    await w.deliver(w.landClick({ user: "U-alice", sessionId: "session-9", envelopeId: "env-1" }));
+    expect(w.lands).toEqual([]);
+    expect(w.slack.calls).toEqual([]);
+  });
+});
+
+describe("a request's intent", () => {
+  it("is autopr= when the request says it, else what the thread reading answered", () => {
+    expect(intentOfRequest(true, "question")).toEqual({ intent: "change", source: "option" });
+    expect(intentOfRequest(false, null)).toEqual({ intent: "question", source: "option" });
+    expect(intentOfRequest(null, "change")).toEqual({ intent: "change", source: "read" });
+    expect(intentOfRequest(null, null)).toBeNull();
   });
 });

@@ -8,7 +8,10 @@ import type { ProjectDto, SlackLinkPreviewDto, SlackMeDto, SlackSettingsDto } fr
 
 type DisplaySetting = keyof Omit<SlackSettingsDto, "defaultHarness">;
 
-/** The owner's display settings, with what each side of the switch means ("What Mend posts"). */
+/**
+ * The owner's display settings, with what each side of the switch means ("What Mend posts"), and
+ * whether a Slack request's change lands by itself.
+ */
 export const SLACK_DISPLAY_SETTINGS: ReadonlyArray<{
   readonly key: DisplaySetting;
   readonly label: string;
@@ -32,6 +35,13 @@ export const SLACK_DISPLAY_SETTINGS: ReadonlyArray<{
     label: "Slack Connect channels",
     off: "Only status and links there.",
     on: "The two settings above apply there too.",
+  },
+  {
+    // docs/adr/0007-landing.md, "Automatic landing": on by default, as in Cursor.
+    key: "landAutomatically",
+    label: "Land automatically",
+    off: "A completed turn pushes nothing. The thread offers the owner “Push and open pull request”.",
+    on: "When a turn completes and its request asked for a change, Mend pushes mend/<name> and opens or updates its pull request, as the requester. A project set to off wins, and autopr= decides for one request.",
   },
 ];
 

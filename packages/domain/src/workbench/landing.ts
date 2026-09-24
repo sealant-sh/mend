@@ -231,6 +231,29 @@ export const notLandedReasonOf = (landing: TurnLanding | null): NotLandedReason 
 };
 
 /**
+ * The latest turn automatic landing decided about, by when it ended: the one whose decision the
+ * facts state ("changes not landed · …", "intent not read").
+ */
+export const latestDecidedTurn = <
+  T extends {
+    readonly landing: TurnLanding | null;
+    readonly endedAt: Date | null;
+    readonly createdAt: Date;
+  },
+>(
+  turns: ReadonlyArray<T>,
+): T | null =>
+  turns
+    .filter((turn) => turn.landing !== null)
+    .reduce<T | null>(
+      (latest, turn) => (latest === null || turnEnd(turn) > turnEnd(latest) ? turn : latest),
+      null,
+    );
+
+const turnEnd = (turn: { readonly endedAt: Date | null; readonly createdAt: Date }): number =>
+  (turn.endedAt ?? turn.createdAt).getTime();
+
+/**
  * One observed fact about a change's landing, as the review page, the session page and a Slack
  * thread state it. Each is what Mend saw, with where it saw it; none says what to do next.
  */

@@ -34,7 +34,14 @@ describe("parsing a mention", () => {
     expect(parsed).toEqual({
       command: null,
       prompt: "fix the flaky login test",
-      options: { project: null, branch: null, harness: null, model: null, effort: null },
+      options: {
+        project: null,
+        branch: null,
+        harness: null,
+        model: null,
+        effort: null,
+        autopr: null,
+      },
       rejected: [],
     });
     expect(parse("hey <@UMEND|mend> can you look").prompt).toBe("hey can you look");
@@ -51,6 +58,7 @@ describe("parsing a mention", () => {
       harness: { value: "codex", form: "inline" },
       model: { value: "gpt-5.5", form: "inline" },
       effort: { value: "high", form: "inline" },
+      autopr: null,
     });
   });
 
@@ -109,6 +117,7 @@ describe("parsing a mention", () => {
       harness: null,
       model: null,
       effort: { value: "high", form: "natural" },
+      autopr: null,
     });
   });
 
@@ -151,6 +160,7 @@ describe("parsing a mention", () => {
         harness: null,
         model: null,
         effort: null,
+        autopr: null,
       });
     }
   });
@@ -184,6 +194,22 @@ describe("parsing a mention", () => {
     expect(parsed.options.project).toEqual({ value: "billing-api", form: "inline" });
     expect(parsed.options.harness).toEqual({ value: "claude", form: "inline" });
     expect(parsed.prompt).toBe("add tests");
+  });
+
+  it("reads autopr=true and autopr=false inline only, and rejects anything else", () => {
+    expect(parse("<@UMEND> autopr=false why does the login test flake?")).toMatchObject({
+      prompt: "why does the login test flake?",
+      options: { autopr: false },
+      rejected: [],
+    });
+    expect(parse("<@UMEND> fix the flaky login test AUTOPR=True").options.autopr).toBe(true);
+    expect(parse("<@UMEND> autopr=true autopr=false tidy up").options.autopr).toBe(false);
+    const rejected = parse("<@UMEND> autopr=maybe tidy up");
+    expect(rejected.options.autopr).toBeNull();
+    expect(rejected.rejected).toEqual([
+      { option: "autopr", value: "maybe", reason: "not one of true, false" },
+    ]);
+    expect(parse("<@UMEND> open an autopr for it").options.autopr).toBeNull();
   });
 
   it("keeps the prompt's lines and code", () => {

@@ -1,6 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import {
   AgentConversationRepo,
+  ChangeLandingsRepo,
   ChangePassesRepo,
   ChangeToursRepo,
   MEND_EVENTS_CHANNEL,
@@ -18,10 +19,12 @@ import {
 import { SessionId } from "@mend/domain";
 import {
   currentAgentProcess,
+  latestDecidedTurn,
   type AgentItem,
   type AgentRequest,
   type AgentTurn,
   type Change,
+  type ChangeLanding,
   type ChangePass,
   type Session,
 } from "@mend/domain/workbench";
@@ -34,6 +37,9 @@ import {
   disclosureFor,
   isDirectMessage,
   isSettledState,
+  landingStatusLines,
+  landOfferMessage,
+  landOfferOf,
   planText,
   privateProjectStatusMessage,
   questionMessage,
@@ -46,6 +52,7 @@ import {
   statusMessage,
   switchOffered,
   type ChangeCounts,
+  type LandOffer,
   type SlackMessage,
   type SlackSessionState,
 } from "@mend/slack";
@@ -64,7 +71,13 @@ import { Cause, Effect, Layer, Queue, Schema, Stream } from "effect";
  * - once Mend's passes over the change have run, one reply: the review tour's summary and
  *   approach, what the review pass drafted, and "Review in Mend";
  * - on completion, the change's line counts in the status line; and when the owner turned diffs
- *   on, each file's diff, once, the first time the session settles with a change.
+ *   on, each file's diff, once, the first time the session settles with a change;
+ * - the change's landing under the status line (docs/adr/0007-landing.md, "What the thread sees"):
+ *   `pushed · mend/fix-login · pull request #412 · opened`, edited in place by each landing, or a
+ *   refusal or failure in the remote's words; and when a completed turn's change did not land (a
+ *   question, `autopr=false`, automatic landing off, a follow-up from someone other than the
+ *   owner), the offer to land it: "Push and open pull request", on the end-of-session reply when
+ *   that reply goes out in the same look, and as a reply of its own otherwise.
  *
  * The install's display settings decide how much: with agent messages off, or in a Slack Connect
  * channel the owner did not open, the thread gets status, reactions and links only.
@@ -190,6 +203,10 @@ interface Look {
   readonly opening: AgentItem | null | undefined;
   readonly change: Change | null;
   readonly review: ReviewMoment | null;
+  /** The change's landings since the thread began, newest first. */
+  readonly landings: ReadonlyArray<ChangeLanding>;
+  /** The latest turn automatic landing decided about. */
+  readonly decided: AgentTurn | null;
 }
 
 /** Nothing seen yet: every reply is news. */
@@ -214,6 +231,9 @@ const seenOf = (look: Look, at: number): Seen => ({
   settled: isSettledState(look.state),
   at,
 });
+
+/** The key an offer to land a turn's change is posted under, once. */
+const offerKey = (offer: LandOffer) => `land-offer:${offer.turnId}`;
 
 /** A Slack write whose failure is logged, never raised: the thread is not the session. */
 const quietly = <A>(what: string, effect: Effect.Effect<A, SlackApiError>) =>
@@ -242,6 +262,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
     const passes = yield* ChangePassesRepo;
     const tours = yield* ChangeToursRepo;
     const comments = yield* ReviewCommentsRepo;
+    const landingsRepo = yield* ChangeLandingsRepo;
     const reads = yield* WorktreeReads;
     const cipher = yield* SecretCipher;
     const slack = yield* SlackApi;
@@ -303,7 +324,26 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
           ? null
           : reviewMoment(change, yield* passes.listForChange(change.id), thread.createdAt);
       const state = slackSessionState({ status: session.status, currentAgent, turns });
-      return { thread, session, state, turns, pending, opening, change, review } satisfies Look;
+      // Only what this thread asked for: a landing from before it is someone else's news.
+      const landings =
+        change === null
+          ? []
+          : (yield* landingsRepo.listForChange(change.id)).filter(
+              (landing) => landing.createdAt >= thread.createdAt,
+            );
+      const decided = latestDecidedTurn(turns);
+      return {
+        thread,
+        session,
+        state,
+        turns,
+        pending,
+        opening,
+        change,
+        review,
+        landings,
+        decided,
+      } satisfies Look;
     });
 
     /** Files, additions and deletions of the change against its base; null when unreadable. */
@@ -392,6 +432,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         // Offered until the first turn completes, which also moves the line, so the button
         // leaves with the edit that says so. The runner checks again on a click.
         switchSession: switchOffered(state, look.turns) ? session.id : null,
+        landing: landingStatusLines({ landings: look.landings, latestTurn: look.decided }),
       });
       yield* moveStatus(token, look, message);
     });
@@ -457,6 +498,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       review: ReviewMoment,
       showSummary: boolean,
       webOrigin: string,
+      offer: LandOffer | null,
     ) =>
       Effect.gen(function* () {
         const tour =
@@ -484,10 +526,16 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
               }),
             )
           : null;
+        // The offer rides this reply when it is due now; claimed like a reply of its own.
+        const offered =
+          offer !== null && (yield* threads.claimPost(thread.sessionId, offerKey(offer)))
+            ? { offer, ownerSlackUserId: thread.slackUserId }
+            : null;
         const message = reviewMessage({
           summary,
           drafts,
           url: changeUrl(webOrigin, change.id),
+          offer: offered,
         });
         return message === null ? [] : [message];
       });
@@ -562,7 +610,20 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         yield* postOnce(token, thread, `request:${request.id}`, Effect.succeed([message]));
       }
 
-      // Mend's passes over the change, once they have run: one reply.
+      // A completed turn whose change did not land: the owner may land it from the thread. The
+      // turn is decided moments after it ends; an offer for an older one is history.
+      const offerable = landOfferOf({
+        sessionId: session.id,
+        turn: look.decided,
+        landings: look.landings,
+      });
+      const offer =
+        offerable !== null && look.change !== null && fresh(look.decided?.endedAt ?? null)
+          ? offerable
+          : null;
+
+      // Mend's passes over the change, once they have run: one reply, which carries the offer
+      // when both are due now.
       const review = look.review;
       const change = look.change;
       if (
@@ -575,7 +636,17 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
           token,
           thread,
           review.key,
-          reviewReply(thread, change, review, shown.agentMessages, install.webOrigin),
+          reviewReply(thread, change, review, shown.agentMessages, install.webOrigin, offer),
+        );
+      }
+      // Otherwise the offer is a reply of its own: the end-of-session reply may come much later,
+      // or not at all when no pass completes.
+      if (offer !== null) {
+        yield* postOnce(
+          token,
+          thread,
+          offerKey(offer),
+          Effect.succeed([landOfferMessage(offer, thread.slackUserId)]),
         );
       }
     });
@@ -641,6 +712,7 @@ export const SlackReporterLive: Layer.Layer<
   never,
   | PgClient.PgClient
   | AgentConversationRepo
+  | ChangeLandingsRepo
   | ChangePassesRepo
   | ChangeToursRepo
   | ProjectsRepo
