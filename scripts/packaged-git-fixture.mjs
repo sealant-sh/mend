@@ -99,12 +99,14 @@ function serveUploadPack(root, request, response, pathname, query) {
     response.writeHead(parsed.status, { ...parsed.headers, "cache-control": "no-store" });
     response.write(parsed.body);
   });
+  // A spawn that fails emits `error` and then `close`: answer once, or the second writeHead
+  // throws outside the request handler and takes the fixture down for every later request.
   child.on("error", () => {
-    if (!started) response.writeHead(500).end();
+    if (!response.headersSent) response.writeHead(500).end();
     else response.destroy();
   });
   child.on("close", () => {
-    if (!started) response.writeHead(500).end();
+    if (!response.headersSent) response.writeHead(500).end();
     else response.end();
   });
 }

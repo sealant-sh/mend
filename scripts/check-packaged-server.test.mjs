@@ -1715,3 +1715,31 @@ test("fixture routes only upload-pack to git http-backend and reads its CGI head
     "body\n\nmore",
   );
 });
+
+test("fixture answers a failed git http-backend spawn once and keeps serving", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "mend-git-fixture-spawn-"));
+  const root = join(scratch, "http");
+  await mkdir(join(root, "repo.git"), { recursive: true });
+  await writeFile(join(root, "repo.git", "HEAD"), "ref: refs/heads/main\n");
+  const server = gitFixtureServer(root);
+  // No git on PATH: spawning http-backend fails, which emits `error` and then `close`.
+  const path = process.env.PATH;
+  process.env.PATH = join(scratch, "empty-path");
+  try {
+    await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const origin = `http://127.0.0.1:${server.address().port}`;
+    const refs = await fetch(`${origin}/repo.git/info/refs?service=git-upload-pack`);
+    assert.equal(refs.status, 500);
+    await refs.body?.cancel();
+    // Let `close` follow `error` before the fixture is asked again.
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const head = await fetch(`${origin}/repo.git/HEAD`);
+    assert.equal(head.status, 200);
+    assert.equal(await head.text(), "ref: refs/heads/main\n");
+  } finally {
+    process.env.PATH = path;
+    server.closeAllConnections();
+    await new Promise((resolve) => server.close(resolve));
+    await rm(scratch, { recursive: true, force: true });
+  }
+});
