@@ -371,6 +371,20 @@ export interface ProcessLogPageDto {
   readonly telemetryNote: string;
 }
 
+/** One conversation event of the session's durable record (GET /api/sessions/:id/transcript). */
+export interface TranscriptEventDto {
+  readonly kind: string;
+  readonly text: string | null;
+  readonly name: string | null;
+  readonly command: string | null;
+  readonly output: string | null;
+}
+
+export interface SessionTranscriptDto {
+  readonly sourceHarness: string;
+  readonly events: ReadonlyArray<TranscriptEventDto>;
+}
+
 export interface ServiceRecipeDto {
   readonly name: string;
   readonly command: string | null;
@@ -619,6 +633,10 @@ export const processOutput = async (id: string): Promise<{ readonly text: string
   }
   throw new ApiError("process log snapshot exceeded 128 pages", 0);
 };
+
+/** The session's conversation, read from its record — what a settled session said and did. */
+export const sessionTranscript = (id: string) =>
+  get<SessionTranscriptDto>(`/api/sessions/${id}/transcript`);
 
 export const reviewDiff = (
   changeId: string,

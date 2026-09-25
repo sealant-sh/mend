@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { pasteSessionImage } from "#/lib/api";
 import { useTerminalFont, type TerminalFontSetting } from "#/lib/terminal-font";
+import { afterUnopenedClose, type PtyLiveness } from "#/lib/tty-attach";
 import type { GhosttyTheme } from "#/terminal/ghostty/core";
 import {
   GhosttyTerminalSurface,
@@ -24,6 +25,11 @@ import type { TtyTarget } from "../../../shared/bridge";
  * together. Reconnects ride the CLI's ladder; the surface survives a
  * reconnect — the server replays the record from `from`, so the screen is
  * reset and rebuilt, not appended.
+ *
+ * An upgrade the server refused looks like a network drop from here (close
+ * 1006 either way), so before climbing the ladder the terminal asks `probe`
+ * whether the PTY's process still runs (#/lib/tty-attach). An ended process
+ * stops the ladder: there is no PTY to come back to.
  */
 
 export type WireState = "connecting" | "live" | "reconnecting" | "settled" | "refused";
@@ -33,7 +39,7 @@ const STABLE_AFTER_MS = 30_000;
 
 // The terminal motif — dark in both themes (styles.css): the record is the
 // same bytes day or night. Cobalt cursor; ANSI palette is ghostty's default.
-const THEME: GhosttyTheme = {
+export const TERMINAL_THEME: GhosttyTheme = {
   background: { r: 0x1e, g: 0x1e, b: 0x21 },
   foreground: { r: 0xcb, g: 0xc8, b: 0xc1 },
   cursor: { r: 0x57, g: 0x81, b: 0xea },
@@ -70,9 +76,9 @@ export function TtyTerminal({
   target,
   sessionId,
   from = "0",
-  dim = false,
   focus = false,
   focusRequest = 0,
+  probe,
   onState,
 }: {
   readonly target: TtyTarget;
@@ -83,11 +89,14 @@ export function TtyTerminal({
   readonly sessionId?: string;
   /** Record sequence to replay from; changing it reconnects. */
   readonly from?: string;
-  /** Settled sessions read at 55% — the bytes are history, not a live shell. */
-  readonly dim?: boolean;
   readonly focus?: boolean;
   /** Increment to return keyboard focus without remounting or resetting the terminal. */
   readonly focusRequest?: number;
+  /**
+   * Whether the PTY's process still runs, asked after an upgrade that never opened. Omitted,
+   * every such close reconnects.
+   */
+  readonly probe?: () => Promise<PtyLiveness>;
   readonly onState?: (state: WireState) => void;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
@@ -97,6 +106,8 @@ export function TtyTerminal({
   const [image, setImage] = useState<ImageState>(null);
   const onStateRef = useRef(onState);
   onStateRef.current = onState;
+  const probeRef = useRef(probe);
+  probeRef.current = probe;
   const fontRef = useRef<TerminalFontSetting>(font);
   fontRef.current = font;
 
@@ -126,6 +137,10 @@ export function TtyTerminal({
     let connectedAt: number | null = null;
     let settled = false;
     let disposed = false;
+    // One attach attempt at a time. Each connect takes the next generation; a ticket mint or a
+    // liveness probe that answers after a newer attempt began (a window focus skips the ladder)
+    // changes nothing, so two sockets never race for the same PTY.
+    let generation = 0;
 
     const sendResize = (cols: number, rows: number) => {
       if (ws !== null && ws.readyState === WebSocket.OPEN) {
@@ -133,11 +148,52 @@ export function TtyTerminal({
       }
     };
 
+    const reconnectLater = () => {
+      if (connectedAt !== null && Date.now() - connectedAt >= STABLE_AFTER_MS) attempt = 0;
+      connectedAt = null;
+      const delay = LADDER_MS[Math.min(attempt, LADDER_MS.length - 1)];
+      attempt += 1;
+      report("reconnecting");
+      timer = window.setTimeout(() => void connect(), delay);
+    };
+
+    // The attach failed before a byte flowed: ask the server what the PTY's process is doing.
+    const afterFailedAttach = async (owner: number) => {
+      const ask = probeRef.current;
+      const liveness: PtyLiveness =
+        ask === undefined ? "unknown" : await ask().catch(() => "unknown" as const);
+      if (disposed || settled || owner !== generation) return;
+      const verdict = afterUnopenedClose(liveness);
+      if (verdict === "ended") {
+        settled = true;
+        report("settled");
+        return;
+      }
+      if (verdict === "refused") {
+        report("refused");
+        return;
+      }
+      reconnectLater();
+    };
+
     const connect = async () => {
       if (disposed || settled || surface === null) return;
+      generation += 1;
+      const mine = generation;
+      if (timer !== null) {
+        window.clearTimeout(timer);
+        timer = null;
+      }
       report(attempt === 0 ? "connecting" : "reconnecting");
-      const url = await window.mend.tty.url(target, from);
-      if (disposed) return;
+      let url: string;
+      try {
+        url = await window.mend.tty.url(target, from);
+      } catch {
+        // The ticket mint failed: the same question as a refused upgrade.
+        if (!disposed && mine === generation) void afterFailedAttach(mine);
+        return;
+      }
+      if (disposed || mine !== generation) return;
       const socket = new WebSocket(url);
       socket.binaryType = "arraybuffer";
       ws = socket;
@@ -172,25 +228,18 @@ export function TtyTerminal({
         }
         if (event.data instanceof ArrayBuffer) surface.write(new Uint8Array(event.data));
       });
-      socket.addEventListener("close", (event) => {
+      socket.addEventListener("close", () => {
         if (disposed || socket !== ws) return;
         ws = null;
         if (settled) {
           report("settled");
           return;
         }
-        // Never opened and the server closed the upgrade: it refused us
-        // (401 signed out, 404 unknown, 409 no PTY). Retrying won't help.
-        if (!opened && event.code !== 1006 && event.code !== 1000) {
-          report("refused");
+        if (!opened) {
+          void afterFailedAttach(mine);
           return;
         }
-        if (connectedAt !== null && Date.now() - connectedAt >= STABLE_AFTER_MS) attempt = 0;
-        connectedAt = null;
-        const delay = LADDER_MS[Math.min(attempt, LADDER_MS.length - 1)];
-        attempt += 1;
-        report("reconnecting");
-        timer = window.setTimeout(() => void connect(), delay);
+        reconnectLater();
       });
     };
 
@@ -198,11 +247,8 @@ export function TtyTerminal({
     // link: skip whatever backoff remains and try immediately.
     const onFocus = () => {
       if (disposed || settled) return;
-      if (ws !== null && ws.readyState === WebSocket.OPEN) return;
-      if (timer !== null) {
-        window.clearTimeout(timer);
-        timer = null;
-      }
+      // A socket still opening is the attempt in progress; an open one needs nothing.
+      if (ws !== null) return;
       attempt = 0;
       void connect();
     };
@@ -210,7 +256,7 @@ export function TtyTerminal({
 
     const encoder = new TextEncoder();
     const options: GhosttyTerminalSurfaceOptions = {
-      theme: THEME,
+      theme: TERMINAL_THEME,
       font: fontRef.current,
       onData: (data) => {
         if (ws !== null && ws.readyState === WebSocket.OPEN) {
@@ -295,11 +341,12 @@ export function TtyTerminal({
 
   return (
     <div className="relative h-full w-full bg-term">
-      <div ref={hostRef} className={`tty-host ${dim ? "opacity-55" : ""}`} />
-      {state !== "live" && state !== "settled" && (
+      <div ref={hostRef} className="tty-host" />
+      {state !== "live" && (
         <p className="pointer-events-none absolute right-3 bottom-2 font-mono text-[11.5px] text-term-faint">
           {state === "connecting" && "connecting…"}
           {state === "reconnecting" && "reconnecting…"}
+          {state === "settled" && "exited · observed"}
           {state === "refused" && "no terminal — the server refused the attach"}
         </p>
       )}

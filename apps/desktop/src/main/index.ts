@@ -17,12 +17,21 @@ import {
   type ApiRequest,
   type ConnectionInfo,
   type EventsState,
-  type SignInInput,
   type TtyTarget,
   type WorkbenchEvent,
 } from "../shared/bridge";
 import { configPath, loadConfig, watchConfig } from "./config";
-import { request, setToken, signIn, signOut, subscribeEvents, ttyUrl } from "./server";
+import {
+  awaitAuthorize,
+  cancelAuthorize,
+  request,
+  setToken,
+  signOut,
+  startAuthorize,
+  subscribeEvents,
+  ttyUrl,
+} from "./server";
+import { isMendSocket, SOCKET_URL_PATTERNS, withoutBrowserCredentials } from "./socket-headers";
 
 /**
  * The cockpit window. One window, one credential, one event stream: main
@@ -143,11 +152,19 @@ const connectionChanged = () => {
 
 const registerIpc = () => {
   ipcMain.handle(IPC.connectionGet, () => connectionInfo());
-  ipcMain.handle(IPC.connectionSignIn, async (_event, input: SignInInput) => {
-    const result = await signIn(input);
+  ipcMain.handle(IPC.connectionAuthorize, async (_event, url: string) => {
+    const opened = await startAuthorize(url);
+    // The browser opens on the approve page, as `mend login` opens it; the page shows the URL
+    // too, for a browser that does not open.
+    if (opened.ok) void shell.openExternal(opened.authorizeUrl).catch(() => undefined);
+    return opened;
+  });
+  ipcMain.handle(IPC.connectionAwaitAuthorize, async () => {
+    const result = await awaitAuthorize();
     if (result.ok) connectionChanged();
     return result;
   });
+  ipcMain.handle(IPC.connectionCancelAuthorize, () => cancelAuthorize());
   ipcMain.handle(
     IPC.connectionSetToken,
     (_event, input: { readonly url: string; readonly token: string }) => {
@@ -155,9 +172,10 @@ const registerIpc = () => {
       connectionChanged();
     },
   );
-  ipcMain.handle(IPC.connectionSignOut, () => {
-    signOut();
+  ipcMain.handle(IPC.connectionSignOut, async () => {
+    const result = await signOut();
     connectionChanged();
+    return result;
   });
   ipcMain.handle(IPC.apiRequest, (_event, input: ApiRequest) => request(input));
   ipcMain.handle(IPC.ttyUrl, (_event, target: TtyTarget, from: string) => ttyUrl(target, from));
@@ -255,6 +273,26 @@ const installContentSecurityPolicy = () => {
   });
 };
 
+// ─── the terminal socket leaves as a token client ───────────────────────────
+
+/**
+ * The renderer opens `/api/tty` itself, and Chromium stamps the upgrade with the page's Origin,
+ * which the server refuses (src/main/socket-headers.ts). The server URL is read per request, so a
+ * `mend login --url` elsewhere or a changed MEND_URL applies to the next socket without a restart.
+ */
+const installSocketHeaders = () => {
+  session.defaultSession.webRequest.onBeforeSendHeaders(
+    { urls: [...SOCKET_URL_PATTERNS] },
+    (details, callback) => {
+      if (!isMendSocket(details.url, loadConfig().url)) {
+        callback({});
+        return;
+      }
+      callback({ requestHeaders: withoutBrowserCredentials(details.requestHeaders) });
+    },
+  );
+};
+
 // ─── lifecycle ──────────────────────────────────────────────────────────────
 
 const summon = () => {
@@ -276,6 +314,7 @@ if (!app.requestSingleInstanceLock()) {
     await app.whenReady();
     app.setAppUserModelId("sh.sealant.mend");
     installContentSecurityPolicy();
+    installSocketHeaders();
     registerIpc();
     buildMenu();
     mainWindow = createWindow();

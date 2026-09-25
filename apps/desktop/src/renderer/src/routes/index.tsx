@@ -13,6 +13,7 @@ import { TabBar } from "#/components/tab-bar";
 import { TerminalPane } from "#/components/terminal-pane";
 import { Titlebar } from "#/components/titlebar";
 import { isUnauthorized, stopShell, type SessionDto, type SessionProcessDto } from "#/lib/api";
+import { useConnection } from "#/lib/connection";
 import { useWorkbenchEvents } from "#/lib/events";
 import { useInboxShelves } from "#/lib/inbox-shelves";
 import { useKeybindings } from "#/lib/keys";
@@ -72,6 +73,7 @@ export const Route = createFileRoute("/")({
 
 function Main() {
   useWorkbenchEvents();
+  const connection = useConnection();
   const navigate = useNavigate();
   const now = useNow();
   const visited = useVisited();
@@ -422,7 +424,15 @@ function Main() {
     details.some((query) => isUnauthorized(query.error)) ||
     processQueries.some((query) => isUnauthorized(query.error)) ||
     isUnauthorized(serviceViews.error);
-  if (unauthorized) return <Navigate to="/connect" search={{ reason: "unauthorized" }} />;
+  if (unauthorized) {
+    // No token on file reads as 401 too; only a token the server refused is "rejected".
+    return (
+      <Navigate
+        to="/connect"
+        search={{ reason: connection?.signedIn === false ? "signed-out" : "unauthorized" }}
+      />
+    );
+  }
 
   return (
     <>
