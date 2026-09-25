@@ -335,6 +335,9 @@ importers:
       '@fontsource/space-grotesk':
         specifier: 'catalog:'
         version: 5.2.10
+      '@mend/api-contracts':
+        specifier: workspace:*
+        version: link:../../packages/api-contracts
       '@mend/domain':
         specifier: workspace:*
         version: link:../../packages/domain
@@ -356,6 +359,9 @@ importers:
       '@tanstack/router-plugin':
         specifier: 'catalog:'
         version: 1.168.19(@tanstack/react-router@1.170.16(react-dom@19.2.3(react@19.2.3))(react@19.2.3))(esbuild@0.28.1)(rolldown@1.2.5)(rollup@4.62.2)(vite@7.3.6(@types/node@22.20.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
+      effect:
+        specifier: 'catalog:'
+        version: 4.0.0-beta.93
       lucide-react:
         specifier: 'catalog:'
         version: 0.545.0(react@19.2.3)
@@ -15994,6 +16000,14 @@ snapshots:
       chai: 5.3.3
       tinyrainbow: 2.0.0
 
+  '@vitest/mocker@3.2.7(vite@7.3.6(@types/node@22.20.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))':
+    dependencies:
+      '@vitest/spy': 3.2.7
+      estree-walker: 3.0.3
+      magic-string: 0.30.21
+    optionalDependencies:
+      vite: 7.3.6(@types/node@22.20.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0)
+
   '@vitest/mocker@3.2.7(vite@7.3.6(@types/node@24.13.2)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))':
     dependencies:
       '@vitest/spy': 3.2.7
@@ -22337,7 +22351,7 @@ snapshots:
     dependencies:
       '@types/chai': 5.2.3
       '@vitest/expect': 3.2.7
-      '@vitest/mocker': 3.2.7(vite@7.3.6(@types/node@24.13.2)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
+      '@vitest/mocker': 3.2.7(vite@7.3.6(@types/node@22.20.0)(jiti@2.7.0)(lightningcss@1.33.0)(terser@5.51.2)(tsx@4.23.12)(yaml@2.9.0))
       '@vitest/pretty-format': 3.2.7
       '@vitest/runner': 3.2.7
       '@vitest/snapshot': 3.2.7

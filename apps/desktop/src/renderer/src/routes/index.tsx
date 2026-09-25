@@ -37,6 +37,7 @@ import {
 } from "#/lib/sidebar-width";
 import { nextWakeAt, useSnoozes } from "#/lib/snooze";
 import { terminalFont } from "#/lib/terminal-font";
+import { sessionActions, useViewer } from "#/lib/viewer";
 import { openShellTab, useWorkbench, workbench } from "#/lib/workbench";
 
 const focusRow = (row: InboxRow) => {
@@ -100,6 +101,7 @@ function Main() {
   };
 
   const projects = useQuery(projectsQuery);
+  const viewer = useViewer();
   const serviceViews = useQuery(servicesQuery);
   const details = useQueries({
     queries: (projects.data ?? []).map((project) => projectDetailQuery(project.id)),
@@ -118,7 +120,7 @@ function Main() {
     queries: sessionList.map((session) => sessionProcessesQuery(session.id)),
   });
 
-  const tree = useMemo(() => buildTree(data), [data]);
+  const tree = useMemo(() => buildTree(data, visited), [data, visited]);
   /** Global order for the palette and the inbox face; per-project rows for the tree. */
   const inbox = useMemo(
     () => buildInbox(data, visited, snoozes, now),
@@ -140,14 +142,10 @@ function Main() {
     );
     return () => window.clearTimeout(timer);
   }, [snoozes, wakeTick]);
-  const rowsByProject = useMemo(() => {
-    const map = new Map<string, ReadonlyArray<InboxRow>>();
-    for (const entry of data) {
-      const scoped = buildInbox([entry], visited);
-      map.set(entry.project.id, [...scoped.active, ...scoped.settled]);
-    }
-    return map;
-  }, [data, visited]);
+  const rowsByProject = useMemo(
+    () => new Map(tree.map((entry) => [entry.project.id, entry.rows])),
+    [tree],
+  );
   const serviceGlances = useMemo(() => {
     const map = new Map<string, Array<ServiceGlance>>();
     for (const view of serviceViews.data ?? []) {
@@ -222,10 +220,20 @@ function Main() {
     }
   }, [data, details, processQueries, processes]);
 
+  /** Whether this viewer steers the session; unknown until the viewer answers, then the server decides. */
+  const steers = (sessionId: string): boolean => {
+    const session = sessions.get(sessionId);
+    return session === undefined || viewer === null || sessionActions(session, viewer).steer;
+  };
+
   const requestShell = () => {
     if (focusedProjectId === null) return;
     if (focusedSessionId === null) {
       setLauncherFor(focusedProjectId);
+      return;
+    }
+    if (!steers(focusedSessionId)) {
+      setShellError("only this session's owner opens a shell in it, unless they share control");
       return;
     }
     setShellError(null);
@@ -239,6 +247,11 @@ function Main() {
     const tab = projectTabs.tabs[index];
     if (tab === undefined) return;
     if (tab.kind === "session" || tab.kind === "logs") {
+      workbench.detachTab(focusedProjectId, index);
+      return;
+    }
+    // Stopping a shell steers the session; without control, closing only detaches the view.
+    if (!steers(tab.sessionId)) {
       workbench.detachTab(focusedProjectId, index);
       return;
     }
@@ -284,12 +297,16 @@ function Main() {
                   if (focusedProjectId !== null) workbench.detachTab(focusedProjectId, index);
                 },
               },
-              {
-                label: "Stop shell",
-                confirm: "Stop the process group?",
-                danger: true,
-                onSelect: () => void closeTabAt(index, { skipConfirm: true }),
-              },
+              ...(steers(tab.sessionId)
+                ? [
+                    {
+                      label: "Stop shell",
+                      confirm: "Stop the process group?",
+                      danger: true,
+                      onSelect: () => void closeTabAt(index, { skipConfirm: true }),
+                    },
+                  ]
+                : []),
             ]
           : [
               {
@@ -544,6 +561,7 @@ function Main() {
               onClose={(index) => void closeTabAt(index)}
               onNewShell={requestShell}
               onTabMenu={openTabMenu}
+              stopsShell={(tab) => steers(tab.sessionId)}
             />
           )}
           {tabMenu.menuElement}

@@ -1,8 +1,5 @@
 # Mend Desktop — brief
 
-> **Amended 2026-08-20:** hidden project benches are retired. The implementation still contains the
-> legacy bench path until the migration described below lands.
-
 The desktop app is a herdr rebuilt as a GUI, with Mend as the engine. Herdr's layout is the part
 worth keeping. Yiannis lives in it all day and its shape is proven: a tree of places on the left,
 tabs across the top, one dominant terminal, an agents list that tells you where to look next. What
@@ -52,8 +49,9 @@ Ctrl+Shift+B (or the toggle at the top of the rail) switches faces; the choice p
 
 - **Tree.** Projects from `/api/projects`, any number open at once (`mend-sidebar-expanded`). Each
   session is a worktree and opens into what runs in it: the harness process, every live supporting
-  shell, and its Services — a shell is never hidden behind a closed tab. Row = dot + name + the
-  status word; clicking a shell child raises its tab.
+  shell, and its Services. Every session is listed, `shell` sessions included — a shell is never
+  hidden behind a closed tab. Row = dot + name + the status word; clicking a shell child raises its
+  tab.
 - **Inbox.** t3code's flat cross-project list: static creation order (activity never reorders a
   row), a collapsed Snoozed shelf, a Settled tail with show-more paging, attention by contrast
   (done-unseen / input / failed prominent, working receded). Snooze is client-local with t3's
@@ -106,6 +104,10 @@ supporting shell), with binary frames, JSON resize, and reconnect backoff. Main 
 upgrade ticket per connect and strips the page's `Origin` (and any `Cookie`) from sockets to the
 configured server (`src/main/socket-headers.ts`), so the upgrade reaches authentication as a token
 client, the way the CLI and the phone do.
+
+Only a caller who steers the session attaches (docs/adr/0003); anyone else reads the record of the
+live agent, and a line under the header says who steers. The owner's header carries the Shared
+control switch.
 
 A browser socket cannot see why an upgrade failed: a refusal and a dropped network both close 1006.
 After an attach that never opened, the terminal asks the server whether the PTY's process still runs
@@ -221,8 +223,9 @@ broker — no local PTYs are needed when every terminal is a server attach), the
 the bridge, the tile grid, the cockpit model that merged two sources.
 
 New: project tree rail, server-discovered session and shell tabs, the inbox, the launcher, native
-Review, Services drawer, and store/settings screens. The legacy bench mechanism is removed only
-after its hidden worktrees and changes are surfaced for migration.
+Review, Services drawer, and store/settings screens. The legacy bench path is gone (2026-09-24): the
+tree lists every session, so a former bench is an ordinary `shell` session with its worktree and
+change in view.
 
 ## Milestones
 
@@ -232,7 +235,9 @@ after its hidden worktrees and changes are surfaced for migration.
   session's workspace reached "failed" before becoming ready on the linear-cli project, as an
   earlier claude session there did.
 - **M1: honest ownership.** Tree, visible sessions, session-owned shells, terminal, inbox, launcher,
-  keybindings, legacy-bench migration, and retained-workspace controls.
+  keybindings, and retained-workspace controls. Clean base (2026-09-24, branch
+  `desktop/02-contracts`): wire shapes and routes from `@mend/api-contracts`, the bench path
+  removed, controls gated on what the server says the caller may do.
 - **M2: Review in-app.** Immutable checkpoint-pair diff, P0 controls, comments, minimum evidence,
   and recoverable send-back.
 - **M3: Services in-app.** Stable Services, attempt history, private forwards, read-only logs, and
@@ -250,13 +255,41 @@ after its hidden worktrees and changes are surfaced for migration.
 - 2026-09-24: an ended PTY replays from the process record (`/api/processes/:id/logs`), not from
   `/api/tty`, which answers 502 for a settled session. Checkpoint `seq` and log chunk sequences
   share the run's record sequence, so the scrubber seeks the log cursor.
-- 2026-09-24: sign-in is the CLI's device flow and sign-out revokes the device; the desktop keeps
-  hand-parsing the `cliAuth` answers the way `apps/cli/src/login.ts` does until the DTO move to
-  `@mend/api-contracts` lands.
+- 2026-09-24: sign-in is the CLI's device flow and sign-out revokes the device. Main still checks
+  the `cliAuth` answers by hand (a non-Mend server answering 200 must read as nothing), but the
+  shapes it returns are the contract's types.
+- 2026-09-24: the renderer's wire shapes come from `@mend/api-contracts`, at the type level only
+  (`lib/contract.ts`). A call names its endpoint by method and path template exactly as the contract
+  declares it (`"GET", "/api/sessions/:id"`), so a moved or dropped route fails the build, and
+  params, query, body and answer are read off that endpoint's schemas as JSON carries them (dates
+  and sequences as strings, no brands). The derived client (`makeMendApiClient`) over an
+  `HttpClient` riding the bridge was rejected: it would decode into `Date`/`bigint`/branded values
+  every screen then has to convert back, and load every schema into the page to re-check what the
+  server just encoded. The phone hand-rolls its DTOs and pins routes in a test; the desktop got both
+  checks from the compiler instead.
 - 2026-09-24 (review): one terminal attach at a time. Each connect takes a generation, so a ticket
   mint or liveness probe answering for an older attempt changes nothing, and a window focus leaves a
   socket that is still opening alone. Before, a focus during a probe could leave two sockets on one
   PTY.
+- 2026-09-24: controls follow what the server says the caller may do (docs/adr/0003). A session pane
+  reads `SessionDetail.control`: delete is `own`; attach, open or stop a shell, rename a shell, run
+  Services and deliver a follow-up are `steer`; stop is `stop`. A caller who cannot steer a live
+  session reads its record instead of attaching, and a shell's logs instead of its PTY. Lists carry
+  no per-session control, so rows and menus apply the domain's steering rule to the viewer from
+  `GET /api/organization`, as the web app's lists do. The owner's pane carries the Shared control
+  switch, and turning it on confirms with the web app's sentence about lending provider logins and
+  Git access; anyone else is told, in the web app's words, who steers or that the owner shares
+  control (with Turn off for an organization owner).
+- 2026-09-24 (review): what a viewer is told about control never comes from a read that has not
+  answered. A non-steering viewer of a live agent with no PTY record of its own reads the
+  conversation instead of waiting on a record process that never comes; Review hides Deliver while
+  the session detail loads and leaves it to the server when the detail does not answer, rather than
+  telling the owner someone else steers; a shell tab's close says "Detach" when it only detaches.
+- 2026-09-24: the bench path is deleted. It never surfaced anything: the tree's rows came from the
+  agent-only inbox, so a `shell` session (a former bench among them) was hidden either way. Alpha
+  had no `bench`-labelled session and one hidden `shell` session on the mend project; the tree now
+  builds its rows from every session and shows it (`shell · mend/test-alph`). The inbox still lists
+  agents only.
 
 - 2026-08-20: hidden project benches are retired. Supporting shells belong to a focused visible
   session and its change. The old default-shell and per-project bench decisions below are

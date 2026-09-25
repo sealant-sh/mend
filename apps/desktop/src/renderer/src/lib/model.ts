@@ -58,15 +58,8 @@ export interface Inbox {
   readonly ordered: ReadonlyArray<InboxRow>;
 }
 
-/** Coding-agent sessions are the inbox material. */
+/** Coding-agent sessions are the inbox material; a `shell` session is you, not an agent. */
 export const isAgentSession = (session: SessionDto): boolean => session.harness !== "shell";
-
-/** Retired hidden benches remain visible until their change and processes are resolved. */
-export const isLegacyBench = (session: SessionDto): boolean =>
-  session.harness === "shell" && session.label === "bench";
-
-const isTreeSession = (session: SessionDto): boolean =>
-  isAgentSession(session) || isLegacyBench(session);
 
 const endedAt = (row: InboxRow): number => {
   const at = row.endedAt ?? row.session.createdAt;
@@ -112,21 +105,24 @@ const wakeAtMs = (row: InboxRow): number => {
   return Number.isNaN(ms) ? 0 : ms;
 };
 
-export const buildInbox = (
-  projects: ReadonlyArray<{
-    readonly project: ProjectDto;
-    readonly sessions: ReadonlyArray<SessionDto>;
-    /** Per-session list facts; the current agent process rides here. */
-    readonly annotations?: ReadonlyArray<SessionAnnotationDto>;
-  }>,
+type ProjectRows = ReadonlyArray<{
+  readonly project: ProjectDto;
+  readonly sessions: ReadonlyArray<SessionDto>;
+  /** Per-session list facts; the current agent process rides here. */
+  readonly annotations?: ReadonlyArray<SessionAnnotationDto>;
+}>;
+
+const buildRows = (
+  projects: ProjectRows,
   visited: Record<string, string>,
-  snoozes: Snoozes = {},
-  now: number = Date.now(),
+  snoozes: Snoozes,
+  now: number,
+  keep: (session: SessionDto) => boolean,
 ): Inbox => {
   const rows: Array<InboxRow> = [];
   for (const { project, sessions, annotations } of projects) {
     for (const session of sessions) {
-      if (!isAgentSession(session)) continue;
+      if (!keep(session)) continue;
       const currentAgent =
         annotations?.find((annotation) => annotation.sessionId === session.id)?.currentAgent ??
         null;
@@ -167,6 +163,13 @@ export const buildInbox = (
   return { active, snoozed, settled, ordered: [...active, ...snoozed, ...settled] };
 };
 
+export const buildInbox = (
+  projects: ProjectRows,
+  visited: Record<string, string>,
+  snoozes: Snoozes = {},
+  now: number = Date.now(),
+): Inbox => buildRows(projects, visited, snoozes, now, isAgentSession);
+
 /** The inbox narrowed to one project — a scope filter over the already-ordered list (t3: Sidebar.tsx 1921-1946). */
 export const scopeInbox = (inbox: Inbox, projectId: string | null): Inbox => {
   if (projectId === null) return inbox;
@@ -198,23 +201,24 @@ export const visibleInboxRows = (
   return [...inbox.active, ...snoozed, ...settled];
 };
 
-/** The project tree: coding-agent sessions plus migration-only legacy benches. */
+/**
+ * The project tree: every session, `shell` sessions included, live ones first and settled ones
+ * after, in the inbox's own order. A session is a worktree with a change, so the tree hides none
+ * of them; only the inbox narrows to agents. The tree never snoozes.
+ */
 export interface TreeProject {
   readonly project: ProjectDto;
-  readonly sessions: ReadonlyArray<SessionDto>;
+  readonly rows: ReadonlyArray<InboxRow>;
 }
 
+const everySession = (): boolean => true;
+
 export const buildTree = (
-  projects: ReadonlyArray<{
-    readonly project: ProjectDto;
-    readonly sessions: ReadonlyArray<SessionDto>;
-  }>,
+  projects: ProjectRows,
+  visited: Record<string, string>,
+  now: number = Date.now(),
 ): ReadonlyArray<TreeProject> =>
-  projects.map(({ project, sessions }) => ({
-    project,
-    sessions: sessions
-      .filter(isTreeSession)
-      .toSorted(
-        (a: SessionDto, b: SessionDto) => createdAt(b) - createdAt(a) || a.id.localeCompare(b.id),
-      ),
-  }));
+  projects.map((entry) => {
+    const rows = buildRows([entry], visited, {}, now, everySession);
+    return { project: entry.project, rows: [...rows.active, ...rows.settled] };
+  });

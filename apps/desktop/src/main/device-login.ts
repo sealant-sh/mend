@@ -1,3 +1,5 @@
+import type { CliAuthPollView, CliAuthStartView } from "@mend/api-contracts";
+
 /**
  * The desktop signs in the way `mend login` does (apps/cli/src/login.ts, the `cliAuth` contract
  * in packages/api-contracts/src/devices.ts): open an authorize request that holds a secret device
@@ -9,31 +11,23 @@
  * approve on, nothing it could collect a token with.
  */
 
-/** POST /api/cli/auth, as the server describes the opened request. */
-export interface OpenedRequest {
-  readonly deviceCode: string;
-  readonly code: string;
-  readonly verifyPath: string;
-  readonly expiresAt: string;
-  readonly intervalSeconds: number;
-}
+/** POST /api/cli/auth, as the server describes the opened request (the contract's own shape). */
+export type OpenedRequest = typeof CliAuthStartView.Encoded;
 
 /** One poll's answer: keep waiting, or the approval with the token shown once. */
-export type PollAnswer =
-  | { readonly status: "pending" }
-  | {
-      readonly status: "approved";
-      readonly token: string;
-      readonly user: { readonly id: string; readonly name: string; readonly email: string };
-      readonly device: { readonly id: string; readonly name: string };
-    };
+export type PollAnswer = typeof CliAuthPollView.Encoded;
 
 const stringField = (value: object, key: string): string | null => {
   const field: unknown = Reflect.get(value, key);
   return typeof field === "string" ? field : null;
 };
 
-/** The opened request, checked field by field: a non-Mend server answering 200 reads as null. */
+/**
+ * The opened request, checked field by field: a non-Mend server answering 200 reads as null. Main
+ * keeps this check by hand rather than loading the contract's schemas at runtime (main's
+ * dependencies stay external, and the contract ships as TypeScript source); the return type is
+ * the contract's, so a field the contract adds fails the build here.
+ */
 export const parseOpenedRequest = (json: unknown): OpenedRequest | null => {
   if (typeof json !== "object" || json === null) return null;
   const deviceCode = stringField(json, "deviceCode");

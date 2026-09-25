@@ -79,6 +79,7 @@ const comment = (id: string, body: string): ReviewCommentDto => ({
   evidence: [],
   sentToSessionId: null,
   createdAt: new Date(0).toISOString(),
+  updatedAt: new Date(0).toISOString(),
 });
 
 describe("native Review helpers", () => {

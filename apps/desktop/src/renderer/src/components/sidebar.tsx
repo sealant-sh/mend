@@ -12,9 +12,10 @@ import {
   type SessionProcessDto,
   currentAgentProcess,
 } from "#/lib/api";
-import type { InboxRow, TreeProject } from "#/lib/model";
+import { isAgentSession, type InboxRow, type TreeProject } from "#/lib/model";
 import { queryClient } from "#/lib/queries";
 import type { ServiceGlance } from "#/lib/services";
+import { sessionActions, useViewer } from "#/lib/viewer";
 import { ago, statusTone, type Tone } from "#/lib/words";
 
 /**
@@ -268,6 +269,7 @@ export function Sidebar({
   readonly onServiceFocus: (row: InboxRow) => void;
 }) {
   const { openMenu, menuElement } = useContextMenu();
+  const viewer = useViewer();
   const [jumpHints, setJumpHints] = useState(false);
   const [deleting, setDeleting] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
@@ -342,33 +344,43 @@ export function Sidebar({
     }
   };
 
-  const sessionMenu = (row: InboxRow): ContextMenuSpec => ({
-    title: row.session.branch,
-    entries: [
-      { label: "Open", onSelect: () => onFocus(row) },
-      { label: "Services", onSelect: () => onServiceFocus(row) },
-      {
-        label: "Copy branch",
-        flash: "Copied",
-        onSelect: () => void navigator.clipboard.writeText(row.session.branch),
-      },
-      "separator",
+  /** Stop for whoever may stop it, delete for its owner; nothing the server would refuse. */
+  const sessionMenu = (row: InboxRow): ContextMenuSpec => {
+    const actions = sessionActions(row.session, viewer);
+    const last =
       row.section === "active"
-        ? {
-            label: "Stop",
-            confirm: "Stop the coding agent?",
-            danger: true,
-            onSelect: () => void stopRow(row),
-          }
-        : {
-            label: "Delete",
-            confirm:
-              "Really delete this session? The worktree, its change, and checkpoints remain.",
-            danger: true,
-            onSelect: () => void deleteRows([row]),
-          },
-    ],
-  });
+        ? actions.stop
+          ? {
+              label: "Stop",
+              // The tree lists `shell` sessions too, which run no coding agent.
+              confirm: isAgentSession(row.session) ? "Stop the coding agent?" : "Stop the shell?",
+              danger: true,
+              onSelect: () => void stopRow(row),
+            }
+          : null
+        : actions.own
+          ? {
+              label: "Delete",
+              confirm:
+                "Really delete this session? The worktree, its change, and checkpoints remain.",
+              danger: true,
+              onSelect: () => void deleteRows([row]),
+            }
+          : null;
+    return {
+      title: row.session.branch,
+      entries: [
+        { label: "Open", onSelect: () => onFocus(row) },
+        { label: "Services", onSelect: () => onServiceFocus(row) },
+        {
+          label: "Copy branch",
+          flash: "Copied",
+          onSelect: () => void navigator.clipboard.writeText(row.session.branch),
+        },
+        ...(last === null ? [] : (["separator", last] as const)),
+      ],
+    };
+  };
 
   const projectMenu = (project: ProjectDto, settled: ReadonlyArray<InboxRow>): ContextMenuSpec => ({
     title: project.storePath,
@@ -418,7 +430,10 @@ export function Sidebar({
           const rows = rowsByProject.get(project.id) ?? [];
           const indexOffset = indexOffsets.get(project.id) ?? 0;
           const live = rows.filter((row) => row.section === "active");
-          const settled = rows.filter((row) => row.section === "settled");
+          // Clearing deletes, which is the owner's alone: only the viewer's own settled rows.
+          const settled = rows.filter(
+            (row) => row.section === "settled" && sessionActions(row.session, viewer).own,
+          );
           return (
             <section key={project.id} className="border-b border-rule-faint">
               <div
@@ -493,7 +508,11 @@ export function Sidebar({
                         onOpenShell={(processId) => onOpenShell(row, processId)}
                         onServiceFocus={() => onServiceFocus(row)}
                         onMenu={(event) => openMenu(event, sessionMenu(row))}
-                        onDelete={row.section === "settled" ? () => deleteOne(row) : null}
+                        onDelete={
+                          row.section === "settled" && sessionActions(row.session, viewer).own
+                            ? () => deleteOne(row)
+                            : null
+                        }
                       />
                     ))}
                   </ul>

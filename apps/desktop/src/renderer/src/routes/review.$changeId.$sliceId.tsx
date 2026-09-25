@@ -20,6 +20,7 @@ import {
   queryClient,
   reviewCommentsQuery,
   reviewDiffQuery,
+  sessionDetailQuery,
   sessionProcessesQuery,
 } from "#/lib/queries";
 import {
@@ -93,6 +94,12 @@ function ReviewPage({
   const diff = useQuery(reviewDiffQuery(changeId, sliceId, { whitespace, context }));
   const comments = useQuery(reviewCommentsQuery(changeId));
   const sessionId = diff.data?.change.sessionId ?? "";
+  // Delivering a follow-up steers the session (docs/adr/0003): the owner's unless shared. Null
+  // while the detail loads; a detail that did not answer leaves the control and the server decides,
+  // so the owner is never told someone else steers because a read failed.
+  const sessionControl = useQuery({ ...sessionDetailQuery(sessionId), enabled: sessionId !== "" });
+  const steer: boolean | null =
+    sessionControl.data?.control.steer ?? (sessionControl.isError ? true : null);
   const processes = useQuery({
     ...sessionProcessesQuery(sessionId),
     enabled: sessionId !== "",
@@ -399,6 +406,7 @@ function ReviewPage({
             changeId={changeId}
             sliceId={sliceId}
             sessionId={sessionId}
+            steer={steer}
             file={selectedFile}
             comments={currentComments}
             openComments={openComments}
@@ -668,6 +676,7 @@ function ReviewInspector({
   changeId,
   sliceId,
   sessionId,
+  steer,
   file,
   comments,
   openComments,
@@ -691,6 +700,8 @@ function ReviewInspector({
   readonly changeId: string;
   readonly sliceId: string;
   readonly sessionId: string;
+  /** Whether the viewer steers the session, so may deliver to it; null until the server says. */
+  readonly steer: boolean | null;
   readonly file: ReviewDiffFileDto | null;
   readonly comments: ReadonlyArray<ReviewCommentDto>;
   readonly openComments: ReadonlyArray<ReviewCommentDto>;
@@ -927,27 +938,29 @@ function ReviewInspector({
             }}
           />
           <div className="mt-2 flex items-center gap-2">
-            <button
-              type="button"
-              disabled={
-                delivery.isPending ||
-                selectedComments.size === 0 ||
-                instruction.trim() === "" ||
-                checkpointA === null ||
-                checkpointB === null ||
-                diffDigest === null
-              }
-              className="rounded-lg bg-primary px-3 py-1.5 font-sans text-[11.5px] font-medium text-primary-foreground shadow-cobalt disabled:opacity-40"
-              onClick={() => delivery.mutate()}
-            >
-              {delivery.isPending
-                ? "Delivering…"
-                : delivery.data?.status === "delivering"
-                  ? "Check delivery"
-                  : delivery.data?.status === "delivery_failed"
-                    ? "Retry delivery"
-                    : "Deliver to session"}
-            </button>
+            {steer === true && (
+              <button
+                type="button"
+                disabled={
+                  delivery.isPending ||
+                  selectedComments.size === 0 ||
+                  instruction.trim() === "" ||
+                  checkpointA === null ||
+                  checkpointB === null ||
+                  diffDigest === null
+                }
+                className="rounded-lg bg-primary px-3 py-1.5 font-sans text-[11.5px] font-medium text-primary-foreground shadow-cobalt disabled:opacity-40"
+                onClick={() => delivery.mutate()}
+              >
+                {delivery.isPending
+                  ? "Delivering…"
+                  : delivery.data?.status === "delivering"
+                    ? "Check delivery"
+                    : delivery.data?.status === "delivery_failed"
+                      ? "Retry delivery"
+                      : "Deliver to session"}
+              </button>
+            )}
             <button
               type="button"
               disabled={instruction.trim() === ""}
@@ -974,7 +987,9 @@ function ReviewInspector({
             </p>
           )}
           <p className="mt-2 font-sans text-[10.5px] leading-relaxed text-label">
-            Comments become sent only after Mend persists the accepted process membership.
+            {steer === false
+              ? "Only this session's owner delivers to it, unless they share control. Copy the instruction to hand it over."
+              : "Comments become sent only after Mend persists the accepted process membership."}
           </p>
         </section>
       </div>
