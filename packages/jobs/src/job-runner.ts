@@ -53,9 +53,32 @@ export class JobRunner extends Context.Service<
         ),
       );
 
+      const poolMax = yield* Config.int("MEND_JOBS_POOL_MAX").pipe(Config.withDefault(3));
+
       const boss = yield* Effect.acquireRelease(
         Effect.promise(async () => {
-          const instance = new PgBoss({ connectionString: Redacted.value(databaseUrl) });
+          const instance = new PgBoss({
+            connectionString: Redacted.value(databaseUrl),
+            application_name: "mend-jobs",
+            max: poolMax,
+          });
+          // pg-boss reports a failed poll or maintenance run as an `error` event and retries on
+          // its own. Node treats an `error` event with no listener as fatal, so without this a
+          // refused connection ("remaining connection slots are reserved") exits the API.
+          instance.on("error", (error) => {
+            Effect.runFork(
+              Effect.logError("jobs: pg-boss error").pipe(
+                Effect.annotateLogs({ error: error.message }),
+              ),
+            );
+          });
+          instance.on("warning", (warning) => {
+            Effect.runFork(
+              Effect.logWarning("jobs: pg-boss warning").pipe(
+                Effect.annotateLogs({ warning: warning.message }),
+              ),
+            );
+          });
           await instance.start();
           return instance;
         }),

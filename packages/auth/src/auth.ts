@@ -199,8 +199,25 @@ export const AuthLive: Layer.Layer<Auth, Config.ConfigError, NetworkConfig | Reg
       const network = yield* NetworkConfig;
       const registration = yield* RegistrationPolicy;
 
+      const poolMax = yield* Config.int("MEND_AUTH_DATABASE_POOL_MAX").pipe(Config.withDefault(3));
       const pool = yield* Effect.acquireRelease(
-        Effect.sync(() => new Pool({ connectionString: Redacted.value(databaseUrl) })),
+        Effect.sync(() => {
+          const created = new Pool({
+            connectionString: Redacted.value(databaseUrl),
+            application_name: "mend-auth",
+            max: poolMax,
+          });
+          // An idle client that loses its connection emits `error` on the pool; with no listener
+          // Node exits the process. The pool drops that client and opens another on next use.
+          created.on("error", (error) => {
+            Effect.runFork(
+              Effect.logError("auth: database pool error").pipe(
+                Effect.annotateLogs({ error: error.message }),
+              ),
+            );
+          });
+          return created;
+        }),
         (p) => Effect.promise(() => p.end()),
       );
 
