@@ -135,6 +135,25 @@ describe("renderCommand", () => {
     for (const line of page.split("\n")) expect(line.length, line).toBeLessThanOrEqual(80);
   });
 
+  it("documents landing: mend land, mend pull, and the launch override", () => {
+    expect(usageOf("land")).toBe(
+      "usage: mend land <session> [--branch <name>] [--no-pr] [--title <text>] [--project <p>]",
+    );
+    expect(usageOf("pull")).toBe("usage: mend pull <session> [--force] [--project <p>]");
+    const land = renderCommand(findCommand(["land"])!, 80).replace(/\s+/g, " ");
+    expect(land).toContain("Only the change's owner lands it");
+    expect(land).toContain(
+      "The session's branch, and the worktree's files, index and HEAD, are not touched.",
+    );
+    expect(land).toContain("only fast-forwards");
+    expect(land).not.toMatch(/ready to merge|safe to merge/);
+    const pull = renderCommand(findCommand(["pull"])!, 80).replace(/\s+/g, " ");
+    expect(pull).toContain("MEND_BUDGET_BUNDLE_BYTES");
+    expect(pull).toContain("--force");
+    expect(renderCommand(findCommand(["claude"])!, 80)).toContain("--land, --no-land");
+    expect(renderManPage(findCommand(["pull"])!, "0.30.0")).toContain("mend\\-land(1)");
+  });
+
   it("lists a family's subcommands on the parent page", () => {
     const page = renderCommand(findCommand(["ssh"])!, 80);
     expect(page).toContain("\nsubcommands\n");

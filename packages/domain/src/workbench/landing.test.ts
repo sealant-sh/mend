@@ -7,10 +7,11 @@ import {
   changeOwnerOf,
   type DecidedTurn,
   intentAllowsLanding,
-  type LandingFact,
+  LandingFact,
   landingFactLine,
   LANDING_GUARD,
   landingFacts,
+  landingFactsFromWire,
   notLandedReasonOf,
   observedAgo,
   parseRefUpdate,
@@ -236,6 +237,37 @@ describe("observedAgo", () => {
     expect(ago(3 * 3600_000)).toBe("3 h ago");
     expect(ago(2 * 86_400_000)).toBe("2 d ago");
     expect(ago(-5_000)).toBe("0 s ago");
+  });
+});
+
+describe("landingFactsFromWire", () => {
+  it("reads the facts the API encoded, with their timestamps as dates", () => {
+    const facts: ReadonlyArray<LandingFact> = [
+      { _tag: "pushed", branch: "mend/fix-login", sha: Sha.make("3f2a1c0".padEnd(40, "0")) },
+      {
+        _tag: "pull-request",
+        number: 412,
+        state: "open",
+        observedAt: new Date(NOW.getTime() - 120_000),
+      },
+      { _tag: "not-landed", reason: "question" },
+    ];
+    const wire: unknown = JSON.parse(
+      JSON.stringify(
+        Schema.encodeUnknownSync(Schema.toCodecJson(Schema.Array(LandingFact)))(facts),
+      ),
+    );
+    const read = landingFactsFromWire(wire);
+    expect(read.map((fact) => landingFactLine(fact, NOW))).toEqual([
+      "pushed · mend/fix-login · 3f2a1c0 · observed",
+      "pull request #412 · open · observed 2 min ago",
+      "changes not landed · the request read as a question",
+    ]);
+  });
+
+  it("refuses a shape it cannot read", () => {
+    expect(() => landingFactsFromWire([{ _tag: "merged" }])).toThrow();
+    expect(() => landingFactsFromWire(null)).toThrow();
   });
 });
 

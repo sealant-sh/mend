@@ -57,6 +57,11 @@ export interface LaunchArgs {
   readonly foreground: boolean;
   /** Keep the session's browser Services off this machine's loopback while attached. */
   readonly noTunnel: boolean;
+  /**
+   * `--land` / `--no-land`: this session's own automatic-landing override (docs/adr/0007);
+   * null follows the project's "Land when a turn completes".
+   */
+  readonly autoLand: boolean | null;
   /** Everything after `--` (mend run's command). */
   readonly custom: ReadonlyArray<string>;
   readonly error: string | null;
@@ -75,12 +80,14 @@ const LAUNCH_ERROR: Omit<LaunchArgs, "error"> = {
   detach: false,
   foreground: false,
   noTunnel: false,
+  autoLand: null,
   custom: [],
 };
 
 /**
  * `mend claude|codex|opencode ["prompt"] [--model <id>] [--effort <level>]
- * [--base <ref>] [--ask] [--detach|-d] [--foreground] [--no-tunnel] [--project <p>]`, plus
+ * [--base <ref>] [--ask] [--detach|-d] [--foreground] [--no-tunnel] [--land|--no-land]
+ * [--project <p>]`, plus
  * `mend run … -- <command...>`.
  * The first non-flag positional is the prompt; a second one is an error so a
  * forgotten quote fails loudly instead of launching with half a sentence.
@@ -101,6 +108,8 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
   let detach = false;
   let foreground = false;
   let noTunnel = false;
+  let land = false;
+  let noLand = false;
   for (let index = 0; index < flagArgs.length; index += 1) {
     const arg = flagArgs[index] ?? "";
     if (arg === "--ask") {
@@ -121,6 +130,14 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
     }
     if (arg === "--no-tunnel") {
       noTunnel = true;
+      continue;
+    }
+    if (arg === "--land") {
+      land = true;
+      continue;
+    }
+    if (arg === "--no-land") {
+      noLand = true;
       continue;
     }
     if (
@@ -164,6 +181,9 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
   if (detach && foreground) {
     return { ...LAUNCH_ERROR, error: "--detach and --foreground contradict — pick one" };
   }
+  if (land && noLand) {
+    return { ...LAUNCH_ERROR, error: "--land and --no-land contradict — pick one" };
+  }
   if (workName !== null && joinWorktree !== null) {
     return {
       ...LAUNCH_ERROR,
@@ -183,6 +203,7 @@ export const parseLaunchArgs = (args: ReadonlyArray<string>): LaunchArgs => {
     detach,
     foreground,
     noTunnel,
+    autoLand: land ? true : noLand ? false : null,
     custom,
     error: null,
   };
