@@ -346,7 +346,8 @@ export const createSession = (
 ) =>
   call("POST", "/api/projects/:id/sessions", {
     params: { id: projectId },
-    body: { harness, label, name, base },
+    // autoLand null follows the project (docs/adr/0007-landing.md).
+    body: { harness, label, name, base, autoLand: null },
   });
 
 export const pasteSessionImage = (sessionId: string, contentsBase64: string) =>
@@ -458,4 +459,7 @@ export const removeWorktree = (id: string, force?: boolean) =>
 
 /** A new conversation inside an existing worktree; launching is separate. */
 export const createSessionInWorktree = (id: string, harness: string) =>
-  call("POST", "/api/worktrees/:id/sessions", { params: { id }, body: { harness, label: null } });
+  call("POST", "/api/worktrees/:id/sessions", {
+    params: { id },
+    body: { harness, label: null, autoLand: null },
+  });
