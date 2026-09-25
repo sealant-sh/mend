@@ -5309,6 +5309,17 @@ const failureText = (exit: Exit.Exit<unknown, unknown>) =>
 /** The engine's read of the worktree's `mend.toml` inside a workspace. */
 const readsToml = (argv: ReadonlyArray<string>) => argv.at(-1) === WORKSPACE_MEND_TOML;
 
+/** What an owner's dotfiles resolve to right now, as a hot-pool test changes them. */
+interface DotfilesState {
+  repository: DotfilesRepository | null;
+  snapshot: { readonly sha: string; readonly data: string };
+}
+
+const savedRepository = (state: DotfilesState): DotfilesRepository => {
+  if (state.repository === null) throw new Error("no repository to change");
+  return state.repository;
+};
+
 describe("SessionEngine capture mode", () => {
   it("tells the daemon only what the deployment stated about its transport", async () => {
     // Without a statement the source names no transport: the daemon then requires verified
@@ -6967,6 +6978,156 @@ describe("SessionEngine capture mode", () => {
     );
   });
 
+  /**
+   * A standby is created with its owner's dotfiles and cannot take new ones, so it is claimable
+   * only while the owner's dotfiles resolve to what it was warmed with. A change sends the next
+   * session cold, and the next reconcile drains the stale standby and warms one with the change.
+   * One world walks every change in turn (a claim costs seconds here; a cold provision does not).
+   */
+  it("a standby is claimed only while its owner's dotfiles are unchanged", async () => {
+    // Nothing listens here: the clone fails fast and the standby records it as left out. The
+    // fingerprint is the saved repository, not the clone's outcome.
+    const warmedRepository: DotfilesRepository = {
+      url: "git://127.0.0.1:1/dots",
+      ref: null,
+      subdirectory: "dots",
+      manager: "stow",
+      bootstrap: true,
+    };
+    // Each change is made to the settings as the one before left them, so exactly one field moves.
+    const changes: ReadonlyArray<
+      readonly [string, (state: DotfilesState, world: World, project: Project) => void]
+    > = [
+      [
+        "a new snapshot",
+        (state) => {
+          state.snapshot = NEWER_SNAPSHOT;
+        },
+      ],
+      [
+        "another repository",
+        (state) => {
+          state.repository = { ...savedRepository(state), url: "git://127.0.0.1:1/other-dots" };
+        },
+      ],
+      [
+        "another branch",
+        (state) => {
+          state.repository = { ...savedRepository(state), ref: "laptop" };
+        },
+      ],
+      [
+        "another manager",
+        (state) => {
+          state.repository = { ...savedRepository(state), manager: "chezmoi" };
+        },
+      ],
+      [
+        "another subdirectory",
+        (state) => {
+          state.repository = { ...savedRepository(state), subdirectory: null };
+        },
+      ],
+      [
+        "install.sh off",
+        (state) => {
+          state.repository = { ...savedRepository(state), bootstrap: false };
+        },
+      ],
+      [
+        "no repository",
+        (state) => {
+          state.repository = null;
+        },
+      ],
+      [
+        "dotfiles turned off for the project",
+        (_state, world, project) => {
+          world.projects.set(project.id, new Project({ ...project, applyDotfiles: false }));
+        },
+      ],
+    ];
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
+    const state: DotfilesState = { repository: warmedRepository, snapshot: SNAPSHOT };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = new Project({ ...(yield* setup(tmp, world)), hotSessions: 1 });
+          world.projects.set(project.id, project);
+          const engine = yield* SessionEngine;
+          const provision = engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(() => pool.entries.some((entry) => entry.status === "ready"), "a standby");
+          expect(created[0]?.dotfiles).toEqual({
+            archives: [{ data: SNAPSHOT.data, manager: "copy", bootstrap: false }],
+          });
+
+          for (const [label, change] of changes) {
+            const stale = pool.entries.find((entry) => entry.status === "ready");
+            if (stale === undefined) throw new Error(`no standby before ${label}`);
+            change(state, world, project);
+            const session = yield* provision;
+            expect(session.id, label).not.toBe(stale.id);
+
+            // The stale standby drains; its replacement carries what the owner has now.
+            yield* engine.reconcileHotSessions(project.id);
+            yield* until(
+              () =>
+                pool.entries.every((entry) => entry.id !== stale.id) &&
+                pool.entries.some((entry) => entry.status === "ready"),
+              `the standby from before ${label} to drain and a fresh one to warm`,
+            );
+            const applies = world.projects.get(project.id)?.applyDotfiles === true;
+            expect(
+              pool.entries.find((entry) => entry.status === "ready")?.dotfiles,
+              label,
+            ).toMatchObject({
+              repository:
+                !applies || state.repository === null
+                  ? null
+                  : { url: state.repository.url, ref: state.repository.ref },
+              snapshotSha: applies ? state.snapshot.sha : null,
+            });
+          }
+
+          // Unchanged since it warmed: the owner's next session claims it.
+          const fresh = pool.entries.find((entry) => entry.status === "ready");
+          const claimed = yield* provision;
+          expect(claimed.id).toBe(fresh?.id);
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(created),
+        hotWorkspacesLayer: pool.layer,
+        userDotfilesLayer: Layer.succeed(UserDotfilesRepo, {
+          repository: () => Effect.sync(() => state.repository),
+          setRepository: (_userId, value) => Effect.succeed(value),
+        }),
+        dotfilesStoreLayer: Layer.succeed(DotfilesStore, {
+          snapshot: () => Effect.die("not in test"),
+          current: () =>
+            Effect.sync(() => ({
+              sha: state.snapshot.sha,
+              source: "laptop",
+              committedAt: new Date(0),
+              files: [],
+            })),
+          archive: () => Effect.sync(() => state.snapshot),
+          clear: () => Effect.void,
+        }),
+      },
+    );
+  });
+
   it("a person's first session goes cold and starts warming for them; at most four people are warmed for", async () => {
     const created: Array<CreateOptions> = [];
     const memory = makeMemoryCaptureStore();
@@ -7811,6 +7972,256 @@ describe("SessionEngine dotfiles", () => {
           reads,
         ),
         dotfilesStoreLayer: dotfilesStoreLayer(() => Effect.die("dotfiles are off here")),
+      },
+    );
+  });
+});
+
+type LaunchImage = typeof defaultSettings.workspaceImage;
+
+const ZSH_FAMILY: LaunchImage = {
+  mode: "family",
+  os: "arch",
+  packages: [],
+  shell: "zsh",
+  services: { docker: false },
+};
+
+const CUSTOM_BASE: LaunchImage = {
+  mode: "custom",
+  baseImage: "ghcr.io/acme/base:1",
+  packages: [],
+  setupCommands: [],
+  services: { docker: false },
+};
+
+/** A store whose snapshot per owner is whatever `snapshots` says right now; every read lands in `reads`. */
+const ownedSnapshotsLayer = (
+  snapshots: Map<string, { readonly sha: string; readonly data: string }>,
+  reads: Array<string> = [],
+): Layer.Layer<DotfilesStore> =>
+  Layer.succeed(DotfilesStore, {
+    snapshot: () => Effect.die("not in test"),
+    current: (userId) =>
+      Effect.sync(() => {
+        const snapshot = snapshots.get(userId);
+        return snapshot === undefined
+          ? null
+          : { sha: snapshot.sha, source: "laptop", committedAt: new Date(0), files: [] };
+      }),
+    archive: (userId) =>
+      Effect.sync(() => {
+        reads.push(`snapshot of ${userId}`);
+        return snapshots.get(userId) ?? null;
+      }),
+    clear: () => Effect.void,
+  });
+
+/** The owner's repository knob per account; every read lands in `reads`. */
+const ownedRepositoriesLayer = (
+  repositories: Map<string, DotfilesRepository>,
+  reads: Array<string> = [],
+): Layer.Layer<UserDotfilesRepo> =>
+  Layer.succeed(UserDotfilesRepo, {
+    repository: (userId) =>
+      Effect.sync(() => {
+        reads.push(`repository of ${userId}`);
+        return repositories.get(userId) ?? null;
+      }),
+    setRepository: (_userId, value) => Effect.succeed(value),
+  });
+
+const NEWER_SNAPSHOT = { sha: "0dd50dd50dd50dd50dd50dd50dd50dd50dd50dd5", data: "bmV3ZXI=" };
+
+describe("SessionEngine dotfiles gate", () => {
+  /**
+   * Dotfiles reach a workspace only when the project applies them, the image is a family image
+   * (a custom base promises only a POSIX sh) and the session has an owner whose dotfiles they
+   * are. Every other combination reads nothing of anyone's and sends no archive.
+   */
+  it.each([
+    { applyDotfiles: true, image: "family", owner: "user-fixture", sent: true },
+    { applyDotfiles: false, image: "family", owner: "user-fixture", sent: false },
+    { applyDotfiles: true, image: "custom", owner: "user-fixture", sent: false },
+    { applyDotfiles: false, image: "custom", owner: "user-fixture", sent: false },
+    { applyDotfiles: true, image: "family", owner: null, sent: false },
+    { applyDotfiles: false, image: "family", owner: null, sent: false },
+    { applyDotfiles: true, image: "custom", owner: null, sent: false },
+    { applyDotfiles: false, image: "custom", owner: null, sent: false },
+  ] as const)(
+    "applyDotfiles $applyDotfiles · $image image · owner $owner → dotfiles sent: $sent",
+    async ({ applyDotfiles, image, owner, sent }) => {
+      const created: CreateOptions[] = [];
+      const reads: Array<string> = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            world.projects.set(project.id, new Project({ ...project, applyDotfiles }));
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: null,
+              ownerUserId: owner,
+              base: null,
+            });
+            const launched = yield* engine.launch(session.id, ["codex"]).pipe(Effect.exit);
+
+            if (owner === null) {
+              // Nobody to run as: the launch settles before anything of anyone's is read.
+              expect(Exit.isFailure(launched)).toBe(true);
+              expect(reads).toEqual([]);
+              expect(created).toHaveLength(0);
+              return;
+            }
+            expect(Exit.isSuccess(launched)).toBe(true);
+            expect(created).toHaveLength(1);
+            const options = created[0];
+            if (image === "family") {
+              expect(options?.os).toBe("arch");
+              expect(options?.shell).toBe("zsh");
+              expect(options?.baseImage).toBeUndefined();
+            } else {
+              expect(options?.baseImage).toBe("ghcr.io/acme/base:1");
+              expect(options?.shell).toBeUndefined();
+            }
+            if (sent) {
+              expect(reads).toEqual(["repository of user-fixture", "snapshot of user-fixture"]);
+              expect(options?.dotfiles).toEqual({
+                archives: [{ data: SNAPSHOT.data, manager: "copy", bootstrap: false }],
+              });
+              expect(world.sessions.get(session.id)?.dotfiles).toEqual({
+                repository: null,
+                snapshotSha: SNAPSHOT.sha,
+                notApplied: [],
+              });
+            } else {
+              expect(reads).toEqual([]);
+              expect(options?.dotfiles).toBeUndefined();
+              expect(world.sessions.get(session.id)?.dotfiles).toEqual({
+                repository: null,
+                snapshotSha: null,
+                notApplied: [],
+              });
+            }
+          }),
+        {
+          sealantLayer: sealantLaunchLayer(created),
+          workspaceImage: image === "family" ? ZSH_FAMILY : CUSTOM_BASE,
+          userDotfilesLayer: ownedRepositoriesLayer(new Map(), reads),
+          dotfilesStoreLayer: ownedSnapshotsLayer(new Map([["user-fixture", SNAPSHOT]]), reads),
+        },
+      );
+    },
+  );
+
+  it("a relaunch into a fresh workspace resolves the owner's dotfiles again", async () => {
+    const created: CreateOptions[] = [];
+    const snapshots = new Map([["user-fixture", SNAPSHOT]]);
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          expect(world.sessions.get(session.id)?.dotfiles?.snapshotSha).toBe(SNAPSHOT.sha);
+          yield* engine.stop(session.id);
+          const agentExited = () =>
+            [...world.processes.values()].every((process) => process.exitedAt !== null);
+          for (let i = 0; i < 200 && !agentExited(); i++) {
+            yield* Effect.sleep(Duration.millis(10));
+          }
+
+          // The owner synced again while the session was stopped.
+          snapshots.set("user-fixture", NEWER_SNAPSHOT);
+          const resumed = yield* engine.resumeSession(session.id, "shell");
+          expect(resumed.status).toBe("running");
+          expect(created).toHaveLength(2);
+          expect(created[1]?.shell).toBe("zsh");
+          expect(created[1]?.dotfiles).toEqual({
+            archives: [{ data: NEWER_SNAPSHOT.data, manager: "copy", bootstrap: false }],
+          });
+          expect(world.sessions.get(session.id)?.dotfiles).toEqual({
+            repository: null,
+            snapshotSha: NEWER_SNAPSHOT.sha,
+            notApplied: [],
+          });
+          // The shell is the image's login shell, the one those dotfiles configure.
+          const live = [...world.processes.values()].filter((process) => process.exitedAt === null);
+          expect(live.map((process) => process.argv)).toEqual([["zsh"]]);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        workspaceImage: ZSH_FAMILY,
+        dotfilesStoreLayer: ownedSnapshotsLayer(snapshots),
+      },
+    );
+  });
+
+  it("each owner's session launches with that owner's dotfiles and nobody else's", async () => {
+    const created: CreateOptions[] = [];
+    const reads: Array<string> = [];
+    const otherSnapshot = { sha: "07e407e407e407e407e407e407e407e407e407e4", data: "b3RoZXI=" };
+    // user-fixture keeps a repository this launch's policy refuses (no clone, no network); the
+    // other owner has none, and a snapshot of their own.
+    const refusedUrl = "https://metadata.google.internal/fixture-dots.git";
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.members.set("user-other", "member");
+          const engine = yield* SessionEngine;
+          const launchAs = (ownerUserId: string) =>
+            Effect.gen(function* () {
+              const session = yield* engine.provision({
+                projectId: project.id,
+                harness: "codex",
+                label: null,
+                name: null,
+                ownerUserId,
+                base: null,
+              });
+              yield* engine.launch(session.id, ["codex"]);
+              return session;
+            });
+
+          const other = yield* launchAs("user-other");
+          expect(reads).toEqual(["repository of user-other", "snapshot of user-other"]);
+          expect(created[0]?.dotfiles).toEqual({
+            archives: [{ data: otherSnapshot.data, manager: "copy", bootstrap: false }],
+          });
+          expect(world.sessions.get(other.id)?.dotfiles).toEqual({
+            repository: null,
+            snapshotSha: otherSnapshot.sha,
+            notApplied: [],
+          });
+
+          reads.length = 0;
+          const fixture = yield* launchAs("user-fixture");
+          expect(reads).toEqual(["repository of user-fixture", "snapshot of user-fixture"]);
+          expect(created[1]?.dotfiles).toEqual({
+            archives: [{ data: SNAPSHOT.data, manager: "copy", bootstrap: false }],
+          });
+          expect(world.sessions.get(fixture.id)?.dotfiles?.repository).toEqual({
+            url: refusedUrl,
+            ref: null,
+          });
+          expect(world.sessions.get(fixture.id)?.dotfiles?.snapshotSha).toBe(SNAPSHOT.sha);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        userDotfilesLayer: ownedRepositoriesLayer(
+          new Map([["user-fixture", repositoryOf(refusedUrl)]]),
+          reads,
+        ),
+        dotfilesStoreLayer: ownedSnapshotsLayer(
+          new Map([
+            ["user-fixture", SNAPSHOT],
+            ["user-other", otherSnapshot],
+          ]),
+          reads,
+        ),
       },
     );
   });

@@ -202,6 +202,22 @@ export const DotfilesStoreLive: Layer.Layer<DotfilesStore, never, StoreConfig> =
           }),
         );
       }
+      // A merge keeps every current file it does not replace, so the cap is on the result:
+      // otherwise repeated merges grow a snapshot past what one launch can carry.
+      if (options.merge && (yield* hasSnapshot(dir))) {
+        const replaced = new Set(decoded.map((file) => file.path));
+        const kept = (yield* summarize(dir)).files
+          .filter((file) => !replaced.has(file.path))
+          .reduce((sum, file) => sum + file.bytes, 0);
+        if (total + kept > MAX_SNAPSHOT_BYTES) {
+          return yield* Effect.fail(
+            new DotfilesStoreError({
+              message:
+                "snapshot exceeds the 4MB cap with the files it already holds — trim the selection",
+            }),
+          );
+        }
+      }
 
       yield* Effect.sync(() => fs.mkdirSync(path.dirname(dir), { recursive: true }));
       if (!fs.existsSync(dir)) {

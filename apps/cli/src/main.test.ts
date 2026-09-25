@@ -594,6 +594,209 @@ describe("mend dotfiles", () => {
   });
 });
 
+interface SyncBody {
+  readonly files: ReadonlyArray<{
+    readonly path: string;
+    readonly contentsBase64: string;
+    readonly mode: string;
+  }>;
+  readonly source: string;
+  readonly merge: boolean;
+}
+
+const isSyncBody = (value: unknown): value is SyncBody =>
+  typeof value === "object" && value !== null && "files" in value && "merge" in value;
+
+/**
+ * A machine with a home of its own: three curated config files, one file that is not on the
+ * curated list, and a file beside home that must never be read. The CLI's own config lives
+ * outside that home, so nothing but the dotfiles is found there.
+ */
+const machine = () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-cli-dotfiles-sync-"));
+  const home = path.join(root, "home");
+  const write = (relative: string, contents: string, mode = 0o644) => {
+    const target = path.join(home, relative);
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.writeFileSync(target, contents);
+    fs.chmodSync(target, mode);
+  };
+  write(".zshrc", "export EDITOR=vim\n", 0o755);
+  write(".gitconfig", "[user]\n  name = me\n");
+  write(".config/starship.toml", "add_newline = false\n");
+  write(".notes", "not on the curated list\n");
+  fs.writeFileSync(path.join(root, "outside"), "beside home, never synced\n");
+  return {
+    root,
+    home,
+    env: { HOME: home, XDG_CONFIG_HOME: path.join(root, "config") },
+    remove: () => fs.rmSync(root, { recursive: true, force: true }),
+  };
+};
+
+const decoded = (body: SyncBody | undefined) =>
+  body?.files.map((entry) => ({
+    path: entry.path,
+    contents: Buffer.from(entry.contentsBase64, "base64").toString(),
+    mode: entry.mode,
+  }));
+
+describe("mend dotfiles sync", () => {
+  /** A server that keeps every snapshot POST, and answers with the snapshot it would store. */
+  const startSyncFake = async (refuse?: string) => {
+    const posts: Array<SyncBody> = [];
+    const fake = await startFakeMend((request, response) => {
+      if (request.url !== "/api/dotfiles/snapshot" || request.method !== "POST") {
+        response.statusCode = 404;
+        response.end();
+        return;
+      }
+      let body = "";
+      request.on("data", (chunk: Buffer) => {
+        body += chunk.toString();
+      });
+      request.on("end", () => {
+        const parsed: unknown = JSON.parse(body);
+        if (!isSyncBody(parsed)) throw new Error(`not a sync body: ${body}`);
+        posts.push(parsed);
+        if (refuse !== undefined) {
+          response.writeHead(422, { "content-type": "application/json" });
+          response.end(JSON.stringify({ _tag: "SettingsFailure", message: refuse }));
+          return;
+        }
+        json(response, {
+          repository: null,
+          snapshot: {
+            sha: "5eed0f5eed0f5eed0f5eed0f5eed0f5eed0f5eed",
+            source: parsed.source,
+            committedAt: new Date(0).toISOString(),
+            files: parsed.files.map((entry) => ({
+              path: entry.path,
+              bytes: Buffer.from(entry.contentsBase64, "base64").byteLength,
+            })),
+          },
+        });
+      });
+    });
+    return { fake, posts };
+  };
+
+  it("without arguments lists what it found under home and uploads nothing", async () => {
+    const home = machine();
+    const { fake, posts } = await startSyncFake();
+    try {
+      const cli = startCli(fake.url, ["dotfiles", "sync"], home.env);
+      const exit = await cli.exited;
+      expect(exit.code, cli.stderr()).toBe(0);
+      const out = cli.stdout();
+      for (const found of [".zshrc", ".gitconfig", ".config/starship.toml"]) {
+        expect(out).toContain(found);
+      }
+      expect(out).not.toContain(".notes");
+      expect(out).toContain("mend dotfiles sync --all");
+      expect(posts).toEqual([]);
+    } finally {
+      await fake.close();
+      home.remove();
+    }
+  });
+
+  it("--all uploads every curated file found, with contents and modes, replacing the snapshot", async () => {
+    const home = machine();
+    const { fake, posts } = await startSyncFake();
+    try {
+      const cli = startCli(fake.url, ["dotfiles", "sync", "--all"], home.env);
+      const exit = await cli.exited;
+      expect(exit.code, cli.stderr()).toBe(0);
+      expect(posts).toHaveLength(1);
+      expect(posts[0]?.merge).toBe(false);
+      expect(posts[0]?.source).toBe(os.hostname());
+      expect(decoded(posts[0])).toEqual([
+        { path: ".zshrc", contents: "export EDITOR=vim\n", mode: "755" },
+        { path: ".config/starship.toml", contents: "add_newline = false\n", mode: "644" },
+        { path: ".gitconfig", contents: "[user]\n  name = me\n", mode: "644" },
+      ]);
+      expect(cli.stdout()).toContain(`synced 3 files from ${os.hostname()} · 5eed0f5`);
+    } finally {
+      await fake.close();
+      home.remove();
+    }
+  });
+
+  it("uploads exactly the paths named, curated or not, absolute under home or relative", async () => {
+    const home = machine();
+    const { fake, posts } = await startSyncFake();
+    try {
+      const cli = startCli(
+        fake.url,
+        ["dotfiles", "sync", ".notes", path.join(home.home, ".gitconfig")],
+        home.env,
+      );
+      const exit = await cli.exited;
+      expect(exit.code, cli.stderr()).toBe(0);
+      expect(decoded(posts[0])?.map((entry) => entry.path)).toEqual([".notes", ".gitconfig"]);
+      expect(cli.stdout()).toContain("synced 2 files");
+    } finally {
+      await fake.close();
+      home.remove();
+    }
+  });
+
+  it.each([
+    ["a path above home", "../outside"],
+    ["an absolute path beside home", "<root>/outside"],
+  ])("refuses %s before reading or uploading anything", async (_label, requested) => {
+    const home = machine();
+    const { fake, posts } = await startSyncFake();
+    try {
+      const target = requested.replace("<root>", home.root);
+      const cli = startCli(fake.url, ["dotfiles", "sync", ".zshrc", target], home.env);
+      const exit = await cli.exited;
+      expect(exit.code).toBe(1);
+      expect(cli.stderr()).toContain(
+        `${target} is not under ${home.home} — only files in your home directory sync`,
+      );
+      expect(posts).toEqual([]);
+    } finally {
+      await fake.close();
+      home.remove();
+    }
+  });
+
+  it("refuses a named file that does not exist, before uploading anything", async () => {
+    const home = machine();
+    const { fake, posts } = await startSyncFake();
+    try {
+      const cli = startCli(fake.url, ["dotfiles", "sync", ".zshrc", ".zshrc-typo"], home.env);
+      const exit = await cli.exited;
+      expect(exit.code).toBe(1);
+      expect(cli.stderr()).toContain(`.zshrc-typo is not a file under ${home.home}`);
+      expect(posts).toEqual([]);
+    } finally {
+      await fake.close();
+      home.remove();
+    }
+  });
+
+  it("prints the server's reason when it refuses the snapshot", async () => {
+    const home = machine();
+    const { fake, posts } = await startSyncFake(
+      "snapshot exceeds the 4MB cap — trim the selection",
+    );
+    try {
+      const cli = startCli(fake.url, ["dotfiles", "sync", "--all"], home.env);
+      const exit = await cli.exited;
+      expect(exit.code).toBe(1);
+      expect(posts).toHaveLength(1);
+      expect(cli.stderr()).toContain("snapshot exceeds the 4MB cap — trim the selection");
+      expect(cli.stdout()).not.toContain("synced");
+    } finally {
+      await fake.close();
+      home.remove();
+    }
+  });
+});
+
 describe("mend connect claude", () => {
   /**
    * The finding this pins: the credential document Claude Code writes holds `mcpOAuth` beside the

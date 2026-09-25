@@ -6587,8 +6587,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ? yield* userDotfilesRepo.repository(ownerUserId)
             : null;
         // The store snapshot is fingerprinted by its head commit (cheap); the cloned repository
-        // only by url+ref — its content is never pinned, so a push between reconciles rides
-        // until the next drain. Cold launches always clone fresh.
+        // only by its saved settings (url, ref, subdirectory, manager, bootstrap) — its content is
+        // never pinned, so a push between reconciles rides until the next drain. Cold launches
+        // always clone fresh.
         const snapshot =
           dotfilesEnabled && ownerUserId !== null
             ? yield* dotfilesStore.current(ownerUserId).pipe(Effect.orElseSucceed(() => null))
@@ -6614,7 +6615,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             revision: bundle.skill.revision,
           })),
           dotfiles: {
-            repository: repository === null ? null : { url: repository.url, ref: repository.ref },
+            repository:
+              repository === null
+                ? null
+                : {
+                    url: repository.url,
+                    ref: repository.ref,
+                    subdirectory: repository.subdirectory,
+                    manager: repository.manager,
+                    bootstrap: repository.bootstrap,
+                  },
             snapshotSha: snapshot?.sha ?? null,
           },
           environmentRevision: environment.revision,

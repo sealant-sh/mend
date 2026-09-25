@@ -585,7 +585,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "capture config files from this machine into your store",
     synopsis: ["[--all | paths...]"],
     description: [
-      "Copies the named files from your home directory into your store on the server. --all takes the known shell, git, and editor files. Setups that rely on ZDOTDIR do not transfer.",
+      "Copies the named files from your home directory into your store on the server. Paths are relative to your home directory; a path outside it is refused before anything is read. --all takes the known shell, git, and editor files. Setups that rely on ZDOTDIR do not transfer.",
     ],
     options: [{ flag: "--all", text: "every known config file" }],
     see: ["dotfiles", "dotfiles repo"],

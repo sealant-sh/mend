@@ -87,16 +87,38 @@ export const scanDotfileCandidates = (home: string): ReadonlyArray<ScannedDotfil
   );
 
 /**
+ * A requested path as the `~`-relative path the server stores, or null when it is not under
+ * `home`. Paths are read relative to home; an absolute path under home is taken too (a shell
+ * expands `~/.zshrc` before the CLI sees it). Anything that climbs out of home is refused before
+ * it is read, so no file from outside home is ever uploaded.
+ */
+export const homeRelativePath = (home: string, requested: string): string | null => {
+  const relative = path.relative(home, path.resolve(home, requested));
+  const outside =
+    relative === "" ||
+    relative === ".." ||
+    relative.startsWith(`..${path.sep}`) ||
+    path.isAbsolute(relative);
+  return outside ? null : relative.split(path.sep).join("/");
+};
+
+/**
  * Read the selected paths for upload. Explicitly requested paths must exist (a typo should fail,
- * not silently sync nothing); oversized files fail with the server's own rule. Modes ride along
- * so an executable script stays executable.
+ * not silently sync nothing) and be under home; oversized files fail with the server's own rule.
+ * Modes ride along so an executable script stays executable.
  */
 export const readSyncFiles = (
   home: string,
   paths_: ReadonlyArray<string>,
 ): { readonly files: ReadonlyArray<SyncFile> } | { readonly error: string } => {
   const files: SyncFile[] = [];
-  for (const relative of paths_) {
+  for (const requested of paths_) {
+    const relative = homeRelativePath(home, requested);
+    if (relative === null) {
+      return {
+        error: `${requested} is not under ${home} — only files in your home directory sync`,
+      };
+    }
     const stat = statFile(home, relative);
     if (stat === null) {
       return { error: `${relative} is not a file under ${home}` };

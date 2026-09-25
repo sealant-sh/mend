@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 
-import { WorkspaceImage } from "@mend/domain";
+import { type DotfilesManager, WorkspaceImage } from "@mend/domain";
 import { Schema } from "effect";
 
 /**
@@ -25,9 +25,16 @@ export interface HotFingerprintInputs {
     readonly revision: number;
   }>;
   readonly dotfiles: {
+    /**
+     * The saved repository, every field of it: the branch, subdirectory, manager and bootstrap
+     * decide what the workspace applied as much as the URL does.
+     */
     readonly repository: {
       readonly url: string;
       readonly ref: string | null;
+      readonly subdirectory: string | null;
+      readonly manager: DotfilesManager;
+      readonly bootstrap: boolean;
     } | null;
     readonly snapshotSha: string | null;
   };
@@ -80,6 +87,9 @@ export const hotFingerprint = (inputs: HotFingerprintInputs): string => {
           : {
               url: inputs.dotfiles.repository.url,
               ref: inputs.dotfiles.repository.ref,
+              subdirectory: inputs.dotfiles.repository.subdirectory,
+              manager: inputs.dotfiles.repository.manager,
+              bootstrap: inputs.dotfiles.repository.bootstrap,
             },
       snapshotSha: inputs.dotfiles.snapshotSha,
     },
