@@ -49,6 +49,7 @@ import {
   WorktreeAnnotation,
   SessionControlView,
   SessionDetail,
+  SessionServicesStopped,
   SessionNotSteerable,
   SessionNotLive,
   SettingsFailure,
@@ -526,6 +527,11 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
         // One read for every session's processes; `currentAgent` is derived per session.
         const processes = yield* SessionProcessesRepo;
         const rows = yield* processes.listForSessions(projectSessions.map((session) => session.id));
+        const liveServices = new Map<string, number>(
+          yield* (yield* ServicesRepo).liveCountsForSessions(
+            projectSessions.map((session) => session.id),
+          ),
+        );
         const bySession = new Map<string, Array<(typeof rows)[number]>>();
         for (const row of rows) {
           const list = bySession.get(row.sessionId);
@@ -541,6 +547,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
               new SessionAnnotation({
                 ...row,
                 currentAgent: currentAgentProcess(bySession.get(row.sessionId) ?? []),
+                liveServices: liveServices.get(row.sessionId) ?? 0,
               }),
           ),
           // Embedded so worktree-aware lists never need a second fetch; the
@@ -2167,6 +2174,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           landings: change === null ? [] : yield* landings.listForChange(change.id),
           processes: rows,
           currentAgent: currentAgentProcess(rows),
+          liveServices:
+            (yield* (yield* ServicesRepo).liveCountsForSessions([session.id])).get(session.id) ?? 0,
         });
       }),
     )
@@ -2652,6 +2661,22 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         return yield* sessions
           .byId(params.id)
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+      }),
+    )
+    .handle("stopServices", ({ params }) =>
+      Effect.gen(function* () {
+        const steering = yield* SessionSteering;
+        yield* steering.stop(params.id);
+        const engine = yield* SessionEngine;
+        const sessions = yield* SessionsRepo;
+        const stopped = yield* engine
+          .stopServices(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        yield* recordControl(params.id, "services-stop", null);
+        const session = yield* sessions
+          .byId(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        return new SessionServicesStopped({ session, stopped });
       }),
     )
     .handle("sharedControl", ({ params, payload }) =>

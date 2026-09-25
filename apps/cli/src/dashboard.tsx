@@ -33,6 +33,7 @@ import {
   liveProtocolOf,
   liveShellOf,
   mapWorkbenchSessions,
+  markServicesStopped,
   markSessionStopped,
   planAttach,
   planLayout,
@@ -42,6 +43,7 @@ import {
   removeWorktreeGroup,
   replaceSession,
   sessionDisplayName,
+  sessionHold,
   stepColumn,
   verbForKey,
   verbHints,
@@ -372,14 +374,17 @@ const SessionRow = ({
   const shells = processes.filter((process) => process.kind === "shell").length;
   const nameWidth = Math.max(6, width - 5 - status.length);
   const factWidth = Math.max(8, width - 3);
-  // The harness leads: it is the fact the machine id used to crowd out.
+  // A stopped agent's Services keep the workspace up: that leads, or it would read as done.
+  const hold = sessionHold(item);
+  // The harness leads otherwise: it is the fact the machine id used to crowd out.
   const facts = fitHints(
     [
+      ...(hold === null ? [] : [hold]),
       session.harness,
       shortAge(session.createdAt),
       ...(shells > 0 ? [`${shells} shell`] : []),
       ...(agents > 0 ? [`${agents} agent`] : []),
-      ...(services.length > 0 ? [`${services.length} service`] : []),
+      ...(hold === null && services.length > 0 ? [`${services.length} service`] : []),
     ],
     factWidth,
   );
@@ -470,6 +475,7 @@ const SessionFacts = ({
 }) => {
   const { session, annotation, services } = item;
   const color = STATUS_COLOR[session.status] ?? MUTED;
+  const hold = sessionHold(item);
   const summary = session.summary?.split("\n")[0] ?? null;
   const change = annotation ?? group?.annotation;
   const lines: ReadonlyArray<ReactNode> = [
@@ -481,6 +487,12 @@ const SessionFacts = ({
     <text key="status" height={1} bg="transparent">
       <span>{"  "}</span>
       <span fg={color}>{session.status}</span>
+      {hold === null ? null : (
+        <>
+          <span fg={FAINT}>{" · "}</span>
+          <span fg={INK_2}>{hold}</span>
+        </>
+      )}
       <span fg={FAINT}>{" · "}</span>
       <span fg={MUTED}>{session.branch}</span>
       <span fg={FAINT}>
@@ -1128,6 +1140,26 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
 
   // Stops are explicit — and armed: the first press names what a second press
   // will stop; moving the selection re-arms against the newly selected row.
+  // A stop leaves Services running; this is their own stop, the ⇧K of a stopped agent's row.
+  const stopServicesMutation = useMutation({
+    mutationFn: (session: SessionDto) =>
+      ctx.api<{ readonly stopped: number }>("POST", `/sessions/${session.id}/services/stop`),
+    onMutate: async (session) => {
+      await queryClient.cancelQueries({ queryKey: WORKBENCH_KEY });
+      patchWorkbench((current) => markServicesStopped(current, session.id));
+    },
+    onSuccess: (result, session) => {
+      say(
+        `stopped ${result.stopped} service${result.stopped === 1 ? "" : "s"} · ${sessionDisplayName(session)} — the workspace ends once nothing is live`,
+      );
+    },
+    onError: (error) => {
+      say(errorText(error));
+      refetch();
+    },
+    onSettled: settleRefetch,
+  });
+
   const stopMutation = useMutation({
     mutationFn: (session: SessionDto) =>
       ctx.api<SessionDto>("POST", `/sessions/${session.id}/stop`),
@@ -1327,6 +1359,18 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     }
     const session = selectedSession;
     if (session === null || isPendingId(session.id)) return;
+    // The agent is no longer live and Services keep the workspace up: ⇧K stops those.
+    const hold = selectedItem === null ? null : sessionHold(selectedItem);
+    if (hold !== null) {
+      if (stopArmed === `svc:${session.id}` && confirmationVisible("press ⇧K again")) {
+        setStopArmed(null);
+        stopServicesMutation.mutate(session);
+        return;
+      }
+      setStopArmed(`svc:${session.id}`);
+      say(`press ⇧K again to stop the services · ${sessionDisplayName(session)} — ${hold}`);
+      return;
+    }
     if (!LIVE_STATUSES.has(session.status)) {
       say("nothing to stop — the session is settled");
       return;

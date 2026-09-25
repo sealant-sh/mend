@@ -1,7 +1,20 @@
-import { ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
+import {
+  ProjectId,
+  SealantWorkspaceId,
+  SessionId,
+  SessionProcessId,
+  Sha,
+  WorktreeId,
+} from "@mend/domain";
 import { describe, expect, it } from "vitest";
 
-import type { SessionDto, WorktreeAnnotationDto, WorktreeDto } from "#/lib/api";
+import type {
+  SessionAnnotationDto,
+  SessionDto,
+  SessionProcessDto,
+  WorktreeAnnotationDto,
+  WorktreeDto,
+} from "#/lib/api";
 
 import { settledGroups, worktreeGroups } from "./model";
 
@@ -101,5 +114,48 @@ describe("Project detail worktree groups", () => {
     expect(groups.flatMap((group) => group.members).some((member) => member.id === "s-newer")).toBe(
       false,
     );
+  });
+
+  it("keeps a stopped agent's worktree live while its Services keep the workspace up", () => {
+    const stoppedAgent: SessionProcessDto = {
+      id: SessionProcessId.make("agent-1"),
+      sessionId: SessionId.make("s-older"),
+      sealantWorkspaceId: SealantWorkspaceId.make("ws-1"),
+      sealantSessionId: "pty-1",
+      sealantRunId: null,
+      launchCorrelationId: null,
+      serviceId: null,
+      attemptOrdinal: null,
+      kind: "agent-pty",
+      harness: "claude",
+      providerSessionId: null,
+      protocolOptions: null,
+      label: "claude",
+      argv: ["claude"],
+      status: "stopped",
+      exitCode: null,
+      workspacePort: null,
+      protocol: "tcp",
+      hostPort: null,
+      createdAt: new Date("2026-09-01T00:00:00Z"),
+      exitedAt: new Date("2026-09-01T01:00:00Z"),
+      updatedAt: new Date("2026-09-01T01:00:00Z"),
+    };
+    const facts: ReadonlyArray<SessionAnnotationDto> = [
+      {
+        sessionId: "s-older",
+        changeId: null,
+        openComments: 0,
+        totalComments: 0,
+        pendingFollowUp: false,
+        currentAgent: stoppedAgent,
+        liveServices: 3,
+      },
+    ];
+    const groups = worktreeGroups([older, newer, live], sessions, annotations, facts);
+    const held = groups.find((group) => group.worktree.id === older.id);
+    expect(held?.holds.get("s-older")).toBe("agent stopped · 3 services keep the workspace up");
+    expect(held?.live).toBe(1);
+    expect(settledGroups(groups).map((group) => group.worktree.name)).toEqual(["newer"]);
   });
 });

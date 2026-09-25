@@ -129,6 +129,26 @@ describe("buildInbox with the current agent process", () => {
     expect(inbox.settled[0]?.endedAt).toBe("2026-08-21T11:30:00.000Z");
   });
 
+  it("keeps a stopped agent's session active while its Services keep the workspace up", () => {
+    const stopped = { ...agent("2026-08-21T11:30:00.000Z", null), status: "stopped" as const };
+    const inbox = buildInbox(
+      [
+        {
+          project: project("p1"),
+          sessions: [session("idle-done", "p1", "idle", "2026-08-21T10:00:00.000Z")],
+          annotations: [
+            annotationFixture({ sessionId: "idle-done", currentAgent: stopped, liveServices: 2 }),
+          ],
+        },
+      ],
+      {},
+      {},
+      now,
+    );
+    expect(inbox.settled).toEqual([]);
+    expect(inbox.active[0]?.hold).toBe("agent stopped · 2 services keep the workspace up");
+  });
+
   it("keeps a failed agent's weight behind an idle session", () => {
     const inbox = buildInbox(
       [

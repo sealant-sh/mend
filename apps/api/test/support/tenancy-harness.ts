@@ -747,6 +747,7 @@ export const createTenancyWorld = async (
       {
         byId: (id) => Effect.succeed(services.get(id) ?? null),
         listAll: () => Effect.succeed([...services.values()]),
+        liveCountsForSessions: () => Effect.succeed(new Map()),
       },
       calls,
     ),

@@ -79,7 +79,7 @@ describe("findCommand", () => {
 describe("usageOf", () => {
   it("quotes the synopsis, one line per shape", () => {
     expect(usageOf("stop")).toBe(
-      "usage: mend stop [session-id-prefix]\n       mend stop --all [--project <p>]",
+      "usage: mend stop [session-id-prefix]\n       mend stop --all [--project <p>]\n       mend stop --services [session-id-prefix]",
     );
     expect(usageOf("doctor")).toBe("usage: mend doctor");
     expect(usageOf("unknown thing")).toBe("usage: mend unknown thing");

@@ -21,7 +21,9 @@ import {
   removeSession,
   renameShell as renameShellProcess,
   resumeSession,
+  sessionServicesHold,
   stopSession,
+  stopSessionServices,
   type AgentLaunchModeDto,
   type SessionDto,
   type SessionProcessDto,
@@ -160,6 +162,15 @@ export function TerminalPane({
       }
     },
   });
+  const stopServices = useMutation({
+    mutationFn: () => stopSessionServices(tab.sessionId),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({ queryKey: ["session", tab.sessionId] });
+      if (session !== null) {
+        void queryClient.invalidateQueries({ queryKey: ["project", session.projectId] });
+      }
+    },
+  });
   const rename = useMutation({
     mutationFn: (label: string) =>
       process === null
@@ -203,6 +214,11 @@ export function TerminalPane({
   const currentAgent = detail.data?.currentAgent ?? null;
   const live = session !== null && agentIsLive(session, currentAgent);
   const agentPty = currentAgent?.sealantSessionId ?? session?.sealantSessionId ?? null;
+  // A stop leaves Services running and they keep the workspace up: say so, with their own stop.
+  const servicesHold =
+    session === null
+      ? null
+      : sessionServicesHold(session, currentAgent, detail.data?.liveServices ?? 0);
   const change = detail.data?.change ?? null;
   // Landing (docs/adr/0007-landing.md): the change's record, read once there is a change. The
   // server answers who may land it (the change's owner); an older server has no such read.
@@ -261,6 +277,9 @@ export function TerminalPane({
               pulse={session.status === "running"}
             />
             <span className="truncate font-mono text-[12px] text-label">{session.branch}</span>
+            {servicesHold !== null && (
+              <span className="truncate font-mono text-[11.5px] text-ink-2">{servicesHold}</span>
+            )}
             <span className="flex-1" />
             <Quiet onClick={onServices}>
               <span className={serviceAttention ? "text-warning" : ""}>
@@ -341,6 +360,23 @@ export function TerminalPane({
             {session.ownerUserId !== null && control.own && (
               <SharedControlSwitch session={session} />
             )}
+            {servicesHold !== null && control.stop && (
+              <Quiet
+                className="hover:text-danger"
+                disabled={stopServices.isPending}
+                title="Stop every Service of this session; the workspace ends once nothing is live"
+                onClick={() => stopServices.mutate()}
+              >
+                {stopServices.isPending ? "stopping services…" : "stop services"}
+              </Quiet>
+            )}
+            {stopServices.isError && (
+              <span className="truncate font-mono text-[11.5px] text-danger">
+                {stopServices.error instanceof Error
+                  ? stopServices.error.message
+                  : "the services did not stop"}
+              </span>
+            )}
             {live
               ? control.stop && (
                   <Quiet
@@ -351,7 +387,8 @@ export function TerminalPane({
                     {stop.isPending ? "stopping…" : "stop"}
                   </Quiet>
                 )
-              : control.own && (
+              : servicesHold === null &&
+                control.own && (
                   <Quiet
                     className="hover:text-danger"
                     disabled={remove.isPending}

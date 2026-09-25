@@ -11,6 +11,7 @@ import { StatusDot, toneText } from "#/components/status-dot";
 import {
   removeSession,
   stopSession,
+  stopSessionServices,
   type ProjectDto,
   type ServiceViewDto,
   type SessionDto,
@@ -149,7 +150,8 @@ export function InboxRail({
   const stopRow = async (row: InboxRow) => {
     setError(null);
     try {
-      await stopSession(row.session.id);
+      // A row whose agent stopped while Services keep its workspace up stops those instead.
+      await (row.hold === null ? stopSession(row.session.id) : stopSessionServices(row.session.id));
       void queryClient.invalidateQueries({ queryKey: ["session", row.session.id] });
       void queryClient.invalidateQueries({ queryKey: ["project", row.session.projectId] });
     } catch (cause) {
@@ -184,12 +186,19 @@ export function InboxRail({
             }
           : null
         : actions.stop
-          ? {
-              label: "Stop",
-              confirm: "Stop the coding agent?",
-              danger: true,
-              onSelect: () => void stopRow(row),
-            }
+          ? row.hold === null
+            ? {
+                label: "Stop",
+                confirm: "Stop the coding agent?",
+                danger: true,
+                onSelect: () => void stopRow(row),
+              }
+            : {
+                label: "Stop services",
+                confirm: `${row.hold}. Stop them? The workspace ends once nothing is live.`,
+                danger: true,
+                onSelect: () => void stopRow(row),
+              }
           : null;
     return {
       title: row.session.branch,
@@ -595,6 +604,7 @@ function Row({
         {!slim && (
           <span className="truncate pl-[14px] font-mono text-[11px] text-label">
             {showProject ? `${row.projectName} · ` : ""}
+            {row.hold === null ? "" : `${row.hold} · `}
             {row.session.branch}
           </span>
         )}

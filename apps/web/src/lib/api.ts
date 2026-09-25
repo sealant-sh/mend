@@ -1,3 +1,4 @@
+import { agentProcessOutcome, servicesHoldLine } from "@mend/domain/workbench";
 import type { inferRouterOutputs } from "@trpc/server";
 
 import type { AppRouter } from "../server/routers/index.ts";
@@ -335,6 +336,9 @@ export type LaunchStartDto = Omit<LaunchRequestDto, "mode" | "argv">;
 export const launchSessionStart = (id: string, start: LaunchStartDto) =>
   orLogin(trpcClient.sessions.launch.mutate({ id, request: { ...start } }));
 export const stopSession = (id: string) => orLogin(trpcClient.sessions.stop.mutate({ id }));
+/** Stop every live Service of the session; the workspace ends once nothing is live. */
+export const stopSessionServices = (id: string) =>
+  orLogin(trpcClient.sessions.stopServices.mutate({ id }));
 export const setSharedControl = (id: string, enabled: boolean) =>
   orLogin(trpcClient.sessions.setSharedControl.mutate({ id, enabled }));
 /** Store a pasted image beside the session; the reply is the workspace path to paste. */
@@ -581,6 +585,22 @@ export const agentIsLive = (session: SessionDto, currentAgent: SessionProcessDto
     : session.status === "starting" ||
       (currentAgent.exitedAt === null &&
         (currentAgent.status === "starting" || currentAgent.status === "running"));
+
+/**
+ * What the session reads once its agent is no longer live while its Services keep the workspace
+ * up (`agent stopped · 3 services keep the workspace up`); null otherwise. A stop leaves
+ * Services running, so the status alone would hide a workspace that is still up.
+ */
+export const sessionServicesHold = (
+  session: SessionDto,
+  currentAgent: SessionProcessDto | null,
+  liveServices: number,
+): string | null =>
+  servicesHoldLine({
+    agentLive: agentIsLive(session, currentAgent),
+    agentOutcome: currentAgent === null ? null : agentProcessOutcome(currentAgent),
+    liveServices,
+  });
 
 const preferredEndpoint = (view: ServiceViewDto): ServiceEndpointDto | null =>
   view.endpoints.find((endpoint) => endpoint.scope === "private") ?? view.endpoints[0] ?? null;

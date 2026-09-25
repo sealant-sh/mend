@@ -6,7 +6,7 @@ import { HiddenEndedSessionsNotice } from "#/components/project-detail/hidden-en
 import { baseLabel, type WorktreeGroup } from "#/components/project-detail/model";
 import { NewWorktreeSession } from "#/components/project-detail/new-worktree-session";
 import { ReviewLink, type DetailHandlers } from "#/components/project-detail/parts";
-import { SessionStatusDot } from "#/components/status";
+import { SessionStatusDot, StatusDot } from "#/components/status";
 import type { SessionDto } from "#/lib/api";
 import { worktreeDisplayName } from "#/lib/workbench-menus";
 
@@ -106,10 +106,13 @@ function WorktreeFactLine({ group }: { readonly group: WorktreeGroup }) {
 /** One session child: lighter than its parent, with its own right-click verbs. */
 function SessionLine({
   session,
+  hold,
   last,
   handlers,
 }: {
   readonly session: SessionDto;
+  /** Its agent is no longer live and its Services keep the workspace up; null otherwise. */
+  readonly hold: string | null;
   readonly last: boolean;
   readonly handlers: DetailHandlers;
 }) {
@@ -131,7 +134,11 @@ function SessionLine({
           <span className="truncate font-sans text-[13px] text-ink-2">{name}</span>
           <span className="shrink-0 font-mono text-[11.5px] text-faint">{session.harness}</span>
         </Link>
-        <SessionStatusDot status={session.status} recorded={session.sealantRunId !== null} />
+        {hold === null ? (
+          <SessionStatusDot status={session.status} recorded={session.sealantRunId !== null} />
+        ) : (
+          <StatusDot tone="hollow" word={hold} />
+        )}
       </div>
     </li>
   );
@@ -204,6 +211,7 @@ function WorktreeNode({
             <SessionLine
               key={session.id}
               session={session}
+              hold={group.holds.get(session.id) ?? null}
               last={index === group.members.length - 1}
               handlers={handlers}
             />

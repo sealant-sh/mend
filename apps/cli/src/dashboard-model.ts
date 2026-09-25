@@ -1,4 +1,13 @@
-import { HARNESS_COMMANDS, isPendingId, LIVE_STATUSES } from "./shared.ts";
+import { servicesHoldLine } from "@mend/domain/workbench";
+
+import {
+  agentIsLive,
+  agentOutcome,
+  HARNESS_COMMANDS,
+  isPendingId,
+  LIVE_STATUSES,
+  type AgentProcessLike,
+} from "./shared.ts";
 
 /**
  * The dashboard's pure data layer: DTOs as the server sends them, the
@@ -47,6 +56,10 @@ export interface SessionAnnotationDto {
   readonly changeId: string | null;
   readonly openComments: number;
   readonly pendingFollowUp: boolean;
+  /** The session's agent process; absent on older servers. */
+  readonly currentAgent?: AgentProcessLike | null;
+  /** Services that keep the workspace up; absent on older servers. */
+  readonly liveServices?: number;
 }
 
 export interface ProjectDetailDto {
@@ -529,15 +542,43 @@ export const createLaunchGate = (): LaunchGate => {
 export const markSessionStopped = (data: Workbench, sessionId: string): Workbench => {
   const processesBySession = new Map(data.processesBySession);
   processesBySession.delete(sessionId);
-  const servicesBySession = new Map(data.servicesBySession);
-  servicesBySession.delete(sessionId);
+  // A stop ends the agent and leaves Services running: their rows stay until their own stop.
   return {
     ...mapWorkbenchSessions(data, (session) =>
       session.id === sessionId ? { ...session, status: "stopped" } : session,
     ),
     processesBySession,
-    servicesBySession,
   };
+};
+
+/** The optimistic Stop services: the session's Service rows leave before the server answers. */
+export const markServicesStopped = (data: Workbench, sessionId: string): Workbench => {
+  const servicesBySession = new Map(data.servicesBySession);
+  servicesBySession.delete(sessionId);
+  return { ...data, servicesBySession };
+};
+
+/** Statuses only a live agent (or a launch about to have one) produces. */
+const AGENT_WORKING: ReadonlySet<string> = new Set(["starting", "running", "waiting"]);
+
+/**
+ * What the conversation reads once its agent is no longer live while its Services keep the
+ * workspace up — `agent stopped · 3 services keep the workspace up` — else null. A stop leaves
+ * Services running, so the status word alone would hide a workspace that is still up.
+ */
+export const sessionHold = (item: SessionItem): string | null => {
+  const agent = item.annotation?.currentAgent ?? null;
+  const agentProcessLive = item.processes.some(
+    (process) => process.kind !== "shell" && process.exitedAt === null,
+  );
+  return servicesHoldLine({
+    agentLive:
+      agent === null
+        ? agentProcessLive || AGENT_WORKING.has(item.session.status)
+        : agentIsLive(item.session, agent),
+    agentOutcome: agentOutcome(agent),
+    liveServices: Math.max(item.annotation?.liveServices ?? 0, item.services.length),
+  });
 };
 
 /** The optimistic removal: the whole group leaves the list before the server answers. */

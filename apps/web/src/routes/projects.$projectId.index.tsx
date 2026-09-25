@@ -42,7 +42,7 @@ function ProjectWorktreesPage() {
   const [clearing, setClearing] = useState<"idle" | "armed" | "working">("idle");
   const { openMenu, menuElement } = useContextMenu();
 
-  const groups = worktreeGroups(worktrees, sessions, worktreeAnnotations);
+  const groups = worktreeGroups(worktrees, sessions, worktreeAnnotations, annotations);
   const settled = settledGroups(groups);
   const handlers: DetailHandlers = {
     onWorktreeMenu: (event, group) =>

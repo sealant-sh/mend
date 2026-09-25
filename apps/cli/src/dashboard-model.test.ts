@@ -15,6 +15,7 @@ import {
   isDeadEnd,
   liveProtocolOf,
   liveShellOf,
+  markServicesStopped,
   markSessionStopped,
   NAV_SECTIONS,
   planAttach,
@@ -22,6 +23,7 @@ import {
   planResume,
   removeWorktreeGroup,
   sessionDisplayName,
+  sessionHold,
   stepColumn,
   verbForKey,
   verbHints,
@@ -558,9 +560,17 @@ describe("optimistic verbs", () => {
     const fixAuth = groups.find((group) => group.name === "fix-auth");
     expect(fixAuth?.live).toBe(0);
     expect(fixAuth?.sessions[0]?.session.status).toBe("stopped");
-    // The child fact lines vanish with the stop — no stale "running" agent row.
+    // The agent's fact line vanishes with the stop — no stale "running" agent row. Services
+    // keep running: a stop leaves them, and they keep the workspace up.
     expect(fixAuth?.sessions[0]?.processes).toEqual([]);
-    expect(fixAuth?.sessions[0]?.services).toEqual([]);
+    expect(fixAuth?.sessions[0]?.services.map((service) => service.label)).toEqual(["web"]);
+    const item = fixAuth?.sessions[0];
+    expect(item === undefined ? null : sessionHold(item)).toBe("1 service keeps the workspace up");
+    const cleared = markServicesStopped(patched, "a");
+    expect(
+      deriveWorktrees(cleared, "proj-1").find((group) => group.name === "fix-auth")?.sessions[0]
+        ?.services,
+    ).toEqual([]);
     // The other worktree is untouched.
     expect(groups.find((group) => group.name === "docs")?.live).toBe(1);
   });
@@ -789,5 +799,66 @@ describe("the keymap", () => {
       expect(verbHints(column), column).toContain("a attach");
       expect(verbHints(column), column).toContain("r resume");
     }
+  });
+});
+
+describe("sessionHold", () => {
+  const stoppedAgent = {
+    status: "stopped",
+    exitCode: null,
+    exitedAt: "2026-08-31T11:00:00.000Z",
+    harness: "claude",
+    sealantSessionId: "pty-1",
+    kind: "agent-pty",
+  };
+
+  it("reads the agent's outcome and the Services that keep the workspace up", () => {
+    const item = {
+      session: session({ id: "held", status: "idle" }),
+      annotation: {
+        sessionId: "held",
+        changeId: null,
+        openComments: 0,
+        pendingFollowUp: false,
+        currentAgent: stoppedAgent,
+        liveServices: 3,
+      },
+      services: [],
+      processes: [],
+    };
+    expect(sessionHold(item)).toBe("agent stopped · 3 services keep the workspace up");
+  });
+
+  it("says nothing while the agent works or no Service holds the workspace", () => {
+    const running = {
+      session: session({ id: "busy", status: "running" }),
+      annotation: undefined,
+      services: [],
+      processes: [
+        {
+          id: "p1",
+          kind: "agent-pty",
+          harness: "claude",
+          label: null,
+          status: "running",
+          exitedAt: null,
+        },
+      ],
+    };
+    expect(sessionHold(running)).toBeNull();
+    const quiet = {
+      session: session({ id: "done", status: "stopped" }),
+      annotation: {
+        sessionId: "done",
+        changeId: null,
+        openComments: 0,
+        pendingFollowUp: false,
+        currentAgent: stoppedAgent,
+        liveServices: 0,
+      },
+      services: [],
+      processes: [],
+    };
+    expect(sessionHold(quiet)).toBeNull();
   });
 });

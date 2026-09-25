@@ -17,7 +17,7 @@ import {
   type ServiceTargetState,
   type ServiceTransport,
 } from "@mend/domain/workbench";
-import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNotNull, isNull, or } from "drizzle-orm";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -57,6 +57,13 @@ export class ServicesRepo extends Context.Service<
     readonly byName: (sessionId: SessionId, name: string) => Effect.Effect<Service | null>;
     readonly listForSession: (sessionId: SessionId) => Effect.Effect<ReadonlyArray<Service>>;
     readonly listAll: () => Effect.Effect<ReadonlyArray<Service>>;
+    /**
+     * Per session, how many Services hold its workspace: a current attempt that has not exited,
+     * or a current forward still binding or bound. Sessions with none are absent.
+     */
+    readonly liveCountsForSessions: (
+      sessionIds: ReadonlyArray<SessionId>,
+    ) => Effect.Effect<ReadonlyMap<SessionId, number>>;
     readonly setCurrentAttempt: (
       id: ServiceId,
       attemptId: SessionProcessId | null,
@@ -240,6 +247,38 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         return rows.map(toService);
       });
 
+      const liveCountsForSessions = Effect.fn("ServicesRepo.liveCountsForSessions")(function* (
+        sessionIds: ReadonlyArray<SessionId>,
+      ) {
+        if (sessionIds.length === 0) return new Map<SessionId, number>();
+        const rows = yield* db
+          .select({ sessionId: services.sessionId, live: count() })
+          .from(services)
+          .leftJoin(
+            sessionProcesses,
+            and(
+              eq(sessionProcesses.id, services.currentAttemptId),
+              isNull(sessionProcesses.exitedAt),
+            ),
+          )
+          .leftJoin(
+            serviceForwards,
+            and(
+              eq(serviceForwards.id, services.currentForwardId),
+              inArray(serviceForwards.state, ["binding", "bound"]),
+            ),
+          )
+          .where(
+            and(
+              inArray(services.sessionId, [...sessionIds]),
+              or(isNotNull(sessionProcesses.id), isNotNull(serviceForwards.id)),
+            ),
+          )
+          .groupBy(services.sessionId)
+          .pipe(Effect.orDie);
+        return new Map(rows.map((row) => [row.sessionId, row.live]));
+      });
+
       const setCurrentAttempt = Effect.fn("ServicesRepo.setCurrentAttempt")(function* (
         id: ServiceId,
         attemptId: SessionProcessId | null,
@@ -327,6 +366,7 @@ export const ServicesRepoLive: Layer.Layer<ServicesRepo, never, MendDB | PgClien
         byName,
         listForSession,
         listAll,
+        liveCountsForSessions,
         setCurrentAttempt,
         setCurrentForward,
         compareAndSetCurrentAttempt,

@@ -57,6 +57,7 @@ import type {
   CheckpointTrigger,
   HotWorkspace,
   Project,
+  Service,
   ServiceRecipe,
   Session,
   SessionDotfilesNotApplied,
@@ -687,7 +688,7 @@ export class SessionEngine extends Context.Service<
      * survive a stop that ended a live agent — you may be sitting in one — and the session
      * reads `idle` while they hold the workspace; a stop with NO live agent left is aimed at
      * the session itself and closes the shells too, so an orphan shell can never hold a
-     * stopped session open. Services keep their own lifecycle and verb.
+     * stopped session open. Services keep their own lifecycle; `stopServices` is their verb.
      */
     readonly stop: (sessionId: SessionId) => Effect.Effect<void, SessionNotFoundError>;
     /**
@@ -789,6 +790,12 @@ export class SessionEngine extends Context.Service<
     readonly stopService: (
       serviceId: ServiceId,
     ) => Effect.Effect<ServiceView, ServiceNotFoundError>;
+    /**
+     * Stop every live Service of the session — the action beside a stopped agent whose Services
+     * keep the workspace up (docs/SESSION-SERVICES.md). Each goes as `stopService` goes; once
+     * nothing is live the workspace ends as after any last lease. Answers how many it stopped.
+     */
+    readonly stopServices: (sessionId: SessionId) => Effect.Effect<number, SessionNotFoundError>;
     /**
      * Rejoin a session as a continuous piece of work — harness- and
      * machine-agnostic. Same worktree, same change, same conversation: the
@@ -6584,6 +6591,35 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const stopService = (serviceId: ServiceId) =>
         withServiceLifecycle(stopServiceUnlocked(serviceId));
 
+      /** A Service holds its workspace while its attempt runs or its forward is open. */
+      const serviceIsLive = Effect.fn("SessionEngine.serviceIsLive")(function* (service: Service) {
+        const attempt =
+          service.currentAttemptId === null
+            ? null
+            : yield* processes.byId(service.currentAttemptId);
+        if (attempt !== null && attempt.exitedAt === null) return true;
+        const forward =
+          service.currentForwardId === null
+            ? null
+            : yield* serviceForwards.byId(service.currentForwardId);
+        return forward !== null && (forward.state === "binding" || forward.state === "bound");
+      });
+
+      const stopServices = Effect.fn("SessionEngine.stopServices")(function* (
+        sessionId: SessionId,
+      ) {
+        yield* sessions.byId(sessionId);
+        let stopped = 0;
+        for (const service of yield* services.listForSession(sessionId)) {
+          if (!(yield* serviceIsLive(service))) continue;
+          yield* stopService(service.id).pipe(
+            Effect.catchTag("ServiceNotFoundError", () => Effect.void),
+          );
+          stopped += 1;
+        }
+        return stopped;
+      });
+
       // -----------------------------------------------------------------------------------------
       // Hot sessions — the per-project pool of pre-provisioned session skeletons. A skeleton is a
       // pre-generated session id, its worktree, its socket dir, and a live workspace mounting
@@ -7613,6 +7649,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         runServiceRecipe: (sessionId, name) => owned(sessionId)(runServiceRecipe(sessionId, name)),
         restartService: (serviceId) => ownedByService(serviceId)(restartService(serviceId)),
         stopService: (serviceId) => ownedByService(serviceId)(stopService(serviceId)),
+        stopServices: (sessionId) => owned(sessionId)(stopServices(sessionId)),
         resumeSession: (sessionId, harness, fresh) =>
           owned(sessionId)(resumeSession(sessionId, harness, fresh)),
         handoff: (sessionId, to, start, author) =>

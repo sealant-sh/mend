@@ -367,6 +367,19 @@ export class SessionDetail extends Schema.Class<SessionDetail>("SessionDetail")(
   processes: Schema.Array(SessionProcess),
   /** The agent process "the session's agent" means right now; null before the first launch. */
   currentAgent: Schema.NullOr(SessionProcess),
+  /**
+   * Services that keep the workspace up (a live attempt or an open forward); a stop leaves them
+   * running (docs/SESSION-SERVICES.md). Older servers omit it.
+   */
+  liveServices: Schema.Int.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
+}) {}
+
+/** What Stop services did: the session as it reads after, and how many Services it stopped. */
+export class SessionServicesStopped extends Schema.Class<SessionServicesStopped>(
+  "SessionServicesStopped",
+)({
+  session: Session,
+  stopped: Schema.Int,
 }) {}
 
 /** The API takes only the human-initiated triggers; the engine owns the rest. */

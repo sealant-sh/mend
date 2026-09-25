@@ -2060,6 +2060,23 @@ const landingDescriptionMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE change_landings ADD COLUMN described_tour_id text`;
 });
 
+/**
+ * docs/SESSION-SERVICES.md, "Stop": a stop keeps Services running, and their own Stop services
+ * action is a steering act like the stop, so the session's control log records who took it.
+ */
+const servicesStopControlMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE session_control_events
+      DROP CONSTRAINT IF EXISTS session_control_events_kind_check`;
+  yield* sql`
+    ALTER TABLE session_control_events
+      ADD CONSTRAINT session_control_events_kind_check CHECK (kind IN (
+        'interrupt', 'terminal-attach', 'shell-open', 'stop', 'services-stop',
+        'shared-control-on', 'shared-control-off'
+      ))`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2128,4 +2145,5 @@ export const migrations = {
   "0064_landing": landingMigration,
   "0065_turn_landing": turnLandingMigration,
   "0066_landing_description": landingDescriptionMigration,
+  "0067_services_stop_control": servicesStopControlMigration,
 };

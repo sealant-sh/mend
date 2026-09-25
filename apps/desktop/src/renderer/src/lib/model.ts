@@ -4,6 +4,7 @@ import {
   type SessionAnnotationDto,
   type SessionDto,
   sessionFace,
+  sessionServicesHold,
 } from "#/lib/api";
 import type { InboxShelves } from "#/lib/inbox-shelves";
 import { hasUnseenSettle } from "#/lib/seen";
@@ -48,6 +49,11 @@ export interface InboxRow {
   readonly unseen: boolean;
   /** When the agent's work ended (ISO) — orders the settled shelf. */
   readonly endedAt: string | null;
+  /**
+   * The agent is no longer live and Services keep the workspace up:
+   * `agent stopped · 3 services keep the workspace up`. Null otherwise. Such a row stays active.
+   */
+  readonly hold: string | null;
 }
 
 export interface Inbox {
@@ -123,12 +129,13 @@ const buildRows = (
   for (const { project, sessions, annotations } of projects) {
     for (const session of sessions) {
       if (!keep(session)) continue;
-      const currentAgent =
-        annotations?.find((annotation) => annotation.sessionId === session.id)?.currentAgent ??
-        null;
+      const facts = annotations?.find((annotation) => annotation.sessionId === session.id);
+      const currentAgent = facts?.currentAgent ?? null;
       const face = sessionFace(session, currentAgent);
       const faced: SessionDto = { ...session, status: face.status, settledAt: face.endedAt };
-      const live = LIVE_STATUSES.has(face.status);
+      // A stop leaves Services running: a workspace they keep up is still active work.
+      const hold = sessionServicesHold(session, currentAgent, facts?.liveServices ?? 0);
+      const live = LIVE_STATUSES.has(face.status) || hold !== null;
       const unseen = !live && hasUnseenSettle(visited, session.id, face.endedAt);
       const slot = slotFor(face.status, unseen);
       const entry = snoozes[session.id];
@@ -145,6 +152,7 @@ const buildRows = (
         recede: !unseen && face.status !== "waiting" && face.status !== "failed",
         unseen,
         endedAt: face.endedAt,
+        hold,
       });
     }
   }

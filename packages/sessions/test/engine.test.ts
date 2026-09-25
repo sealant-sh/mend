@@ -978,6 +978,26 @@ const servicesLayer = (world: World) =>
         [...world.services.values()].filter((service) => service.sessionId === sessionId),
       ),
     listAll: () => Effect.succeed([...world.services.values()]),
+    liveCountsForSessions: (sessionIds) =>
+      Effect.sync(() => {
+        const counts = new Map<SessionId, number>();
+        for (const service of world.services.values()) {
+          if (!sessionIds.includes(service.sessionId)) continue;
+          const attempt =
+            service.currentAttemptId === null
+              ? undefined
+              : world.processes.get(service.currentAttemptId);
+          const forward =
+            service.currentForwardId === null
+              ? undefined
+              : world.serviceForwards.get(service.currentForwardId);
+          const live =
+            (attempt !== undefined && attempt.exitedAt === null) ||
+            (forward !== undefined && (forward.state === "binding" || forward.state === "bound"));
+          if (live) counts.set(service.sessionId, (counts.get(service.sessionId) ?? 0) + 1);
+        }
+        return counts;
+      }),
     setCurrentAttempt: (id, currentAttemptId) =>
       Effect.sync(() => {
         const service = world.services.get(id);
@@ -3512,6 +3532,51 @@ describe("SessionEngine", () => {
           expect(stopped).toEqual([]);
           yield* engine.stopShell(shell.id);
           expect(stopped).toEqual(["workspace-1"]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
+    );
+  });
+
+  it("stopServices stops every live Service a stopped agent left behind, then the workspace", async () => {
+    const created: CreateOptions[] = [];
+    const stopped: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const web = yield* engine.runService(session.id, ["pnpm", "dev"], 3000, "web");
+          const db = yield* engine.addService(session.id, 5432, "db");
+          const ended = yield* engine.runService(session.id, ["pnpm", "worker"], 4000, "worker");
+          yield* engine.stopService(ended.service.id);
+
+          yield* engine.stop(session.id);
+          const agentExited = () =>
+            [...world.processes.values()].some(
+              (process) => process.kind === "agent-pty" && process.exitedAt !== null,
+            );
+          for (let i = 0; i < 200 && !agentExited(); i++) {
+            yield* Effect.sleep(Duration.millis(10));
+          }
+          // The stop ended the agent; two Services still hold the workspace.
+          expect(stopped).toEqual([]);
+
+          expect(yield* engine.stopServices(session.id)).toBe(2);
+          expect(world.services.get(web.service.id)?.currentAttemptId).toBeNull();
+          expect(world.services.get(db.service.id)?.currentForwardId).toBeNull();
+          expect(stopped).toEqual(["workspace-1"]);
+          expect(world.sessions.get(session.id)?.status).toBe("stopped");
+          // Nothing left: a second press stops nothing and says so.
+          expect(yield* engine.stopServices(session.id)).toBe(0);
         }),
       { sealantLayer: sealantLaunchLayer(created, undefined, stopped) },
     );
