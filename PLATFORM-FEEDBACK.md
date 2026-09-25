@@ -7,6 +7,20 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-23 · 0.37.0 · A GitHub call as a user, from the host
+
+- **Needed:** Mend's landing (docs/adr/0007-landing.md) opens and updates a pull request as the
+  session's owner, with the GitHub account they connected, and reads its state back. Every other
+  landing step runs on the host.
+- **Today:** `connectedAccounts` lists, connects and disconnects. The GitHub token is readable only
+  inside a workspace the platform builds (`GH_TOKEN`). So Mend runs `gh pr create` / `gh pr edit`
+  through `exec` in the session's workspace, or starts a short-lived workspace for the owner just
+  for that call, which costs a workspace start on every landing of a stopped session.
+- **Suggested:** either a user-scoped provider request, where the platform holds the token, makes
+  the call and records it (for example `connectedAccounts(userId).request("github", call)`), or a
+  short-lived token minted for the service principal on behalf of a user, scoped to one repository.
+  The first keeps the token on the platform, and Mend prefers it.
+
 ## 2026-09-20 · 0.35.1 · MicroVM ignores a project's image, and the host builds it anyway
 
 - **Needed:** a project's packages and setup commands take effect on every runtime, MicroVM
