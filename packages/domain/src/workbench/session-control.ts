@@ -7,13 +7,14 @@ import type { OrganizationRole } from "./organization.ts";
 /**
  * Who did what to a session beyond sending turns (docs/adr/0003-organizations-and-tenancy.md).
  * Turns carry their author and approvals their decider; these are the other steering acts, so a
- * shared session always says who interrupted, attached or stopped it.
+ * shared session always says who interrupted, attached or stopped it, or stopped its Services.
  */
 export const SessionControlKind = Schema.Literals([
   "interrupt",
   "terminal-attach",
   "shell-open",
   "stop",
+  "services-stop",
   "shared-control-on",
   "shared-control-off",
 ]);

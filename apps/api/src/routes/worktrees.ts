@@ -121,6 +121,9 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         const annotations = yield* changes.annotationsForProject(worktree.projectId);
         const memberIds = new Set<string>(members.map((session) => session.id));
         const processRows = yield* processes.listForSessions(members.map((session) => session.id));
+        const liveServices = new Map<string, number>(
+          yield* (yield* ServicesRepo).liveCountsForSessions(members.map((session) => session.id)),
+        );
         const bySession = new Map<string, Array<(typeof processRows)[number]>>();
         for (const row of processRows) {
           const list = bySession.get(row.sessionId);
@@ -139,6 +142,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
                 new SessionAnnotation({
                   ...annotation,
                   currentAgent: currentAgentProcess(bySession.get(annotation.sessionId) ?? []),
+                  liveServices: liveServices.get(annotation.sessionId) ?? 0,
                 }),
             ),
         });

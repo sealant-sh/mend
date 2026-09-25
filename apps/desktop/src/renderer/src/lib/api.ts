@@ -23,6 +23,7 @@ import type {
 import {
   isAgentProcessKind as isAgentKind,
   LIVE_PROCESS_STATUSES,
+  servicesHoldLine,
   type AgentItem,
   type AgentLaunchMode,
   type AgentRequest,
@@ -210,6 +211,22 @@ export const sessionFace = (
   }
   return { status: session.status, endedAt: session.settledAt };
 };
+
+/**
+ * What the session reads once its agent is no longer live while its Services keep the workspace
+ * up (`agent stopped · 3 services keep the workspace up`); null otherwise. A stop leaves
+ * Services running, so the status alone would hide a workspace that is still up.
+ */
+export const sessionServicesHold = (
+  session: SessionDto,
+  currentAgent: SessionProcessDto | null,
+  liveServices: number,
+): string | null =>
+  servicesHoldLine({
+    agentLive: agentIsLive(session, currentAgent),
+    agentOutcome: currentAgent === null ? null : agentProcessOutcome(currentAgent),
+    liveServices,
+  });
 
 const decodeProcessLogChunks = (chunks: ReadonlyArray<{ readonly dataBase64: string }>): string => {
   const decoded = chunks.map((chunk) => atob(chunk.dataBase64));
@@ -544,6 +561,10 @@ export const renameShell = (id: string, label: string) =>
 
 export const stopSession = (id: string) =>
   call("POST", "/api/sessions/:id/stop", { params: { id } });
+
+/** Stop every live Service of the session; the workspace ends once nothing is live. */
+export const stopSessionServices = (id: string) =>
+  call("POST", "/api/sessions/:id/services/stop", { params: { id } });
 
 /**
  * docs/adr/0003: the owner lends their credentials so everyone who can see the project may

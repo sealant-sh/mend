@@ -95,6 +95,14 @@ stopped agent beside a live shell reads `idle` until the shell ends. Clients tha
 outcome while a shell holds the workspace read the session's `currentAgent`
 (`SessionDetail.currentAgent`, the list annotation) rather than the fold.
 
+A stop keeps Services running, and a running Service keeps the workspace up, so the stop has to show
+it. `liveServices` (on `SessionDetail` and the list annotation) counts the session's Services with a
+live attempt or an open forward, and every surface reads it next to the agent's outcome:
+`agent stopped · 3 services keep the workspace up`. The **Stop services** action
+(`POST /api/sessions/:id/services/stop`, `mend stop --services`) stops all of them. Once nothing is
+live, the workspace ends as it would after any last lease. Review prep does not wait for the
+workspace: an agent that stopped or exited has settled for review even while Services run on.
+
 The coding agent, supporting shells, and Services share the same worktree, dependencies, and
 network. Their states remain independent: the coding-agent run can complete while a shell or Service
 retains the workspace.
@@ -321,6 +329,7 @@ mend service connect [name…] [--port <p>]   tunnel live Services to this machi
 mend service logs <service>       (supervised: attach to its PTY/record)
 mend service restart <service>
 mend service stop <service>
+mend stop --services [session]          stop every Service of the session
 ```
 
 Every surface presents the same facts:

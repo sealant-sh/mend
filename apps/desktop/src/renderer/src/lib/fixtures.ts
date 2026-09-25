@@ -122,6 +122,7 @@ export const annotationFixture = (
   totalComments: 0,
   pendingFollowUp: false,
   currentAgent: null,
+  liveServices: 0,
   ...patch,
 });
 
@@ -141,6 +142,7 @@ export const detailFixture = (patch: Partial<SessionDetailDto> = {}): SessionDet
   landings: [],
   processes: [],
   currentAgent: null,
+  liveServices: 0,
   ...patch,
 });
 

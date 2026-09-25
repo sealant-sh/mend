@@ -139,6 +139,8 @@ interface TestWorld {
   readonly projects: ReadonlyArray<Project>;
   readonly sessions: ReadonlyArray<Session>;
   readonly worktrees: ReadonlyArray<Worktree>;
+  /** Services that keep each session's workspace up; sessions absent hold none. */
+  readonly liveServices?: ReadonlyMap<SessionId, number>;
 }
 
 const projectsLayer = (world: TestWorld): Layer.Layer<ProjectsRepo> =>
@@ -182,9 +184,31 @@ const worktreesLayer = (world: TestWorld): Layer.Layer<WorktreesRepo> =>
       Effect.succeed(world.worktrees.filter((candidate) => candidate.projectId === projectId)),
   });
 
-const changesLayer: Layer.Layer<WorktreeChangesRepo> = Layer.mock(WorktreeChangesRepo, {
-  annotationsForProject: () => Effect.succeed([]),
-});
+const changesLayer = (world: TestWorld): Layer.Layer<WorktreeChangesRepo> =>
+  Layer.mock(WorktreeChangesRepo, {
+    annotationsForProject: () =>
+      Effect.succeed(
+        [...(world.liveServices?.keys() ?? [])].map((sessionId) => ({
+          sessionId,
+          changeId: null,
+          openComments: 0,
+          totalComments: 0,
+          pendingFollowUp: false,
+        })),
+      ),
+  });
+
+const servicesLayer = (world: TestWorld): Layer.Layer<ServicesRepo> =>
+  Layer.mock(ServicesRepo, {
+    liveCountsForSessions: (sessionIds) =>
+      Effect.succeed(
+        new Map(
+          [...(world.liveServices ?? new Map<SessionId, number>())].filter(([sessionId]) =>
+            sessionIds.includes(sessionId),
+          ),
+        ),
+      ),
+  });
 
 const processesLayer: Layer.Layer<SessionProcessesRepo> = Layer.mock(SessionProcessesRepo, {
   listForSessions: () => Effect.succeed([]),
@@ -242,6 +266,7 @@ type UnusedProjectRouteServices = Exclude<
   | WorktreeChangesRepo
   | SessionProcessesRepo
   | WorktreesRepo
+  | ServicesRepo
   | ProjectAccess
 >;
 
@@ -252,7 +277,6 @@ const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.
   Layer.mock(Store, {}),
   Layer.mock(UserGitAccessRepo, {}),
   Layer.mock(MendKeys, {}),
-  Layer.mock(ServicesRepo, {}),
   Layer.mock(ServiceForwardsRepo, {}),
   Layer.mock(SessionEngine, {}),
   Layer.mock(HotWorkspacesRepo, {}),
@@ -317,7 +341,8 @@ const requestProject = async (
         projectsLayer(world),
         sessionsLayer(world),
         worktreesLayer(world),
-        changesLayer,
+        changesLayer(world),
+        servicesLayer(world),
         processesLayer,
         unusedProjectRouteLayers,
       ),
@@ -487,5 +512,26 @@ describe("GET /projects/:id response", () => {
     });
     expect(JSON.stringify(body)).not.toContain(existing.id);
     expect(JSON.stringify(body)).not.toContain(existing.storePath);
+  });
+
+  it("counts the Services that keep a session's workspace up", async () => {
+    const rows = [
+      session({ id: "held", status: "idle", hasTranscript: true }),
+      session({ id: "quiet", status: "completed", hasTranscript: true }),
+    ];
+    const world = {
+      ...makeWorld(rows),
+      liveServices: new Map([
+        [SessionId.make("held"), 3],
+        [SessionId.make("quiet"), 0],
+      ]),
+    };
+    const { detail } = await requestProject(world);
+
+    const facts = new Map(
+      (detail?.annotations ?? []).map((annotation) => [annotation.sessionId, annotation]),
+    );
+    expect(facts.get("held")?.liveServices).toBe(3);
+    expect(facts.get("quiet")?.liveServices).toBe(0);
   });
 });

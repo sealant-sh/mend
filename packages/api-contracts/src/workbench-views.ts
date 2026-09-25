@@ -83,6 +83,12 @@ export class SessionAnnotation extends Schema.Class<SessionAnnotation>("SessionA
    * where that agent's outcome lives.
    */
   currentAgent: Schema.NullOr(SessionProcess),
+  /**
+   * Services that keep the session's workspace up: a live attempt or an open forward. A stop
+   * leaves them running, so a list reads `agent stopped · 3 services keep the workspace up`
+   * (docs/SESSION-SERVICES.md). Older servers omit it.
+   */
+  liveServices: Schema.Int.pipe(Schema.withDecodingDefaultKey(Effect.succeed(0))),
 }) {}
 
 /**

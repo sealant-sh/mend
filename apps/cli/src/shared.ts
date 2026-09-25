@@ -1,6 +1,8 @@
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
 
+import { servicesHoldLine } from "@mend/domain/workbench";
+
 /**
  * Facts both entry points need: how each harness launches and resumes, which
  * session statuses mean "live", and how a cwd resolves to an adopted project.
@@ -283,6 +285,22 @@ export const agentOutcome = (
   if (currentAgent.harness === "shell") return "completed";
   return currentAgent.exitCode === null || currentAgent.exitCode === 0 ? "completed" : "failed";
 };
+
+/**
+ * What a session reads once its agent is no longer live while its Services keep the workspace up
+ * (`agent stopped · 3 services keep the workspace up`); null otherwise. A stop leaves Services
+ * running, so the status word alone would hide a workspace that is still up.
+ */
+export const servicesHoldOf = (
+  session: { readonly status: string },
+  currentAgent: AgentProcessLike | null,
+  liveServices: number,
+): string | null =>
+  servicesHoldLine({
+    agentLive: agentIsLive(session, currentAgent),
+    agentOutcome: agentOutcome(currentAgent),
+    liveServices,
+  });
 
 export interface CwdProjectLike {
   readonly name: string;

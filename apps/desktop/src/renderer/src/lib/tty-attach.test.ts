@@ -57,6 +57,7 @@ const detail = (
   landings: [],
   processes: agent === null ? [] : [agent],
   currentAgent: agent,
+  liveServices: 0,
 });
 
 describe("afterUnopenedClose", () => {

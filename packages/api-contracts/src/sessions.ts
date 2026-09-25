@@ -43,6 +43,7 @@ import {
   NewWorkbenchSession,
   ProtocolSessionNotLive,
   SessionDetail,
+  SessionServicesStopped,
   SubmitAgentTurnRequest,
 } from "./project-environment.ts";
 import {
@@ -320,6 +321,15 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     HttpApiEndpoint.post("stop", "/sessions/:id/stop", {
       params: { id: SessionId },
       success: Session,
+      error: [NotFound, SessionNotSteerable],
+    }),
+  )
+  .add(
+    // A stop leaves Services running; this stops every live one of the session, and the
+    // workspace ends once nothing is live (docs/SESSION-SERVICES.md).
+    HttpApiEndpoint.post("stopServices", "/sessions/:id/services/stop", {
+      params: { id: SessionId },
+      success: SessionServicesStopped,
       error: [NotFound, SessionNotSteerable],
     }),
   )

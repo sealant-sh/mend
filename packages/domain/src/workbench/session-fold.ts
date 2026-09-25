@@ -75,3 +75,23 @@ export const agentProcessOutcome = (process: SessionProcess): AgentProcessOutcom
   if (process.harness === "shell") return "completed";
   return process.exitCode === null || process.exitCode === 0 ? "completed" : "failed";
 };
+
+/**
+ * The line a session reads once its agent is no longer live while its Services keep the workspace
+ * up (docs/SESSION-SERVICES.md, "Stop"): a stop ends the agent and leaves Services running, so the
+ * workspace stays up until they stop too. The agent's own outcome leads when one ran —
+ * `agent stopped · 3 services keep the workspace up`. Null while the agent runs, and when no
+ * Service holds the workspace.
+ */
+export const servicesHoldLine = (input: {
+  readonly agentLive: boolean;
+  readonly agentOutcome: AgentProcessOutcome | null;
+  readonly liveServices: number;
+}): string | null => {
+  if (input.agentLive || input.liveServices <= 0) return null;
+  const hold =
+    input.liveServices === 1
+      ? "1 service keeps the workspace up"
+      : `${input.liveServices} services keep the workspace up`;
+  return input.agentOutcome === null ? hold : `agent ${input.agentOutcome} · ${hold}`;
+};

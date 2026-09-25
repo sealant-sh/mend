@@ -9,6 +9,7 @@ import {
   removeWorktree,
   resumeSession,
   stopSession,
+  stopSessionServices,
   type ProjectDto,
   type SessionAnnotationDto,
   type SessionDto,
@@ -165,6 +166,16 @@ export const sessionMenu = (
           .finally(() => invalidateSession());
         void navigate({ to: "/sessions/$sessionId", params: { sessionId: session.id } });
       },
+    });
+  }
+  // A stop leaves Services running; they keep the workspace up until their own stop.
+  if (stop && (annotation?.liveServices ?? 0) > 0) {
+    entries.push({
+      label: "Stop services",
+      onSelect: () =>
+        void stopSessionServices(session.id)
+          .catch(() => undefined)
+          .finally(() => invalidateSession()),
     });
   }
   if (!live && own) {

@@ -56,6 +56,11 @@ export const sessionsRouter = router({
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.stop({ params: { id: i.id } })),
     ),
+  stopServices: procedure
+    .input(byId)
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.sessions.stopServices({ params: { id: i.id } })),
+    ),
   resume: procedure
     .input(input(Schema.Struct({ id: SessionId, request: ResumeRequest })))
     .mutation(({ ctx, input: i }) =>

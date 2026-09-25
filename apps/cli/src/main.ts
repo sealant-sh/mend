@@ -86,6 +86,7 @@ import {
   normalizeProjectName,
   gitCurrentBranch,
   parseLaunchArgs,
+  servicesHoldOf,
 } from "./shared.ts";
 import { DEFAULT_SKILLS_DIR, scanSkillLibrary } from "./skills.ts";
 import { sshCommand } from "./ssh-setup.ts";
@@ -210,12 +211,16 @@ interface SessionAnnotationDto {
   readonly pendingFollowUp: boolean;
   /** The session's current agent process; null before the first launch. */
   readonly currentAgent: AgentProcessLike | null;
+  /** Services that keep the workspace up; absent on older servers. */
+  readonly liveServices?: number;
 }
 
 /** The slice of /sessions/:id the CLI reads: the row plus the agent process it currently means. */
 interface SessionDetailLiteDto {
   readonly session: SessionDto;
   readonly currentAgent: AgentProcessLike | null;
+  /** Services that keep the workspace up; absent on older servers. */
+  readonly liveServices?: number;
 }
 
 // `$XDG_CONFIG_HOME/mend`, default `~/.config/mend`; a pre-XDG `~/.mend` stays authoritative
@@ -1135,6 +1140,12 @@ const attachPicked = async (
  * workspace harvests and closes; the record and review remain.
  */
 const stopCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  if (args.includes("--services")) {
+    const prefix = args.find((arg) => !arg.startsWith("--"));
+    const session = await resolveLiveSession(config, prefix, "stop --services");
+    await stopServicesOf(config, session);
+    return;
+  }
   const all = args.includes("--all");
   const projectFlag = args.indexOf("--project");
   const projectName =
@@ -1191,11 +1202,38 @@ const stopSessions = async (
     say(
       `${green("✓")} stopped · ${session.harness} · ${dim(session.id.slice(0, 8))} · ${session.branch}`,
     );
+    // A stop ends the agent and leaves Services running; say so, with their own stop.
+    const after = await api<SessionDetailLiteDto>(config, "GET", `/sessions/${session.id}`).catch(
+      () => null,
+    );
+    const hold =
+      after === null
+        ? null
+        : servicesHoldOf(after.session, after.currentAgent, after.liveServices ?? 0);
+    if (hold !== null) {
+      say(`${amber("  " + hold)} · mend stop --services ${session.id.slice(0, 8)}`);
+    }
     say(`${cobalt("  review")} · ${config.url}/sessions/${session.id}`);
   }
   if (summarise) {
     say(`${green("✓")} stopped ${targets.length} session${targets.length === 1 ? "" : "s"}`);
   }
+};
+
+/** Stop every live Service of the session; the workspace ends once nothing is live. */
+const stopServicesOf = async (config: CliConfig, session: SessionDto): Promise<void> => {
+  const result = await api<{ readonly stopped: number }>(
+    config,
+    "POST",
+    `/sessions/${session.id}/services/stop`,
+  );
+  if (result.stopped === 0) {
+    say(`no live services · ${session.harness} · ${dim(session.id.slice(0, 8))}`);
+    return;
+  }
+  say(
+    `${green("✓")} stopped ${result.stopped} service${result.stopped === 1 ? "" : "s"} · ${session.harness} · ${dim(session.id.slice(0, 8))} · ${session.branch}`,
+  );
 };
 
 // ─── shell: the second pane — a real shell in the session's workspace ───────
@@ -3573,11 +3611,20 @@ interface SessionsJson {
   readonly sessions: ReadonlyArray<SessionJson>;
 }
 
+/** The session's Services-hold line from its list facts; null without them or without a hold. */
+const rowHold = (row: SessionRow): string | null =>
+  row.annotation === undefined
+    ? null
+    : servicesHoldOf(row.session, row.annotation.currentAgent, row.annotation.liveServices ?? 0);
+
 const printSessionRow = (row: SessionRow) => {
   const { session, annotation } = row;
   const live = ACTIVE_STATUSES.has(session.status);
   const status = session.status.padEnd(9);
   const facts: Array<string> = [];
+  // A stop leaves Services running: a held workspace leads the facts, or the row reads as done.
+  const hold = rowHold(row);
+  if (hold !== null) facts.push(amber(hold));
   if (session.label !== null) facts.push(session.label);
   if (annotation !== undefined && annotation.openComments > 0) {
     facts.push(amber(`${annotation.openComments} open`));
@@ -3620,21 +3667,28 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
   }
 
   let rows: Array<SessionRow>;
-  if (all || projectName !== null) {
+  if (all || projectName !== null || !json) {
     // --all means all: dead ends (settled, no conversation) included, which the server hides
-    // otherwise for every client.
+    // otherwise for every client. The default human list reads the details too, for the facts
+    // a status word cannot carry (a stopped agent's Services keeping its workspace up).
     const details = await Promise.all(
       scope.map((p) =>
         api<ProjectDetailDto>(config, "GET", `/projects/${p.id}${all ? "?deadEnds=include" : ""}`),
       ),
     );
-    rows = details.flatMap((detail) =>
+    const detailed = details.flatMap((detail) =>
       detail.sessions.map((session) => ({
         session,
         projectName: detail.project.name,
         annotation: detail.annotations.find((a) => a.sessionId === session.id),
       })),
     );
+    rows =
+      all || projectName !== null
+        ? detailed
+        : detailed.filter(
+            (row) => ACTIVE_STATUSES.has(row.session.status) || rowHold(row) !== null,
+          );
   } else {
     const active = await api<ReadonlyArray<SessionDto>>(config, "GET", "/sessions");
     const nameById = new Map(projects.map((p) => [p.id, p.name]));

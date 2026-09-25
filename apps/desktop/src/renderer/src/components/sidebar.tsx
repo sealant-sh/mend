@@ -8,6 +8,7 @@ import {
   LIVE_PROCESS,
   removeSession,
   stopSession,
+  stopSessionServices,
   type ProjectDto,
   type SessionProcessDto,
   currentAgentProcess,
@@ -336,7 +337,8 @@ export function Sidebar({
 
   const stopRow = async (row: InboxRow) => {
     try {
-      await stopSession(row.session.id);
+      // A row whose agent stopped while Services keep its workspace up stops those instead.
+      await (row.hold === null ? stopSession(row.session.id) : stopSessionServices(row.session.id));
       void queryClient.invalidateQueries({ queryKey: ["session", row.session.id] });
       void queryClient.invalidateQueries({ queryKey: ["project", row.session.projectId] });
     } catch (cause) {
@@ -350,13 +352,20 @@ export function Sidebar({
     const last =
       row.section === "active"
         ? actions.stop
-          ? {
-              label: "Stop",
-              // The tree lists `shell` sessions too, which run no coding agent.
-              confirm: isAgentSession(row.session) ? "Stop the coding agent?" : "Stop the shell?",
-              danger: true,
-              onSelect: () => void stopRow(row),
-            }
+          ? row.hold === null
+            ? {
+                label: "Stop",
+                // The tree lists `shell` sessions too, which run no coding agent.
+                confirm: isAgentSession(row.session) ? "Stop the coding agent?" : "Stop the shell?",
+                danger: true,
+                onSelect: () => void stopRow(row),
+              }
+            : {
+                label: "Stop services",
+                confirm: `${row.hold}. Stop them? The workspace ends once nothing is live.`,
+                danger: true,
+                onSelect: () => void stopRow(row),
+              }
           : null
         : actions.own
           ? {

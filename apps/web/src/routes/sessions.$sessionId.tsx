@@ -7,16 +7,18 @@ import { FollowUpBanner } from "#/components/follow-up";
 import { SessionLandingLineView } from "#/components/land-panel";
 import { ServicesCard } from "#/components/services-card";
 import { AppShell } from "#/components/shell";
-import { SessionStatusDot } from "#/components/status";
+import { SessionStatusDot, StatusDot } from "#/components/status";
 import { SessionTerminal } from "#/components/terminal";
 import {
   agentIsLive,
   checkpointSession,
   removeSession,
   resumeSession,
+  sessionServicesHold,
   setSessionLabel,
   setSharedControl,
   stopSession,
+  stopSessionServices,
   type TranscriptEventDto,
 } from "#/lib/api";
 import { sessionDotfilesLines } from "#/lib/session-dotfiles";
@@ -102,7 +104,7 @@ function SessionPage() {
   const { sessionId } = Route.useParams();
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const { session, checkpoints, change, currentAgent, control } = useSuspenseQuery(
+  const { session, checkpoints, change, currentAgent, control, liveServices } = useSuspenseQuery(
     trpc.sessions.detail.queryOptions({ id: sessionId }),
   ).data;
   // Steering is the owner's unless they share control (docs/adr/0003); the API says what this
@@ -117,10 +119,14 @@ function SessionPage() {
   // `idle`, but the terminal, stop, and resume controls are about the AGENT.
   const agentLive = agentIsLive(session, currentAgent);
   const agentPty = currentAgent?.sealantSessionId ?? session.sealantSessionId;
+  // A stop leaves Services running and they keep the workspace up: say so, with their own stop.
+  const servicesHold = sessionServicesHold(session, currentAgent, liveServices);
   const followUp = useSuspenseQuery(
     trpc.sessions.pendingFollowUp.queryOptions({ id: sessionId }),
   ).data;
-  const [pending, setPending] = useState<"stop" | "checkpoint" | "resume" | null>(null);
+  const [pending, setPending] = useState<"stop" | "stop-services" | "checkpoint" | "resume" | null>(
+    null,
+  );
   const [labelDraft, setLabelDraft] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<"idle" | "armed" | "working">("idle");
   const navigate = useNavigate();
@@ -153,10 +159,14 @@ function SessionPage() {
       .catch(() => setDeleting("idle"));
   };
 
-  const act = (kind: "stop" | "checkpoint") => {
+  const act = (kind: "stop" | "stop-services" | "checkpoint") => {
     setPending(kind);
     const action =
-      kind === "stop" ? stopSession(sessionId) : checkpointSession(sessionId, "user-mark");
+      kind === "stop"
+        ? stopSession(sessionId)
+        : kind === "stop-services"
+          ? stopSessionServices(sessionId)
+          : checkpointSession(sessionId, "user-mark");
     void action
       .then(() => queryClient.invalidateQueries(trpc.sessions.pathFilter()))
       .finally(() => setPending(null));
@@ -201,7 +211,11 @@ function SessionPage() {
               />
             </div>
           )}
-          <SessionStatusDot status={session.status} recorded={session.sealantRunId !== null} />
+          {servicesHold === null ? (
+            <SessionStatusDot status={session.status} recorded={session.sealantRunId !== null} />
+          ) : (
+            <StatusDot tone="hollow" word={servicesHold} />
+          )}
         </div>
         <p className="mt-2 font-mono text-xs text-faint">
           {session.branch} · worktree {session.worktree} · base{" "}
@@ -271,6 +285,17 @@ function SessionPage() {
               className="font-sans text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
             >
               {pending === "stop" ? "Stopping…" : "Stop"}
+            </button>
+          )}
+          {liveServices > 0 && control.stop && (
+            <button
+              type="button"
+              disabled={pending !== null}
+              onClick={() => act("stop-services")}
+              title="Stop every Service of this session; the workspace ends once nothing is live"
+              className="font-sans text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              {pending === "stop-services" ? "Stopping services…" : "Stop services"}
             </button>
           )}
           {!agentLive && control.own && (
