@@ -1,9 +1,11 @@
+import { pullRequestBase } from "@mend/domain/workbench";
 import { Button } from "@mend/ui/components/ui/button";
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
 import { ProtocolConversation } from "#/components/conversation";
+import { LandingFactLine, LandSheet } from "#/components/land-panel";
 import { LogsView } from "#/components/logs-view";
 import { RecordReplay, TranscriptView } from "#/components/record-replay";
 import { ReplayScrubber } from "#/components/replay-scrubber";
@@ -25,7 +27,15 @@ import {
   type SessionProcessDto,
 } from "#/lib/api";
 import { CONVERSATION_HARNESSES, launchModeOf, rememberLaunchMode } from "#/lib/conversation";
-import { queryClient, sessionDetailQuery, sessionProcessesQuery } from "#/lib/queries";
+import { headlineFact } from "#/lib/landing";
+import { useNow } from "#/lib/now";
+import {
+  projectDetailQuery,
+  queryClient,
+  sessionDetailQuery,
+  sessionLandingsQuery,
+  sessionProcessesQuery,
+} from "#/lib/queries";
 import { processEndFact } from "#/lib/record";
 import { reviewOpenKey, takeReplayCursor } from "#/lib/review";
 import {
@@ -194,6 +204,20 @@ export function TerminalPane({
   const live = session !== null && agentIsLive(session, currentAgent);
   const agentPty = currentAgent?.sealantSessionId ?? session?.sealantSessionId ?? null;
   const change = detail.data?.change ?? null;
+  // Landing (docs/adr/0007-landing.md): the change's record, read once there is a change. The
+  // server answers who may land it (the change's owner); an older server has no such read.
+  const landingsRead = useQuery({
+    ...sessionLandingsQuery(tab.sessionId),
+    enabled: isSessionTab && change !== null,
+  });
+  const landingView = landingsRead.data ?? null;
+  const landingHeadline = landingView === null ? null : headlineFact(landingView.facts);
+  const [landOpen, setLandOpen] = useState(false);
+  const projectRead = useQuery({
+    ...projectDetailQuery(session?.projectId ?? ""),
+    enabled: landOpen && session !== null,
+  });
+  const nowMs = useNow();
   // The ended agent's record: its PTY output replays when the process had a platform PTY.
   const recordProcess =
     currentAgent !== null && currentAgent.sealantSessionId !== null ? currentAgent : null;
@@ -227,7 +251,7 @@ export function TerminalPane({
   });
 
   return (
-    <div className="flex min-h-0 min-w-0 flex-1 flex-col">
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col">
       <div className="flex h-8 shrink-0 items-center gap-3 border-b border-rule bg-background px-3">
         {session !== null && isSessionTab && (
           <>
@@ -261,6 +285,20 @@ export function TerminalPane({
             >
               {review.isPending ? "opening Review…" : "review the change"}
             </Quiet>
+            {change !== null &&
+              landingView !== null &&
+              (landingView.land || landingHeadline !== null) && (
+                <Quiet
+                  title={
+                    landingView.land
+                      ? "Push the change to origin and open or update its pull request"
+                      : "What Mend pushed for this change, and its pull request"
+                  }
+                  onClick={() => setLandOpen((open) => !open)}
+                >
+                  {landingView.land ? "land" : "landing"}
+                </Quiet>
+              )}
             <Quiet disabled={!live || mark.isPending} onClick={() => mark.mutate()}>
               {mark.isPending ? "marking…" : "mark checkpoint"}
             </Quiet>
@@ -384,6 +422,29 @@ export function TerminalPane({
 
       {session !== null && tab.kind !== "logs" && (
         <SharedControlFact session={session} control={control} ownerName={ownerName} />
+      )}
+      {isSessionTab && landingHeadline !== null && (
+        <button
+          type="button"
+          onClick={() => setLandOpen(true)}
+          title="Open the Land panel"
+          className="flex h-7 shrink-0 items-center border-b border-rule-faint bg-background px-3 text-left hover:bg-wash"
+        >
+          <LandingFactLine fact={landingHeadline} now={new Date(nowMs)} truncate />
+        </button>
+      )}
+      {isSessionTab && landOpen && session !== null && change !== null && (
+        <LandSheet
+          sessionId={tab.sessionId}
+          sessionLabel={session.label}
+          worktreeBranch={session.branch}
+          base={
+            projectRead.data === undefined
+              ? null
+              : pullRequestBase(session.baseRef, projectRead.data.project.defaultBranch)
+          }
+          onClose={() => setLandOpen(false)}
+        />
       )}
 
       <div className="relative flex min-h-0 flex-1 flex-col bg-term">

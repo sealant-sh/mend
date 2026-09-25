@@ -187,6 +187,34 @@ implementation; port, don't reinvent, and extract shared pieces into a package o
 consumer proves the shape. Until M2 lands, the review button deep-links to the web app so the loop
 is never broken.
 
+## Landing (docs/adr/0007-landing.md)
+
+Landing publishes a change: Mend checkpoints the worktree, commits what the agent left uncommitted,
+pushes the branch to origin fast-forward only, and opens or updates its GitHub pull request. Merging
+stays on GitHub; nothing in the app says a change is ready.
+
+- **Where.** A session with a change reads its landing record (`GET /api/sessions/:id/landings`).
+  The header gains `land` for the change's owner, or `landing` for anyone else once there is
+  something to read, and a strip under the header states the one fact that matters now: a turn held
+  back (`changes not landed · the request read as a question`), a refused or failed step in the
+  remote's words, else the pull request, else the push. Both open the Land sheet. Review's header
+  opens the same sheet, as the web shows its Land panel on the change's review.
+- **The sheet.** Where the change goes (`push mend/fix-login to origin · pull request into main`),
+  the observed facts, Check origin (a fetch with the viewer's own git access), Refresh pull request
+  (the owner; Mend does not poll GitHub), Open #412 on GitHub, and the landing record's own
+  landings, newest first (`pushed · mend/fix-login · 3f2a1c0 · pull request #412 · open · observed`,
+  `automatic · 2 min ago`). The owner also gets the title, their own description above Mend's
+  section, and one button: Push and open pull request, Push and update pull request, or Push to
+  origin where origin is not on GitHub (with the reason).
+- **Who.** Only the change's owner lands: the owner of the worktree's first session, which the
+  server answers as the record's `land`. That is not `control.own`: a teammate who owns a session in
+  someone else's worktree owns that session, not the change. Shared control does not extend to
+  landing.
+- **Composer.** For a conversation, the settings menu carries the web's "Land when a turn
+  completes": As the project (with what that means now), Land, Do not land; a project set to off
+  offers only that. Not sticky. A terminal agent never lands by itself, so Terminal says so and
+  sends no override.
+
 ## Repo store (projects surface)
 
 The GUI for what `mend adopt` and the web project page do today, same endpoints:
@@ -298,6 +326,13 @@ change in view.
     and notarization (Developer ID secrets, `mac.identity`, `notarize: true`, hardened runtime
     entitlements) come later in their own change. So does auto-update: the release job publishes
     only files, and no `latest*.yml` feed.
+- **Landing (2026-09-24, local branch `desktop/05-landing`, on the landing stack's
+  `landing/07-web`).** The Land sheet from the session header and from Review, the header's landing
+  strip, and the composer's automatic-landing override. Proven with unit tests (the fact words held
+  to the domain's `landingFactLine`, the routes and bodies the calls send, the panel's markup for
+  owner, viewer, held-back, refused and non-GitHub cases) and a component harness screenshotted in
+  Chromium against fixtures. Not proven live: alpha runs 0.29.2, which has no landing routes, and
+  landing pushes to a real origin.
 - **M2: Review in-app.** Immutable checkpoint-pair diff, P0 controls, comments, minimum evidence,
   and recoverable send-back.
 - **M3: Services in-app.** Stable Services, attempt history, private forwards, read-only logs, and
@@ -306,6 +341,28 @@ change in view.
   and keybinding configuration.
 
 ## Decision log
+
+- 2026-09-24: the Land surface gates on the landing record's `land`, not on `control.own`. ADR 0007
+  says the change's owner lands (the owner of the worktree's first session), and the server answers
+  exactly that as `land`; `control.own` is the session's owner, which differs for a teammate's
+  session in someone else's worktree and would offer a button that answers 403.
+- 2026-09-24: the landing words are the web's, ported over the wire shapes instead of shared. The
+  fact lines repeat the domain's `landingFactLine`, which needs branded shas and `Date`s the
+  renderer does not decode into, so a test holds every fact's line to the domain's. The web's
+  `lib/landing.ts` helpers (next branch, button label, report line, the composer's items) are
+  copied; they are the candidates for a shared module once a third client needs them.
+- 2026-09-24: the Land sheet has no description preview. The web renders Mend's section from the
+  review's files and the tour; the session header has neither without opening a review, which takes
+  a checkpoint. The sheet says what Mend's section holds instead.
+- 2026-09-24: a server from before landing is read as having none. The landing read answers 404 and
+  the session shows nothing; the project's missing `autoLand` hides the composer's override, since
+  the server would ignore it.
+- 2026-09-24 (review): the landing record is the change's, read by every session in its worktree,
+  while a landing or a turn's event names only the session that landed or ran it. Every `session`
+  and `session-change` event and every land, check and refresh therefore re-reads all open landing
+  reads, as the web invalidates all of its; keyed under one session, a sibling session's strip and
+  Review's button kept a stale fact. The sheet reads its history, the button's words and the facts
+  from that one record rather than `SessionDetail.landings`, which a sibling's event left stale.
 
 - 2026-09-24: packaging ships the electron-vite output alone. Every runtime import is bundled (main
   and preload need only electron and node builtins), so the desktop's former `dependencies` moved to

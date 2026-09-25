@@ -3,6 +3,7 @@ import { QueryClient, queryOptions } from "@tanstack/react-query";
 import {
   changeComments,
   getSealantIdentity,
+  getSettings,
   isUnauthorized,
   listProjects,
   listServices,
@@ -14,6 +15,7 @@ import {
   projectPullRequests,
   reviewDiff,
   sessionDetail,
+  sessionLandings,
   sessionTranscript,
 } from "#/lib/api";
 
@@ -58,6 +60,35 @@ export const sessionProcessesQuery = (id: string) =>
     queryKey: ["session", id, "processes"],
     queryFn: () => listSessionProcesses(id),
   });
+
+/**
+ * The change's landing record as this session reads it. A server from before landing answers
+ * 404, which reads as nothing to show.
+ */
+export const sessionLandingsQuery = (id: string) =>
+  queryOptions({
+    queryKey: ["session", id, "landings"],
+    queryFn: () => sessionLandings(id),
+    retry: false,
+  });
+
+/**
+ * Every session's read of a landing record. The record is the change's, and every session in
+ * the worktree reads the same one, while an event names only the session that landed or ran
+ * the turn; so a landing, or a turn's landing decision, refreshes all of them, as the web does.
+ */
+export const isLandingsQuery = (query: { readonly queryKey: ReadonlyArray<unknown> }): boolean =>
+  query.queryKey[0] === "session" && query.queryKey[2] === "landings";
+
+export const invalidateLandings = () =>
+  queryClient.invalidateQueries({ predicate: isLandingsQuery });
+
+/** Instance settings change rarely, and only from the web app's Settings. */
+export const settingsQuery = queryOptions({
+  queryKey: ["settings"],
+  queryFn: getSettings,
+  staleTime: 60_000,
+});
 
 export const servicesQuery = queryOptions({
   queryKey: ["services"],

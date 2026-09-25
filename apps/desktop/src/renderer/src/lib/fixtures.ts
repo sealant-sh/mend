@@ -1,5 +1,7 @@
 import type {
   AgentItemDto,
+  ChangeLandingDto,
+  ChangeLandingsDto,
   AgentRequestDto,
   AgentTurnDto,
   ProjectDto,
@@ -139,6 +141,45 @@ export const detailFixture = (patch: Partial<SessionDetailDto> = {}): SessionDet
   landings: [],
   processes: [],
   currentAgent: null,
+  ...patch,
+});
+
+/** A landing that pushed and opened its pull request. */
+export const landingFixture = (patch: Partial<ChangeLandingDto> = {}): ChangeLandingDto => ({
+  id: "landing-1",
+  changeId: "change-1",
+  sessionId: "session-1",
+  projectId: "project-1",
+  checkpointId: "checkpoint-1",
+  checkpointRef: "refs/mend/checkpoints/worktree-1/1",
+  checkpointSha: "a".repeat(40),
+  commitSha: "b".repeat(40),
+  remoteBranch: "mend/fix-login",
+  pushedSha: `3f2a1c0${"c".repeat(33)}`,
+  trigger: "manual",
+  pullRequest: {
+    number: 412,
+    url: "https://github.com/acme/app/pull/412",
+    state: "open",
+    observedAt: AT,
+  },
+  outcome: "pull-request",
+  message: null,
+  userId: "user-1",
+  createdAt: AT,
+  ...patch,
+});
+
+/** A change's landing record as its owner reads it, with nothing landed yet. */
+export const landingsFixture = (patch: Partial<ChangeLandingsDto> = {}): ChangeLandingsDto => ({
+  changeId: "change-1",
+  sessionId: "session-1",
+  land: true,
+  landings: [],
+  facts: [],
+  remote: null,
+  remoteFailure: null,
+  pullRequest: { available: true, reason: null },
   ...patch,
 });
 
