@@ -41,6 +41,7 @@ import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { runPackagedDotfilesAcceptance } from "./packaged-dotfiles-acceptance.mjs";
 import { preparePackagedGitAccessAcceptance } from "./packaged-git-access-acceptance.mjs";
 import {
   assertFreshDocker,
@@ -1357,6 +1358,25 @@ async function main() {
   console.log(
     "PASS network adoption, real mend run, store-less executor, registered capture, completed flush, capture-backed checkpoint chain, pack-served Review patch and replayable record",
   );
+  if (offline)
+    console.log("NOT TESTED dotfiles; the ubuntu family workspace image build needs the network");
+  else {
+    stage = "dotfiles";
+    await runPackagedDotfilesAcceptance({
+      cli,
+      startCli,
+      docker,
+      run,
+      until,
+      api,
+      scratch,
+      environment: env,
+      fixtureId,
+      fixtureOrigin: `http://${fixtureName}:9080`,
+      sourceUrl,
+      runId,
+    });
+  }
   // Fixture is temporary infrastructure, not a third idle product container.
   await docker(["rm", "-f", fixtureId]);
   fixtureId = undefined;
