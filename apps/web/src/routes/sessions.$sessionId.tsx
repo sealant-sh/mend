@@ -4,6 +4,7 @@ import { useState } from "react";
 
 import { ProjectCrumbs } from "#/components/breadcrumb";
 import { FollowUpBanner } from "#/components/follow-up";
+import { SessionLandingLineView } from "#/components/land-panel";
 import { ServicesCard } from "#/components/services-card";
 import { AppShell } from "#/components/shell";
 import { SessionStatusDot } from "#/components/status";
@@ -242,6 +243,7 @@ function SessionPage() {
           steer={control.steer}
           ownerName={ownerName}
         />
+        {change !== null && <SessionLanding sessionId={sessionId} changeId={change.id} />}
 
         <div className="mt-6 flex flex-wrap items-center gap-3">
           {change !== null && (
@@ -383,10 +385,12 @@ function SessionPage() {
                 checkpoints.map((checkpoint, index) => (
                   <div
                     key={checkpoint.id}
-                    className={`px-4 py-3 ${index === 0 ? "" : "border-t border-rule-faint"}`}
+                    // A landed pull request's description links here (docs/adr/0007-landing.md).
+                    id={`checkpoint-${checkpoint.ordinal}`}
+                    className={`scroll-mt-24 px-4 py-3 target:bg-wash ${index === 0 ? "" : "border-t border-rule-faint"}`}
                   >
                     <p className="font-mono text-xs text-ink-2">
-                      {index} · {checkpoint.trigger}
+                      {checkpoint.ordinal} · {checkpoint.trigger}
                     </p>
                     <p className="mt-1 font-mono text-[11px] text-faint">
                       {checkpoint.sha.slice(0, 12)} · seq {checkpoint.seq} ·{" "}
@@ -405,6 +409,36 @@ function SessionPage() {
         </div>
       </div>
     </AppShell>
+  );
+}
+
+/** The latest landing fact, and the way to the change's Land panel (docs/adr/0007-landing.md). */
+function SessionLanding({
+  sessionId,
+  changeId,
+}: {
+  readonly sessionId: string;
+  readonly changeId: string;
+}) {
+  const trpc = useTRPC();
+  const view = useQuery(trpc.landings.forSession.queryOptions({ id: sessionId })).data;
+  if (view === undefined) return null;
+  return (
+    <SessionLandingLineView
+      facts={view.facts}
+      land={view.land}
+      now={new Date()}
+      link={
+        <Link
+          to="/changes/$changeId"
+          params={{ changeId }}
+          hash="land"
+          className="font-sans text-xs font-medium text-info no-underline"
+        >
+          {view.land ? "Land →" : "Landing →"}
+        </Link>
+      }
+    />
   );
 }
 

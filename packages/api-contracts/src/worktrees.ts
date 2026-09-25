@@ -58,6 +58,11 @@ export class NewWorktreeSession extends Schema.Class<NewWorktreeSession>("NewWor
   /** Intended agent launch shape; omitted keeps the PTY default. */
   mode: Schema.optional(AgentLaunchMode),
   label: Schema.NullOr(Schema.String).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
+  /**
+   * This session's own "Land when a turn completes" (the composer's override,
+   * docs/adr/0007-landing.md). Null (and older clients, which omit the key) follows the project.
+   */
+  autoLand: Schema.NullOr(Schema.Boolean).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 }) {}
 
 export class WorktreeListing extends Schema.Class<WorktreeListing>("WorktreeListing")({

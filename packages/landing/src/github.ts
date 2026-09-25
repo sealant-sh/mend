@@ -65,20 +65,5 @@ export const pullRequestAvailability = (originUrl: string | null): PullRequestAv
   };
 };
 
-const FULL_SHA = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
-
-/**
- * The branch a pull request merges into: the session's base as a branch name. A base recorded as
- * a remote-tracking or full ref is reduced to the branch; a base that was a commit, or none,
- * falls back to the project's default branch.
- */
-export const pullRequestBase = (baseRef: string | null, defaultBranch: string): string => {
-  if (baseRef === null) return defaultBranch;
-  const branch = baseRef
-    .trim()
-    .replace(/^refs\/heads\//, "")
-    .replace(/^refs\/remotes\/origin\//, "")
-    .replace(/^origin\//, "");
-  if (branch === "" || branch === "HEAD" || FULL_SHA.test(branch)) return defaultBranch;
-  return branch;
-};
+/** The branch a pull request merges into; pure, so it lives beside the description. */
+export { pullRequestBase } from "@mend/domain/workbench";

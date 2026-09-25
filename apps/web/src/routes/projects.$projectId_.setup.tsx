@@ -8,6 +8,7 @@ import {
   GitAccessSection,
   HotSessionsSection,
   InstallCommandSection,
+  LandingSection,
   LinksSection,
   MountsSection,
   ProjectFoldersSection,
@@ -148,6 +149,7 @@ function ProjectSetupPage() {
               <GitAccessSection project={project} />
               <SessionLifecycleSection project={project} />
               <ReviewAutomationSection project={project} />
+              <LandingSection project={project} />
             </>
           ) : (
             <p className="max-w-[64ch] border-l-2 border-[var(--sw-accent)] pl-3 text-[13px] leading-relaxed text-ink-2">

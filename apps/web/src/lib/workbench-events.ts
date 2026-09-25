@@ -49,6 +49,8 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
           // (detail, transcript, pending follow-up, processes) — a follow-up
           // banner staling on another device taught us not to enumerate.
           void queryClient.invalidateQueries(trpc.sessions.pathFilter());
+          // A turn's landing decision ("changes not landed · …") rides on the turn.
+          void queryClient.invalidateQueries(trpc.landings.pathFilter());
           break;
         case "session-process":
           if (event.sessionId !== undefined) {
@@ -66,6 +68,8 @@ export const useWorkbenchEvents = (onEvent?: (event: WorkbenchEventDto) => void)
         case "session-change":
         case "review-comment":
           void queryClient.invalidateQueries(trpc.changes.pathFilter());
+          // A landing is recorded against the change (docs/adr/0007-landing.md).
+          void queryClient.invalidateQueries(trpc.landings.pathFilter());
           // Worktree list annotations carry comment/follow-up counts.
           void queryClient.invalidateQueries(trpc.worktrees.pathFilter());
           break;

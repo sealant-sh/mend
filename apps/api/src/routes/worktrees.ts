@@ -226,6 +226,7 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
             harness: payload.harness,
             label: payload.label,
             ownerUserId: caller.user.id,
+            autoLand: payload.autoLand,
           })
           .pipe(
             Effect.catchTag("WorktreeNotFoundError", () =>
