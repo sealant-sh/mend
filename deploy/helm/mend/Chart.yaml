@@ -5,6 +5,6 @@ description:
   Garage — plus Postgres), with the cluster-internal session channel for workspaces.
 type: application
 version: 0.3.0
-appVersion: "0.30.0"
+appVersion: "0.31.0"
 sources:
   - https://github.com/sealant-sh/mend

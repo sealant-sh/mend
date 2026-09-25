@@ -1,5 +1,57 @@
 # @sealant/mend
 
+## 0.31.0
+
+### Minor Changes
+
+- 8f82bd3: Workspaces commit as you. "Git author" is a new account setting: a name and email in
+  Settings, or `mend git-author "Name" you@example.com` (`--clear` goes back to the name and email
+  you registered with, which is also what applies until you set one). Before the agent starts, every
+  workspace receives it as system git config, co-located or captured, cold or a claimed standby. A
+  `.gitconfig` from your dotfiles and a repository's own config still decide over it. Agents no
+  longer have to make up an identity to commit.
+- f57a064: Landing finds a pull request opened outside Mend and updates it instead of opening a
+  second one. Mend looks with the owner's `gh` 45 s after the agent pushes a branch through the
+  workspace transport, and again when the agent's turn ends while its workspace is up. "Check
+  GitHub" in the Land panel, and `mend land <session> --check`, look on demand, even when nothing
+  has landed yet. The lookup covers the worktree's branch, every branch the agent pushed, and any
+  pull request that holds the agent's head commit. The next landing pushes that pull request's
+  branch and updates it. A pull request from a fork is shown
+  (`pull request #367 · merged · observed · opened outside Mend · from anna's fork`) and never
+  updated, because Mend pushes to origin only. The lookup that finds the pull request to update no
+  longer mistakes a fork's same-named branch for origin's.
+- 77bd0d5: A stop ends the agent and leaves Services running, and a running Service keeps the
+  workspace up. Every surface now says so: the web session page and project list, the desktop inbox
+  and terminal header, and `mend sessions` and the dashboard read, for example,
+  `agent stopped · 3 services keep the workspace up`. Stop services (`mend stop --services`, ⇧K on
+  such a row in the dashboard, the button on the session page, and the desktop's stop services)
+  stops all of them, and the workspace ends once nothing is live. Review prep now starts when the
+  agent stops or exits, even while Services keep the workspace up.
+
+### Patch Changes
+
+- c980a4a: On captured workspaces (AWS MicroVM executors), a pasted image now reaches the agent:
+  Mend writes it into the live workspace's harness home, at the same path the terminal pastes.
+  Before, it landed on the Mend server, where no captured workspace could read it. A session with no
+  live workspace now answers that it is not live instead of returning a path nothing can read. The
+  owner's skills reach captured workspaces the same way, before the harness starts.
+- 149b8ec: Mend caps its database connections: 6 for its queries (`MEND_DATABASE_POOL_MAX`), 3 for
+  the job queue (`MEND_JOBS_POOL_MAX`) and 3 for sign-in sessions (`MEND_AUTH_DATABASE_POOL_MAX`),
+  where each pool was previously uncapped at pg's default of 10. A refused connection from the job
+  queue or the sign-in pool is logged and retried instead of exiting the API. The bundled image
+  waits up to 240 s for Mend's first health answer before it restarts the bundle.
+- f3f432c: Review passes no longer wait behind each other or run twice. Up to three tours, reads and
+  suggestion passes run at once instead of one per kind. A request for a pass that is already queued
+  or running for the change is absorbed: review prep, the review page and a landing share one key
+  per change, which pg-boss's standard queues never enforced, and a tour whose diff has not changed
+  since it was composed is not composed again. A pass reads "queued" from the moment it is
+  requested, so the change page shows it waiting instead of "Composing…". Naming a session that
+  settled without a first prompt stops there and leaves it unnamed, instead of retrying for an hour.
+- f57a064: Sealant 0.37.1, with sealantd 0.18.2: dotfiles `manager: auto` picks stow only for a stow
+  layout, so a home mirror keeps its dot entries; a restart keeps dotfiles; and a MicroVM boot
+  failure reports sealantd's last output. The image copies the released 0.37.1 Sealant API, worker
+  and SSH gateway by digest, and `@sealant/sdk` and `@sealant/api-contracts` move to 0.37.1.
+
 ## 0.30.0
 
 ### Minor Changes
