@@ -407,6 +407,7 @@ describe("mend help", () => {
       "env show",
       "accounts",
       "dotfiles",
+      "dotfiles repo",
       "dotfiles sync",
       "run",
       "attach",
@@ -457,6 +458,139 @@ describe("mend help", () => {
     const outcome = await cli.exited;
     expect(outcome.code).toBe(1);
     expect(cli.stderr()).toContain("usage: mend service stop <name-or-id>");
+  });
+});
+
+describe("mend dotfiles", () => {
+  const repository = {
+    url: "git@github.com:me/dots.git",
+    ref: null,
+    subdirectory: "dots",
+    manager: "copy",
+    bootstrap: true,
+  };
+
+  /** A fake that records every `PUT /api/dotfiles/repository` body and echoes it back as saved. */
+  const startDotfilesFake = async (saved: typeof repository | null) => {
+    const puts: Array<unknown> = [];
+    const fake = await startFakeMend((request, response) => {
+      if (request.url === "/api/dotfiles" && request.method === "GET") {
+        json(response, { repository: saved, snapshot: null });
+        return;
+      }
+      if (request.url === "/api/dotfiles/repository" && request.method === "PUT") {
+        let body = "";
+        request.on("data", (chunk: Buffer) => {
+          body += chunk.toString();
+        });
+        request.on("end", () => {
+          const parsed = JSON.parse(body) as { readonly repository: unknown };
+          puts.push(parsed);
+          json(response, { repository: parsed.repository, snapshot: null });
+        });
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    return { fake, puts };
+  };
+
+  it("shows the manager the repository applies with", async () => {
+    const { fake } = await startDotfilesFake(repository);
+    try {
+      const cli = startCli(fake.url, ["dotfiles"]);
+      const exit = await cli.exited;
+      expect(exit.code, cli.stderr()).toBe(0);
+      expect(cli.stdout()).toContain("git@github.com:me/dots.git");
+      expect(cli.stdout()).toContain("default branch · dots/ · manager copy · install.sh on");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("sets the whole repository, the manager included", async () => {
+    const { fake, puts } = await startDotfilesFake(null);
+    try {
+      const cli = startCli(fake.url, [
+        "dotfiles",
+        "repo",
+        "git@github.com:me/dots.git",
+        "--subdirectory",
+        "dots",
+        "--manager",
+        "stow",
+        "--no-bootstrap",
+      ]);
+      const exit = await cli.exited;
+      expect(exit.code, cli.stderr()).toBe(0);
+      expect(puts).toEqual([
+        {
+          repository: {
+            url: "git@github.com:me/dots.git",
+            ref: null,
+            subdirectory: "dots",
+            manager: "stow",
+            bootstrap: false,
+          },
+        },
+      ]);
+      expect(cli.stdout()).toContain("manager stow · install.sh off");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("clears the repository with --clear", async () => {
+    const { fake, puts } = await startDotfilesFake(repository);
+    try {
+      const cli = startCli(fake.url, ["dotfiles", "repo", "--clear"]);
+      const exit = await cli.exited;
+      expect(exit.code, cli.stderr()).toBe(0);
+      expect(puts).toEqual([{ repository: null }]);
+      expect(cli.stdout()).toContain("cleared the dotfiles repository");
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("refuses an unknown manager before any request", async () => {
+    const { fake, puts } = await startDotfilesFake(null);
+    try {
+      const cli = startCli(fake.url, [
+        "dotfiles",
+        "repo",
+        "https://x/dots.git",
+        "--manager",
+        "yadm",
+      ]);
+      const exit = await cli.exited;
+      expect(exit.code).toBe(1);
+      expect(cli.stderr()).toContain("--manager must be one of auto, copy, stow, chezmoi");
+      expect(cli.stderr()).toContain("usage: mend dotfiles repo <url>");
+      expect(puts).toEqual([]);
+    } finally {
+      await fake.close();
+    }
+  });
+
+  it("prints the server's reason when it cannot clone the repository", async () => {
+    const fake = await startFakeMend((request, response) => {
+      request.resume();
+      response.writeHead(400, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({ message: "the dotfiles repo https://x/dots.git could not be cloned" }),
+      );
+    });
+    try {
+      const cli = startCli(fake.url, ["dotfiles", "repo", "https://x/dots.git"]);
+      const exit = await cli.exited;
+      expect(exit.code).toBe(1);
+      expect(cli.stderr()).toContain("could not be cloned");
+      expect(cli.stdout()).not.toContain("saved");
+    } finally {
+      await fake.close();
+    }
   });
 });
 

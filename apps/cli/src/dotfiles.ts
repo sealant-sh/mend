@@ -113,3 +113,87 @@ export const readSyncFiles = (
   }
   return { files };
 };
+
+/** How the workspace applies a repository's tree; the server's `DotfilesManager`, duplicated. */
+export const DOTFILES_MANAGERS = ["auto", "copy", "stow", "chezmoi"] as const;
+export type DotfilesManager = (typeof DOTFILES_MANAGERS)[number];
+
+/** The saved repository, as `PUT /dotfiles/repository` takes it and `GET /dotfiles` returns it. */
+export interface DotfilesRepositoryBody {
+  readonly url: string;
+  readonly ref: string | null;
+  readonly subdirectory: string | null;
+  readonly manager: DotfilesManager;
+  readonly bootstrap: boolean;
+}
+
+export type DotfilesRepoArgs =
+  | { readonly kind: "set"; readonly repository: DotfilesRepositoryBody }
+  | { readonly kind: "clear" }
+  | { readonly kind: "error"; readonly error: string };
+
+const VALUE_FLAGS = ["--ref", "--subdirectory", "--manager"] as const;
+
+/**
+ * `mend dotfiles repo <url> [--ref <r>] [--subdirectory <d>] [--manager <m>] [--no-bootstrap]`,
+ * or `mend dotfiles repo --clear`. The command sets the whole repository: an option left out takes
+ * its default (the remote's default branch, the repository root, auto, install.sh on), so what is
+ * saved is exactly what was typed. The server validates the subdirectory and tries the clone.
+ */
+export const parseDotfilesRepoArgs = (args: ReadonlyArray<string>): DotfilesRepoArgs => {
+  if (args.includes("--clear")) {
+    return args.length === 1
+      ? { kind: "clear" }
+      : { kind: "error", error: "--clear takes no URL or other options" };
+  }
+  let url: string | null = null;
+  const values = new Map<string, string>();
+  let bootstrap = true;
+  for (let index = 0; index < args.length; index += 1) {
+    const arg = args[index] ?? "";
+    if (arg === "--no-bootstrap") {
+      bootstrap = false;
+      continue;
+    }
+    const flag = VALUE_FLAGS.find((candidate) => candidate === arg);
+    if (flag !== undefined) {
+      const value = args[index + 1];
+      if (value === undefined || value.trim() === "" || value.startsWith("--")) {
+        return { kind: "error", error: `${flag} needs a value` };
+      }
+      values.set(flag, value.trim());
+      index += 1;
+      continue;
+    }
+    if (arg.startsWith("-")) return { kind: "error", error: `unknown flag ${arg}` };
+    if (url !== null) return { kind: "error", error: "one repository URL only" };
+    url = arg.trim();
+  }
+  if (url === null || url === "") {
+    return { kind: "error", error: "name the repository URL, or --clear to remove it" };
+  }
+  const requested = values.get("--manager") ?? "auto";
+  const manager = DOTFILES_MANAGERS.find((candidate) => candidate === requested);
+  if (manager === undefined) {
+    return { kind: "error", error: `--manager must be one of ${DOTFILES_MANAGERS.join(", ")}` };
+  }
+  return {
+    kind: "set",
+    repository: {
+      url,
+      ref: values.get("--ref") ?? null,
+      subdirectory: values.get("--subdirectory") ?? null,
+      manager,
+      bootstrap,
+    },
+  };
+};
+
+/** The facts beside a repository's URL: `default branch · dots/ · manager auto · install.sh on`. */
+export const dotfilesRepositoryFacts = (repository: DotfilesRepositoryBody): string =>
+  [
+    repository.ref ?? "default branch",
+    ...(repository.subdirectory === null ? [] : [`${repository.subdirectory}/`]),
+    `manager ${repository.manager}`,
+    repository.bootstrap ? "install.sh on" : "install.sh off",
+  ].join(" · ");

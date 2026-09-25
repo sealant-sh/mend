@@ -21,8 +21,10 @@ The workspace receives file trees, not the repository URL or a Git credential.
 mend dotfiles
 ```
 
-The command shows the configured repository and the current synced snapshot. Snapshot output lists
-paths, sizes, source hostname, and a short content digest.
+The command shows the configured repository and the current synced snapshot. The repository line
+names its branch, subdirectory, manager and whether `./install.sh` runs, for example
+`(default branch · dots/ · manager auto · install.sh on)`. Snapshot output lists paths, sizes,
+source hostname, and a short content digest.
 
 ## Sync files from this machine
 
@@ -55,7 +57,18 @@ Open **Settings → Dotfiles** and provide a repository URL. Optional fields con
 
 - the branch or ref; an empty value uses the remote's default branch;
 - a repository subdirectory whose contents should become the home tree;
+- the [manager](#choose-a-manager) that applies the tree;
 - whether Mend runs `./install.sh` when the selected tree contains it.
+
+Or set it from the terminal:
+
+```sh
+mend dotfiles repo git@github.com:you/dots.git --subdirectory dots --manager copy
+```
+
+The command sets the whole repository: an option you leave out takes its default (`--ref` the
+remote's default branch, `--subdirectory` the repository root, `--manager auto`, and `./install.sh`
+on unless you pass `--no-bootstrap`). `mend dotfiles repo --clear` removes the repository.
 
 At each launch, the server clones the repository as you, archives the selected tree, and sends the
 archive to the workspace. [Which credentials the clone uses](#which-credentials-the-clone-uses) is
@@ -87,8 +100,28 @@ The exception is a single-tenant install (`MEND_TENANCY=single`, the default): t
 own dotfiles clone with the server's Git and SSH setup, as a shell on that machine would. Every
 other account on that install follows the rules above.
 
-Automatic mode detects chezmoi and stow layouts. Other repositories are copied into the workspace
-home directory.
+### Choose a manager
+
+The manager decides how the repository's tree lands in the workspace home directory:
+
+| Manager   | What it does                                                                          |
+| --------- | ------------------------------------------------------------------------------------- |
+| `auto`    | Picks one of the three below from the top level of the tree. The default.             |
+| `copy`    | Copies the tree into the home directory as it is.                                     |
+| `stow`    | Links each top-level directory into the home directory as a GNU stow package.         |
+| `chezmoi` | Runs `chezmoi apply` with the tree as its source, so `dot_` names and templates work. |
+
+`auto` uses chezmoi when the top level is a chezmoi source (`.chezmoi*`, `dot_*`, `private_*` or
+`*.tmpl` entries). It uses stow only for a pure stow layout: package directories at the top level
+and no dot entries beside them. Plain files such as `README.md` or a `Brewfile` do not count, and
+neither do Git's and stow's own files (`.gitignore`, `.github/`, `.stow-local-ignore`). Any other
+tree is copied, including a home mirror that holds `.config/` and `.zshenv` beside `bin/`.
+
+Pick a manager explicitly when `auto` would choose differently from what you intend. A repository
+whose top level mirrors your home directory wants `copy`. For stow packages kept beside other files,
+point `--subdirectory` at the directory that holds only the packages.
+
+Files from the synced snapshot always apply with `copy`, after the repository.
 
 ## Add files from the web app
 

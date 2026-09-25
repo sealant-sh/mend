@@ -24,7 +24,13 @@ import {
 } from "./claude-grant.ts";
 import { readClipboardImage } from "./clipboard.ts";
 import { doctorCommand } from "./doctor.ts";
-import { readSyncFiles, scanDotfileCandidates } from "./dotfiles.ts";
+import {
+  dotfilesRepositoryFacts,
+  parseDotfilesRepoArgs,
+  readSyncFiles,
+  scanDotfileCandidates,
+  type DotfilesRepositoryBody,
+} from "./dotfiles.ts";
 import { formatLoadReport, type EnvironmentLoadReportDto } from "./env.ts";
 import {
   findCommand,
@@ -147,12 +153,7 @@ interface ProjectDto {
 
 /** The account's dotfiles: repository knob + store snapshot (see `mend dotfiles`). */
 interface DotfilesDto {
-  readonly repository: {
-    readonly url: string;
-    readonly ref: string | null;
-    readonly subdirectory: string | null;
-    readonly bootstrap: boolean;
-  } | null;
+  readonly repository: DotfilesRepositoryBody | null;
   readonly snapshot: {
     readonly sha: string;
     readonly source: string;
@@ -2516,19 +2517,14 @@ const keysCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
 const formatDotfileBytes = (bytes: number): string =>
   bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
 
+const repositoryLine = (repository: DotfilesRepositoryBody | null): string =>
+  repository === null
+    ? `repo      ${dim("none")}`
+    : `repo      ${repository.url} ${dim(`(${dotfilesRepositoryFacts(repository)})`)}`;
+
 const dotfilesShow = async (config: CliConfig) => {
   const dotfiles = await api<DotfilesDto>(config, "GET", "/dotfiles");
-  if (dotfiles.repository === null) {
-    say(`repo      ${dim("none")}`);
-  } else {
-    const branch = dotfiles.repository.ref ?? "default branch";
-    const subdir =
-      dotfiles.repository.subdirectory === null ? [] : [`${dotfiles.repository.subdirectory}/`];
-    const bootstrap = dotfiles.repository.bootstrap ? "install.sh on" : "install.sh off";
-    say(
-      `repo      ${dotfiles.repository.url} ${dim(`(${[branch, ...subdir, bootstrap].join(" · ")})`)}`,
-    );
-  }
+  say(repositoryLine(dotfiles.repository));
   if (dotfiles.snapshot === null) {
     say(`snapshot  ${dim("none — sync from this machine: mend dotfiles sync --all")}`);
     return;
@@ -2540,6 +2536,27 @@ const dotfilesShow = async (config: CliConfig) => {
   for (const file of snapshot.files) {
     say(`  ${file.path.padEnd(36)} ${dim(formatDotfileBytes(file.bytes))}`);
   }
+};
+
+/**
+ * `mend dotfiles repo <url> [options] | --clear` — set or clear the repository the server clones at
+ * every launch. The server tries the clone before it saves, so a success line means it cloned.
+ */
+const dotfilesRepo = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const parsed = parseDotfilesRepoArgs(args);
+  if (parsed.kind === "error") return fail(`${parsed.error}\n${usageOf("dotfiles repo")}`);
+  const repository = parsed.kind === "clear" ? null : parsed.repository;
+  if (repository !== null) say(dim(`cloning ${repository.url} on the server to check it…`));
+  const result = await api<DotfilesDto>(config, "PUT", "/dotfiles/repository", { repository });
+  if (result.repository === null) {
+    say(
+      `${green("✓")} cleared the dotfiles repository ${dim("— applies from the next session launch")}`,
+    );
+    return;
+  }
+  say(`${green("✓")} saved · the server cloned it once to check`);
+  say(repositoryLine(result.repository));
+  say(dim("applies from the next session launch"));
 };
 
 /**
@@ -2834,6 +2851,8 @@ const dotfilesCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
   switch (verb) {
     case "sync":
       return dotfilesSync(config, rest);
+    case "repo":
+      return dotfilesRepo(config, rest);
     case "show":
     case undefined:
       return dotfilesShow(config);
