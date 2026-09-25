@@ -1,5 +1,107 @@
 # @sealant/mend
 
+## 0.30.0
+
+### Minor Changes
+
+- d91db01: `mend land <session>` publishes a session's change: Mend takes a checkpoint, commits what
+  the agent left uncommitted, pushes the branch to origin (fast-forward only, never forced), and
+  opens or updates its GitHub pull request. `--branch` names the branch on origin, `--no-pr` pushes
+  only, and `--title` sets the pull request's title. It prints the landing and what Mend observed,
+  in the remote's own words when a push is refused, and exits 1 then. Only the change's owner lands,
+  and the session's branch is never moved.
+
+  `mend pull <session>`, run in a local clone of the project, fetches the change as `mend/<name>`
+  from a git bundle, before landing and without origin. It leaves the working tree and the current
+  branch alone, only fast-forwards an existing branch, and refuses a bundle over the server's limit
+  with its size.
+
+  `mend codex|claude|opencode` take `--land` and `--no-land`, which override the project's "Land
+  when a turn completes" setting for one session.
+
+- 1aa929c: Session Services work in capture-mode (MicroVM) sessions, where Mend is not beside the
+  worktree. `mend.toml` recipes are read from the session's live workspace, so
+  `mend service run <name>`, the web's recipe list, and the agent's own `mend service run <name>`
+  find them there; a session with no live workspace says so instead of answering 500. The agent's
+  Mend Services instructions are written into capture-mode workspaces too, and the in-workspace
+  `mend service run` and `mend service add` take `--http`/`--https`, so a Service the agent starts
+  gets a browser URL.
+
+  `mend attach`, `mend codex|claude|opencode`, and `mend rejoin`, attached to a session on a server
+  that is not this machine, tunnel that session's live Services declared `--http` or `--https` to
+  this machine's loopback: on the Service's own port when it is free, else on a free one, one line
+  each (`web → http://localhost:5173`). A Service that stops closes its tunnel, detaching closes
+  them all, and the Services keep running. The dashboard does the same for the selected session and
+  shows where each opens in the session pane. `--no-tunnel` opts out; `mend service connect` is
+  unchanged.
+
+  The web's and the desktop's Services show `mend service connect <name>` in place of a dead Open
+  link when a Service answers only on a remote Mend host's loopback.
+
+- 5a08921: Mend in Slack (ADR 0006): an organization owner connects a Slack app made from Mend's
+  manifest (Settings → Slack, Socket Mode, outbound only). `@mend <prompt>` in a thread starts a
+  session for the linked person in the project the message, the thread or a default names, reports
+  into the thread, and takes follow-ups there.
+
+  Automatic landing (ADR 0007): a session started from Slack pushes its branch and opens or updates
+  a pull request after a turn that asked for a change, never for a question. Projects can turn it on
+  for their own sessions ("Land when a turn completes") or off for every session; `autopr=` in a
+  Slack request overrides it.
+
+### Patch Changes
+
+- ff401b2: The server's clone of a dotfiles repository is bounded. It clones one branch at depth 1
+  with no tags, never downloads a file larger than 4MB, is stopped past 64MB on disk or after 60
+  seconds (git and every helper it started are killed), and the packed archive is capped at 4MB as
+  it streams. Each refusal names the bound it hit, and a file over the per-file bound is named by
+  its path. Under the tenant source policy the pinned ssh command keeps `BatchMode=yes`, so a
+  dotfiles clone over ssh fails with ssh's own message instead of trying to prompt.
+- 79045d4: The dotfiles repository's manager can be chosen. Settings → Dotfiles offers `auto`,
+  `copy`, `stow` and `chezmoi`, each with a line saying what it does, and saving sends the choice;
+  before, the page always kept `auto`. From the terminal,
+  `mend dotfiles repo <url> [--ref <r>] [--subdirectory <d>] [--manager <m>] [--no-bootstrap]` sets
+  the repository (the server tries the clone before it saves, as the web save does) and
+  `mend dotfiles repo --clear` removes it. `mend dotfiles` now names the manager on the repository
+  line, for example `(default branch · dots/ · manager copy · install.sh on)`.
+- 74e0974: Adding files to a dotfiles snapshot (a merge, as the web's add-a-file does) now counts
+  the files the snapshot already holds against the 4MB cap. Before, only the files being added were
+  counted, so repeated additions could grow a snapshot past what one launch can carry. A merge that
+  would pass the cap is refused with "snapshot exceeds the 4MB cap with the files it already holds",
+  and the snapshot stays as it was.
+- d445355: The server's clone of a dotfiles repository, at launch and when it is saved, now runs as
+  the account whose dotfiles they are, never with the server's own Git and SSH setup. An SSH URL
+  signs with that account's Git access: its Mend key, or its connected signer when its Git access is
+  the bridge. An HTTPS URL clones without a credential, so only a public repository clones that way;
+  a refused HTTPS clone says so and points to the SSH URL. These clones read none of the server's
+  credential helpers, `.netrc`, SSH agent, SSH config or key files. On a single-tenant install
+  (`MEND_TENANCY=single`) the operator's own dotfiles still clone with the server's setup, as
+  before.
+- 3e001fb: Saving a dotfiles repository now runs the launch's own clone and archive once, with the
+  same limits and the same Git environment. A repository the server cannot clone, a branch or
+  subdirectory it does not have, or a tree over the limits is not saved, and the save shows the
+  reason. At launch, a dotfiles source that fails (the repository clone or the synced snapshot) no
+  longer fails the session: the workspace starts without that source, the other source still
+  applies, and the session records what was left out. The session page shows it, for example
+  `dotfiles · repo not applied · <reason>`. Standby workspaces behave the same way. The server's
+  clone of a dotfiles repository runs quietly, so a failure reason no longer includes the server's
+  temporary directory. The save's clone holds one of the account's launch slots, so saves cannot
+  start more clones than the `accountLaunchesInFlight` budget allows; past it the save is refused
+  with `BudgetExceeded`. The session page says the dotfiles it lists were `sent at launch`, since
+  Mend observes what it shipped, not what the workspace applied.
+- 74e0974: A standby workspace is no longer handed to a session after its owner changes the dotfiles
+  repository's branch, subdirectory, manager or `install.sh` setting. Before, only the URL and
+  branch were compared, so a session could start with the manager the standby was warmed with; now
+  any saved change sends the next session cold and the next reconcile warms a standby with the new
+  setting. Every standby warmed before this release is replaced once after upgrading.
+
+  `mend dotfiles sync <paths...>` refuses a path outside your home directory before it reads the
+  file. Before, `mend dotfiles sync ../file` read the file and uploaded it, and only the server
+  refused it. An absolute path under your home directory (what a shell makes of `~/.zshrc`) is now
+  taken as its home-relative path.
+
+- ed945d0: Saving a dotfiles repository whose URL carries a token or password is refused: Mend
+  stores the URL and shows it on your sessions.
+
 ## 0.29.2
 
 ### Patch Changes
