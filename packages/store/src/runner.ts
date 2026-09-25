@@ -11,6 +11,24 @@ import { type BlobNotFoundError, BlobStore, type BlobStoreError } from "./blob-s
 import { type CaptureManifest, digestOfKey, packIdxKeyOf, verifyGitPack } from "./captures.ts";
 import { git, type GitError } from "./git.ts";
 import {
+  type BundleEmptyError,
+  type BundleInput,
+  type BundleTooLargeError,
+  type ChangeBundle,
+  createChangeBundle,
+  type InvalidBranchError,
+  type LandedCommit,
+  type LandingCommitInput,
+  type ProbeInput,
+  probeRemoteBranch,
+  pushBranch,
+  type PushInput,
+  type Pushed,
+  type PushRefusedError,
+  type RemoteBranchState,
+  writeLandingCommit,
+} from "./landing.ts";
+import {
   type ChangedFile,
   type DiffFileFact,
   type FileListing,
@@ -74,6 +92,18 @@ export interface DerivedCommit {
   readonly packSha256: string;
   readonly pack: Uint8Array;
   readonly idx: Uint8Array;
+}
+
+/**
+ * Landing's commit on a runner: what was written and its pack. The cache moves no ref (its refs
+ * are rewritten on every `ensure`), so the caller stores the pack under the project's derived
+ * prefix and keeps the landed head under `refs/mend/landed/<worktree>` in `store_refs`, as it
+ * does for a derived checkpoint. The executor's branch never sees Mend's commit.
+ */
+export interface RunnerLandingCommit {
+  readonly head: Sha;
+  readonly written: (LandedCommit & { readonly derived: DerivedCommit }) | null;
+  readonly nothingNew: boolean;
 }
 
 export interface BlameLine {
@@ -151,6 +181,33 @@ export class GitOpsRunner extends Context.Service<
       cache: RunnerCache,
       input: { readonly tree: string; readonly parent: Sha | null; readonly message: string },
     ) => Effect.Effect<DerivedCommit, GitError | RunnerCacheError>;
+    /**
+     * Landing step 2 for a capture-backed session (docs/adr/0007-landing.md "Where each step
+     * runs"): Mend's commit of the checkpoint's tree, parented by `planLanding` on the last
+     * landing and the agent's head, or nothing when an existing commit already is what lands.
+     * `agentHead`, `lastLanded` and `checkpoint` resolve through the handle.
+     */
+    readonly landingCommit: (
+      cache: RunnerCache,
+      input: LandingCommitInput,
+    ) => Effect.Effect<RunnerLandingCommit, GitError | RunnerCacheError>;
+    /** Landing step 3 from the cache: fast-forward only, to `input.remote` (the origin URL). */
+    readonly push: (
+      cache: RunnerCache,
+      input: PushInput,
+    ) => Effect.Effect<Pushed, GitError | InvalidBranchError | PushRefusedError>;
+    readonly probeRemote: (
+      cache: RunnerCache,
+      input: ProbeInput,
+    ) => Effect.Effect<RemoteBranchState, GitError | InvalidBranchError>;
+    /** The `mend pull` bundle from the cache; `base` and `tip` resolve through the handle. */
+    readonly bundle: (
+      cache: RunnerCache,
+      input: BundleInput,
+    ) => Effect.Effect<
+      ChangeBundle,
+      GitError | InvalidBranchError | BundleTooLargeError | BundleEmptyError
+    >;
   }
 >()("@mend/store/GitOpsRunner") {}
 
@@ -460,16 +517,11 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         return Sha.make(yield* git(["rev-parse", "--verify", `${target}^{tree}`], cache.path));
       });
 
-      const commitTree = Effect.fn("GitOpsRunner.commitTree")(function* (
+      /** A self-contained pack of one commit object the runner wrote. */
+      const packCommit = Effect.fn("GitOpsRunner.packCommit")(function* (
         cache: RunnerCache,
-        input: { readonly tree: string; readonly parent: Sha | null; readonly message: string },
+        commit: Sha,
       ) {
-        const tree = yield* treeOf(cache, input.tree);
-        const args =
-          input.parent === null
-            ? ["commit-tree", tree, "-m", input.message]
-            : ["commit-tree", tree, "-p", input.parent, "-m", input.message];
-        const commit = yield* git(args, cache.path);
         const staging = path.join(cache.path, "objects", `derived-${crypto.randomUUID()}`);
         yield* cacheIo(cache.projectId, () => fs.mkdirSync(staging, { recursive: true }));
         const attempt = Effect.gen(function* () {
@@ -491,14 +543,86 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
             () => new Uint8Array(fs.readFileSync(path.join(staging, `p-${name}.idx`))),
           );
           const packSha256 = crypto.createHash("sha256").update(pack).digest("hex");
-          return { sha: Sha.make(commit), packSha256, pack, idx } satisfies DerivedCommit;
+          return { sha: commit, packSha256, pack, idx } satisfies DerivedCommit;
         });
         return yield* attempt.pipe(
           Effect.ensuring(Effect.sync(() => fs.rmSync(staging, { recursive: true, force: true }))),
         );
       });
 
+      const commitTree = Effect.fn("GitOpsRunner.commitTree")(function* (
+        cache: RunnerCache,
+        input: { readonly tree: string; readonly parent: Sha | null; readonly message: string },
+      ) {
+        const tree = yield* treeOf(cache, input.tree);
+        const args =
+          input.parent === null
+            ? ["commit-tree", tree, "-m", input.message]
+            : ["commit-tree", tree, "-p", input.parent, "-m", input.message];
+        const commit = yield* git(args, cache.path);
+        return yield* packCommit(cache, Sha.make(commit));
+      });
+
+      const landingCommit = Effect.fn("GitOpsRunner.landingCommit")(function* (
+        cache: RunnerCache,
+        input: LandingCommitInput,
+      ) {
+        const [agentHead, checkpoint] = yield* Effect.all([
+          resolve(cache, input.agentHead),
+          resolve(cache, input.checkpoint),
+        ]);
+        const lastLanded =
+          input.lastLanded === null ? null : yield* resolve(cache, input.lastLanded);
+        const landed = yield* writeLandingCommit(cache.path, {
+          ...input,
+          agentHead,
+          lastLanded,
+          checkpoint,
+        });
+        if (landed.written === null) {
+          return {
+            head: landed.head,
+            written: null,
+            nothingNew: landed.nothingNew,
+          } satisfies RunnerLandingCommit;
+        }
+        const derived = yield* packCommit(cache, landed.written.sha);
+        return {
+          head: landed.head,
+          written: { ...landed.written, derived },
+          nothingNew: false,
+        } satisfies RunnerLandingCommit;
+      });
+
+      const push = Effect.fn("GitOpsRunner.push")(function* (cache: RunnerCache, input: PushInput) {
+        const sha = yield* resolve(cache, input.sha);
+        return yield* pushBranch(cache.path, { ...input, sha });
+      });
+
+      const probeRemote = Effect.fn("GitOpsRunner.probeRemote")(function* (
+        cache: RunnerCache,
+        input: ProbeInput,
+      ) {
+        const sha = yield* resolve(cache, input.sha);
+        return yield* probeRemoteBranch(cache.path, { ...input, sha });
+      });
+
+      const bundle = Effect.fn("GitOpsRunner.bundle")(function* (
+        cache: RunnerCache,
+        input: BundleInput,
+      ) {
+        const [base, tip] = yield* Effect.all([
+          resolve(cache, input.base),
+          resolve(cache, input.tip),
+        ]);
+        return yield* createChangeBundle(cache.path, { ...input, base, tip });
+      });
+
       return {
+        landingCommit,
+        push,
+        probeRemote,
+        bundle,
         ensure,
         resolve,
         diffRange,
