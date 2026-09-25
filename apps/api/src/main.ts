@@ -98,6 +98,7 @@ import {
   SummarizeFailureJob,
   ThreadProjectReaderLive,
   TourComposer,
+  withoutFirstPrompt,
 } from "@mend/inference";
 import {
   CaptureRetentionLive,
@@ -205,6 +206,13 @@ import { SessionSteeringLive } from "./session-steering.ts";
 import { SlackRunnerLive } from "./slack-runner.ts";
 import { SlackLinkedMentionWorkerLive, SlackSocketsLive } from "./slack-worker.ts";
 import { TenancyConfigLive } from "./tenancy.ts";
+
+/**
+ * The machine passes over a change run side by side: a tour composing for minutes must not hold
+ * every other change's tour, read and suggestions behind it (pg-boss runs one job per queue and
+ * process unless asked).
+ */
+const REVIEW_PASS_WORK = { localConcurrency: 3 } as const;
 
 /**
  * The composition boundary (ARCHITECTURE.md §2): every service is wired here
@@ -443,7 +451,7 @@ const InferenceWorkersLive = Layer.effectDiscard(
     const recorded = (
       kind: "tour" | "read" | "suggest",
       changeId: ChangeId,
-      pass: Effect.Effect<number | void, InferenceError>,
+      pass: Effect.Effect<unknown, InferenceError>,
     ) =>
       passes.begin(changeId, kind).pipe(
         Effect.andThen(pass),
@@ -452,13 +460,16 @@ const InferenceWorkersLive = Layer.effectDiscard(
         ),
         Effect.tapError((error) => passes.fail(changeId, kind, error.message)),
       );
-    yield* jobs.work("read-change", (payload) =>
-      decodeReadChangeJob(payload).pipe(
-        Effect.flatMap((job) =>
-          asChangeOwner(job.changeId)(recorded("read", job.changeId, reader.read(job))),
+    yield* jobs.work(
+      "read-change",
+      (payload) =>
+        decodeReadChangeJob(payload).pipe(
+          Effect.flatMap((job) =>
+            asChangeOwner(job.changeId)(recorded("read", job.changeId, reader.read(job))),
+          ),
+          Effect.orDie,
         ),
-        Effect.orDie,
-      ),
+      REVIEW_PASS_WORK,
     );
     // A completed tour reaches the pull request Mend opened without one (docs/adr/0007-landing.md,
     // "What the thread sees"), once per tour. Its failure is logged and never fails the tour.
@@ -480,23 +491,29 @@ const InferenceWorkersLive = Layer.effectDiscard(
         ),
         Effect.asVoid,
       );
-    yield* jobs.work("compose-tour", (payload) =>
-      decodeComposeTourJob(payload).pipe(
-        Effect.flatMap((job) =>
-          asChangeOwner(job.changeId)(
-            recorded("tour", job.changeId, tourComposer.compose(job)),
-          ).pipe(Effect.andThen(describeAfterTour(job.changeId))),
+    yield* jobs.work(
+      "compose-tour",
+      (payload) =>
+        decodeComposeTourJob(payload).pipe(
+          Effect.flatMap((job) =>
+            asChangeOwner(job.changeId)(
+              recorded("tour", job.changeId, tourComposer.compose(job)),
+            ).pipe(Effect.andThen(describeAfterTour(job.changeId))),
+          ),
+          Effect.orDie,
         ),
-        Effect.orDie,
-      ),
+      REVIEW_PASS_WORK,
     );
-    yield* jobs.work("suggest-change", (payload) =>
-      decodeSuggestChangeJob(payload).pipe(
-        Effect.flatMap((job) =>
-          asChangeOwner(job.changeId)(recorded("suggest", job.changeId, suggester.suggest(job))),
+    yield* jobs.work(
+      "suggest-change",
+      (payload) =>
+        decodeSuggestChangeJob(payload).pipe(
+          Effect.flatMap((job) =>
+            asChangeOwner(job.changeId)(recorded("suggest", job.changeId, suggester.suggest(job))),
+          ),
+          Effect.orDie,
         ),
-        Effect.orDie,
-      ),
+      REVIEW_PASS_WORK,
     );
     yield* jobs.work("brief", (payload) =>
       decodeCompileBriefJob(payload).pipe(
@@ -529,6 +546,7 @@ const InferenceWorkersLive = Layer.effectDiscard(
     const engine = yield* SessionEngine;
     const firstPromptFromTranscript = Effect.fn("firstPromptFromTranscript")(function* (
       job: NameSessionJob,
+      session: { readonly settledAt: Date | null },
     ) {
       const transcript = yield* engine
         .transcript(job.sessionId)
@@ -537,6 +555,9 @@ const InferenceWorkersLive = Layer.effectDiscard(
       const firstUserAt = events.findIndex((event) => event.kind === "user");
       const firstUser = firstUserAt === -1 ? undefined : events[firstUserAt];
       if (firstUser === undefined || firstUser.kind !== "user") {
+        // A settled session gets no first prompt any more: it stays unnamed, and the job ends
+        // here instead of retrying for an hour into the dead letter.
+        if (withoutFirstPrompt(session) === "leave-unnamed") return null;
         // Retryable by design: the user has not typed the first prompt yet.
         return yield* Effect.die(new Error("no first prompt in the transcript yet — retrying"));
       }
@@ -567,7 +588,13 @@ const InferenceWorkersLive = Layer.effectDiscard(
 
       const turns = hasInlinePrompt
         ? { firstUserTurn: inlinePrompt }
-        : yield* firstPromptFromTranscript(job);
+        : yield* firstPromptFromTranscript(job, session);
+      if (turns === null) {
+        yield* Effect.logInfo("session left unnamed · it settled without a first prompt").pipe(
+          Effect.annotateLogs({ sessionId: job.sessionId, status: session.status }),
+        );
+        return;
+      }
 
       const label = yield* namer.name({
         harness: session.harness,

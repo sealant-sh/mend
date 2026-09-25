@@ -2,7 +2,13 @@ import { describe, expect, it } from "@effect/vitest";
 import { Effect, Layer, Schema } from "effect";
 
 import { InferenceError, InferenceProvider, type InferenceRequest } from "./provider.ts";
-import { NameSessionJob, normalizeLabel, SessionNamer, SessionNamerLive } from "./session-namer.ts";
+import {
+  NameSessionJob,
+  normalizeLabel,
+  SessionNamer,
+  SessionNamerLive,
+  withoutFirstPrompt,
+} from "./session-namer.ts";
 
 const input = {
   harness: "claude",
@@ -133,5 +139,14 @@ describe("NameSessionJob", () => {
       firstUserTurn: "fix the flaky retry loop",
     });
     expect(send.firstUserTurn).toBe("fix the flaky retry loop");
+  });
+});
+
+describe("withoutFirstPrompt", () => {
+  it("waits for a first prompt while the session can still get one, and stops once it settled", () => {
+    expect(withoutFirstPrompt({ settledAt: null })).toBe("retry");
+    expect(withoutFirstPrompt({ settledAt: new Date("2026-09-25T10:00:00.000Z") })).toBe(
+      "leave-unnamed",
+    );
   });
 });

@@ -131,7 +131,7 @@ import {
   normalizeGitAuthor,
   type SessionStatus,
 } from "@mend/domain/workbench";
-import { JobRunner } from "@mend/jobs";
+import { JobRunner, queueReviewPass } from "@mend/jobs";
 import { asSealantUser, SealantClient } from "@mend/sealant";
 import {
   CaptureRuntime,
@@ -3376,17 +3376,10 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).change(params.id);
         const changes = yield* WorktreeChangesRepo;
-        const jobs = yield* JobRunner;
         yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        // One pass at a time per change (the key dedups while queued/active);
-        // a finished pass can be re-requested and reads the newer state.
-        yield* jobs
-          .enqueue({
-            name: "read-change",
-            payload: { changeId: params.id },
-            idempotencyKey: `read-change:${params.id}`,
-          })
-          .pipe(Effect.orDie);
+        // One pass at a time per change (`reviewPassKey`: a request while one is queued or
+        // running is absorbed); a finished pass can be re-requested and reads the newer state.
+        yield* queueReviewPass("read", params.id).pipe(Effect.orDie);
         return { queued: true };
       }),
     )
@@ -3403,15 +3396,9 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).change(params.id);
         const changes = yield* WorktreeChangesRepo;
-        const jobs = yield* JobRunner;
         yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
-        yield* jobs
-          .enqueue({
-            name: "compose-tour",
-            payload: { changeId: params.id },
-            idempotencyKey: `compose-tour:${params.id}`,
-          })
-          .pipe(Effect.orDie);
+        // The same key review prep and landing use: one tour per change in flight.
+        yield* queueReviewPass("tour", params.id).pipe(Effect.orDie);
         return { queued: true };
       }),
     )
@@ -3419,16 +3406,9 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
       Effect.gen(function* () {
         yield* (yield* ProjectAccess).change(params.id);
         const changes = yield* WorktreeChangesRepo;
-        const jobs = yield* JobRunner;
         yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         // One pass at a time per change; a finished pass can be re-requested.
-        yield* jobs
-          .enqueue({
-            name: "suggest-change",
-            payload: { changeId: params.id },
-            idempotencyKey: `suggest-change:${params.id}`,
-          })
-          .pipe(Effect.orDie);
+        yield* queueReviewPass("suggest", params.id).pipe(Effect.orDie);
         return { queued: true };
       }),
     )

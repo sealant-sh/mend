@@ -72,7 +72,7 @@ export interface ChangeTourDto {
 export interface ChangePassDto {
   readonly changeId: string;
   readonly kind: "tour" | "read" | "suggest";
-  readonly status: "running" | "completed" | "failed";
+  readonly status: "queued" | "running" | "completed" | "failed";
   readonly detail: string | null;
   readonly findings: number | null;
   readonly startedAt: string;
@@ -184,7 +184,9 @@ export const useChangePasses = (changeId: string | null) =>
     enabled: changeId !== null,
     queryFn: () => api<ReadonlyArray<ChangePassDto>>("GET", `/changes/${changeId}/passes`),
     refetchInterval: (query) =>
-      (query.state.data ?? []).some((pass) => pass.status === "running") ? 2_500 : 12_000,
+      (query.state.data ?? []).some((pass) => pass.status === "running" || pass.status === "queued")
+        ? 2_500
+        : 12_000,
   });
 
 // ─── actions ────────────────────────────────────────────────────────────────

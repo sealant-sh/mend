@@ -176,16 +176,13 @@ export class LandingGit extends Context.Service<
  * Asks for a change's review tour when a landing opens or updates its pull request and finds
  * none (docs/adr/0007-landing.md, "The pull request's description"). The landing does not wait:
  * the pull request opens with the file list, and `LandingDescriptions` writes the tour in once it
- * completes. Asking twice for the same state asks once. Never fails a landing.
+ * completes. Asking while a tour is queued or composing for the change asks once; the tour reads
+ * the change as it is when it runs. Never fails a landing.
  */
 export class TourRequests extends Context.Service<
   TourRequests,
   {
-    readonly request: (input: {
-      readonly changeId: ChangeId;
-      /** The change's state the tour is for, which keys the request. */
-      readonly head: Sha;
-    }) => Effect.Effect<void>;
+    readonly request: (input: { readonly changeId: ChangeId }) => Effect.Effect<void>;
   }
 >()("@mend/landing/TourRequests") {}
 
@@ -598,10 +595,7 @@ export const LandingLive: Layer.Layer<
       // No tour yet: the pull request opened with the file list, and gains the tour when it
       // completes (`LandingDescriptions`).
       if (tour === null) {
-        yield* tourRequests.request({
-          changeId: change.id,
-          head: change.headSha ?? change.baseSha,
-        });
+        yield* tourRequests.request({ changeId: change.id });
       }
       return yield* finish(
         checkpoint,

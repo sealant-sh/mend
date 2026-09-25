@@ -1,7 +1,7 @@
 import { PgClient } from "@effect/sql-pg";
 import { type ChangeId } from "@mend/domain";
 import { ChangePass, type PassKind } from "@mend/domain/workbench";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, inArray } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -21,6 +21,11 @@ const decodePass = Schema.decodeUnknownEffect(Schema.Struct(ChangePass.fields));
 export class ChangePassesRepo extends Context.Service<
   ChangePassesRepo,
   {
+    /**
+     * Mark a pass queued, before its job is enqueued. A pass already queued or running keeps its
+     * row: the job that will run it (or runs it) writes what happens next.
+     */
+    readonly queue: (changeId: ChangeId, kind: PassKind) => Effect.Effect<void>;
     readonly begin: (changeId: ChangeId, kind: PassKind) => Effect.Effect<void>;
     /** Findings: how many the pass drafted; null where the kind has no count (the tour). */
     readonly complete: (
@@ -69,6 +74,28 @@ export const ChangePassesRepoLive: Layer.Layer<
         sessionId: row.sessionId,
         projectId: row.projectId,
       });
+    });
+
+    const queue = Effect.fn("ChangePassesRepo.queue")(function* (
+      changeId: ChangeId,
+      kind: PassKind,
+    ) {
+      yield* db
+        .insert(changePasses)
+        .values({ changeId, kind, status: "queued", detail: null, findings: null })
+        .onConflictDoUpdate({
+          target: [changePasses.changeId, changePasses.kind],
+          set: {
+            status: "queued",
+            detail: null,
+            findings: null,
+            startedAt: new Date(),
+            finishedAt: null,
+          },
+          setWhere: inArray(changePasses.status, ["completed", "failed"]),
+        })
+        .pipe(Effect.orDie);
+      yield* notify(changeId);
     });
 
     const begin = Effect.fn("ChangePassesRepo.begin")(function* (
@@ -130,6 +157,6 @@ export const ChangePassesRepoLive: Layer.Layer<
       return yield* Effect.forEach(rows, decodeRow);
     });
 
-    return { begin, complete, fail, listForChange };
+    return { queue, begin, complete, fail, listForChange };
   }),
 );

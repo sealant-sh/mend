@@ -70,7 +70,13 @@ const failed = (message: string) => new InferenceError({ message, cause: null })
 export class TourComposer extends Context.Service<
   TourComposer,
   {
-    readonly compose: (job: ComposeTourJob) => Effect.Effect<void, InferenceError>;
+    /**
+     * `unchanged` when the change's diff is the one the current tour was composed from: nothing
+     * is spent, the tour stands.
+     */
+    readonly compose: (
+      job: ComposeTourJob,
+    ) => Effect.Effect<"composed" | "unchanged", InferenceError>;
   }
 >()("@mend/inference/TourComposer") {
   static readonly layer = Layer.effect(
@@ -116,6 +122,21 @@ export class TourComposer extends Context.Service<
           );
         }
         const sealantRunId = session.sealantRunId;
+
+        // The tour stamps the diff it was composed from. The same diff again (a settle that
+        // changed nothing, a landing asking for the tour that just finished) is no new work.
+        const diff = yield* reads.diffWorktree(project.id, change.worktreeId, change.baseSha).pipe(
+          Effect.map((read) => read.value),
+          Effect.mapError((error) => failed(`hashing the diff failed: ${String(error)}`)),
+        );
+        const diffDigest = createHash("sha256").update(diff).digest("hex");
+        const current = yield* tours.byChange(job.changeId);
+        if (current !== null && current.diffDigest === diffDigest) {
+          yield* Effect.logInfo("tour: the diff is the one the tour was composed from").pipe(
+            Effect.annotateLogs({ changeId: job.changeId, diffDigest }),
+          );
+          return "unchanged" as const;
+        }
 
         const pass = yield* makeSessionChangePass({
           projectId: project.id,
@@ -177,19 +198,16 @@ export class TourComposer extends Context.Service<
           return yield* failed("the tour came back with no stops — nothing to guide");
         }
 
-        const diff = yield* reads.diffWorktree(project.id, change.worktreeId, change.baseSha).pipe(
-          Effect.map((read) => read.value),
-          Effect.mapError((error) => failed(`hashing the diff failed: ${String(error)}`)),
-        );
-
         yield* tours.upsert({
           changeId: job.changeId,
           sessionId: change.sessionId,
           summary: parsed.summary.slice(0, 700),
           approach: parsed.approach === null ? null : parsed.approach.slice(0, 500),
           stops,
-          diffDigest: createHash("sha256").update(diff).digest("hex"),
+          // The diff read before composing: what this tour was composed from.
+          diffDigest,
         });
+        return "composed" as const;
       });
 
       return { compose };

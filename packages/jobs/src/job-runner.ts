@@ -11,9 +11,13 @@ export interface JobSpec {
   readonly name: string;
   readonly payload: Record<string, unknown>;
   /**
-   * Structural, per ARCHITECTURE.md §5: `open-pr:{change_id}`,
-   * `merge:{change_id}`, `brief:{change_id}:{head_sha}`. A retried enqueue
-   * with the same key never starts a duplicate job.
+   * Structural, per ARCHITECTURE.md §5: `compose-tour:{change_id}`,
+   * `brief:{change_id}:{head_sha}`. While a job with the same name and key is
+   * queued, waiting to retry or running, another enqueue with it is dropped
+   * (`enqueue` answers null). Once that job has completed or failed, the key
+   * starts a new one. The live layer checks before it sends: pg-boss's
+   * `standard` queues ignore `singletonKey` without `singletonSeconds`, and a
+   * queue's policy cannot change once it exists.
    */
   readonly idempotencyKey?: string;
   readonly retryLimit?: number;
@@ -23,6 +27,17 @@ export interface JobSpec {
   readonly retryDelaySeconds?: number;
 }
 
+export interface WorkOptions {
+  /**
+   * How many jobs of this name one process runs at once. pg-boss runs one by default, so a single
+   * long pass (a tour composing for minutes) holds every other change's pass behind it.
+   */
+  readonly localConcurrency?: number;
+}
+
+/** The states in which a job still holds its idempotency key. */
+const LIVE_JOB_STATES: ReadonlySet<string> = new Set(["created", "retry", "active"]);
+
 /**
  * The seam over the side-effect job engine. pg-boss is the live layer today;
  * if it ever disappoints, the engine is a layer swap — nothing upstream knows
@@ -31,7 +46,7 @@ export interface JobSpec {
 export class JobRunner extends Context.Service<
   JobRunner,
   {
-    /** Returns the job id, or null when the idempotency key deduplicated it. */
+    /** Returns the job id, or null when a live job with the same key absorbed it. */
     readonly enqueue: (job: JobSpec) => Effect.Effect<string | null, JobEnqueueError>;
     /**
      * Register the worker for a job name. Handlers arrive fully provided
@@ -41,6 +56,7 @@ export class JobRunner extends Context.Service<
     readonly work: (
       name: string,
       handler: (payload: unknown) => Effect.Effect<void>,
+      options?: WorkOptions,
     ) => Effect.Effect<void>;
   }
 >()("@mend/jobs/JobRunner") {
@@ -95,10 +111,23 @@ export class JobRunner extends Context.Service<
               knownQueues.add(name);
             });
 
+      /** Whether a job with this name and key is still queued, retrying or running. */
+      const keyIsLive = (name: string, key: string) =>
+        Effect.tryPromise({
+          try: () => boss.findJobs(name, { key }),
+          catch: (cause) => new JobEnqueueError({ job: name, cause }),
+        }).pipe(Effect.map((found) => found.some((job) => LIVE_JOB_STATES.has(job.state))));
+
       const enqueue = Effect.fn("JobRunner.enqueue")(function* (job: JobSpec) {
         yield* ensureQueue(job.name).pipe(
           Effect.catchDefect((cause) => new JobEnqueueError({ job: job.name, cause })),
         );
+        if (job.idempotencyKey !== undefined && (yield* keyIsLive(job.name, job.idempotencyKey))) {
+          yield* Effect.logDebug("jobs: enqueue dropped · the key's job is still live").pipe(
+            Effect.annotateLogs({ job: job.name, key: job.idempotencyKey }),
+          );
+          return null;
+        }
         return yield* Effect.tryPromise({
           try: () =>
             boss.send(job.name, job.payload, {
@@ -115,10 +144,11 @@ export class JobRunner extends Context.Service<
       const work = Effect.fn("JobRunner.work")(function* (
         name: string,
         handler: (payload: unknown) => Effect.Effect<void>,
+        options?: WorkOptions,
       ) {
         yield* ensureQueue(name).pipe(Effect.orDie);
         yield* Effect.promise(() =>
-          boss.work(name, async (jobs) => {
+          boss.work(name, { localConcurrency: options?.localConcurrency ?? 1 }, async (jobs) => {
             for (const job of jobs) {
               // The handler's death must still fail the job into pg-boss
               // retry — but never silently. Without these taps the reason
@@ -162,7 +192,10 @@ export class JobRunner extends Context.Service<
     }),
   );
 
-  /** In-memory engine for tests: enqueue runs the registered handler inline. */
+  /**
+   * In-memory engine for tests: enqueue runs the registered handler inline, and a key, once seen,
+   * drops every later enqueue with it (the live layer frees it when its job completes).
+   */
   static readonly testLayer = Layer.sync(JobRunner, () => {
     const handlers = new Map<string, (payload: unknown) => Effect.Effect<void>>();
     const seenKeys = new Set<string>();

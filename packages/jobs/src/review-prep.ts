@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import {
+  ChangePassesRepo,
   MEND_EVENTS_CHANNEL,
   MendEvent,
   ProjectsRepo,
@@ -23,6 +24,7 @@ import type { GitError } from "@mend/store";
 import { Cause, Effect, Layer, Schema, Stream } from "effect";
 
 import { JobRunner } from "./job-runner.ts";
+import { queueReviewPass } from "./review-passes.ts";
 
 /**
  * Review automation (the cascade's execution point): when a session settles for review (its
@@ -33,8 +35,9 @@ import { JobRunner } from "./job-runner.ts";
  *
  * Discipline shared with the session notifier:
  * - transition, not state: only a session seen leaving a live phase queues
- *   the passes; the settle event flapping or repeating cannot re-queue (and
- *   the jobs' idempotency keys dedup anything that races through anyway).
+ *   the passes; the settle event flapping or repeating cannot re-queue, and a
+ *   request that races through anyway meets the pass's key while its job is
+ *   queued or running (`queueReviewPass`).
  * - known baseline only: a session first seen already settled (reconnect,
  *   restart) records silently — prep belongs to the settle moment, and the
  *   review page still offers both passes on demand.
@@ -130,6 +133,7 @@ export const ReviewPrepLive: Layer.Layer<
   | PgClient.PgClient
   | SessionsRepo
   | SessionProcessesRepo
+  | ChangePassesRepo
   | WorktreeChangesRepo
   | ProjectsRepo
   | SettingsRepo
@@ -201,24 +205,11 @@ export const ReviewPrepLive: Layer.Layer<
       const files = read.value;
       if (files.length === 0) return;
 
-      // Key by content, not identity: many sessions settle onto ONE worktree
-      // change now, so a bare change id would dedupe forever after the first
-      // settle — and an unchanged head must not re-spend inference.
-      const head = change.headSha ?? change.baseSha;
-      if (autoTour) {
-        yield* jobs.enqueue({
-          name: "compose-tour",
-          payload: { changeId: change.id },
-          idempotencyKey: `compose-tour:${change.id}:${head}`,
-        });
-      }
-      if (autoSuggest) {
-        yield* jobs.enqueue({
-          name: "suggest-change",
-          payload: { changeId: change.id },
-          idempotencyKey: `suggest-change:${change.id}:${head}`,
-        });
-      }
+      // One key per change and pass (`reviewPassKey`), shared with the review page: a pass
+      // already queued or running for this change absorbs this request (it reads the change as
+      // it is when it runs), and a tour whose diff is unchanged is not composed again.
+      if (autoTour) yield* queueReviewPass("tour", change.id);
+      if (autoSuggest) yield* queueReviewPass("suggest", change.id);
       yield* Effect.annotateLogs(Effect.logInfo("review prep queued"), {
         sessionId,
         changeId: change.id,

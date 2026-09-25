@@ -205,7 +205,8 @@ export const runStarterLayer = Layer.effect(
     /**
      * A completed run grows the change and recompiles the brief: ensure the
      * change row, tie the run's recording to it, enqueue the `brief` job (the
-     * per-run key means one compile per settle, retries deduped). A completed
+     * per-run key: a repeat while that compile is queued or running is
+     * dropped). A completed
      * mending run also starts the verification run whose recording carries the
      * causal proof; the recompile after IT settles cites those legs.
      */

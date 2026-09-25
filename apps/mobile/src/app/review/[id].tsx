@@ -98,6 +98,13 @@ Address each point using your own judgment about how. Check your work with the r
 function PassOutcomeLine({ pass }: { readonly pass: ChangePassDto }) {
   const label = pass.kind === "suggest" ? "suggestions" : "findings";
   const at = new Date(pass.finishedAt ?? pass.startedAt).toLocaleTimeString();
+  if (pass.status === "queued") {
+    return (
+      <MonoText size={11} tone="label">
+        {label} · queued {at}
+      </MonoText>
+    );
+  }
   if (pass.status === "running") {
     return (
       <MonoText size={11} tone="label">
@@ -151,12 +158,17 @@ function DescriptionCard({
 }) {
   if (tour === null && !canCompose) return null;
   const failedDetail = pass?.status === "failed" ? (pass.detail ?? "the pass failed") : null;
+  const queued = pass?.status === "queued";
   return (
     <Panel>
       <PanelRow first>
         {tour === null ? (
           <View style={{ gap: 10 }}>
-            {inFlight ? (
+            {queued ? (
+              <UiText size={13} tone="muted">
+                Description & tour queued
+              </UiText>
+            ) : inFlight ? (
               <UiText size={13} tone="muted">
                 Composing the description and tour…
               </UiText>
@@ -176,11 +188,13 @@ function DescriptionCard({
                 variant="outline"
                 disabled={inFlight}
                 label={
-                  inFlight
-                    ? "Composing…"
-                    : failedDetail !== null
-                      ? "Retry"
-                      : "Compose description & tour"
+                  queued
+                    ? "Queued"
+                    : inFlight
+                      ? "Composing…"
+                      : failedDetail !== null
+                        ? "Retry"
+                        : "Compose description & tour"
                 }
                 onPress={onCompose}
               />
@@ -595,8 +609,11 @@ export default function ReviewScreen() {
   const tourPass = passOf("tour");
   const readPass = passOf("read");
   const suggestPass = passOf("suggest");
+  // Queued and running both hold the button: the pass is waiting for a worker or composing.
   const composing =
-    (queuePass.isPending && queuePass.variables === "tour") || tourPass?.status === "running";
+    (queuePass.isPending && queuePass.variables === "tour") ||
+    tourPass?.status === "running" ||
+    tourPass?.status === "queued";
 
   const additions = stats.reduce((sum, file) => sum + file.additions, 0);
   const deletions = stats.reduce((sum, file) => sum + file.deletions, 0);
@@ -678,10 +695,17 @@ export default function ReviewScreen() {
             <EvButton
               size="sm"
               variant="outline"
-              label={suggestPass?.status === "running" ? "Running…" : "Suggest fixes"}
+              label={
+                suggestPass?.status === "running"
+                  ? "Running…"
+                  : suggestPass?.status === "queued"
+                    ? "Queued"
+                    : "Suggest fixes"
+              }
               disabled={
                 stats.length === 0 ||
                 suggestPass?.status === "running" ||
+                suggestPass?.status === "queued" ||
                 (queuePass.isPending && queuePass.variables === "suggest")
               }
               onPress={() => queuePass.mutate("suggest")}
@@ -689,9 +713,16 @@ export default function ReviewScreen() {
             <EvButton
               size="sm"
               variant="outline"
-              label={readPass?.status === "running" ? "Running…" : "Read this change"}
+              label={
+                readPass?.status === "running"
+                  ? "Running…"
+                  : readPass?.status === "queued"
+                    ? "Queued"
+                    : "Read this change"
+              }
               disabled={
                 readPass?.status === "running" ||
+                readPass?.status === "queued" ||
                 (queuePass.isPending && queuePass.variables === "read")
               }
               onPress={() => queuePass.mutate("read")}

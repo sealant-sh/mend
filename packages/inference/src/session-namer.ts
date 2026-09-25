@@ -6,13 +6,23 @@ import { InferenceError, InferenceProvider } from "./provider.ts";
 
 /**
  * The `name-session` job's payload. Two enqueue shapes share one idempotency
- * key (`name-session:{sessionId}`), so whichever fires first wins:
+ * key (`name-session:{sessionId}`), so while one is queued or running the
+ * other is dropped:
  * - launch-time, no prompt: the worker polls the harness's native transcript
  *   (delayed first attempt + spaced retries until the first prompt exists);
  * - send-time, prompt inline (`firstUserTurn`): a Mend-owned composer saw the
  *   prompt on its way to the session — the worker names immediately, with no
  *   transcript read and no harness-parseability gate.
  */
+/**
+ * What a naming pass does when the transcript has no first prompt: wait for one (the job retries)
+ * while the session can still receive it, and stop once the session settled without one — it
+ * stays unnamed, and the job completes instead of retrying into the dead letter.
+ */
+export const withoutFirstPrompt = (session: {
+  readonly settledAt: Date | null;
+}): "retry" | "leave-unnamed" => (session.settledAt === null ? "retry" : "leave-unnamed");
+
 export class NameSessionJob extends Schema.Class<NameSessionJob>("NameSessionJob")({
   sessionId: SessionId,
   firstUserTurn: Schema.optional(Schema.String),
