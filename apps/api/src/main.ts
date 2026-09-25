@@ -149,6 +149,7 @@ import {
   SessionSocketHostLive,
   SessionRepositoryCapturedLive,
   SessionRepositoryLocalLive,
+  WorkspaceGitHooksLive,
   WorktreeReadsCapturedLive,
   WorktreeReadsColocatedLive,
 } from "@mend/sessions";
@@ -193,6 +194,7 @@ import { apiMiddleware } from "./http-middleware.ts";
 import { TourRequestsLive } from "./landing-tours.ts";
 import { MemberRemovalLive } from "./member-removal.ts";
 import { OwnerLandingLive } from "./owner-landing.ts";
+import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
 import { boundedWebRequest } from "./request-budgets.ts";
 import { MendApiLive } from "./routes/api-live.ts";
@@ -644,6 +646,8 @@ const WorkerLive = Layer.mergeAll(
   SlackReporterLive,
   // Lands a change when a turn completes and automatic landing is on (docs/adr/0007-landing.md).
   AutomaticLandingLive,
+  // Adopts a pull request the agent opened itself, after its push and when its turn ends.
+  PullRequestAdoptionLive,
   // Queues tour + suggestion passes at settle, per the automation cascade.
   ReviewPrepLive,
   // Capture mode (ADR-0002 "Review", "Retention"): the observed pass over posted summaries,
@@ -771,8 +775,12 @@ const MainLive = Layer.unwrap(
       Layer.provide(FollowUpDeliveryLayer),
       // The session engine and store serve both the API handlers and the worker.
       Layer.provide(SessionEngineLayer),
-      // The store kind's adapters (MEND_SESSION_STORE): authority, reads, capture runtime.
-      Layer.provide(Layer.mergeAll(sessionRepository, worktreeReads, captureRuntime)),
+      // The store kind's adapters (MEND_SESSION_STORE): authority, reads, capture runtime. The
+      // workspace git hooks ride here, below the engine that reports into them and the worker
+      // that registers what runs, so both hold the same one.
+      Layer.provide(
+        Layer.mergeAll(sessionRepository, worktreeReads, captureRuntime, WorkspaceGitHooksLive),
+      ),
       Layer.provide(StoreLive),
       Layer.provide(StoreConfig.layer),
       // `pipe` takes at most twenty steps; deployment facts, the source policy (which git

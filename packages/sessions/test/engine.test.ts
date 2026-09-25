@@ -123,6 +123,8 @@ import {
   type SessionSocketApi,
   SessionSocketHost,
   WORKSPACE_MEND_TOML,
+  WorkspaceGitHooks,
+  WorkspaceGitHooksLive,
 } from "@mend/sessions";
 import {
   AgentBridge,
@@ -1889,6 +1891,8 @@ const withEngine = <A, E>(
     readonly userDotfilesLayer?: Layer.Layer<UserDotfilesRepo>;
     /** The owner's git author; `Account <id>` <`<id>@accounts.example`> unless a test says. */
     readonly gitAuthorLayer?: Layer.Layer<UserGitAuthorRepo>;
+    /** Who hears about pushes and ended agents; nobody unless a test says. */
+    readonly gitHooksLayer?: Layer.Layer<WorkspaceGitHooks>;
     readonly dotfilesStoreLayer?: Layer.Layer<DotfilesStore>;
     /** Whose git access a dotfiles clone uses; the operator's host setup unless a test says. */
     readonly dotfilesClonerLayer?: Layer.Layer<DotfilesCloner>;
@@ -2021,6 +2025,7 @@ const withEngine = <A, E>(
         secretCipherStubLayer,
         options.userDotfilesLayer ?? userDotfilesStubLayer,
         options.gitAuthorLayer ?? gitAuthorStubLayer,
+        options.gitHooksLayer ?? WorkspaceGitHooksLive,
         options.dotfilesStoreLayer ?? dotfilesStoreStubLayer,
         options.dotfilesClonerLayer ?? dotfilesClonerLayer(),
         options.skillsLayer ?? skillsStubLayer,
@@ -4797,6 +4802,7 @@ describe("SessionEngine", () => {
           settingsLayer(),
           userDotfilesStubLayer,
           gitAuthorStubLayer,
+          WorkspaceGitHooksLive,
           dotfilesStoreStubLayer,
           dotfilesClonerLayer(),
           skillsStubLayer,
@@ -4816,6 +4822,84 @@ describe("SessionEngine", () => {
     const settled = world.sessions.get(orphan.id);
     expect(settled?.status).toBe("failed");
     expect(settled?.summary).toContain("restarted before the harness started");
+  });
+});
+
+describe("SessionEngine workspace git hooks", () => {
+  it("reports an ended agent while its workspace is still up, before the sweep stops it", async () => {
+    const created: CreateOptions[] = [];
+    const stopped: string[] = [];
+    const heard: Array<{ readonly sessionId: string; readonly stoppedYet: number }> = [];
+    const hooks = Layer.succeed(WorkspaceGitHooks, {
+      branchesPushed: () => Effect.void,
+      agentEnded: (event) =>
+        Effect.sync(
+          () => void heard.push({ sessionId: event.sessionId, stoppedYet: stopped.length }),
+        ),
+      register: () => Effect.void,
+    });
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          yield* engine.stop(session.id);
+          for (let i = 0; i < 300 && stopped.length === 0; i++) {
+            yield* Effect.sleep(Duration.millis(10));
+          }
+          expect(heard).toEqual([{ sessionId: session.id, stoppedYet: 0 }]);
+          expect(stopped).toEqual(["workspace-1"]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created, undefined, stopped), gitHooksLayer: hooks },
+    );
+  });
+});
+
+describe("SessionEngine workspace git hooks: pushes", () => {
+  it("reports a push through the transport that moved a branch, and nothing else", async () => {
+    const created: CreateOptions[] = [];
+    const pushed: Array<string> = [];
+    const hooks = Layer.succeed(WorkspaceGitHooks, {
+      branchesPushed: (event) => Effect.sync(() => void pushed.push(event.worktreeId)),
+      agentEnded: () => Effect.void,
+      register: () => Effect.void,
+    });
+    const zero = "0".repeat(40);
+    const next = "a".repeat(40);
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const api = servedSocketApis.get(session.id);
+          if (api === undefined) return yield* Effect.die("no socket api served");
+          yield* api.gitTransportDone("op-tag", 0, [`${zero} ${next} refs/tags/v1`]);
+          yield* api.gitTransportDone("op-failed", 1, [`${zero} ${next} refs/heads/wip`]);
+          yield* api.gitTransportDone("op-fetch", 0, null);
+          expect(pushed).toEqual([]);
+          yield* api.gitTransportDone("op-push", 0, [`${zero} ${next} refs/heads/chore/bump`]);
+          expect(pushed).toEqual([session.worktreeId]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created), gitHooksLayer: hooks },
+    );
   });
 });
 

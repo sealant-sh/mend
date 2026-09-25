@@ -479,7 +479,13 @@ const remoteWords = (message: string | null): string => {
 
 type LandingSeen = Pick<
   ChangeLanding,
-  "outcome" | "remoteBranch" | "pushedSha" | "pullRequest" | "message"
+  | "outcome"
+  | "remoteBranch"
+  | "pushedSha"
+  | "pullRequest"
+  | "message"
+  | "pullRequestCrossRepository"
+  | "pullRequestHeadOwner"
 >;
 
 /**
@@ -494,6 +500,12 @@ export const landingLine = (
   earlier: ReadonlyArray<LandingSeen>,
   how: "opened" | "updated" | null = null,
 ): string => {
+  if (landing.outcome === "adopted" && landing.pullRequest !== null) {
+    const fork = landing.pullRequestCrossRepository
+      ? ` · from ${landing.pullRequestHeadOwner === null ? "a fork" : `${landing.pullRequestHeadOwner}'s fork`}`
+      : "";
+    return `pull request #${landing.pullRequest.number} · ${landing.pullRequest.state} · opened outside Mend${fork}`;
+  }
   if (landing.outcome === "refused") {
     return `push refused · ${landing.remoteBranch} · ${remoteWords(landing.message)}`;
   }
@@ -542,7 +554,7 @@ export interface LandOffer {
   /** The turn whose change it is: the thread offers it once. */
   readonly turnId: string;
   readonly reason: NotLandedReason;
-  /** A pull request Mend opened is still open, and the landing updates it. */
+  /** A pull request on origin (Mend's, or adopted) is still open, and the landing updates it. */
   readonly updates: boolean;
 }
 
@@ -554,7 +566,9 @@ export interface LandOffer {
 export const landOfferOf = (input: {
   readonly sessionId: string;
   readonly turn: Pick<AgentTurn, "id" | "landing" | "endedAt"> | null;
-  readonly landings: ReadonlyArray<Pick<ChangeLanding, "createdAt" | "pullRequest">>;
+  readonly landings: ReadonlyArray<
+    Pick<ChangeLanding, "createdAt" | "pullRequest" | "pullRequestCrossRepository">
+  >;
 }): LandOffer | null => {
   const { turn } = input;
   if (turn === null || turn.endedAt === null) return null;
@@ -566,7 +580,10 @@ export const landOfferOf = (input: {
     sessionId: input.sessionId,
     turnId: turn.id,
     reason,
-    updates: input.landings.some((landing) => landing.pullRequest?.state === "open"),
+    // A fork's pull request is never updated: Mend pushes to origin only.
+    updates: input.landings.some(
+      (landing) => landing.pullRequest?.state === "open" && !landing.pullRequestCrossRepository,
+    ),
   };
 };
 

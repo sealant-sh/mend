@@ -42,6 +42,8 @@ export const AuditAction = Schema.Literals([
   "change.landed",
   "change.pull_request_refreshed",
   "change.bundle_downloaded",
+  // A pull request opened outside Mend was read with the owner's `gh` and recorded.
+  "change.pull_request_adopted",
 ]);
 export type AuditAction = typeof AuditAction.Type;
 

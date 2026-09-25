@@ -3,6 +3,8 @@ import {
   ChangeToursRepo,
   type LandingResult,
   ProjectsRepo,
+  SessionGitOpsRepo,
+  SessionProcessesRepo,
   SessionsRepo,
   UsersRepo,
   WorktreeChangesRepo,
@@ -10,9 +12,15 @@ import {
 } from "@mend/db";
 import type { ChangeId, ChangeLandingId, SessionId, Sha } from "@mend/domain";
 import {
+  agentPushedBranches,
   type ChangeLanding,
   changeOwnerOf,
   type Checkpoint,
+  forkPullRequestReason,
+  isLiveProcess,
+  nextLandingBranch,
+  openForkPullRequest,
+  pullRequestToUpdate,
   type CheckpointTrigger,
   type LandedPullRequest,
   type LandingTrigger,
@@ -30,7 +38,7 @@ import type {
   PushRefusedError,
   RemoteBranchState,
 } from "@mend/store";
-import { Effect, Layer, Result, Schema } from "effect";
+import { Clock, Effect, Layer, Result, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import {
@@ -252,6 +260,25 @@ export interface LandingReport {
   readonly pullRequest: PullRequestStep;
 }
 
+/** A look for a pull request opened outside Mend ("Pull requests opened outside Mend"). */
+export interface AdoptInput {
+  readonly changeId: ChangeId;
+  /**
+   * A check nobody asked for (after the agent pushed, when its turn ended): `gh` runs only in a
+   * live workspace of the owner's, and nothing is asked when the change has no commit of the
+   * agent's and no push. False is the owner's "Check GitHub", which may use a short-lived
+   * workspace.
+   */
+  readonly background: boolean;
+}
+
+/** What the look came to. Only `adopted` records a row; `observed` refreshed an existing one. */
+export type Adoption =
+  | { readonly _tag: "adopted"; readonly landing: ChangeLanding }
+  | { readonly _tag: "observed"; readonly landing: ChangeLanding }
+  | { readonly _tag: "none" }
+  | { readonly _tag: "skipped"; readonly reason: string };
+
 /** A `mend pull` bundle of a session's change (docs/adr/0007-landing.md, "Pulling a change"). */
 export interface BundleChangeInput {
   readonly sessionId: SessionId;
@@ -288,6 +315,17 @@ export class Landing extends Context.Service<
     readonly refreshPullRequest: (
       landingId: ChangeLandingId,
     ) => Effect.Effect<ChangeLanding, LandingNotStartedError | PullRequestStepError>;
+    /**
+     * Look for a pull request someone opened outside Mend for the change (the agent, through
+     * `gh`, or a person) and record it as the change's pull request, so the next landing updates
+     * it instead of opening a second one. The lookup is `gh` as the change's owner: the change's
+     * branch and every branch the agent pushed, on origin only, then any pull request that holds
+     * the agent's head commit, a fork's included. A pull request already recorded has its state
+     * refreshed instead.
+     */
+    readonly adoptPullRequest: (
+      input: AdoptInput,
+    ) => Effect.Effect<Adoption, LandingNotStartedError | PullRequestStepError>;
   }
 >()("@mend/landing/Landing") {}
 
@@ -325,6 +363,9 @@ export const linksOf = (
 const notStarted = (reason: LandingNotStartedError["reason"], message: string) =>
   new LandingNotStartedError({ reason, message });
 
+/** An adoption that did not look, and why. */
+const skipped = (reason: string): Adoption => ({ _tag: "skipped", reason });
+
 /** Where the pull request step runs `gh`: the session's workspace only when it is the owner's. */
 const workspaceTarget = (session: Session, owner: string) => ({
   ownerUserId: owner,
@@ -347,6 +388,8 @@ export const LandingLive: Layer.Layer<
   | ChangeLandingsRepo
   | ChangeToursRepo
   | UsersRepo
+  | SessionGitOpsRepo
+  | SessionProcessesRepo
   | LandingGit
   | PullRequests
   | TourRequests
@@ -363,6 +406,21 @@ export const LandingLive: Layer.Layer<
     const git = yield* LandingGit;
     const pullRequests = yield* PullRequests;
     const tourRequests = yield* TourRequests;
+    const gitOps = yield* SessionGitOpsRepo;
+    const processes = yield* SessionProcessesRepo;
+
+    /**
+     * The branches the agent pushed itself through the workspace's transport, newest first,
+     * across every session of the worktree (`session_git_ops`).
+     */
+    const agentBranchesOf = (members: ReadonlyArray<Session>) =>
+      Effect.gen(function* () {
+        const ops = (yield* Effect.forEach(members, (member) => gitOps.listForSession(member.id)))
+          .flat()
+          .filter((op) => op.kind === "push" && op.exitCode === 0)
+          .toSorted((left, right) => right.startedAt.getTime() - left.startedAt.getTime());
+        return agentPushedBranches(ops.flatMap((op) => op.refUpdates ?? []));
+      });
 
     const scopeOf = (sessionId: SessionId) =>
       Effect.gen(function* () {
@@ -432,11 +490,19 @@ export const LandingLive: Layer.Layer<
         return yield* notStarted("no-change", "landing not started · the session has no change");
       }
       const history = yield* landings.listForChange(change.id);
-      // L: what the change's last landing pushed. A landing that pushed nothing leaves neither
-      // a commit to build on nor a branch name to reuse.
+      // L: what the change's last landing pushed. A landing that pushed nothing (an adoption
+      // included) leaves no commit to build on.
       const lastPush = history.find((landing) => landing.pushedSha !== null);
-      const remoteBranch = input.remoteBranch ?? lastPush?.remoteBranch ?? worktree.branch;
       const base = pullRequestBase(worktree.baseRef, project.defaultBranch);
+      // The branch: the owner's, the last landing's, the agent's own push, an adopted pull
+      // request's head on origin, else the worktree's.
+      const remoteBranch = nextLandingBranch({
+        requested: input.remoteBranch,
+        landings: history,
+        agentBranches: yield* agentBranchesOf(yield* sessions.listForWorktree(worktree.id)),
+        worktreeBranch: worktree.branch,
+        protectedBranches: [project.defaultBranch, base],
+      });
       if (remoteBranch === project.defaultBranch || remoteBranch === base) {
         const which =
           remoteBranch === project.defaultBranch
@@ -547,6 +613,12 @@ export const LandingLive: Layer.Layer<
       if (!availability.available) {
         return yield* pushedOnly({ _tag: "unavailable", reason: availability.reason });
       }
+      // The change is under review in a pull request from a fork: Mend pushes to origin only,
+      // and a second pull request from origin is not what anyone asked for.
+      const fork = openForkPullRequest(history);
+      if (fork !== null) {
+        return yield* pushedOnly({ _tag: "unavailable", reason: forkPullRequestReason(fork) });
+      }
       const files = yield* git
         .changedFiles(scope, { base: worktree.baseSha, head: pushedSha })
         .pipe(
@@ -558,7 +630,14 @@ export const LandingLive: Layer.Layer<
             ),
           ),
         );
-      const previous = history.find((landing) => landing.pullRequest !== null)?.pullRequest ?? null;
+      // The recorded pull request on origin, adopted or Mend's own; a closed one leads to a
+      // lookup by branch, and a fork's is never updated.
+      const previous =
+        pullRequestToUpdate(history) ??
+        history.find(
+          (landing) => landing.pullRequest !== null && !landing.pullRequestCrossRepository,
+        )?.pullRequest ??
+        null;
       const published = yield* pullRequests
         .publish({
           target: workspaceTarget(session, owner),
@@ -682,6 +761,91 @@ export const LandingLive: Layer.Layer<
       });
     });
 
-    return { land, bundle, refreshPullRequest };
+    const adoptPullRequest = Effect.fn("Landing.adoptPullRequest")(function* (input: AdoptInput) {
+      const change = yield* changes
+        .byId(input.changeId)
+        .pipe(Effect.mapError(() => notStarted("not-found", `no change ${input.changeId}`)));
+      const place = yield* Effect.all({
+        project: projects.byId(change.projectId),
+        worktree: worktrees.byId(change.worktreeId),
+      }).pipe(
+        Effect.mapError((error) =>
+          notStarted("not-found", `pull request not looked for · ${error._tag}`),
+        ),
+      );
+      const { project, worktree } = place;
+      const availability = pullRequestAvailability(project.originUrl);
+      if (!availability.available) return skipped(availability.reason);
+      const members = yield* sessions.listForWorktree(worktree.id);
+      const owner = changeOwnerOf(members);
+      if (owner === null) return skipped("the change has no owner");
+      const agentBranches = yield* agentBranchesOf(members);
+      const commit =
+        change.headSha !== null && change.headSha !== worktree.baseSha ? change.headSha : null;
+      // Nothing the agent committed or pushed: no pull request of its can exist.
+      if (input.background && commit === null && agentBranches.length === 0) {
+        return { _tag: "none" } satisfies Adoption;
+      }
+      // `gh` speaks as the owner, in a workspace of the owner's own sessions: the newest live
+      // one, else (the owner's button) a short-lived one.
+      const ownerSessions = members
+        .filter((member) => member.ownerUserId === owner)
+        .toSorted((left, right) => right.createdAt.getTime() - left.createdAt.getTime());
+      const liveIds = new Set<string>(
+        (yield* processes.listForSessions(ownerSessions.map((member) => member.id)))
+          .filter(isLiveProcess)
+          .map((process) => process.sessionId),
+      );
+      const session = ownerSessions.find((member) => liveIds.has(member.id)) ?? null;
+      if (session === null && input.background) {
+        return skipped("no live workspace of the owner's to ask gh in");
+      }
+      const base = pullRequestBase(worktree.baseRef, project.defaultBranch);
+      const branches = [...new Set([worktree.branch, ...agentBranches])].filter(
+        (branch) => branch !== project.defaultBranch && branch !== base,
+      );
+      const found = yield* pullRequests.find({
+        target: {
+          ownerUserId: owner,
+          sessionId: session?.id ?? null,
+          liveOnly: input.background,
+        },
+        repository: availability.repository,
+        branches,
+        commit,
+      });
+      if (found === null) return { _tag: "none" } satisfies Adoption;
+      const pullRequest: LandedPullRequest = {
+        number: found.number,
+        url: found.url,
+        state: found.state,
+        observedAt: new Date(yield* Clock.currentTimeMillis),
+      };
+      const history = yield* landings.listForChange(change.id);
+      const recorded = history.find((landing) => landing.pullRequest?.number === found.number);
+      if (recorded !== undefined) {
+        const updated = yield* landings.observePullRequest(recorded.id, pullRequest);
+        return { _tag: "observed", landing: updated ?? recorded } satisfies Adoption;
+      }
+      const landing = yield* landings.record({
+        changeId: change.id,
+        sessionId: session?.id ?? change.sessionId,
+        projectId: project.id,
+        checkpoint: null,
+        commitSha: null,
+        remoteBranch: found.headRefName === "" ? worktree.branch : found.headRefName,
+        trigger: "adopted",
+        userId: owner,
+        result: {
+          outcome: "adopted",
+          pullRequest,
+          crossRepository: found.crossRepository,
+          headOwner: found.headOwner,
+        },
+      });
+      return { _tag: "adopted", landing } satisfies Adoption;
+    });
+
+    return { land, bundle, refreshPullRequest, adoptPullRequest };
   }),
 );

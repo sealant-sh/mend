@@ -4,15 +4,19 @@ import { useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
 import {
+  checkGitHub,
   landSession,
   refreshLanding,
   sessionLandings,
   type ChangeLandingsDto,
   type LandingFactDto,
   type LandingReportDto,
+  type PullRequestCheckDto,
 } from "#/lib/api";
 import {
+  checkLine,
   factLine,
+  forkNote,
   factsWithProbe,
   factTone,
   heldBack,
@@ -86,7 +90,7 @@ export interface LandDraft {
   readonly body: string;
 }
 
-export type LandPending = "land" | "probe" | "refresh" | null;
+export type LandPending = "land" | "probe" | "refresh" | "check" | null;
 
 export interface LandPanelViewProps {
   /** The change's landing record: its landings newest first, and the facts observed of them. */
@@ -100,12 +104,15 @@ export interface LandPanelViewProps {
   readonly draft: LandDraft;
   readonly pending: LandPending;
   readonly report: LandingReportDto | null;
+  /** What the owner's last "Check GitHub" found. */
+  readonly check: PullRequestCheckDto | null;
   readonly error: string | null;
   readonly now: Date;
   readonly onDraft: (draft: LandDraft) => void;
   readonly onLand: () => void;
   readonly onProbe: () => void;
   readonly onRefresh: () => void;
+  readonly onCheck: () => void;
   readonly onOpenPullRequest: (url: string) => void;
 }
 
@@ -128,12 +135,14 @@ export function LandPanelView(props: LandPanelViewProps) {
   const landings = view.landings;
   const facts = factsWithProbe(view.facts, props.probed);
   const updates = pullRequestToUpdate(landings);
-  const branch = nextRemoteBranch(landings, props.worktreeBranch);
+  const branch = nextRemoteBranch(view, props.worktreeBranch);
   const recorded = latestPullRequest(landings);
   const remote = props.probed === null ? null : remoteLine(props.probed, now);
+  const fork = forkNote(landings);
   const label = landButtonLabel({
     pullRequestAvailable: view.pullRequest.available,
     updates: updates !== null,
+    fork: fork !== null,
   });
 
   return (
@@ -159,8 +168,23 @@ export function LandPanelView(props: LandPanelViewProps) {
         {!view.pullRequest.available && view.pullRequest.reason !== null && (
           <p className="mt-1 font-mono text-[11.5px] text-faint">{view.pullRequest.reason}</p>
         )}
+        {fork !== null && <p className="mt-1 font-mono text-[11.5px] text-faint">{fork}</p>}
         {remote !== null && <p className="mt-1 font-mono text-[11px] text-faint">{remote}</p>}
+        {props.check !== null && (
+          <p role="status" className="mt-1 font-mono text-[11.5px] text-ink-2">
+            {checkLine(props.check)}
+          </p>
+        )}
         <div className="mt-2 flex flex-wrap items-center gap-x-4 gap-y-1">
+          {view.land && view.pullRequest.available && view.changeId !== null && (
+            <TextAction
+              disabled={pending !== null}
+              onClick={props.onCheck}
+              title="Ask GitHub, as you, for a pull request someone opened outside Mend for this change's branches or the agent's commit"
+            >
+              {pending === "check" ? "Checking GitHub…" : "Check GitHub"}
+            </TextAction>
+          )}
           {landings.length > 0 && (
             <TextAction
               disabled={pending !== null}
@@ -311,6 +335,7 @@ export function LandPanel({
   const [pending, setPending] = useState<LandPending>(null);
   const [probed, setProbed] = useState<ChangeLandingsDto | null>(null);
   const [report, setReport] = useState<LandingReportDto | null>(null);
+  const [check, setCheck] = useState<PullRequestCheckDto | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   if (view.isError) {
@@ -350,6 +375,7 @@ export function LandPanel({
       draft={draft}
       pending={pending}
       report={report}
+      check={check}
       error={error}
       now={now}
       onDraft={setDraft}
@@ -376,6 +402,14 @@ export function LandPanel({
         setPending("refresh");
         setError(null);
         void settle(refreshLanding(recorded.landingId));
+      }}
+      onCheck={() => {
+        const changeId = data.changeId;
+        if (changeId === null) return;
+        setPending("check");
+        setError(null);
+        setCheck(null);
+        void settle(checkGitHub(changeId).then(setCheck));
       }}
       onOpenPullRequest={(url) => void window.mend.shell.openExternal(url)}
     />

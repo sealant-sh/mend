@@ -17,6 +17,7 @@ import {
   type LandedPullRequestDto,
   landedLines,
   type LandingReportDto,
+  checkLine,
   landingReportLine,
   landingSucceeded,
   parseLandArgs,
@@ -53,6 +54,7 @@ describe("mend land's arguments", () => {
     ).toEqual({
       args: {
         session: "3f2a",
+        check: false,
         branch: "wip/login",
         pullRequest: false,
         title: "Fix the login",
@@ -60,8 +62,42 @@ describe("mend land's arguments", () => {
       },
     });
     expect(parseLandArgs(["fix-login", "--project", "api"])).toEqual({
-      args: { session: "fix-login", branch: null, pullRequest: true, title: null, project: "api" },
+      args: {
+        session: "fix-login",
+        check: false,
+        branch: null,
+        pullRequest: true,
+        title: null,
+        project: "api",
+      },
     });
+  });
+
+  it("takes --check alone: it pushes nothing", () => {
+    expect(parseLandArgs(["fix-login", "--check"])).toMatchObject({
+      args: { session: "fix-login", check: true },
+    });
+    expect(parseLandArgs(["fix-login", "--check", "--no-pr"])).toEqual({
+      error: "--check pushes nothing; it takes no --branch, --title or --no-pr",
+    });
+  });
+
+  it("says what --check found", () => {
+    const adopted = landing({
+      outcome: "adopted",
+      pushedSha: null,
+      checkpointSha: null,
+      pullRequest: { ...pullRequest, number: 367, url: "https://github.com/acme/api/pull/367" },
+    });
+    expect(checkLine({ outcome: "adopted", reason: null, landing: adopted })).toBe(
+      "pull request #367 recorded · opened outside Mend · https://github.com/acme/api/pull/367",
+    );
+    expect(checkLine({ outcome: "none", reason: null, landing: null })).toBe(
+      "no pull request on GitHub for the change's branches or the agent's commit",
+    );
+    expect(
+      checkLine({ outcome: "skipped", reason: "the change has no owner", landing: null }),
+    ).toBe("GitHub not checked · the change has no owner");
   });
 
   it("refuses a missing session, a second one, an unknown flag and a flag with no value", () => {
@@ -180,6 +216,8 @@ describe("what mend land prints", () => {
           number: 412,
           state: "open",
           observedAt: new Date(NOW.getTime() - 120_000),
+          outside: false,
+          fork: null,
         },
       ],
       NOW,

@@ -3,6 +3,8 @@ import {
   ChangeToursRepo,
   type NewChangeLanding,
   ProjectsRepo,
+  SessionGitOpsRepo,
+  SessionProcessesRepo,
   SessionsRepo,
   UsersRepo,
   UserFacts,
@@ -15,7 +17,10 @@ import {
   CheckpointId,
   OrganizationId,
   ProjectId,
+  SealantWorkspaceId,
+  SessionGitOpId,
   SessionId,
+  SessionProcessId,
   Sha,
   WorktreeId,
 } from "@mend/domain";
@@ -27,6 +32,7 @@ import {
   type LandedPullRequest,
   Project,
   Session,
+  SessionProcess,
   Worktree,
 } from "@mend/domain/workbench";
 import { Effect, Layer } from "effect";
@@ -61,6 +67,12 @@ export interface WorldOptions {
     readonly ownerUserId: string | null;
     readonly createdAt: Date;
   }>;
+  /** The worktree's head as the change last saw it; null (the default) never refreshed. */
+  readonly headSha?: Sha | null;
+  /** `ref_updates` of the pushes the agent made itself through the transport. */
+  readonly agentPushes?: ReadonlyArray<ReadonlyArray<string>>;
+  /** Whether the session holds a live process: a workspace `gh` can run in. */
+  readonly live?: boolean;
 }
 
 export const makeWorld = (options: WorldOptions = {}) => {
@@ -159,7 +171,7 @@ export const makeWorld = (options: WorldOptions = {}) => {
     sessionId,
     branch,
     baseSha,
-    headSha: null,
+    headSha: options.headSha ?? null,
     createdAt: NOW,
     updatedAt: NOW,
   });
@@ -198,9 +210,15 @@ export const makeWorld = (options: WorldOptions = {}) => {
       checkpointSha: landing.checkpoint?.sha ?? null,
       commitSha: landing.commitSha,
       remoteBranch: landing.remoteBranch,
-      pushedSha: result.outcome === "refused" ? null : result.pushedSha,
+      pushedSha:
+        result.outcome === "refused" || result.outcome === "adopted" ? null : result.pushedSha,
       trigger: landing.trigger,
-      pullRequest: result.outcome === "pull-request" ? result.pullRequest : null,
+      pullRequest:
+        result.outcome === "pull-request" || result.outcome === "adopted"
+          ? result.pullRequest
+          : null,
+      pullRequestCrossRepository: result.outcome === "adopted" ? result.crossRepository : false,
+      pullRequestHeadOwner: result.outcome === "adopted" ? result.headOwner : null,
       outcome: result.outcome,
       message: result.outcome === "refused" || result.outcome === "failed" ? result.message : null,
       userId: landing.userId,
@@ -222,6 +240,60 @@ export const makeWorld = (options: WorldOptions = {}) => {
     }),
     Layer.mock(ChangeToursRepo, { byChange: () => Effect.succeed(tour) }),
     Layer.mock(UsersRepo, { byId: (id) => Effect.succeed(users.get(id) ?? null) }),
+    Layer.mock(SessionGitOpsRepo, {
+      listForSession: (id) =>
+        Effect.succeed(
+          id !== sessionId
+            ? []
+            : (options.agentPushes ?? []).map((refUpdates, index) => ({
+                id: SessionGitOpId.make(`op-${index}`),
+                sessionId,
+                projectId,
+                host: "github.com",
+                port: null,
+                kind: "push" as const,
+                command: "git-receive-pack 'acme/api.git'",
+                authMode: "mend-key" as const,
+                refUpdates: [...refUpdates],
+                exitCode: 0,
+                startedAt: new Date(NOW.getTime() - index * 1000),
+                finishedAt: new Date(NOW.getTime() - index * 1000),
+              })),
+        ),
+    }),
+    Layer.mock(SessionProcessesRepo, {
+      listForSessions: (ids) =>
+        Effect.succeed(
+          options.live === true && ids.includes(sessionId)
+            ? [
+                new SessionProcess({
+                  id: SessionProcessId.make("agent-1"),
+                  sessionId,
+                  sealantWorkspaceId: SealantWorkspaceId.make("ws-1"),
+                  sealantSessionId: "pty-1",
+                  sealantRunId: null,
+                  launchCorrelationId: null,
+                  serviceId: null,
+                  attemptOrdinal: null,
+                  kind: "agent-pty",
+                  harness: "claude",
+                  providerSessionId: null,
+                  protocolOptions: null,
+                  label: "claude",
+                  argv: ["claude"],
+                  status: "running",
+                  exitCode: null,
+                  workspacePort: null,
+                  protocol: "tcp",
+                  hostPort: null,
+                  createdAt: NOW,
+                  exitedAt: null,
+                  updatedAt: NOW,
+                }),
+              ]
+            : [],
+        ),
+    }),
     Layer.succeed(ChangeLandingsRepo, {
       record: (landing) =>
         Effect.sync(() => {

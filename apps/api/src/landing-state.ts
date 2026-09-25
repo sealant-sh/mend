@@ -8,6 +8,7 @@ import {
 } from "@mend/db";
 import type { OrganizationId, WorktreeId } from "@mend/domain";
 import {
+  agentPushedBranches,
   type AgentTurn,
   type Change,
   type ChangeLanding,
@@ -15,10 +16,11 @@ import {
   type LandingFact,
   landingFacts,
   latestDecidedTurn as latestDecidedTurnOf,
+  nextLandingBranch,
   type Project,
   type Worktree,
 } from "@mend/domain/workbench";
-import { LandingGit, LandingStepError } from "@mend/landing";
+import { LandingGit, LandingStepError, pullRequestBase } from "@mend/landing";
 import { WorktreeReads } from "@mend/sessions";
 import {
   AgentBridge,
@@ -104,6 +106,28 @@ export const auditLanding = (
     });
   });
 
+/**
+ * Audit an adopted pull request: the owner's `gh` read it, and it is now the change's (docs/adr/
+ * 0007-landing.md, "Pull requests opened outside Mend"). The actor is the owner it was read as.
+ */
+export const auditAdoption = (landing: ChangeLanding, organizationId: OrganizationId) =>
+  Effect.gen(function* () {
+    yield* (yield* AuditEventsRepo).record({
+      organizationId,
+      actorUserId: landing.userId,
+      action: "change.pull_request_adopted",
+      subjectType: "change",
+      subjectId: landing.changeId,
+      data: {
+        landingId: landing.id,
+        pullRequest: landing.pullRequest?.number ?? null,
+        state: landing.pullRequest?.state ?? null,
+        branch: landing.remoteBranch,
+        fork: landing.pullRequestCrossRepository ? (landing.pullRequestHeadOwner ?? "") : null,
+      },
+    });
+  });
+
 /** The latest turn automatic landing decided about, among a worktree's sessions. */
 export const latestDecidedTurn = (turns: ReadonlyArray<AgentTurn>): AgentTurn | null =>
   latestDecidedTurnOf(turns);
@@ -119,6 +143,8 @@ export interface LandingObservation {
   readonly remote: ObservedRemote | null;
   /** Why the fetch could not run, in git's or the remote's words. */
   readonly remoteFailure: string | null;
+  /** The branch the next landing pushes when the owner names none. */
+  readonly nextBranch: string;
 }
 
 /** The ref commands of every push the worktree's sessions made through the transport. */
@@ -173,8 +199,25 @@ export const observeLandings = Effect.fn("observeLandings")(function* (input: {
     }
   }
 
+  // Newest push first, as the branch choice reads them; a push that failed moved nothing.
+  const pushes = ops
+    .flat()
+    .filter((op) => op.kind === "push" && op.exitCode === 0)
+    .toSorted((left, right) => right.startedAt.getTime() - left.startedAt.getTime());
+  const nextBranch = nextLandingBranch({
+    requested: null,
+    landings,
+    agentBranches: agentPushedBranches(pushes.flatMap((op) => op.refUpdates ?? [])),
+    worktreeBranch: worktree.branch,
+    protectedBranches: [
+      project.defaultBranch,
+      pullRequestBase(worktree.baseRef, project.defaultBranch),
+    ],
+  });
+
   return {
     landings,
+    nextBranch,
     facts: landingFacts({
       landings,
       originCommitsUnseen: remote?.unseen ?? null,

@@ -732,6 +732,8 @@ describe("Mend Drizzle schema", () => {
       "pull_request_url",
       "pull_request_state",
       "pr_observed_at",
+      "pr_cross_repository",
+      "pr_head_owner",
       "outcome",
       "message",
       "user_id",

@@ -140,6 +140,7 @@ export type ChangeLandingsDto = Outputs["landings"]["forChange"];
 export type ChangeLandingDto = ChangeLandingsDto["landings"][number];
 export type LandingFactDto = ChangeLandingsDto["facts"][number];
 export type LandingReportDto = Outputs["landings"]["land"];
+export type PullRequestCheckDto = Outputs["landings"]["checkGitHub"];
 export type PullRequestStepDto = LandingReportDto["pullRequest"];
 
 export type DeviceDto = Outputs["devices"]["list"][number];
@@ -483,6 +484,9 @@ export const probeLandings = (changeId: string) =>
 /** Ask `gh` for the pull request's state now; Mend does not poll GitHub. */
 export const refreshLanding = (landingId: ChangeLandingDto["id"]) =>
   orLogin(trpcClient.landings.refresh.mutate({ id: landingId }));
+/** Ask `gh`, as the change's owner, for a pull request opened outside Mend, and record it. */
+export const checkGitHub = (changeId: string) =>
+  orLogin(trpcClient.landings.checkGitHub.mutate({ id: changeId }));
 
 // ─── Settings · dotfiles · devices ──────────────────────────────────────────
 

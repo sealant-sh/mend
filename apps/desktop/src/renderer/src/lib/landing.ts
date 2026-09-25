@@ -5,6 +5,7 @@ import type {
   ChangeLandingsDto,
   LandingFactDto,
   LandingReportDto,
+  PullRequestCheckDto,
 } from "#/lib/api";
 
 /**
@@ -35,8 +36,15 @@ export const factLine = (fact: LandingFactDto, now: Date): string => {
   switch (fact._tag) {
     case "pushed":
       return `pushed · ${fact.branch} · ${shortSha(fact.sha)} · observed`;
-    case "pull-request":
-      return `pull request #${fact.number} · ${fact.state} · observed ${observedAgo(new Date(fact.observedAt), now)}`;
+    case "pull-request": {
+      // An older server leaves `outside` and `fork` out.
+      const fork = fact.fork ?? null;
+      return (
+        `pull request #${fact.number} · ${fact.state} · observed ${observedAgo(new Date(fact.observedAt), now)}` +
+        (fact.outside === true ? " · opened outside Mend" : "") +
+        (fork === null ? "" : ` · from ${fork === "" ? "a fork" : `${fork}'s fork`}`)
+      );
+    }
     case "origin-moved":
       return `origin has moved · ${fact.branch} has ${plural(fact.commits, "commit", "commits")} Mend has not seen`;
     case "changed-since-landing":
@@ -112,11 +120,22 @@ export const factsWithProbe = (
   return [...facts.filter((fact) => fact._tag !== "origin-moved"), ...moved];
 };
 
-/** The branch the next landing pushes: the one the change landed on before, else its own. */
+/**
+ * The branch the next landing pushes, as the server chose it (`nextBranch`: the last landing's,
+ * the agent's own push, an adopted pull request's head on origin, else the worktree's). An older
+ * server does not say: the branch the change pushed to before, else the worktree's.
+ */
 export const nextRemoteBranch = (
-  landings: ReadonlyArray<ChangeLandingDto>,
+  view: Pick<ChangeLandingsDto, "landings"> & { readonly nextBranch?: string | null },
   worktreeBranch: string,
-): string => landings[0]?.remoteBranch ?? worktreeBranch;
+): string =>
+  view.nextBranch ??
+  view.landings.find((landing) => landing.pushedSha !== null)?.remoteBranch ??
+  worktreeBranch;
+
+/** The recorded pull request's head is in a fork (older servers do not say: origin's own). */
+const fromFork = (landing: ChangeLandingDto): boolean =>
+  landing.pullRequestCrossRepository === true;
 
 /** The pull request a landing recorded most recently, whatever GitHub last said of it. */
 export const latestPullRequest = (
@@ -131,26 +150,61 @@ export const latestPullRequest = (
 export type PullRequestDto = NonNullable<ChangeLandingDto["pullRequest"]>;
 
 /**
- * The pull request the next landing updates: the recorded one while GitHub last said it was
- * open. A closed or merged one leads to a new pull request.
+ * The pull request the next landing updates: the recorded one, adopted or Mend's own, while GitHub
+ * last said it was open and its head is on origin. A closed or merged one leads to a new pull
+ * request; a fork's is never updated.
  */
 export const pullRequestToUpdate = (
   landings: ReadonlyArray<ChangeLandingDto>,
 ): PullRequestDto | null => {
-  const recorded = latestPullRequest(landings)?.pullRequest ?? null;
-  return recorded !== null && recorded.state === "open" ? recorded : null;
+  const landing = landings.find((candidate) => candidate.pullRequest !== null);
+  if (landing === undefined || landing.pullRequest === null) return null;
+  return landing.pullRequest.state === "open" && !fromFork(landing) ? landing.pullRequest : null;
+};
+
+/**
+ * Why the next landing opens no pull request although origin is on GitHub: the change is under
+ * review in a pull request from a fork, and Mend pushes to origin only. Null otherwise.
+ */
+export const forkNote = (landings: ReadonlyArray<ChangeLandingDto>): string | null => {
+  const landing = landings.find((candidate) => candidate.pullRequest !== null);
+  if (landing === undefined || landing.pullRequest === null) return null;
+  if (landing.pullRequest.state !== "open" || !fromFork(landing)) return null;
+  const owner = landing.pullRequestHeadOwner ?? null;
+  return `pull request #${landing.pullRequest.number} is from ${owner === null ? "a fork" : `${owner}'s fork`} · Mend pushes to origin only`;
 };
 
 /** The one button's words: what it will do, never what the change is. */
 export const landButtonLabel = (view: {
   readonly pullRequestAvailable: boolean;
   readonly updates: boolean;
+  /** An open pull request from a fork: the landing pushes to origin and opens none. */
+  readonly fork?: boolean;
 }): string =>
-  !view.pullRequestAvailable
+  !view.pullRequestAvailable || view.fork === true
     ? "Push to origin"
     : view.updates
       ? "Push and update pull request"
       : "Push and open pull request";
+
+/** What "Check GitHub" found, as its status line. */
+export const checkLine = (check: PullRequestCheckDto): string => {
+  const pullRequest = check.landing?.pullRequest ?? null;
+  switch (check.outcome) {
+    case "adopted":
+      return pullRequest === null
+        ? "pull request recorded · opened outside Mend"
+        : `pull request #${pullRequest.number} recorded · opened outside Mend`;
+    case "observed":
+      return pullRequest === null
+        ? "pull request already recorded · state read again"
+        : `pull request #${pullRequest.number} already recorded · ${pullRequest.state} · observed`;
+    case "none":
+      return "no pull request on GitHub for the change's branches or the agent's commit";
+    case "skipped":
+      return `GitHub not checked · ${check.reason ?? "no reason given"}`;
+  }
+};
 
 /**
  * What the land request carries: an empty field sends null, so Mend keeps what GitHub has. The
@@ -196,6 +250,9 @@ export const landingReportLine = (report: LandingReportDto): string => {
  * request (`pushed · mend/fix-login · 3f2a1c0 · pull request #412 · open · observed`).
  */
 export const landingRecordLine = (landing: ChangeLandingDto): string => {
+  if (landing.outcome === "adopted" && landing.pullRequest !== null) {
+    return `pull request #${landing.pullRequest.number} · ${landing.pullRequest.state} · opened outside Mend · ${landing.remoteBranch}`;
+  }
   if (landing.outcome === "refused") {
     return `push refused · ${landing.remoteBranch} · ${landing.message ?? "no reason given"}`;
   }

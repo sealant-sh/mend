@@ -132,6 +132,8 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       const tip = text(event.data["tip"]);
       return `downloaded change ${event.subjectId} as a bundle · ${text(event.data["branch"]) ?? "?"}${tip === null ? "" : ` · ${tip.slice(0, 7)}`}`;
     }
+    case "change.pull_request_adopted":
+      return `recorded pull request #${String(event.data["pullRequest"])} of change ${event.subjectId}, opened outside Mend · ${text(event.data["state"]) ?? "?"}`;
   }
 };
 

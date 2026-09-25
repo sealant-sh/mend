@@ -34,6 +34,10 @@ interface GhPullRequest {
   readonly state: "OPEN" | "CLOSED" | "MERGED";
   readonly title: string;
   readonly body: string;
+  readonly headRefName: string;
+  readonly headRefOid: string;
+  readonly isCrossRepository: boolean;
+  readonly headRepositoryOwner: { readonly login: string } | null;
 }
 
 const pr = (number: number, overrides: Partial<GhPullRequest> = {}): GhPullRequest => ({
@@ -42,8 +46,16 @@ const pr = (number: number, overrides: Partial<GhPullRequest> = {}): GhPullReque
   state: "OPEN",
   title: "login loop",
   body: "",
+  headRefName: "mend/fix-login",
+  headRefOid: "a".repeat(40),
+  isCrossRepository: false,
+  headRepositoryOwner: { login: "acme" },
   ...overrides,
 });
+
+/** The same branch name in a fork. */
+const fork = (number: number, overrides: Partial<GhPullRequest> = {}): GhPullRequest =>
+  pr(number, { isCrossRepository: true, headRepositoryOwner: { login: "anna" }, ...overrides });
 
 /** The value of `--name=value` in a gh argv. */
 const flag = (argv: ReadonlyArray<string>, name: string) =>
@@ -86,8 +98,14 @@ const fakeGitHub = (options: {
       }
       case "list": {
         const head = flag(argv, "head");
-        const open = [...pulls.values()].filter((pull) => pull.state === "OPEN");
-        return ok(JSON.stringify(head === "mend/fix-login" ? open.slice(0, 1) : []));
+        const search = flag(argv, "search");
+        const state = flag(argv, "state");
+        const listed = [...pulls.values()]
+          .filter((pull) => head === null || pull.headRefName === head)
+          .filter((pull) => search === null || pull.headRefOid === search)
+          .filter((pull) => state !== "open" || pull.state === "OPEN")
+          .toSorted((left, right) => right.number - left.number);
+        return ok(JSON.stringify(listed));
       }
       case "create": {
         if (options.createFails !== undefined) {
@@ -253,6 +271,71 @@ describe("PullRequests.publish", () => {
       expect(published.workspace).toBe("session");
     }).pipe(Effect.provide(github.layer));
   });
+});
+
+describe("PullRequests: pull requests from forks", () => {
+  it.effect("never updates a fork's pull request from a branch of the same name", () => {
+    const github = fakeGitHub({ pullRequests: [fork(367)] });
+    return Effect.gen(function* () {
+      const published = yield* (yield* PullRequests).publish(publishInput({ previous: 367 }));
+      expect(published.action).toBe("opened");
+      expect(published.pullRequest.number).not.toBe(367);
+      expect(github.pulls.get(367)?.body).toBe("");
+    }).pipe(Effect.provide(github.layer));
+  });
+});
+
+describe("PullRequests.find", () => {
+  const findWith = (
+    pullRequests: ReadonlyArray<GhPullRequest>,
+    input: { readonly branches: ReadonlyArray<string>; readonly commit: string | null },
+  ) => {
+    const github = fakeGitHub({ pullRequests, kind: "session" });
+    return Effect.gen(function* () {
+      return yield* (yield* PullRequests).find({
+        target: { ownerUserId: "ada", sessionId: null, liveOnly: true },
+        repository,
+        ...input,
+      });
+    }).pipe(Effect.provide(github.layer));
+  };
+
+  it.effect("finds the pull request on origin for a branch the agent pushed, open first", () =>
+    Effect.gen(function* () {
+      const found = yield* findWith(
+        [
+          pr(300, { headRefName: "chore/bump-deps", state: "MERGED" }),
+          pr(310, { headRefName: "chore/bump-deps" }),
+          fork(320, { headRefName: "chore/bump-deps" }),
+        ],
+        { branches: ["mend/update-deps", "chore/bump-deps"], commit: null },
+      );
+      expect(found?.number).toBe(310);
+      expect(found?.crossRepository).toBe(false);
+    }),
+  );
+
+  it.effect("ignores a fork's same-named branch, and finds a fork's pull request by commit", () =>
+    Effect.gen(function* () {
+      const commit = "c".repeat(40);
+      const byBranch = yield* findWith([fork(367, { headRefName: "fix-login" })], {
+        branches: ["fix-login"],
+        commit: null,
+      });
+      expect(byBranch).toBeNull();
+      const byCommit = yield* findWith(
+        [fork(367, { headRefName: "fix-login", headRefOid: commit, state: "MERGED" })],
+        { branches: ["mend/wt/1"], commit },
+      );
+      expect(byCommit).toMatchObject({
+        number: 367,
+        state: "merged",
+        crossRepository: true,
+        headOwner: "anna",
+        headRefName: "fix-login",
+      });
+    }),
+  );
 });
 
 describe("PullRequests.observe", () => {

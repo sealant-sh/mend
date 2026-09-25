@@ -10,6 +10,8 @@ import {
 } from "@mend/domain";
 import { AgentTurn, ChangeLanding, type LandedPullRequest, Session } from "@mend/domain/workbench";
 import {
+  type Adoption,
+  type AdoptInput,
   type BundleChangeInput,
   type LandInput,
   LandingNotStartedError,
@@ -98,6 +100,8 @@ interface State {
   refreshed: ChangeLanding | PullRequestStepError | null;
   unseen: number;
   sinceLanding: Array<ChangedFile>;
+  adoption: Adoption | null;
+  adopts: Array<AdoptInput>;
 }
 
 const fresh = (): State => ({
@@ -110,6 +114,8 @@ const fresh = (): State => ({
   refreshed: null,
   unseen: 0,
   sinceLanding: [],
+  adoption: null,
+  adopts: [],
 });
 
 /** The one turn a test adds to the world, removed before every test. */
@@ -174,6 +180,13 @@ describe("landing routes", () => {
                       bytes: new Uint8Array([35, 32, 118, 50]),
                     })
                   : Effect.fail(state.bundle);
+              }),
+            adoptPullRequest: (input) =>
+              Effect.suspend(() => {
+                state.adopts.push(input);
+                return state.adoption === null
+                  ? Effect.die("no adoption scripted")
+                  : Effect.succeed(state.adoption);
               }),
             refreshPullRequest: () =>
               Effect.suspend(() => {
@@ -677,6 +690,74 @@ describe("landing routes", () => {
           refUpdates: [`${"0".repeat(40)} 91bd2e4000000000000000000000000000000000 refs/heads/wip`],
         },
       ]);
+    });
+  });
+
+  describe("POST /changes/:id/pull-request/check", () => {
+    const check = `/api/changes/${sharedA.change}/pull-request/check`;
+
+    it("asks gh for the owner, and records and audits a pull request opened outside Mend", async () => {
+      const adopted = landingRow({
+        id: ChangeLandingId.make("landing-adopted"),
+        trigger: "adopted",
+        outcome: "adopted",
+        pushedSha: null,
+        commitSha: null,
+        checkpointId: null,
+        checkpointRef: null,
+        checkpointSha: null,
+        remoteBranch: "fix-login",
+        pullRequest: { ...PR, number: 367 },
+        pullRequestCrossRepository: true,
+        pullRequestHeadOwner: "anna",
+      });
+      state.adoption = { _tag: "adopted", landing: adopted };
+      const response = await api.request("alice", "POST", check);
+      expect(response.status).toBe(200);
+      expect(await response.json()).toMatchObject({
+        outcome: "adopted",
+        reason: null,
+        landing: {
+          trigger: "adopted",
+          pullRequest: { number: 367 },
+          pullRequestCrossRepository: true,
+          pullRequestHeadOwner: "anna",
+        },
+      });
+      expect(state.adopts).toEqual([{ changeId: sharedA.change, background: false }]);
+      expect(state.audited).toEqual([
+        expect.objectContaining({
+          action: "change.pull_request_adopted",
+          actorUserId: "alice",
+          subjectId: sharedA.change,
+          data: expect.objectContaining({ pullRequest: 367, fork: "anna", branch: "fix-login" }),
+        }),
+      ]);
+    });
+
+    it("says why it did not look, and audits nothing", async () => {
+      state.adoption = { _tag: "skipped", reason: "the change has no owner" };
+      const response = await api.request("alice", "POST", check);
+      expect(await response.json()).toEqual({
+        outcome: "skipped",
+        reason: "the change has no owner",
+        landing: null,
+      });
+      expect(state.audited).toEqual([]);
+    });
+
+    it("refuses anyone but the change's owner before gh is asked", async () => {
+      state.adoption = { _tag: "none" };
+      const response = await api.request("carol", "POST", check);
+      expect(response.status).toBe(403);
+      expect(state.adopts).toEqual([]);
+    });
+  });
+
+  describe("the next landing's branch", () => {
+    it("names the branch the agent pushed itself when nothing has landed", async () => {
+      const response = await api.request("alice", "GET", `/api/changes/${sharedA.change}/landings`);
+      expect(await response.json()).toMatchObject({ nextBranch: "wip" });
     });
   });
 });

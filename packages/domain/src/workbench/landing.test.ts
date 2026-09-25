@@ -3,8 +3,10 @@ import { describe, expect, it } from "vitest";
 
 import { ChangeId, ChangeLandingId, ProjectId, SessionId, Sha } from "../ids.ts";
 import {
+  agentPushedBranches,
   ChangeLanding,
   changeOwnerOf,
+  forkPullRequestReason,
   type DecidedTurn,
   intentAllowsLanding,
   LandingFact,
@@ -13,9 +15,12 @@ import {
   landingFacts,
   landingFactsFromWire,
   latestDecidedTurn,
+  nextLandingBranch,
   notLandedReasonOf,
   observedAgo,
+  openForkPullRequest,
   parseRefUpdate,
+  pullRequestToUpdate,
   RequestIntentReading,
   requestOfTurn,
   resolveAutoLand,
@@ -214,7 +219,22 @@ describe("the landing facts (docs/adr/0007, What Mend records and shows)", () =>
   it("never renders a verdict", () => {
     const every: ReadonlyArray<LandingFact> = [
       { _tag: "pushed", branch: "mend/x", sha: sha("a") },
-      { _tag: "pull-request", number: 1, state: "closed", observedAt: NOW },
+      {
+        _tag: "pull-request",
+        number: 1,
+        state: "closed",
+        observedAt: NOW,
+        outside: false,
+        fork: null,
+      },
+      {
+        _tag: "pull-request",
+        number: 2,
+        state: "open",
+        observedAt: NOW,
+        outside: true,
+        fork: "anna",
+      },
       { _tag: "origin-moved", branch: "mend/x", commits: 1 },
       { _tag: "changed-since-landing", files: 1 },
       { _tag: "refused", branch: "mend/x", message: "denied" },
@@ -250,6 +270,8 @@ describe("landingFactsFromWire", () => {
         number: 412,
         state: "open",
         observedAt: new Date(NOW.getTime() - 120_000),
+        outside: false,
+        fork: null,
       },
       { _tag: "not-landed", reason: "question" },
     ];
@@ -422,5 +444,126 @@ describe("the prompt guard (docs/adr/0007, Questions do not open pull requests)"
     expect(withLandingGuard("")).toBe("");
     expect(requestOfTurn(withLandingGuard("fix the flaky test"))).toBe("fix the flaky test");
     expect(requestOfTurn("fix the flaky test")).toBe("fix the flaky test");
+  });
+});
+
+describe("pull requests opened outside Mend (docs/adr/0007, open question 4)", () => {
+  const pr367 = (state: "open" | "merged") => ({
+    number: 367,
+    url: "https://github.com/sealant-sh/mend/pull/367",
+    state,
+    observedAt: new Date(NOW.getTime() - 120_000),
+  });
+  const adopted = (fork: string | null, state: "open" | "merged" = "open") =>
+    landing({
+      id: ChangeLandingId.make("l-adopted"),
+      trigger: "adopted",
+      outcome: "adopted",
+      pushedSha: null,
+      checkpointRef: null,
+      checkpointSha: null,
+      remoteBranch: "chore/bump-deps-tailwind-v4",
+      pullRequest: pr367(state),
+      pullRequestCrossRepository: fork !== null,
+      pullRequestHeadOwner: fork,
+    });
+
+  it("says a pull request was opened outside Mend, and from whose fork", () => {
+    expect(
+      lines(
+        landingFacts({
+          landings: [adopted("anna", "merged")],
+          ...nothingObserved,
+          agentRefUpdates: [],
+        }),
+      ),
+    ).toEqual([
+      "pull request #367 · merged · observed 2 min ago · opened outside Mend · from anna's fork",
+    ]);
+    // An adoption pushed nothing: no push fact, no failure.
+    expect(
+      lines(landingFacts({ landings: [adopted(null)], ...nothingObserved, agentRefUpdates: [] })),
+    ).toEqual(["pull request #367 · open · observed 2 min ago · opened outside Mend"]);
+  });
+
+  it("keeps saying so after Mend's own landing updated it", () => {
+    const updated = landing({
+      id: ChangeLandingId.make("l-2"),
+      outcome: "pull-request",
+      remoteBranch: "chore/bump-deps-tailwind-v4",
+      pullRequest: pr367("open"),
+    });
+    expect(
+      lines(
+        landingFacts({
+          landings: [updated, adopted(null)],
+          ...nothingObserved,
+          agentRefUpdates: [],
+        }),
+      ),
+    ).toContain("pull request #367 · open · observed 2 min ago · opened outside Mend");
+  });
+
+  it("updates an open pull request on origin, never one from a fork", () => {
+    expect(pullRequestToUpdate([adopted(null)])?.number).toBe(367);
+    expect(pullRequestToUpdate([adopted("anna")])).toBeNull();
+    expect(pullRequestToUpdate([adopted(null, "merged")])).toBeNull();
+    expect(openForkPullRequest([adopted("anna")])).toEqual({ number: 367, owner: "anna" });
+    expect(openForkPullRequest([adopted(null)])).toBeNull();
+    expect(forkPullRequestReason({ number: 367, owner: "anna" })).toBe(
+      "pull request #367 is from anna's fork · Mend pushes to origin only",
+    );
+  });
+
+  it("reads the branches the agent pushed, newest first, without deletions or tags", () => {
+    const zero = "0".repeat(40);
+    expect(
+      agentPushedBranches([
+        `${"a".repeat(40)} ${"b".repeat(40)} refs/heads/chore/bump-deps-tailwind-v4`,
+        `${zero} ${"a".repeat(40)} refs/heads/chore/bump-deps-tailwind-v4`,
+        `${"c".repeat(40)} ${zero} refs/heads/old`,
+        `${zero} ${"d".repeat(40)} refs/tags/v1`,
+        "not a ref update",
+      ]),
+    ).toEqual(["chore/bump-deps-tailwind-v4"]);
+  });
+
+  it("picks the next landing's branch: asked, landed, the agent's, an adopted head, the worktree's", () => {
+    const base = {
+      requested: null,
+      landings: [],
+      agentBranches: [],
+      worktreeBranch: "mend/update-deps",
+      protectedBranches: ["main"],
+    };
+    expect(nextLandingBranch(base)).toBe("mend/update-deps");
+    expect(nextLandingBranch({ ...base, requested: "mine" })).toBe("mine");
+    expect(nextLandingBranch({ ...base, landings: [adopted(null)] })).toBe(
+      "chore/bump-deps-tailwind-v4",
+    );
+    // A fork's branch is not on origin: the worktree's own is pushed.
+    expect(nextLandingBranch({ ...base, landings: [adopted("anna")] })).toBe("mend/update-deps");
+    expect(nextLandingBranch({ ...base, agentBranches: ["main", "wip"] })).toBe("wip");
+    expect(
+      nextLandingBranch({
+        ...base,
+        landings: [landing({ remoteBranch: "landed" })],
+        agentBranches: ["wip"],
+      }),
+    ).toBe("landed");
+  });
+
+  it("reads a pull request fact from a server that predates adoption", () => {
+    const [fact] = landingFactsFromWire([
+      { _tag: "pull-request", number: 412, state: "open", observedAt: NOW.toISOString() },
+    ]);
+    expect(fact).toEqual({
+      _tag: "pull-request",
+      number: 412,
+      state: "open",
+      observedAt: NOW,
+      outside: false,
+      fork: null,
+    });
   });
 });
