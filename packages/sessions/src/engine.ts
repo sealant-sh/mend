@@ -3565,25 +3565,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The repository was checked when it was saved; checked again here, and the clone dials the
         // address just checked, because a name can answer differently at every launch. The owner's
         // actual role was applied at save; this recheck guards the tenant profile's networks.
-        const dotfilesCloneEnv =
+        // The pin composes over the clone's own defaults, so a pinned ssh keeps BatchMode.
+        const dotfilesClearance =
           dotfilesRepository === null
-            ? {}
-            : sourcePolicy.pinnedEnv(
-                yield* sourcePolicy.check(dotfilesRepository.url, { isOperator: true }).pipe(
-                  Effect.mapError(
-                    (refused) =>
-                      new DotfilesResolveError({
-                        message: `dotfiles repository refused: ${refused.message}`,
-                      }),
-                  ),
-                  report,
+            ? null
+            : yield* sourcePolicy.check(dotfilesRepository.url, { isOperator: true }).pipe(
+                Effect.mapError(
+                  (refused) =>
+                    new DotfilesResolveError({
+                      message: `dotfiles repository refused: ${refused.message}`,
+                    }),
                 ),
-                {},
+                report,
               );
         const dotfilesArchives = yield* resolveDotfilesArchives({
           repository: dotfilesRepository,
           snapshot: dotfilesSnapshot,
-          cloneEnv: dotfilesCloneEnv,
+          ...(dotfilesClearance === null
+            ? {}
+            : {
+                pinCloneEnv: (env: Readonly<Record<string, string>>) =>
+                  sourcePolicy.pinnedEnv(dotfilesClearance, env),
+              }),
         }).pipe(report);
         // The project env store, read ONCE per fresh workspace (plan: one snapshot per launch, a
         // live workspace is never mutated). Configuration rides `env` (plaintext by contract);
