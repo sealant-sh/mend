@@ -19,7 +19,6 @@ import {
   SessionLifecycleSection,
   VisibilitySection,
 } from "#/components/project-setup";
-import { ProjectShell } from "#/components/project-shell";
 import { ProjectSkillsSection } from "#/components/project-skills-section";
 import {
   setProjectWorkspaceImage,
@@ -61,7 +60,6 @@ import {
   projectEnvironmentFormReducer,
 } from "#/lib/project-environment-form";
 import { useTRPC } from "#/lib/trpc";
-import { useWorkbenchEvents } from "#/lib/workbench-events";
 import { copyText } from "#/lib/workbench-menus";
 import {
   OS_LABELS,
@@ -72,10 +70,10 @@ import {
 
 /**
  * Project environment (`.plans/project-environment-variables.md` §UI): the workspace image the
- * project's sessions build from, and the project's ordinary environment variables. A non-nested
- * route — the project page has no <Outlet>, so `$projectId_.` keeps this a sibling full page.
+ * project's sessions build from, and the project's ordinary environment variables. A child of the
+ * project layout, so switching tabs keeps the shared ProjectShell mounted.
  */
-export const Route = createFileRoute("/projects/$projectId_/setup")({
+export const Route = createFileRoute("/projects/$projectId/setup")({
   ssr: false,
   loader: async ({ context: { queryClient, trpc }, params }) => {
     await Promise.all([
@@ -107,60 +105,57 @@ function ProjectSetupPage() {
   const { project, capabilities, mountDelivery } = useSuspenseQuery(
     trpc.projects.detail.queryOptions({ id: projectId }),
   ).data;
-  useWorkbenchEvents();
 
   return (
-    <ProjectShell project={project}>
-      <div className="mt-6">
-        <h2 className="text-sm font-medium">Setup</h2>
-        <p className="mt-2 max-w-[64ch] text-sm leading-relaxed text-muted-foreground">
-          How sessions in this project launch — image, variables, secrets, references, mounts,
-          services, dotfiles, git access, review automation. Changes apply to new workspace
-          launches, including when you resume a settled session; running workspaces keep the
-          configuration they started with.
-        </p>
+    <div className="mt-6">
+      <h2 className="text-sm font-medium">Setup</h2>
+      <p className="mt-2 max-w-[64ch] text-sm leading-relaxed text-muted-foreground">
+        How sessions in this project launch — image, variables, secrets, references, mounts,
+        services, dotfiles, git access, review automation. Changes apply to new workspace launches,
+        including when you resume a settled session; running workspaces keep the configuration they
+        started with.
+      </p>
 
-        <div className="mt-8 space-y-6">
-          {capabilities.changeVisibility ? <VisibilitySection project={project} /> : null}
-          {capabilities.manage ? (
-            <>
-              <div id="environment" className="scroll-mt-6">
-                <WorkspaceImagePanel project={project} />
-              </div>
-              <ProjectSkillsSection project={project} />
-              <div id="variables" className="scroll-mt-6 space-y-6">
-                <VariablesComposer projectId={projectId} />
-                <ConfigurationPanel projectId={projectId} />
-              </div>
-              <div id="secrets" className="scroll-mt-6">
-                <SecretsPanel projectId={projectId} />
-              </div>
-              <div id="cluster-bindings" className="scroll-mt-6">
-                <ClusterBindingsPanel projectId={projectId} />
-              </div>
-              <ReferencesSection projectId={projectId} />
-              <ProjectFoldersSection projectId={project.id} mountDelivery={mountDelivery} />
-              {capabilities.hostMounts ? <MountsSection projectId={projectId} /> : null}
-              <LinksSection projectId={projectId} />
-              <ServicesSection projectId={projectId} />
-              <DotfilesSection project={project} />
-              <HotSessionsSection project={project} />
-              <InstallCommandSection project={project} />
-              <GitAccessSection project={project} />
-              <SessionLifecycleSection project={project} />
-              <ReviewAutomationSection project={project} />
-              <LandingSection project={project} />
-            </>
-          ) : (
-            <p className="max-w-[64ch] border-l-2 border-[var(--sw-accent)] pl-3 text-[13px] leading-relaxed text-ink-2">
-              How sessions here launch is set by the project&apos;s creator or an organization
-              owner. You can start sessions and review changes as it stands.
-            </p>
-          )}
-          {capabilities.remove ? <RemoveProjectSection projectId={projectId} /> : null}
-        </div>
+      <div className="mt-8 space-y-6">
+        {capabilities.changeVisibility ? <VisibilitySection project={project} /> : null}
+        {capabilities.manage ? (
+          <>
+            <div id="environment" className="scroll-mt-6">
+              <WorkspaceImagePanel project={project} />
+            </div>
+            <ProjectSkillsSection project={project} />
+            <div id="variables" className="scroll-mt-6 space-y-6">
+              <VariablesComposer projectId={projectId} />
+              <ConfigurationPanel projectId={projectId} />
+            </div>
+            <div id="secrets" className="scroll-mt-6">
+              <SecretsPanel projectId={projectId} />
+            </div>
+            <div id="cluster-bindings" className="scroll-mt-6">
+              <ClusterBindingsPanel projectId={projectId} />
+            </div>
+            <ReferencesSection projectId={projectId} />
+            <ProjectFoldersSection projectId={project.id} mountDelivery={mountDelivery} />
+            {capabilities.hostMounts ? <MountsSection projectId={projectId} /> : null}
+            <LinksSection projectId={projectId} />
+            <ServicesSection projectId={projectId} />
+            <DotfilesSection project={project} />
+            <HotSessionsSection project={project} />
+            <InstallCommandSection project={project} />
+            <GitAccessSection project={project} />
+            <SessionLifecycleSection project={project} />
+            <ReviewAutomationSection project={project} />
+            <LandingSection project={project} />
+          </>
+        ) : (
+          <p className="max-w-[64ch] border-l-2 border-[var(--sw-accent)] pl-3 text-[13px] leading-relaxed text-ink-2">
+            How sessions here launch is set by the project&apos;s creator or an organization owner.
+            You can start sessions and review changes as it stands.
+          </p>
+        )}
+        {capabilities.remove ? <RemoveProjectSection projectId={projectId} /> : null}
       </div>
-    </ProjectShell>
+    </div>
   );
 }
 
