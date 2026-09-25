@@ -1,8 +1,44 @@
-import type { AutomationChoice } from "@mend/domain/workbench";
+import { SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
+import {
+  type AutomationChoice,
+  SessionProcess,
+  type SessionProcessKind,
+} from "@mend/domain/workbench";
 import { GitError } from "@mend/store";
 import { describe, expect, it } from "vitest";
 
-import { readFailureAnnotations, reviewPassesFor } from "../src/review-prep.ts";
+import {
+  readFailureAnnotations,
+  reviewPassesFor,
+  settledForReview,
+  shouldPrepareReview,
+} from "../src/review-prep.ts";
+
+const processRow = (kind: SessionProcessKind, live: boolean) =>
+  new SessionProcess({
+    id: SessionProcessId.make(`${kind}-${live ? "live" : "ended"}`),
+    sessionId: SessionId.make("session-1"),
+    sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
+    sealantSessionId: "pty-1",
+    sealantRunId: null,
+    launchCorrelationId: null,
+    serviceId: null,
+    attemptOrdinal: null,
+    kind,
+    harness: kind === "agent-pty" ? "claude" : null,
+    providerSessionId: null,
+    protocolOptions: null,
+    label: kind,
+    argv: [],
+    status: live ? "running" : "stopped",
+    exitCode: null,
+    workspacePort: null,
+    protocol: "tcp",
+    hostPort: null,
+    createdAt: new Date(0),
+    exitedAt: live ? null : new Date(1),
+    updatedAt: new Date(0),
+  });
 
 /**
  * The review-prep warning must be diagnosable from the log line alone (observed facts, never a
@@ -86,5 +122,31 @@ describe("review prep: which passes a settled session queues", () => {
       tour: true,
       suggest: false,
     });
+  });
+});
+
+describe("review prep: when a session has settled for review", () => {
+  it("counts a stopped agent whose Services keep the workspace up", () => {
+    const stoppedAgentWithServices = [processRow("agent-pty", false), processRow("service", true)];
+    expect(settledForReview("idle", stoppedAgentWithServices)).toBe(true);
+    expect(settledForReview("stopped", [])).toBe(true);
+    expect(settledForReview("completed", [])).toBe(true);
+  });
+
+  it("does not count live work, or a workspace no agent ever ran in", () => {
+    expect(settledForReview("running", [processRow("agent-pty", true)])).toBe(false);
+    expect(
+      settledForReview("idle", [processRow("agent-pty", true), processRow("shell", true)]),
+    ).toBe(false);
+    expect(settledForReview("idle", [processRow("shell", true)])).toBe(false);
+    expect(settledForReview("starting", [])).toBe(false);
+  });
+
+  it("prepares once, on the move from live work to settled", () => {
+    expect(shouldPrepareReview(false, true)).toBe(true);
+    // Unknown baseline, still live, or already settled (idle → stopped as the last Service ends).
+    expect(shouldPrepareReview(undefined, true)).toBe(false);
+    expect(shouldPrepareReview(false, false)).toBe(false);
+    expect(shouldPrepareReview(true, true)).toBe(false);
   });
 });

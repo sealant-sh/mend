@@ -4,14 +4,19 @@ import {
   MendEvent,
   ProjectsRepo,
   WorktreeChangesRepo,
+  SessionProcessesRepo,
   SessionsRepo,
   SettingsRepo,
 } from "@mend/db";
 import { SessionId } from "@mend/domain";
 import {
+  agentProcessesOf,
+  isLiveAgentProcess,
   resolveAutomation,
   type AutomationChoice,
   type SessionOrigin,
+  type SessionProcess,
+  type SessionStatus,
 } from "@mend/domain/workbench";
 import { CaptureRuntime, WorktreeReads } from "@mend/sessions";
 import type { GitError } from "@mend/store";
@@ -20,8 +25,9 @@ import { Cause, Effect, Layer, Schema, Stream } from "effect";
 import { JobRunner } from "./job-runner.ts";
 
 /**
- * Review automation (the cascade's execution point): when a session settles,
- * resolve each switch — project override first, Settings default under
+ * Review automation (the cascade's execution point): when a session settles for review (its
+ * status settled, or its agent stopped or exited while shells or Services keep the workspace:
+ * `settledForReview`), resolve each switch — project override first, Settings default under
  * `inherit` — and queue the passes whose switch is on, so review opens with
  * the tour composed and the suggestions drafted instead of a pair of buttons.
  *
@@ -41,6 +47,29 @@ import { JobRunner } from "./job-runner.ts";
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(MendEvent));
 
 const SETTLED = new Set(["completed", "failed", "stopped"]);
+
+/**
+ * Whether a session has settled FOR REVIEW: its status settled, or its agent no longer live
+ * while shells or Services keep the workspace (`idle`, with an agent that ran). A stop keeps
+ * Services running (docs/SESSION-SERVICES.md), so waiting for the workspace to end would leave a
+ * stopped agent's change unprepared for as long as a dev server runs.
+ */
+export const settledForReview = (
+  status: SessionStatus,
+  processes: ReadonlyArray<SessionProcess>,
+): boolean =>
+  SETTLED.has(status) ||
+  (status === "idle" &&
+    agentProcessesOf(processes).length > 0 &&
+    !processes.some(isLiveAgentProcess));
+
+/**
+ * Transition, not state: prep runs once, when a session is seen moving from live work to settled
+ * for review. An unknown baseline records silently; staying settled (`idle` → `stopped` as the
+ * last Service ends) is not a second settle.
+ */
+export const shouldPrepareReview = (previous: boolean | undefined, settled: boolean): boolean =>
+  previous === false && settled;
 
 /** The passes a settled session queues over a non-empty change. */
 export interface ReviewPasses {
@@ -100,6 +129,7 @@ export const ReviewPrepLive: Layer.Layer<
   never,
   | PgClient.PgClient
   | SessionsRepo
+  | SessionProcessesRepo
   | WorktreeChangesRepo
   | ProjectsRepo
   | SettingsRepo
@@ -110,6 +140,7 @@ export const ReviewPrepLive: Layer.Layer<
   Effect.gen(function* () {
     const sql = yield* PgClient.PgClient;
     const sessions = yield* SessionsRepo;
+    const processes = yield* SessionProcessesRepo;
     const changes = yield* WorktreeChangesRepo;
     const projects = yield* ProjectsRepo;
     const settingsRepo = yield* SettingsRepo;
@@ -196,19 +227,27 @@ export const ReviewPrepLive: Layer.Layer<
       });
     });
 
+    const settledNow = Effect.fn("ReviewPrep.settledNow")(function* (session: {
+      readonly id: SessionId;
+      readonly status: SessionStatus;
+    }) {
+      // Only an `idle` session needs its processes read: every other status answers alone.
+      if (session.status !== "idle") return SETTLED.has(session.status);
+      return settledForReview(session.status, yield* processes.listForSession(session.id));
+    });
+
     const observe = Effect.fn("ReviewPrep.observe")(function* (sessionId: string) {
       const session = yield* sessions.byId(SessionId.make(sessionId));
-      const settled = SETTLED.has(session.status);
+      const settled = yield* settledNow(session);
       const previous = lastSettled.get(session.id);
       lastSettled.set(session.id, settled);
-      if (previous === undefined) return; // unknown baseline — record, never queue
-      if (previous || !settled) return;
+      if (!shouldPrepareReview(previous, settled)) return;
       yield* prepare(session.id);
     });
 
     // Baseline: whatever exists right now settled before we were listening.
     const active = yield* sessions.listActive();
-    for (const session of active) lastSettled.set(session.id, SETTLED.has(session.status));
+    for (const session of active) lastSettled.set(session.id, yield* settledNow(session));
 
     yield* sql.listen(MEND_EVENTS_CHANNEL).pipe(
       Stream.runForEach((payload) =>
