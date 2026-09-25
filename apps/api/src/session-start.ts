@@ -1,10 +1,12 @@
 import { BudgetExceeded, LaunchRequest, NotFound, StoreFailure } from "@mend/api-contracts";
-import { ProjectsRepo, SessionsRepo, SettingsRepo } from "@mend/db";
+import { AgentConversationRepo, ProjectsRepo, SessionsRepo, SettingsRepo } from "@mend/db";
 import type { ProjectId } from "@mend/domain";
 import {
   composeLaunchArgv,
   PROMPTABLE_HARNESSES,
+  resolveAutoLand,
   resolveAutomation,
+  withLandingGuard,
   type Session,
   type SessionOrigin,
 } from "@mend/domain/workbench";
@@ -27,6 +29,11 @@ export interface CreateSessionInput {
   readonly base: string | null;
   /** `mend` for the HTTP API, `slack` for a mention. Stamped on the session at provision. */
   readonly origin: SessionOrigin;
+  /**
+   * The session's own "Land when a turn completes" (docs/adr/0007-landing.md): `--land` /
+   * `--no-land`, or a Slack request's `autopr=`. Absent or null follows the project.
+   */
+  readonly autoLand?: boolean | null;
 }
 
 /** Provision, then launch: what Slack asks for in one step. */
@@ -81,6 +88,28 @@ export const makeSessionStart = Effect.gen(function* () {
   const projects = yield* ProjectsRepo;
   const settingsRepo = yield* SettingsRepo;
   const jobs = yield* JobRunner;
+  const conversations = yield* AgentConversationRepo;
+
+  /**
+   * Whether the session's opening turn carries the prompt guard (docs/adr/0007-landing.md,
+   * "Questions do not open pull requests"): every Slack request, and any session that lands by
+   * itself. Only the opening turn does: a resumed conversation heard it already.
+   */
+  const guardsLanding = Effect.fn("SessionStart.guardsLanding")(function* (session: Session) {
+    if (session.origin !== "slack") {
+      const project = yield* projects.byId(session.projectId);
+      const settings = yield* settingsRepo.get();
+      const on = resolveAutoLand({
+        origin: session.origin,
+        project: project.autoLand,
+        settings: settings.autoLand,
+        session: session.autoLand,
+        slack: false,
+      });
+      if (!on) return false;
+    }
+    return (yield* conversations.listTurns(session.id)).length === 0;
+  });
 
   const createAs = Effect.fn("SessionStart.createAs")(function* (
     userId: string,
@@ -103,6 +132,7 @@ export const makeSessionStart = Effect.gen(function* () {
         base: input.base,
         ownerUserId: userId,
         origin: input.origin,
+        autoLand: input.autoLand ?? null,
       })
       .pipe(
         Effect.catchTag("ProjectNotFoundError", () => Effect.fail(new NotFound({ id: projectId }))),
@@ -133,6 +163,13 @@ export const makeSessionStart = Effect.gen(function* () {
     // server because model and effort ride on provider turns, not the long-lived process argv.
     const argv = input.argv ?? composeLaunchArgv(session.harness, input);
     const prompt = input.prompt?.trim() ?? "";
+    // The protocol opening turn is the one Mend composes; a PTY argv is the person's own.
+    const guarded =
+      input.mode === "protocol" &&
+      prompt !== "" &&
+      (yield* guardsLanding(session).pipe(
+        Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(false)),
+      ));
     const inlineNamePrompt =
       input.argv === undefined && prompt !== "" && PROMPTABLE_HARNESSES.has(session.harness)
         ? prompt
@@ -175,7 +212,11 @@ export const makeSessionStart = Effect.gen(function* () {
     if (inlineNamePrompt !== null) yield* queueAutoName;
     const launch =
       input.mode === "protocol"
-        ? engine.launchProtocol(session.id, input, userId)
+        ? engine.launchProtocol(
+            session.id,
+            guarded ? { ...input, prompt: withLandingGuard(prompt) } : input,
+            userId,
+          )
         : engine.launch(session.id, argv);
     // A launch holds a platform workspace build for minutes. One account starts a bounded
     // number at once; a launch already under way is never touched.
@@ -233,5 +274,12 @@ export const makeSessionStart = Effect.gen(function* () {
 export const SessionStartLive: Layer.Layer<
   SessionStart,
   never,
-  Budgets | JobRunner | ProjectAccess | ProjectsRepo | SessionEngine | SessionsRepo | SettingsRepo
+  | AgentConversationRepo
+  | Budgets
+  | JobRunner
+  | ProjectAccess
+  | ProjectsRepo
+  | SessionEngine
+  | SessionsRepo
+  | SettingsRepo
 > = Layer.effect(SessionStart, makeSessionStart);

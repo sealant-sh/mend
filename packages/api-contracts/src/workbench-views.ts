@@ -175,6 +175,11 @@ export class ProjectAutomationRequest extends Schema.Class<ProjectAutomationRequ
   backgroundSessions: AutomationChoice.pipe(
     Schema.withDecodingDefaultKey(Effect.succeed("inherit" as const)),
   ),
+  /**
+   * "Land when a turn completes" (docs/adr/0007-landing.md). Older clients omit the key, which
+   * keeps the project's stance rather than resetting it.
+   */
+  autoLand: Schema.optionalKey(AutomationChoice),
 }) {}
 
 /** How host-side git reaches this project's remote (docs/GIT-ACCESS.md). */

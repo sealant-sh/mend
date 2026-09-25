@@ -420,6 +420,11 @@ export interface ProvisionInput {
   readonly ownerUserId: string | null;
   /** Where the session was started from (docs/adr/0006-slack.md); absent is `mend`. */
   readonly origin?: SessionOrigin;
+  /**
+   * The session's own "Land when a turn completes" (docs/adr/0007-landing.md); absent or null
+   * follows the project.
+   */
+  readonly autoLand?: boolean | null;
 }
 
 /** Anonymous worktrees are keyed by their own id, named ones by the name. */
@@ -557,6 +562,7 @@ export class SessionEngine extends Context.Service<
         readonly label: string | null;
         readonly ownerUserId: string | null;
         readonly origin?: SessionOrigin;
+        readonly autoLand?: boolean | null;
       },
     ) => Effect.Effect<Session, WorktreeNotFoundError | ProjectNotFoundError>;
     readonly attachRun: (
@@ -644,11 +650,16 @@ export class SessionEngine extends Context.Service<
       AgentRequest,
       ProtocolHostNotLiveError | AgentRequestNotFoundError | AgentRequestAlreadyResolvedError
     >;
-    /** Launch the exact approved Review instruction with a durable process correlation. */
+    /**
+     * Launch the exact approved Review instruction with a durable process correlation. `author`
+     * is who sent the review comments: the turn is theirs, so automatic landing (docs/adr/0007)
+     * never takes it for the owner's unless it is.
+     */
     readonly launchFollowUp: (
       sessionId: SessionId,
       instruction: string,
       launchCorrelationId: string,
+      author: string | null,
     ) => Effect.Effect<
       Session,
       | SessionNotFoundError
@@ -2024,6 +2035,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly label: string | null;
           readonly ownerUserId: string | null;
           readonly origin?: SessionOrigin;
+          readonly autoLand?: boolean | null;
         },
       ) {
         const session = yield* sessions.create({
@@ -2034,6 +2046,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           label: input.label,
           ownerUserId: input.ownerUserId,
           origin: input.origin ?? "mend",
+          autoLand: input.autoLand ?? null,
           worktree: worktree.directory,
           branch: worktree.branch,
           baseSha: worktree.baseSha,
@@ -2059,6 +2072,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly label: string | null;
           readonly ownerUserId: string | null;
           readonly origin?: SessionOrigin;
+          readonly autoLand?: boolean | null;
         },
       ) {
         if (project.hotSessions > 0) {
@@ -5295,6 +5309,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
         instruction: string,
         launchCorrelationId: string,
+        author: string | null,
       ) {
         const session = yield* sessions.byId(sessionId);
         if (isLegacyBench(session)) {
@@ -5305,17 +5320,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             (process) => process.kind === "agent-protocol" && isLiveProcess(process),
           );
           if (liveProtocol !== undefined && (yield* protocolHost.has(liveProtocol.id))) {
-            yield* protocolHost.submitTurn(sessionId, instruction, null, launchCorrelationId).pipe(
-              Effect.mapError(
-                (error) =>
-                  new SealantPlatformError({
-                    code: "agent_protocol_not_live",
-                    status: null,
-                    message: "The protocol process stopped before the follow-up was queued.",
-                    cause: error,
-                  }),
-              ),
-            );
+            yield* protocolHost
+              .submitTurn(sessionId, instruction, author, launchCorrelationId)
+              .pipe(
+                Effect.mapError(
+                  (error) =>
+                    new SealantPlatformError({
+                      code: "agent_protocol_not_live",
+                      status: null,
+                      message: "The protocol process stopped before the follow-up was queued.",
+                      cause: error,
+                    }),
+                ),
+              );
             return yield* sessions.byId(sessionId);
           }
           return yield* new SealantPlatformError({
@@ -5330,7 +5347,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           return yield* launchProtocol(
             sessionId,
             { mode: "protocol", prompt: instruction, permissionMode: "bypass" },
-            null,
+            author,
             launchCorrelationId,
           ).pipe(
             Effect.catchTag("ProtocolHarnessUnsupportedError", (error) =>
@@ -6943,6 +6960,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly label: string | null;
           readonly ownerUserId: string | null;
           readonly origin?: SessionOrigin;
+          readonly autoLand?: boolean | null;
         },
       ) {
         // Capture mode: one executor per worktree (ADR-0002). A worktree another session's
@@ -7001,6 +7019,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           label: input.label,
           ownerUserId: input.ownerUserId,
           origin: input.origin ?? "mend",
+          autoLand: input.autoLand ?? null,
           worktree: worktree.directory,
           branch: worktree.branch,
           baseSha: worktree.baseSha,
@@ -7580,8 +7599,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           owned(sessionId)(submitTurn(sessionId, input, author)),
         interruptTurn,
         respondRequest,
-        launchFollowUp: (sessionId, instruction, launchCorrelationId) =>
-          owned(sessionId)(launchFollowUp(sessionId, instruction, launchCorrelationId)),
+        launchFollowUp: (sessionId, instruction, launchCorrelationId, author) =>
+          owned(sessionId)(launchFollowUp(sessionId, instruction, launchCorrelationId, author)),
         reconcileHotSessions: requestHotReconcile,
         checkpointNow: (sessionId, trigger) => owned(sessionId)(checkpointNow(sessionId, trigger)),
         stop: (sessionId) => owned(sessionId)(stop(sessionId)),

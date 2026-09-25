@@ -333,6 +333,11 @@ export class NewWorkbenchSession extends Schema.Class<NewWorkbenchSession>("NewW
   name: Schema.NullOr(WorktreeName).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
   /** Branch or sha to base the worktree on; null = the project's default branch. */
   base: Schema.NullOr(Schema.String),
+  /**
+   * This session's own "Land when a turn completes" (`--land` / `--no-land`,
+   * docs/adr/0007-landing.md). Null (and older clients, which omit the key) follows the project.
+   */
+  autoLand: Schema.NullOr(Schema.Boolean).pipe(Schema.withDecodingDefaultKey(Effect.succeed(null))),
 }) {}
 
 /** What the caller may do with a session (docs/adr/0003), so clients show only real controls. */

@@ -222,6 +222,8 @@ export interface TenancyWorld {
   readonly processes: ReadonlyMap<SessionProcessId, SessionProcess>;
   readonly services: ReadonlyMap<ServiceId, Service>;
   readonly skills: ReadonlyMap<SkillId, SkillWithFiles>;
+  /** Every session's turns: a test may add one (a turn automatic landing decided about). */
+  readonly turns: Map<AgentTurnId, AgentTurn>;
   /** Flip a project's visibility, as an owner's `PUT /projects/:id/visibility` would. */
   readonly setVisibility: (project: HarnessProject, visibility: ProjectVisibility) => void;
   /** Tokens: each user's bearer is their name. */
@@ -754,6 +756,8 @@ export const createTenancyWorld = async (
       {
         byTurnId: (id) => Effect.succeed(turns.get(id) ?? null),
         byRequestId: (id) => Effect.succeed(requests.get(id) ?? null),
+        listTurns: (sessionId) =>
+          Effect.sync(() => [...turns.values()].filter((turn) => turn.sessionId === sessionId)),
       },
       calls,
     ),
@@ -797,6 +801,7 @@ export const createTenancyWorld = async (
     processes,
     services,
     skills,
+    turns,
     setVisibility: (key, visibility) => {
       const row = projects.get(ids(key).project);
       if (row !== undefined) projects.set(row.id, new Project({ ...row, visibility }));

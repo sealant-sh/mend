@@ -1,8 +1,15 @@
 import { Effect, Schema } from "effect";
 
-import { AgentItemId, AgentRequestId, AgentTurnId, SessionId, SessionProcessId } from "../ids.ts";
+import {
+  AgentItemId,
+  AgentRequestId,
+  AgentTurnId,
+  ChangeLandingId,
+  SessionId,
+  SessionProcessId,
+} from "../ids.ts";
 import { Timestamp } from "../timestamp.ts";
-import { RequestIntent, RequestIntentSource } from "./landing.ts";
+import { RequestIntent, RequestIntentSource, TurnLanding } from "./landing.ts";
 
 /** How Mend launches and records a coding-agent process. */
 export const AgentLaunchMode = Schema.Literals(["pty", "protocol"]);
@@ -49,6 +56,15 @@ export class AgentTurn extends Schema.Class<AgentTurn>("AgentTurn")({
    */
   intent: Schema.NullOr(RequestIntent).pipe(Schema.withConstructorDefault(Effect.succeed(null))),
   intentSource: Schema.NullOr(RequestIntentSource).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * What Mend decided about landing once the turn ended ("When a completed turn lands"): null
+   * until it decides, or for a turn that ended before automatic landing existed.
+   */
+  landing: Schema.NullOr(TurnLanding).pipe(Schema.withConstructorDefault(Effect.succeed(null))),
+  /** The automatic landing this turn started, when it `attempted` one and the row remains. */
+  landingId: Schema.NullOr(ChangeLandingId).pipe(
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
   createdAt: Timestamp,

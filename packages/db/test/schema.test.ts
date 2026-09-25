@@ -735,6 +735,7 @@ describe("Mend Drizzle schema", () => {
       "outcome",
       "message",
       "user_id",
+      "described_tour_id",
       "created_at",
     ]);
     expect(

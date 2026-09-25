@@ -1429,3 +1429,144 @@ describe.skipIf(!reachable)("0064 landing", () => {
     });
   });
 });
+
+describe.skipIf(!reachable)("0065 turn landing", () => {
+  const TURN_DB = `${SCRATCH_DB}_turn_landing`;
+  const turnLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${TURN_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withTurnDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(turnLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${TURN_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${TURN_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("decides every turn that already ended, and holds a decision to its claim", async () => {
+    const result = await withTurnDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0064_landing");
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-1', 'api', '/store/p-1/repo.git', 'main', ${organization?.id ?? ""})`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc')`;
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, status)
+          VALUES ('s-1', 'p-1', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running')`;
+        yield* sql`
+          INSERT INTO session_processes
+            (id, session_id, sealant_workspace_id, sealant_session_id, kind, status)
+          VALUES ('proc-1', 's-1', 'ws-1', 'pty-1', 'agent-protocol', 'running')`;
+        yield* sql`
+          INSERT INTO agent_turns (id, session_id, process_id, ordinal, input, status, ended_at)
+          VALUES ('t-done', 's-1', 'proc-1', 0, 'fix it', 'completed', '2026-09-01T00:00:00Z'),
+                 ('t-failed', 's-1', 'proc-1', 1, 'fix it', 'failed', NULL),
+                 ('t-open', 's-1', 'proc-1', 2, 'fix it', 'running', NULL)`;
+        yield* migrations["0065_turn_landing"];
+
+        const turns = yield* sql<{
+          readonly id: string;
+          readonly landing: string | null;
+          readonly claimed: boolean;
+        }>`
+          SELECT id, landing, landing_claimed_at IS NOT NULL AS claimed
+          FROM agent_turns ORDER BY ordinal`;
+        const decide = (landing: string | null, claimed: boolean) =>
+          attempt(sql`
+            UPDATE agent_turns
+            SET landing = ${landing},
+                landing_claimed_at = ${claimed ? new Date() : null}
+            WHERE id = 't-open'`);
+        return {
+          turns: turns.map((turn) => ({ ...turn })),
+          checks: {
+            decidedWithClaim: yield* decide("question", true),
+            decidedWithoutClaim: yield* decide("question", false),
+            unknownDecision: yield* decide("merged", true),
+            claimedUndecided: yield* decide(null, true),
+            landingWithoutAttempt: yield* attempt(
+              sql`UPDATE agent_turns SET landing_id = 'l-none' WHERE id = 't-done'`,
+            ),
+          },
+        };
+      }),
+    );
+    expect(result).toEqual({
+      turns: [
+        { id: "t-done", landing: "skipped", claimed: true },
+        { id: "t-failed", landing: "skipped", claimed: true },
+        { id: "t-open", landing: null, claimed: false },
+      ],
+      checks: {
+        decidedWithClaim: "inserted",
+        decidedWithoutClaim: "refused",
+        unknownDecision: "refused",
+        claimedUndecided: "inserted",
+        landingWithoutAttempt: "refused",
+      },
+    });
+  });
+});
+
+describe.skipIf(!reachable)("0066 landing description", () => {
+  const DESCRIPTION_DB = `${SCRATCH_DB}_landing_description`;
+  const descriptionLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DESCRIPTION_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDescriptionDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(descriptionLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DESCRIPTION_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DESCRIPTION_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("adds the tour claim to every landing, unclaimed", async () => {
+    const columns = await withDescriptionDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0065_turn_landing");
+        yield* migrations["0066_landing_description"];
+        const rows = yield* sql<{ readonly column_name: string; readonly is_nullable: string }>`
+          SELECT column_name, is_nullable FROM information_schema.columns
+          WHERE table_name = 'change_landings' AND column_name = 'described_tour_id'`;
+        return rows.map((row) => ({ ...row }));
+      }),
+    );
+    expect(columns).toEqual([{ column_name: "described_tour_id", is_nullable: "YES" }]);
+  });
+});

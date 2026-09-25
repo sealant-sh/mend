@@ -1,7 +1,23 @@
 import { LaunchRequest, NotFound } from "@mend/api-contracts";
-import { ProjectsRepo, SessionsRepo, SettingsRepo } from "@mend/db";
-import { defaultSettings, OrganizationId, ProjectId, SessionId, WorktreeId } from "@mend/domain";
-import { Project, Session } from "@mend/domain/workbench";
+import { AgentConversationRepo, ProjectsRepo, SessionsRepo, SettingsRepo } from "@mend/db";
+import {
+  AgentTurnId,
+  defaultSettings,
+  MendSettings,
+  OrganizationId,
+  ProjectId,
+  SessionId,
+  SessionProcessId,
+  WorktreeId,
+} from "@mend/domain";
+import {
+  AgentTurn,
+  LANDING_GUARD,
+  Project,
+  Session,
+  type AutomationChoice,
+  type SessionOrigin,
+} from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import { SessionEngine } from "@mend/sessions";
 import { Deferred, Effect, Fiber, Layer } from "effect";
@@ -28,12 +44,34 @@ const project = new Project({
   autoName: "on",
 });
 
-const provisioned = (ownerUserId: string | null) =>
+const provisioned = (
+  ownerUserId: string | null,
+  origin: SessionOrigin = "mend",
+  autoLand: boolean | null = null,
+) =>
   new Session({
     ...makeSession(SESSION, PROJECT, WorktreeId.make("worktree-new"), ownerUserId),
     harness: "claude",
     label: null,
+    origin,
+    autoLand,
   });
+
+const earlierTurn = new AgentTurn({
+  id: AgentTurnId.make("turn-earlier"),
+  sessionId: SESSION,
+  processId: SessionProcessId.make("process-earlier"),
+  ordinal: 0,
+  author: "alice",
+  input: "fix the flaky test",
+  status: "completed",
+  providerTurnId: null,
+  error: null,
+  usage: null,
+  createdAt: new Date("2026-09-24T10:00:00.000Z"),
+  startedAt: null,
+  endedAt: null,
+});
 
 const request = (launch: ConstructorParameters<typeof LaunchRequest>[0]): StartSessionInput => ({
   projectId: PROJECT,
@@ -50,6 +88,14 @@ const startWorld = (
     readonly limits?: Partial<BudgetLimits>;
     readonly live?: number;
     readonly launchGate?: Deferred.Deferred<void>;
+    /** Where the provisioned session says it came from, and its own landing override. */
+    readonly origin?: SessionOrigin;
+    readonly sessionAutoLand?: boolean | null;
+    /** The project's "Land when a turn completes", and the Settings default. */
+    readonly projectAutoLand?: AutomationChoice;
+    readonly settingsAutoLand?: boolean;
+    /** How many turns the session has had already. */
+    readonly turns?: number;
   } = {},
 ) => {
   const effects: Array<string> = [];
@@ -89,8 +135,16 @@ const startWorld = (
         }),
         Layer.mock(SessionEngine, {
           provision: (input) =>
-            note(`engine.provision:${input.projectId}:${input.ownerUserId}:${input.origin}`).pipe(
-              Effect.as(provisioned(input.ownerUserId)),
+            note(
+              `engine.provision:${input.projectId}:${input.ownerUserId}:${input.origin}${input.autoLand === null || input.autoLand === undefined ? "" : `:land=${input.autoLand}`}`,
+            ).pipe(
+              Effect.as(
+                provisioned(
+                  input.ownerUserId,
+                  options.origin ?? "mend",
+                  options.sessionAutoLand ?? null,
+                ),
+              ),
             ),
           launchProtocol: (sessionId, start, author) =>
             note(`engine.launchProtocol:${sessionId}:${author}:${start.prompt}`).pipe(
@@ -104,8 +158,27 @@ const startWorld = (
               Effect.as(provisioned("alice")),
             ),
         }),
-        Layer.mock(ProjectsRepo, { byId: () => Effect.succeed(project) }),
-        Layer.mock(SettingsRepo, { get: () => Effect.succeed(defaultSettings) }),
+        Layer.mock(ProjectsRepo, {
+          byId: () =>
+            Effect.succeed(
+              new Project({ ...project, autoLand: options.projectAutoLand ?? "inherit" }),
+            ),
+        }),
+        Layer.mock(SettingsRepo, {
+          get: () =>
+            Effect.succeed(
+              new MendSettings({
+                ...defaultSettings,
+                autoLand: options.settingsAutoLand ?? defaultSettings.autoLand,
+              }),
+            ),
+        }),
+        Layer.mock(AgentConversationRepo, {
+          listTurns: (sessionId) =>
+            note(`conversations.listTurns:${sessionId}`).pipe(
+              Effect.as(Array.from({ length: options.turns ?? 0 }, () => earlierTurn)),
+            ),
+        }),
         Layer.mock(JobRunner, {
           enqueue: (job) =>
             note(`jobs.enqueue:${job.name}:${job.startAfterSeconds}`).pipe(Effect.as("job")),
@@ -226,5 +299,74 @@ describe("SessionStart.startAs", () => {
       _tag: "StoreFailure",
     });
     expect(world.effects.some((entry) => entry.startsWith("engine.launch"))).toBe(false);
+  });
+});
+
+const launched = (world: ReturnType<typeof startWorld>) =>
+  world.effects.filter((entry) => entry.startsWith("engine.launchProtocol"));
+
+describe("the prompt guard (docs/adr/0007, Questions do not open pull requests)", () => {
+  const guarded = `engine.launchProtocol:${SESSION}:alice:fix the flaky test\n\n${LANDING_GUARD}`;
+  const plain = `engine.launchProtocol:${SESSION}:alice:fix the flaky test`;
+
+  it("tells a Slack request's agent that Mend publishes, after the request", async () => {
+    const world = startWorld({ origin: "slack" });
+    const result = await startAs(
+      world,
+      "alice",
+      request({ mode: "protocol", prompt: "fix the flaky test" }),
+    );
+
+    expect(result._tag).toBe("Success");
+    expect(launched(world)).toEqual([guarded]);
+    expect(LANDING_GUARD).toContain("If the request is a question, answer it and change no files.");
+    expect(LANDING_GUARD).toContain("Never push and never open a pull request.");
+    expect(LANDING_GUARD).toContain("Committing is fine.");
+  });
+
+  it("tells a web session's agent only while it lands by itself", async () => {
+    const off = startWorld();
+    await startAs(off, "alice", request({ mode: "protocol", prompt: "fix the flaky test" }));
+    expect(launched(off)).toEqual([plain]);
+    // Nothing is read about turns when the guard cannot apply.
+    expect(off.effects.some((entry) => entry.startsWith("conversations."))).toBe(false);
+
+    const projectOn = startWorld({ projectAutoLand: "on" });
+    await startAs(projectOn, "alice", request({ mode: "protocol", prompt: "fix the flaky test" }));
+    expect(launched(projectOn)).toEqual([guarded]);
+
+    const settings = startWorld({ settingsAutoLand: true });
+    await startAs(settings, "alice", request({ mode: "protocol", prompt: "fix the flaky test" }));
+    expect(launched(settings)).toEqual([guarded]);
+
+    const override = startWorld({ settingsAutoLand: true, sessionAutoLand: false });
+    await startAs(override, "alice", request({ mode: "protocol", prompt: "fix the flaky test" }));
+    expect(launched(override)).toEqual([plain]);
+
+    const projectOff = startWorld({ projectAutoLand: "off", sessionAutoLand: true });
+    await startAs(projectOff, "alice", request({ mode: "protocol", prompt: "fix the flaky test" }));
+    expect(launched(projectOff)).toEqual([plain]);
+  });
+
+  it("guards only the opening turn: a resumed conversation heard it already", async () => {
+    const world = startWorld({ origin: "slack", turns: 1 });
+    await startAs(world, "alice", request({ mode: "protocol", prompt: "fix the flaky test" }));
+    expect(launched(world)).toEqual([plain]);
+  });
+
+  it("passes the session's own override to provisioning", async () => {
+    const world = startWorld();
+    await startAs(world, "alice", {
+      ...request({ mode: "protocol", prompt: "fix the flaky test" }),
+      session: {
+        harness: "claude",
+        label: null,
+        name: null,
+        base: null,
+        origin: "mend",
+        autoLand: true,
+      },
+    });
+    expect(world.effects).toContain(`engine.provision:${PROJECT}:alice:mend:land=true`);
   });
 });

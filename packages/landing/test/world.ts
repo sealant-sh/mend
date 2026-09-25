@@ -184,6 +184,8 @@ export const makeWorld = (options: WorldOptions = {}) => {
 
   /** The `change_landings` rows, newest first. */
   const landings: Array<ChangeLanding> = [];
+  /** Which tour each landing's pull request was last described with after the tour completed. */
+  const describedTours = new Map<string, string>();
   const toRow = (landing: NewChangeLanding): ChangeLanding => {
     const result = landing.result;
     return new ChangeLanding({
@@ -214,7 +216,10 @@ export const makeWorld = (options: WorldOptions = {}) => {
     }),
     Layer.mock(ProjectsRepo, { byId: () => Effect.succeed(project) }),
     Layer.mock(WorktreesRepo, { byId: () => Effect.succeed(worktree) }),
-    Layer.mock(WorktreeChangesRepo, { byWorktree: () => Effect.succeed(change) }),
+    Layer.mock(WorktreeChangesRepo, {
+      byWorktree: () => Effect.succeed(change),
+      byId: () => Effect.succeed(change),
+    }),
     Layer.mock(ChangeToursRepo, { byChange: () => Effect.succeed(tour) }),
     Layer.mock(UsersRepo, { byId: (id) => Effect.succeed(users.get(id) ?? null) }),
     Layer.succeed(ChangeLandingsRepo, {
@@ -227,6 +232,13 @@ export const makeWorld = (options: WorldOptions = {}) => {
       byId: (id) => Effect.succeed(landings.find((landing) => landing.id === id) ?? null),
       listForChange: () => Effect.sync(() => [...landings]),
       latestForChange: () => Effect.sync(() => landings[0] ?? null),
+      claimTourDescription: (id, tourId) =>
+        Effect.sync(() => {
+          if (!landings.some((landing) => landing.id === id)) return false;
+          if (describedTours.get(id) === tourId) return false;
+          describedTours.set(id, tourId);
+          return true;
+        }),
       observePullRequest: (id, pullRequest: LandedPullRequest) =>
         Effect.sync(() => {
           const index = landings.findIndex((landing) => landing.id === id);

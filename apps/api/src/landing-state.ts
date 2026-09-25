@@ -1,11 +1,14 @@
 import {
+  AgentConversationRepo,
+  AuditEventsRepo,
   ChangeLandingsRepo,
   SessionGitOpsRepo,
   SessionsRepo,
   type SessionGitOpRow,
 } from "@mend/db";
-import type { WorktreeId } from "@mend/domain";
+import type { OrganizationId, WorktreeId } from "@mend/domain";
 import {
+  type AgentTurn,
   type Change,
   type ChangeLanding,
   changeOwnerOf,
@@ -75,6 +78,45 @@ export const remoteEnvFor = (project: Project, userId: string, step: LandingStep
     });
   });
 
+/** Audit a landing, whatever its outcome and trigger: it acted with the owner's credentials. */
+export const auditLanding = (
+  landing: ChangeLanding,
+  organizationId: OrganizationId,
+  actorUserId: string,
+) =>
+  Effect.gen(function* () {
+    yield* (yield* AuditEventsRepo).record({
+      organizationId,
+      actorUserId,
+      action: "change.landed",
+      subjectType: "change",
+      subjectId: landing.changeId,
+      data: {
+        sessionId: landing.sessionId,
+        landingId: landing.id,
+        outcome: landing.outcome,
+        trigger: landing.trigger,
+        remoteBranch: landing.remoteBranch,
+        pushedSha: landing.pushedSha,
+        pullRequest: landing.pullRequest?.number ?? null,
+      },
+    });
+  });
+
+/**
+ * The latest turn automatic landing decided about, among a worktree's sessions: the one whose
+ * decision the facts state ("changes not landed · …", "intent not read").
+ */
+export const latestDecidedTurn = (turns: ReadonlyArray<AgentTurn>): AgentTurn | null =>
+  turns
+    .filter((turn) => turn.landing !== null)
+    .reduce<AgentTurn | null>(
+      (latest, turn) => (latest === null || endOf(turn) > endOf(latest) ? turn : latest),
+      null,
+    );
+
+const endOf = (turn: AgentTurn): number => (turn.endedAt ?? turn.createdAt).getTime();
+
 /** Origin's branch against the last landed commit, and when it was looked at. */
 export interface ObservedRemote extends RemoteBranchState {
   readonly observedAt: Date;
@@ -118,6 +160,8 @@ export const observeLandings = Effect.fn("observeLandings")(function* (input: {
   const sessions = yield* (yield* SessionsRepo).listForWorktree(worktree.id);
   const gitOps = yield* SessionGitOpsRepo;
   const ops = yield* Effect.forEach(sessions, (session) => gitOps.listForSession(session.id));
+  const conversations = yield* AgentConversationRepo;
+  const turns = yield* Effect.forEach(sessions, (session) => conversations.listTurns(session.id));
 
   let remote: ObservedRemote | null = null;
   let remoteFailure: string | null = null;
@@ -145,6 +189,7 @@ export const observeLandings = Effect.fn("observeLandings")(function* (input: {
       originCommitsUnseen: remote?.unseen ?? null,
       filesChangedSinceLanding: since,
       agentRefUpdates: agentRefUpdates(ops.flat()),
+      latestTurn: latestDecidedTurn(turns.flat()),
     }),
     remote,
     remoteFailure,

@@ -673,6 +673,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
             autoSuggest: payload.autoSuggest,
             autoName: payload.autoName,
             backgroundSessions: payload.backgroundSessions,
+            ...(payload.autoLand === undefined ? {} : { autoLand: payload.autoLand }),
           })
           .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
       }),
@@ -2133,6 +2134,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
           name: payload.name,
           base: payload.base,
           origin: "mend",
+          autoLand: payload.autoLand,
         });
       }),
     )
@@ -2862,6 +2864,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
         yield* steering.session(params.id);
+        const caller = yield* CurrentUser;
         const delivery = yield* FollowUpDelivery;
         return yield* delivery
           .deliver({
@@ -2873,6 +2876,8 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             commentIds: payload.commentIds,
             instruction: payload.instruction,
             idempotencyKey: payload.idempotencyKey,
+            // The turn is the reviewer's, so automatic landing checks it against the owner.
+            author: caller.user.id,
           })
           .pipe(Effect.mapError((error) => new StoreFailure({ message: error.message })));
       }),

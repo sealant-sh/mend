@@ -1,3 +1,4 @@
+export * from "./automatic.ts";
 export * from "./description.ts";
 export * from "./gh.ts";
 export * from "./github.ts";
@@ -6,3 +7,4 @@ export * from "./landing-git.ts";
 export * from "./landing-git-captured.ts";
 export * from "./pull-request-workspaces.ts";
 export * from "./pull-requests.ts";
+export * from "./tour-description.ts";

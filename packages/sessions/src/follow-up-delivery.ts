@@ -24,6 +24,11 @@ export interface DeliverFollowUpInput {
   readonly commentIds: ReadonlyArray<ReviewCommentId>;
   readonly instruction: string;
   readonly idempotencyKey: string;
+  /**
+   * Who sent the review comments. The follow-up turn is recorded as theirs, so automatic landing
+   * (docs/adr/0007-landing.md) lands it only when that is the change's owner.
+   */
+  readonly author: string | null;
 }
 
 export class FollowUpDeliveryInputError extends Schema.TaggedErrorClass<FollowUpDeliveryInputError>()(
@@ -425,7 +430,7 @@ export const FollowUpDeliveryLive: Layer.Layer<
             Effect.gen(function* () {
               yield* heartbeat.pipe(Effect.interruptible, Effect.forkScoped);
               return yield* launcher
-                .launch(input.sessionId, instruction, decision.correlationId)
+                .launch(input.sessionId, instruction, decision.correlationId, input.author)
                 .pipe(Effect.result);
             }),
           );
