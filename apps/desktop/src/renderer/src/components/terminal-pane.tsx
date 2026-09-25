@@ -3,6 +3,7 @@ import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 
+import { ProtocolConversation } from "#/components/conversation";
 import { LogsView } from "#/components/logs-view";
 import { RecordReplay, TranscriptView } from "#/components/record-replay";
 import { ReplayScrubber } from "#/components/replay-scrubber";
@@ -10,15 +11,20 @@ import { SharedControlFact, SharedControlSwitch } from "#/components/shared-cont
 import { StatusDot } from "#/components/status-dot";
 import { TtyTerminal } from "#/components/tty-terminal";
 import {
+  agentIsLive,
+  agentRunsAsConversation,
   checkpointSession,
+  handoffSession,
   openReview,
   removeSession,
   renameShell as renameShellProcess,
+  resumeSession,
   stopSession,
+  type AgentLaunchModeDto,
   type SessionDto,
   type SessionProcessDto,
-  agentIsLive,
 } from "#/lib/api";
+import { CONVERSATION_HARNESSES, launchModeOf, rememberLaunchMode } from "#/lib/conversation";
 import { queryClient, sessionDetailQuery, sessionProcessesQuery } from "#/lib/queries";
 import { processEndFact } from "#/lib/record";
 import { reviewOpenKey, takeReplayCursor } from "#/lib/review";
@@ -66,6 +72,12 @@ const probeTab = (tab: Tab, projectId: string | null) => (): Promise<PtyLiveness
     }, livenessOfError);
 };
 
+/** The confirmation a handoff of a live agent asks for: the running process ends first. */
+const handoffConfirm = (harness: string, to: AgentLaunchModeDto): string =>
+  to === "protocol"
+    ? `The ${harness} process in the terminal ends, and the same ${harness} session continues here as a conversation.`
+    : `The ${harness} conversation process ends, and the same ${harness} session continues in a terminal.`;
+
 /** What an ended session's record says happened, as one terse line. */
 const sessionEndFact = (session: SessionDto, agent: SessionProcessDto | null): string =>
   agent !== null && agent.exitedAt !== null
@@ -83,6 +95,7 @@ const sessionEndFact = (session: SessionDto, agent: SessionProcessDto | null): s
 export function TerminalPane({
   tab,
   session,
+  listedAgent,
   process,
   serviceCount,
   serviceAttention,
@@ -94,6 +107,11 @@ export function TerminalPane({
   readonly tab: Tab;
   /** The visible session that owns this terminal and its worktree. */
   readonly session: SessionDto | null;
+  /**
+   * The session's agent as the project list annotated it: enough to know a protocol agent (a
+   * conversation, nothing to attach) before the session's own detail answers.
+   */
+  readonly listedAgent: SessionProcessDto | null;
   /** Present for a supporting-shell tab. */
   readonly process: SessionProcessDto | null;
   readonly serviceCount: number;
@@ -152,6 +170,24 @@ export function TerminalPane({
     },
   });
 
+  const afterRelaunch = () => {
+    void queryClient.invalidateQueries({ queryKey: ["session", tab.sessionId] });
+    if (session !== null) {
+      void queryClient.invalidateQueries({ queryKey: ["project", session.projectId] });
+    }
+  };
+  const resume = useMutation({
+    mutationFn: () => resumeSession(tab.sessionId),
+    onSuccess: afterRelaunch,
+  });
+  const handoff = useMutation({
+    mutationFn: (to: AgentLaunchModeDto) => handoffSession(tab.sessionId, to),
+    onSuccess: (_session, to) => {
+      rememberLaunchMode(tab.sessionId, to);
+      afterRelaunch();
+    },
+  });
+
   // The agent's own liveness, not the session fold: a shell holding the workspace keeps the
   // session `idle`, but this pane shows the AGENT's PTY — ended means replay and resume.
   const currentAgent = detail.data?.currentAgent ?? null;
@@ -162,6 +198,29 @@ export function TerminalPane({
   const recordProcess =
     currentAgent !== null && currentAgent.sealantSessionId !== null ? currentAgent : null;
   const face = recordProcess === null ? "transcript" : recordFace;
+  // Protocol mode (codex app-server, claude stream-json): the agent is a conversation, with no
+  // PTY to attach or replay. Its record is the turns, items and requests.
+  const conversation =
+    session !== null &&
+    agentRunsAsConversation(currentAgent ?? listedAgent, launchModeOf(tab.sessionId));
+  // Resume rejoins a settled session in the mode its agent last ran in; a handoff continues the
+  // same provider session in the other mode, and is the owner's alone even while control is
+  // shared (the server's rule, docs/adr/0003).
+  const canResume = session !== null && !live && control.steer && detail.data !== undefined;
+  const handoffTo: AgentLaunchModeDto | null =
+    session !== null &&
+    control.own &&
+    detail.data !== undefined &&
+    CONVERSATION_HARNESSES.has(session.harness) &&
+    // Only an agent that ran has a provider session to continue: not a launch that failed
+    // before its process existed, nor a settled one that left no conversation behind.
+    currentAgent !== null &&
+    session.hasTranscript !== false
+      ? conversation
+        ? "pty"
+        : "protocol"
+      : null;
+  const relaunchError = resume.error ?? handoff.error;
   const review = useMutation({
     mutationFn: (changeId: string) => openReview(changeId, reviewOpenKey(changeId)),
     onSuccess: (opened) => onReview(opened.slice.changeId, opened.slice.id),
@@ -205,6 +264,42 @@ export function TerminalPane({
             <Quiet disabled={!live || mark.isPending} onClick={() => mark.mutate()}>
               {mark.isPending ? "marking…" : "mark checkpoint"}
             </Quiet>
+            {relaunchError !== null && (
+              <span className="truncate font-mono text-[11.5px] text-danger">
+                {relaunchError instanceof Error
+                  ? relaunchError.message
+                  : "the session did not relaunch"}
+              </span>
+            )}
+            {canResume && (
+              <Quiet
+                disabled={resume.isPending || handoff.isPending}
+                title="Rejoin the session: same worktree, restored harness state"
+                onClick={() => resume.mutate()}
+              >
+                {resume.isPending ? "resuming…" : "resume"}
+              </Quiet>
+            )}
+            {handoffTo !== null && (
+              <Quiet
+                disabled={resume.isPending || handoff.isPending}
+                title={
+                  handoffTo === "protocol"
+                    ? "Continue the same provider session as a conversation"
+                    : "Continue the same provider session in a terminal"
+                }
+                onClick={() => {
+                  if (live && !window.confirm(handoffConfirm(session.harness, handoffTo))) return;
+                  handoff.mutate(handoffTo);
+                }}
+              >
+                {handoff.isPending
+                  ? "handing off…"
+                  : handoffTo === "protocol"
+                    ? "continue as conversation"
+                    : "continue in terminal"}
+              </Quiet>
+            )}
             {session.ownerUserId !== null && control.own && (
               <SharedControlSwitch session={session} />
             )}
@@ -298,6 +393,17 @@ export function TerminalPane({
           // Nothing is known yet (the lists are loading): attach nothing, and show nothing
           // read-only, until the session and what this viewer may do with it are.
           <p className="p-4 font-mono text-[11.5px] text-term-faint">reading the session…</p>
+        ) : isSessionTab && session !== null && conversation ? (
+          <ProtocolConversation
+            key={tab.sessionId}
+            sessionId={tab.sessionId}
+            live={live}
+            starting={session.status === "starting" || (currentAgent ?? listedAgent) === null}
+            steer={control.steer}
+            summary={session.summary}
+            endFact={live ? null : sessionEndFact(session, currentAgent)}
+            viewerId={viewer?.userId ?? null}
+          />
         ) : tab.kind === "shell" && !control.steer ? (
           // A shell is steered like the agent: without control, its output is read, not typed in.
           <LogsView processId={tab.processId} />
@@ -359,7 +465,7 @@ export function TerminalPane({
         )}
       </div>
 
-      {isSessionTab && session !== null && !live && !detail.isPending && (
+      {isSessionTab && session !== null && !live && !detail.isPending && !conversation && (
         <ReplayScrubber
           checkpoints={detail.data?.checkpoints ?? []}
           from={from}

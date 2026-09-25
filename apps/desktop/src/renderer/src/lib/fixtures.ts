@@ -1,4 +1,7 @@
 import type {
+  AgentItemDto,
+  AgentRequestDto,
+  AgentTurnDto,
   ProjectDto,
   SessionAnnotationDto,
   SessionControlDto,
@@ -6,6 +9,8 @@ import type {
   SessionDto,
   SessionProcessDto,
 } from "#/lib/api";
+
+import type { ApiRequest, ApiResponse, MendBridge } from "../../../shared/bridge";
 
 /**
  * Complete wire objects for tests: every field the contract declares, with quiet defaults, so a
@@ -135,4 +140,94 @@ export const detailFixture = (patch: Partial<SessionDetailDto> = {}): SessionDet
   processes: [],
   currentAgent: null,
   ...patch,
+});
+
+export const turnFixture = (patch: Partial<AgentTurnDto> = {}): AgentTurnDto => ({
+  id: "turn-1",
+  sessionId: "session-1",
+  processId: "process-1",
+  ordinal: 1,
+  author: "user-1",
+  input: "Fix the flaky login test",
+  status: "completed",
+  providerTurnId: null,
+  error: null,
+  usage: null,
+  intent: null,
+  intentSource: null,
+  landing: null,
+  landingId: null,
+  createdAt: AT,
+  startedAt: AT,
+  endedAt: AT,
+  ...patch,
+});
+
+export const itemFixture = (patch: Partial<AgentItemDto> = {}): AgentItemDto => ({
+  id: "item-1",
+  sessionId: "session-1",
+  processId: "process-1",
+  turnId: "turn-1",
+  seq: 1,
+  providerItemId: "provider-item-1",
+  kind: "assistant-message",
+  status: "completed",
+  title: null,
+  text: "Done.",
+  data: null,
+  createdAt: AT,
+  updatedAt: AT,
+  ...patch,
+});
+
+export const requestFixture = (patch: Partial<AgentRequestDto> = {}): AgentRequestDto => ({
+  id: "request-1",
+  sessionId: "session-1",
+  processId: "process-1",
+  turnId: "turn-1",
+  kind: "command-approval",
+  providerRequestId: "provider-request-1",
+  providerItemId: null,
+  title: null,
+  detail: null,
+  questions: null,
+  status: "pending",
+  decision: null,
+  decidedBy: null,
+  answers: null,
+  createdAt: AT,
+  decidedAt: null,
+  ...patch,
+});
+
+/** A preload bridge whose every API request answers through `request`; the rest is inert. */
+export const bridgeFixture = (
+  request: (input: ApiRequest) => Promise<ApiResponse>,
+): MendBridge => ({
+  platform: "linux",
+  connection: {
+    get: async () => ({
+      url: "http://localhost:3105",
+      signedIn: true,
+      configPath: "/tmp/cli.json",
+    }),
+    authorize: async () => ({ ok: false, reason: "not in test" }),
+    awaitAuthorize: async () => ({ ok: false, reason: "not in test" }),
+    cancelAuthorize: async () => undefined,
+    setToken: async () => undefined,
+    signOut: async () => ({ revoke: "no-device" }),
+    onChange: () => () => {},
+  },
+  api: { request },
+  tty: { url: async () => "ws://localhost/tty" },
+  events: {
+    onEvent: () => () => {},
+    onState: () => () => {},
+  },
+  shell: { openExternal: async () => undefined },
+  window: {
+    minimize: () => {},
+    toggleMaximize: () => {},
+    close: () => {},
+  },
 });

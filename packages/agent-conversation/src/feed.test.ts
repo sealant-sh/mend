@@ -2,9 +2,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildAgentConversation,
+  conversationActivity,
+  latestItemSeq,
   mergeAgentItems,
+  openTurnOf,
   type AgentConversationDto,
-} from "./agent-conversation-feed";
+} from "./feed.ts";
 
 const conversation: AgentConversationDto = {
   turns: [
@@ -104,5 +107,29 @@ describe("buildAgentConversation", () => {
     const updated = { ...original, seq: 4, text: "done now" };
     const added = { ...seed, id: "later", seq: 5 };
     expect(mergeAgentItems([original], [updated, added])).toEqual([updated, added]);
+  });
+});
+
+describe("conversation activity", () => {
+  it("names the newest open turn as what Stop interrupts", () => {
+    expect(openTurnOf(conversation.turns)?.id).toBe("turn-2");
+    expect(openTurnOf(conversation.turns.filter((turn) => turn.id === "turn-1"))).toBeUndefined();
+  });
+
+  it("says the agent waits on a person before it says it works", () => {
+    expect(conversationActivity(conversation)).toBe("waiting");
+    expect(conversationActivity({ ...conversation, requests: [] })).toBe("working");
+    expect(
+      conversationActivity({
+        ...conversation,
+        requests: [],
+        turns: conversation.turns.map((turn) => ({ ...turn, status: "completed" })),
+      }),
+    ).toBeNull();
+  });
+
+  it("reads on from the highest item sequence held", () => {
+    expect(latestItemSeq(conversation.items)).toBe(3);
+    expect(latestItemSeq([])).toBe(0);
   });
 });

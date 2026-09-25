@@ -93,9 +93,40 @@ the pill row, and go. Choices are sticky per project + harness (`mend-composer-p
 default harness is what a project starts on until it picks its own. `createSession` +
 `launchSessionStart` — the server composes harness argv from the structured start and seeds
 auto-naming from the prompt — then the terminal opens as a new session tab and the session appears
-in the tree and inbox. An empty prompt is `mend claude` as a button; the CLI and the app produce
-identical sessions. The same composer fills the terminal pane inline whenever the focused project
-has no tabs open, so an empty cockpit starts with a prompt, not a hint.
+in the tree and inbox. For claude and codex, Settings › Runs as picks Terminal (the PTY default) or
+Conversation (protocol mode, sticky per project + harness); a conversation start sends `mode` on
+create and launch, the prompt becomes its opening turn, and the tab opens as the conversation. An
+empty prompt is `mend claude` as a button; the CLI and the app produce identical sessions. The same
+composer fills the terminal pane inline whenever the focused project has no tabs open, so an empty
+cockpit starts with a prompt, not a hint.
+
+### Conversations (protocol-mode sessions)
+
+A claude or codex session can run its agent in protocol mode (codex app-server, claude stream-json)
+instead of a PTY. It has no terminal to attach: its session tab shows the conversation where the
+terminal would be (`components/conversation.tsx`), on the app's own sheet, since nothing there is a
+terminal. The feed is the phone's, shared as `@mend/agent-conversation`: authored turns in order,
+each turn's items (what the agent said and did) and requests (approvals, questions) beneath it. A
+caller who steers sends turns, answers approvals (allow once, allow for session, decline) and
+questions, and interrupts the open turn; anyone else reads it, and a request tells them it is
+waiting for an answer. A turn names who sent it when that was someone else, and who interrupted it
+when the control record (`/api/sessions/:id/control-events`) says. A turn without an author is
+Mend's (a Review follow-up) only on a conversation process; the terminal history a handoff imports
+also has no author, recorded against the terminal agent's process, and reads "from the terminal".
+The stream's `agent-conversation` pointer re-reads the conversation (items from the held cursor on)
+and the detail. Pointers come per streamed delta, faster than a read completes, so a read in flight
+is left to finish and the pointers that land meanwhile coalesce into one read after it (cancelling
+the read in flight, the default invalidation, froze the view until the agent paused). A 4-second
+poll covers a dropped stream while the agent runs.
+
+The pane knows a conversation from the agent's own row (`kind: agent-protocol`), from the project
+list's annotation before the detail answers, and from the launcher's intent before any row exists.
+
+A settled session offers **resume** (`control.steer`), which rejoins it in the mode its agent last
+ran in. A claude or codex session whose agent ran offers **continue as conversation** or **continue
+in terminal**: the same provider session in the other mode (`POST /api/sessions/:id/handoff`). That
+is the owner's alone even while control is shared (`control.own`, the server's rule); handing off a
+live agent confirms first, since its process ends.
 
 ### The terminal
 
@@ -238,6 +269,11 @@ change in view.
   keybindings, and retained-workspace controls. Clean base (2026-09-24, branch
   `desktop/02-contracts`): wire shapes and routes from `@mend/api-contracts`, the bench path
   removed, controls gated on what the server says the caller may do.
+- **Conversations (2026-09-24, branch `desktop/03-conversations`).** Protocol-mode sessions read and
+  steer as a conversation (turns, approvals, questions, interrupt), the launcher starts claude and
+  codex in either mode, settled sessions resume, and the owner hands a session between modes. Proven
+  with unit tests on the data layer and a component harness driven in Chromium against fixtures; not
+  proven live: alpha has no protocol-mode session, and launching one spends the owner's credentials.
 - **M2: Review in-app.** Immutable checkpoint-pair diff, P0 controls, comments, minimum evidence,
   and recoverable send-back.
 - **M3: Services in-app.** Stable Services, attempt history, private forwards, read-only logs, and
@@ -246,6 +282,19 @@ change in view.
   and keybinding configuration.
 
 ## Decision log
+
+- 2026-09-24: the phone's platform-free conversation logic moved into `@mend/agent-conversation`
+  (ordering, item cursor paging, request words, answer composition) instead of being copied. The
+  phone keeps its own DTO parsing; the feed is generic over the shapes, so the desktop passes the
+  contract's wire types. The package says what the conversation is doing (`waiting`/`working`); each
+  client words it for who is looking.
+- 2026-09-24: a conversation is drawn on the app's sheet, not the dark terminal ground; the terminal
+  stays the one always-dark surface. Assistant text is plain pre-wrapped prose: the desktop has no
+  markdown renderer yet.
+- 2026-09-24: handoff is gated on `control.own`, not `control.steer`: the server's handoff answers
+  only the owner (`steering.owned`), and SessionControlView says hand-off is the owner's. It is
+  offered only once an agent process ran and the session left a conversation behind. Resume is
+  `control.steer`, as the server enforces.
 
 - 2026-09-24: the terminal socket drops `Origin` and `Cookie` in main
   (`session.webRequest.onBeforeSendHeaders`, sockets to the configured server only) instead of

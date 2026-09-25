@@ -1,4 +1,27 @@
 import { LegendList } from "@legendapp/list/react-native";
+import {
+  answersComplete,
+  buildAgentConversation,
+  composeAnswers,
+  conversationActivity,
+  EMPTY_CONVERSATION,
+  itemFailed,
+  itemName,
+  openTurnOf,
+  recordedAnswers as recordedAnswersOf,
+  requestAsk,
+  requestDetailText,
+  requestName,
+  requestOutcome,
+  toggleChoice,
+  type AgentConversationEntry,
+  type AgentItemDto,
+  type AgentRequestDto,
+  type AgentRequestResponse,
+  type AgentTurnDto,
+  type AnswerChoices,
+  type WrittenAnswers,
+} from "@mend/agent-conversation";
 import { useCallback, useMemo, useState } from "react";
 import { Pressable, StyleSheet, TextInput, View } from "react-native";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
@@ -7,69 +30,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { EvButton } from "@/components/button";
 import { MendMarkdown } from "@/components/markdown";
 import { MonoText, UiText } from "@/components/typography";
-import {
-  buildAgentConversation,
-  useAgentConversation,
-  useAgentConversationActions,
-  type AgentConversationEntry,
-  type AgentItemDto,
-  type AgentRequestDto,
-  type AgentRequestResponse,
-  type AgentTurnDto,
-} from "@/data/agent-conversation";
-import { findLastMatching } from "@/data/collections";
+import { useAgentConversation, useAgentConversationActions } from "@/data/agent-conversation";
 import { radius, spacing, useEvidenceTheme } from "@/theme/evidence";
-
-const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
-
-const requestDetailText = (detail: unknown): string | null => {
-  if (typeof detail === "string") {
-    return detail === "" ? null : detail;
-  }
-  if (detail === null) {
-    return null;
-  }
-  const visible = isRecord(detail) && detail.input !== undefined ? detail.input : detail;
-  const text = JSON.stringify(visible, null, 2);
-  return text === undefined || text === "{}" ? null : text;
-};
-
-const requestOutcome = (request: AgentRequestDto): string => {
-  if (request.answers !== null) {
-    return "answered";
-  }
-  switch (request.decision) {
-    case "accept":
-      return "allowed once";
-    case "accept-for-session":
-      return "allowed for session";
-    case "decline":
-      return "declined";
-    case "cancel":
-      return "cancelled";
-    default:
-      return request.status;
-  }
-};
-
-const requestName = (request: AgentRequestDto): string => {
-  if (request.title !== null && request.title !== "") {
-    return request.title;
-  }
-  switch (request.kind) {
-    case "command-approval":
-      return "Run this command?";
-    case "file-change-approval":
-      return "Apply this file change?";
-    case "tool-permission":
-      return "Allow this tool?";
-    case "user-input":
-      return "The agent needs an answer";
-    default:
-      return "The agent needs a decision";
-  }
-};
 
 function TurnRow({ turn }: { readonly turn: AgentTurnDto }) {
   const { colors } = useEvidenceTheme();
@@ -96,22 +58,6 @@ function TurnRow({ turn }: { readonly turn: AgentTurnDto }) {
     </View>
   );
 }
-
-const itemName = (item: AgentItemDto): string => {
-  if (item.title !== null) {
-    return item.title;
-  }
-  switch (item.kind) {
-    case "file-change":
-      return "File change";
-    case "web-search":
-      return "Web search";
-    case "command-execution":
-      return "Command";
-    default:
-      return "Tool";
-  }
-};
 
 function ItemRow({ item }: { readonly item: AgentItemDto }) {
   const { colors } = useEvidenceTheme();
@@ -145,7 +91,7 @@ function ItemRow({ item }: { readonly item: AgentItemDto }) {
     );
   }
 
-  const failure = item.kind === "error" || item.status === "failed";
+  const failure = itemFailed(item);
   return (
     <View
       style={{
@@ -181,50 +127,23 @@ function RequestRow({
   readonly onRespond: (requestId: string, response: AgentRequestResponse) => void;
 }) {
   const { colors } = useEvidenceTheme();
-  const [selected, setSelected] = useState<Readonly<Record<string, ReadonlyArray<string>>>>({});
-  const [written, setWritten] = useState<Readonly<Record<string, string>>>({});
+  const [selected, setSelected] = useState<AnswerChoices>({});
+  const [written, setWritten] = useState<WrittenAnswers>({});
   const pending = request.status === "pending";
   const questions = request.questions ?? [];
-  const expectsAnswers = request.kind === "user-input";
-  const hasQuestions = expectsAnswers && questions.length > 0;
+  const ask = requestAsk(request);
+  const expectsAnswers = ask !== "decision";
+  const hasQuestions = ask === "answers";
   const detail = requestDetailText(request.detail);
-  const recordedAnswers = Object.entries(request.answers ?? {}).map(([questionId, answers]) => ({
-    question:
-      questions.find((candidate) => candidate.id === questionId)?.header ??
-      questions.find((candidate) => candidate.id === questionId)?.question ??
-      questionId,
-    answers,
-  }));
+  const recordedAnswers = recordedAnswersOf(request);
 
   const toggle = (questionId: string, label: string, multiSelect: boolean) => {
-    setSelected((current) => {
-      const values = current[questionId] ?? [];
-      let next: ReadonlyArray<string>;
-      if (values.includes(label)) {
-        next = values.filter((value) => value !== label);
-      } else {
-        next = multiSelect ? [...values, label] : [label];
-      }
-      return { ...current, [questionId]: next };
-    });
+    setSelected((current) => toggleChoice(current, questionId, label, multiSelect));
   };
   const answer = () => {
-    const answers: Record<string, ReadonlyArray<string>> = {};
-    for (const question of questions) {
-      const custom = written[question.id]?.trim() ?? "";
-      const choices = selected[question.id] ?? [];
-      if (custom === "") {
-        answers[question.id] = choices;
-      } else {
-        answers[question.id] = question.multiSelect ? [...choices, custom] : [custom];
-      }
-    }
-    onRespond(request.id, { answers });
+    onRespond(request.id, { answers: composeAnswers(questions, selected, written) });
   };
-  const canAnswer = questions.every((question) => {
-    const custom = written[question.id]?.trim() ?? "";
-    return (selected[question.id]?.length ?? 0) > 0 || custom !== "";
-  });
+  const canAnswer = answersComplete(questions, selected, written);
   let answerLabel = hasQuestions ? "Send answer" : "Continue";
   if (responding) {
     answerLabel = "Sending…";
@@ -423,23 +342,11 @@ export function ProtocolConversation({
     isVisible: state.isVisible,
   }));
   const entries = useMemo(
-    () =>
-      buildAgentConversation(
-        conversation.data ?? {
-          turns: [],
-          items: [],
-          requests: [],
-        },
-      ),
+    () => buildAgentConversation(conversation.data ?? EMPTY_CONVERSATION),
     [conversation.data],
   );
-  const openTurn = findLastMatching(
-    conversation.data?.turns ?? [],
-    (turn) => turn.status === "queued" || turn.status === "running",
-  );
-  const pendingRequest = conversation.data?.requests.find(
-    (request) => request.status === "pending",
-  );
+  const openTurn = openTurnOf(conversation.data?.turns ?? []);
+  const activity = conversationActivity(conversation.data ?? EMPTY_CONVERSATION);
   const bottomPad =
     (keyboard.isVisible ? keyboard.height : insets.bottom) +
     (active ? composerHeight + spacing.xs : spacing.md);
@@ -507,9 +414,9 @@ export function ProtocolConversation({
           gap: 10,
         }}
         ListFooterComponent={
-          active && (openTurn !== undefined || pendingRequest !== undefined) ? (
+          active && activity !== null ? (
             <MonoText tone="faint" size={11.5} style={{ paddingHorizontal: 2, paddingTop: 4 }}>
-              {pendingRequest === undefined ? "working…" : "waiting for your answer"}
+              {activity === "waiting" ? "waiting for your answer" : "working…"}
             </MonoText>
           ) : null
         }

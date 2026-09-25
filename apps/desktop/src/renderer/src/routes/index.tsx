@@ -194,6 +194,12 @@ function Main() {
     focusedSessionId === null ? null : (sessions.get(focusedSessionId) ?? null);
   const focusedProcess =
     focusedTab?.kind === "shell" ? (processes.get(focusedTab.processId) ?? null) : null;
+  /** The focused session's agent as the project list saw it, before its own detail answers. */
+  const focusedListedAgent =
+    focusedSessionId === null
+      ? null
+      : (focusedProject?.annotations.find((row) => row.sessionId === focusedSessionId)
+          ?.currentAgent ?? null);
   const focusedServices =
     focusedSessionId === null ? [] : servicesForSession(serviceViews.data ?? [], focusedSessionId);
 
@@ -605,6 +611,7 @@ function Main() {
               }
               tab={focusedTab}
               session={focusedSession}
+              listedAgent={focusedListedAgent}
               process={focusedProcess}
               serviceCount={focusedServices.length}
               serviceAttention={focusedServices.some((service) => service.attention !== null)}
