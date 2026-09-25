@@ -128,10 +128,10 @@ import { JobRunner } from "@mend/jobs";
 import { asSealantUser, SealantClient } from "@mend/sealant";
 import {
   CaptureRuntime,
+  DotfilesCloner,
   FollowUpDelivery,
   RECIPE_NAME,
   type ReadStamp,
-  resolveRepositoryArchive,
   SessionEngine,
   WorktreeReads,
   type WorktreeReadError,
@@ -995,14 +995,16 @@ export const DotfilesGroupLive = HttpApiBuilder.group(MendApi, "dotfiles", (hand
             (message) => new SettingsFailure({ message }),
           );
           // Tried before it is saved, through the launch's own clone and pack (same bounds, same
-          // git environment): a repository that cannot be cloned, has no such branch or
-          // subdirectory, or packs past the cap is refused here with that reason, instead of
-          // being left out of every launch after it. The clone is a launch's clone, so it holds
-          // one of the account's launch slots: saves cannot start clones past that budget.
+          // git environment, the caller's own git access): a repository that cannot be cloned,
+          // has no such branch or subdirectory, or packs past the cap is refused here with that
+          // reason, instead of being left out of every launch after it. The clone is a launch's
+          // clone, so it holds one of the account's launch slots: saves cannot start clones past
+          // that budget.
           const budgets = yield* Budgets;
+          const cloner = yield* DotfilesCloner;
           const tried = yield* budgets.withLaunchSlot(
             caller.user.id,
-            resolveRepositoryArchive(payload.repository, { pinCloneEnv }).pipe(
+            cloner.archive(caller.user.id, payload.repository, { pinCloneEnv }).pipe(
               Effect.mapError((error) => new SettingsFailure({ message: error.message })),
               Effect.as(true),
             ),

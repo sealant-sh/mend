@@ -138,7 +138,7 @@ import {
   REPLACEMENT_AGE_SECONDS,
 } from "./capture-runtime.ts";
 import { detectInstallCommand, PLATFORM_PROBE_SCRIPT, platformKeyOf } from "./dependency-cache.ts";
-import { DotfilesResolveError, resolveRepositoryArchive, snapshotArchive } from "./dotfiles.ts";
+import { DotfilesCloner, DotfilesResolveError, snapshotArchive } from "./dotfiles.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
 import {
   HARNESS_HOME_MOUNT_PATH,
@@ -841,6 +841,7 @@ type SessionEngineRequirements =
   | HotWorkspacesRepo
   | UserDotfilesRepo
   | DotfilesStore
+  | DotfilesCloner
   | SkillsRepo
   | SessionRunsRepo
   | SessionProcessesRepo
@@ -1562,6 +1563,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const hotWorkspaces = yield* HotWorkspacesRepo;
       const userDotfilesRepo = yield* UserDotfilesRepo;
       const dotfilesStore = yield* DotfilesStore;
+      const dotfilesCloner = yield* DotfilesCloner;
       const skillsRepo = yield* SkillsRepo;
       const sessionRuns = yield* SessionRunsRepo;
       const processes = yield* SessionProcessesRepo;
@@ -3571,8 +3573,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // address just checked, because a name can answer differently at every launch. The owner's
         // actual role was applied at save; this recheck guards the tenant profile's networks.
         // The pin composes over the clone's own defaults, so a pinned ssh keeps BatchMode.
+        // The clone runs as the owner, with their own git access (DotfilesCloner).
         const repositoryOutcome =
-          dotfilesRepository === null
+          dotfilesRepository === null || ownerUserId === null
             ? null
             : yield* sourcePolicy.check(dotfilesRepository.url, { isOperator: true }).pipe(
                 Effect.mapError(
@@ -3582,7 +3585,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     }),
                 ),
                 Effect.flatMap((clearance) =>
-                  resolveRepositoryArchive(dotfilesRepository, {
+                  dotfilesCloner.archive(ownerUserId, dotfilesRepository, {
                     pinCloneEnv: (env) => sourcePolicy.pinnedEnv(clearance, env),
                   }),
                 ),

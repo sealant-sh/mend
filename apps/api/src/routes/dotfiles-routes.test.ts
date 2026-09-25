@@ -5,10 +5,16 @@ import * as path from "node:path";
 
 import { dotfilesGroup } from "@mend/api-contracts";
 import { Auth } from "@mend/auth";
-import { ProjectsRepo, UserDotfilesRepo } from "@mend/db";
+import {
+  type GitAccessMode,
+  InstanceRolesRepo,
+  ProjectsRepo,
+  UserDotfilesRepo,
+  UserGitAccessRepo,
+} from "@mend/db";
 import type { DotfilesRepository } from "@mend/domain";
-import { SessionEngine } from "@mend/sessions";
-import { DotfilesStore, SourcePolicy } from "@mend/store";
+import { DotfilesCloner, makeDotfilesClonerLayer, SessionEngine } from "@mend/sessions";
+import { AgentBridge, DotfilesStore, MendKeys, NO_SIGNER_MESSAGE, SourcePolicy } from "@mend/store";
 import { Deferred, Effect, Fiber, Layer, ManagedRuntime, Option } from "effect";
 import { HttpRouter, HttpServer } from "effect/unstable/http";
 import { HttpApi, HttpApiBuilder } from "effect/unstable/httpapi";
@@ -75,6 +81,7 @@ const authLayer: Layer.Layer<Auth> = Layer.succeed(Auth, {
 
 type DotfilesRouteServices =
   | Budgets
+  | DotfilesCloner
   | UserDotfilesRepo
   | DotfilesStore
   | SourcePolicy
@@ -82,10 +89,47 @@ type DotfilesRouteServices =
   | ProjectsRepo
   | SessionEngine;
 
+/** Whose git access the probe's clone uses: an operator of a single-tenant install by default. */
+interface ClonerWorld {
+  readonly tenancy: "single" | "multi";
+  readonly ownerIsOperator: boolean;
+  readonly gitAccess: GitAccessMode | null;
+  /** Every account whose git access the cloner read. */
+  readonly asked?: Array<string>;
+}
+
+const HOST_OPERATOR: ClonerWorld = { tenancy: "single", ownerIsOperator: true, gitAccess: null };
+
+const clonerLayer = (world: ClonerWorld): Layer.Layer<DotfilesCloner> =>
+  makeDotfilesClonerLayer(world.tenancy).pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        Layer.mock(MendKeys, {
+          ensure: () => Effect.die("no key in these worlds"),
+        }),
+        Layer.mock(AgentBridge, {
+          status: () => Effect.succeed({ connected: false, clientName: null, since: null }),
+          socketPath: () => "/unused/agent.sock",
+        }),
+        Layer.mock(UserGitAccessRepo, {
+          mode: (userId) =>
+            Effect.sync(() => {
+              world.asked?.push(userId);
+              return world.gitAccess;
+            }),
+        }),
+        Layer.mock(InstanceRolesRepo, {
+          isOperator: () => Effect.succeed(world.ownerIsOperator),
+        }),
+      ),
+    ),
+  );
+
 /** PUT /api/dotfiles/repository; `saved` is every repository the handler wrote. */
 const putRepository = async (
   repository: Partial<DotfilesRepository> & { readonly url: string },
   budgets: Budgets["Service"] = makeBudgets(DEFAULT_BUDGET_LIMITS),
+  cloner: ClonerWorld = HOST_OPERATOR,
 ): Promise<{
   readonly status: number;
   readonly body: unknown;
@@ -94,6 +138,7 @@ const putRepository = async (
   const saved: Array<DotfilesRepository | null> = [];
   const dependencies = Layer.mergeAll(
     Layer.succeed(Budgets, budgets),
+    clonerLayer(cloner),
     Layer.succeed(UserDotfilesRepo, {
       repository: () => Effect.succeed(saved.at(-1) ?? null),
       setRepository: (_userId, value) =>
@@ -204,5 +249,22 @@ describe("PUT /api/dotfiles/repository", () => {
     const saved = await putRepository({ url }, budgets);
     expect(saved.status).toBe(200);
     expect(saved.saved).toHaveLength(1);
+  });
+
+  it("tries the repository with the caller's own git access, and refuses without falling back", async () => {
+    const asked: Array<string> = [];
+    // A multi-tenant caller whose git access is the bridge, with nobody sharing a signer.
+    const result = await putRepository(
+      { url: "git@github.com:dots/dots.git" },
+      makeBudgets(DEFAULT_BUDGET_LIMITS),
+      { tenancy: "multi", ownerIsOperator: false, gitAccess: "bridge", asked },
+    );
+    expect(asked).toEqual(["user-dotfiles"]);
+    expect(result.status).toBe(422);
+    expect(result.body).toMatchObject({
+      _tag: "SettingsFailure",
+      message: `the dotfiles repository signs with your connected signer: ${NO_SIGNER_MESSAGE}`,
+    });
+    expect(result.saved).toEqual([]);
   });
 });

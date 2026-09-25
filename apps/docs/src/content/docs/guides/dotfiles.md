@@ -57,14 +57,35 @@ Open **Settings → Dotfiles** and provide a repository URL. Optional fields con
 - a repository subdirectory whose contents should become the home tree;
 - whether Mend runs `./install.sh` when the selected tree contains it.
 
-At each launch, the server clones or refreshes the repository with its own host Git and SSH setup,
-archives the selected tree, and sends the archive to the workspace.
+At each launch, the server clones the repository as you, archives the selected tree, and sends the
+archive to the workspace. [Which credentials the clone uses](#which-credentials-the-clone-uses) is
+below.
 
 Saving the repository runs that same clone and archive once. If it fails (the server cannot reach
 the repository, the branch or subdirectory does not exist, or the tree is over the size limits),
 Mend does not save the repository and shows the reason. The check is a launch's clone, so it counts
 toward the account's launches starting at once (`MEND_BUDGET_ACCOUNT_LAUNCHES_IN_FLIGHT`); past that
 budget the save is refused until a launch settles.
+
+### Which credentials the clone uses
+
+The clone uses your own [Git access](/guides/git-access/), never another account's:
+
+- **An SSH URL** (`git@github.com:you/dots.git` or `ssh://…`) signs with your Git access: your Mend
+  key, or your connected signer if your Git access is the bridge. Add your Mend public key to your
+  Git account's SSH keys, or as a deploy key on the dotfiles repository. With the bridge, keep
+  `mend keys share` running when sessions launch; while no signer is connected, sessions launch
+  without the repository and say why.
+- **An HTTPS URL** clones without a credential, so only a public repository clones that way. Mend
+  holds no HTTPS token for your account: a connected GitHub account's token stays with the platform
+  and is never returned to the server. For a private repository, save its SSH URL instead.
+
+These clones read none of the server's own Git or SSH setup: no credential helper, `.netrc`, SSH
+agent, SSH config or key files.
+
+The exception is a single-tenant install (`MEND_TENANCY=single`, the default): there, the operator's
+own dotfiles clone with the server's Git and SSH setup, as a shell on that machine would. Every
+other account on that install follows the rules above.
 
 Automatic mode detects chezmoi and stow layouts. Other repositories are copied into the workspace
 home directory.

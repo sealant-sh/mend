@@ -39,6 +39,9 @@ import {
   SettingsRepo,
   SkillsRepo,
   UserDotfilesRepo,
+  type GitAccessMode,
+  InstanceRolesRepo,
+  UserGitAccessRepo,
   type NewCheckpoint,
   type NewSession,
   type NewSessionProcess,
@@ -103,6 +106,8 @@ import {
   CaptureRuntimeLive,
   CaptureRuntimeOff,
   CaptureUploadPolicyDefault,
+  DotfilesCloner,
+  makeDotfilesClonerLayer,
   HARNESS_HOME_MOUNT_PATH,
   HarnessStateNotFoundError,
   LegacyBenchReadOnlyError,
@@ -672,6 +677,44 @@ const agentBridgeStubLayer = Layer.succeed(AgentBridge, {
   socketPath: () => "/tmp/mend-test-bridge.sock",
   begin: () => Effect.succeed(() => {}),
 });
+
+/**
+ * The dotfiles cloner as production builds it, under `tenancy`, over the stub key and bridge. The
+ * default world is a single-tenant install whose session owner is its operator, so a clone uses
+ * the host's own git setup, as the fixture's git daemon needs nothing more.
+ */
+const dotfilesClonerLayer = (
+  options: {
+    readonly tenancy?: "single" | "multi";
+    readonly ownerIsOperator?: boolean;
+    readonly gitAccess?: GitAccessMode | null;
+    readonly agentBridge?: Layer.Layer<AgentBridge>;
+    /** Every account the cloner asked about, and what it asked. */
+    readonly asked?: Array<string>;
+  } = {},
+): Layer.Layer<DotfilesCloner> =>
+  makeDotfilesClonerLayer(options.tenancy ?? "single").pipe(
+    Layer.provide(
+      Layer.mergeAll(
+        mendKeysStubLayer,
+        options.agentBridge ?? agentBridgeStubLayer,
+        Layer.mock(UserGitAccessRepo, {
+          mode: (userId) =>
+            Effect.sync(() => {
+              options.asked?.push(`git access of ${userId}`);
+              return options.gitAccess ?? null;
+            }),
+        }),
+        Layer.mock(InstanceRolesRepo, {
+          isOperator: (userId) =>
+            Effect.sync(() => {
+              options.asked?.push(`operator role of ${userId}`);
+              return options.ownerIsOperator ?? true;
+            }),
+        }),
+      ),
+    ),
+  );
 
 const gitOpsStubLayer = Layer.succeed(SessionGitOpsRepo, {
   record: (op) =>
@@ -1800,6 +1843,8 @@ const withEngine = <A, E>(
     /** The owner's dotfiles; none configured unless a test brings its own. */
     readonly userDotfilesLayer?: Layer.Layer<UserDotfilesRepo>;
     readonly dotfilesStoreLayer?: Layer.Layer<DotfilesStore>;
+    /** Whose git access a dotfiles clone uses; the operator's host setup unless a test says. */
+    readonly dotfilesClonerLayer?: Layer.Layer<DotfilesCloner>;
     readonly workspaceImage?: typeof defaultSettings.workspaceImage;
     readonly environment?: () => {
       readonly revision: number;
@@ -1929,6 +1974,7 @@ const withEngine = <A, E>(
         secretCipherStubLayer,
         options.userDotfilesLayer ?? userDotfilesStubLayer,
         options.dotfilesStoreLayer ?? dotfilesStoreStubLayer,
+        options.dotfilesClonerLayer ?? dotfilesClonerLayer(),
         options.skillsLayer ?? skillsStubLayer,
       ),
     ),
@@ -4653,6 +4699,7 @@ describe("SessionEngine", () => {
           settingsLayer(),
           userDotfilesStubLayer,
           dotfilesStoreStubLayer,
+          dotfilesClonerLayer(),
           skillsStubLayer,
         ),
       ),
@@ -7660,6 +7707,72 @@ describe("SessionEngine dotfiles", () => {
         sealantLayer: sealantLaunchLayer(created),
         userDotfilesLayer: userDotfilesLayer({ repository: repositoryOf(url) }),
         dotfilesStoreLayer: dotfilesStoreLayer(() => Effect.succeed(SNAPSHOT)),
+      },
+    );
+  });
+
+  it("clones as the session's owner, with their git access, and never lends the host's", async () => {
+    const created: CreateOptions[] = [];
+    const asked: Array<string> = [];
+    // An ssh remote on a multi-tenant instance, for an owner whose git access is the bridge and
+    // who shares no signer: the clone has no signer of theirs, and no other identity to use.
+    const url = "ssh://git@127.0.0.1:1/owner/dots.git";
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+
+          expect(asked).toEqual(["git access of user-fixture"]);
+          expect(created).toHaveLength(1);
+          expect(created[0]?.dotfiles?.archives).toEqual([
+            { data: SNAPSHOT.data, manager: "copy", bootstrap: false },
+          ]);
+          const launched = world.sessions.get(session.id);
+          expect(launched?.status).toBe("running");
+          expect(launched?.dotfiles?.notApplied).toEqual([
+            {
+              source: "repository",
+              reason:
+                "the dotfiles repository signs with your connected signer: no signer connected — run `mend keys share` on the machine that holds your key",
+            },
+          ]);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        userDotfilesLayer: userDotfilesLayer({ repository: repositoryOf(url) }),
+        dotfilesStoreLayer: dotfilesStoreLayer(() => Effect.succeed(SNAPSHOT)),
+        dotfilesClonerLayer: dotfilesClonerLayer({
+          tenancy: "multi",
+          gitAccess: "bridge",
+          asked,
+        }),
+      },
+    );
+  });
+
+  it("clones a public repository on a multi-tenant instance with none of the host's setup", async () => {
+    const created: CreateOptions[] = [];
+    const cell: { repository: DotfilesRepository | null } = { repository: null };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { project, engine, session } = yield* launchOnce(world, tmp);
+          const url = dotfilesOrigin(tmp, project);
+          cell.repository = repositoryOf(url);
+          yield* engine.launch(session.id, ["codex"]);
+
+          expect(created[0]?.dotfiles?.archives?.map(({ manager }) => manager)).toEqual([
+            "stow",
+            "copy",
+          ]);
+          expect(world.sessions.get(session.id)?.dotfiles?.notApplied).toEqual([]);
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        userDotfilesLayer: userDotfilesLayer(cell),
+        dotfilesStoreLayer: dotfilesStoreLayer(() => Effect.succeed(SNAPSHOT)),
+        dotfilesClonerLayer: dotfilesClonerLayer({ tenancy: "multi", ownerIsOperator: false }),
       },
     );
   });

@@ -120,6 +120,7 @@ import {
   CaptureRuntimeLive,
   CaptureUploadPolicyLive,
   CaptureRuntimeOff,
+  DotfilesClonerLive,
   FollowUpDeliveryLive,
   FollowUpLauncherLive,
   ProtocolHostLive,
@@ -677,9 +678,10 @@ const MainLive = Layer.unwrap(
       Layer.provide(Layer.mergeAll(sessionRepository, worktreeReads, captureRuntime)),
       Layer.provide(StoreLive),
       Layer.provide(StoreConfig.layer),
-      // `pipe` takes at most twenty steps; deployment facts and the source policy (which git
-      // remotes Mend may reach, for the routes and the engine) ride one.
-      Layer.provide(Layer.merge(DeploymentConfigLive, SourcePolicyLive)),
+      // `pipe` takes at most twenty steps; deployment facts, the source policy (which git
+      // remotes Mend may reach, for the routes and the engine) and the dotfiles cloner (whose
+      // git access a dotfiles clone uses, for the save probe and the launch) ride one.
+      Layer.provide(Layer.mergeAll(DeploymentConfigLive, SourcePolicyLive, DotfilesClonerLive)),
       // The per-user dotfiles store and the organization folders, read and written directly.
       Layer.provide(Layer.merge(DotfilesStoreLayer, FolderStoreLayer)),
       // The machine's Mend git key (docs/GIT-ACCESS.md — the mend-key auth mode).

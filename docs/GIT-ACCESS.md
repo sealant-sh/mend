@@ -116,6 +116,17 @@ another account's. A hot workspace is warmed as the owner it serves, and a sessi
 no signer at all. Reference repositories belong to an organization and are fetched with the git
 access of the owner who adds or refreshes them, never the host's ambient identity.
 
+The dotfiles repository is cloned at every launch as the session's owner, and when it is saved as
+the account saving it. An SSH URL signs with that account's git access (its Mend key, or its bridge
+when that is its choice). An HTTPS or `git://` URL clones with no credential: Mend holds no HTTPS
+token of the account's (a connected GitHub account's token lives in Sealant, which never returns
+it). Neither reads the host's git or ssh setup: no system or global git config, no askpass, no
+agent, no ssh config (`-F /dev/null`), none of ssh's default key files (`-o IdentityFile=none`; ssh
+finds `~/.ssh/id_*` through the passwd entry, not HOME, and would offer them on the bridge), and an
+empty HOME, so no `.netrc`. Only the operator of a `single` tenancy install clones with the host's
+own setup, the same rule as the host's `gh` login below (`packages/sessions/src/dotfiles.ts`,
+`DotfilesCloner`).
+
 Calls to the GitHub API (repository discovery, pull request lists) have no per-account credential
 yet. On a single-organization install the operator may use the host's `gh` login; everyone else sees
 "no identity" with the reason. A per-account GitHub token, sealed like other credentials, is the
