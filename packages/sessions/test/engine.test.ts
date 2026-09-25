@@ -124,6 +124,7 @@ import {
   DeploymentConfig,
   type ExecutorTransport,
   DotfilesStore,
+  DotfilesStoreError,
   type GitSection,
   GitOpsRunnerLive,
   MendKeys,
@@ -1796,6 +1797,9 @@ const withEngine = <A, E>(
     readonly protocolHostLayer?: Layer.Layer<ProtocolHost>;
     readonly hotWorkspacesLayer?: Layer.Layer<HotWorkspacesRepo>;
     readonly skillsLayer?: Layer.Layer<SkillsRepo>;
+    /** The owner's dotfiles; none configured unless a test brings its own. */
+    readonly userDotfilesLayer?: Layer.Layer<UserDotfilesRepo>;
+    readonly dotfilesStoreLayer?: Layer.Layer<DotfilesStore>;
     readonly workspaceImage?: typeof defaultSettings.workspaceImage;
     readonly environment?: () => {
       readonly revision: number;
@@ -1923,8 +1927,8 @@ const withEngine = <A, E>(
         projectSecretsLayer(options.secrets ?? emptySecrets),
         projectClusterBindingsLayer(options.clusterBindings ?? emptyClusterBindings),
         secretCipherStubLayer,
-        userDotfilesStubLayer,
-        dotfilesStoreStubLayer,
+        options.userDotfilesLayer ?? userDotfilesStubLayer,
+        options.dotfilesStoreLayer ?? dotfilesStoreStubLayer,
         options.skillsLayer ?? skillsStubLayer,
       ),
     ),
@@ -4729,7 +4733,13 @@ describe("SessionEngine hot sessions", () => {
               baseSha: null,
               sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
               workspaceImage: defaultSettings.workspaceImage,
-              dotfiles: { repository: null, snapshotSha: null },
+              // What the prewarm applied, a source it left out included, is what the claiming
+              // session records.
+              dotfiles: {
+                repository: { url: "https://example.test/dots.git", ref: null },
+                snapshotSha: null,
+                notApplied: [{ source: "repository", reason: "dotfiles clone failed" }],
+              },
               environment: {
                 environmentRevision: 0,
                 environmentVariableNames: [],
@@ -4767,6 +4777,11 @@ describe("SessionEngine hot sessions", () => {
           const launched = world.sessions.get(session.id);
           expect(launched?.status).toBe("running");
           expect(launched?.sealantWorkspaceId).toBe("workspace-1");
+          expect(launched?.dotfiles).toEqual({
+            repository: { url: "https://example.test/dots.git", ref: null },
+            snapshotSha: null,
+            notApplied: [{ source: "repository", reason: "dotfiles clone failed" }],
+          });
         }),
       {
         sealantLayer: sealantLaunchLayer(created, () => false, undefined, spawned),
@@ -4801,7 +4816,7 @@ describe("SessionEngine hot sessions", () => {
               baseSha: null,
               sealantWorkspaceId: SealantWorkspaceId.make("workspace-1"),
               workspaceImage: defaultSettings.workspaceImage,
-              dotfiles: { repository: null, snapshotSha: null },
+              dotfiles: { repository: null, snapshotSha: null, notApplied: [] },
               environment: {
                 environmentRevision: 0,
                 environmentVariableNames: [],
@@ -6854,6 +6869,57 @@ describe("SessionEngine capture mode", () => {
     );
   });
 
+  it("warms a standby without a dotfiles source that fails, and the row records what was left out", async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
+    const repository: DotfilesRepository = {
+      url: "git://127.0.0.1:1/dots",
+      ref: null,
+      subdirectory: null,
+      manager: "auto",
+      bootstrap: true,
+    };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(
+            () => pool.entries.some((entry) => entry.status !== "warming"),
+            "the standby to settle",
+          );
+          const entry = pool.entries[0];
+          expect(entry?.status).toBe("ready");
+          expect(created).toHaveLength(1);
+          expect(created[0]?.dotfiles).toBeUndefined();
+          expect(entry?.dotfiles).toEqual({
+            repository: { url: repository.url, ref: null },
+            snapshotSha: null,
+            notApplied: [
+              {
+                source: "repository",
+                reason: expect.stringMatching(
+                  /^dotfiles clone of git:\/\/127\.0\.0\.1:1\/dots failed: /,
+                ),
+              },
+            ],
+          });
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(created),
+        hotWorkspacesLayer: pool.layer,
+        userDotfilesLayer: Layer.succeed(UserDotfilesRepo, {
+          repository: () => Effect.succeed(repository),
+          setRepository: (_userId, value) => Effect.succeed(value),
+        }),
+      },
+    );
+  });
+
   it("a person's first session goes cold and starts warming for them; at most four people are warmed for", async () => {
     const created: Array<CreateOptions> = [];
     const memory = makeMemoryCaptureStore();
@@ -7372,4 +7438,267 @@ describe("SessionEngine capture mode", () => {
       );
     },
   );
+});
+
+/** A path on the fixture's git daemon, beside the adopted origin. */
+const servedUrl = (project: Project, name: string): string => {
+  if (project.originUrl === null) throw new Error("the fixture project has no origin");
+  return project.originUrl.replace(/\/origin$/, `/${name}`);
+};
+
+/** A dotfiles repo beside the fixture origin, served by the same git daemon. */
+const dotfilesOrigin = (tmp: string, project: Project): string => {
+  const dots = path.join(tmp, "dots");
+  fs.mkdirSync(dots, { recursive: true });
+  const run = (...args: ReadonlyArray<string>) =>
+    execFileSync("git", [...args], {
+      cwd: dots,
+      env: {
+        ...process.env,
+        GIT_AUTHOR_NAME: "dots",
+        GIT_AUTHOR_EMAIL: "dots@localhost",
+        GIT_COMMITTER_NAME: "dots",
+        GIT_COMMITTER_EMAIL: "dots@localhost",
+      },
+    });
+  run("init", "-b", "main");
+  fs.writeFileSync(path.join(dots, ".vimrc"), "set nocompatible\n");
+  run("add", "-A");
+  run("commit", "-m", "dots");
+  return servedUrl(project, "dots");
+};
+
+/** The owner's repository knob, read from a cell the test fills once the daemon is up. */
+const userDotfilesLayer = (
+  cell: { repository: DotfilesRepository | null },
+  reads: Array<string> = [],
+): Layer.Layer<UserDotfilesRepo> =>
+  Layer.succeed(UserDotfilesRepo, {
+    repository: (userId) =>
+      Effect.sync(() => {
+        reads.push(userId);
+        return cell.repository;
+      }),
+    setRepository: (_userId, value) => Effect.succeed(value),
+  });
+
+const dotfilesStoreLayer = (
+  archive: DotfilesStore["Service"]["archive"],
+): Layer.Layer<DotfilesStore> =>
+  Layer.succeed(DotfilesStore, {
+    snapshot: () => Effect.die("not in test"),
+    current: () => Effect.succeed(null),
+    archive,
+    clear: () => Effect.void,
+  });
+
+const SNAPSHOT = { sha: "5eed0f5eed0f5eed0f5eed0f5eed0f5eed0f5eed", data: "c25hcHNob3Q=" };
+
+const repositoryOf = (url: string): DotfilesRepository => ({
+  url,
+  ref: null,
+  subdirectory: null,
+  manager: "stow",
+  bootstrap: false,
+});
+
+const launchOnce = (world: World, tmp: string) =>
+  Effect.gen(function* () {
+    const project = yield* setup(tmp, world);
+    const engine = yield* SessionEngine;
+    const session = yield* engine.provision({
+      projectId: project.id,
+      harness: "codex",
+      label: null,
+      name: null,
+      ownerUserId: "user-fixture",
+      base: null,
+    });
+    return { project, engine, session };
+  });
+
+describe("SessionEngine dotfiles", () => {
+  it("ships the repository before the snapshot and stamps both as applied", async () => {
+    const created: CreateOptions[] = [];
+    const cell: { repository: DotfilesRepository | null } = { repository: null };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { project, engine, session } = yield* launchOnce(world, tmp);
+          const url = dotfilesOrigin(tmp, project);
+          cell.repository = repositoryOf(url);
+          yield* engine.launch(session.id, ["codex"]);
+
+          // Apply order: the repository with its own manager, then the snapshot as a copy.
+          expect(
+            created[0]?.dotfiles?.archives?.map(({ manager, bootstrap }) => ({
+              manager,
+              bootstrap,
+            })),
+          ).toEqual([
+            { manager: "stow", bootstrap: false },
+            { manager: "copy", bootstrap: false },
+          ]);
+          expect(created[0]?.dotfiles?.archives?.[1]?.data).toBe(SNAPSHOT.data);
+          const launched = world.sessions.get(session.id);
+          expect(launched?.status).toBe("running");
+          expect(launched?.dotfiles).toEqual({
+            repository: { url, ref: null },
+            snapshotSha: SNAPSHOT.sha,
+            notApplied: [],
+          });
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        userDotfilesLayer: userDotfilesLayer(cell),
+        dotfilesStoreLayer: dotfilesStoreLayer(() => Effect.succeed(SNAPSHOT)),
+      },
+    );
+  });
+
+  it("launches without a repository that cannot be cloned, still ships the snapshot, and records why", async () => {
+    const created: CreateOptions[] = [];
+    const cell: { repository: DotfilesRepository | null } = { repository: null };
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { project, engine, session } = yield* launchOnce(world, tmp);
+          // The daemon serves nothing at this path: the clone fails the way a wrong URL does.
+          const url = servedUrl(project, "no-such-dots");
+          cell.repository = repositoryOf(url);
+          yield* engine.launch(session.id, ["codex"]);
+
+          expect(created).toHaveLength(1);
+          expect(created[0]?.dotfiles?.archives).toEqual([
+            { data: SNAPSHOT.data, manager: "copy", bootstrap: false },
+          ]);
+          const launched = world.sessions.get(session.id);
+          expect(launched?.status).toBe("running");
+          expect(launched?.dotfiles).toEqual({
+            repository: { url, ref: null },
+            snapshotSha: SNAPSHOT.sha,
+            notApplied: [
+              {
+                source: "repository",
+                reason: expect.stringMatching(
+                  /^dotfiles clone of \S+\/no-such-dots failed: fatal: remote error: /,
+                ),
+              },
+            ],
+          });
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        userDotfilesLayer: userDotfilesLayer(cell),
+        dotfilesStoreLayer: dotfilesStoreLayer(() => Effect.succeed(SNAPSHOT)),
+      },
+    );
+  });
+
+  it("launches with no dotfiles when the only source fails, and records why", async () => {
+    const created: CreateOptions[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+
+          expect(created).toHaveLength(1);
+          expect(created[0]?.dotfiles).toBeUndefined();
+          const launched = world.sessions.get(session.id);
+          expect(launched?.status).toBe("running");
+          expect(launched?.dotfiles).toEqual({
+            repository: null,
+            snapshotSha: null,
+            notApplied: [
+              { source: "snapshot", reason: "dotfiles snapshot could not be packed: git failed" },
+            ],
+          });
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        dotfilesStoreLayer: dotfilesStoreLayer(() =>
+          Effect.fail(
+            new DotfilesStoreError({
+              message: "dotfiles snapshot could not be packed: git failed",
+            }),
+          ),
+        ),
+      },
+    );
+  });
+
+  it("launches without a repository the source policy refuses at launch, and records the refusal", async () => {
+    const created: CreateOptions[] = [];
+    // Saved under a policy that let it through; this launch's policy refuses the host.
+    const url = "https://metadata.google.internal/dots.git";
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+
+          expect(created).toHaveLength(1);
+          expect(created[0]?.dotfiles?.archives).toEqual([
+            { data: SNAPSHOT.data, manager: "copy", bootstrap: false },
+          ]);
+          const launched = world.sessions.get(session.id);
+          expect(launched?.status).toBe("running");
+          expect(launched?.dotfiles).toEqual({
+            repository: { url, ref: null },
+            snapshotSha: SNAPSHOT.sha,
+            notApplied: [
+              {
+                source: "repository",
+                reason:
+                  "dotfiles repository refused: metadata.google.internal is not a repository host.",
+              },
+            ],
+          });
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        userDotfilesLayer: userDotfilesLayer({ repository: repositoryOf(url) }),
+        dotfilesStoreLayer: dotfilesStoreLayer(() => Effect.succeed(SNAPSHOT)),
+      },
+    );
+  });
+
+  it("never resolves dotfiles for a project that turned them off", async () => {
+    const created: CreateOptions[] = [];
+    const reads: Array<string> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, applyDotfiles: false }));
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+
+          expect(reads).toEqual([]);
+          expect(created[0]?.dotfiles).toBeUndefined();
+          expect(world.sessions.get(session.id)?.dotfiles).toEqual({
+            repository: null,
+            snapshotSha: null,
+            notApplied: [],
+          });
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        userDotfilesLayer: userDotfilesLayer(
+          { repository: repositoryOf("git://127.0.0.1:1/dots") },
+          reads,
+        ),
+        dotfilesStoreLayer: dotfilesStoreLayer(() => Effect.die("dotfiles are off here")),
+      },
+    );
+  });
 });

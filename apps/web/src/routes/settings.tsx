@@ -632,8 +632,9 @@ function DotfilesPanel() {
           Dotfiles repository
         </label>
         <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
-          Cloned by this server at every launch — chezmoi and stow layouts are detected, anything
-          else is copied into the home directory. If the home tree lives in a subfolder (a{" "}
+          Cloned by this server at every launch, and once when you save: one it cannot clone is not
+          saved, and the reason shows here. Chezmoi and stow layouts are detected, anything else is
+          copied into the home directory. If the home tree lives in a subfolder (a{" "}
           <span className="font-mono text-xs text-ink-2">dots/</span> directory, a stow package),
           name it and only that subtree applies. Leave empty for none.
         </p>
@@ -707,7 +708,7 @@ function DotfilesPanel() {
             onClick={() => void saveRepository()}
             className="ml-auto inline-flex min-h-8 shrink-0 items-center justify-center rounded-xl border border-border bg-panel px-3.5 font-sans text-[13px] font-medium text-foreground shadow-[var(--shadow-xs)] transition-[transform,border-color] hover:-translate-y-0.5 hover:border-input disabled:pointer-events-none disabled:opacity-60"
           >
-            {busy === "repo" ? "Saving…" : "Save repository"}
+            {busy === "repo" ? (repoDraft === null ? "Saving…" : "Cloning…") : "Save repository"}
           </button>
         </div>
       </div>

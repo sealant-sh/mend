@@ -12,7 +12,8 @@ import {
   DOTFILES_CLONE_BOUNDS,
   DOTFILES_LOCAL_GIT_ENV,
   dotfilesCloneEnv,
-  resolveDotfilesArchives,
+  resolveRepositoryArchive,
+  snapshotArchive,
 } from "../src/dotfiles.ts";
 
 const tmp = (prefix: string) => fs.mkdtempSync(path.join(os.tmpdir(), prefix));
@@ -26,15 +27,14 @@ const extract = (base64: string): string => {
   return path.join(dir, "out");
 };
 
-describe("resolveDotfilesArchives", () => {
-  it("resolves nothing configured to no archives", async () => {
-    const archives = await Effect.runPromise(
-      resolveDotfilesArchives({ repository: null, snapshot: null }),
-    );
-    expect(archives).toEqual([]);
+describe("resolveRepositoryArchive", () => {
+  it("wraps a store snapshot as a copy-manager archive that never bootstraps", () => {
+    const data = Buffer.from("snapshot-tarball").toString("base64");
+    // The snapshot rides untouched — the store already packed it — with copy semantics.
+    expect(snapshotArchive({ data })).toEqual({ data, manager: "copy", bootstrap: false });
   });
 
-  it("wraps a store snapshot as a copy-manager archive after the repo", async () => {
+  it("packs the remote's default branch with the repository's manager and bootstrap", async () => {
     const origin = tmp("mend-dotfiles-origin-");
     execFileSync("git", ["init", "--initial-branch", "trunk"], { cwd: origin });
     fs.writeFileSync(path.join(origin, ".vimrc"), "set nocompatible\n");
@@ -50,28 +50,21 @@ describe("resolveDotfilesArchives", () => {
       },
     });
 
-    const snapshotData = Buffer.from("snapshot-tarball").toString("base64");
-    const archives = await Effect.runPromise(
-      resolveDotfilesArchives({
-        // A non-"main" default branch: the ref-less clone must take the remote's default.
-        repository: {
-          url: origin,
-          ref: null,
-          subdirectory: null,
-          manager: "auto",
-          bootstrap: true,
-        },
-        snapshot: { sha: "abc123", data: snapshotData },
+    const archive = await Effect.runPromise(
+      // A non-"main" default branch: the ref-less clone must take the remote's default.
+      resolveRepositoryArchive({
+        url: origin,
+        ref: null,
+        subdirectory: null,
+        manager: "auto",
+        bootstrap: true,
       }),
     );
-    expect(archives).toHaveLength(2);
-    expect(archives[0]?.manager).toBe("auto");
-    expect(archives[0]?.bootstrap).toBe(true);
-    const out = extract(archives[0]?.data ?? "");
+    expect(archive.manager).toBe("auto");
+    expect(archive.bootstrap).toBe(true);
+    const out = extract(archive.data);
     expect(fs.readFileSync(path.join(out, ".vimrc"), "utf8")).toBe("set nocompatible\n");
     expect(fs.existsSync(path.join(out, ".git"))).toBe(false);
-    // The snapshot rides untouched — the store already packed it — with copy semantics.
-    expect(archives[1]).toEqual({ data: snapshotData, manager: "copy", bootstrap: false });
   });
 
   it("re-roots the archive at the configured subdirectory", async () => {
@@ -95,19 +88,16 @@ describe("resolveDotfilesArchives", () => {
       },
     });
 
-    const archives = await Effect.runPromise(
-      resolveDotfilesArchives({
-        repository: {
-          url: origin,
-          ref: null,
-          subdirectory: "dots",
-          manager: "auto",
-          bootstrap: true,
-        },
-        snapshot: null,
+    const archive = await Effect.runPromise(
+      resolveRepositoryArchive({
+        url: origin,
+        ref: null,
+        subdirectory: "dots",
+        manager: "auto",
+        bootstrap: true,
       }),
     );
-    const out = extract(archives[0]?.data ?? "");
+    const out = extract(archive.data);
     // The subtree's CONTENTS are the archive root — ready to land at ~.
     expect(fs.readFileSync(path.join(out, ".zshenv"), "utf8")).toBe(
       "export ZDOTDIR=~/.config/zsh\n",
@@ -138,15 +128,12 @@ describe("resolveDotfilesArchives", () => {
     });
 
     const result = await Effect.runPromise(
-      resolveDotfilesArchives({
-        repository: {
-          url: origin,
-          ref: null,
-          subdirectory: "does-not-exist",
-          manager: "auto",
-          bootstrap: true,
-        },
-        snapshot: null,
+      resolveRepositoryArchive({
+        url: origin,
+        ref: null,
+        subdirectory: "does-not-exist",
+        manager: "auto",
+        bootstrap: true,
       }).pipe(Effect.result),
     );
     expect(Result.isFailure(result)).toBe(true);
@@ -155,15 +142,12 @@ describe("resolveDotfilesArchives", () => {
 
   it("fails readable when the repo cannot be cloned", async () => {
     const result = await Effect.runPromise(
-      resolveDotfilesArchives({
-        repository: {
-          url: path.join(os.tmpdir(), "mend-dotfiles-does-not-exist"),
-          ref: null,
-          subdirectory: null,
-          manager: "auto",
-          bootstrap: true,
-        },
-        snapshot: null,
+      resolveRepositoryArchive({
+        url: path.join(os.tmpdir(), "mend-dotfiles-does-not-exist"),
+        ref: null,
+        subdirectory: null,
+        manager: "auto",
+        bootstrap: true,
       }).pipe(Effect.result),
     );
     expect(Result.isFailure(result)).toBe(true);
@@ -213,7 +197,7 @@ const repository = (url: string, subdirectory: string | null = null) => ({
   bootstrap: false,
 });
 
-const failureOf = async (effect: ReturnType<typeof resolveDotfilesArchives>): Promise<string> => {
+const failureOf = async (effect: ReturnType<typeof resolveRepositoryArchive>): Promise<string> => {
   const result = await Effect.runPromise(effect.pipe(Effect.result));
   expect(Result.isFailure(result)).toBe(true);
   return String(result);
@@ -234,9 +218,7 @@ describe("bounding the dotfiles clone", () => {
     try {
       const started = Date.now();
       const message = await failureOf(
-        resolveDotfilesArchives({
-          repository: repository(`git://127.0.0.1:${port}/dots.git`),
-          snapshot: null,
+        resolveRepositoryArchive(repository(`git://127.0.0.1:${port}/dots.git`), {
           bounds: { ...DOTFILES_CLONE_BOUNDS, timeoutMs: 400 },
         }),
       );
@@ -257,9 +239,7 @@ describe("bounding the dotfiles clone", () => {
       "dots/Library/cache.bin": noise(96 * 1024),
     });
     const message = await failureOf(
-      resolveDotfilesArchives({
-        repository: repository(`file://${origin}`, "dots"),
-        snapshot: null,
+      resolveRepositoryArchive(repository(`file://${origin}`, "dots"), {
         bounds: { ...DOTFILES_CLONE_BOUNDS, maxFileBytes: 32 * 1024 },
       }),
     );
@@ -306,9 +286,7 @@ describe("bounding the dotfiles clone", () => {
 
     // Through the resolver: a subdirectory naming that file is refused with a readable message.
     const message = await failureOf(
-      resolveDotfilesArchives({
-        repository: repository(`file://${origin}`, "big.bin"),
-        snapshot: null,
+      resolveRepositoryArchive(repository(`file://${origin}`, "big.bin"), {
         bounds: { ...DOTFILES_CLONE_BOUNDS, maxFileBytes: 32 * 1024 },
       }),
     );
@@ -320,23 +298,19 @@ describe("bounding the dotfiles clone", () => {
       "dots/.vimrc": "set nocompatible\n",
       "assets/wallpaper.bin": noise(96 * 1024),
     });
-    const archives = await Effect.runPromise(
-      resolveDotfilesArchives({
-        repository: repository(`file://${origin}`, "dots"),
-        snapshot: null,
+    const archive = await Effect.runPromise(
+      resolveRepositoryArchive(repository(`file://${origin}`, "dots"), {
         bounds: { ...DOTFILES_CLONE_BOUNDS, maxFileBytes: 32 * 1024 },
       }),
     );
-    const out = extract(archives[0]?.data ?? "");
+    const out = extract(archive.data);
     expect(fs.readFileSync(path.join(out, ".vimrc"), "utf8")).toBe("set nocompatible\n");
   });
 
   it("stops a clone larger than the clone bound", async () => {
     const origin = originWith({ ".vimrc": "x\n", "blob.bin": noise(256 * 1024) });
     const message = await failureOf(
-      resolveDotfilesArchives({
-        repository: repository(`file://${origin}`),
-        snapshot: null,
+      resolveRepositoryArchive(repository(`file://${origin}`), {
         bounds: { ...DOTFILES_CLONE_BOUNDS, maxCloneBytes: 64 * 1024 },
       }),
     );
@@ -346,9 +320,7 @@ describe("bounding the dotfiles clone", () => {
   it("refuses an archive over the platform cap as it streams", async () => {
     const origin = originWith({ ".vimrc": "x\n", "blob.bin": noise(64 * 1024) });
     const message = await failureOf(
-      resolveDotfilesArchives({
-        repository: repository(`file://${origin}`),
-        snapshot: null,
+      resolveRepositoryArchive(repository(`file://${origin}`), {
         bounds: { ...DOTFILES_CLONE_BOUNDS, maxArchiveBytes: 16 * 1024 },
       }),
     );
@@ -390,9 +362,7 @@ describe("the dotfiles clone environment", () => {
     );
     const clearance = await Effect.runPromise(tenant.check(source, { isOperator: true }));
     const message = await failureOf(
-      resolveDotfilesArchives({
-        repository: repository(source),
-        snapshot: null,
+      resolveRepositoryArchive(repository(source), {
         pinCloneEnv: (base) => ({
           ...tenant.pinnedEnv(clearance, base),
           PATH: `${bin}:${process.env["PATH"] ?? ""}`,

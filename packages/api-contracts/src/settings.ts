@@ -3,7 +3,7 @@ import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
 import { NotFound } from "./accounts.ts";
-import { AuthMiddleware } from "./common.ts";
+import { AuthMiddleware, BudgetExceeded } from "./common.ts";
 import { DotfilesRepositoryRequest, ObservationStamp } from "./workbench-views.ts";
 import {
   DotfilesSnapshotRequest,
@@ -46,10 +46,12 @@ export const settingsGroup = HttpApiGroup.make("settings")
 export const dotfilesGroup = HttpApiGroup.make("dotfiles")
   .add(HttpApiEndpoint.get("get", "/dotfiles", { success: DotfilesView }))
   .add(
+    // Saving clones the repository once, as a launch does, and holds one of the account's
+    // launch slots while it runs: past `accountLaunchesInFlight` the save is refused.
     HttpApiEndpoint.put("repository", "/dotfiles/repository", {
       payload: DotfilesRepositoryRequest,
       success: DotfilesView,
-      error: SettingsFailure,
+      error: [SettingsFailure, BudgetExceeded],
     }),
   )
   .add(
