@@ -25,6 +25,11 @@ export const landingsRouter = router({
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.landings.land({ params: { id: i.id }, payload: i.request })),
     ),
+  checkGitHub: procedure
+    .input(input(Schema.Struct({ id: ChangeId })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) => api.landings.checkGitHub({ params: { id: i.id } })),
+    ),
   refresh: procedure
     .input(input(Schema.Struct({ id: ChangeLandingId })))
     .mutation(({ ctx, input: i }) =>

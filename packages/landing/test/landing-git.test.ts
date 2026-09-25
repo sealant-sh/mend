@@ -124,6 +124,7 @@ describe("landing a co-located session", () => {
       latestForWorktree: () => Effect.sync(() => checkpoints.at(-1) ?? null),
     });
     const pullRequests = Layer.succeed(PullRequests, {
+      find: () => Effect.succeed(null),
       publish: (input) =>
         Effect.sync(() => {
           published.push(input);

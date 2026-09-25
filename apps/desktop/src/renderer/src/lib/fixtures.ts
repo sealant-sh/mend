@@ -165,6 +165,8 @@ export const landingFixture = (patch: Partial<ChangeLandingDto> = {}): ChangeLan
     state: "open",
     observedAt: AT,
   },
+  pullRequestCrossRepository: false,
+  pullRequestHeadOwner: null,
   outcome: "pull-request",
   message: null,
   userId: "user-1",
@@ -182,6 +184,7 @@ export const landingsFixture = (patch: Partial<ChangeLandingsDto> = {}): ChangeL
   remote: null,
   remoteFailure: null,
   pullRequest: { available: true, reason: null },
+  nextBranch: null,
   ...patch,
 });
 

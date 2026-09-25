@@ -1,4 +1,4 @@
-import { Option, Schema } from "effect";
+import { Effect, Option, Schema } from "effect";
 
 import type { GitHubRepository } from "./github.ts";
 
@@ -20,8 +20,15 @@ const gh = (args: ReadonlyArray<string>): ReadonlyArray<string> => [
   ...args,
 ];
 
-/** The fields Mend reads back from every pull request `gh` shows. */
-export const PULL_REQUEST_FIELDS = "number,url,state,title,body";
+/**
+ * The fields Mend reads back from every pull request `gh` shows. The head's branch, commit and
+ * repository say whether a pull request is from origin's own branch or from a fork.
+ */
+export const PULL_REQUEST_FIELDS =
+  "number,url,state,title,body,headRefName,headRefOid,isCrossRepository,headRepositoryOwner";
+
+/** How many pull requests a lookup reads: enough to see past a fork's same-named branch. */
+const LIST_LIMIT = 20;
 
 /** One pull request, by number or URL. */
 export const viewArgv = (repository: GitHubRepository, pullRequest: number | string) =>
@@ -33,7 +40,11 @@ export const viewArgv = (repository: GitHubRepository, pullRequest: number | str
     `--json=${PULL_REQUEST_FIELDS}`,
   ]);
 
-/** The open pull request from a branch, when there is one: the agent may have opened it. */
+/**
+ * The open pull requests from a branch name: the agent may have opened one. `--head` matches the
+ * name in any repository, a fork's included, so the caller keeps the one on origin
+ * (`firstOnOrigin`).
+ */
 export const openForBranchArgv = (repository: GitHubRepository, branch: string) =>
   gh([
     "pr",
@@ -42,7 +53,35 @@ export const openForBranchArgv = (repository: GitHubRepository, branch: string) 
     `--head=${branch}`,
     "--state=open",
     `--json=${PULL_REQUEST_FIELDS}`,
-    "--limit=1",
+    `--limit=${LIST_LIMIT}`,
+  ]);
+
+/** Every pull request from a branch name, open, closed or merged, newest first. */
+export const anyForBranchArgv = (repository: GitHubRepository, branch: string) =>
+  gh([
+    "pr",
+    "list",
+    `--repo=${repository.slug}`,
+    `--head=${branch}`,
+    "--state=all",
+    `--json=${PULL_REQUEST_FIELDS}`,
+    `--limit=${LIST_LIMIT}`,
+  ]);
+
+/**
+ * Every pull request into the repository that contains a commit, from any branch or fork: how a
+ * pull request whose branch Mend never saw (pushed over HTTPS to a fork) is found by the agent's
+ * own commit.
+ */
+export const anyWithCommitArgv = (repository: GitHubRepository, sha: string) =>
+  gh([
+    "pr",
+    "list",
+    `--repo=${repository.slug}`,
+    `--search=${sha}`,
+    "--state=all",
+    `--json=${PULL_REQUEST_FIELDS}`,
+    `--limit=${LIST_LIMIT}`,
   ]);
 
 export const createArgv = (input: {
@@ -106,6 +145,13 @@ const GhPullRequest = Schema.Struct({
   state: Schema.Literals(["OPEN", "CLOSED", "MERGED"]),
   title: Schema.String,
   body: Schema.String,
+  // Asked for in PULL_REQUEST_FIELDS; a `gh` that leaves one out reads as origin's own branch.
+  headRefName: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(""))),
+  headRefOid: Schema.String.pipe(Schema.withDecodingDefaultKey(Effect.succeed(""))),
+  isCrossRepository: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false))),
+  headRepositoryOwner: Schema.NullOr(Schema.Struct({ login: Schema.String })).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
 });
 
 /** A pull request as `gh` showed it, in Mend's words for its state. */
@@ -115,6 +161,14 @@ export interface PullRequestView {
   readonly state: "open" | "closed" | "merged";
   readonly title: string;
   readonly body: string;
+  /** The branch its head is, in whichever repository holds it. */
+  readonly headRefName: string;
+  /** The commit its head is at; empty when `gh` did not say. */
+  readonly headRefOid: string;
+  /** Its head is in another repository than the one it merges into: a fork. */
+  readonly crossRepository: boolean;
+  /** Who owns the repository its head is in, when `gh` said. */
+  readonly headOwner: string | null;
 }
 
 const toView = (wire: typeof GhPullRequest.Type): PullRequestView => ({
@@ -123,6 +177,10 @@ const toView = (wire: typeof GhPullRequest.Type): PullRequestView => ({
   state: wire.state === "OPEN" ? "open" : wire.state === "CLOSED" ? "closed" : "merged",
   title: wire.title,
   body: wire.body,
+  headRefName: wire.headRefName,
+  headRefOid: wire.headRefOid,
+  crossRepository: wire.isCrossRepository,
+  headOwner: wire.headRepositoryOwner?.login ?? null,
 });
 
 const decodeView = Schema.decodeUnknownOption(Schema.fromJsonString(GhPullRequest));
@@ -132,15 +190,20 @@ const decodeList = Schema.decodeUnknownOption(Schema.fromJsonString(Schema.Array
 export const parsePullRequest = (stdout: string): PullRequestView | null =>
   Option.match(decodeView(stdout.trim()), { onNone: () => null, onSome: toView });
 
-/** `gh pr list --json`: the first pull request, null when there is none or the output is not JSON. */
-export const parseFirstPullRequest = (stdout: string): PullRequestView | null =>
+/** `gh pr list --json`: every pull request, in `gh`'s order; null when the output is not JSON. */
+export const parsePullRequests = (stdout: string): ReadonlyArray<PullRequestView> | null =>
   Option.match(decodeList(stdout.trim()), {
     onNone: () => null,
-    onSome: (list) => {
-      const first = list[0];
-      return first === undefined ? null : toView(first);
-    },
+    onSome: (list) => list.map(toView),
   });
+
+/**
+ * `gh pr list --json`: the first pull request whose head is on origin, null when there is none or
+ * the output is not JSON. A fork's pull request from a branch of the same name is not the one
+ * Mend pushed.
+ */
+export const firstOnOrigin = (stdout: string): PullRequestView | null =>
+  parsePullRequests(stdout)?.find((pullRequest) => !pullRequest.crossRepository) ?? null;
 
 /**
  * What `gh pr create` printed as the new pull request's URL: its last line that is one. `gh`

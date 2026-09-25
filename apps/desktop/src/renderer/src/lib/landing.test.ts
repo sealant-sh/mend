@@ -42,8 +42,40 @@ const FACTS: ReadonlyArray<readonly [LandingFactDto, LandingFact]> = [
     { _tag: "pushed", branch: "mend/fix-login", sha: Sha.make(SHA) },
   ],
   [
-    { _tag: "pull-request", number: 412, state: "open", observedAt: OBSERVED },
-    { _tag: "pull-request", number: 412, state: "open", observedAt: new Date(OBSERVED) },
+    {
+      _tag: "pull-request",
+      number: 412,
+      state: "open",
+      observedAt: OBSERVED,
+      outside: false,
+      fork: null,
+    },
+    {
+      _tag: "pull-request",
+      number: 412,
+      state: "open",
+      observedAt: new Date(OBSERVED),
+      outside: false,
+      fork: null,
+    },
+  ],
+  [
+    {
+      _tag: "pull-request",
+      number: 367,
+      state: "merged",
+      observedAt: OBSERVED,
+      outside: true,
+      fork: "anna",
+    },
+    {
+      _tag: "pull-request",
+      number: 367,
+      state: "merged",
+      observedAt: new Date(OBSERVED),
+      outside: true,
+      fork: "anna",
+    },
   ],
   [
     { _tag: "origin-moved", branch: "mend/fix-login", commits: 2 },
@@ -107,7 +139,14 @@ describe("landing facts", () => {
   it("headline what held a change back before the pull request", () => {
     const facts: ReadonlyArray<LandingFactDto> = [
       { _tag: "pushed", branch: "mend/fix-login", sha: SHA },
-      { _tag: "pull-request", number: 412, state: "open", observedAt: OBSERVED },
+      {
+        _tag: "pull-request",
+        number: 412,
+        state: "open",
+        observedAt: OBSERVED,
+        outside: false,
+        fork: null,
+      },
       { _tag: "not-landed", reason: "question" },
     ];
     expect(headlineFact(facts)?._tag).toBe("not-landed");
@@ -127,9 +166,15 @@ describe("landing facts", () => {
 
 describe("the next landing", () => {
   it("pushes to the branch the change landed on before, else its own", () => {
-    expect(nextRemoteBranch([], "mend/worktree-1")).toBe("mend/worktree-1");
-    expect(nextRemoteBranch([landingFixture({ remoteBranch: "fix/login" })], "mend/w")).toBe(
-      "fix/login",
+    expect(nextRemoteBranch(landingsFixture(), "mend/worktree-1")).toBe("mend/worktree-1");
+    expect(
+      nextRemoteBranch(
+        landingsFixture({ landings: [landingFixture({ remoteBranch: "fix/login" })] }),
+        "mend/w",
+      ),
+    ).toBe("fix/login");
+    expect(nextRemoteBranch(landingsFixture({ nextBranch: "chore/bump" }), "mend/w")).toBe(
+      "chore/bump",
     );
   });
 

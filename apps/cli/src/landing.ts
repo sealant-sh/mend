@@ -61,7 +61,7 @@ export interface ChangeLandingDto {
   readonly pushedSha: string | null;
   readonly commitSha: string | null;
   readonly checkpointSha: string | null;
-  readonly outcome: "pushed" | "pull-request" | "refused" | "failed";
+  readonly outcome: "pushed" | "pull-request" | "refused" | "failed" | "adopted";
   readonly message: string | null;
   readonly pullRequest: LandedPullRequestDto | null;
 }
@@ -80,6 +80,13 @@ export interface LandingReportDto {
 interface ChangeLandingsDto {
   readonly changeId: string | null;
   readonly facts: unknown;
+}
+
+/** What `POST /changes/:id/pull-request/check` found. */
+export interface PullRequestCheckDto {
+  readonly outcome: "adopted" | "observed" | "none" | "skipped";
+  readonly reason: string | null;
+  readonly landing: ChangeLandingDto | null;
 }
 
 /** One raw download: the bundle is bytes with its facts in headers, not JSON. */
@@ -103,6 +110,8 @@ const BUNDLE_HEADERS = {
 
 export interface LandArgs {
   readonly session: string;
+  /** Only look on GitHub for a pull request opened outside Mend; push nothing. */
+  readonly check: boolean;
   /** Null keeps the branch the change landed on before, else `mend/<name>`. */
   readonly branch: string | null;
   readonly pullRequest: boolean;
@@ -151,19 +160,30 @@ const parseFlags = (
   return { positional, values, on };
 };
 
-/** `mend land <session> [--branch <name>] [--no-pr] [--title <text>] [--project <p>]`. */
+/**
+ * `mend land <session> [--branch <name>] [--no-pr] [--title <text>] [--project <p>]`, or
+ * `mend land <session> --check [--project <p>]`.
+ */
 export const parseLandArgs = (args: ReadonlyArray<string>): Parsed<LandArgs> => {
-  const flags = parseFlags(args, ["--branch", "--title", "--project"], ["--no-pr"]);
+  const flags = parseFlags(args, ["--branch", "--title", "--project"], ["--no-pr", "--check"]);
   if ("error" in flags) return flags;
   const [session, extra] = flags.positional;
   if (session === undefined) return { error: "name the session to land" };
   if (extra !== undefined) return { error: `one session only; "${extra}" is extra` };
+  const check = flags.on.has("--check");
+  if (
+    check &&
+    (flags.values.has("--branch") || flags.values.has("--title") || flags.on.has("--no-pr"))
+  ) {
+    return { error: "--check pushes nothing; it takes no --branch, --title or --no-pr" };
+  }
   const branch = flags.values.get("--branch")?.trim() ?? null;
   if (branch === "") return { error: "--branch needs a name" };
   const title = flags.values.get("--title")?.trim() ?? null;
   return {
     args: {
       session,
+      check,
       branch,
       pullRequest: !flags.on.has("--no-pr"),
       title: title === "" ? null : title,
@@ -309,10 +329,47 @@ const readFacts = (wire: unknown): ReadonlyArray<LandingFact> => {
   }
 };
 
+/** What `mend land --check` found, as one line. */
+export const checkLine = (check: PullRequestCheckDto): string => {
+  const pullRequest = check.landing?.pullRequest ?? null;
+  switch (check.outcome) {
+    case "adopted":
+      return pullRequest === null
+        ? "pull request recorded · opened outside Mend"
+        : `pull request #${pullRequest.number} recorded · opened outside Mend · ${pullRequest.url}`;
+    case "observed":
+      return pullRequest === null
+        ? "pull request already recorded"
+        : `pull request #${pullRequest.number} already recorded · ${pullRequest.state} · observed`;
+    case "none":
+      return "no pull request on GitHub for the change's branches or the agent's commit";
+    case "skipped":
+      return `GitHub not checked · ${check.reason ?? "no reason given"}`;
+  }
+};
+
 export const landCommand = async (api: ApiCall, args: ReadonlyArray<string>): Promise<void> => {
   const parsed = parseLandArgs(args);
   if ("error" in parsed) return fail(parsed.error);
   const { session, project } = await findSession(api, parsed.args.session, parsed.args.project);
+  if (parsed.args.check) {
+    const before = await api<ChangeLandingsDto>("GET", `/sessions/${session.id}/landings`);
+    if (before.changeId === null) return fail("the session's worktree holds no change yet");
+    const check = await api<PullRequestCheckDto>(
+      "POST",
+      `/changes/${before.changeId}/pull-request/check`,
+    );
+    const mark =
+      check.outcome === "adopted" || check.outcome === "observed" ? green("✓") : dim("·");
+    say(`${mark} ${checkLine(check)}`);
+    const after = await api<ChangeLandingsDto>("GET", `/sessions/${session.id}/landings`);
+    const facts = readFacts(after.facts);
+    if (facts.length > 0) {
+      say(dim("  observed"));
+      for (const fact of facts) say(`    ${landingFactLine(fact, new Date())}`);
+    }
+    return;
+  }
   const steps = parsed.args.pullRequest
     ? "checkpoint · commit · push · pull request"
     : "checkpoint · commit · push";

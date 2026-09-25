@@ -1728,6 +1728,10 @@ export const changeLandings = pgTable(
     pullRequestUrl: text(),
     pullRequestState: text().$type<PullRequestState>(),
     prObservedAt: timestamp({ mode: "date", withTimezone: true }),
+    // The pull request's head is in another repository, and whose (0069): an adopted fork pull
+    // request, which Mend never updates.
+    prCrossRepository: boolean().notNull().default(false),
+    prHeadOwner: text(),
     outcome: text().$type<LandingOutcome>().notNull(),
     message: text(),
     // FK to "user"(id) ON DELETE RESTRICT, declared in the migration: the owner who landed.

@@ -9,6 +9,7 @@ import {
   MendApi,
   NotFound,
   PullRequestAvailabilityView,
+  PullRequestCheckView,
   PullRequestStepFailed,
   RemoteBranchObservation,
   SessionGitOpView,
@@ -33,6 +34,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { ProjectAccess } from "../access.ts";
 import { budgetMessage, Budgets } from "../budgets.ts";
 import {
+  auditAdoption,
   auditLanding,
   changeOwnerOfWorktree,
   observeLandings,
@@ -122,6 +124,7 @@ const landingsView = (change: Change | null, session: Session | null, probe: boo
         remote: null,
         remoteFailure: null,
         pullRequest: new PullRequestAvailabilityView({ available: false, reason: null }),
+        nextBranch: null,
       });
     }
     const project = yield* projectOf(change);
@@ -159,6 +162,7 @@ const landingsView = (change: Change | null, session: Session | null, probe: boo
           ? { available: true, reason: null }
           : { available: false, reason: availability.reason },
       ),
+      nextBranch: observed.nextBranch,
     });
   });
 
@@ -227,6 +231,33 @@ export const LandingsGroupLive = HttpApiBuilder.group(MendApi, "landings", (hand
         const change = yield* (yield* ProjectAccess).change(params.id);
         const session = yield* sessionOfChange(change);
         return yield* landingsView(change, session, query.probe === "true");
+      }),
+    )
+    .handle("checkGitHub", ({ params }) =>
+      Effect.gen(function* () {
+        const change = yield* (yield* ProjectAccess).change(params.id);
+        const caller = yield* CurrentUser;
+        // `gh` speaks as the change's owner, so only they ask it.
+        const owner = yield* changeOwnerOfWorktree(change.worktreeId);
+        if (owner === null || owner !== caller.user.id) return yield* notAllowed(ONLY_THE_OWNER);
+        const adoption = yield* (yield* Landing)
+          .adoptPullRequest({ changeId: change.id, background: false })
+          .pipe(
+            Effect.catchTags({
+              LandingNotStartedError: () => Effect.fail(new NotFound({ id: params.id })),
+              PullRequestStepError: (error) =>
+                Effect.fail(new PullRequestStepFailed({ message: error.message })),
+            }),
+          );
+        if (adoption._tag === "adopted") {
+          yield* auditAdoption(adoption.landing, (yield* projectOf(change)).organizationId);
+        }
+        return new PullRequestCheckView({
+          outcome: adoption._tag,
+          reason: adoption._tag === "skipped" ? adoption.reason : null,
+          landing:
+            adoption._tag === "adopted" || adoption._tag === "observed" ? adoption.landing : null,
+        });
       }),
     )
     .handle("refresh", ({ params }) =>

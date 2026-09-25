@@ -543,6 +543,7 @@ const CASES: ReadonlyArray<AccessCase> = [
   session("project-read", "GET", "/landings")("landings.forSession"),
   child("project-read", "change", "GET", "/api/changes", "/landings")("landings.forChange"),
   child("project-read", "change", "GET", "/api/changes", "/bundle")("landings.bundle"),
+  child("land", "change", "POST", "/api/changes", "/pull-request/check")("landings.checkGitHub"),
   session("project-read", "GET", "/git-ops")("landings.gitOps"),
 ];
 

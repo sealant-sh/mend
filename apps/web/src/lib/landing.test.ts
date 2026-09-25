@@ -33,6 +33,8 @@ const landing = (overrides: Partial<ChangeLandingDto> = {}): ChangeLandingDto =>
   pushedSha,
   trigger: "manual",
   pullRequest: null,
+  pullRequestCrossRepository: false,
+  pullRequestHeadOwner: null,
   outcome: "pushed",
   message: null,
   userId: "alice",
@@ -49,6 +51,7 @@ const view = (overrides: Partial<ChangeLandingsDto> = {}): ChangeLandingsDto => 
   remote: null,
   remoteFailure: null,
   pullRequest: { available: true, reason: null },
+  nextBranch: null,
   ...overrides,
 });
 
@@ -61,9 +64,16 @@ const openPullRequest = {
 
 describe("where the next landing goes", () => {
   it("pushes to the branch the change landed on before, else the worktree's own", () => {
-    expect(nextRemoteBranch([], "mend/fix-login")).toBe("mend/fix-login");
-    expect(nextRemoteBranch([landing({ remoteBranch: "fix/login" })], "mend/fix-login")).toBe(
-      "fix/login",
+    expect(nextRemoteBranch(view(), "mend/fix-login")).toBe("mend/fix-login");
+    expect(
+      nextRemoteBranch(
+        view({ landings: [landing({ remoteBranch: "fix/login" })] }),
+        "mend/fix-login",
+      ),
+    ).toBe("fix/login");
+    // The server's own choice wins: the agent's pushed branch, an adopted pull request's head.
+    expect(nextRemoteBranch(view({ nextBranch: "chore/bump-deps" }), "mend/fix-login")).toBe(
+      "chore/bump-deps",
     );
   });
 
@@ -154,12 +164,26 @@ describe("the facts", () => {
     expect(
       headlineFact([
         { _tag: "pushed", branch: "mend/fix-login", sha: pushedSha },
-        { _tag: "pull-request", number: 412, state: "open", observedAt: now },
+        {
+          _tag: "pull-request",
+          number: 412,
+          state: "open",
+          observedAt: now,
+          outside: false,
+          fork: null,
+        },
       ])?._tag,
     ).toBe("pull-request");
     expect(
       headlineFact([
-        { _tag: "pull-request", number: 412, state: "open", observedAt: now },
+        {
+          _tag: "pull-request",
+          number: 412,
+          state: "open",
+          observedAt: now,
+          outside: false,
+          fork: null,
+        },
         { _tag: "not-landed", reason: "question" },
       ]),
     ).toEqual({ _tag: "not-landed", reason: "question" });

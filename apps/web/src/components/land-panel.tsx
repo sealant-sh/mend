@@ -2,19 +2,23 @@ import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 
 import {
+  checkGitHub,
   landSession,
   probeLandings,
   refreshLanding,
   type ChangeLandingsDto,
   type LandingFactDto,
   type LandingReportDto,
+  type PullRequestCheckDto,
   type ReviewDiffFileDto,
 } from "#/lib/api";
 import {
+  checkLine,
   defaultPullRequestTitle,
   describedFileOfReview,
   descriptionPreview,
   factLine,
+  forkNote,
   factsWithProbe,
   factTone,
   headlineFact,
@@ -77,8 +81,10 @@ export interface LandPanelViewProps {
   readonly preview: string;
   readonly draft: LandDraft;
   readonly previewOpen: boolean;
-  readonly pending: "land" | "probe" | "refresh" | null;
+  readonly pending: "land" | "probe" | "refresh" | "check" | null;
   readonly report: LandingReportDto | null;
+  /** What the owner's last "Check GitHub" found. */
+  readonly check: PullRequestCheckDto | null;
   readonly error: string | null;
   readonly now: Date;
   readonly onDraft: (draft: LandDraft) => void;
@@ -86,18 +92,21 @@ export interface LandPanelViewProps {
   readonly onLand: () => void;
   readonly onProbe: () => void;
   readonly onRefresh: () => void;
+  readonly onCheck: () => void;
 }
 
 export function LandPanelView(props: LandPanelViewProps) {
   const { view, probed, draft, pending, now } = props;
   const facts = factsWithProbe(view.facts, probed);
   const updates = pullRequestToUpdate(view.landings);
-  const branch = nextRemoteBranch(view.landings, props.worktreeBranch);
+  const branch = nextRemoteBranch(view, props.worktreeBranch);
   const latestPullRequest = view.landings.find((landing) => landing.pullRequest !== null) ?? null;
   const remote = probed === null ? null : remoteLine(probed, now);
+  const fork = forkNote(view.landings);
   const label = landButtonLabel({
     pullRequestAvailable: view.pullRequest.available,
     updates: updates !== null,
+    fork: fork !== null,
   });
 
   return (
@@ -131,6 +140,7 @@ export function LandPanelView(props: LandPanelViewProps) {
       {!view.pullRequest.available && view.pullRequest.reason !== null && (
         <p className="mt-1 font-mono text-[11.5px] text-faint">{view.pullRequest.reason}</p>
       )}
+      {fork !== null && <p className="mt-1 font-mono text-[11.5px] text-faint">{fork}</p>}
       {remote !== null && <p className="mt-1 font-mono text-[11px] text-faint">{remote}</p>}
 
       <div className="mt-2 flex flex-wrap items-center gap-4">
@@ -143,6 +153,17 @@ export function LandPanelView(props: LandPanelViewProps) {
             className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
           >
             {pending === "probe" ? "Checking origin…" : "Check origin"}
+          </button>
+        )}
+        {view.land && view.pullRequest.available && (
+          <button
+            type="button"
+            disabled={pending !== null}
+            onClick={props.onCheck}
+            title="Ask GitHub, as you, for a pull request someone opened outside Mend for this change's branches or the agent's commit"
+            className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+          >
+            {pending === "check" ? "Checking GitHub…" : "Check GitHub"}
           </button>
         )}
         {view.land && latestPullRequest?.pullRequest != null && (
@@ -237,6 +258,11 @@ export function LandPanelView(props: LandPanelViewProps) {
         </p>
       )}
 
+      {props.check !== null && (
+        <p role="status" className="mt-3 font-mono text-[11.5px] text-ink-2">
+          {checkLine(props.check)}
+        </p>
+      )}
       {props.report !== null && (
         <p role="status" className="mt-3 font-mono text-[11.5px] text-ink-2">
           {landingReportLine(props.report)}
@@ -278,9 +304,10 @@ export function LandPanel({
   const view = useQuery(trpc.landings.forChange.queryOptions({ id: changeId })).data;
   const [draft, setDraft] = useState<LandDraft>({ title: "", body: "" });
   const [previewOpen, setPreviewOpen] = useState(false);
-  const [pending, setPending] = useState<"land" | "probe" | "refresh" | null>(null);
+  const [pending, setPending] = useState<"land" | "probe" | "refresh" | "check" | null>(null);
   const [probed, setProbed] = useState<ChangeLandingsDto | null>(null);
   const [report, setReport] = useState<LandingReportDto | null>(null);
+  const [check, setCheck] = useState<PullRequestCheckDto | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   if (view === undefined) return null;
@@ -309,6 +336,12 @@ export function LandPanel({
     setPending("probe");
     setError(null);
     void settle(probeLandings(changeId).then(setProbed));
+  };
+  const lookOnGitHub = () => {
+    setPending("check");
+    setError(null);
+    setCheck(null);
+    void settle(checkGitHub(changeId).then(setCheck));
   };
   const refresh = () => {
     const recorded = view.landings.find((landing) => landing.pullRequest !== null);
@@ -339,6 +372,7 @@ export function LandPanel({
       previewOpen={previewOpen}
       pending={pending}
       report={report}
+      check={check}
       error={error}
       now={new Date()}
       onDraft={setDraft}
@@ -346,6 +380,7 @@ export function LandPanel({
       onLand={land}
       onProbe={probe}
       onRefresh={refresh}
+      onCheck={lookOnGitHub}
     />
   );
 }

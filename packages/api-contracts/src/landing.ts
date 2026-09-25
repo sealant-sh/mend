@@ -90,6 +90,27 @@ export class ChangeLandingsView extends Schema.Class<ChangeLandingsView>("Change
   /** Why the fetch could not run, in git's or the remote's words. */
   remoteFailure: Schema.NullOr(Schema.String),
   pullRequest: PullRequestAvailabilityView,
+  /**
+   * The branch the next landing pushes when the owner names none (`nextLandingBranch`): the last
+   * landing's, the agent's own push, an adopted pull request's head on origin, else the
+   * worktree's. Null for a change with no worktree yet, and from older servers.
+   */
+  nextBranch: Schema.NullOr(Schema.String).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+  ),
+}) {}
+
+/**
+ * What "Check GitHub" found (docs/adr/0007-landing.md, "Pull requests opened outside Mend"):
+ * `adopted` recorded a pull request opened outside Mend, `observed` refreshed one already
+ * recorded, `none` found nothing, `skipped` did not look, and says why.
+ */
+export class PullRequestCheckView extends Schema.Class<PullRequestCheckView>(
+  "PullRequestCheckView",
+)({
+  outcome: Schema.Literals(["adopted", "observed", "none", "skipped"]),
+  reason: Schema.NullOr(Schema.String),
+  landing: Schema.NullOr(ChangeLanding),
 }) {}
 
 export const GitTransportKindSchema = Schema.Literals(["fetch", "push", "archive"]);
@@ -190,6 +211,15 @@ export const landingsGroup = HttpApiGroup.make("landings")
       query: probeQuery,
       success: ChangeLandingsView,
       error: NotFound,
+    }),
+  )
+  .add(
+    // Ask `gh`, as the change's owner, for a pull request someone opened outside Mend for the
+    // change's branches or the agent's commit, and record it. The owner only.
+    HttpApiEndpoint.post("checkGitHub", "/changes/:id/pull-request/check", {
+      params: { id: ChangeId },
+      success: PullRequestCheckView,
+      error: [NotFound, LandingNotAllowed, PullRequestStepFailed],
     }),
   )
   .add(

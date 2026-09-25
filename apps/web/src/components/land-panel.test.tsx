@@ -22,6 +22,8 @@ const landing = (overrides: Partial<ChangeLandingDto> = {}): ChangeLandingDto =>
   pushedSha,
   trigger: "manual",
   pullRequest: null,
+  pullRequestCrossRepository: false,
+  pullRequestHeadOwner: null,
   outcome: "pushed",
   message: null,
   userId: "alice",
@@ -38,6 +40,7 @@ const view = (overrides: Partial<ChangeLandingsDto> = {}): ChangeLandingsDto => 
   remote: null,
   remoteFailure: null,
   pullRequest: { available: true, reason: null },
+  nextBranch: null,
   ...overrides,
 });
 
@@ -54,6 +57,7 @@ const render = (overrides: Partial<LandPanelViewProps> = {}) =>
       previewOpen={false}
       pending={null}
       report={null}
+      check={null}
       error={null}
       now={now}
       onDraft={() => undefined}
@@ -61,6 +65,7 @@ const render = (overrides: Partial<LandPanelViewProps> = {}) =>
       onLand={() => undefined}
       onProbe={() => undefined}
       onRefresh={() => undefined}
+      onCheck={() => undefined}
       {...overrides}
     />,
   );
@@ -93,6 +98,8 @@ describe("the Land panel", () => {
             number: 412,
             state: "open",
             observedAt: openPullRequest.observedAt,
+            outside: false,
+            fork: null,
           },
           { _tag: "changed-since-landing", files: 3 },
           {
@@ -111,6 +118,59 @@ describe("the Land panel", () => {
     expect(markup).toContain('placeholder="kept as it is on GitHub"');
     expect(markup).toContain("Refresh pull request");
     expect(markup).toContain('href="https://github.com/acme/app/pull/412"');
+  });
+
+  it("lets the owner check GitHub before anything landed", () => {
+    expect(render()).toContain("Check GitHub</button>");
+    expect(render({ view: view({ land: false }) })).not.toContain("Check GitHub");
+    expect(
+      render({
+        check: { outcome: "none", reason: null, landing: null },
+      }),
+    ).toContain(
+      "no pull request on GitHub for the change&#x27;s branches or the agent&#x27;s commit",
+    );
+  });
+
+  it("updates a pull request the agent opened on origin", () => {
+    const markup = render({
+      view: view({
+        landings: [
+          landing({
+            trigger: "adopted",
+            outcome: "adopted",
+            pushedSha: null,
+            remoteBranch: "chore/bump-deps",
+            pullRequest: { ...openPullRequest, number: 368 },
+          }),
+        ],
+        nextBranch: "chore/bump-deps",
+      }),
+    });
+    expect(markup).toContain("push mend/fix-login to origin as chore/bump-deps");
+    expect(markup).toContain("Push and update pull request</button>");
+  });
+
+  it("says a fork's pull request is not Mend's to update, and pushes to origin only", () => {
+    const markup = render({
+      view: view({
+        landings: [
+          landing({
+            trigger: "adopted",
+            outcome: "adopted",
+            pushedSha: null,
+            remoteBranch: "fix-login",
+            pullRequest: { ...openPullRequest, number: 367 },
+            pullRequestCrossRepository: true,
+            pullRequestHeadOwner: "anna",
+          }),
+        ],
+      }),
+    });
+    expect(markup).toContain(
+      "pull request #367 is from anna&#x27;s fork · Mend pushes to origin only",
+    );
+    expect(markup).toContain("Push to origin</button>");
   });
 
   it("shows the facts, and no button, to someone who does not own the session", () => {

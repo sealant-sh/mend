@@ -265,7 +265,8 @@ The review page shows landing as observed facts:
 Pushes the agent made itself come from `session_git_ops`:
 `pushed by the agent · refs/heads/wip · 91bd2e4`. Mend shows them beside its own landings and does
 not treat them as landings. They did not go through this path, and the ADR 0002 lease does not fence
-them.
+them. A pull request opened from one is adopted (below) and reads
+`pull request #368 · open · observed · opened outside Mend`.
 
 A pull request's state is refreshed each time Mend runs step 4, and when the change owner asks for
 it from the review page. Refreshing needs a workspace for the same reason step 4 does. Mend does not
@@ -274,6 +275,42 @@ poll GitHub.
 "Check origin" fetches origin's branch as the person who asked, into a ref Mend deletes afterwards,
 so nothing lands under `refs/remotes`. Anyone who can see the change may ask, and each account's
 checks are bounded by a request budget like other calls to a remote.
+
+### Pull requests opened outside Mend
+
+The prompt tells the agent not to push or open a pull request, and it may do both anyway: through
+the workspace's git transport and `gh`, or over HTTPS to a fork of its own. A person may open one by
+hand. Mend adopts such a pull request instead of opening a second one beside it (amended 2026-09-25,
+closing open question 4).
+
+An adoption is a `change_landings` row with trigger and outcome `adopted`: the pull request's
+number, URL and state as `gh` reported them, its head branch, whether its head is in another
+repository (a fork) and whose, and no pushed sha. So the commit planning above (`L`, `H`, `T`) never
+builds on it, and it pushed nothing.
+
+Mend looks with `gh`, as the change's owner:
+
+- the worktree's branch and every `refs/heads/*` the agent pushed through the transport
+  (`session_git_ops.ref_updates`, newest first), keeping only pull requests whose head is on origin.
+  A fork's branch of the same name is someone else's, and `gh pr list --head` matches it too, so the
+  lookup that finds the pull request to update skips it as well;
+- then any pull request into the repository that holds the agent's head commit, a fork's included.
+  This finds a pull request whose branch Mend never saw, pushed over HTTPS to a fork.
+
+It looks 45 seconds after a push through the transport that moved a branch, when an agent ends while
+its workspace is still up (the last moment `gh` can run there), and when the owner presses "Check
+GitHub" in the Land panel (`mend land <session> --check`), even when nothing has landed. The first
+two only ever use a live workspace of the owner's and ask nothing when the agent neither committed
+nor pushed. The owner's check may use a short-lived workspace, as step 4 does. A pull request
+already recorded has its state refreshed instead of a second row.
+
+The next landing then chooses its branch in this order: the one the owner names, the one the
+change's last landing pushed, the one the agent last pushed itself, an adopted pull request's head
+on origin, the worktree's own. It passes the adopted pull request as the one to update. A pull
+request from a fork is shown
+(`pull request #367 · merged · observed 2 min ago · opened outside Mend · from anna's fork`) and
+never updated: Mend pushes to origin only, the Land button reads "Push to origin", and a landing
+skips its pull request step with that reason rather than open a second pull request.
 
 ### Worktree removal
 
@@ -313,7 +350,9 @@ into anyone's checkout.
 - **Web:** a Land panel on the change page. It shows the branch, the base, the pull request title
   and description preview, the observed facts above, and one button, "Push and open pull request",
   which reads "Push and update pull request" once there is one. The session page links to it.
-- **CLI:** `mend land <session> [--branch <name>] [--no-pr] [--title …]`, and `mend pull <session>`.
+- **CLI:** `mend land <session> [--branch <name>] [--no-pr] [--title …]`,
+  `mend land <session> --check` (look for a pull request opened outside Mend), and
+  `mend pull <session>`.
 - **Slack (ADR 0006):** lands automatically as above, and the status line carries the branch and the
   pull request. When a request did not land (a question, automatic landing off, a follow-up from
   someone other than the owner), the end-of-session reply has a "Push and open pull request" button,
@@ -402,6 +441,11 @@ it. After PR 6, sessions land themselves. PR 9 is the Cursor experience end to e
 12. **Pulling is a read.** A bundle download by anyone who can read the review diff must not change
     what the owner sees. So it moves nothing, writes no branch, and takes a checkpoint only for the
     change owner.
+13. **Adopt a pull request opened outside Mend; never update a fork's.** An agent that opened its
+    own pull request left the change under review there, and a second one from Mend splits the
+    review. Adopting it keeps one. A fork's pull request is someone's own branch in someone's own
+    repository, and Mend's push to origin cannot reach it, so Mend states it and pushes to origin
+    only.
 
 ## Open questions
 
@@ -412,8 +456,7 @@ it. After PR 6, sessions land themselves. PR 9 is the Cursor experience end to e
    workspace and the owner's GitLab account, which is not a connected-account provider today.
 3. **Draft pull requests.** Should the owner be able to open a draft? It is one flag on `gh`. The
    question is whether a draft state belongs in Mend's copy at all.
-4. **The agent opens its own pull request anyway.** The prompt tells it not to, and it may still do
-   it. Mend could recognize a pull request from the session's branch and adopt it as the landing's
-   pull request, rather than failing to open a second one.
+4. ~~**The agent opens its own pull request anyway.**~~ Closed 2026-09-25: Mend adopts it ("Pull
+   requests opened outside Mend").
 5. **Commit message by inference.** The tour summary is written for a reviewer, not as a commit
    message. A dedicated one-line subject is cheap, but it is a new claim Mend makes.

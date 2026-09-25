@@ -136,6 +136,8 @@ export type LandingFactDto = ChangeLandingsDto["facts"][number];
 /** What one landing did, with how its pull request step went. */
 export type LandingReportDto = Answer<"POST", "/api/sessions/:id/land">;
 export type LandRequestDto = Payload<"POST", "/api/sessions/:id/land">;
+/** What "Check GitHub" found. */
+export type PullRequestCheckDto = Answer<"POST", "/api/changes/:id/pull-request/check">;
 /** A composed start — the server turns this into the harness's own argv. */
 export type LaunchStartDto = Omit<Payload<"POST", "/api/sessions/:id/launch">, "argv">;
 
@@ -388,6 +390,10 @@ export const landSession = (sessionId: string, request: LandRequestDto) =>
 /** Ask `gh` for the pull request's state now; Mend does not poll GitHub. */
 export const refreshLanding = (landingId: string) =>
   call("POST", "/api/landings/:id/refresh", { params: { id: landingId } });
+
+/** Ask `gh`, as the change's owner, for a pull request opened outside Mend, and record it. */
+export const checkGitHub = (changeId: string) =>
+  call("POST", "/api/changes/:id/pull-request/check", { params: { id: changeId } });
 
 // ─── protocol-mode conversation ─────────────────────────────────────────────
 

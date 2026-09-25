@@ -605,6 +605,21 @@ describe("landing in the thread", () => {
     });
   const open412 = { number: 412, state: "open" } as const;
 
+  it("reads a pull request opened outside Mend as such, and from whose fork", () => {
+    const adopted = new ChangeLanding({
+      ...landing("l-adopted", "adopted", { pullRequest: { number: 367, state: "merged" } }),
+      pushedSha: null,
+      trigger: "adopted",
+      pullRequestCrossRepository: true,
+      pullRequestHeadOwner: "anna",
+    });
+    expect(landingLine(adopted, [])).toBe(
+      "pull request #367 · merged · opened outside Mend · from anna's fork",
+    );
+    const onOrigin = new ChangeLanding({ ...adopted, pullRequestCrossRepository: false });
+    expect(landingLine(onOrigin, [])).toBe("pull request #367 · merged · opened outside Mend");
+  });
+
   it("reads a landing as the branch and the pull request, opened then updated", () => {
     const first = landing("l1", "pull-request", { pullRequest: open412 });
     expect(landingLine(first, [])).toBe("pushed · mend/fix-login · pull request #412 · opened");

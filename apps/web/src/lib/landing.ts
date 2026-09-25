@@ -1,10 +1,13 @@
 import {
   describePullRequest,
+  forkPullRequestReason,
   landingFactLine,
   observedAgo,
+  openForkPullRequest,
   ownerDescription,
   pullRequestBase,
   pullRequestTitle,
+  pullRequestToUpdate as pullRequestOnOriginToUpdate,
   resolveAutoLand,
   type AutomationChoice,
   type DescribedFile,
@@ -15,6 +18,7 @@ import type {
   ChangeLandingsDto,
   LandingFactDto,
   LandingReportDto,
+  PullRequestCheckDto,
   ReviewDiffFileDto,
 } from "#/lib/api";
 
@@ -24,33 +28,67 @@ import type {
  * the session page read the same words.
  */
 
-/** The branch the next landing pushes: the one the change landed on before, else its own. */
+/**
+ * The branch the next landing pushes, as the server chose it (`nextBranch`: the last landing's,
+ * the agent's own push, an adopted pull request's head on origin, else the worktree's). An older
+ * server does not say: the branch the change landed on before, else the worktree's.
+ */
 export const nextRemoteBranch = (
-  landings: ReadonlyArray<ChangeLandingDto>,
+  view: Pick<ChangeLandingsDto, "landings" | "nextBranch">,
   worktreeBranch: string,
-): string => landings[0]?.remoteBranch ?? worktreeBranch;
+): string =>
+  view.nextBranch ??
+  view.landings.find((landing) => landing.pushedSha !== null)?.remoteBranch ??
+  worktreeBranch;
 
 /**
- * The pull request the next landing updates: the one an earlier landing recorded, while it is
- * still open. A closed or merged one leads to a new pull request.
+ * The pull request the next landing updates: the newest recorded, adopted or Mend's own, while it
+ * is open and its head is on origin. A closed or merged one leads to a new pull request; a fork's
+ * is never updated.
  */
 export const pullRequestToUpdate = (
   landings: ReadonlyArray<ChangeLandingDto>,
-): NonNullable<ChangeLandingDto["pullRequest"]> | null => {
-  const recorded = landings.find((landing) => landing.pullRequest !== null)?.pullRequest ?? null;
-  return recorded !== null && recorded.state === "open" ? recorded : null;
+): NonNullable<ChangeLandingDto["pullRequest"]> | null => pullRequestOnOriginToUpdate(landings);
+
+/**
+ * Why the next landing opens no pull request although origin is on GitHub: the change is under
+ * review in a pull request from a fork, and Mend pushes to origin only. Null otherwise.
+ */
+export const forkNote = (landings: ReadonlyArray<ChangeLandingDto>): string | null => {
+  const fork = openForkPullRequest(landings);
+  return fork === null ? null : forkPullRequestReason(fork);
 };
 
 /** The one button's words: what it will do, never what the change is. */
 export const landButtonLabel = (view: {
   readonly pullRequestAvailable: boolean;
   readonly updates: boolean;
+  /** An open pull request from a fork: the landing pushes to origin and opens none. */
+  readonly fork?: boolean;
 }): string =>
-  !view.pullRequestAvailable
+  !view.pullRequestAvailable || view.fork === true
     ? "Push to origin"
     : view.updates
       ? "Push and update pull request"
       : "Push and open pull request";
+
+/** What "Check GitHub" found, as its status line. */
+export const checkLine = (check: PullRequestCheckDto): string => {
+  switch (check.outcome) {
+    case "adopted":
+      return check.landing?.pullRequest == null
+        ? "pull request recorded · opened outside Mend"
+        : `pull request #${check.landing.pullRequest.number} recorded · opened outside Mend`;
+    case "observed":
+      return check.landing?.pullRequest == null
+        ? "pull request already recorded · state read again"
+        : `pull request #${check.landing.pullRequest.number} already recorded · ${check.landing.pullRequest.state} · observed`;
+    case "none":
+      return "no pull request on GitHub for the change's branches or the agent's commit";
+    case "skipped":
+      return `GitHub not checked · ${check.reason ?? "no reason given"}`;
+  }
+};
 
 /** A review file as the description lists it: the same facts git gave the landing. */
 export const describedFileOfReview = (file: ReviewDiffFileDto): DescribedFile => ({

@@ -6,6 +6,7 @@ import { BundleTooLargeError, PushRefusedError } from "@mend/store";
 import { Effect, Layer } from "effect";
 
 import { DESCRIPTION_START } from "../src/description.ts";
+import type { PullRequestView } from "../src/gh.ts";
 import {
   type LandInput,
   Landing,
@@ -15,7 +16,12 @@ import {
   LandingStepError,
   TourRequests,
 } from "../src/landing.ts";
-import { type PublishInput, PullRequests, PullRequestStepError } from "../src/pull-requests.ts";
+import {
+  type PublishInput,
+  PullRequests,
+  PullRequestStepError,
+  type PullRequestWorkspaceTarget,
+} from "../src/pull-requests.ts";
 import { BASE_SHA, checkpointOf, makeWorld, OWNER, type WorldOptions } from "./world.ts";
 
 const CHECKPOINT_SHA = "cccccccccccccccccccccccccccccccccccccccc";
@@ -52,6 +58,8 @@ interface Script {
   readonly bundle?: "ok" | BundleTooLargeError;
   /** The worktree has no checkpoint yet. */
   readonly noCheckpoint?: boolean;
+  /** What `gh` finds for a pull request opened outside Mend. */
+  readonly found?: PullRequestView | null;
 }
 
 const PR: LandedPullRequest = {
@@ -79,6 +87,11 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
     readonly env: unknown;
   }> = [];
   const published: Array<PublishInput> = [];
+  const finds: Array<{
+    readonly target: PullRequestWorkspaceTarget;
+    readonly branches: ReadonlyArray<string>;
+    readonly commit: string | null;
+  }> = [];
   const bundles: Array<{ readonly base: string; readonly tip: string; readonly branch: string }> =
     [];
   const git = Layer.succeed(LandingGit, {
@@ -200,6 +213,12 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
           ? Effect.succeed({ action: outcome, pullRequest: PR, workspace: "short-lived" as const })
           : Effect.fail(outcome);
       }),
+    find: (find) =>
+      Effect.sync(() => {
+        calls.push("find");
+        finds.push({ target: find.target, branches: find.branches, commit: find.commit });
+        return script.found ?? null;
+      }),
     observe: (observe) =>
       Effect.sync(() => {
         observed.push(observe.target);
@@ -226,6 +245,7 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
     observed,
     bundles,
     tourRequests,
+    finds,
     layer,
   };
 };
@@ -786,6 +806,164 @@ describe("Landing.bundle", () => {
       const error = yield* (yield* Landing).bundle(bundleInput(OWNER)).pipe(Effect.flip);
       expect(error).toMatchObject({ _tag: "LandingStepError", message: "fatal: bad object" });
       expect(h.calls).toEqual(["checkpoint"]);
+    }).pipe(Effect.provide(h.layer));
+  });
+});
+
+describe("Landing.adoptPullRequest (docs/adr/0007, pull requests opened outside Mend)", () => {
+  const AGENT_HEAD = Sha.make("9".repeat(40));
+  const zero = "0".repeat(40);
+  const pushedBump = [`${zero} ${AGENT_HEAD} refs/heads/chore/bump-deps-tailwind-v4`];
+  const found = (overrides: Partial<PullRequestView> = {}): PullRequestView => ({
+    number: 368,
+    url: "https://github.com/acme/api/pull/368",
+    state: "open",
+    title: "Bump deps, Tailwind v4",
+    body: "Opened by the agent.",
+    headRefName: "chore/bump-deps-tailwind-v4",
+    headRefOid: AGENT_HEAD,
+    crossRepository: false,
+    headOwner: "acme",
+    ...overrides,
+  });
+
+  it.effect("asks nothing in the background when the agent neither committed nor pushed", () => {
+    const h = harness({ found: found() }, { live: true });
+    return Effect.gen(function* () {
+      const adoption = yield* (yield* Landing).adoptPullRequest({
+        changeId: h.world.change.id,
+        background: true,
+      });
+      expect(adoption._tag).toBe("none");
+      expect(h.finds).toEqual([]);
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect("never starts a workspace for a background look", () => {
+    const h = harness({ found: found() }, { agentPushes: [pushedBump] });
+    return Effect.gen(function* () {
+      const adoption = yield* (yield* Landing).adoptPullRequest({
+        changeId: h.world.change.id,
+        background: true,
+      });
+      expect(adoption).toEqual({
+        _tag: "skipped",
+        reason: "no live workspace of the owner's to ask gh in",
+      });
+      expect(h.finds).toEqual([]);
+    }).pipe(Effect.provide(h.layer));
+  });
+
+  it.effect(
+    "adopts the agent's pull request, and the next landing pushes its branch and updates it",
+    () => {
+      const h = harness(
+        { found: found(), publish: "updated" },
+        {
+          live: true,
+          agentPushes: [pushedBump],
+          branch: "mend/update-deps",
+        },
+      );
+      return Effect.gen(function* () {
+        const landing = yield* Landing;
+        const adoption = yield* landing.adoptPullRequest({
+          changeId: h.world.change.id,
+          background: true,
+        });
+        expect(h.finds).toEqual([
+          {
+            target: { ownerUserId: OWNER, sessionId: h.world.session.id, liveOnly: true },
+            branches: ["mend/update-deps", "chore/bump-deps-tailwind-v4"],
+            commit: null,
+          },
+        ]);
+        expect(adoption._tag).toBe("adopted");
+        expect(h.world.landings[0]).toMatchObject({
+          trigger: "adopted",
+          outcome: "adopted",
+          pushedSha: null,
+          remoteBranch: "chore/bump-deps-tailwind-v4",
+          pullRequest: { number: 368, state: "open" },
+          pullRequestCrossRepository: false,
+          userId: OWNER,
+        });
+
+        // Asked again, the same pull request is observed, not recorded twice.
+        const again = yield* landing.adoptPullRequest({
+          changeId: h.world.change.id,
+          background: true,
+        });
+        expect(again._tag).toBe("observed");
+        expect(h.world.landings).toHaveLength(1);
+
+        yield* landing.land(input());
+        expect(h.pushes.map((push) => push.remoteBranch)).toEqual(["chore/bump-deps-tailwind-v4"]);
+        expect(h.published[0]).toMatchObject({
+          head: "chore/bump-deps-tailwind-v4",
+          previous: 368,
+        });
+        // The adoption pushed nothing, so the landing builds on nothing Mend landed.
+        expect(h.commits[0]?.lastLanded).toBeNull();
+      }).pipe(Effect.provide(h.layer));
+    },
+  );
+
+  it.effect(
+    "records a fork's pull request found by the agent's commit, and pushes to origin only",
+    () => {
+      const h = harness(
+        {
+          found: found({
+            number: 367,
+            headRefName: "fix-login",
+            crossRepository: true,
+            headOwner: "anna",
+          }),
+        },
+        { live: true, headSha: AGENT_HEAD },
+      );
+      return Effect.gen(function* () {
+        const landing = yield* Landing;
+        const adoption = yield* landing.adoptPullRequest({
+          changeId: h.world.change.id,
+          background: true,
+        });
+        expect(h.finds[0]?.commit).toBe(AGENT_HEAD);
+        expect(adoption._tag).toBe("adopted");
+        expect(h.world.landings[0]).toMatchObject({
+          pullRequestCrossRepository: true,
+          pullRequestHeadOwner: "anna",
+          remoteBranch: "fix-login",
+        });
+
+        const report = yield* landing.land(input());
+        // The fork's branch is not on origin: the worktree's own branch is pushed.
+        expect(h.pushes.map((push) => push.remoteBranch)).toEqual(["mend/fix-login"]);
+        expect(report.pullRequest).toEqual({
+          _tag: "unavailable",
+          reason: "pull request #367 is from anna's fork · Mend pushes to origin only",
+        });
+        expect(h.published).toEqual([]);
+      }).pipe(Effect.provide(h.layer));
+    },
+  );
+
+  it.effect("lets the owner's own check use a short-lived workspace", () => {
+    const h = harness({ found: null }, {});
+    return Effect.gen(function* () {
+      const adoption = yield* (yield* Landing).adoptPullRequest({
+        changeId: h.world.change.id,
+        background: false,
+      });
+      expect(adoption._tag).toBe("none");
+      expect(h.finds).toEqual([
+        {
+          target: { ownerUserId: OWNER, sessionId: null, liveOnly: false },
+          branches: ["mend/fix-login"],
+          commit: null,
+        },
+      ]);
     }).pipe(Effect.provide(h.layer));
   });
 });

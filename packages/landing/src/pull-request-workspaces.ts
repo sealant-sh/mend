@@ -12,6 +12,7 @@ import { Effect, Layer } from "effect";
 import {
   type PullRequestWorkspace,
   PullRequestStepError,
+  type PullRequestWorkspaceTarget,
   PullRequestWorkspaces,
 } from "./pull-requests.ts";
 
@@ -136,7 +137,7 @@ export const PullRequestWorkspacesLive: Layer.Layer<
       );
 
     const within = <A, E>(
-      target: { readonly ownerUserId: string; readonly sessionId: SessionId | null },
+      target: PullRequestWorkspaceTarget,
       use: (workspace: PullRequestWorkspace) => Effect.Effect<A, E>,
     ): Effect.Effect<A, E | PullRequestStepError> =>
       Effect.gen(function* () {
@@ -145,6 +146,11 @@ export const PullRequestWorkspacesLive: Layer.Layer<
           .pipe(Effect.mapError(platformFailure("the owner's platform account")));
         const live = yield* liveWorkspace(client, target.sessionId);
         if (live !== null) return yield* use({ kind: "session", exec: execIn(client, live) });
+        if (target.liveOnly === true) {
+          return yield* new PullRequestStepError({
+            message: "the session has no live workspace to ask gh in",
+          });
+        }
         return yield* shortLived(client, use);
       });
 

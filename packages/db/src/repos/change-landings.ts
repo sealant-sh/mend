@@ -28,7 +28,14 @@ export type LandingResult =
       readonly pullRequest: LandedPullRequest;
     }
   | { readonly outcome: "refused"; readonly message: string }
-  | { readonly outcome: "failed"; readonly pushedSha: Sha | null; readonly message: string };
+  | { readonly outcome: "failed"; readonly pushedSha: Sha | null; readonly message: string }
+  /** A pull request opened outside Mend, recorded; nothing was pushed. */
+  | {
+      readonly outcome: "adopted";
+      readonly pullRequest: LandedPullRequest;
+      readonly crossRepository: boolean;
+      readonly headOwner: string | null;
+    };
 
 export interface NewChangeLanding {
   readonly changeId: ChangeId;
@@ -40,11 +47,11 @@ export interface NewChangeLanding {
     readonly ref: string;
     readonly sha: Sha;
   } | null;
-  /** The commit Mend wrote for uncommitted work; null when the agent had committed it all. */
+  /** The commit Mend wrote for uncommitted work; null when it wrote none (or adopted). */
   readonly commitSha: Sha | null;
   readonly remoteBranch: string;
   readonly trigger: LandingTrigger;
-  /** The session's owner: only they land. */
+  /** The change's owner: only they land, and a pull request is adopted for them. */
   readonly userId: string;
   readonly result: LandingResult;
 }
@@ -103,6 +110,8 @@ const toLanding = (row: typeof changeLandings.$inferSelect): ChangeLanding =>
             state: row.pullRequestState,
             observedAt: row.prObservedAt,
           },
+    pullRequestCrossRepository: row.prCrossRepository,
+    pullRequestHeadOwner: row.prHeadOwner,
     outcome: row.outcome,
     message: row.message,
     userId: row.userId,
@@ -130,6 +139,14 @@ const resultColumns = (result: LandingResult) => {
       return { pushedSha: null, message: result.message, ...pullRequestColumns(null) };
     case "failed":
       return { pushedSha: result.pushedSha, message: result.message, ...pullRequestColumns(null) };
+    case "adopted":
+      return {
+        pushedSha: null,
+        message: null,
+        ...pullRequestColumns(result.pullRequest),
+        prCrossRepository: result.crossRepository,
+        prHeadOwner: result.headOwner,
+      };
   }
 };
 

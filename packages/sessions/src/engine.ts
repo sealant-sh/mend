@@ -68,6 +68,7 @@ import type {
   Worktree,
 } from "@mend/domain/workbench";
 import {
+  agentPushedBranches,
   gitRemoteLocation,
   isSameGitRemote,
   type ProjectLink,
@@ -212,6 +213,11 @@ import {
   planSkills,
 } from "./skills.ts";
 import { type WorkspaceFile, WorkspaceFileError, writeFilesExecs } from "./workspace-files.ts";
+import { WorkspaceGitHooks } from "./workspace-git-hooks.ts";
+
+/** Whether a push's ref commands created or moved a branch (not a tag, not a delete). */
+const pushedBranches = (refUpdates: ReadonlyArray<string> | null): boolean =>
+  agentPushedBranches(refUpdates ?? []).length > 0;
 
 /**
  * How a harness takes an opening prompt (the cross-harness handoff). The public SDK rejects argv
@@ -921,7 +927,8 @@ type SessionEngineRequirements =
   | SessionGitOpsRepo
   | MendKeys
   | AgentBridge
-  | SourcePolicy;
+  | SourcePolicy
+  | WorkspaceGitHooks;
 
 export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineRequirements> =
   Layer.effect(
@@ -1615,6 +1622,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const hotWorkspaces = yield* HotWorkspacesRepo;
       const userDotfilesRepo = yield* UserDotfilesRepo;
       const gitAuthors = yield* UserGitAuthorRepo;
+      const gitHooks = yield* WorkspaceGitHooks;
       const dotfilesStore = yield* DotfilesStore;
       const dotfilesCloner = yield* DotfilesCloner;
       const skillsRepo = yield* SkillsRepo;
@@ -3160,6 +3168,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             "process-end harvest",
           );
           if (captureReady) yield* tryHarvest(agentProcess);
+          // The workspace is still up: the last moment `gh` can run in it before the sweep below
+          // may stop it (a pull request the agent opened itself is found here). Bounded, and
+          // never in the way of the settle.
+          yield* gitHooks
+            .agentEnded({ sessionId: session.id, worktreeId: session.worktreeId })
+            .pipe(Effect.timeout("20 seconds"), Effect.ignore);
           yield* reconcileSession(agentProcess.sessionId, { sweep });
         }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
 
@@ -6719,6 +6733,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   refUpdates: refUpdates === null ? undefined : refUpdates.join(", "),
                 }),
               );
+              // A push that moved branches on origin: a pull request from one may follow.
+              if (exitCode === 0 && pushedBranches(refUpdates)) {
+                const session = yield* sessions.byId(sessionId);
+                yield* gitHooks.branchesPushed({ sessionId, worktreeId: session.worktreeId });
+              }
             }).pipe(Effect.ignore),
         });
 

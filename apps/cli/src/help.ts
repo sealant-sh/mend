@@ -375,18 +375,26 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "land",
     section: "sessions",
     summary: "push a session's change to origin and open its pull request",
-    synopsis: ["<session> [--branch <name>] [--no-pr] [--title <text>] [--project <p>]"],
+    synopsis: [
+      "<session> [--branch <name>] [--no-pr] [--title <text>] [--project <p>]",
+      "<session> --check [--project <p>]",
+    ],
     description: [
       "Only the change's owner lands it: the owner of the worktree's first session, not someone who started a session in it later. Mend takes a checkpoint, commits what the agent left uncommitted on top of the agent's own commits and the last landing, and pushes that to origin with the project's git access. The agent's commits are pushed as they are. The session's branch, and the worktree's files, index and HEAD, are not touched.",
       "The push only fast-forwards. When origin's branch has commits Mend has not seen, or origin refuses the push, nothing is pushed and the command prints the remote's own words. Mend never force-pushes.",
       "When origin is on GitHub, Mend then opens a pull request into the session's base branch, or updates the one it opened before. That call runs in a workspace with your GitHub account (mend connect github). The description holds Mend's review summary when there is one, the changed files and links back to the session, and an update replaces only Mend's section of it. For any other origin the push happens and the pull request is reported as unavailable, with the reason.",
       "Landing again after more work adds commits to the same branch and updates the same pull request. When nothing is new since the last landing, nothing is pushed and the command says so. The branch on origin is never the project's default branch or the pull request's base. The command then prints what Mend observed: the push, the pull request and its state, what changed since, and pushes the agent made itself. It exits 1 when the push was refused or a step failed.",
+      "A pull request someone opened outside Mend, the agent through gh included, is found and recorded as the change's own: Mend looks after the agent pushes a branch and when its turn ends, and --check looks now. It asks GitHub, as you, about the worktree's branch, every branch the agent pushed, and the agent's head commit. A landing then pushes that pull request's branch and updates it. A pull request from a fork is shown and never updated: Mend pushes to origin only, and opens no second pull request beside it.",
       "<session> is a prefix of the session id or the worktree's name. Settled sessions count.",
     ],
     options: [
       {
         flag: "--branch <name>",
-        text: "the branch on origin. Default: where the change last pushed to, else mend/<worktree>",
+        text: "the branch on origin. Default: where the change last pushed to, the branch the agent pushed, an adopted pull request's branch, else mend/<worktree>",
+      },
+      {
+        flag: "--check",
+        text: "only look on GitHub for a pull request opened outside Mend, and record it; push nothing",
       },
       { flag: "--no-pr", text: "push only; open or update no pull request" },
       {

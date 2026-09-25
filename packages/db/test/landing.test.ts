@@ -378,4 +378,73 @@ describe.skipIf(!reachable)("landing in Postgres", () => {
       }),
     );
   });
+
+  it("records a pull request opened outside Mend as an adoption that pushed nothing", async () => {
+    await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const landings = yield* ChangeLandingsRepo;
+        const change = ChangeId.make("c-adopt");
+        yield* sql`
+          INSERT INTO worktree_changes (id, project_id, worktree_id, session_id, branch, base_sha)
+          VALUES (${change}, ${PROJECT}, ${WORKTREE}, ${SESSION}, 'mend/fix-login', 'abc')`;
+        const observedAt = new Date("2026-09-25T10:00:00.000Z");
+        const adopted = yield* landings.record({
+          changeId: change,
+          sessionId: SESSION,
+          projectId: PROJECT,
+          checkpoint: null,
+          commitSha: null,
+          remoteBranch: "fix-login",
+          trigger: "adopted",
+          userId: "alice",
+          result: {
+            outcome: "adopted",
+            pullRequest: {
+              number: 367,
+              url: "https://github.com/acme/api/pull/367",
+              state: "open",
+              observedAt,
+            },
+            crossRepository: true,
+            headOwner: "anna",
+          },
+        });
+        expect(adopted).toMatchObject({
+          trigger: "adopted",
+          outcome: "adopted",
+          pushedSha: null,
+          checkpointSha: null,
+          remoteBranch: "fix-login",
+          pullRequestCrossRepository: true,
+          pullRequestHeadOwner: "anna",
+          pullRequest: { number: 367, state: "open", observedAt },
+        });
+        // Refreshing its state keeps whose fork it is.
+        const merged = yield* landings.observePullRequest(adopted.id, {
+          number: 367,
+          url: "https://github.com/acme/api/pull/367",
+          state: "merged",
+          observedAt,
+        });
+        expect([merged?.pullRequest?.state, merged?.pullRequestHeadOwner]).toEqual([
+          "merged",
+          "anna",
+        ]);
+        // An adoption names its pull request and pushes nothing, whatever a writer says.
+        const pushedAdoption = yield* sql`
+          UPDATE change_landings SET pushed_sha = ${sha("e")} WHERE id = ${adopted.id}`.pipe(
+          Effect.flip,
+        );
+        expect(String(Reflect.get(Object(pushedAdoption.reason), "cause"))).toContain(
+          "change_landings_outcome_facts_check",
+        );
+        const landedAsAdoption = yield* sql`
+          UPDATE change_landings SET trigger = 'manual' WHERE id = ${adopted.id}`.pipe(Effect.flip);
+        expect(String(Reflect.get(Object(landedAsAdoption.reason), "cause"))).toContain(
+          "change_landings_outcome_facts_check",
+        );
+      }),
+    );
+  });
 });

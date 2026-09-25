@@ -21,12 +21,14 @@ const render = (patch: Partial<LandPanelViewProps> = {}): string =>
       draft: { title: "", body: "" },
       pending: null,
       report: null,
+      check: null,
       error: null,
       now: NOW,
       onDraft: noop,
       onLand: noop,
       onProbe: noop,
       onRefresh: noop,
+      onCheck: noop,
       onOpenPullRequest: noop,
       ...patch,
     }),
@@ -36,7 +38,14 @@ const LANDED = landingsFixture({
   landings: [landingFixture()],
   facts: [
     { _tag: "pushed", branch: "mend/fix-login", sha: SHA },
-    { _tag: "pull-request", number: 412, state: "open", observedAt: "2026-08-20T00:00:00.000Z" },
+    {
+      _tag: "pull-request",
+      number: 412,
+      state: "open",
+      observedAt: "2026-08-20T00:00:00.000Z",
+      outside: false,
+      fork: null,
+    },
   ],
 });
 
@@ -113,5 +122,37 @@ describe("the Land panel", () => {
     });
     expect(markup).toContain("push refused · mend/fix-login · non-fast-forward");
     expect(markup).toContain("Push and open pull request");
+  });
+
+  it("lets the owner check GitHub, and says what a fork's pull request means", () => {
+    expect(render()).toContain("Check GitHub");
+    const markup = render({
+      view: landingsFixture({
+        landings: [
+          landingFixture({
+            trigger: "adopted",
+            outcome: "adopted",
+            pushedSha: null,
+            commitSha: null,
+            remoteBranch: "fix-login",
+            pullRequest: {
+              number: 367,
+              url: "https://github.com/acme/app/pull/367",
+              state: "open",
+              observedAt: "2026-08-20T00:00:00.000Z",
+            },
+            pullRequestCrossRepository: true,
+            pullRequestHeadOwner: "anna",
+          }),
+        ],
+      }),
+      check: { outcome: "adopted", reason: null, landing: null },
+    });
+    expect(markup).toContain(
+      "pull request #367 is from anna&#x27;s fork · Mend pushes to origin only",
+    );
+    expect(markup).toContain("Push to origin");
+    expect(markup).toContain("pull request #367 · open · opened outside Mend · fix-login");
+    expect(markup).toContain("pull request recorded · opened outside Mend");
   });
 });

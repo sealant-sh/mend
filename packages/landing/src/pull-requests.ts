@@ -5,13 +5,16 @@ import * as Context from "effect/Context";
 
 import { mergeDescription, ownerDescription } from "./description.ts";
 import {
+  anyForBranchArgv,
+  anyWithCommitArgv,
   createArgv,
   createdUrl,
   editArgv,
+  firstOnOrigin,
   ghWords,
   openForBranchArgv,
-  parseFirstPullRequest,
   parsePullRequest,
+  parsePullRequests,
   type PullRequestView,
   removeFileArgv,
   viewArgv,
@@ -51,6 +54,11 @@ export interface PullRequestWorkspaceTarget {
   readonly ownerUserId: string;
   /** Null asks for a short-lived workspace outright. */
   readonly sessionId: SessionId | null;
+  /**
+   * Only the session's live workspace: no short-lived one is made, and without a live workspace
+   * the call fails with `PullRequestStepError`. A background check never starts a workspace.
+   */
+  readonly liveOnly?: boolean;
 }
 
 /**
@@ -104,6 +112,19 @@ export class PullRequests extends Context.Service<
      * already open from the branch. Only Mend's marked section of the body is replaced.
      */
     readonly publish: (input: PublishInput) => Effect.Effect<Published, PullRequestStepError>;
+    /**
+     * The pull request for a change, wherever it was opened from (docs/adr/0007-landing.md,
+     * "Pull requests opened outside Mend"). Each branch in order, keeping only pull requests
+     * whose head is on origin (a fork's branch of the same name is someone else's); then, when a
+     * commit is given, any pull request that contains it, a fork's included. Among several, an
+     * open one first, then the newest. Null when none is found.
+     */
+    readonly find: (input: {
+      readonly target: PullRequestWorkspaceTarget;
+      readonly repository: GitHubRepository;
+      readonly branches: ReadonlyArray<string>;
+      readonly commit: string | null;
+    }) => Effect.Effect<PullRequestView | null, PullRequestStepError>;
     /** The pull request's number, URL and state as `gh` reports them now. */
     readonly observe: (input: {
       readonly target: PullRequestWorkspaceTarget;
@@ -168,15 +189,35 @@ const openTarget = (
       const recorded = yield* view(workspace, input.repository, input.previous).pipe(
         Effect.orElseSucceed(() => null),
       );
-      if (recorded !== null && recorded.state === "open") return recorded;
+      // A fork's pull request is never updated: Mend pushes to origin only.
+      if (recorded !== null && recorded.state === "open" && !recorded.crossRepository) {
+        return recorded;
+      }
     }
     const listed = yield* ghOk(
       workspace,
       openForBranchArgv(input.repository, input.head),
       "gh pr list",
     );
-    return parseFirstPullRequest(listed.stdout);
+    return firstOnOrigin(listed.stdout);
   });
+
+/** Open first, then the newest (the highest number). */
+const preferred = (candidates: ReadonlyArray<PullRequestView>): PullRequestView | null =>
+  candidates.toSorted(
+    (left, right) =>
+      Number(right.state === "open") - Number(left.state === "open") || right.number - left.number,
+  )[0] ?? null;
+
+const listed = (workspace: PullRequestWorkspace, argv: ReadonlyArray<string>) =>
+  ghOk(workspace, argv, "gh pr list").pipe(
+    Effect.flatMap((output) => {
+      const parsed = parsePullRequests(output.stdout);
+      return parsed === null
+        ? Effect.fail(failure("gh pr list · the answer was not the pull requests' JSON"))
+        : Effect.succeed(parsed);
+    }),
+  );
 
 export const PullRequestsLive: Layer.Layer<PullRequests, never, PullRequestWorkspaces> =
   Layer.effect(
@@ -245,6 +286,38 @@ export const PullRequestsLive: Layer.Layer<PullRequests, never, PullRequestWorks
         ),
       );
 
+      const find = Effect.fn("PullRequests.find")(
+        (input: {
+          readonly target: PullRequestWorkspaceTarget;
+          readonly repository: GitHubRepository;
+          readonly branches: ReadonlyArray<string>;
+          readonly commit: string | null;
+        }) =>
+          workspaces.within(input.target, (workspace) =>
+            Effect.gen(function* () {
+              for (const branch of input.branches) {
+                const onOrigin = (yield* listed(
+                  workspace,
+                  anyForBranchArgv(input.repository, branch),
+                )).filter((pullRequest) => !pullRequest.crossRepository);
+                const found = preferred(onOrigin);
+                if (found !== null) return found;
+              }
+              if (input.commit === null) return null;
+              const commit = input.commit;
+              const containing = yield* listed(
+                workspace,
+                anyWithCommitArgv(input.repository, commit),
+              );
+              // The commit at the head beats one further down another pull request's history.
+              return (
+                preferred(containing.filter((pullRequest) => pullRequest.headRefOid === commit)) ??
+                preferred(containing)
+              );
+            }),
+          ),
+      );
+
       const observe = Effect.fn("PullRequests.observe")(
         (input: {
           readonly target: PullRequestWorkspaceTarget;
@@ -259,6 +332,6 @@ export const PullRequestsLive: Layer.Layer<PullRequests, never, PullRequestWorks
           ),
       );
 
-      return { publish, observe };
+      return { publish, find, observe };
     }),
   );

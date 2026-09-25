@@ -2092,6 +2092,37 @@ const userGitAuthorMigration = Effect.gen(function* () {
     )`;
 });
 
+/**
+ * docs/adr/0007-landing.md, "Pull requests opened outside Mend": a pull request the agent (or a
+ * person) opened for the change's branch is adopted as a landing that pushed nothing. Its trigger
+ * and outcome are `adopted`; it carries the pull request and no pushed sha, so the commit planning
+ * (L, H, T) never builds on it. A pull request whose head is in a fork says so and whose it is.
+ */
+const landingAdoptionMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE change_landings
+      DROP CONSTRAINT IF EXISTS change_landings_trigger_check,
+      DROP CONSTRAINT IF EXISTS change_landings_outcome_check,
+      DROP CONSTRAINT IF EXISTS change_landings_outcome_facts_check`;
+  yield* sql`
+    ALTER TABLE change_landings
+      ADD COLUMN pr_cross_repository boolean NOT NULL DEFAULT false,
+      ADD COLUMN pr_head_owner text,
+      ADD CONSTRAINT change_landings_trigger_check
+        CHECK (trigger IN ('manual', 'automatic', 'adopted')),
+      ADD CONSTRAINT change_landings_outcome_check
+        CHECK (outcome IN ('pushed', 'pull-request', 'refused', 'failed', 'adopted')),
+      ADD CONSTRAINT change_landings_outcome_facts_check CHECK (
+        (outcome = 'pushed' AND pushed_sha IS NOT NULL)
+        OR (outcome = 'pull-request' AND pushed_sha IS NOT NULL AND pull_request_number IS NOT NULL)
+        OR (outcome = 'refused' AND pushed_sha IS NULL)
+        OR outcome = 'failed'
+        OR (outcome = 'adopted' AND trigger = 'adopted' AND pushed_sha IS NULL
+          AND pull_request_number IS NOT NULL)
+      )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2162,4 +2193,5 @@ export const migrations = {
   "0066_landing_description": landingDescriptionMigration,
   "0067_services_stop_control": servicesStopControlMigration,
   "0068_user_git_author": userGitAuthorMigration,
+  "0069_landing_adoption": landingAdoptionMigration,
 };
