@@ -274,6 +274,30 @@ change in view.
   codex in either mode, settled sessions resume, and the owner hands a session between modes. Proven
   with unit tests on the data layer and a component harness driven in Chromium against fixtures; not
   proven live: alpha has no protocol-mode session, and launching one spends the owner's credentials.
+- **Packaging (2026-09-24, branch `desktop/04-packaging`).** `pnpm -F @mend/desktop package` builds,
+  then runs electron-builder (`electron-builder.config.ts`) for the host: Linux AppImage and tar.gz,
+  macOS dmg and zip for arm64 and x64, unsigned and not notarized. Artifacts land in `release/`. The
+  app icon is the seam mark from `apps/mobile/assets/images/icon.png`, copied to
+  `resources/icon.png`. The package holds `out/` and `package.json` only (a 16 MB `app.asar`, no
+  node_modules), with the ghostty wasm, the Nerd Font symbols and the fontsource faces under
+  `out/renderer/assets`. Proven on Linux: the unpacked tar.gz ran against alpha read-only
+  (`app.isPackaged` true, renderer at `file://…/app.asar/out/renderer/index.html`), drew the tree,
+  loaded Space Grotesk, Inter and JetBrains Mono, and replayed a completed codex session's record
+  through the ghostty terminal. The AppImage was built but not launched: on NixOS it needs
+  `appimage-run`. On Linux the macOS `.app` and zip build, and the dmg stops at `sips`, a macOS
+  tool. No macOS artifact has been opened on a Mac yet.
+  - Proposed CI job, not wired: `release-desktop.yml`, on the same `v*.*.*` tag as
+    `release-cli.yml`. A matrix of `ubuntu-latest` (AppImage, tar.gz) and `macos-latest` (dmg, zip,
+    arm64 and x64). Each leg runs `pnpm install --frozen-lockfile --ignore-scripts`
+    (electron-builder fetches its own Electron, so electron's postinstall is not needed), stamps the
+    version from the tag (`pnpm -F @mend/desktop exec npm version "$VERSION" --no-git-tag-version`,
+    as the CLI job does), runs `pnpm -F @mend/desktop package --publish never` and uploads
+    `release/Mend-*` as a workflow artifact. A final job, needing both legs and `github-release`,
+    attaches them to the tag's release with `gh release upload`, skipping assets already present, as
+    the setup assets do. It lists them under "Artifacts of this release" as unsigned builds. Signing
+    and notarization (Developer ID secrets, `mac.identity`, `notarize: true`, hardened runtime
+    entitlements) come later in their own change. So does auto-update: the release job publishes
+    only files, and no `latest*.yml` feed.
 - **M2: Review in-app.** Immutable checkpoint-pair diff, P0 controls, comments, minimum evidence,
   and recoverable send-back.
 - **M3: Services in-app.** Stable Services, attempt history, private forwards, read-only logs, and
@@ -282,6 +306,24 @@ change in view.
   and keybinding configuration.
 
 ## Decision log
+
+- 2026-09-24: packaging ships the electron-vite output alone. Every runtime import is bundled (main
+  and preload need only electron and node builtins), so the desktop's former `dependencies` moved to
+  `devDependencies` and `beforeBuild` answers false. Without that hook electron-builder finds no
+  dependencies in `apps/desktop`, falls back to the workspace root and packs the root's (`effect`
+  and its tree, msgpackr's native addon): 56 MB of asar instead of 16. `npmRebuild: false` is left
+  out on purpose, because it returns before `beforeBuild` runs. The config is TypeScript
+  (`Configuration` from electron-builder) and type-checked with the node project.
+- 2026-09-24: the packaged app keeps the package name, so `userData` is the same
+  `~/.config/@mend/desktop` in dev and packaged runs, and the credential stays in the CLI's
+  `~/.config/mend/cli.json`. `desktopName` (`mend-desktop.desktop`, added through `extraMetadata`)
+  with `linux.syncDesktopName` gives the Wayland app_id and the AppImage's desktop entry one name.
+- 2026-09-24 (review): the package name is not the name people read. Electron takes `app.name` from
+  it, and macOS spells the app menu's About, Hide and Quit items from `app.name`, so the packaged
+  Mac build said "Quit @mend/desktop". Main now pins `userData` to the path the package name gives,
+  then calls `app.setName("Mend")`: the rename alone would have moved the profile to
+  `~/.config/Mend`. The X11 WM_CLASS was already `mend-desktop` (checked with xprop): Electron takes
+  it from `desktopName`, not from the app name.
 
 - 2026-09-24: the phone's platform-free conversation logic moved into `@mend/agent-conversation`
   (ordering, item cursor paging, request words, answer composition) instead of being copied. The
