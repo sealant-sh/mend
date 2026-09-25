@@ -20,6 +20,7 @@ import {
   UserDotfilesRepo,
   UserEvents,
   UserGitAccessRepo,
+  UserGitAuthorRepo,
 } from "@mend/db";
 import { makePublicNetwork, PublicOrigin } from "@mend/network";
 import { SealantClient } from "@mend/sealant";
@@ -106,6 +107,7 @@ const startServer = async () => {
     // announcement passes silently while every other database access stays a defect.
     Layer.mock(UserEvents, { changed: () => Effect.void }),
     Layer.mock(UserGitAccessRepo, {}),
+    Layer.mock(UserGitAuthorRepo, {}),
     Layer.mock(AgentConversationRepo, {}),
     Layer.mock(SealantClient, {}),
     Layer.mock(SessionsRepo, {}),

@@ -6,6 +6,7 @@ import {
   ChangeStats,
   CurrentUser,
   GitAccessView,
+  GitAuthorView,
   GitBridgeStatusView,
   GitKeyView,
   EnvironmentLoadedEntry,
@@ -94,6 +95,7 @@ import {
   UserDotfilesRepo,
   UserEvents,
   UserGitAccessRepo,
+  UserGitAuthorRepo,
 } from "@mend/db";
 import {
   dotfilesRepositoryUrlCredentialIssue,
@@ -125,6 +127,8 @@ import {
   type SessionControlKind,
   canRemoveProject,
   type GitAuthMode,
+  gitAuthorIssue,
+  normalizeGitAuthor,
   type SessionStatus,
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
@@ -1125,8 +1129,40 @@ export const GitKeysGroupLive = HttpApiBuilder.group(MendApi, "gitKeys", (handle
         yield* gitAccessChanged(caller.user.id);
         return yield* gitAccessView();
       }),
+    )
+    .handle("author", () => gitAuthorView())
+    .handle("setAuthor", ({ payload }) =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        const issue = gitAuthorIssue(payload);
+        if (issue !== null) {
+          return yield* new SettingsFailure({ message: `git author not saved · ${issue}` });
+        }
+        yield* (yield* UserGitAuthorRepo).set(caller.user.id, normalizeGitAuthor(payload));
+        return yield* gitAuthorView();
+      }),
+    )
+    .handle("clearAuthor", () =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        yield* (yield* UserGitAuthorRepo).clear(caller.user.id);
+        return yield* gitAuthorView();
+      }),
     ),
 );
+
+/**
+ * The calling account's git author: its setting, else the name and email it registered with
+ * (the session's own account row, which exists for every caller).
+ */
+const gitAuthorView = () =>
+  Effect.gen(function* () {
+    const caller = yield* CurrentUser;
+    const resolved = yield* (yield* UserGitAuthorRepo).resolve(caller.user.id);
+    return new GitAuthorView(
+      resolved ?? { name: caller.user.name, email: caller.user.email, source: "account" },
+    );
+  });
 
 /** The pointer the first-run checklist and Settings re-read this user's git access on. */
 const gitAccessChanged = (userId: string) =>

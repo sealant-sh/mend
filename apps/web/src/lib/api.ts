@@ -103,6 +103,7 @@ export type HostEnvironmentSuggestionsDto = Outputs["settings"]["environmentSugg
 export type GitKeyDto = Outputs["git"]["key"];
 export type GitAccessDto = Outputs["git"]["access"];
 export type GitAccessModeDto = GitAccessDto["mode"];
+export type GitAuthorDto = Outputs["git"]["author"];
 export type GitBridgeStatusDto = Outputs["git"]["bridgeStatus"];
 export type ReferenceDto = Outputs["git"]["references"][number];
 export type ProjectMountDto = Outputs["projects"]["mounts"][number];
@@ -311,6 +312,9 @@ export const refreshReference = (id: string) =>
 export const initGitKey = () => orLogin(trpcClient.git.initKey.mutate());
 export const setGitAccess = (mode: GitAccessModeDto) =>
   orLogin(trpcClient.git.setAccess.mutate({ mode }));
+export const setGitAuthor = (name: string, email: string) =>
+  orLogin(trpcClient.git.setAuthor.mutate({ name, email }));
+export const clearGitAuthor = () => orLogin(trpcClient.git.clearAuthor.mutate());
 
 // ─── Sessions · services ────────────────────────────────────────────────────
 

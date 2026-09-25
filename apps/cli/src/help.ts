@@ -655,6 +655,22 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     see: ["dotfiles", "dotfiles repo"],
   },
   {
+    name: "git-author",
+    section: "project setup",
+    summary: "the name and email your workspaces commit as",
+    synopsis: ["[<name> <email>]", "--clear"],
+    description: [
+      "Commits the agent makes in your workspaces name this author. Until you set one, it is the name and email you registered with. Without arguments, prints it and where it comes from.",
+      "Each workspace receives it as system git config before the agent starts, so a user section in your dotfiles' .gitconfig or in a repository's own config still decides. Sessions launched after a change commit as the new author.",
+    ],
+    options: [{ flag: "--clear", text: "go back to your account's name and email" }],
+    examples: [
+      { command: 'mend git-author "Anna Example" anna@example.com', text: "" },
+      { command: "mend git-author --clear", text: "" },
+    ],
+    see: ["dotfiles", "keys mode"],
+  },
+  {
     name: "keys init",
     section: "project setup",
     summary: "create your Mend key (ed25519) on the server",

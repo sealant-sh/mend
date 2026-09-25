@@ -2077,6 +2077,21 @@ const servicesStopControlMigration = Effect.gen(function* () {
       ))`;
 });
 
+/**
+ * docs/GIT-ACCESS.md, "Git author": the name and email an account's workspaces commit as. No row
+ * means the account's own registration name and email.
+ */
+const userGitAuthorMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE user_git_author (
+      user_id text PRIMARY KEY REFERENCES "user" (id) ON DELETE CASCADE,
+      name text NOT NULL,
+      email text NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2146,4 +2161,5 @@ export const migrations = {
   "0065_turn_landing": turnLandingMigration,
   "0066_landing_description": landingDescriptionMigration,
   "0067_services_stop_control": servicesStopControlMigration,
+  "0068_user_git_author": userGitAuthorMigration,
 };

@@ -131,3 +131,19 @@ Calls to the GitHub API (repository discovery, pull request lists) have no per-a
 yet. On a single-organization install the operator may use the host's `gh` login; everyone else sees
 "no identity" with the reason. A per-account GitHub token, sealed like other credentials, is the
 planned follow-up.
+
+## Git author
+
+The commits an agent makes in a workspace name an author. That is an account setting, **Git
+author**: a name and an email in Settings (the web) or `mend git-author "Name" you@example.com` (the
+CLI), `GET`/`PUT`/`DELETE /api/me/git-author`. Until the account saves one, it is the name and email
+the account registered with; `DELETE` returns it there.
+
+Before the harness starts, in every workspace the session's owner launches (co-located or captured,
+cold or a claimed standby), Mend writes it as system git config: `git config --system user.name` and
+`user.email`, the values passed as arguments, never through a shell. System level is deliberate: a
+`~/.gitconfig` from the owner's dotfiles and the repository's own `.git/config` still decide over
+it. `GIT_AUTHOR_*` environment variables would override both, so Mend does not set them. A workspace
+that already runs (a sibling session joining a captured worktree's lease holder) keeps the author it
+was launched with. A write that fails is logged and the session still launches, like the transport
+install beside it.

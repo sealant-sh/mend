@@ -9,6 +9,7 @@ import { Timestamp } from "@mend/domain";
 import {
   AutomationChoice,
   GitAuthMode,
+  GitAuthorSource,
   ProjectVisibility,
   Project,
   RepositoryCloneUrl,
@@ -346,6 +347,22 @@ export class GitAccessView extends Schema.Class<GitAccessView>("GitAccessView")(
 
 export class SetGitAccessRequest extends Schema.Class<SetGitAccessRequest>("SetGitAccessRequest")({
   mode: GitAccessMode,
+}) {}
+
+/**
+ * The account's git author (docs/GIT-ACCESS.md, "Git author"): the name and email its workspaces
+ * commit as. `source` says whether the account saved it (`setting`) or it is the account's own
+ * registration name and email (`account`).
+ */
+export class GitAuthorView extends Schema.Class<GitAuthorView>("GitAuthorView")({
+  name: Schema.String,
+  email: Schema.String,
+  source: GitAuthorSource,
+}) {}
+
+export class SetGitAuthorRequest extends Schema.Class<SetGitAuthorRequest>("SetGitAuthorRequest")({
+  name: Schema.String,
+  email: Schema.String,
 }) {}
 
 export const HostToolSuggestionView = Schema.Struct({

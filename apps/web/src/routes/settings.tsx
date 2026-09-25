@@ -3,6 +3,7 @@ import { createFileRoute, useRouter } from "@tanstack/react-router";
 import { useReducer, useState } from "react";
 
 import { GitAccessPanel } from "#/components/git-access-panel";
+import { GitAuthorPanel } from "#/components/git-author-panel";
 import { OrganizationSettings } from "#/components/organization-settings";
 import {
   PairingQr,
@@ -58,6 +59,7 @@ export const Route = createFileRoute("/settings")({
     await Promise.all([
       queryClient.ensureQueryData(trpc.settings.get.queryOptions()),
       queryClient.ensureQueryData(trpc.settings.dotfiles.queryOptions()),
+      queryClient.ensureQueryData(trpc.git.author.queryOptions()),
       queryClient.ensureQueryData(trpc.platform.sealantIdentity.queryOptions()),
       queryClient.ensureQueryData(trpc.devices.list.queryOptions(undefined, { staleTime: 30_000 })),
     ]);
@@ -86,6 +88,7 @@ function SettingsPage() {
         <WorkspaceEnvironmentPanel />
         <DotfilesPanel />
         <GitAccessSettingsPanel />
+        <GitAuthorPanel />
         <SessionLifecyclePanel />
         <ReviewAutomationPanel />
         <LandingPanel />

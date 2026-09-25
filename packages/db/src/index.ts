@@ -32,6 +32,7 @@ export * from "./repos/project-secrets.ts";
 export * from "./repos/project-service-recipes.ts";
 export * from "./repos/user-dotfiles.ts";
 export * from "./repos/user-git-access.ts";
+export * from "./repos/user-git-author.ts";
 export * from "./repos/users.ts";
 export * from "./repos/user-events.ts";
 export * from "./repos/sealant-identities.ts";

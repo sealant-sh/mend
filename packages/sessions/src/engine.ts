@@ -36,6 +36,7 @@ import {
   SettingsRepo,
   SkillsRepo,
   UserDotfilesRepo,
+  UserGitAuthorRepo,
   SessionChannelTokensRepo,
 } from "@mend/db";
 import {
@@ -140,6 +141,7 @@ import {
 } from "./capture-runtime.ts";
 import { detectInstallCommand, PLATFORM_PROBE_SCRIPT, platformKeyOf } from "./dependency-cache.ts";
 import { DotfilesCloner, DotfilesResolveError, snapshotArchive } from "./dotfiles.ts";
+import { gitAuthorConfigArgv } from "./git-author.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
 import {
   HARNESS_HOME_MOUNT_PATH,
@@ -858,6 +860,7 @@ type SessionEngineRequirements =
   | SessionsRepo
   | HotWorkspacesRepo
   | UserDotfilesRepo
+  | UserGitAuthorRepo
   | DotfilesStore
   | DotfilesCloner
   | SkillsRepo
@@ -1580,6 +1583,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const sessions = yield* SessionsRepo;
       const hotWorkspaces = yield* HotWorkspacesRepo;
       const userDotfilesRepo = yield* UserDotfilesRepo;
+      const gitAuthors = yield* UserGitAuthorRepo;
       const dotfilesStore = yield* DotfilesStore;
       const dotfilesCloner = yield* DotfilesCloner;
       const skillsRepo = yield* SkillsRepo;
@@ -4353,6 +4357,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       };
 
+      /**
+       * Write the owner's git author into the workspace as system git config. Best-effort, like
+       * the transport install: an agent without it still works, and the warning says why.
+       */
+      const applyGitAuthor = Effect.fn("SessionEngine.applyGitAuthor")(function* (
+        sessionId: SessionId,
+        workspace: Workspace,
+        ownerUserId: string,
+      ) {
+        const author = yield* gitAuthors.resolve(ownerUserId);
+        if (author === null) return;
+        const notWritten = (detail: Record<string, unknown>) =>
+          Effect.logWarning("session engine: the git author was not written in the workspace").pipe(
+            Effect.annotateLogs({ sessionId, source: author.source, ...detail }),
+          );
+        yield* sealant.exec(workspace, gitAuthorConfigArgv(author)).pipe(
+          Effect.flatMap((result) =>
+            result.exitCode === 0
+              ? Effect.void
+              : notWritten({ exitCode: result.exitCode, stderr: result.stderr.trim() }),
+          ),
+          Effect.catch((error) => notWritten({ message: error.message })),
+        );
+      });
+
       const launchInternal = Effect.fn("SessionEngine.launchInternal")(function* (
         sessionId: SessionId,
         argv: ReadonlyArray<string>,
@@ -4561,6 +4590,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // url+ref that was cloned and the exact snapshot sha the store packed (for a hot
         // workspace: whatever the prewarm actually applied).
         yield* sessions.setDotfiles(sessionId, provisioned.dotfiles);
+        // The owner's git author (docs/GIT-ACCESS.md, "Git author"), for a cold workspace and a
+        // claimed standby alike: system config, written before the harness starts, so dotfiles
+        // and repository config still decide over it.
+        yield* applyGitAuthor(sessionId, workspace, ownerUserId);
 
         // A relaunch restores the ORIGINAL harness's saved state into the
         // fresh workspace before anything starts — for a same-harness launch

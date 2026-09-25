@@ -549,6 +549,18 @@ export const userGitAccess = pgTable("user_git_access", {
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * The name and email this account's workspaces commit as (docs/GIT-ACCESS.md, "Git author"),
+ * written as system git config before the harness starts. No row = the account's registration
+ * name and email.
+ */
+export const userGitAuthor = pgTable("user_git_author", {
+  userId: text().primaryKey(),
+  name: text().notNull(),
+  email: text().notNull(),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
 export const userDotfiles = pgTable("user_dotfiles", {
   userId: text().primaryKey(),
   repository: jsonbOf(DotfilesRepository),
