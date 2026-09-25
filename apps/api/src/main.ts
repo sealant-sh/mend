@@ -207,6 +207,13 @@ import { SlackLinkedMentionWorkerLive, SlackSocketsLive } from "./slack-worker.t
 import { TenancyConfigLive } from "./tenancy.ts";
 
 /**
+ * The machine passes over a change run side by side: a tour composing for minutes must not hold
+ * every other change's tour, read and suggestions behind it (pg-boss runs one job per queue and
+ * process unless asked).
+ */
+const REVIEW_PASS_WORK = { localConcurrency: 3 } as const;
+
+/**
  * The composition boundary (ARCHITECTURE.md §2): every service is wired here
  * and nowhere else. This process is the Mend API server — the typed contract,
  * auth, the WebSocket data planes, the session engine, and the workers. The
@@ -452,13 +459,16 @@ const InferenceWorkersLive = Layer.effectDiscard(
         ),
         Effect.tapError((error) => passes.fail(changeId, kind, error.message)),
       );
-    yield* jobs.work("read-change", (payload) =>
-      decodeReadChangeJob(payload).pipe(
-        Effect.flatMap((job) =>
-          asChangeOwner(job.changeId)(recorded("read", job.changeId, reader.read(job))),
+    yield* jobs.work(
+      "read-change",
+      (payload) =>
+        decodeReadChangeJob(payload).pipe(
+          Effect.flatMap((job) =>
+            asChangeOwner(job.changeId)(recorded("read", job.changeId, reader.read(job))),
+          ),
+          Effect.orDie,
         ),
-        Effect.orDie,
-      ),
+      REVIEW_PASS_WORK,
     );
     // A completed tour reaches the pull request Mend opened without one (docs/adr/0007-landing.md,
     // "What the thread sees"), once per tour. Its failure is logged and never fails the tour.
@@ -480,23 +490,29 @@ const InferenceWorkersLive = Layer.effectDiscard(
         ),
         Effect.asVoid,
       );
-    yield* jobs.work("compose-tour", (payload) =>
-      decodeComposeTourJob(payload).pipe(
-        Effect.flatMap((job) =>
-          asChangeOwner(job.changeId)(
-            recorded("tour", job.changeId, tourComposer.compose(job)),
-          ).pipe(Effect.andThen(describeAfterTour(job.changeId))),
+    yield* jobs.work(
+      "compose-tour",
+      (payload) =>
+        decodeComposeTourJob(payload).pipe(
+          Effect.flatMap((job) =>
+            asChangeOwner(job.changeId)(
+              recorded("tour", job.changeId, tourComposer.compose(job)),
+            ).pipe(Effect.andThen(describeAfterTour(job.changeId))),
+          ),
+          Effect.orDie,
         ),
-        Effect.orDie,
-      ),
+      REVIEW_PASS_WORK,
     );
-    yield* jobs.work("suggest-change", (payload) =>
-      decodeSuggestChangeJob(payload).pipe(
-        Effect.flatMap((job) =>
-          asChangeOwner(job.changeId)(recorded("suggest", job.changeId, suggester.suggest(job))),
+    yield* jobs.work(
+      "suggest-change",
+      (payload) =>
+        decodeSuggestChangeJob(payload).pipe(
+          Effect.flatMap((job) =>
+            asChangeOwner(job.changeId)(recorded("suggest", job.changeId, suggester.suggest(job))),
+          ),
+          Effect.orDie,
         ),
-        Effect.orDie,
-      ),
+      REVIEW_PASS_WORK,
     );
     yield* jobs.work("brief", (payload) =>
       decodeCompileBriefJob(payload).pipe(
