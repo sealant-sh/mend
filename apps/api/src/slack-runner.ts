@@ -20,9 +20,13 @@ import {
 } from "@mend/db";
 import { ProjectId, SessionId, type OrganizationId } from "@mend/domain";
 import {
+  changeOwnerOf,
   currentAgentProcess,
   isLiveProcess,
+  type AgentTurn,
   type Project,
+  type RequestIntent,
+  type RequestIntentReading,
   type Session,
   type SessionProcess,
   type SlackLinkedMentionJob,
@@ -54,9 +58,12 @@ import {
   imageRefusal,
   imagesNotAttached,
   isDirectMessage,
+  landedMessage,
+  landingLine,
   LISTED_SESSIONS,
   linkPrompt,
   linkUrl,
+  notLanded,
   outsiderMessage,
   parseMention,
   projectPicker,
@@ -96,6 +103,7 @@ import { Cause, Config, Effect, FiberSet, Layer, Option, Schema, type Fiber } fr
 import * as Context from "effect/Context";
 
 import { ProjectAccess } from "./access.ts";
+import { OwnerLanding } from "./owner-landing.ts";
 import { SessionStart } from "./session-start.ts";
 import { SessionSteering } from "./session-steering.ts";
 
@@ -518,6 +526,38 @@ export const slackStateOf = (session: Pick<Session, "status">): SlackSessionStat
 };
 
 /**
+ * What a request asked for, as its turn records it before it ends (docs/adr/0007-landing.md,
+ * "Questions do not open pull requests"): `autopr=true` reads as a change and `autopr=false` as a
+ * question, over anything read; otherwise what the thread reading answered in the call that
+ * picked the project. Null leaves the reading to automatic landing, which asks for it itself.
+ */
+export const intentOfRequest = (
+  autopr: boolean | null,
+  read: RequestIntent | null,
+): RequestIntentReading | null => {
+  if (autopr !== null) return { intent: autopr ? "change" : "question", source: "option" };
+  return read === null ? null : { intent: read, source: "read" };
+};
+
+/**
+ * A press of "Push and open pull request" from anyone but the change's owner (the owner of the
+ * worktree's first session), naming them when the thread knows their Slack account.
+ */
+export const ownerOnly = (ownerSlackUserId: string | null): SlackMessage =>
+  section(
+    ownerSlackUserId === null
+      ? escapeSlack(
+          "not pushed · only the change's owner lands it · it pushes with their key and speaks on GitHub as them",
+        )
+      : `${escapeSlack("not pushed · only the change's owner, ")}<@${escapeSlack(ownerSlackUserId)}>${escapeSlack(", lands it · it pushes with their key and speaks on GitHub as them")}`,
+  );
+
+/** Said to the owner at once: the push and the pull request take a moment. */
+export const landingUnderWay: SlackMessage = section(
+  "landing · pushing to origin as you · the status message shows how it ends",
+);
+
+/**
  * What a follow-up does when no protocol process of the thread's session takes turns here
  * (docs/adr/0006-slack.md, "Follow-ups in a thread", and open question 1). The engine's protocol
  * launch resumes a session whose latest agent was a protocol process of its own harness: it opens
@@ -629,6 +669,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
     const conversations = yield* AgentConversationRepo;
     const controls = yield* SessionControlEventsRepo;
     const processes = yield* SessionProcessesRepo;
+    const ownerLanding = yield* OwnerLanding;
     const now = options.now ?? Date.now;
     const ceiling = makeWindowLimiter();
     const inferenceCeiling = makeWindowLimiter(60 * 60_000);
@@ -1152,6 +1193,32 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       }
     });
 
+    /**
+     * Record a request's intent on its turn while the turn runs, so automatic landing reads it
+     * rather than asking inference again. `turn` is the turn when the caller has it; otherwise the
+     * session's newest, which a launch just submitted. A turn already read or decided is left as
+     * it is.
+     */
+    const recordIntent = (
+      sessionId: SessionId,
+      reading: RequestIntentReading | null,
+      turn: AgentTurn | null = null,
+    ) =>
+      Effect.gen(function* () {
+        if (reading === null) return;
+        const target =
+          turn ??
+          (yield* conversations.listTurns(sessionId)).reduce<AgentTurn | null>(
+            (newest, candidate) =>
+              newest === null || candidate.ordinal > newest.ordinal ? candidate : newest,
+            null,
+          );
+        if (target === null || target.intentSource !== null || target.landing !== null) return;
+        yield* conversations
+          .setTurnIntent(target.id, reading)
+          .pipe(Effect.catchTag("AgentTurnNotFoundError", () => Effect.void));
+      });
+
     /** Start a session for a linked person, or say why not. */
     const startFor = Effect.fn("SlackRunner.startFor")(function* (
       install: SealedSlackInstall,
@@ -1297,6 +1364,9 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           name: null,
           base: chosen.branch,
           origin: "slack",
+          // `autopr=` is the session's own override (docs/adr/0007-landing.md); a project set
+          // to off still wins over it.
+          autoLand: parsed.options.autopr,
         })
         .pipe(Effect.result);
       if (created._tag === "Failure") {
@@ -1421,6 +1491,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         return;
       }
       yield* updateStatus(slackStateOf(launched.success), launched.success);
+      yield* recordIntent(session.id, intentOfRequest(parsed.options.autopr, inference.intent));
     });
 
     /**
@@ -1437,6 +1508,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       userId: string,
       session: Session,
       prompt: string,
+      reading: RequestIntentReading | null,
     ) {
       const agent = currentAgentProcess(yield* processes.listForSession(session.id));
       switch (followUpWhenNotLive(session, agent)) {
@@ -1482,6 +1554,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         );
         return false;
       }
+      yield* recordIntent(session.id, reading);
       return true;
     });
 
@@ -1593,12 +1666,86 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
         images: new Map(attached.map((image) => [image.file.id, image])),
       });
       const sent = yield* engine.submitTurn(session.id, turn, userId).pipe(Effect.result);
+      // `autopr=` on a follow-up overrides what its own turn reads as; without it, automatic
+      // landing reads the follow-up's intent itself.
+      const reading = intentOfRequest(parsed.options.autopr, null);
+      if (sent._tag === "Success") yield* recordIntent(session.id, reading, sent.success);
       // A new session in the thread fetches the images again, and says what it left out itself.
       const delivered =
         sent._tag === "Success" ||
-        (yield* resumeOrStartAnew(install, token, mention, userId, session, turn));
+        (yield* resumeOrStartAnew(install, token, mention, userId, session, turn, reading));
       if (delivered) yield* sayWhatWasLeftOut(token, mention, attached);
       if (delivered && unapplied) yield* whisper(token, mention, modelEffortNotApplied);
+    });
+
+    /**
+     * "Push and open pull request" on a turn whose change did not land (docs/adr/0007-landing.md,
+     * "Surfaces"): everyone in the thread sees the button, and it lands only for the change's
+     * owner, as them, through the same landing as the web app's Land panel. Anyone else is told
+     * so where only they read it. The owner hears how it ended; the status message says it to
+     * everyone.
+     */
+    const landFromThread = Effect.fn("SlackRunner.landFromThread")(function* (
+      install: SealedSlackInstall,
+      token: string,
+      channel: string,
+      slackUserId: string,
+      sessionId: SessionId,
+    ) {
+      const thread = yield* threads.forSession(sessionId);
+      if (thread === null || thread.teamId !== install.teamId || thread.channelId !== channel) {
+        return;
+      }
+      const at = requestOf(thread, slackUserId);
+      const link = yield* links.bySlackUser(install.teamId, slackUserId);
+      if (link === null) return yield* whisper(token, at, notLinkedYet);
+      const session = yield* sessions
+        .byId(sessionId)
+        .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+      if (session === null) return yield* whisper(token, at, notLanded("the session is gone"));
+      // The change's owner, not whoever owns this session: a teammate's session in the owner's
+      // worktree lends no key.
+      const owner = changeOwnerOf(yield* sessions.listForWorktree(session.worktreeId));
+      if (owner === null || owner !== link.userId) {
+        // The thread's requester is the session's owner; name them only when they own the change.
+        const named = owner !== null && owner === session.ownerUserId ? thread.slackUserId : null;
+        return yield* whisper(token, at, ownerOnly(named));
+      }
+      const project = yield* access
+        .projectAs(link.userId, session.projectId)
+        .pipe(Effect.catchTag("NotFound", () => Effect.succeed(null)));
+      if (project === null) {
+        return yield* whisper(token, at, notLanded("the project is not available to you"));
+      }
+      // Everyone in a channel reads the status message the landing moves.
+      if (!isDirectMessage(channel) && project.visibility !== "shared") {
+        return yield* whisper(
+          token,
+          at,
+          notLanded("the session's project is private · a channel offers shared projects only"),
+        );
+      }
+      yield* whisper(token, at, landingUnderWay);
+      const landed = yield* ownerLanding
+        .land({
+          session,
+          project,
+          ownerUserId: link.userId,
+          trigger: "manual",
+          webOrigin: install.webOrigin,
+        })
+        .pipe(Effect.result);
+      if (landed._tag === "Failure") {
+        return yield* whisper(token, at, notLanded(landed.failure.message));
+      }
+      const { landing, pullRequest } = landed.success;
+      const how =
+        pullRequest._tag === "opened" || pullRequest._tag === "updated" ? pullRequest._tag : null;
+      yield* whisper(
+        token,
+        at,
+        landedMessage(landingLine(landing, [], how), landing.pullRequest?.url ?? null),
+      );
     });
 
     /** Who set a channel default, as the settings reply names them. */
@@ -1862,6 +2009,26 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       // acknowledgement is all.
       if (action === undefined) return;
       const channel = payload.channel?.id ?? payload.container?.channel_id;
+      if (action.action_id === SLACK_ACTIONS.landChange) {
+        if (action.value === undefined || channel === undefined) return;
+        // One landing per press, however many times Slack delivers it.
+        if (action.action_ts !== undefined) {
+          const first = yield* claims.claim({
+            eventId: `land:${install.teamId}:${action.value}:${action.action_ts}`,
+            teamId: install.teamId,
+          });
+          if (!first) return;
+        }
+        const token = yield* botTokenOf(install);
+        if (token === null) return;
+        return yield* landFromThread(
+          install,
+          token,
+          channel,
+          payload.user.id,
+          SessionId.make(action.value),
+        );
+      }
       if (action.action_id === SLACK_ACTIONS.switchProject) {
         if (action.value === undefined || channel === undefined) return;
         const token = yield* botTokenOf(install);
@@ -2047,6 +2214,7 @@ export const SlackRunnerLive: Layer.Layer<
   Config.ConfigError,
   | AgentConversationRepo
   | AuditEventsRepo
+  | OwnerLanding
   | ProjectAccess
   | SealantClients
   | SecretCipher

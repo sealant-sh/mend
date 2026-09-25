@@ -60,6 +60,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { makeProject, makeSession } from "../test/support/tenancy-harness.ts";
 import { ProjectAccess } from "./access.ts";
 import { makeAutomaticLanding } from "./automatic-landing.ts";
+import { OwnerLandingLive } from "./owner-landing.ts";
 
 /**
  * Automatic landing (docs/adr/0007-landing.md, "Automatic landing") over in-memory repositories:
@@ -377,7 +378,7 @@ const look = (times = 1) =>
     Effect.gen(function* () {
       const lander = yield* makeAutomaticLanding({ now: () => NOW.getTime() });
       for (let index = 0; index < times; index += 1) yield* lander.consider(SESSION);
-    }).pipe(Effect.provide(layer)),
+    }).pipe(Effect.provide(OwnerLandingLive.pipe(Layer.provideMerge(layer)))),
   );
 
 const decisions = (): ReadonlyArray<[number, TurnLanding | null]> =>

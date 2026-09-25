@@ -317,7 +317,10 @@ function Choice({
   );
 }
 
-/** What Mend posts into Slack, and the harness a mention runs when it names none. */
+/**
+ * What Mend posts into Slack, whether a request's change lands by itself, and the harness a
+ * mention runs when it names none.
+ */
 function DisplaySettings({
   app,
   harnesses,

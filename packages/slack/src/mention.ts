@@ -16,7 +16,14 @@ import { parseRepositoryUrl, projectsNamedBy, type RepositoryProject } from "./r
 export const MENTION_COMMANDS = ["help", "settings", "list", "new"] as const;
 export type MentionCommand = (typeof MENTION_COMMANDS)[number];
 
-export const MENTION_OPTIONS = ["project", "branch", "harness", "model", "effort"] as const;
+export const MENTION_OPTIONS = [
+  "project",
+  "branch",
+  "harness",
+  "model",
+  "effort",
+  "autopr",
+] as const;
 export type MentionOptionName = (typeof MENTION_OPTIONS)[number];
 
 /** An option and how it was written: `inline` (`key=value`) or `natural` (`in <project>`). */
@@ -31,6 +38,12 @@ export interface MentionOptions {
   readonly harness: MentionOption | null;
   readonly model: MentionOption | null;
   readonly effort: MentionOption<EffortLevel> | null;
+  /**
+   * `autopr=true` or `autopr=false` (docs/adr/0007-landing.md, "Automatic landing"): whether this
+   * request's change lands by itself, over the Slack app's setting and the intent Mend reads.
+   * Inline only; null when the request does not say.
+   */
+  readonly autopr: boolean | null;
 }
 
 /** An inline option Mend could not use, with the reason worded for a reply in the thread. */
@@ -94,7 +107,7 @@ const BRANCH_PREFIXES: ReadonlySet<string> = new Set([
 ]);
 
 const INLINE_OPTION =
-  /(?<=^|\s)(project|branch|harness|model|effort)=("[^"]*"|“[^”]*”|'[^']*'|‘[^’]*’|\S+)(?=[\s,;]|$)[ \t]*/gi;
+  /(?<=^|\s)(project|branch|harness|model|effort|autopr)=("[^"]*"|“[^”]*”|'[^']*'|‘[^’]*’|\S+)(?=[\s,;]|$)[ \t]*/gi;
 
 const QUOTED = /^(?:"([^"]*)"|“([^”]*)”|'([^']*)'|‘([^’]*)’|`([^`]*)`)$/;
 
@@ -299,9 +312,14 @@ export const parseMention = (
     const option = key.toLowerCase();
     if (!isOptionName(option)) return whole;
     const { value } = unquote(raw);
-    const normalised = option === "harness" || option === "effort" ? value.toLowerCase() : value;
+    const normalised =
+      option === "harness" || option === "effort" || option === "autopr"
+        ? value.toLowerCase()
+        : value;
     if (normalised === "") {
       rejected.push({ option, value, reason: "no value" });
+    } else if (option === "autopr" && normalised !== "true" && normalised !== "false") {
+      rejected.push({ option, value, reason: "not one of true, false" });
     } else if (option === "effort" && !isEffort(normalised)) {
       rejected.push({ option, value, reason: `not one of ${EFFORT_LEVELS.join(", ")}` });
     } else if (option === "harness" && !vocabulary.harnesses.includes(normalised)) {
@@ -348,6 +366,7 @@ export const parseMention = (
     return fromNatural === undefined ? null : { value: fromNatural, form: "natural" };
   };
   const effort = pick("effort");
+  const autopr = inline.get("autopr");
   return {
     command,
     prompt: prompt.replace(EDGE_PUNCTUATION, ""),
@@ -360,6 +379,7 @@ export const parseMention = (
         effort !== null && isEffort(effort.value)
           ? { value: effort.value, form: effort.form }
           : null,
+      autopr: autopr === undefined ? null : autopr === "true",
     },
     rejected,
   };

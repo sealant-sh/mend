@@ -190,6 +190,7 @@ import { GithubIdentityLive } from "./github-identity.ts";
 import { apiMiddleware } from "./http-middleware.ts";
 import { TourRequestsLive } from "./landing-tours.ts";
 import { MemberRemovalLive } from "./member-removal.ts";
+import { OwnerLandingLive } from "./owner-landing.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
 import { boundedWebRequest } from "./request-budgets.ts";
 import { MendApiLive } from "./routes/api-live.ts";
@@ -635,6 +636,8 @@ const WorkerLive = Layer.mergeAll(
   // The session namer, the Slack runner's reading of a thread for its project, and the reading
   // of a request's intent that automatic landing asks for.
   Layer.provide(Layer.mergeAll(SessionNamerLive, ThreadProjectReaderLive, RequestIntentReaderLive)),
+  // Landing as a session's owner, for automatic landing and Slack's "Push and open pull request".
+  Layer.provide(OwnerLandingLive),
   Layer.provide(liveToolsLayer),
   // start_run: the one tool that reaches the run machinery.
   Layer.provide(startRunToolLayer),

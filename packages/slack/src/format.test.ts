@@ -1,3 +1,5 @@
+import { AgentTurnId, ChangeId, ChangeLandingId, ProjectId, SessionId, Sha } from "@mend/domain";
+import { ChangeLanding } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
 import {
@@ -15,8 +17,15 @@ import {
   diffMessages,
   disclosureFor,
   helpMessage,
+  landButtonLabel,
+  landedMessage,
+  landingLine,
+  landingStatusLines,
+  landOfferMessage,
+  landOfferOf,
   linkPrompt,
   linkUrl,
+  notLanded,
   outsiderMessage,
   pickProjectActionId,
   planText,
@@ -243,6 +252,7 @@ describe("replies only the person sees", () => {
     for (const command of ["new", "list", "settings", "help"]) {
       expect(text).toContain(`\`@mend ${command}`);
     }
+    expect(text).toContain("`autopr=true` or `autopr=false`");
   });
 
   it("asks an unlinked person to link, with a button to the link page", () => {
@@ -550,6 +560,206 @@ describe("what the reporter posts", () => {
     ].flatMap((message) => (message === null ? [] : [message]));
     expect(messages).toHaveLength(3);
     for (const message of messages) expect(copyOf(message)).not.toMatch(VERDICTS);
+  });
+});
+
+describe("landing in the thread", () => {
+  const AT = new Date("2026-09-24T12:00:00.000Z");
+  const landing = (
+    id: string,
+    outcome: ChangeLanding["outcome"],
+    options: {
+      readonly pullRequest?: { readonly number: number; readonly state: "open" | "merged" };
+      readonly message?: string;
+      readonly createdAt?: Date;
+    } = {},
+  ) =>
+    new ChangeLanding({
+      id: ChangeLandingId.make(id),
+      changeId: ChangeId.make("chg-1"),
+      sessionId: SessionId.make("s1"),
+      projectId: ProjectId.make("p1"),
+      checkpointId: null,
+      checkpointRef: null,
+      checkpointSha: null,
+      commitSha: null,
+      remoteBranch: "mend/fix-login",
+      pushedSha:
+        outcome === "refused" || (outcome === "failed" && options.pullRequest === undefined)
+          ? null
+          : Sha.make("3f2a1c0".padEnd(40, "0")),
+      trigger: "automatic",
+      pullRequest:
+        options.pullRequest === undefined
+          ? null
+          : {
+              number: options.pullRequest.number,
+              url: `https://github.com/acme/api/pull/${options.pullRequest.number}`,
+              state: options.pullRequest.state,
+              observedAt: AT,
+            },
+      outcome,
+      message: options.message ?? null,
+      userId: "alice",
+      createdAt: options.createdAt ?? AT,
+    });
+  const open412 = { number: 412, state: "open" } as const;
+
+  it("reads a landing as the branch and the pull request, opened then updated", () => {
+    const first = landing("l1", "pull-request", { pullRequest: open412 });
+    expect(landingLine(first, [])).toBe("pushed · mend/fix-login · pull request #412 · opened");
+    expect(landingLine(landing("l2", "pull-request", { pullRequest: open412 }), [first])).toBe(
+      "pushed · mend/fix-login · pull request #412 · updated",
+    );
+    // What the landing reported doing wins: it may have adopted a pull request the agent opened.
+    expect(landingLine(first, [], "updated")).toBe(
+      "pushed · mend/fix-login · pull request #412 · updated",
+    );
+    expect(
+      landingLine(
+        landing("l3", "pull-request", { pullRequest: { number: 412, state: "merged" } }),
+        [first],
+      ),
+    ).toBe("pushed · mend/fix-login · pull request #412 · merged");
+    expect(landingLine(landing("l4", "pushed"), [])).toBe("pushed · mend/fix-login");
+  });
+
+  it("gives a refusal or a failure in the remote's words, on one line", () => {
+    expect(
+      landingLine(
+        landing("l1", "refused", {
+          message: "remote: GH006: Protected branch update failed\n ! [remote rejected]",
+        }),
+        [],
+      ),
+    ).toBe(
+      "push refused · mend/fix-login · remote: GH006: Protected branch update failed ! [remote rejected]",
+    );
+    expect(landingLine(landing("l2", "failed", { message: "the checkpoint failed" }), [])).toBe(
+      "landing failed · the checkpoint failed",
+    );
+    expect(
+      landingLine(
+        new ChangeLanding({
+          ...landing("l3", "failed", { message: "gh: not logged in" }),
+          pushedSha: Sha.make("a".repeat(40)),
+        }),
+        [],
+      ),
+    ).toBe("pushed · mend/fix-login · pull request step failed · gh: not logged in");
+    expect(landingLine(landing("l4", "refused", { message: "  " }), [])).toBe(
+      "push refused · mend/fix-login · no reason given",
+    );
+  });
+
+  it("states the latest landing, and a turn that did not land until a landing answers it", () => {
+    const question = { landing: "question", intentSource: "read", endedAt: AT } as const;
+    expect(landingStatusLines({ landings: [], latestTurn: question })).toEqual([
+      "changes not landed · the request read as a question",
+    ]);
+    const earlier = landing("l1", "pull-request", {
+      pullRequest: open412,
+      createdAt: new Date(AT.getTime() - 60_000),
+    });
+    expect(landingStatusLines({ landings: [earlier], latestTurn: question })).toEqual([
+      "pushed · mend/fix-login · pull request #412 · opened",
+      "changes not landed · the request read as a question",
+    ]);
+    const answered = landing("l2", "pull-request", { pullRequest: open412 });
+    expect(landingStatusLines({ landings: [answered, earlier], latestTurn: question })).toEqual([
+      "pushed · mend/fix-login · pull request #412 · updated",
+    ]);
+    expect(
+      landingStatusLines({
+        landings: [answered],
+        latestTurn: { landing: "attempted", intentSource: "unread", endedAt: AT },
+      }),
+    ).toEqual(["pushed · mend/fix-login · pull request #412 · opened", "intent not read"]);
+    expect(landingStatusLines({ landings: [], latestTurn: null })).toEqual([]);
+  });
+
+  it("offers to land a turn that did not, once per turn, until a landing answers it", () => {
+    const turn = { id: AgentTurnId.make("turn-3"), landing: "off", endedAt: AT } as const;
+    const offer = landOfferOf({ sessionId: "s1", turn, landings: [] });
+    expect(offer).toEqual({ sessionId: "s1", turnId: "turn-3", reason: "off", updates: false });
+    expect(landButtonLabel({ updates: false })).toBe("Push and open pull request");
+    expect(
+      landOfferOf({
+        sessionId: "s1",
+        turn,
+        landings: [landing("l1", "pull-request", { pullRequest: open412, createdAt: new Date(0) })],
+      })?.updates,
+    ).toBe(true);
+    expect(landButtonLabel({ updates: true })).toBe("Push and update pull request");
+    expect(landOfferOf({ sessionId: "s1", turn, landings: [landing("l2", "pushed")] })).toBeNull();
+    for (const decided of ["attempted", "skipped", null] as const) {
+      expect(
+        landOfferOf({ sessionId: "s1", turn: { ...turn, landing: decided }, landings: [] }),
+      ).toBeNull();
+    }
+    expect(landOfferOf({ sessionId: "s1", turn: null, landings: [] })).toBeNull();
+  });
+
+  it("puts the offer's button on a reply everyone sees, naming the owner it acts for", () => {
+    const offer = { sessionId: "s1", turnId: "t1", reason: "not-owner", updates: false } as const;
+    const message = landOfferMessage(offer, "U-alice");
+    expect(message.text).toBe("changes not landed · the turn was not sent by the owner");
+    expect(message.blocks[1]).toEqual({
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          action_id: SLACK_ACTIONS.landChange,
+          text: { type: "plain_text", text: "Push and open pull request", emoji: true },
+          value: "s1",
+          style: "primary",
+        },
+      ],
+    });
+    expect(copyOf(message)).toContain("<@U-alice>");
+
+    const reply = reviewMessage({
+      summary: null,
+      drafts: { drafts: 1, suggestions: 0 },
+      url: "https://mend.example/changes/chg-1",
+      offer: { offer, ownerSlackUserId: "U-alice" },
+    });
+    expect(reply?.text).toBe("Mend read the change · 1 draft comment");
+    expect(JSON.stringify(reply)).toContain(SLACK_ACTIONS.landChange);
+    // With nothing else to say, the reply is the offer.
+    expect(
+      reviewMessage({
+        summary: null,
+        drafts: null,
+        url: "https://mend.example/changes/chg-1",
+        offer: { offer, ownerSlackUserId: "U-alice" },
+      }),
+    ).toEqual(message);
+  });
+
+  it("carries the landing under the status line, and gives no verdicts", () => {
+    const message = statusMessage({
+      ...status,
+      state: "completed",
+      landing: ["pushed · mend/fix-login · pull request #412 · opened"],
+    });
+    expect(message.text).toBe(
+      `${statusLine({ ...status, state: "completed" })}\npushed · mend/fix-login · pull request #412 · opened`,
+    );
+    const messages = [
+      message,
+      landOfferMessage(
+        { sessionId: "s1", turnId: "t1", reason: "question", updates: true },
+        "U-alice",
+      ),
+      notLanded("the session is gone"),
+      landedMessage("pushed · mend/fix-login · pull request #412 · opened", null),
+      landedMessage(
+        "pushed · mend/fix-login · pull request #412 · opened",
+        "https://github.com/acme/api/pull/412",
+      ),
+    ];
+    for (const each of messages) expect(copyOf(each)).not.toMatch(VERDICTS);
   });
 });
 

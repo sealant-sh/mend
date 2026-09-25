@@ -1,7 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import {
   AgentConversationRepo,
-  AuditEventsRepo,
   ChangeLandingsRepo,
   MEND_EVENTS_CHANNEL,
   MendEvent,
@@ -25,16 +24,13 @@ import {
   type TurnLanding,
 } from "@mend/domain/workbench";
 import { RequestIntentReader } from "@mend/inference";
-import { afterTheIntent, beforeTheChange, Landing, recordedIntent } from "@mend/landing";
+import { afterTheIntent, beforeTheChange, recordedIntent } from "@mend/landing";
 import { NetworkConfig } from "@mend/network";
 import { asSealantUser } from "@mend/sealant";
 import { WorktreeReads } from "@mend/sessions";
-import { AgentBridge, MendKeys, SourcePolicy } from "@mend/store";
 import { Cause, Effect, Layer, Queue, Schema, Stream } from "effect";
 
-import { ProjectAccess } from "./access.ts";
-import { auditLanding, remoteEnvFor } from "./landing-state.ts";
-import { withSignerContext } from "./routes/workbench.ts";
+import { OwnerLanding } from "./owner-landing.ts";
 
 /**
  * Automatic landing (docs/adr/0007-landing.md, "Automatic landing"): after each turn that
@@ -90,12 +86,8 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
     const installs = yield* SlackInstallsRepo;
     const reads = yield* WorktreeReads;
     const reader = yield* RequestIntentReader;
-    const landing = yield* Landing;
+    const lander = yield* OwnerLanding;
     const network = yield* NetworkConfig;
-    // What the landing's push and audit read, captured once so a look needs nothing more.
-    const context = yield* Effect.context<
-      AuditEventsRepo | ProjectAccess | SourcePolicy | MendKeys | AgentBridge
-    >();
     const now = options.now ?? Date.now;
 
     /** The Slack install a Slack session's thread belongs to, when it still has one. */
@@ -183,27 +175,16 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
     /** Land the change as its owner, with the owner's credentials, and audit it. */
     const land = (session: Session, project: Project, owner: string) =>
       Effect.gen(function* () {
-        const remoteEnv = yield* remoteEnvFor(project, owner, "push");
         const install = yield* installOf(session);
-        const report = yield* withSignerContext(
-          project.gitAuthMode,
-          owner,
-          `land ${session.label ?? session.id} → origin`,
-          landing.land({
-            sessionId: session.id,
-            actorUserId: owner,
-            trigger: "automatic",
-            remoteBranch: null,
-            pullRequest: true,
-            title: null,
-            body: null,
-            webOrigin: install?.webOrigin ?? network.appUrl,
-            remoteEnv,
-          }),
-        ).pipe(asSealantUser(owner));
-        yield* auditLanding(report.landing, project.organizationId, owner);
+        const report = yield* lander.land({
+          session,
+          project,
+          ownerUserId: owner,
+          trigger: "automatic",
+          webOrigin: install?.webOrigin ?? network.appUrl,
+        });
         return decided("attempted", report.landing.id);
-      }).pipe(Effect.provide(context));
+      });
 
     /** The checks, in the ADR's order, for one ended turn this worker claimed. */
     const decide = Effect.fn("AutomaticLanding.decide")(function* (
@@ -295,21 +276,16 @@ export const AutomaticLandingLive: Layer.Layer<
   never,
   never,
   | PgClient.PgClient
-  | AgentBridge
   | AgentConversationRepo
-  | AuditEventsRepo
   | ChangeLandingsRepo
-  | Landing
-  | MendKeys
   | NetworkConfig
-  | ProjectAccess
+  | OwnerLanding
   | ProjectsRepo
   | RequestIntentReader
   | SessionsRepo
   | SettingsRepo
   | SlackInstallsRepo
   | SlackThreadsRepo
-  | SourcePolicy
   | WorktreeChangesRepo
   | WorktreeReads
   | WorktreesRepo

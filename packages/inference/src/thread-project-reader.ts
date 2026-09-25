@@ -1,4 +1,4 @@
-import { EFFORT_LEVELS, type EffortLevel } from "@mend/domain/workbench";
+import { EFFORT_LEVELS, RequestIntent, type EffortLevel } from "@mend/domain/workbench";
 import { Config, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -16,6 +16,11 @@ import { InferenceError, InferenceProvider } from "./provider.ts";
  * `with high effort` mid-sentence). Those are read from the requester's own words only, and each
  * value must appear in them: text another person wrote in the thread cannot pick a harness or a
  * base branch that runs with the requester's credentials.
+ *
+ * The same call reads the request's intent (docs/adr/0007-landing.md, "Questions do not open pull
+ * requests"): `change` or `question`, from the request with the thread as context. A Slack
+ * session lands automatically only after a request that read as a change, so this reading costs
+ * no call of its own.
  */
 
 /** A project inference may answer with. */
@@ -58,12 +63,15 @@ export interface ThreadProjectAnswer {
   /** Candidates, likeliest first, for the picker when nothing else answers. */
   readonly likeliest: ReadonlyArray<string>;
   readonly options: ThreadProjectOptions;
+  /** What the request asked for; null when the call did not answer it, or did not run. */
+  readonly intent: RequestIntent | null;
 }
 
 export const NO_THREAD_PROJECT: ThreadProjectAnswer = {
   projectId: null,
   likeliest: [],
   options: { harness: null, model: null, effort: null, branch: null },
+  intent: null,
 };
 
 /** Cheap models, as for session naming: the choice is a lookup, not a reading of code. */
@@ -87,7 +95,8 @@ Rules:
 - "likeliest" lists up to 5 candidate ids that could be meant, likeliest first. Empty when none could.
 - Use only ids from the candidate list.
 - "options" reads only the REQUEST, never the thread: fill a field only when the request's own words ask for it ("use codex", "on the release/2.3 branch", "with high effort", "with opus"). A field the request does not ask for is null. Fields listed as already set are always null.
-- Answer with JSON: {"projectId": string|null, "likeliest": [string], "options": {"harness": string|null, "model": string|null, "effort": string|null, "branch": string|null}}.`;
+- "intent" says what the REQUEST asks for, with the thread as context: "change" when it asks for code, files or configuration to be changed (fix, add, remove, rename, update, refactor, write tests), "question" when it asks only to explain, investigate, review or answer something. When a request asks for both, answer "change".
+- Answer with JSON: {"projectId": string|null, "likeliest": [string], "options": {"harness": string|null, "model": string|null, "effort": string|null, "branch": string|null}, "intent": "change"|"question"}.`;
 
 const Answer = Schema.Struct({
   projectId: Schema.NullOr(Schema.String),
@@ -98,6 +107,9 @@ const Answer = Schema.Struct({
     effort: Schema.NullOr(Schema.String),
     branch: Schema.NullOr(Schema.String),
   }),
+  // A string, not the literals, and optional: a reading Mend cannot use is dropped, and the
+  // project the call chose stays.
+  intent: Schema.optional(Schema.NullOr(Schema.String)),
 });
 type Answer = typeof Answer.Type;
 
@@ -151,6 +163,8 @@ const BRANCH_NAME = /^(?!-)(?!.*\.\.)(?!.*\/\/)(?!.*@\{)[A-Za-z0-9._/-]{1,200}(?
 
 const isEffort = (value: string): value is EffortLevel =>
   EFFORT_LEVELS.some((level) => level === value);
+
+const isRequestIntent = Schema.is(RequestIntent);
 
 /**
  * Whether `value` is in the request's own words: a whole word or path, case aside. An option the
@@ -215,6 +229,7 @@ export const checkThreadProjectAnswer = (
       effort: effort !== null && isEffort(effort) ? effort : null,
       branch: branch !== null && BRANCH_NAME.test(branch) ? branch : null,
     },
+    intent: isRequestIntent(answer.intent) ? answer.intent : null,
   };
 };
 

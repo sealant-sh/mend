@@ -12,6 +12,7 @@ import {
   LANDING_GUARD,
   landingFacts,
   landingFactsFromWire,
+  latestDecidedTurn,
   notLandedReasonOf,
   observedAgo,
   parseRefUpdate,
@@ -388,6 +389,21 @@ describe("a turn's landing decision, as facts (docs/adr/0007, Questions do not o
     expect(notLandedReasonOf("attempted")).toBeNull();
     expect(notLandedReasonOf("skipped")).toBeNull();
     expect(notLandedReasonOf(null)).toBeNull();
+  });
+});
+
+describe("latestDecidedTurn", () => {
+  it("is the decided turn that ended last, and null when none is decided", () => {
+    const at = (minutes: number) => new Date(NOW.getTime() + minutes * 60_000);
+    const turns = [
+      { id: "t1", landing: "attempted", endedAt: at(1), createdAt: at(0) },
+      { id: "t2", landing: "question", endedAt: at(3), createdAt: at(2) },
+      { id: "t3", landing: null, endedAt: at(5), createdAt: at(4) },
+      { id: "t4", landing: "skipped", endedAt: null, createdAt: at(2.5) },
+    ] as const;
+    expect(latestDecidedTurn(turns)?.id).toBe("t2");
+    expect(latestDecidedTurn(turns.slice(2))?.id).toBe("t4");
+    expect(latestDecidedTurn([turns[2]])).toBeNull();
   });
 });
 

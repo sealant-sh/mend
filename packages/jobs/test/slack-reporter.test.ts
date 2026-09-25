@@ -1,5 +1,6 @@
 import {
   AgentConversationRepo,
+  ChangeLandingsRepo,
   ChangePassesRepo,
   ChangeToursRepo,
   ProjectsRepo,
@@ -18,6 +19,7 @@ import {
   AgentRequestId,
   AgentTurnId,
   ChangeId,
+  ChangeLandingId,
   OrganizationId,
   ProjectId,
   ReviewCommentId,
@@ -33,6 +35,7 @@ import {
   AgentRequest,
   AgentTurn,
   Change,
+  ChangeLanding,
   ChangePass,
   ChangeTour,
   Project,
@@ -43,6 +46,7 @@ import {
   type AgentRequestKind,
   type AgentTurnStatus,
   type SlackInstallSettings,
+  type TurnLanding,
 } from "@mend/domain/workbench";
 import { WORKTREE_STAMP, WorktreeReads } from "@mend/sessions";
 import { PRIVATE_PROJECT_STATUS, SLACK_ACTIONS, statusLine, SUMMARY_PROVENANCE } from "@mend/slack";
@@ -191,6 +195,57 @@ const turn = (ordinal: number, status: AgentTurnStatus, endedAt: Date | null = n
     createdAt: NOW,
     startedAt: NOW,
     endedAt,
+  });
+
+/** A turn automatic landing decided about (docs/adr/0007-landing.md). */
+const decidedTurn = (
+  ordinal: number,
+  landing: TurnLanding,
+  endedAt: Date = NOW,
+  intentSource: AgentTurn["intentSource"] = null,
+) =>
+  new AgentTurn({
+    ...turn(ordinal, "completed", endedAt),
+    landing,
+    intent: intentSource === "read" ? "change" : null,
+    intentSource,
+  });
+
+/** A landing of the change, as `change_landings` records it. */
+const landingOf = (
+  id: string,
+  outcome: ChangeLanding["outcome"],
+  options: {
+    readonly createdAt?: Date;
+    readonly pullRequest?: number;
+    readonly message?: string;
+  } = {},
+) =>
+  new ChangeLanding({
+    id: ChangeLandingId.make(id),
+    changeId: CHANGE,
+    sessionId: SESSION,
+    projectId: PROJECT,
+    checkpointId: null,
+    checkpointRef: null,
+    checkpointSha: null,
+    commitSha: null,
+    remoteBranch: "mend/flaky-login-test",
+    pushedSha: outcome === "refused" ? null : Sha.make("3f2a1c0".padEnd(40, "0")),
+    trigger: "automatic",
+    pullRequest:
+      options.pullRequest === undefined
+        ? null
+        : {
+            number: options.pullRequest,
+            url: `https://github.com/acme/billing-api/pull/${options.pullRequest}`,
+            state: "open",
+            observedAt: options.createdAt ?? NOW,
+          },
+    outcome,
+    message: options.message ?? null,
+    userId: "alice",
+    createdAt: options.createdAt ?? NOW,
   });
 
 const item = (
@@ -394,6 +449,8 @@ const world = (options: WorldOptions = {}) => {
     passes: [] as ReadonlyArray<ChangePass>,
     tour: null as ChangeTour | null,
     comments: [] as ReadonlyArray<ReviewComment>,
+    /** The change's landings, newest first. */
+    landings: [] as ReadonlyArray<ChangeLanding>,
     posted: new Set<string>(),
     project,
     /** The thread row is gone (its session deleted). */
@@ -460,6 +517,7 @@ const world = (options: WorldOptions = {}) => {
     }),
     Layer.mock(WorktreeChangesRepo, { byWorktree: () => Effect.sync(() => state.change) }),
     Layer.mock(ChangePassesRepo, { listForChange: () => Effect.sync(() => state.passes) }),
+    Layer.mock(ChangeLandingsRepo, { listForChange: () => Effect.sync(() => state.landings) }),
     Layer.mock(ChangeToursRepo, { byChange: () => Effect.sync(() => state.tour) }),
     Layer.mock(ReviewCommentsRepo, { listForChange: () => Effect.sync(() => state.comments) }),
     Layer.mock(WorktreeReads, {
@@ -1025,6 +1083,177 @@ describe("the Slack thread reporter", () => {
     gone.state.turns = [turn(1, "running")];
     await gone.observe(gone.worker());
     expect(gone.writes()).toEqual([]);
+  });
+});
+
+describe("landing in the thread (docs/adr/0007-landing.md)", () => {
+  const COMPLETED =
+    "billing-api · from a link in the thread · claude · completed · observed · mend/flaky-login-test · 2 files · +3 −1";
+
+  it("puts the landing under the status line, and each later landing edits it in place", async () => {
+    const w = world();
+    const reporter = w.worker();
+    w.state.change = change;
+    w.state.turns = [decidedTurn(1, "attempted")];
+    // A landing from before the thread began is not this thread's news.
+    w.state.landings = [landingOf("l0", "pushed", { createdAt: minutesAgo(40) })];
+    await w.observe(reporter);
+    expect(w.updates()).toEqual([COMPLETED]);
+
+    w.state.landings = [landingOf("l1", "pull-request", { pullRequest: 412 }), ...w.state.landings];
+    await w.observe(reporter);
+    expect(w.updates().at(-1)).toBe(
+      `${COMPLETED}\npushed · mend/flaky-login-test · pull request #412 · opened`,
+    );
+
+    // The next turn's landing updates the same pull request: the line moves, no reply is added.
+    w.state.landings = [landingOf("l2", "pull-request", { pullRequest: 412 }), ...w.state.landings];
+    await w.observe(reporter);
+    expect(w.updates().at(-1)).toBe(
+      `${COMPLETED}\npushed · mend/flaky-login-test · pull request #412 · updated`,
+    );
+
+    // A refusal reads in the remote's own words, on one line.
+    w.state.landings = [
+      landingOf("l3", "refused", {
+        message:
+          "origin has moved · mend/flaky-login-test has 1 commit Mend has not seen\n ! [rejected] (fetch first)",
+      }),
+      ...w.state.landings,
+    ];
+    await w.observe(reporter);
+    expect(w.updates().at(-1)).toBe(
+      `${COMPLETED}\npush refused · mend/flaky-login-test · origin has moved · mend/flaky-login-test has 1 commit Mend has not seen ! [rejected] (fetch first)`,
+    );
+    expect(w.posts()).toEqual([]);
+    expect(w.updates()).toHaveLength(4);
+  });
+
+  it("says a pull request step that failed after the push, and a read that did not happen", async () => {
+    const w = world();
+    w.state.change = change;
+    w.state.turns = [decidedTurn(1, "attempted", NOW, "unread")];
+    w.state.landings = [
+      landingOf("l1", "failed", { message: "gh: no GitHub account is connected" }),
+    ];
+    await w.observe(w.worker());
+    expect(w.updates().at(-1)).toBe(
+      `${COMPLETED}\npushed · mend/flaky-login-test · pull request step failed · gh: no GitHub account is connected\nintent not read`,
+    );
+  });
+
+  it("offers Push and open pull request once when a turn's change did not land, and a landing answers it", async () => {
+    const w = world({ threadCreatedAt: NOW });
+    const reporter = w.worker();
+    w.state.change = change;
+    w.state.turns = [decidedTurn(1, "question")];
+    await w.observe(reporter);
+    await w.observe(reporter);
+    await w.observe(w.worker());
+
+    expect(w.updates().at(-1)).toBe(
+      `${COMPLETED}\nchanges not landed · the request read as a question`,
+    );
+    expect(w.posts()).toHaveLength(1);
+    const [offer] = w.posts();
+    expect(offer?.threadTs).toBe(THREAD);
+    expect(offer?.text).toBe("changes not landed · the request read as a question");
+    expect(offer?.blocks).toEqual([
+      {
+        type: "section",
+        text: { type: "mrkdwn", text: "changes not landed · the request read as a question" },
+      },
+      {
+        type: "actions",
+        elements: [
+          {
+            type: "button",
+            action_id: SLACK_ACTIONS.landChange,
+            text: { type: "plain_text", text: "Push and open pull request", emoji: true },
+            value: SESSION,
+            style: "primary",
+          },
+        ],
+      },
+      {
+        type: "context",
+        elements: [
+          {
+            type: "mrkdwn",
+            text: "lands as the change's owner, <@U-alice> · only they can use it",
+          },
+        ],
+      },
+    ]);
+
+    // The owner pressed it: the landing answers the turn, and the line says what it did.
+    w.state.landings = [landingOf("l1", "pull-request", { pullRequest: 412 })];
+    await w.observe(reporter);
+    expect(w.updates().at(-1)).toBe(
+      `${COMPLETED}\npushed · mend/flaky-login-test · pull request #412 · opened`,
+    );
+    expect(w.posts()).toHaveLength(1);
+  });
+
+  it("offers it for automatic landing off and for someone else's follow-up, and not for an old turn", async () => {
+    for (const [landing, line] of [
+      ["off", "changes not landed · automatic landing is off"],
+      ["not-owner", "changes not landed · the turn was not sent by the owner"],
+      ["option", "changes not landed · the request said autopr=false"],
+    ] as const) {
+      const w = world({ threadCreatedAt: NOW });
+      w.state.change = change;
+      w.state.turns = [decidedTurn(1, landing)];
+      await w.observe(w.worker());
+      expect(w.posts().map((post) => post.text)).toEqual([line]);
+    }
+
+    for (const landing of ["attempted", "skipped"] as const) {
+      const w = world({ threadCreatedAt: NOW });
+      w.state.change = change;
+      w.state.turns = [decidedTurn(1, landing)];
+      await w.observe(w.worker());
+      expect(w.posts()).toEqual([]);
+    }
+
+    // Ten minutes after the turn ended the offer is history; the status line still says it.
+    const late = world({ threadCreatedAt: NOW });
+    late.state.change = change;
+    late.state.turns = [decidedTurn(1, "question", minutesAgo(10))];
+    await late.observe(late.worker());
+    expect(late.posts()).toEqual([]);
+    expect(late.updates().at(-1)).toContain("changes not landed · the request read as a question");
+  });
+
+  it("puts the offer on the end-of-session reply when both are due in the same look", async () => {
+    const w = world({ threadCreatedAt: NOW });
+    w.state.session = sessionWith("completed");
+    w.state.change = change;
+    w.state.turns = [decidedTurn(1, "question")];
+    w.state.passes = [passOf("tour", "completed")];
+    w.state.tour = tourOf();
+    await w.observe(w.worker());
+    await w.observe(w.worker());
+
+    expect(w.posts()).toHaveLength(1);
+    const [reply] = w.posts();
+    expect(reply?.text).toBe("Mend read the change");
+    const text = blockText(reply ?? {});
+    expect(text).toContain("**Summary**");
+    expect(text).toContain(SLACK_ACTIONS.reviewChange);
+    expect(text).toContain(SLACK_ACTIONS.landChange);
+    expect(text).toContain("changes not landed · the request read as a question");
+  });
+
+  it("names nothing about landing once a channel's project is private", async () => {
+    const w = world({ threadCreatedAt: NOW });
+    w.state.project = new Project({ ...project, visibility: "private" });
+    w.state.change = change;
+    w.state.turns = [decidedTurn(1, "question")];
+    w.state.landings = [landingOf("l1", "pull-request", { pullRequest: 412 })];
+    await w.observe(w.worker());
+    expect(w.updates()).toEqual([PRIVATE_PROJECT_STATUS]);
+    expect(w.posts()).toEqual([]);
   });
 });
 
