@@ -271,6 +271,13 @@ Engine changes, by function (`engine.ts` at `ade9996`):
   revision the same day: the lease was claimed at the standby's synthetic epoch, the placeholder
   stayed an alias of the worktree for the executor's life, and only a worktree at capture 0 from the
   standby's base could be served.)
+- Files the co-located store writes beside the mounted harness home (amended 2026-09-25): a pasted
+  image and the owner's skills never reached a captured executor, which mounts nothing. They go into
+  the live workspace's harness home through `exec` instead, at the same paths: the image when it is
+  pasted (`SessionEngine.storePastedImage`; no live workspace answers `SessionNotLive`), the skills
+  in `launchInternal` once the harness home is relocated, cold or claimed. The bytes ride argv as
+  chunked base64 (`packages/sessions/src/workspace-files.ts`) until the SDK can write a file
+  (PLATFORM-FEEDBACK.md, "A file into a workspace").
 
 ### Replacement and pickup
 

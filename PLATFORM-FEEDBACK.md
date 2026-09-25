@@ -7,6 +7,22 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-25 · 0.37.0 · A file into a workspace
+
+- **Needed:** a capture-mode workspace (MicroVM executors, ADR-0002) mounts nothing, so what the
+  co-located store writes beside the mounted harness home never arrives: an image pasted onto the
+  terminal (up to 8 MB), and the owner's skills before the harness starts. Mend has to put bytes at
+  a path inside the live workspace.
+- **Today:** `workspace.exec(argv, { cwd })` takes argv only: no stdin, no env, and no file write,
+  and every exec is recorded as a run. Mend base64-encodes the bytes into argv, at most 90 000
+  characters per exec, decodes them with `base64 -d`, appends large files chunk by chunk into a part
+  file and renames it (`packages/sessions/src/workspace-files.ts`). An 8 MB image is about 125 execs
+  and as many recorded runs; a typical screenshot is a handful. Skills are one exec for the manifest
+  read, one to prepare the directories, and a few batched writes.
+- **Suggested:** `workspace.writeFile(path, bytes, { mode })` (or `files.put` for several at once),
+  or an `exec` option for stdin so a single `sh -c 'cat > "$1"'` carries the bytes. Either should be
+  able to skip the run record: a file placement is not evidence.
+
 ## 2026-09-24 · 0.37.0 · A workspace with one credential and nothing else
 
 - **Needed:** landing's pull request step (docs/adr/0007-landing.md, "Where each step runs") runs

@@ -9,6 +9,10 @@
  * read-write into every workspace the session gets at
  * `HARNESS_HOME_MOUNT_PATH`), and the terminal pastes the container path.
  *
+ * Capture mode mounts nothing (ADR-0002), so there the bytes go into the live workspace's own
+ * harness home through exec, at the same path (`SessionEngine.storePastedImage`); a session with no
+ * live workspace answers "not live" rather than storing a file no workspace will see.
+ *
  * The harness home, not the worktree: nothing to exclude from the change or
  * the checkpoints, nothing a `git clean -fdx` can take, and the directory
  * lives and dies with the session. `paste/` sits beside the relocated harness
@@ -43,6 +47,14 @@ export class PastedImageError extends Schema.TaggedErrorClass<PastedImageError>(
     message: Schema.String,
   },
 ) {}
+
+/** What a paste answers wherever it landed: the path the terminal pastes, the format, the size. */
+export interface PlacedPastedImage {
+  /** The file as the workspace sees it — what the terminal pastes. */
+  readonly path: string;
+  readonly mediaType: PastedImageMediaType;
+  readonly bytes: number;
+}
 
 export interface StoredPastedImage {
   /** Where the bytes landed on this side of the mount. */
@@ -84,13 +96,18 @@ export const pastedImageName = (
   return `${stamp}-${nonce}.${PASTED_IMAGE_TYPES[mediaType]}`;
 };
 
-/**
- * Write one pasted image into the session's harness home. `harnessHome` is
- * the host-side directory (`harnessHomePathOf` in the store); the directory
- * is created if the session has not launched yet, and the launch mounts it.
- */
-export const storePastedImage = Effect.fn("storePastedImage")(function* (
-  harnessHome: string,
+/** An accepted paste: its format from the bytes, and the file name it lands under. */
+export interface CheckedPastedImage {
+  readonly mediaType: PastedImageMediaType;
+  readonly name: string;
+}
+
+/** Where a pasted image sits as the workspace sees it — what the terminal pastes. */
+export const pastedImageWorkspacePath = (name: string): string =>
+  posix.join(HARNESS_HOME_MOUNT_PATH, PASTED_IMAGE_DIR, name);
+
+/** Refuse what is too large or not an image, before any byte is written; name what is not. */
+export const checkPastedImage = Effect.fn("checkPastedImage")(function* (
   bytes: Uint8Array,
   options: { readonly now?: Date; readonly nonce?: string } = {},
 ) {
@@ -112,6 +129,22 @@ export const storePastedImage = Effect.fn("storePastedImage")(function* (
     options.now ?? new Date(),
     options.nonce ?? Math.random().toString(16).slice(2, 6).padEnd(4, "0"),
   );
+  return { mediaType, name } satisfies CheckedPastedImage;
+});
+
+/**
+ * Write one pasted image into the session's harness home on this machine — the co-located store,
+ * where that directory is mounted into every workspace the session gets. `harnessHome` is the
+ * host-side directory (`harnessHomePathOf` in the store); the directory is created if the session
+ * has not launched yet, and the launch mounts it. Capture mode mounts nothing: the engine writes
+ * into the live workspace instead (`SessionEngine.storePastedImage`).
+ */
+export const storePastedImage = Effect.fn("storePastedImage")(function* (
+  harnessHome: string,
+  bytes: Uint8Array,
+  options: { readonly now?: Date; readonly nonce?: string } = {},
+) {
+  const { mediaType, name } = yield* checkPastedImage(bytes, options);
   const directory = path.join(harnessHome, PASTED_IMAGE_DIR);
   const hostPath = path.join(directory, name);
   yield* Effect.tryPromise({
@@ -130,7 +163,7 @@ export const storePastedImage = Effect.fn("storePastedImage")(function* (
   });
   return {
     hostPath,
-    path: posix.join(HARNESS_HOME_MOUNT_PATH, PASTED_IMAGE_DIR, name),
+    path: pastedImageWorkspacePath(name),
     mediaType,
     bytes: bytes.byteLength,
   } satisfies StoredPastedImage;
