@@ -111,6 +111,27 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       const project = text(event.data["projectName"]) ?? event.subjectId;
       return `cleared the default project of Slack channel ${channel} (was ${project})`;
     }
+    case "change.landed": {
+      const branch = text(event.data["remoteBranch"]) ?? "?";
+      const pushed = text(event.data["pushedSha"]);
+      const pullRequest = event.data["pullRequest"];
+      switch (text(event.data["outcome"])) {
+        case "pull-request":
+          return `pushed change ${event.subjectId} to ${branch} · pull request #${String(pullRequest)}`;
+        case "pushed":
+          return `pushed change ${event.subjectId} to ${branch}${pushed === null ? "" : ` · ${pushed.slice(0, 7)}`}`;
+        case "refused":
+          return `landing of change ${event.subjectId} refused by origin · ${branch}`;
+        default:
+          return `landing of change ${event.subjectId} failed · ${branch}`;
+      }
+    }
+    case "change.pull_request_refreshed":
+      return `read pull request #${String(event.data["pullRequest"])} of change ${event.subjectId} · ${text(event.data["state"]) ?? "?"}`;
+    case "change.bundle_downloaded": {
+      const tip = text(event.data["tip"]);
+      return `downloaded change ${event.subjectId} as a bundle · ${text(event.data["branch"]) ?? "?"}${tip === null ? "" : ` · ${tip.slice(0, 7)}`}`;
+    }
   }
 };
 

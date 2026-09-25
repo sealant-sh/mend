@@ -37,6 +37,11 @@ export const AuditAction = Schema.Literals([
   "slack.session_started",
   "slack.channel_default_set",
   "slack.channel_default_cleared",
+  // docs/adr/0007-landing.md, "What Mend records and shows": the owner's credentials pushed, and
+  // `gh` spoke as them.
+  "change.landed",
+  "change.pull_request_refreshed",
+  "change.bundle_downloaded",
 ]);
 export type AuditAction = typeof AuditAction.Type;
 
@@ -55,8 +60,8 @@ export class AuditEvent extends Schema.Class<AuditEvent>("AuditEvent")({
   actorUserId: Schema.String,
   action: AuditAction,
   /**
-   * What the action touched: `member`, `invitation`, `project`, `session`, `folder`, `reference`
-   * or `slack` (the organization's Slack app).
+   * What the action touched: `member`, `invitation`, `project`, `session`, `folder`, `reference`,
+   * `slack` (the organization's Slack app) or `change` (a landing).
    */
   subjectType: Schema.String,
   subjectId: Schema.String,

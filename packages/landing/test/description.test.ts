@@ -10,6 +10,7 @@ import {
   describePullRequest,
   landingCommitMessage,
   mergeDescription,
+  ownerDescription,
   pullRequestTitle,
 } from "../src/description.ts";
 
@@ -180,6 +181,20 @@ describe("mergeDescription", () => {
   it("treats a start marker with no end as no markers", () => {
     const body = `Intro\n${DESCRIPTION_START}\nhalf a section`;
     expect(mergeDescription(body, section)).toBe(`${body}\n\n${section}`);
+  });
+});
+
+describe("ownerDescription", () => {
+  const section = describePullRequest(input());
+
+  it("puts the owner's words above Mend's section", () => {
+    expect(ownerDescription("\nFixes the SSO loop.\n\n", section)).toBe(
+      `Fixes the SSO loop.\n\n${section}`,
+    );
+  });
+
+  it("is the section alone when the owner's words are blank", () => {
+    expect(ownerDescription("  ", section)).toBe(section);
   });
 });
 

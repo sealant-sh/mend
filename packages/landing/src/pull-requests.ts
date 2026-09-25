@@ -3,7 +3,7 @@ import type { LandedPullRequest } from "@mend/domain/workbench";
 import { Clock, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
-import { mergeDescription } from "./description.ts";
+import { mergeDescription, ownerDescription } from "./description.ts";
 import {
   createArgv,
   createdUrl,
@@ -81,6 +81,11 @@ export interface PublishInput {
   readonly titleGiven: boolean;
   /** Mend's section of the description, markers included. */
   readonly section: string;
+  /**
+   * The owner's own words, written above the section in place of the rest of the body. Null
+   * keeps what people wrote outside the section.
+   */
+  readonly body: string | null;
   /** The pull request an earlier landing of this change opened, as recorded. */
   readonly previous: number | null;
 }
@@ -184,7 +189,10 @@ export const PullRequestsLive: Layer.Layer<PullRequests, never, PullRequestWorks
           Effect.gen(function* () {
             const target = yield* openTarget(workspace, input);
             const bodyFile = `/tmp/mend-pull-request-${crypto.randomUUID()}.md`;
-            const body = mergeDescription(target?.body ?? null, input.section);
+            const body =
+              input.body === null
+                ? mergeDescription(target?.body ?? null, input.section)
+                : ownerDescription(input.body, input.section);
             const written = yield* workspace.exec(writeFileArgv(bodyFile, body));
             if (written.exitCode !== 0) {
               return yield* failure(`writing the description · ${ghWords(written)}`);

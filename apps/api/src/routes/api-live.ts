@@ -55,6 +55,7 @@ import { TenancyConfig } from "../tenancy.ts";
 import { DevicePairingLive } from "./devices.ts";
 import { FoldersGroupLive } from "./folders.ts";
 import { GithubGroupLive } from "./github.ts";
+import { LandingsGroupLive } from "./landing.ts";
 import { MachineGroupLive } from "./machine.ts";
 import { OperatorGroupLive } from "./operator.ts";
 import { InvitationsGroupLive, OrganizationGroupLive } from "./organization.ts";
@@ -666,7 +667,7 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
   Layer.provide(ReferencesGroupLive),
   Layer.provide(SessionsGroupLive),
   Layer.provide(WorktreesGroupLive),
-  Layer.provide(SessionChangesGroupLive),
+  Layer.provide(Layer.merge(SessionChangesGroupLive, LandingsGroupLive)),
   Layer.provide(GithubGroupLive),
   Layer.provide(DevicesGroupLive),
   Layer.provide(

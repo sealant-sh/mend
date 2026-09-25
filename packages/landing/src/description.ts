@@ -176,6 +176,15 @@ export const mergeDescription = (existing: string | null, section: string): stri
 };
 
 /**
+ * The body when the owner wrote the description themselves: their words, then Mend's section.
+ * What sat outside the section on GitHub is replaced, since the owner asked for these words.
+ */
+export const ownerDescription = (text: string, section: string): string => {
+  const own = text.trim();
+  return own === "" ? section : `${own}\n\n${section}`;
+};
+
+/**
  * The title Mend opens a pull request with: the owner's own when they gave one, else the
  * session's label. On an update Mend sends only a title the owner gave for that landing, so a
  * title edited on GitHub is kept.

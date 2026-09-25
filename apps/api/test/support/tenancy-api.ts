@@ -25,6 +25,7 @@ import {
   ServiceForwardsRepo,
   ServiceObservationsRepo,
   SessionControlEventsRepo,
+  SessionGitOpsRepo,
   SettingsRepo,
   SlackDefaultsRepo,
   SlackInstallsRepo,
@@ -38,7 +39,9 @@ import {
   UpgradeTicketsRepo,
 } from "@mend/db";
 import type { DotfilesRepository } from "@mend/domain";
+import type { Session } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
+import { Landing, LandingGit } from "@mend/landing";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
 import { SealantClient, SealantClients } from "@mend/sealant";
 import {
@@ -143,6 +146,8 @@ export const createTenancyApi = async (
     readonly exposure?: ExposureConfig["Service"];
     /** Credentials that no longer stand (`session:<account>`): add one to sign that account out. */
     readonly revokedCredentials?: ReadonlySet<string>;
+    /** Sessions added to the world, such as a teammate's in someone else's worktree. */
+    readonly sessions?: ReadonlyArray<Session>;
     /**
      * The dotfiles routes past authorization: the real store over this world's store root, each
      * account's repository kept in memory, and `cloner` for the clone a save tries first.
@@ -150,9 +155,21 @@ export const createTenancyApi = async (
     readonly dotfiles?: { readonly cloner: DotfilesCloner["Service"] };
     /** `MEND_TENANCY` and the source policy profile it brings; single (operator) unless stated. */
     readonly tenancy?: "single" | "multi";
+    /**
+     * What a few services answer, for tests that follow a request past authorization. Each is
+     * still recorded; a method left out still fails as unimplemented.
+     */
+    readonly implement?: {
+      readonly audit?: Layer.PartialEffectful<AuditEventsRepo["Service"]>;
+      readonly landings?: Layer.PartialEffectful<ChangeLandingsRepo["Service"]>;
+      readonly landing?: Layer.PartialEffectful<Landing["Service"]>;
+      readonly landingGit?: Layer.PartialEffectful<LandingGit["Service"]>;
+      readonly gitOps?: Layer.PartialEffectful<SessionGitOpsRepo["Service"]>;
+      readonly reads?: Layer.PartialEffectful<WorktreeReads["Service"]>;
+    };
   } = {},
 ): Promise<TenancyApi> => {
-  const world = await createTenancyWorld();
+  const world = await createTenancyWorld(options.sessions);
   const ticketsLayer = Layer.mergeAll(
     Layer.succeed(
       UpgradeTicketsRepo,
@@ -179,12 +196,20 @@ export const createTenancyApi = async (
         };
   const effects = Layer.mergeAll(
     Layer.mergeAll(
-      recording(AuditEventsRepo, "audit", { record: () => Effect.void }, calls),
+      recording(
+        AuditEventsRepo,
+        "audit",
+        options.implement?.audit ?? { record: () => Effect.void },
+        calls,
+      ),
       recording(BriefCommentsRepo, "briefComments", {}, calls),
       recording(BriefsRepo, "briefs", {}, calls),
       recording(ChangePassesRepo, "changePasses", {}, calls),
       recording(ChangesRepo, "legacyChanges", {}, calls),
-      recording(ChangeLandingsRepo, "landings", {}, calls),
+      recording(ChangeLandingsRepo, "landings", options.implement?.landings ?? {}, calls),
+      recording(Landing, "landing", options.implement?.landing ?? {}, calls),
+      recording(LandingGit, "landingGit", options.implement?.landingGit ?? {}, calls),
+      recording(SessionGitOpsRepo, "gitOps", options.implement?.gitOps ?? {}, calls),
       recording(ChangeToursRepo, "changeTours", {}, calls),
       recording(CheckpointsRepo, "checkpoints", {}, calls),
       recording(DevicesRepo, "devices", {}, calls),
@@ -244,7 +269,7 @@ export const createTenancyApi = async (
       Layer.succeed(CaptureRuntime, { enabled: false }),
       recording(FollowUpDelivery, "followUpDelivery", {}, calls),
       recording(SessionEngine, "engine", {}, calls),
-      recording(WorktreeReads, "reads", {}, calls),
+      recording(WorktreeReads, "reads", options.implement?.reads ?? {}, calls),
       recording(AgentBridge, "agentBridge", { socketPath: () => "/unused/agent.sock" }, calls),
       options.dotfiles === undefined
         ? recording(DotfilesStore, "dotfilesStore", {}, calls)

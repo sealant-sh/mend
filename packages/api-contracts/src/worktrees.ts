@@ -102,7 +102,8 @@ export const worktreesGroup = HttpApiGroup.make("worktrees")
   .add(
     // The one explicit destructive act: conversations, change, chain, and
     // review artifacts go with the directory. Refused while any conversation
-    // is live, and while an unreviewed diff stands unless `force=true`.
+    // is live, and while a change not on origin stands (docs/adr/0007-landing.md,
+    // "Worktree removal") unless `force=true`.
     HttpApiEndpoint.delete("remove", "/worktrees/:id", {
       params: { id: WorktreeId },
       query: { force: Schema.optional(Schema.String) },

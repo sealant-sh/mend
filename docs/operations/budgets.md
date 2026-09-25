@@ -8,21 +8,23 @@ capture. Every refusal happens before the effect it guards: the request windows 
 before routing and authentication, the session and connection budgets after authorization (so a
 refusal never says whether something you may not see exists).
 
-| Variable                                     | Default    | What it bounds                                                                                                        |
-| -------------------------------------------- | ---------- | --------------------------------------------------------------------------------------------------------------------- |
-| `MEND_BUDGET_BODY_BYTES`                     | `1048576`  | One request body. A declared length over it is refused unread; an undeclared body is cut at it.                       |
-| `MEND_BUDGET_UPLOAD_BODY_BYTES`              | `25165824` | The same, for the routes that take a file: pasted images, `skills sync`, folder uploads, dotfiles, workspace image.   |
-| `MEND_BUDGET_FRAME_BYTES`                    | `1048576`  | One WebSocket frame from a client on a terminal, a service tunnel or the key bridge. Over it, the socket closes 1009. |
-| `MEND_BUDGET_ADDRESS_REQUESTS_PER_MINUTE`    | `1200`     | Requests from one client address, counted before authentication.                                                      |
-| `MEND_BUDGET_CREDENTIAL_REQUESTS_PER_MINUTE` | `1200`     | Requests presenting one credential (a session cookie or a bearer), valid or not.                                      |
-| `MEND_BUDGET_SIGN_IN_ATTEMPTS_PER_MINUTE`    | `20`       | Sign-in, sign-up, password reset and invitation attempts from one address.                                            |
-| `MEND_BUDGET_ACCOUNT_LIVE_SESSIONS`          | `24`       | Unsettled sessions one account holds.                                                                                 |
-| `MEND_BUDGET_ORGANIZATION_LIVE_SESSIONS`     | `120`      | Unsettled sessions one organization holds.                                                                            |
-| `MEND_BUDGET_ACCOUNT_LAUNCHES_IN_FLIGHT`     | `4`        | Launches one account has starting at once.                                                                            |
-| `MEND_BUDGET_ACCOUNT_EVENT_STREAMS`          | `12`       | Open event streams (one per browser tab or client) for one account.                                                   |
-| `MEND_BUDGET_ACCOUNT_TERMINALS`              | `24`       | Open terminal sockets for one account.                                                                                |
-| `MEND_BUDGET_ACCOUNT_TUNNELS`                | `24`       | Open service tunnels for one account.                                                                                 |
-| `MEND_BUDGET_ACCOUNT_KEY_BRIDGES`            | `4`        | Open ssh-agent shares for one account.                                                                                |
+| Variable                                       | Default    | What it bounds                                                                                                                               |
+| ---------------------------------------------- | ---------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND_BUDGET_BODY_BYTES`                       | `1048576`  | One request body. A declared length over it is refused unread; an undeclared body is cut at it.                                              |
+| `MEND_BUDGET_UPLOAD_BODY_BYTES`                | `25165824` | The same, for the routes that take a file: pasted images, `skills sync`, folder uploads, dotfiles, workspace image.                          |
+| `MEND_BUDGET_FRAME_BYTES`                      | `1048576`  | One WebSocket frame from a client on a terminal, a service tunnel or the key bridge. Over it, the socket closes 1009.                        |
+| `MEND_BUDGET_ADDRESS_REQUESTS_PER_MINUTE`      | `1200`     | Requests from one client address, counted before authentication.                                                                             |
+| `MEND_BUDGET_CREDENTIAL_REQUESTS_PER_MINUTE`   | `1200`     | Requests presenting one credential (a session cookie or a bearer), valid or not.                                                             |
+| `MEND_BUDGET_SIGN_IN_ATTEMPTS_PER_MINUTE`      | `20`       | Sign-in, sign-up, password reset and invitation attempts from one address.                                                                   |
+| `MEND_BUDGET_ACCOUNT_LIVE_SESSIONS`            | `24`       | Unsettled sessions one account holds.                                                                                                        |
+| `MEND_BUDGET_ORGANIZATION_LIVE_SESSIONS`       | `120`      | Unsettled sessions one organization holds.                                                                                                   |
+| `MEND_BUDGET_ACCOUNT_LAUNCHES_IN_FLIGHT`       | `4`        | Launches one account has starting at once.                                                                                                   |
+| `MEND_BUDGET_BUNDLE_BYTES`                     | `67108864` | One `mend pull` bundle (`GET /changes/:id/bundle`). A larger one is refused with 413 and its size.                                           |
+| `MEND_BUDGET_ACCOUNT_ORIGIN_CHECKS_PER_MINUTE` | `30`       | Fetches of origin's branch one account asks for ("Check origin", `?probe=true`). Over it, the record answers without the fetch and says why. |
+| `MEND_BUDGET_ACCOUNT_EVENT_STREAMS`            | `12`       | Open event streams (one per browser tab or client) for one account.                                                                          |
+| `MEND_BUDGET_ACCOUNT_TERMINALS`                | `24`       | Open terminal sockets for one account.                                                                                                       |
+| `MEND_BUDGET_ACCOUNT_TUNNELS`                  | `24`       | Open service tunnels for one account.                                                                                                        |
+| `MEND_BUDGET_ACCOUNT_KEY_BRIDGES`              | `4`        | Open ssh-agent shares for one account.                                                                                                       |
 
 `0` turns one budget off. The API logs at start which are off, and the public exposure gate needs
 every one of them set.

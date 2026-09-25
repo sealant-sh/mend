@@ -47,6 +47,11 @@ type Rule =
   | "steer"
   /** Steer, plus organization owners. */
   | "stop"
+  /**
+   * The session owner only, even under shared control or for an organization owner: landing
+   * pushes with the owner's key (docs/adr/0007-landing.md, "Who lands").
+   */
+  | "land"
   /** Manage the project, or own every session in the worktree. */
   | "worktree-remove"
   /** Manage the project, and hold the operator role (host mounts). */
@@ -135,6 +140,8 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "skills.update",
   "skills.remove",
   "skills.sync",
+  // A landing's id resolves to its change first; landing.test.ts covers who may refresh it.
+  "landings.refresh",
 ]);
 
 const project =
@@ -527,6 +534,12 @@ const CASES: ReadonlyArray<AccessCase> = [
   child("project-read", "change", "POST", "/api/changes", "/tour")("sessionChanges.composeTour"),
   child("project-read", "change", "POST", "/api/changes", "/suggest")("sessionChanges.suggest"),
   child("project-read", "change", "GET", "/api/changes", "/passes")("sessionChanges.passes"),
+  // ── Landing (docs/adr/0007-landing.md) ──
+  session("land", "POST", "/land", {})("landings.land"),
+  session("project-read", "GET", "/landings")("landings.forSession"),
+  child("project-read", "change", "GET", "/api/changes", "/landings")("landings.forChange"),
+  child("project-read", "change", "GET", "/api/changes", "/bundle")("landings.bundle"),
+  session("project-read", "GET", "/git-ops")("landings.gitOps"),
 ];
 
 type Expectation = "refused" | "forbidden" | "admitted";
@@ -569,6 +582,14 @@ const MATRIX: Readonly<Record<Rule, ReadonlyArray<readonly [HarnessUser, Target,
     ["alice", "private-alice", "admitted"],
   ],
   steer: [
+    ["bob", "shared-a", "refused"],
+    ["dave", "shared-a", "refused"],
+    ["carol", "private-alice", "refused"],
+    ["carol", "shared-a", "forbidden"],
+    ["alice", "shared-a", "admitted"],
+    ["carol", "private-carol", "admitted"],
+  ],
+  land: [
     ["bob", "shared-a", "refused"],
     ["dave", "shared-a", "refused"],
     ["carol", "private-alice", "refused"],

@@ -29,6 +29,10 @@ export interface BudgetLimits {
   readonly organizationLiveSessions: number;
   /** Launches one account may have starting at once. */
   readonly accountLaunchesInFlight: number;
+  /** Largest `mend pull` bundle a change answers with, refused with its size above it. */
+  readonly bundleBytes: number;
+  /** Fetches of origin's branch one account asks for per minute ("Check origin"). */
+  readonly accountOriginChecksPerMinute: number;
   /** Open long-lived connections one account may hold, by kind. */
   readonly accountEventStreams: number;
   readonly accountTerminals: number;
@@ -49,6 +53,8 @@ export const DEFAULT_BUDGET_LIMITS: BudgetLimits = {
   accountLiveSessions: 24,
   organizationLiveSessions: 120,
   accountLaunchesInFlight: 4,
+  bundleBytes: 64 * 1024 * 1024,
+  accountOriginChecksPerMinute: 30,
   accountEventStreams: 12,
   accountTerminals: 24,
   accountTunnels: 24,
@@ -65,6 +71,8 @@ const ENV: Readonly<Record<BudgetName, string>> = {
   accountLiveSessions: "MEND_BUDGET_ACCOUNT_LIVE_SESSIONS",
   organizationLiveSessions: "MEND_BUDGET_ORGANIZATION_LIVE_SESSIONS",
   accountLaunchesInFlight: "MEND_BUDGET_ACCOUNT_LAUNCHES_IN_FLIGHT",
+  bundleBytes: "MEND_BUDGET_BUNDLE_BYTES",
+  accountOriginChecksPerMinute: "MEND_BUDGET_ACCOUNT_ORIGIN_CHECKS_PER_MINUTE",
   accountEventStreams: "MEND_BUDGET_ACCOUNT_EVENT_STREAMS",
   accountTerminals: "MEND_BUDGET_ACCOUNT_TERMINALS",
   accountTunnels: "MEND_BUDGET_ACCOUNT_TUNNELS",
@@ -83,6 +91,8 @@ const WORDS: Readonly<Record<BudgetName, string>> = {
   accountLiveSessions: "unsettled sessions for one account",
   organizationLiveSessions: "unsettled sessions for one organization",
   accountLaunchesInFlight: "launches starting at once for one account",
+  bundleBytes: "bytes in one change bundle",
+  accountOriginChecksPerMinute: "fetches of origin per minute for one account",
   accountEventStreams: "open event streams for one account",
   accountTerminals: "open terminals for one account",
   accountTunnels: "open service tunnels for one account",
@@ -113,6 +123,8 @@ export class Budgets extends Context.Service<
     readonly addresses: WindowLimiter;
     readonly credentials: WindowLimiter;
     readonly signIns: WindowLimiter;
+    /** Fetches of origin's branch a viewer asks for, by account. */
+    readonly originChecks: WindowLimiter;
     /**
      * Hold one launch slot for the account while `effect` runs, or null when the account has
      * `accountLaunchesInFlight` starting already. The slot is released however `effect` ends.
@@ -131,6 +143,7 @@ export const makeBudgets = (limits: BudgetLimits) => {
     addresses: makeWindowLimiter(),
     credentials: makeWindowLimiter(),
     signIns: makeWindowLimiter(),
+    originChecks: makeWindowLimiter(),
     withLaunchSlot: <A, E, R>(userId: string, effect: Effect.Effect<A, E, R>) =>
       Effect.suspend(() => {
         const held = launching.get(userId) ?? 0;
@@ -162,6 +175,8 @@ export const budgetLimitsConfig = Config.all({
   accountLiveSessions: limit("accountLiveSessions"),
   organizationLiveSessions: limit("organizationLiveSessions"),
   accountLaunchesInFlight: limit("accountLaunchesInFlight"),
+  bundleBytes: limit("bundleBytes"),
+  accountOriginChecksPerMinute: limit("accountOriginChecksPerMinute"),
   accountEventStreams: limit("accountEventStreams"),
   accountTerminals: limit("accountTerminals"),
   accountTunnels: limit("accountTunnels"),

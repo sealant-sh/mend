@@ -198,7 +198,7 @@ const fileListingFailure = (error: { readonly stderr: string }) =>
   new StoreFailure({ message: error.stderr === "" ? "git could not list files" : error.stderr });
 
 /** A worktree read that could not be served — the observed reason, in the read's own words. */
-const readFailure = (error: WorktreeReadError): StoreFailure =>
+export const readFailure = (error: WorktreeReadError): StoreFailure =>
   new StoreFailure({
     message:
       error._tag === "GitError"
@@ -353,7 +353,7 @@ const remoteEnvFor = (mode: GitAuthMode, userId: string | null) =>
  * bridge can print what asked for the signature. Non-bridge modes pass through
  * untouched.
  */
-const withSignerContext = <A, E, R>(
+export const withSignerContext = <A, E, R>(
   mode: GitAuthMode,
   userId: string,
   description: string,
@@ -2618,7 +2618,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             if (diff.trim() !== "") {
               return yield* new StoreFailure({
                 message:
-                  "This legacy bench still contains a reviewable change. Review, export, commit, or discard it before removal.",
+                  "This legacy bench still contains a reviewable change. Review, land or discard it before removal.",
               });
             }
           }

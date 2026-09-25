@@ -20,6 +20,7 @@
     "@mend/domain": "workspace:*",
     "@mend/inference": "workspace:*",
     "@mend/jobs": "workspace:*",
+    "@mend/landing": "workspace:*",
     "@mend/network": "workspace:*",
     "@mend/sealant": "workspace:*",
     "@mend/sessions": "workspace:*",
