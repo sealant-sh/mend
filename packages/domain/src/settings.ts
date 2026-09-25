@@ -9,6 +9,7 @@ export type PrMode = typeof PrMode.Type;
 
 /** Rows written before a switch existed decode to its default — never a failed read. */
 const onByDefault = Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true)));
+const offByDefault = Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(false)));
 
 export const WorkspaceImageOs = Schema.Literals(["fedora", "arch", "nix", "ubuntu"]);
 export type WorkspaceImageOs = typeof WorkspaceImageOs.Type;
@@ -218,6 +219,12 @@ export class MendSettings extends Schema.Class<MendSettings>("MendSettings")({
   autoSuggest: onByDefault,
   /** Name the session from its first prompt — a label appears in lists while it still runs. */
   autoName: onByDefault,
+  /**
+   * Land the change when a turn completes (docs/adr/0007-landing.md, "Automatic landing"): push
+   * the branch and open or update its pull request. Off by default for sessions people run
+   * themselves; Slack sessions follow the Slack app's own setting instead.
+   */
+  autoLand: offByDefault,
   /** Base operating system and additional tools baked into every new session workspace. */
   workspaceImage: workspaceImageWithDefault,
   /**
@@ -235,6 +242,7 @@ export const defaultSettings = new MendSettings({
   autoTour: true,
   autoSuggest: true,
   autoName: true,
+  autoLand: false,
   workspaceImage: defaultWorkspaceImage,
   backgroundSessions: true,
 });

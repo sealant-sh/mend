@@ -174,12 +174,14 @@ describe.skipIf(!reachable)("slack in Postgres", () => {
           showAgentMessages: true,
           showDiffs: false,
           externalChannels: false,
+          landAutomatically: true,
         });
         yield* installs.updateSettings(ACME, {
           defaultHarness: "codex",
           showAgentMessages: false,
           showDiffs: true,
           externalChannels: false,
+          landAutomatically: false,
         });
         const { code } = yield* links.mintCode({
           teamId: "T-ACME",
@@ -201,6 +203,7 @@ describe.skipIf(!reachable)("slack in Postgres", () => {
         expect(rotated.previous?.sealedBotToken).toBe("sealed:bot:1");
         expect(rotated.install.sealedBotToken).toBe("sealed:bot:2");
         expect(rotated.install.settings.defaultHarness).toBe("codex");
+        expect(rotated.install.settings.landAutomatically).toBe(false);
         expect(rotated.install.createdAt).toEqual(first.install.createdAt);
         expect(yield* links.bySlackUser("T-ACME", "U-BOB")).toMatchObject({ userId: "bob" });
         expect(yield* defaults.channelDefault("T-ACME", "C-GENERAL")).not.toBeNull();
@@ -216,6 +219,7 @@ describe.skipIf(!reachable)("slack in Postgres", () => {
         const moved = yield* installs.save(installFor({ teamId: "T-NEW", teamName: "Acme 2" }));
         expect(moved.previous?.teamId).toBe("T-ACME");
         expect(moved.install.settings.defaultHarness).toBe("claude");
+        expect(moved.install.settings.landAutomatically).toBe(true);
         expect(yield* links.listForOrganization(ACME)).toEqual([]);
         expect(yield* defaults.channelDefault("T-ACME", "C-GENERAL")).toBeNull();
         expect(yield* installs.byTeam("T-ACME")).toBeNull();

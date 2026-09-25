@@ -10,6 +10,7 @@
  * worktree     1 ── 0..n sessions      one agent conversation each; several may be live at once
  * worktree     1 ── 1    change        worktree vs base — the reviewable object
  * worktree     1 ── 0..n checkpoints   hidden git ref + exact record pointer; two = a slice
+ * change       1 ── 0..n landings      a push, and its pull request, of one checkpoint (docs/adr/0007)
  * session      1 ── 0..n runs          Sealant execution records, one sequence space each
  * session      1 ── 0..n processes     PTYs in the current workspace: agent, shells, Services
  * session      1 ── 0..1 snapshot      immutable context manifest
@@ -30,6 +31,7 @@ export * from "./folder.ts";
 export * from "./follow-up.ts";
 export * from "./harness-launch.ts";
 export * from "./hot-workspace.ts";
+export * from "./landing.ts";
 export * from "./mount.ts";
 export * from "./link.ts";
 export * from "./organization.ts";

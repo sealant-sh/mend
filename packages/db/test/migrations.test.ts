@@ -188,6 +188,12 @@ describe.skipIf(!reachable)("0035 process kinds and 0036 agent conversation", ()
       Effect.gen(function* () {
         const sql = yield* SqlClient.SqlClient;
         yield* sql`UPDATE agent_turns SET status = 'completed' WHERE id = 'turn-1'`;
+        // The repository writes today's columns, so the schema it runs against is today's.
+        yield* Effect.forEach(
+          ORDERED.filter(([name]) => name > "0036_agent_conversation"),
+          ([, migration]) => migration,
+          { discard: true },
+        );
       }),
     );
     const result = await withConversation(
@@ -1212,6 +1218,214 @@ describe.skipIf(!reachable)("0063 slack reports", () => {
       again: "refused",
       orphan: "refused",
       postsAfterSession: 0,
+    });
+  });
+});
+
+describe.skipIf(!reachable)("0064 landing", () => {
+  const LANDING_DB = `${SCRATCH_DB}_landing`;
+  const landingLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${LANDING_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withLandingDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(landingLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${LANDING_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${LANDING_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("leaves existing rows to their defaults, and the checks hold a landing's facts together", async () => {
+    const result = await withLandingDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0063_slack_reports");
+        yield* sql`
+          INSERT INTO "user" ("id", "name", "email", "createdAt")
+          VALUES ('u-alice', 'Alice', 'alice@example.com', '2026-01-01T00:00:00Z')`;
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        const acme = organization?.id ?? "";
+        yield* sql`
+          INSERT INTO organization_members (organization_id, user_id, role)
+          VALUES (${acme}, 'u-alice', 'owner')`;
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-1', 'api', '/store/p-1/repo.git', 'main', ${acme})`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc')`;
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, status)
+          VALUES ('s-1', 'p-1', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running')`;
+        yield* sql`
+          INSERT INTO session_processes
+            (id, session_id, sealant_workspace_id, sealant_session_id, kind, status)
+          VALUES ('proc-1', 's-1', 'ws-1', 'pty-1', 'agent-protocol', 'running')`;
+        yield* sql`
+          INSERT INTO agent_turns (id, session_id, process_id, ordinal, input, status)
+          VALUES ('t-1', 's-1', 'proc-1', 1, 'why does the login test flake?', 'completed')`;
+        yield* sql`
+          INSERT INTO slack_installs
+            (organization_id, team_id, team_name, bot_user_id, app_id, sealed_app_token,
+             sealed_bot_token, web_origin, installed_by_user_id)
+          VALUES (${acme}, 'T-ACME', 'Acme', 'B1', 'A1', 'sealed-app', 'sealed-bot',
+                  'https://mend.example', 'u-alice')`;
+        yield* sql`
+          INSERT INTO worktree_changes (id, project_id, worktree_id, session_id, branch, base_sha)
+          VALUES ('c-1', 'p-1', 'wt-1', 's-1', 'mend/one', 'abc')`;
+        yield* sql`
+          INSERT INTO checkpoints (id, worktree_id, session_id, ordinal, ref, sha, trigger)
+          VALUES ('cp-1', 'wt-1', 's-1', 0, 'refs/mend/checkpoints/wt-1/0', 'def', 'session-start')`;
+        yield* migrations["0064_landing"];
+
+        const [defaults] = yield* sql<{
+          readonly project: string;
+          readonly session: boolean | null;
+          readonly slack: boolean;
+          readonly intent: string | null;
+          readonly intent_source: string | null;
+        }>`
+          SELECT
+            (SELECT auto_land FROM projects) AS project,
+            (SELECT auto_land FROM agent_sessions) AS session,
+            (SELECT land_automatically FROM slack_installs) AS slack,
+            (SELECT intent FROM agent_turns) AS intent,
+            (SELECT intent_source FROM agent_turns) AS intent_source`;
+        const projectChoice = yield* attempt(sql`UPDATE projects SET auto_land = 'sometimes'`);
+
+        const intent = (value: string | null, source: string | null) =>
+          attempt(sql`UPDATE agent_turns SET intent = ${value}, intent_source = ${source}`);
+        const intents = {
+          read: yield* intent("question", "read"),
+          option: yield* intent("change", "option"),
+          unread: yield* intent(null, "unread"),
+          unreadWithIntent: yield* intent("change", "unread"),
+          readWithoutIntent: yield* intent(null, "read"),
+          intentWithoutSource: yield* intent("change", null),
+          unknownIntent: yield* intent("chat", "read"),
+        };
+
+        let next = 0;
+        const land = (columns: {
+          readonly outcome: string;
+          readonly pushed?: string | null;
+          readonly pr?: number | null;
+          readonly checkpointRef?: string | null;
+          readonly checkpointSha?: string | null;
+        }) => {
+          next += 1;
+          const pr = columns.pr ?? null;
+          return attempt(sql`
+            INSERT INTO change_landings
+              (id, change_id, session_id, project_id, checkpoint_id, checkpoint_ref,
+               checkpoint_sha, remote_branch, pushed_sha, trigger, pull_request_number,
+               pull_request_url, pull_request_state, pr_observed_at, outcome, message, user_id)
+            VALUES (${`l-${next}`}, 'c-1', 's-1', 'p-1', 'cp-1',
+                    ${columns.checkpointRef === undefined ? "refs/mend/checkpoints/wt-1/0" : columns.checkpointRef},
+                    ${columns.checkpointSha === undefined ? "def" : columns.checkpointSha},
+                    'mend/one', ${columns.pushed === undefined ? "abc123" : columns.pushed},
+                    'manual', ${pr}, ${pr === null ? null : "https://github.com/acme/api/pull/1"},
+                    ${pr === null ? null : "open"}, ${pr === null ? null : new Date()},
+                    ${columns.outcome}, null, 'u-alice')`);
+        };
+        const landings = {
+          pushed: yield* land({ outcome: "pushed" }),
+          pullRequest: yield* land({ outcome: "pull-request", pr: 1 }),
+          refused: yield* land({ outcome: "refused", pushed: null }),
+          failedBeforePush: yield* land({ outcome: "failed", pushed: null }),
+          failedAfterPush: yield* land({ outcome: "failed" }),
+          noCheckpoint: yield* land({
+            outcome: "failed",
+            pushed: null,
+            checkpointRef: null,
+            checkpointSha: null,
+          }),
+          pushedWithoutSha: yield* land({ outcome: "pushed", pushed: null }),
+          pullRequestWithoutOne: yield* land({ outcome: "pull-request" }),
+          refusedButPushed: yield* land({ outcome: "refused" }),
+          halfACheckpoint: yield* land({ outcome: "pushed", checkpointSha: null }),
+          unknownOutcome: yield* land({ outcome: "merged" }),
+        };
+        const halfAPullRequest = yield* attempt(
+          sql`UPDATE change_landings SET pull_request_url = NULL WHERE id = 'l-2'`,
+        );
+
+        const count = sql<{ readonly n: number }>`SELECT count(*)::int AS n FROM change_landings`;
+        yield* sql`DELETE FROM checkpoints`;
+        yield* sql`DELETE FROM agent_sessions`;
+        const [kept] = yield* sql<{
+          readonly n: number;
+          readonly sessions: number;
+          readonly checkpoints: number;
+        }>`
+          SELECT count(*)::int AS n,
+                 count(session_id)::int AS sessions,
+                 count(checkpoint_id)::int AS checkpoints
+          FROM change_landings`;
+        yield* sql`DELETE FROM worktree_changes`;
+        const [afterChange] = yield* count;
+
+        return {
+          defaults,
+          projectChoice,
+          intents,
+          landings,
+          halfAPullRequest,
+          kept,
+          afterChange: afterChange?.n ?? -1,
+        };
+      }),
+    );
+    expect(result).toEqual({
+      defaults: {
+        project: "inherit",
+        session: null,
+        slack: true,
+        intent: null,
+        intent_source: null,
+      },
+      projectChoice: "refused",
+      intents: {
+        read: "inserted",
+        option: "inserted",
+        unread: "inserted",
+        unreadWithIntent: "refused",
+        readWithoutIntent: "refused",
+        intentWithoutSource: "refused",
+        unknownIntent: "refused",
+      },
+      landings: {
+        pushed: "inserted",
+        pullRequest: "inserted",
+        refused: "inserted",
+        failedBeforePush: "inserted",
+        failedAfterPush: "inserted",
+        noCheckpoint: "inserted",
+        pushedWithoutSha: "refused",
+        pullRequestWithoutOne: "refused",
+        refusedButPushed: "refused",
+        halfACheckpoint: "refused",
+        unknownOutcome: "refused",
+      },
+      halfAPullRequest: "refused",
+      // The record of a push outlives its session and its checkpoint, and goes with its change.
+      kept: { n: 6, sessions: 0, checkpoints: 0 },
+      afterChange: 0,
     });
   });
 });

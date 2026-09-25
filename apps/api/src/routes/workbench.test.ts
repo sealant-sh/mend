@@ -60,6 +60,7 @@ const project = (id: ProjectId, name: string): Project =>
     autoTour: "inherit",
     autoSuggest: "inherit",
     autoName: "inherit",
+    autoLand: "inherit",
     backgroundSessions: "inherit",
     gitAuthMode: "ambient",
     workspaceImage: null,

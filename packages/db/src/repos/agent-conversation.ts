@@ -17,6 +17,7 @@ import {
   type AgentInputAnswers,
   type AgentTurnStatus,
   type AgentTurnUsage,
+  type RequestIntentReading,
 } from "@mend/domain/workbench";
 import { and, asc, eq, gt, inArray, isNull, max, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
@@ -127,6 +128,14 @@ export class AgentConversationRepo extends Context.Service<
     readonly failTurn: (
       id: AgentTurnId,
       error: string,
+    ) => Effect.Effect<AgentTurn, AgentTurnNotFoundError>;
+    /**
+     * What the turn's request asked for (docs/adr/0007-landing.md), read once per turn and
+     * replaced whole when read again.
+     */
+    readonly setTurnIntent: (
+      id: AgentTurnId,
+      reading: RequestIntentReading,
     ) => Effect.Effect<AgentTurn, AgentTurnNotFoundError>;
     readonly completeTurn: (
       providerTurnId: string,
@@ -454,6 +463,21 @@ export const AgentConversationRepoLive: Layer.Layer<
       const [row] = yield* db
         .update(agentTurns)
         .set({ status: "failed", error, endedAt: new Date() })
+        .where(eq(agentTurns.id, id))
+        .returning()
+        .pipe(Effect.orDie);
+      if (row === undefined) return yield* new AgentTurnNotFoundError({ turnId: id });
+      yield* notify(row.sessionId);
+      return toTurn(row);
+    });
+
+    const setTurnIntent = Effect.fn("AgentConversationRepo.setTurnIntent")(function* (
+      id: AgentTurnId,
+      reading: RequestIntentReading,
+    ) {
+      const [row] = yield* db
+        .update(agentTurns)
+        .set({ intent: reading.intent, intentSource: reading.source })
         .where(eq(agentTurns.id, id))
         .returning()
         .pipe(Effect.orDie);
@@ -998,6 +1022,7 @@ export const AgentConversationRepoLive: Layer.Layer<
       setProviderTurnId,
       bindRunningProviderTurn,
       failTurn,
+      setTurnIntent,
       completeTurn,
       upsertItem,
       listItems,

@@ -79,6 +79,11 @@ export class ProjectsRepo extends Context.Service<
         readonly backgroundSessions: AutomationChoice;
       },
     ) => Effect.Effect<Project, ProjectNotFoundError>;
+    /** "Land when a turn completes" (docs/adr/0007-landing.md), over the Settings default. */
+    readonly setAutoLand: (
+      id: ProjectId,
+      choice: AutomationChoice,
+    ) => Effect.Effect<Project, ProjectNotFoundError>;
     /** How host-side git authenticates to this project's remote (docs/GIT-ACCESS.md). */
     readonly setGitAuthMode: (
       id: ProjectId,
@@ -245,6 +250,22 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
+      const setAutoLand = Effect.fn("ProjectsRepo.setAutoLand")(function* (
+        id: ProjectId,
+        choice: AutomationChoice,
+      ) {
+        const [row] = yield* db
+          .update(projects)
+          .set({ autoLand: choice, updatedAt: new Date() })
+          .where(eq(projects.id, id))
+          .returning()
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
+        const updated = toProject(row);
+        yield* notifyEvent(sql, { type: "project", projectId: id });
+        return updated;
+      });
+
       const setGitAuthMode = Effect.fn("ProjectsRepo.setGitAuthMode")(function* (
         id: ProjectId,
         mode: GitAuthMode,
@@ -355,6 +376,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         setVisibility,
         setCreatedBy,
         setAutomation,
+        setAutoLand,
         setGitAuthMode,
         setWorkspaceImage,
         setApplyDotfiles,

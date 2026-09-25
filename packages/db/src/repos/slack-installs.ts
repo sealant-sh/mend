@@ -105,6 +105,7 @@ const toInstall = (row: typeof slackInstalls.$inferSelect): SealedSlackInstall =
     showAgentMessages: row.showAgentMessages,
     showDiffs: row.showDiffs,
     externalChannels: row.externalChannels,
+    landAutomatically: row.landAutomatically,
   },
   installedByUserId: row.installedByUserId,
   createdAt: row.createdAt,

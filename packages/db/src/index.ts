@@ -9,6 +9,7 @@ export * from "./repos/agent-sessions.ts";
 export * from "./repos/brief-comments.ts";
 export * from "./repos/briefs.ts";
 export * from "./repos/capture-store.ts";
+export * from "./repos/change-landings.ts";
 export * from "./repos/changes.ts";
 export * from "./repos/checkpoints.ts";
 export * from "./repos/devices.ts";

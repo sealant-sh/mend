@@ -13,6 +13,7 @@ import {
   EFFORT_LEVELS,
   PERMISSION_MODES,
   SPEED_MODES,
+  ChangeLanding,
   Checkpoint,
   DiffDigest,
   ProjectClusterBinding,
@@ -352,6 +353,11 @@ export class SessionDetail extends Schema.Class<SessionDetail>("SessionDetail")(
   /** The WORKTREE's chain and change, denormalized here for pre-worktree clients. */
   checkpoints: Schema.Array(Checkpoint),
   change: Schema.NullOr(SessionChange),
+  /**
+   * The change's landings, newest first (docs/adr/0007-landing.md): what was pushed where, and
+   * the pull request as `gh` last reported it. Older servers omit it.
+   */
+  landings: Schema.Array(ChangeLanding).pipe(Schema.withDecodingDefaultKey(Effect.succeed([]))),
   /** Every process the session has held, oldest first — agents, shells, Service attempts. */
   processes: Schema.Array(SessionProcess),
   /** The agent process "the session's agent" means right now; null before the first launch. */

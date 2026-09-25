@@ -170,6 +170,13 @@ export class Project extends Schema.Class<Project>("Project")({
   /** Override of the Settings default: name the session from its first prompt. */
   autoName: AutomationChoice,
   /**
+   * Override of the Settings default: land the change when a turn completes (docs/adr/0007). `off`
+   * also stops sessions started from Slack.
+   */
+  autoLand: AutomationChoice.pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed("inherit" as const)),
+  ),
+  /**
    * Override of the Settings default: sessions keep running when every client
    * disconnects. Resolved by the launching CLI (flag → project → settings) —
    * only the client that would stop the session can enforce foreground.

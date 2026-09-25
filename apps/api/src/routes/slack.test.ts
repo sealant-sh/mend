@@ -128,6 +128,7 @@ const installsLayer = Layer.mock(SlackInstallsRepo, {
                 showAgentMessages: true,
                 showDiffs: false,
                 externalChannels: false,
+                landAutomatically: true,
               },
         createdAt: previous?.createdAt ?? NOW,
         updatedAt: NOW,
@@ -482,6 +483,7 @@ describe("the organization's Slack app (docs/adr/0006)", () => {
       showAgentMessages: true,
       showDiffs: true,
       externalChannels: false,
+      landAutomatically: true,
     };
     const patched = await call("alice", "PATCH", "/api/organization/slack/settings", { settings });
     expect(patched.status).toBe(200);
@@ -500,6 +502,9 @@ describe("the organization's Slack app (docs/adr/0006)", () => {
     expect(
       changedSettings(settings, { ...settings, externalChannels: true, showAgentMessages: false }),
     ).toEqual({ showAgentMessages: false, externalChannels: true });
+    expect(changedSettings(settings, { ...settings, landAutomatically: false })).toEqual({
+      landAutomatically: false,
+    });
   });
 
   it("hands an owner the manifest to paste, with no URL in it", async () => {

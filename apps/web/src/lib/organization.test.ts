@@ -57,6 +57,9 @@ describe("describeAudit for Slack (docs/adr/0006)", () => {
     expect(describeAudit(event("slack.settings_changed", { showDiffs: true }))).toBe(
       "set Slack show diffs true",
     );
+    expect(describeAudit(event("slack.settings_changed", { landAutomatically: false }))).toBe(
+      "set Slack land automatically false",
+    );
     expect(describeAudit(event("slack.link_created", { slackUserId: "U1" }, "Carol Chen"))).toBe(
       "linked Slack user U1 to Carol Chen",
     );

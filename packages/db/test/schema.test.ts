@@ -9,6 +9,7 @@ import {
   briefComments,
   briefVersions,
   briefs,
+  changeLandings,
   changePasses,
   changeTours,
   changes,
@@ -118,7 +119,7 @@ describe("Mend Drizzle schema", () => {
 
   it("maps project defaults for automation and user-scoped setup", () => {
     const projectColumns = getTableConfig(projects).columns;
-    for (const name of ["auto_tour", "auto_suggest", "auto_name"]) {
+    for (const name of ["auto_tour", "auto_suggest", "auto_name", "auto_land"]) {
       const column = projectColumns.find((candidate) => candidate.name === name);
       expect(column?.notNull, name).toBe(true);
       expect(column?.default, name).toBe("inherit");
@@ -177,6 +178,7 @@ describe("Mend Drizzle schema", () => {
       "dotfiles",
       "owner_user_id",
       "origin",
+      "auto_land",
       "shared_control_enabled_by_user_id",
       "shared_control_enabled_at",
       "has_transcript",
@@ -272,6 +274,12 @@ describe("Mend Drizzle schema", () => {
     expect(turnIndexes.get("agent_turns_session_provider_key")?.unique).toBe(true);
     expect(turnIndexes.get("agent_turns_one_running_process_idx")?.unique).toBe(true);
     expect(turnIndexes.get("agent_turns_one_running_process_idx")?.where).toBeDefined();
+    for (const name of ["intent", "intent_source"]) {
+      const column = getTableConfig(agentTurns).columns.find(
+        (candidate) => candidate.name === name,
+      );
+      expect(column?.notNull, name).toBe(false);
+    }
 
     const requestConfig = getTableConfig(agentRequests);
     expect(requestConfig.uniqueConstraints.map((constraint) => constraint.name)).toEqual([
@@ -365,6 +373,7 @@ describe("Mend Drizzle schema", () => {
       ["show_agent_messages", true],
       ["show_diffs", false],
       ["external_channels", false],
+      ["land_automatically", true],
     ] as const) {
       expect(installs.columns.find((column) => column.name === name)?.default, name).toBe(value);
     }
@@ -702,6 +711,47 @@ describe("Mend Drizzle schema", () => {
       "kind",
     ]);
     expect(config.foreignKeys[0]?.onDelete).toBe("cascade");
+  });
+
+  it("maps change landings: gone with the change, kept past their session and checkpoint", () => {
+    const config = getTableConfig(changeLandings);
+    expect(config.name).toBe("change_landings");
+    expect(config.columns.map((column) => column.name)).toEqual([
+      "id",
+      "change_id",
+      "session_id",
+      "project_id",
+      "checkpoint_id",
+      "checkpoint_ref",
+      "checkpoint_sha",
+      "commit_sha",
+      "remote_branch",
+      "pushed_sha",
+      "trigger",
+      "pull_request_number",
+      "pull_request_url",
+      "pull_request_state",
+      "pr_observed_at",
+      "outcome",
+      "message",
+      "user_id",
+      "created_at",
+    ]);
+    expect(
+      config.foreignKeys.map((foreignKey) => [
+        foreignKey.reference().columns[0]?.name,
+        foreignKey.onDelete,
+      ]),
+    ).toEqual([
+      ["change_id", "cascade"],
+      ["session_id", "set null"],
+      ["project_id", "cascade"],
+      ["checkpoint_id", "set null"],
+    ]);
+    expect(config.indexes.map((index) => index.config.name)).toEqual([
+      "change_landings_change_created_idx",
+      "change_landings_session_idx",
+    ]);
   });
 
   it("keeps destructive ownership and nullable evidence links explicit", () => {

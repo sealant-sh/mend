@@ -264,6 +264,7 @@ export const makeProject = (facts: {
     autoTour: "off",
     autoSuggest: "off",
     autoName: "off",
+    autoLand: "inherit",
     backgroundSessions: "off",
     gitAuthMode: "ambient",
     workspaceImage: null,
