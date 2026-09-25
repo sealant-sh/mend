@@ -1,5 +1,6 @@
 export * from "./dispatcher.ts";
 export * from "./review-prep.ts";
+export * from "./review-passes.ts";
 export * from "./summary-observe.ts";
 export * from "./capture-retention.ts";
 export * from "./dependency-install.ts";

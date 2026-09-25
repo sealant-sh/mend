@@ -450,7 +450,7 @@ const InferenceWorkersLive = Layer.effectDiscard(
     const recorded = (
       kind: "tour" | "read" | "suggest",
       changeId: ChangeId,
-      pass: Effect.Effect<number | void, InferenceError>,
+      pass: Effect.Effect<unknown, InferenceError>,
     ) =>
       passes.begin(changeId, kind).pipe(
         Effect.andThen(pass),

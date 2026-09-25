@@ -109,6 +109,7 @@ function ChangeReview({
   readonly sessionId: string;
 }) {
   const trpc = useTRPC();
+  const queryClient = useQueryClient();
   // Cache hit — the parent already ensured this query.
   const review = useSuspenseQuery(
     trpc.changes.reviewDiff.queryOptions({ id: changeId, sliceId }),
@@ -283,8 +284,12 @@ function ChangeReview({
           composing={composing}
           canCompose={files.length > 0}
           onCompose={() => {
+            // Only while the request is in flight: once it answers, the pass row (queued, then
+            // running) says what is happening, and a failure there is shown, not hidden.
             setComposing(true);
-            void composeTour(changeId).catch(() => setComposing(false));
+            void composeTour(changeId)
+              .then(() => queryClient.invalidateQueries(trpc.changes.passes.pathFilter()))
+              .finally(() => setComposing(false));
           }}
           onStartTour={() => goToStop(0)}
         />
@@ -442,8 +447,10 @@ function DescriptionCard({
   if (tour === null && !canCompose) return null;
 
   // In flight when the reviewer just clicked OR the recorded pass says so
-  // (the settle automation composes without a click on this page).
-  const inFlight = composing || tourPass?.status === "running";
+  // (the settle automation composes without a click on this page). Queued is
+  // its own fact: the pass waits for a worker, and nothing is composing yet.
+  const queued = tourPass?.status === "queued";
+  const inFlight = composing || queued || tourPass?.status === "running";
   const failedDetail =
     tourPass?.status === "failed" ? (tourPass.detail ?? "the pass failed") : null;
 
@@ -451,7 +458,14 @@ function DescriptionCard({
     <section className="mt-5 rounded-2xl bg-panel px-5 py-4 shadow-[var(--shadow-sm)]">
       {tour === null ? (
         <div className="flex flex-wrap items-center justify-between gap-3">
-          {inFlight ? (
+          {queued ? (
+            <p className="text-sm text-muted-foreground">
+              Description &amp; tour queued{" "}
+              <span className="font-mono text-xs text-faint">
+                · since {new Date(tourPass.startedAt).toLocaleTimeString()}
+              </span>
+            </p>
+          ) : inFlight ? (
             <p className="text-sm text-muted-foreground">Composing the description and tour…</p>
           ) : failedDetail !== null ? (
             <p className="text-sm text-danger">
@@ -470,11 +484,13 @@ function DescriptionCard({
             title="Compose a description and guided tour from the diff and the session record"
             className="rounded-xl border border-border bg-card px-3.5 py-1.5 font-sans text-xs font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-60"
           >
-            {inFlight
-              ? "Composing…"
-              : failedDetail !== null
-                ? "Retry"
-                : "Compose description & tour"}
+            {queued
+              ? "Queued"
+              : inFlight
+                ? "Composing…"
+                : failedDetail !== null
+                  ? "Retry"
+                  : "Compose description & tour"}
           </button>
         </div>
       ) : (
@@ -493,7 +509,7 @@ function DescriptionCard({
                   onClick={onCompose}
                   className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-60"
                 >
-                  {inFlight ? "Recomposing…" : "Recompose"}
+                  {queued ? "Queued" : inFlight ? "Recomposing…" : "Recompose"}
                 </button>
               )}
               <button
@@ -621,6 +637,13 @@ function PassOutcomes({ passes }: { readonly passes: ReadonlyArray<ChangePassDto
 function PassOutcomeLine({ pass }: { readonly pass: ChangePassDto }) {
   const label = pass.kind === "suggest" ? "suggestions" : "findings";
   const at = new Date(pass.finishedAt ?? pass.startedAt).toLocaleTimeString();
+  if (pass.status === "queued") {
+    return (
+      <p className="font-mono text-[11px] text-label">
+        {label} · queued {at}
+      </p>
+    );
+  }
   if (pass.status === "running") {
     return (
       <p className="font-mono text-[11px] text-label">
@@ -666,6 +689,7 @@ function SuggestButton({
 }) {
   const [queueing, setQueueing] = useState(false);
   const running = pass?.status === "running";
+  const queued = pass?.status === "queued";
   const request = () => {
     setQueueing(true);
     void suggestChange(changeId).finally(() => setQueueing(false));
@@ -673,12 +697,12 @@ function SuggestButton({
   return (
     <button
       type="button"
-      disabled={disabled || queueing || running}
+      disabled={disabled || queueing || running || queued}
       onClick={request}
       title="Draft replacement suggestions for concrete defects in this change; most changes produce none"
       className="rounded-xl border border-border bg-card px-4 py-2 font-sans text-sm font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-60"
     >
-      {running ? "Running…" : queueing ? "…" : "Suggest fixes"}
+      {running ? "Running…" : queued ? "Queued" : queueing ? "…" : "Suggest fixes"}
     </button>
   );
 }
@@ -692,6 +716,7 @@ function ReadChangeButton({
 }) {
   const [queueing, setQueueing] = useState(false);
   const running = pass?.status === "running";
+  const queued = pass?.status === "queued";
   const request = () => {
     setQueueing(true);
     void readChange(changeId).finally(() => setQueueing(false));
@@ -699,12 +724,12 @@ function ReadChangeButton({
   return (
     <button
       type="button"
-      disabled={queueing || running}
+      disabled={queueing || running || queued}
       onClick={request}
       title="Read the diff against the session record and draft evidence-linked findings"
       className="rounded-xl border border-border bg-card px-4 py-2 font-sans text-sm font-medium text-foreground shadow-xs transition-transform hover:-translate-y-0.5 disabled:opacity-60"
     >
-      {running ? "Running…" : queueing ? "…" : "Read this change"}
+      {running ? "Running…" : queued ? "Queued" : queueing ? "…" : "Read this change"}
     </button>
   );
 }

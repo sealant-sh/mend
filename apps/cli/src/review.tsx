@@ -143,7 +143,7 @@ interface ChangeTourDto {
 
 interface ChangePassDto {
   readonly kind: "tour" | "read" | "suggest";
-  readonly status: "running" | "completed" | "failed";
+  readonly status: "queued" | "running" | "completed" | "failed";
   readonly detail: string | null;
   readonly findings: number | null;
 }
@@ -272,6 +272,7 @@ const anchorOf = (comment: ReviewCommentDto): string =>
 
 const passFact = (pass: ChangePassDto): { readonly text: string; readonly color: string } => {
   const label = pass.kind === "suggest" ? "suggestions" : pass.kind;
+  if (pass.status === "queued") return { text: `${label} queued`, color: MUTED };
   if (pass.status === "running") return { text: `${label} running`, color: INK_2 };
   if (pass.status === "failed") return { text: `${label} failed`, color: ERROR };
   return {
