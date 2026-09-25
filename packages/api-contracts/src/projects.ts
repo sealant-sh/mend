@@ -22,9 +22,11 @@ import { ProjectFileListing, ProjectPullRequests } from "./settings.ts";
 import {
   AdoptProject,
   GitAccessView,
+  GitAuthorView,
   GitBridgeStatusView,
   GitKeyView,
   SetGitAccessRequest,
+  SetGitAuthorRequest,
   ProjectApplyDotfilesRequest,
   ProjectAutomationRequest,
   ProjectDetail,
@@ -212,6 +214,17 @@ export const gitKeysGroup = HttpApiGroup.make("gitKeys")
       error: StoreFailure,
     }),
   )
+  // The name and email this account's workspaces commit as; DELETE returns it to the account's
+  // registration name and email (docs/GIT-ACCESS.md, "Git author").
+  .add(HttpApiEndpoint.get("author", "/me/git-author", { success: GitAuthorView }))
+  .add(
+    HttpApiEndpoint.put("setAuthor", "/me/git-author", {
+      payload: SetGitAuthorRequest,
+      success: GitAuthorView,
+      error: SettingsFailure,
+    }),
+  )
+  .add(HttpApiEndpoint.delete("clearAuthor", "/me/git-author", { success: GitAuthorView }))
   .middleware(AuthMiddleware);
 
 /** Add a reference: clone `source` shallow into the store, pinned to `ref` when given. */

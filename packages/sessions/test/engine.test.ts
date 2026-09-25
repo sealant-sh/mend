@@ -39,6 +39,7 @@ import {
   SettingsRepo,
   SkillsRepo,
   UserDotfilesRepo,
+  UserGitAuthorRepo,
   type GitAccessMode,
   InstanceRolesRepo,
   UserGitAccessRepo,
@@ -85,6 +86,7 @@ import {
   ProjectEnvironmentVariable,
   ProjectSecretsSnapshot,
   RepositoryCloneUrl,
+  ResolvedGitAuthor,
   Service,
   ServiceForward,
   ServiceObservation,
@@ -630,6 +632,22 @@ const sessionSocketStubLayer = Layer.succeed(SessionSocketHost, {
 /** No machine key and no transport log in these worlds. */
 // Dotfiles resolve per owner; the engine fixtures run without any configured, so launches
 // carry no archives and stamp an empty record.
+/** The exec that writes the owner's git author as system config (`gitAuthorConfigArgv`). */
+const isGitAuthorExec = (argv: ReadonlyArray<string>): boolean => argv[3] === "mend-git-author";
+
+/** Every account's git author is its registration name and email unless a test says. */
+const gitAuthorStubLayer = Layer.succeed(UserGitAuthorRepo, {
+  resolve: (userId) =>
+    Effect.succeed(
+      new ResolvedGitAuthor({
+        name: `Account ${userId}`,
+        email: `${userId}@accounts.example`,
+        source: "account",
+      }),
+    ),
+  set: () => Effect.void,
+  clear: () => Effect.void,
+});
 const userDotfilesStubLayer = Layer.succeed(UserDotfilesRepo, {
   repository: () => Effect.succeed(null),
   setRepository: (_userId: string, value: DotfilesRepository | null) => Effect.succeed(value),
@@ -1869,6 +1887,8 @@ const withEngine = <A, E>(
     readonly skillsLayer?: Layer.Layer<SkillsRepo>;
     /** The owner's dotfiles; none configured unless a test brings its own. */
     readonly userDotfilesLayer?: Layer.Layer<UserDotfilesRepo>;
+    /** The owner's git author; `Account <id>` <`<id>@accounts.example`> unless a test says. */
+    readonly gitAuthorLayer?: Layer.Layer<UserGitAuthorRepo>;
     readonly dotfilesStoreLayer?: Layer.Layer<DotfilesStore>;
     /** Whose git access a dotfiles clone uses; the operator's host setup unless a test says. */
     readonly dotfilesClonerLayer?: Layer.Layer<DotfilesCloner>;
@@ -2000,6 +2020,7 @@ const withEngine = <A, E>(
         projectClusterBindingsLayer(options.clusterBindings ?? emptyClusterBindings),
         secretCipherStubLayer,
         options.userDotfilesLayer ?? userDotfilesStubLayer,
+        options.gitAuthorLayer ?? gitAuthorStubLayer,
         options.dotfilesStoreLayer ?? dotfilesStoreStubLayer,
         options.dotfilesClonerLayer ?? dotfilesClonerLayer(),
         options.skillsLayer ?? skillsStubLayer,
@@ -4775,6 +4796,7 @@ describe("SessionEngine", () => {
           secretCipherStubLayer,
           settingsLayer(),
           userDotfilesStubLayer,
+          gitAuthorStubLayer,
           dotfilesStoreStubLayer,
           dotfilesClonerLayer(),
           skillsStubLayer,
@@ -4794,6 +4816,99 @@ describe("SessionEngine", () => {
     const settled = world.sessions.get(orphan.id);
     expect(settled?.status).toBe("failed");
     expect(settled?.summary).toContain("restarted before the harness started");
+  });
+});
+
+describe("SessionEngine git author", () => {
+  const savedAuthor = Layer.succeed(UserGitAuthorRepo, {
+    resolve: (userId) =>
+      Effect.succeed(
+        userId === "user-fixture"
+          ? new ResolvedGitAuthor({
+              name: "Anna Example",
+              email: "anna@example.com",
+              source: "setting",
+            })
+          : null,
+      ),
+    set: () => Effect.void,
+    clear: () => Effect.void,
+  });
+
+  /** Launch one codex session; report what ran in the workspace before the harness opened. */
+  const launchAndWatch = async (captured: MemoryCaptureStore | undefined) => {
+    const created: CreateOptions[] = [];
+    const execCalls: ReadonlyArray<string>[] = [];
+    const beforeHarness: Array<ReadonlyArray<string>> = [];
+    let opened = false;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+        }),
+      {
+        ...(captured === undefined ? {} : { captured }),
+        gitAuthorLayer: savedAuthor,
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
+          undefined,
+          {
+            beforeOpen: () => {
+              if (opened) return;
+              opened = true;
+              beforeHarness.push(...execCalls);
+            },
+          },
+        ),
+      },
+    );
+    return { created, execCalls, beforeHarness };
+  };
+
+  it("writes the owner's author as system git config before the harness starts", async () => {
+    const { created, execCalls, beforeHarness } = await launchAndWatch(undefined);
+    expect(execCalls.filter(isGitAuthorExec)).toEqual([
+      [
+        "sh",
+        "-c",
+        'git config --system user.name "$1" && git config --system user.email "$2"',
+        "mend-git-author",
+        "Anna Example",
+        "anna@example.com",
+      ],
+    ]);
+    expect(beforeHarness.some(isGitAuthorExec)).toBe(true);
+    // Never as env: GIT_AUTHOR_* would override the owner's dotfiles and the repository's config.
+    const env = created[0]?.env ?? {};
+    expect(Object.keys(env).filter((name) => name.startsWith("GIT_"))).toEqual([]);
+  });
+
+  it("writes it in a captured workspace too, where nothing is mounted", async () => {
+    const { created, execCalls, beforeHarness } = await launchAndWatch(makeMemoryCaptureStore());
+    expect(created[0]?.source?.kind).toBe("capture");
+    expect(execCalls.filter(isGitAuthorExec).map((argv) => argv.slice(4))).toEqual([
+      ["Anna Example", "anna@example.com"],
+    ]);
+    expect(beforeHarness.some(isGitAuthorExec)).toBe(true);
   });
 });
 
@@ -4834,6 +4949,7 @@ describe("SessionEngine hot sessions", () => {
   it("claims a ready skeleton: provision adopts its id and launch skips the create", async () => {
     const created: CreateOptions[] = [];
     const spawned: ReadonlyArray<string>[] = [];
+    const execCalls: ReadonlyArray<string>[] = [];
     const pool = { entries: [] as Array<HotWorkspace>, removed: [] as Array<string> };
     await withEngine(
       (world, tmp) =>
@@ -4897,6 +5013,10 @@ describe("SessionEngine hot sessions", () => {
 
           expect(created).toHaveLength(0);
           expect(spawned.length).toBeGreaterThan(0);
+          // The claimed standby receives the owner's git author at claim, as a cold one does.
+          expect(execCalls.filter(isGitAuthorExec).map((argv) => argv.slice(4))).toEqual([
+            ["Account user-fixture", "user-fixture@accounts.example"],
+          ]);
           expect(pool.removed).toContain(skeletonId);
           const launched = world.sessions.get(session.id);
           expect(launched?.status).toBe("running");
@@ -4908,7 +5028,18 @@ describe("SessionEngine hot sessions", () => {
           });
         }),
       {
-        sealantLayer: sealantLaunchLayer(created, () => false, undefined, spawned),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          () => false,
+          undefined,
+          spawned,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
+        ),
         hotWorkspacesLayer: hotPoolLayer(pool),
       },
     );

@@ -32,6 +32,7 @@ import {
   type DotfilesRepositoryBody,
 } from "./dotfiles.ts";
 import { formatLoadReport, type EnvironmentLoadReportDto } from "./env.ts";
+import { gitAuthorLine, parseGitAuthorArgs, type GitAuthorDto } from "./git-author.ts";
 import {
   findCommand,
   manFileName,
@@ -2551,6 +2552,36 @@ const keysShare = async (config: CliConfig) => {
   });
 };
 
+/** `mend git-author`: show, set, or clear the name and email this account's workspaces commit as. */
+const gitAuthorCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const asked = parseGitAuthorArgs(args);
+  switch (asked.kind) {
+    case "usage":
+      return fail(usageOf("git-author"));
+    case "invalid":
+      return fail(asked.message);
+    case "show":
+      say(gitAuthorLine(await api<GitAuthorDto>(config, "GET", "/me/git-author")));
+      return;
+    case "clear": {
+      const author = await api<GitAuthorDto>(config, "DELETE", "/me/git-author");
+      say(`${green("✓")} git author · ${gitAuthorLine(author)}`);
+      return;
+    }
+    case "set": {
+      const author = await api<GitAuthorDto>(config, "PUT", "/me/git-author", {
+        name: asked.name,
+        email: asked.email,
+      });
+      say(`${green("✓")} git author · ${gitAuthorLine(author)}`);
+      say(
+        dim("  sessions launched from now on commit as this, unless their dotfiles say otherwise"),
+      );
+      return;
+    }
+  }
+};
+
 interface GitAccessDto {
   readonly mode: "mend-key" | "bridge";
   readonly key: GitKeyDto;
@@ -3081,6 +3112,7 @@ _mend() {
     'server:local server setup, lifecycle and upgrades'
     'uninstall:remove the server, local Mend files, or both'
     'keys:the machine Mend deploy key — init, show, share'
+    'git-author:the name and email your workspaces commit as'
     'skills:skill libraries — list, push'
     'accounts:your connected accounts on the platform'
     'pair:pair a phone or a second machine' 'doctor:read-only checklist of this setup'
@@ -3122,7 +3154,7 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach stop shell service server uninstall keys skills pair doctor continue resume rejoin land pull refresh projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach stop shell service server uninstall keys git-author skills pair doctor continue resume rejoin land pull refresh projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
@@ -4091,6 +4123,8 @@ const main = async () => {
       return uninstallCommand(config, rest);
     case "keys":
       return keysCommand(config, rest);
+    case "git-author":
+      return gitAuthorCommand(config, rest);
     case "dotfiles":
       return dotfilesCommand(config, rest);
     case "skills":
