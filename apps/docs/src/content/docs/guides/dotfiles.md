@@ -93,6 +93,9 @@ The clone uses your own [Git access](/guides/git-access/), never another account
   holds no HTTPS token for your account: a connected GitHub account's token stays with the platform
   and is never returned to the server. For a private repository, save its SSH URL instead.
 
+Mend refuses a URL that carries a token or password (`https://token@github.com/…`): it stores the
+URL and shows it on your sessions. A login name over SSH (`git@…`, `ssh://git@…`) is fine.
+
 These clones read none of the server's own Git or SSH setup: no credential helper, `.netrc`, SSH
 agent, SSH config or key files.
 

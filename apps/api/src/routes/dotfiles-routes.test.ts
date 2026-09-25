@@ -205,6 +205,16 @@ describe("PUT /api/dotfiles/repository", () => {
     expect(result.saved).toEqual([]);
   });
 
+  it("refuses a URL carrying a token before it clones anything, and saves nothing", async () => {
+    const result = await putRepository({ url: "https://ghp_token@github.com/acme/dots.git" });
+    expect(result.status).toBe(422);
+    expect(result.body).toMatchObject({
+      _tag: "SettingsFailure",
+      message: expect.stringMatching(/cannot carry a login or token/),
+    });
+    expect(result.saved).toEqual([]);
+  });
+
   it("refuses a subdirectory the repository does not have, and saves nothing", async () => {
     const url = originWith({ ".vimrc": "set nocompatible\n" });
     const result = await putRepository({ url, subdirectory: "dots" });

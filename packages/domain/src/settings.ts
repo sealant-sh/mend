@@ -116,8 +116,9 @@ export const DotfilesManager = Schema.Literals(["auto", "chezmoi", "stow", "copy
 export type DotfilesManager = typeof DotfilesManager.Type;
 
 /**
- * A dotfiles repository resolved by the Mend server at every session launch: cloned with the
- * server host's git/ssh setup, packed, and shipped into the workspace as an archive. No URL or
+ * A dotfiles repository resolved by the Mend server at every session launch: cloned with its
+ * owner's own git access (the server's setup only for a single-tenant operator), packed, and
+ * shipped into the workspace as an archive. No URL or
  * credential ever reaches the container, and every session gets the branch tip as of its launch.
  * Dotfiles are identity, not instance configuration — this rides per-user (see the dotfiles
  * store), never in the global settings document.
@@ -164,6 +165,28 @@ export const DotfilesRepository = Schema.Struct({
   bootstrap: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
 });
 export type DotfilesRepository = typeof DotfilesRepository.Type;
+
+/**
+ * Why a dotfiles repository URL may not be saved because it carries a secret, or null. Mend stores
+ * the URL, stamps it on every session and shows it there, so a token or password in it would be
+ * readable by anyone who can see those sessions. A login name alone is fine where it is only a
+ * name (`git@host:path`, `ssh://git@host/path`); over HTTP(S) the "user" is where tokens go.
+ * Malformed URLs are `repositoryCloneUrlIssue`'s to report, not this check's.
+ */
+export const dotfilesRepositoryUrlCredentialIssue = (url: string): string | null => {
+  if (!url.includes("://")) return null;
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return null;
+  }
+  const httpLogin =
+    (parsed.protocol === "http:" || parsed.protocol === "https:") && parsed.username !== "";
+  return parsed.password !== "" || httpLogin
+    ? "A dotfiles repository URL cannot carry a login or token: Mend stores it and shows it on your sessions. Save the URL without it; Mend clones with your own git access."
+    : null;
+};
 
 export const dotfilesRepositoriesEqual = (
   left: DotfilesRepository | null,
