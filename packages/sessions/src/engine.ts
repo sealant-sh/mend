@@ -173,6 +173,13 @@ import {
   type ConvertedNativeSession,
 } from "./native-convert.ts";
 import {
+  checkPastedImage,
+  PastedImageError,
+  pastedImageWorkspacePath,
+  type PlacedPastedImage,
+  storePastedImage as storePastedImageOnHost,
+} from "./pasted-images.ts";
+import {
   ProtocolHost,
   type ProtocolHostHooks,
   type ProtocolHostNotLiveError,
@@ -197,7 +204,14 @@ import {
   workspaceScriptStaging,
   type SessionSocketApi,
 } from "./session-socket.ts";
-import { materializeSkills, mergeSkillLibraries } from "./skills.ts";
+import {
+  MANAGED_SKILLS_MANIFEST,
+  materializeSkills,
+  mergeSkillLibraries,
+  parseManagedSkills,
+  planSkills,
+} from "./skills.ts";
+import { type WorkspaceFile, WorkspaceFileError, writeFilesExecs } from "./workspace-files.ts";
 
 /**
  * How a harness takes an opening prompt (the cross-harness handoff). The public SDK rejects argv
@@ -633,6 +647,23 @@ export class SessionEngine extends Context.Service<
       | DotfilesResolveError
       | ProtocolHarnessUnsupportedError
       | HandoffUnsupportedError
+    >;
+    /**
+     * Put one pasted image where the session's harness reads it, and answer the path the terminal
+     * pastes. Co-located: into the mounted harness home on this machine (before a launch too).
+     * Capture mode mounts nothing, so the bytes go into the live workspace's harness home through
+     * exec; with no live workspace the answer is `SessionNotLiveError`.
+     */
+    readonly storePastedImage: (
+      sessionId: SessionId,
+      bytes: Uint8Array,
+    ) => Effect.Effect<
+      PlacedPastedImage,
+      | SessionNotFoundError
+      | SessionNotLiveError
+      | ProjectNotFoundError
+      | PastedImageError
+      | SealantPlatformError
     >;
     /** Queue one authored turn on the live protocol process. */
     readonly submitTurn: (
@@ -4382,6 +4413,95 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
+      /** Write files into a live workspace through exec (`workspace-files.ts`), in order. */
+      const writeWorkspaceFiles = Effect.fn("SessionEngine.writeWorkspaceFiles")(function* (
+        workspace: Workspace,
+        files: ReadonlyArray<WorkspaceFile>,
+      ) {
+        for (const argv of writeFilesExecs(files)) {
+          const result = yield* sealant.exec(workspace, argv);
+          if (result.exitCode !== 0) {
+            return yield* new WorkspaceFileError({
+              path: argv.at(-1) ?? "",
+              message: `exit ${result.exitCode}: ${result.stderr.trim()}`,
+            });
+          }
+        }
+      });
+
+      /**
+       * Capture mode's skills delivery: the same plan the co-located store writes beside the
+       * mounted harness home (`skills.ts`), applied inside the live workspace's own. Best-effort
+       * like the host write: a launch never fails over its skills.
+       */
+      const deliverSkillsToWorkspace = Effect.fn("SessionEngine.deliverSkillsToWorkspace")(
+        function* (session: Session, project: Project, workspace: Workspace) {
+          const libraries = yield* skillsRepo.forLaunch(session.ownerUserId, project.id);
+          const bundles = mergeSkillLibraries(libraries, {
+            inheritUserSkills: project.inheritUserSkills,
+          });
+          const home = HARNESS_HOME_MOUNT_PATH;
+          const manifestPath = path.posix.join(home, MANAGED_SKILLS_MANIFEST);
+          const read = yield* sealant.exec(workspace, ["cat", manifestPath]);
+          const plan = planSkills(
+            parseManagedSkills(read.exitCode === 0 ? read.stdout : null),
+            bundles,
+          );
+          if (plan === null) return;
+          const inHome = (relative: string) => path.posix.join(home, relative);
+          const prepared = yield* sealant.exec(workspace, [
+            "sh",
+            "-c",
+            'set -e; dirs=$1; shift; for d in $dirs; do mkdir -p "$d"; done; rm -rf -- "$@"',
+            "mend-skills",
+            plan.directories.map(inHome).join(" "),
+            ...plan.remove.map(inHome),
+          ]);
+          if (prepared.exitCode !== 0) {
+            return yield* new WorkspaceFileError({
+              path: home,
+              message: `exit ${prepared.exitCode}: ${prepared.stderr.trim()}`,
+            });
+          }
+          const encoder = new TextEncoder();
+          yield* writeWorkspaceFiles(workspace, [
+            ...plan.files.map((file) => ({
+              path: inHome(file.path),
+              bytes: encoder.encode(file.contents),
+            })),
+            { path: manifestPath, bytes: encoder.encode(plan.manifest) },
+          ]);
+        },
+      );
+
+      const storePastedImage = Effect.fn("SessionEngine.storePastedImage")(function* (
+        sessionId: SessionId,
+        bytes: Uint8Array,
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        if (capture === null) {
+          const project = yield* projects.byId(session.projectId);
+          const stored = yield* storePastedImageOnHost(
+            harnessHomePathOf(project.storePath, session.id),
+            bytes,
+          );
+          return { path: stored.path, mediaType: stored.mediaType, bytes: stored.bytes };
+        }
+        const checked = yield* checkPastedImage(bytes);
+        const workspace = yield* workspaceForSupportingProcess(session);
+        const target = pastedImageWorkspacePath(checked.name);
+        yield* writeWorkspaceFiles(workspace, [{ path: target, bytes }]).pipe(
+          Effect.mapError(
+            (error) =>
+              new PastedImageError({
+                reason: "write-failed",
+                message: `Could not place the image in the workspace: ${error.message}`,
+              }),
+          ),
+        );
+        return { path: target, mediaType: checked.mediaType, bytes: bytes.byteLength };
+      });
+
       const launchInternal = Effect.fn("SessionEngine.launchInternal")(function* (
         sessionId: SessionId,
         argv: ReadonlyArray<string>,
@@ -4781,6 +4901,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* relocation.pipe(
             Effect.tapError(() => sealant.stopWorkspace(workspace).pipe(Effect.ignore)),
             settleOnFailure,
+          );
+          // Capture mode mounts nothing: the skills the co-located store writes beside the
+          // mounted harness home go into this workspace's own, now that it is in place.
+          yield* deliverSkillsToWorkspace(session, project, workspace).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("session engine: skills were not delivered to the workspace").pipe(
+                Effect.annotateLogs({ sessionId, message: error.message }),
+              ),
+            ),
           );
         }
         // State restore can rewrite $HOME, while a hot claim can freshen mend.toml after prewarm.
@@ -7683,6 +7812,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         restartService: (serviceId) => ownedByService(serviceId)(restartService(serviceId)),
         stopService: (serviceId) => ownedByService(serviceId)(stopService(serviceId)),
         stopServices: (sessionId) => owned(sessionId)(stopServices(sessionId)),
+        storePastedImage: (sessionId, bytes) =>
+          owned(sessionId)(storePastedImage(sessionId, bytes)),
         resumeSession: (sessionId, harness, fresh) =>
           owned(sessionId)(resumeSession(sessionId, harness, fresh)),
         handoff: (sessionId, to, start, author) =>

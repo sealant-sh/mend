@@ -4912,6 +4912,151 @@ describe("SessionEngine git author", () => {
   });
 });
 
+/** What the batched write execs put where: absolute workspace path → contents. */
+const writtenFiles = (execCalls: ReadonlyArray<ReadonlyArray<string>>): Map<string, Buffer> => {
+  const files = new Map<string, Buffer>();
+  for (const argv of execCalls) {
+    if (argv[3] !== "mend-write" || argv[2]?.includes("while") !== true) continue;
+    const pairs = argv.slice(4);
+    for (let index = 0; index + 1 < pairs.length; index += 2) {
+      files.set(pairs[index] ?? "", Buffer.from(pairs[index + 1] ?? "", "base64"));
+    }
+  }
+  return files;
+};
+
+describe("SessionEngine files into a captured workspace", () => {
+  const PNG = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0, 0, 0x0d]);
+
+  const captureLayer = (created: CreateOptions[], execCalls: ReadonlyArray<string>[]) =>
+    sealantLaunchLayer(
+      created,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      execCalls,
+    );
+
+  it("places a pasted image in the live workspace's harness home, not on this machine", async () => {
+    const created: CreateOptions[] = [];
+    const execCalls: ReadonlyArray<string>[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          // No workspace yet: nowhere a harness would read the file, so nothing is stored.
+          const early = yield* engine.storePastedImage(session.id, PNG).pipe(Effect.flip);
+          expect(early._tag).toBe("SessionNotLiveError");
+
+          yield* engine.launch(session.id, ["codex"]);
+          const placed = yield* engine.storePastedImage(session.id, PNG);
+          expect(placed.path).toMatch(/^\/workspace\/harness-home\/paste\/\d{8}-\d{6}-\w{4}\.png$/);
+          expect(placed.mediaType).toBe("image/png");
+          expect(new Uint8Array(writtenFiles(execCalls).get(placed.path) ?? [])).toEqual(PNG);
+          expect(
+            fs.existsSync(path.join(harnessHomePathOf(project.storePath, session.id), "paste")),
+          ).toBe(false);
+
+          const refused = yield* engine
+            .storePastedImage(session.id, new TextEncoder().encode("not an image"))
+            .pipe(Effect.flip);
+          expect(refused._tag).toBe("PastedImageError");
+        }),
+      { captured: makeMemoryCaptureStore(), sealantLayer: captureLayer(created, execCalls) },
+    );
+  });
+
+  it("keeps writing a co-located paste beside the store, launched or not", async () => {
+    await withEngine((world, tmp) =>
+      Effect.gen(function* () {
+        const project = yield* setup(tmp, world);
+        const engine = yield* SessionEngine;
+        const session = yield* engine.provision({
+          projectId: project.id,
+          harness: "codex",
+          label: null,
+          name: null,
+          ownerUserId: "user-fixture",
+          base: null,
+        });
+        const placed = yield* engine.storePastedImage(session.id, PNG);
+        const hostPath = path.join(
+          harnessHomePathOf(project.storePath, session.id),
+          "paste",
+          path.posix.basename(placed.path),
+        );
+        expect(new Uint8Array(fs.readFileSync(hostPath))).toEqual(PNG);
+      }),
+    );
+  });
+
+  it("delivers the owner's skills into a captured workspace's harness home", async () => {
+    const created: CreateOptions[] = [];
+    const execCalls: ReadonlyArray<string>[] = [];
+    const skillsLayer = skillsForLaunchLayer((ownerUserId, projectId) =>
+      Effect.succeed({
+        user: [
+          launchSkill("global", "owner global", {
+            scope: "user",
+            userId: ownerUserId ?? "missing-owner",
+          }),
+        ],
+        project: [launchSkill("local", "project local", { scope: "project", projectId })],
+      }),
+    );
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const written = writtenFiles(execCalls);
+          const text = (file: string) => written.get(file)?.toString("utf8");
+          for (const target of [".claude/skills", ".codex/skills"]) {
+            expect(text(`/workspace/harness-home/${target}/global/SKILL.md`)).toBe("owner global");
+            expect(text(`/workspace/harness-home/${target}/local/SKILL.md`)).toBe("project local");
+          }
+          expect(
+            JSON.parse(text("/workspace/harness-home/.mend-managed-skills.json") ?? "{}"),
+          ).toEqual({
+            ".claude/skills": ["global", "local"],
+            ".codex/skills": ["global", "local"],
+          });
+          // The bundles are rewritten whole: their old directories go first.
+          const prepared = execCalls.find((argv) => argv[3] === "mend-skills");
+          expect(prepared).toContain("/workspace/harness-home/.claude/skills/global");
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: captureLayer(created, execCalls),
+        skillsLayer,
+      },
+    );
+  });
+});
+
 describe("SessionEngine hot sessions", () => {
   /**
    * An in-memory pool with one skeleton. `claim` ignores the fingerprint — the test simulates a

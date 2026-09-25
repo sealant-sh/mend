@@ -135,12 +135,13 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
     }),
   )
   .add(
-    // An image for the terminal: stored beside the session, pasted as a path.
+    // An image for the terminal: stored where the session's harness reads it, pasted as a path.
     HttpApiEndpoint.post("pasteImage", "/sessions/:id/images", {
       params: { id: SessionId },
       payload: PastedImageUpload,
       success: PastedImage,
-      error: [NotFound, SessionNotSteerable, StoreFailure, PastedImageRejected],
+      // SessionNotLive: capture mode places the image in the live workspace, and there is none.
+      error: [NotFound, SessionNotSteerable, StoreFailure, PastedImageRejected, SessionNotLive],
     }),
   )
   .add(

@@ -143,7 +143,6 @@ import {
   WorktreeReads,
   type WorktreeReadError,
   stampLabel,
-  storePastedImage,
 } from "@mend/sessions";
 import {
   AgentBridge,
@@ -154,7 +153,6 @@ import {
   DotfilesStore,
   ChangeSummary,
   describeGitRemoteFailure,
-  harnessHomePathOf,
   referenceDirectory,
   resolveRemoteEnv,
   worktreePathOf,
@@ -2234,23 +2232,29 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
       Effect.gen(function* () {
         const steering = yield* SessionSteering;
         const session = yield* steering.session(params.id);
-        const projects = yield* ProjectsRepo;
-        const project = yield* projects
-          .byId(session.projectId)
-          .pipe(Effect.mapError(() => new NotFound({ id: session.projectId })));
         const bytes = Buffer.from(payload.contentsBase64, "base64");
-        const stored = yield* storePastedImage(
-          harnessHomePathOf(project.storePath, session.id),
-          new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
-        ).pipe(
-          Effect.catchTag("PastedImageError", (error) =>
-            Effect.fail(
-              error.reason === "write-failed"
-                ? new StoreFailure({ message: error.message })
-                : new PastedImageRejected({ message: error.message }),
-            ),
-          ),
-        );
+        // Co-located: the mounted harness home on this machine. Capture mode: the live
+        // workspace's own, through exec; no live workspace is `SessionNotLive`.
+        const stored = yield* (yield* SessionEngine)
+          .storePastedImage(
+            session.id,
+            new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength),
+          )
+          .pipe(
+            Effect.catchTags({
+              PastedImageError: (error) =>
+                Effect.fail(
+                  error.reason === "write-failed"
+                    ? new StoreFailure({ message: error.message })
+                    : new PastedImageRejected({ message: error.message }),
+                ),
+              SessionNotLiveError: () => Effect.fail(new SessionNotLive({ id: session.id })),
+              SessionNotFoundError: () => Effect.fail(new NotFound({ id: session.id })),
+              ProjectNotFoundError: () => Effect.fail(new NotFound({ id: session.projectId })),
+              SealantPlatformError: (error) =>
+                Effect.fail(new StoreFailure({ message: error.message })),
+            }),
+          );
         return new PastedImage({
           path: stored.path,
           mediaType: stored.mediaType,
