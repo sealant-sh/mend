@@ -180,7 +180,11 @@ const startBundle = async (supervisor) => {
       BETTER_AUTH_SECRET: configuration.betterAuthSecret,
     }),
   );
-  await supervisor.waitFor("Mend API", () => httpResponds("http://127.0.0.1:3101/api/health"));
+  // Alpha measured 83 s from Mend's start to its first health answer on 0.30.0, and the 90 s
+  // default then restarted the whole bundle before Mend could answer.
+  await supervisor.waitFor("Mend API", () => httpResponds("http://127.0.0.1:3101/api/health"), {
+    timeoutMs: 240_000,
+  });
   await supervisor.start(
     baseSpecification("mend-web", ["node", "/app/apps/web/.output/front.mjs"], {
       PORT: "3105",

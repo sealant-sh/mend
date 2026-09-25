@@ -17,6 +17,10 @@ export const PgLive = PgClient.layerConfig({
     Config.orElse(() => Config.succeed(Redacted.make("postgres://mend:mend@localhost:5434/mend"))),
   ),
   applicationName: Config.succeed("mend"),
+  // Mend shares its database server with Sealant, and a small hosted Postgres allows few
+  // connections (alpha's allows 50 for both). An unset cap is pg's default of 10 per pool, and
+  // Mend holds three pools; say it (docs/SELF-HOSTING.md, "Database connections").
+  maxConnections: Config.int("MEND_DATABASE_POOL_MAX").pipe(Config.withDefault(6)),
   transformResultNames: Config.succeed(Str.snakeToCamel),
   transformQueryNames: Config.succeed(Str.camelToSnake),
 });
