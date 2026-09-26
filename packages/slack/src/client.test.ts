@@ -97,14 +97,30 @@ describe("the live Slack client (over @slack/web-api)", () => {
     expect(JSON.stringify(result)).not.toContain("xoxb-secret");
   });
 
-  it("reads the app id off an app-level token's socket URL", async () => {
+  it("sends an app-level token as a bearer only, and names its app from auth.test", async () => {
+    // Slack refuses an app-level token in a form body with invalid_auth; the SDK's `token`
+    // argument puts it there. The socket URL's app_id is a hash, so the app comes from auth.test.
     const slack = fakeFetch({
       "apps.connections.open": [
-        { ok: true, url: "wss://wss-primary.slack.com/link/?ticket=abc&app_id=A123" },
+        {
+          ok: true,
+          url: "wss://wss-primary.slack.com/link/?ticket=abc&app_id=92bd9032a523d8dc9539ee49",
+        },
+      ],
+      "auth.test": [
+        { ok: true, team_id: "T1", team: "Acme", user_id: "U1", app_id: "A0C4HUQT6F7" },
       ],
     });
     const result = await run(makeSlackApi({ fetch: slack.fetch }).appsConnectionsOpen("xapp-1"));
-    expect(result).toMatchObject({ _tag: "Success", success: { appId: "A123" } });
+    expect(result).toMatchObject({ _tag: "Success", success: { appId: "A0C4HUQT6F7" } });
+    expect(slack.sent.map((request) => request.url.split("/").at(-1))).toEqual([
+      "apps.connections.open",
+      "auth.test",
+    ]);
+    for (const request of slack.sent) {
+      expect(request.authorization).toBe("Bearer xapp-1");
+      expect(request.body.has("token")).toBe(false);
+    }
   });
 
   it("reads a thread across pages, up to the mention, as thread messages", async () => {

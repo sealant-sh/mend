@@ -101,6 +101,8 @@ export const makeSlackSocket = (
           try: () => client.start(),
           catch: (cause) => slackApiError("apps.connections.open", cause),
         });
+        // `start` resolves once the socket is open; the SDK itself says so only at debug level.
+        yield* Effect.logInfo("slack socket: connected");
       }).pipe(
         // The callback runs in a fiber of its own: its failure reaches the stream only here.
         Effect.catch((error) => Queue.fail(queue, error)),

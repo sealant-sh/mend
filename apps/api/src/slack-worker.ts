@@ -71,6 +71,8 @@ export const makeSlackSockets = Effect.gen(function* () {
                 Stream.runForEach((envelope) => runner.receive(install.organizationId, envelope)),
               ),
           ),
+          // The socket's own lines (connected, ack not sent) carry the install they belong to.
+          Effect.annotateLogs(log),
           Effect.exit,
         );
         failures = Date.now() - openedAt >= HEALTHY_MS ? 0 : failures + 1;
