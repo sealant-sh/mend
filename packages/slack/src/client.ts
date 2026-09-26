@@ -6,7 +6,7 @@ import {
   WebAPIRequestError,
   WebClient,
 } from "@slack/web-api";
-import { Effect, Layer, Option, Schema } from "effect";
+import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import type { SlackBlock } from "./blocks.ts";
@@ -58,7 +58,10 @@ export interface SlackAuthIdentity {
 /** An app-level token's socket URL, from `apps.connections.open`, and the app it names. */
 export interface SlackConnection {
   readonly url: string;
-  /** The `app_id` query parameter Slack puts on the URL; null when it is absent. */
+  /**
+   * The app the token belongs to, as `auth.test` reports it for that token (`A0C4…`). The
+   * `app_id` on the socket URL is a hash, not this id, so it is never read.
+   */
   readonly appId: string | null;
 }
 
@@ -205,6 +208,9 @@ const AuthTestResult = Schema.Struct({
 
 const ConnectionsOpenResult = Schema.Struct({ url: Schema.String });
 
+/** `auth.test` for an app-level token names the app and no workspace: no team, no user. */
+const AppAuthTestResult = Schema.Struct({ app_id: OptionalString });
+
 const BotsInfoResult = Schema.Struct({
   bot: Schema.Struct({ id: Schema.String, app_id: OptionalString, name: Schema.String }),
 });
@@ -334,14 +340,13 @@ export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"]
     fetch: fetchFn,
   });
 
-  const call = <S extends Schema.Top>(
+  const decode = <S extends Schema.Top>(
     method: string,
-    token: string,
-    args: Record<string, unknown>,
     result: S,
+    request: Promise<unknown>,
   ): Effect.Effect<S["Type"], SlackApiError, S["DecodingServices"]> =>
     Effect.tryPromise({
-      try: () => client.apiCall(method, { ...args, token }),
+      try: () => request,
       catch: (cause) => slackApiError(method, cause),
     }).pipe(
       Effect.flatMap((answer) => Schema.decodeUnknownEffect(result)(answer)),
@@ -350,6 +355,38 @@ export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"]
           new SlackApiError({ method, code: "unexpected_response", message: error.message }),
         ),
       ),
+    );
+
+  const call = <S extends Schema.Top>(
+    method: string,
+    token: string,
+    args: Record<string, unknown>,
+    result: S,
+  ): Effect.Effect<S["Type"], SlackApiError, S["DecodingServices"]> =>
+    decode(method, result, client.apiCall(method, { ...args, token }));
+
+  /**
+   * A call with an app-level token (`xapp-`). `apiCall`'s `token` argument rides in the form body
+   * as well as the `Authorization` header, and Slack refuses an app-level token in a body with
+   * `invalid_auth`, so the token goes on a client of its own as a header only, exactly as the SDK's
+   * Socket Mode client does before it calls `apps.connections.open`.
+   */
+  const appLevelCall = <S extends Schema.Top>(
+    method: string,
+    appToken: string,
+    result: S,
+  ): Effect.Effect<S["Type"], SlackApiError, S["DecodingServices"]> =>
+    decode(
+      method,
+      result,
+      new WebClient(undefined, {
+        logLevel: LogLevel.WARN,
+        retryConfig: { retries: 2, factor: 2, minTimeout: 500, maxTimeout: 2_000 },
+        timeout: timeoutMs,
+        rejectRateLimitedCalls: false,
+        fetch: fetchFn,
+        headers: { Authorization: `Bearer ${appToken}` },
+      }).apiCall(method, {}),
     );
 
   return {
@@ -365,13 +402,12 @@ export const makeSlackApi = (options: SlackApiOptions = {}): SlackApi["Service"]
         })),
       ),
     appsConnectionsOpen: (appToken) =>
-      call("apps.connections.open", appToken, {}, ConnectionsOpenResult).pipe(
-        Effect.map((answer) => ({
-          url: answer.url,
-          appId: Option.getOrNull(
-            Option.liftThrowable(() => new URL(answer.url).searchParams.get("app_id"))(),
+      appLevelCall("apps.connections.open", appToken, ConnectionsOpenResult).pipe(
+        Effect.flatMap((answer) =>
+          appLevelCall("auth.test", appToken, AppAuthTestResult).pipe(
+            Effect.map((identity) => ({ url: answer.url, appId: present(identity.app_id) })),
           ),
-        })),
+        ),
       ),
     botsInfo: (token, botId) =>
       call("bots.info", token, { bot: botId }, BotsInfoResult).pipe(
