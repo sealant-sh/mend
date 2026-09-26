@@ -23,7 +23,9 @@ import {
   runClaudeLogin,
 } from "./claude-grant.ts";
 import { readClipboardImage } from "./clipboard.ts";
-import { doctorCommand } from "./doctor.ts";
+import { bundleCollectors, pathOf } from "./doctor-bundle-collectors.ts";
+import { doctorBundleCommand } from "./doctor-bundle.ts";
+import { doctorCommand, formatCheck, onPath, runChecks } from "./doctor.ts";
 import {
   dotfilesRepositoryFacts,
   parseDotfilesRepoArgs,
@@ -53,7 +55,8 @@ import {
   sessionShareCommand,
 } from "./organization.ts";
 import { type ApiCall, pairCommand, qrCommand } from "./pair.ts";
-import { nodeServerRuntime, serverCommand } from "./server-setup.ts";
+import { runServerProcess } from "./server-runtime.ts";
+import { nodeServerRuntime, readServerInstallationFacts, serverCommand } from "./server-setup.ts";
 import {
   isComposeFile,
   proposeFromCompose,
@@ -2129,19 +2132,73 @@ const accountLine = (account: ConnectedAccountDto): string => {
  * `mend accounts`: the signed-in user's own connected accounts on the platform — each person's
  * subscriptions, under their own Sealant user (docs/SEALANT-IDENTITY.md).
  */
-const accountsCommand = async (config: CliConfig) => {
-  const identity = await api<SealantIdentityDto>(config, "GET", "/me/sealant");
-  process.stdout.write(`platform user ${identity.sealantUserId}\n`);
+const accountsLines = async (config: CliConfig): Promise<ReadonlyArray<string>> => {
+  const identity = await request<SealantIdentityDto>(config, "GET", "/me/sealant");
   const providers: ReadonlyArray<ConnectedAccountProvider> = ["claude", "codex", "github"];
-  for (const provider of providers) {
-    const account =
-      identity.accounts.find((row) => row.provider === provider && row.name === "default") ??
-      identity.accounts.find((row) => row.provider === provider);
-    process.stdout.write(
-      `  ${account === undefined ? `${provider.padEnd(8)} not connected` : accountLine(account)}\n`,
-    );
-  }
+  return [
+    `platform user ${identity.sealantUserId}`,
+    ...providers.map((provider) => {
+      const account =
+        identity.accounts.find((row) => row.provider === provider && row.name === "default") ??
+        identity.accounts.find((row) => row.provider === provider);
+      return `  ${account === undefined ? `${provider.padEnd(8)} not connected` : accountLine(account)}`;
+    }),
+  ];
 };
+
+const accountsCommand = async (config: CliConfig) => {
+  let lines: ReadonlyArray<string>;
+  try {
+    lines = await accountsLines(config);
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
+  for (const line of lines) process.stdout.write(`${line}\n`);
+};
+
+/** The Claude grant Mend keeps for itself on this machine, for `mend doctor`. */
+const claudeGrantSecret = (): string | null => {
+  const read = readGrant(claudeGrantDir(mendCliHome()));
+  return read.kind === "missing" ? null : read.secret;
+};
+
+/**
+ * `mend doctor --bundle`: the collectors, wired to this process's server, credentials and
+ * environment. Every read the bundle makes is one an existing command already makes.
+ */
+const doctorBundle = (config: CliConfig, args: ReadonlyArray<string>) =>
+  doctorBundleCommand(args, {
+    defaultDir: path.join(mendCliHome(), "bundles"),
+    now: () => new Date(),
+    say,
+    warn: (line) => process.stderr.write(`${line}\n`),
+    collectors: (tail) =>
+      bundleCollectors({
+        cliVersion: cliVersion(),
+        serverUrl: config.url,
+        configuredUrl: config.configuredUrl,
+        deviceId: config.deviceId,
+        tokenSaved: config.token !== null,
+        env: process.env,
+        stdinTty: process.stdin.isTTY === true,
+        stdoutTty: process.stdout.isTTY === true,
+        get: (route) => request(config, "GET", route),
+        doctor: async () => {
+          const checks = await runChecks(config, {
+            localCredential,
+            claudeGrant: claudeGrantSecret,
+            onPath,
+          });
+          return `${checks.map((check) => formatCheck(check)).join("\n")}\n`;
+        },
+        accounts: async () => `${(await accountsLines(config)).join("\n")}\n`,
+        run: (command, commandArgs, timeoutMs) =>
+          runServerProcess(command, commandArgs, process.env, { timeoutMs }),
+        readServer: () => readServerInstallationFacts(nodeServerRuntime().configDir),
+        pathOf,
+        tail,
+      }),
+  });
 
 /** A moment as a person reads it beside a credential, or `unknown` when nothing said. */
 const minuteOrUnknown = (at: Date | null): string =>
@@ -4155,10 +4212,8 @@ const main = async () => {
     case "qr":
       return qrCommand(rest);
     case "doctor":
-      return doctorCommand(config, localCredential, () => {
-        const read = readGrant(claudeGrantDir(mendCliHome()));
-        return read.kind === "missing" ? null : read.secret;
-      });
+      if (rest.includes("--bundle")) return doctorBundle(config, rest);
+      return doctorCommand(config, localCredential, claudeGrantSecret);
     case "env":
       return envCommand(config, rest);
     case "ssh":

@@ -892,6 +892,49 @@ export const readServerInstallation = (
   }
 };
 
+/** The active generation as `mend doctor --bundle` reports it: config, compose, `.env` KEYS only. */
+export interface ServerInstallationFacts {
+  readonly directory: string;
+  readonly config: ServerConfig;
+  readonly compose: string;
+  readonly envKeys: ReadonlyArray<string>;
+}
+
+/** The KEY of every `KEY=value` line; comments and blanks are not keys. */
+export const envKeyNames = (env: string): ReadonlyArray<string> =>
+  env.split("\n").flatMap((line) => {
+    const match = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)=/.exec(line);
+    return match?.[1] === undefined ? [] : [match[1]];
+  });
+
+/**
+ * Read the active generation under the same lock every lifecycle command holds, then let go: the
+ * bundle's Docker reads run unlocked. Null when this machine has a store but no active
+ * generation; a missing store or a busy lock throws with the store's own words.
+ */
+export const readServerInstallationFacts = async (
+  configDir: string,
+): Promise<ServerInstallationFacts | null> => {
+  const result = await withServerStore(
+    configDir,
+    async (store) => {
+      const installation = storeValue(readServerInstallation(store));
+      if (installation === null) return null;
+      const generation = storeValue(store.readActive());
+      if (generation === null) return null;
+      return {
+        directory: installation.directory,
+        config: installation.config,
+        compose: generation.files.compose,
+        envKeys: envKeyNames(generation.files.env),
+      };
+    },
+    { create: false },
+  );
+  if (result._tag === "error") throw result.error;
+  return result.value;
+};
+
 const persistSetup = (
   store: ServerStore,
   config: ServerConfig,
