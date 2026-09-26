@@ -552,6 +552,9 @@ export const removeSlackLink = (slackUserId: string) =>
 export const unlinkSlack = () => orLogin(trpcClient.slack.unlink.mutate());
 export const setSlackDefaultProject = (projectId: ProjectDto["id"] | null) =>
   orLogin(trpcClient.slack.setDefaultProject.mutate({ projectId }));
+export const previewSlackLink = (code: string) =>
+  orLogin(trpcClient.slack.previewLink.mutate({ code }));
+
 export const confirmSlackLink = (code: string) =>
   orLogin(trpcClient.slack.confirmLink.mutate({ code }));
 

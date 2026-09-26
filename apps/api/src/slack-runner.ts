@@ -688,14 +688,18 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
           ),
         );
 
-    /** A reply only the requester sees, in the mention's thread. */
+    /**
+     * A reply only the requester sees: in the mention's thread when it has one, else in the
+     * channel. An ephemeral message posted into a thread nobody has replied to yet is accepted
+     * (`ok: true`) and shown nowhere — no reply count, no message in the channel.
+     */
     const whisper = (token: string, mention: SlackMention, message: SlackMessage) =>
       quietly(
         "chat.postEphemeral",
         slack.postEphemeral(token, {
           channel: mention.channelId,
           user: mention.slackUserId,
-          threadTs: replyThreadOf(mention),
+          ...(mention.threadTs === null ? {} : { threadTs: mention.threadTs }),
           text: message.text,
           blocks: message.blocks,
         }),

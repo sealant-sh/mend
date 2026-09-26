@@ -38,7 +38,9 @@ export const slackRouter = router({
   // The /slack/link/<code> page.
   previewLink: procedure
     .input(input(SlackLinkCodeRequest))
-    .query(({ ctx, input: payload }) => run(ctx, (api) => api.slack.previewLink({ payload }))),
+    // A mutation, though it reads: the browser sends its Origin with a POST, which the API requires
+    // of a cookie-bearing POST (the route is a POST to keep the code out of request lines).
+    .mutation(({ ctx, input: payload }) => run(ctx, (api) => api.slack.previewLink({ payload }))),
   confirmLink: procedure
     .input(input(SlackLinkCodeRequest))
     .mutation(({ ctx, input: payload }) => run(ctx, (api) => api.slack.confirmLink({ payload }))),

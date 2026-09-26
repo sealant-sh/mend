@@ -1140,6 +1140,19 @@ describe("the Slack runner, before anything starts", () => {
     expect(w.effects.some((entry) => entry.startsWith("start."))).toBe(false);
   });
 
+  it("answers a top-level mention's link prompt in the channel, not a thread nobody opened", async () => {
+    // Slack accepts an ephemeral message posted into a thread with no replies and shows it
+    // nowhere: no reply count, nothing in the channel. Found on alpha, 2026-09-26.
+    const w = world();
+    await w.deliver(
+      w.mention("Ev1", { user: "U-bob", text: "<@U-bot> hello", ts: "1700000200.000200" }),
+    );
+
+    const [prompt] = posts(w, "postEphemeral");
+    expect(prompt).toMatchObject({ user: "U-bob", channel: "C-general" });
+    expect(prompt).not.toHaveProperty("threadTs");
+  });
+
   it("answers help for anyone, linked or not", async () => {
     const w = world();
     await w.deliver(w.mention("Ev1", { user: "U-bob", text: "<@U-bot> help", ts: "1.1" }));
@@ -1836,13 +1849,13 @@ describe("the Slack runner, for `settings` and `list`", () => {
         },
       },
     ]);
-    expect(posts(w, "postEphemeral")).toMatchObject([
-      {
-        user: "U-alice",
-        threadTs: "1700000500.000100",
-        text: "channel default · billing-api · set by you",
-      },
+    const confirmations = posts(w, "postEphemeral");
+    expect(confirmations).toMatchObject([
+      { user: "U-alice", text: "channel default · billing-api · set by you" },
     ]);
+    // `@mend settings` was a top-level message: its answer shows in the channel, not in a
+    // thread nobody opened (where Slack accepts an ephemeral and shows it nowhere).
+    expect(confirmations[0]).not.toHaveProperty("threadTs");
   });
 
   it("clears it, refuses a private project in a channel, and asks the unlinked to link", async () => {

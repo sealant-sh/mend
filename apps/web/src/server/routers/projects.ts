@@ -41,7 +41,10 @@ export const projectsRouter = router({
     )
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) =>
-        api.projects.visibility({ params: { id: i.id }, payload: { visibility: i.visibility } }),
+        api.projects.visibility({
+          params: { id: i.id },
+          payload: new ProjectVisibilityRequest({ visibility: i.visibility }),
+        }),
       ),
     ),
   folders: procedure
@@ -59,7 +62,7 @@ export const projectsRouter = router({
       run(ctx, (api) =>
         api.folders.selectForProject({
           params: { id: i.id },
-          payload: { selections: i.selections },
+          payload: new SetProjectFoldersRequest({ selections: i.selections }),
         }),
       ),
     ),
