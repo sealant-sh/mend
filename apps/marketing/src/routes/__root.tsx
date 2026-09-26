@@ -4,7 +4,7 @@ import appCss from "../styles.css?url";
 
 const TITLE = "Mend — run your TUI agents anywhere you want";
 const DESCRIPTION =
-  "Run claude, codex, or any TUI coding agent in a recorded worktree on your own machine, and steer it from web or phone. Harness-agnostic sessions, one worktree per session, guided local review, a link per session. Open source, built on Sealant.";
+  "Run Claude Code, Codex, OpenCode, Pi or any command on hardware you own. Every session and worktree lives on one machine, each session isolated in its own worktree and workspace, with your dotfiles, secrets, dev servers and a live preview link for every change. Reach it from a terminal, VS Code, a browser, your phone or Slack. Open source, self-hosted.";
 
 export const Route = createRootRoute({
   head: () => ({

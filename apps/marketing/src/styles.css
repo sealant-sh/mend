@@ -42,68 +42,10 @@
   }
 }
 
-/* Low-contrast structural overlays — never decorative, always faint. */
-@utility mend-dot-grid {
-  background-image: radial-gradient(
-    circle at center,
-    color-mix(in oklab, var(--sw-ink) 7%, transparent) 1px,
-    transparent 1.4px
-  );
-  background-size: 22px 22px;
-  background-position: center;
-}
-
-@keyframes mend-status-pulse {
-  0%,
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
-  50% {
-    opacity: 0.4;
-    transform: scale(0.82);
-  }
-}
-
-@keyframes mend-rise {
-  from {
-    opacity: 0;
-    transform: translateY(14px);
-  }
-  to {
-    opacity: 1;
-    transform: translateY(0);
-  }
-}
-
-.mend-rise {
-  animation: mend-rise 0.62s cubic-bezier(0.22, 1, 0.36, 1) both;
-}
-
-.mend-status-running {
-  animation: mend-status-pulse 1.8s ease-in-out infinite;
-}
-
-/* The /4 tour: the active tab's cobalt line fills over the dwell time; the
-   variant advances on animationend. Reduced motion kills the animation, which
-   also stops the auto-advance — tabs then only change by hand. */
-@keyframes mend-tab-progress {
-  from {
-    width: 0%;
-  }
-  to {
-    width: 100%;
-  }
-}
-
-.mend-tab-progress {
-  animation: mend-tab-progress 7s linear both;
-}
-/* Terminal-demo primitives: a command types itself (steps() over ch width),
-   output lines reveal after a beat, an invisible timer paces the script.
-   Each chains to the next on animationend — no JS timers. Deliberately NOT
-   in the reduced-motion kill list: killing them would freeze the script's
-   state machine mid-scene; the motion itself is terminal-typical. */
+/* The typed harness word in `mend <harness>`: a width animation stepped per
+   character types it, an invisible timer holds it, and each chains to the
+   next on animationend, so there are no JS timers. The typing is left out of
+   the reduced-motion kill list: killing it would freeze the cycle mid-word. */
 @keyframes mend-type {
   from {
     width: 0;
@@ -121,19 +63,6 @@
   animation: mend-type var(--type-dur) steps(var(--type-steps)) both;
 }
 
-@keyframes mend-appear {
-  from {
-    opacity: 0;
-  }
-  to {
-    opacity: 1;
-  }
-}
-
-.mend-appear {
-  animation: mend-appear 0.18s ease-out both;
-}
-
 @keyframes mend-timer {
   from {
     opacity: 0;
@@ -145,26 +74,6 @@
 
 .mend-timer {
   animation: mend-timer var(--timer) linear both;
-}
-
-/* Character-strip animations: a stack of 1em-tall frames behind a 1em window.
-   The spinner loops its ten braille frames; the counter steps once per second
-   and its end resolves the spinner (animationend chains the script). */
-@keyframes mend-strip {
-  from {
-    transform: translateY(0);
-  }
-  to {
-    transform: translateY(var(--strip-shift));
-  }
-}
-
-.mend-strip-loop {
-  animation: mend-strip var(--strip-dur) steps(var(--strip-steps)) infinite;
-}
-
-.mend-strip-once {
-  animation: mend-strip var(--strip-dur) steps(var(--strip-steps)) both;
 }
 
 @keyframes mend-blink {
@@ -186,10 +95,38 @@
   html {
     scroll-behavior: auto;
   }
-  .mend-rise,
-  .mend-status-running,
-  .mend-tab-progress,
   .mend-caret {
     animation: none;
   }
+}
+
+/* A film grain over everything, and in dark mode a near-black ground with a
+   faint teal cast. Overriding --sw-canvas on the dark root keeps every surface
+   that paints the canvas on the same ground: the page behind an overscroll,
+   the sticky header, the ruled grid cells. The grain is SVG fractal noise;
+   contrast(0%) flattens its colour, so only its alpha varies and it adds
+   texture without tinting. It never takes pointer events. */
+.mend-grain-surface {
+  background-color: var(--sw-canvas);
+}
+
+html.dark {
+  --sw-canvas: oklch(0.1271 0.0074 184.24);
+}
+
+.mend-grain::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  pointer-events: none;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 600 600'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.65' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+  background-size: 1200px;
+  opacity: 0.07;
+  filter: contrast(0%);
+}
+
+/* The same grain reads much stronger on the pale canvas, so light runs it lower. */
+.dark .mend-grain::after {
+  opacity: 0.12;
 }
