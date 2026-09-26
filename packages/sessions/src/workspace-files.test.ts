@@ -5,7 +5,12 @@ import * as path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { WORKSPACE_EXEC_ARG_CHARS, writeFilesExecs } from "./workspace-files.ts";
+import {
+  parseHomeFileOutcomes,
+  WORKSPACE_EXEC_ARG_CHARS,
+  writeAbsentHomeFilesExecs,
+  writeFilesExecs,
+} from "./workspace-files.ts";
 
 /** Run the execs with a real `sh`, the way a workspace would, and fail on the first nonzero exit. */
 const runAll = (execs: ReadonlyArray<ReadonlyArray<string>>) => {
@@ -72,5 +77,84 @@ describe("writeFilesExecs", () => {
     }));
     // 40 000 bytes are 53 336 characters: two never share one exec.
     expect(writeFilesExecs(files)).toHaveLength(3);
+  });
+});
+
+const encode = (value: string) => new TextEncoder().encode(value);
+
+/** Run each exec with `HOME` at `home`; return what they printed, one outcome per file. */
+const runIn = (home: string, execs: ReadonlyArray<ReadonlyArray<string>>) =>
+  execs.flatMap(([command = "", ...args]) => {
+    const result = spawnSync(command, args, {
+      encoding: "utf8",
+      env: { ...process.env, HOME: home },
+    });
+    expect(result.stderr).toBe("");
+    expect(result.status).toBe(0);
+    return parseHomeFileOutcomes(result.stdout);
+  });
+
+describe("writeAbsentHomeFilesExecs", () => {
+  it("writes each absent file under $HOME, directories included, and reports it", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-home-files-"));
+    const execs = writeAbsentHomeFilesExecs([
+      { path: ".zshrc", bytes: encode("# a\n$(touch pwned)\n") },
+      { path: ".config/starship.toml", bytes: encode("add_newline = false\n") },
+    ]);
+    expect(execs).toHaveLength(1);
+    expect(runIn(home, execs)).toEqual([
+      { path: ".zshrc", outcome: "written" },
+      { path: ".config/starship.toml", outcome: "written" },
+    ]);
+    expect(fs.readFileSync(path.join(home, ".zshrc"), "utf8")).toBe("# a\n$(touch pwned)\n");
+    expect(fs.readFileSync(path.join(home, ".config/starship.toml"), "utf8")).toBe(
+      "add_newline = false\n",
+    );
+    expect(fs.statSync(path.join(home, ".zshrc")).mode & 0o777).toBe(0o644);
+    expect(fs.existsSync(path.join(home, "pwned"))).toBe(false);
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("leaves a file, a symlink (even a dangling one) and a directory where they are", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-home-files-"));
+    fs.writeFileSync(path.join(home, ".zshrc"), "mine\n");
+    fs.mkdirSync(path.join(home, ".config"), { mode: 0o700 });
+    fs.symlinkSync(
+      path.join(home, "dots", "starship.toml"),
+      path.join(home, ".config/starship.toml"),
+    );
+    fs.mkdirSync(path.join(home, ".bashrc"));
+    const execs = writeAbsentHomeFilesExecs([
+      { path: ".zshrc", bytes: encode("mend\n") },
+      { path: ".config/starship.toml", bytes: encode("mend\n") },
+      { path: ".bashrc", bytes: encode("mend\n") },
+      { path: ".config/new.toml", bytes: encode("new\n") },
+    ]);
+    expect(runIn(home, execs)).toEqual([
+      { path: ".zshrc", outcome: "present" },
+      { path: ".config/starship.toml", outcome: "present" },
+      { path: ".bashrc", outcome: "present" },
+      { path: ".config/new.toml", outcome: "written" },
+    ]);
+    expect(fs.readFileSync(path.join(home, ".zshrc"), "utf8")).toBe("mine\n");
+    expect(fs.lstatSync(path.join(home, ".config/starship.toml")).isSymbolicLink()).toBe(true);
+    expect(fs.existsSync(path.join(home, "dots"))).toBe(false);
+    expect(fs.statSync(path.join(home, ".bashrc")).isDirectory()).toBe(true);
+    // An existing directory keeps its own mode.
+    expect(fs.statSync(path.join(home, ".config")).mode & 0o777).toBe(0o700);
+    fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  it("splits files that would pass the argument budget across execs", () => {
+    const large = "x".repeat(WORKSPACE_EXEC_ARG_CHARS / 2);
+    const execs = writeAbsentHomeFilesExecs([
+      { path: "a", bytes: encode(large) },
+      { path: "b", bytes: encode(large) },
+    ]);
+    expect(execs).toHaveLength(2);
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-home-files-"));
+    expect(runIn(home, execs).map((outcome) => outcome.outcome)).toEqual(["written", "written"]);
+    expect(fs.readFileSync(path.join(home, "b"), "utf8")).toBe(large);
+    fs.rmSync(home, { recursive: true, force: true });
   });
 });

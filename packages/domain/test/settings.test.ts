@@ -9,7 +9,7 @@ import {
 } from "../src/settings.ts";
 
 describe("MendSettings workspace image profile", () => {
-  it("defaults new installs to the standard Arch developer image", () => {
+  it("defaults new installs to the standard Arch developer image, zsh and the shell profile's packages", () => {
     expect(defaultSettings.workspaceImage).toEqual({
       mode: "family",
       os: "arch",
@@ -26,8 +26,13 @@ describe("MendSettings workspace image profile", () => {
         "ripgrep",
         "fd",
         "fzf",
+        "starship",
+        "zsh-autosuggestions",
+        "zsh-syntax-highlighting",
+        "zsh-history-substring-search",
+        "direnv",
       ],
-      shell: "bash",
+      shell: "zsh",
       services: { docker: true },
     });
   });
@@ -56,8 +61,13 @@ describe("MendSettings workspace image profile", () => {
         "ripgrep",
         "fd",
         "fzf",
+        "starship",
+        "zsh-autosuggestions",
+        "zsh-syntax-highlighting",
+        "zsh-history-substring-search",
+        "direnv",
       ],
-      shell: "bash",
+      shell: "zsh",
       services: { docker: true },
     });
   });

@@ -141,6 +141,41 @@ repositories need a controlled environment.
 Dotfiles apply only to managed OS-family images. Mend skips them for custom images, where the base
 image and setup commands own the home environment.
 
+## Default shell profile
+
+For people who bring no shell setup of their own, Mend writes a default zsh profile when a session
+launches into a zsh workspace:
+
+- `~/.zshrc`: 100,000 lines of shared history in `~/.local/state/zsh/history`, `autocd`, menu
+  completion that ignores case, fzf key bindings and completion, the direnv hook, the
+  `zsh-autosuggestions`, `zsh-syntax-highlighting` and `zsh-history-substring-search` plugins (up
+  and down arrows search history for what you typed), and a starship prompt. It defines no aliases.
+- `~/.config/starship.toml`: a one-line prompt with the directory, OS, Git branch and status, and
+  the Node.js, Rust, Go and PHP versions.
+
+Your dotfiles win. Mend writes each file only when nothing is at that path after your dotfiles have
+been applied, and never overwrites one. A dotfiles `.zshrc` keeps Mend's `starship.toml` beside it
+unless your dotfiles bring that file too.
+
+The profile expects these packages, which the default workspace environment includes:
+
+```text
+fzf
+starship
+direnv
+zsh-autosuggestions
+zsh-syntax-highlighting
+zsh-history-substring-search
+```
+
+Every block checks for its tool or plugin file first, so on an image without one of them that block
+is skipped and the shell still starts. The plugins are looked up where the Arch, Fedora, Ubuntu and
+Nix packages install them.
+
+The profile applies only to managed OS-family images whose shell is zsh, not to `bash`, `fish` or
+custom images. To turn it off for a project, open its **Setup** page and turn **Default shell
+profile** off under **Dotfiles**. A workspace that is already running keeps the files it has.
+
 ## Launch timing
 
 Dotfiles resolve at workspace creation. A running workspace does not change when you sync another

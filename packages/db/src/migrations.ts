@@ -2143,6 +2143,17 @@ const organizationSettingsMigration = Effect.gen(function* () {
     )`;
 });
 
+/**
+ * The default shell profile (packages/sessions/src/shell-profile.ts): on for every project,
+ * existing ones included; a project turns it off in Setup.
+ */
+const projectDefaultShellProfileMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE projects
+      ADD COLUMN IF NOT EXISTS default_shell_profile boolean NOT NULL DEFAULT true`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2215,4 +2226,5 @@ export const migrations = {
   "0068_user_git_author": userGitAuthorMigration,
   "0069_landing_adoption": landingAdoptionMigration,
   "0070_organization_settings": organizationSettingsMigration,
+  "0071_project_default_shell_profile": projectDefaultShellProfileMigration,
 };

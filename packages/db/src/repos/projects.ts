@@ -101,6 +101,11 @@ export class ProjectsRepo extends Context.Service<
       id: ProjectId,
       applyDotfiles: boolean,
     ) => Effect.Effect<Project, ProjectNotFoundError>;
+    /** Whether a zsh launch writes Mend's default shell profile where no file exists. */
+    readonly setDefaultShellProfile: (
+      id: ProjectId,
+      defaultShellProfile: boolean,
+    ) => Effect.Effect<Project, ProjectNotFoundError>;
     /** Whether sessions inherit the launching user's skills in addition to project skills. */
     readonly setInheritUserSkills: (
       id: ProjectId,
@@ -322,6 +327,22 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         return updated;
       });
 
+      const setDefaultShellProfile = Effect.fn("ProjectsRepo.setDefaultShellProfile")(function* (
+        id: ProjectId,
+        defaultShellProfile: boolean,
+      ) {
+        const [row] = yield* db
+          .update(projects)
+          .set({ defaultShellProfile, updatedAt: new Date() })
+          .where(eq(projects.id, id))
+          .returning()
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* new ProjectNotFoundError({ projectId: id });
+        const updated = toProject(row);
+        yield* notifyEvent(sql, { type: "project", projectId: id });
+        return updated;
+      });
+
       const setInheritUserSkills = Effect.fn("ProjectsRepo.setInheritUserSkills")(function* (
         id: ProjectId,
         inheritUserSkills: boolean,
@@ -388,6 +409,7 @@ export const ProjectsRepoLive: Layer.Layer<ProjectsRepo, never, MendDB | PgClien
         setGitAuthMode,
         setWorkspaceImage,
         setApplyDotfiles,
+        setDefaultShellProfile,
         setInheritUserSkills,
         setHotSessions,
         setInstallCommand,

@@ -426,6 +426,8 @@ export const projects = pgTable(
     workspaceImage: jsonbOf(WorkspaceImage),
     // Whether sessions here receive the launching user's dotfiles.
     applyDotfiles: boolean().notNull().default(true),
+    // Whether a zsh launch writes Mend's default shell profile where dotfiles left no file (0071).
+    defaultShellProfile: boolean().notNull().default(true),
     // Whether sessions inherit the launching user's skills. Project skills are always included.
     inheritUserSkills: boolean().notNull().default(true),
     // Aggregate revision of the project's environment variables; bumped by every mutation under the

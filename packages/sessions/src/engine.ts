@@ -205,6 +205,7 @@ import {
   workspaceScriptStaging,
   type SessionSocketApi,
 } from "./session-socket.ts";
+import { loadShellProfile, shellProfileApplies } from "./shell-profile.ts";
 import {
   MANAGED_SKILLS_MANIFEST,
   materializeSkills,
@@ -212,7 +213,13 @@ import {
   parseManagedSkills,
   planSkills,
 } from "./skills.ts";
-import { type WorkspaceFile, WorkspaceFileError, writeFilesExecs } from "./workspace-files.ts";
+import {
+  parseHomeFileOutcomes,
+  type WorkspaceFile,
+  WorkspaceFileError,
+  writeAbsentHomeFilesExecs,
+  writeFilesExecs,
+} from "./workspace-files.ts";
 import { WorkspaceGitHooks } from "./workspace-git-hooks.ts";
 
 /** Whether a push's ref commands created or moved a branch (not a tag, not a delete). */
@@ -4446,6 +4453,49 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * Mend's default shell profile (`shell-profile.ts`): `~/.zshrc` and
+       * `~/.config/starship.toml`, each written only where nothing exists, so a file the owner's
+       * dotfiles put there at boot stays. Only for a managed image whose shell is zsh, and only
+       * while the project leaves the switch on. Best-effort like the git author: a shell without
+       * it still works, and the warning says why.
+       */
+      const applyDefaultShellProfile = Effect.fn("SessionEngine.applyDefaultShellProfile")(
+        function* (
+          sessionId: SessionId,
+          workspace: Workspace,
+          project: Project,
+          workspaceImage: WorkspaceImage,
+        ) {
+          if (!shellProfileApplies(project, workspaceImage)) return;
+          yield* Effect.gen(function* () {
+            const files = yield* loadShellProfile;
+            for (const argv of writeAbsentHomeFilesExecs(files)) {
+              const result = yield* sealant.exec(workspace, argv);
+              if (result.exitCode !== 0) {
+                return yield* new WorkspaceFileError({
+                  path: "~",
+                  message: `exit ${result.exitCode}: ${result.stderr.trim()}`,
+                });
+              }
+              for (const file of parseHomeFileOutcomes(result.stdout)) {
+                yield* Effect.logInfo(
+                  file.outcome === "written"
+                    ? "session engine: default shell profile · written"
+                    : "session engine: default shell profile · a file exists, left as it is",
+                ).pipe(Effect.annotateLogs({ sessionId, path: `~/${file.path}` }));
+              }
+            }
+          }).pipe(
+            Effect.catch((error) =>
+              Effect.logWarning(
+                "session engine: the default shell profile was not written in the workspace",
+              ).pipe(Effect.annotateLogs({ sessionId, message: error.message })),
+            ),
+          );
+        },
+      );
+
+      /**
        * Capture mode's skills delivery: the same plan the co-located store writes beside the
        * mounted harness home (`skills.ts`), applied inside the live workspace's own. Best-effort
        * like the host write: a launch never fails over its skills.
@@ -4730,6 +4780,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // claimed standby alike: system config, written before the harness starts, so dotfiles
         // and repository config still decide over it.
         yield* applyGitAuthor(sessionId, workspace, ownerUserId);
+        // Mend's default shell profile, beside it and for the same launches: dotfiles were
+        // applied at boot, so only a file they left absent is written.
+        yield* applyDefaultShellProfile(sessionId, workspace, project, workspaceImage);
 
         // A relaunch restores the ORIGINAL harness's saved state into the
         // fresh workspace before anything starts — for a same-harness launch

@@ -377,6 +377,9 @@ const CASES: ReadonlyArray<AccessCase> = [
   project("project-manage", "PUT", "/apply-dotfiles", { applyDotfiles: true })(
     "projects.applyDotfiles",
   ),
+  project("project-manage", "PUT", "/default-shell-profile", { defaultShellProfile: true })(
+    "projects.defaultShellProfile",
+  ),
   project("project-manage", "PUT", "/inherit-user-skills", { inheritUserSkills: true })(
     "projects.inheritUserSkills",
   ),

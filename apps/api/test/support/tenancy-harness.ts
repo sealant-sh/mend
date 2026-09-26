@@ -273,6 +273,7 @@ export const makeProject = (facts: {
     gitAuthMode: "ambient",
     workspaceImage: null,
     applyDotfiles: false,
+    defaultShellProfile: true,
     inheritUserSkills: false,
     hotSessions: 0,
     installCommand: null,

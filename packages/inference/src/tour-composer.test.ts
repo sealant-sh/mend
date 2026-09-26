@@ -57,6 +57,7 @@ const project = new Project({
   gitAuthMode: "ambient",
   workspaceImage: null,
   applyDotfiles: true,
+  defaultShellProfile: true,
   inheritUserSkills: true,
   hotSessions: 0,
   installCommand: null,

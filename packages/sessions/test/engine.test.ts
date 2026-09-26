@@ -1387,6 +1387,7 @@ const projectsLayer = (world: World) =>
     setCreatedBy: () => Effect.die("not in test"),
     setWorkspaceImage: () => Effect.die("not in test"),
     setApplyDotfiles: () => Effect.die("not in test"),
+    setDefaultShellProfile: () => Effect.die("not in test"),
     setInheritUserSkills: () => Effect.die("not in test"),
     setHotSessions: () => Effect.die("not in test"),
     setInstallCommand: () => Effect.die("not in test"),
@@ -1869,6 +1870,7 @@ const setup = (tmp: string, world: World) => {
       gitAuthMode: "ambient",
       workspaceImage: null,
       applyDotfiles: true,
+      defaultShellProfile: true,
       inheritUserSkills: true,
       hotSessions: 0,
       installCommand: null,
@@ -3841,7 +3843,8 @@ describe("SessionEngine", () => {
           const resumed = yield* engine.resumeSession(session.id, "shell");
           expect(resumed.status).toBe("running");
           const live = [...world.processes.values()].filter((process) => process.exitedAt === null);
-          expect(live.map((process) => process.argv)).toEqual([["bash"]]);
+          // The default image's login shell (zsh), not the `bash` request sentinel.
+          expect(live.map((process) => process.argv)).toEqual([["zsh"]]);
         }),
       { sealantLayer: sealantLaunchLayer(created) },
     );
@@ -3875,7 +3878,8 @@ describe("SessionEngine", () => {
           // The session keeps its harness identity — only this launch is a shell.
           expect(resumed.harness).toBe("codex");
           const live = [...world.processes.values()].filter((process) => process.exitedAt === null);
-          expect(live.map((process) => process.argv)).toEqual([["bash"]]);
+          // The default image's login shell (zsh), not the `bash` request sentinel.
+          expect(live.map((process) => process.argv)).toEqual([["zsh"]]);
         }),
       { sealantLayer: sealantLaunchLayer(created) },
     );
@@ -4999,6 +5003,173 @@ describe("SessionEngine git author", () => {
   });
 });
 
+/** The exec that writes Mend's default shell profile where no file exists (`shell-profile.ts`). */
+const isShellProfileExec = (argv: ReadonlyArray<string>): boolean =>
+  argv[3] === "mend-write-absent";
+
+/** A default shell profile file as shipped (`packages/sessions/src/shell-profile/`). */
+const shellProfileAsset = (name: string) =>
+  fs.readFileSync(new URL(`../src/shell-profile/${name}`, import.meta.url), "utf8");
+
+describe("SessionEngine default shell profile", () => {
+  const ZSHRC = shellProfileAsset("zshrc");
+  const STARSHIP = shellProfileAsset("starship.toml");
+  const DOTFILES_ZSHRC = "# from the owner's dotfiles\n";
+  const DOTFILES_STARSHIP = "add_newline = true\n";
+
+  /**
+   * Launch one codex session into `image`, with the workspace's `$HOME` a real directory: the
+   * profile exec runs its own script there, as the workspace would, and every other exec answers
+   * exit 0. `dotfiles` puts what the owner's dotfiles left in `$HOME` before the launch; the
+   * result reads both profile paths back after it.
+   */
+  const launchWithHome = async (options: {
+    readonly captured?: MemoryCaptureStore;
+    readonly image?: LaunchImage;
+    readonly defaultShellProfile?: boolean;
+    readonly dotfiles?: { readonly zshrc?: boolean; readonly starship?: boolean };
+  }) => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-shell-profile-home-"));
+    if (options.dotfiles?.zshrc === true) {
+      fs.writeFileSync(path.join(home, ".zshrc"), DOTFILES_ZSHRC);
+    }
+    if (options.dotfiles?.starship === true) {
+      fs.mkdirSync(path.join(home, ".config"));
+      fs.writeFileSync(path.join(home, ".config", "starship.toml"), DOTFILES_STARSHIP);
+    }
+    const created: CreateOptions[] = [];
+    const execCalls: ReadonlyArray<string>[] = [];
+    const beforeHarness: Array<ReadonlyArray<string>> = [];
+    let opened = false;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          if (options.defaultShellProfile !== undefined) {
+            world.projects.set(
+              project.id,
+              new Project({ ...project, defaultShellProfile: options.defaultShellProfile }),
+            );
+          }
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+        }),
+      {
+        ...(options.captured === undefined ? {} : { captured: options.captured }),
+        workspaceImage: options.image ?? ZSH_FAMILY,
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
+          undefined,
+          {
+            beforeOpen: () => {
+              if (opened) return;
+              opened = true;
+              beforeHarness.push(...execCalls);
+            },
+            exec: (argv) => {
+              if (!isShellProfileExec(argv)) return undefined;
+              const result = spawnSync("sh", argv.slice(1), {
+                env: { ...process.env, HOME: home },
+                encoding: "utf8",
+              });
+              return {
+                exitCode: result.status ?? 1,
+                stdout: result.stdout,
+                stderr: result.stderr,
+              };
+            },
+          },
+        ),
+      },
+    );
+    const read = (relative: string) => {
+      const file = path.join(home, relative);
+      return fs.existsSync(file) ? fs.readFileSync(file, "utf8") : null;
+    };
+    const zshrc = read(".zshrc");
+    const starship = read(".config/starship.toml");
+    fs.rmSync(home, { recursive: true, force: true });
+    return {
+      created,
+      profileExecs: execCalls.filter(isShellProfileExec),
+      beforeHarness,
+      zshrc,
+      starship,
+    };
+  };
+
+  it("writes ~/.zshrc and ~/.config/starship.toml into a zsh workspace with neither, before the harness starts", async () => {
+    const launched = await launchWithHome({});
+    expect(launched.profileExecs).toHaveLength(1);
+    expect(launched.beforeHarness.some(isShellProfileExec)).toBe(true);
+    expect(launched.zshrc).toBe(ZSHRC);
+    expect(launched.starship).toBe(STARSHIP);
+  });
+
+  it("leaves each file the owner's dotfiles put there and writes only the other", async () => {
+    const keptZshrc = await launchWithHome({ dotfiles: { zshrc: true } });
+    expect(keptZshrc.zshrc).toBe(DOTFILES_ZSHRC);
+    expect(keptZshrc.starship).toBe(STARSHIP);
+
+    const keptStarship = await launchWithHome({ dotfiles: { starship: true } });
+    expect(keptStarship.zshrc).toBe(ZSHRC);
+    expect(keptStarship.starship).toBe(DOTFILES_STARSHIP);
+  });
+
+  it("does the same in a captured workspace, where nothing is mounted", async () => {
+    const fresh = await launchWithHome({ captured: makeMemoryCaptureStore() });
+    expect(fresh.created[0]?.source?.kind).toBe("capture");
+    expect(fresh.beforeHarness.some(isShellProfileExec)).toBe(true);
+    expect(fresh.zshrc).toBe(ZSHRC);
+    expect(fresh.starship).toBe(STARSHIP);
+
+    const kept = await launchWithHome({
+      captured: makeMemoryCaptureStore(),
+      dotfiles: { zshrc: true, starship: true },
+    });
+    expect(kept.profileExecs).toHaveLength(1);
+    expect(kept.zshrc).toBe(DOTFILES_ZSHRC);
+    expect(kept.starship).toBe(DOTFILES_STARSHIP);
+  });
+
+  it("writes nothing when the project turns it off", async () => {
+    for (const captured of [undefined, makeMemoryCaptureStore()]) {
+      const launched = await launchWithHome({
+        ...(captured === undefined ? {} : { captured }),
+        defaultShellProfile: false,
+      });
+      expect(launched.profileExecs).toEqual([]);
+      expect(launched.zshrc).toBeNull();
+      expect(launched.starship).toBeNull();
+    }
+  });
+
+  it("writes nothing into a bash family image or a custom base", async () => {
+    for (const image of [{ ...ZSH_FAMILY, shell: "bash" as const }, CUSTOM_BASE]) {
+      const launched = await launchWithHome({ image });
+      expect(launched.profileExecs).toEqual([]);
+      expect(launched.zshrc).toBeNull();
+    }
+  });
+});
+
 /** What the batched write execs put where: absolute workspace path → contents. */
 const writtenFiles = (execCalls: ReadonlyArray<ReadonlyArray<string>>): Map<string, Buffer> => {
   const files = new Map<string, Buffer>();
@@ -5249,6 +5420,8 @@ describe("SessionEngine hot sessions", () => {
           expect(execCalls.filter(isGitAuthorExec).map((argv) => argv.slice(4))).toEqual([
             ["Account user-fixture", "user-fixture@accounts.example"],
           ]);
+          // …and the default shell profile: the standby's image is the zsh default.
+          expect(execCalls.filter(isShellProfileExec)).toHaveLength(1);
           expect(pool.removed).toContain(skeletonId);
           const launched = world.sessions.get(session.id);
           expect(launched?.status).toBe("running");
@@ -6302,6 +6475,7 @@ describe("SessionEngine capture mode", () => {
               gitAuthMode: "ambient",
               workspaceImage: null,
               applyDotfiles: true,
+              defaultShellProfile: true,
               inheritUserSkills: true,
               hotSessions: 0,
               installCommand: null,
@@ -7740,6 +7914,7 @@ describe("SessionEngine capture mode", () => {
     const created: Array<CreateOptions> = [];
     const spawned: ReadonlyArray<string>[] = [];
     const flushed: string[] = [];
+    const execCalls: ReadonlyArray<string>[] = [];
     const memory = makeMemoryCaptureStore();
     const pool = memoryHotPool();
     /** What sealantd's `capture.replan` does: `plan.get` with no worktree named, as the executor. */
@@ -7820,6 +7995,8 @@ describe("SessionEngine capture mode", () => {
 
           executor = session.id;
           yield* engine.launch(session.id, ["codex"]);
+          // The claimed standby gets the default shell profile, as a cold executor does.
+          expect(execCalls.filter(isShellProfileExec)).toHaveLength(1);
           // The standby's workspace was adopted, not created again, and re-planned exactly once:
           // the channel answered the claimed worktree, the claim's epoch and the head (capture 0).
           expect(spawned.length).toBeGreaterThan(0);
@@ -7927,7 +8104,7 @@ describe("SessionEngine capture mode", () => {
           undefined,
           undefined,
           undefined,
-          undefined,
+          execCalls,
           undefined,
           { flushed, replan },
         ),
