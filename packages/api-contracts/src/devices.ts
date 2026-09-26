@@ -32,6 +32,22 @@ export class DeviceView extends Schema.Class<DeviceView>("DeviceView")({
   lastUsedAt: Schema.NullOr(Schema.String),
 }) {}
 
+/** What the owner types to mint a token by hand: what to call the device, and what it is. */
+export class MintDeviceRequest extends Schema.Class<MintDeviceRequest>("MintDeviceRequest")({
+  name: Schema.String,
+  platform: Schema.Literals(DEVICE_PLATFORMS),
+}) {}
+
+/**
+ * A token minted by hand, shown once, with the configured origins a device can
+ * reach this machine at. Mend keeps only its sha256, like a claimed pairing.
+ */
+export class MintedDevice extends Schema.Class<MintedDevice>("MintedDevice")({
+  token: Schema.String,
+  urls: Schema.Array(PublicOrigin),
+  device: DeviceView,
+}) {}
+
 /** A freshly minted pairing code plus the explicitly configured public origins. */
 export class PairingView extends Schema.Class<PairingView>("PairingView")({
   code: Schema.String,
@@ -164,6 +180,12 @@ export class CliAuthDenied extends Schema.TaggedErrorClass<CliAuthDenied>()(
  */
 export const userDevicesGroup = HttpApiGroup.make("userDevices")
   .add(HttpApiEndpoint.post("createPairing", "/me/devices/pairings", { success: PairingView }))
+  .add(
+    HttpApiEndpoint.post("create", "/me/devices", {
+      payload: MintDeviceRequest,
+      success: MintedDevice,
+    }),
+  )
   .add(HttpApiEndpoint.get("list", "/me/devices", { success: Schema.Array(DeviceView) }))
   .add(
     HttpApiEndpoint.delete("revoke", "/me/devices/:id", {

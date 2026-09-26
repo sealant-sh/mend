@@ -81,6 +81,11 @@ URLs; it cannot introduce an address the server does not know:
 mend pair --url http://mend-host.example:3105
 ```
 
+A device that cannot scan or type a code in time can take a token minted by hand: in the web app,
+Settings → Devices → **Mint a token by hand** names the device and shows its token once, beside the
+configured origins. In the mobile app it goes under Settings → Advanced as the server URL and bearer
+token. Mend keeps only the token's hash.
+
 After a successful claim, the new device receives its own revocable token. Revoke devices from
 **Settings**.
 

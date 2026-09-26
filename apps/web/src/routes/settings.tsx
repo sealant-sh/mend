@@ -11,6 +11,7 @@ import {
 } from "#/components/organization-defaults";
 import { OrganizationSettings } from "#/components/organization-settings";
 import {
+  MintedToken,
   PairingQr,
   formatDay,
   formatLastUsed,
@@ -25,6 +26,7 @@ import { WorkspaceEnvironmentEditor } from "#/components/workspace-environment-e
 import {
   connectAccount,
   createPairing,
+  mintDevice,
   deleteDotfilesSnapshot,
   disconnectAccount,
   postDotfilesSnapshot,
@@ -33,6 +35,7 @@ import {
   revokeDevice,
   saveWorkspaceEnvironment,
   type DotfilesDto,
+  type MintedDeviceDto,
   type PairingDto,
   type ConnectedAccountDto,
   type ConnectedAccountProviderDto,
@@ -1015,6 +1018,8 @@ function DevicesPanel() {
   ).data;
   const refreshDevices = () => queryClient.invalidateQueries(trpc.devices.list.queryFilter());
   const [minted, setMinted] = useState<{ pairing: PairingDto; svg: string } | null>(null);
+  const [byHand, setByHand] = useState<{ name: string } | null>(null);
+  const [mintedToken, setMintedToken] = useState<MintedDeviceDto | null>(null);
   const [pending, setPending] = useState(false);
   const [confirming, setConfirming] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -1025,6 +1030,20 @@ function DevicesPanel() {
     setError(null);
     void mintPairing()
       .then((made) => setMinted(made))
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
+      .finally(() => setPending(false));
+  };
+
+  const mintByHand = (name: string) => {
+    setPending(true);
+    setError(null);
+    void mintDevice({ name, platform: "other" })
+      .then((made) => {
+        setByHand(null);
+        setMinted(null);
+        setMintedToken(made);
+        return refreshDevices();
+      })
       .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : String(cause)))
       .finally(() => setPending(false));
   };
@@ -1061,13 +1080,71 @@ function DevicesPanel() {
           <button
             type="button"
             disabled={pending}
-            onClick={startPairing}
+            onClick={() => {
+              setMintedToken(null);
+              setByHand({ name: "" });
+            }}
+            className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground disabled:opacity-50"
+          >
+            Mint a token by hand
+          </button>
+          <button
+            type="button"
+            disabled={pending}
+            onClick={() => {
+              setByHand(null);
+              setMintedToken(null);
+              startPairing();
+            }}
             className="rounded-xl bg-primary px-3.5 py-1.5 font-sans text-xs font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:opacity-50"
           >
             {pending ? "Minting…" : "Pair a phone"}
           </button>
         </div>
       </div>
+
+      {byHand === null ? null : (
+        <form
+          className="mt-5 flex flex-wrap items-end gap-3 border-t border-[var(--sw-faint-rule)] pt-5"
+          onSubmit={(event) => {
+            event.preventDefault();
+            mintByHand(byHand.name.trim() === "" ? "by hand" : byHand.name.trim());
+          }}
+        >
+          <label className="flex min-w-[24ch] flex-1 flex-col gap-1">
+            <span className="font-mono text-[12px] text-label">device name</span>
+            <input
+              value={byHand.name}
+              onChange={(event) => setByHand({ name: event.target.value })}
+              placeholder="App Review iPhone"
+              autoFocus
+              className="rounded-lg border border-border bg-card px-2.5 py-1.5 font-sans text-[13px] text-foreground shadow-xs outline-none focus:border-input"
+            />
+          </label>
+          <button
+            type="submit"
+            disabled={pending}
+            className="rounded-xl bg-primary px-3.5 py-1.5 font-sans text-xs font-medium text-primary-foreground shadow-[var(--shadow-cobalt)] transition-transform hover:-translate-y-0.5 disabled:opacity-50"
+          >
+            {pending ? "Minting…" : "Mint"}
+          </button>
+          <button
+            type="button"
+            onClick={() => setByHand(null)}
+            className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+          >
+            Cancel
+          </button>
+          <p className="basis-full text-[13px] leading-relaxed text-muted-foreground">
+            For a device that cannot scan a code. The token is shown once and typed into the app by
+            hand; it appears in the list below like any paired device.
+          </p>
+        </form>
+      )}
+
+      {mintedToken === null ? null : (
+        <MintedToken minted={mintedToken} onDismiss={() => setMintedToken(null)} />
+      )}
 
       {minted === null ? null : (
         <PairingQr
