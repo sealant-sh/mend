@@ -149,6 +149,7 @@ export type PullRequestStepDto = LandingReportDto["pullRequest"];
 
 export type DeviceDto = Outputs["devices"]["list"][number];
 export type PairingDto = Outputs["devices"]["createPairing"];
+export type MintedDeviceDto = Outputs["devices"]["create"];
 
 /** The SSE payloads from /api/events — pointers, never data (outside the typed contract). */
 export type MendEventDto =
@@ -589,6 +590,10 @@ export const deleteFolderFile = (id: FolderDto["id"], path: string) =>
 
 export const createPairing = () => orLogin(trpcClient.devices.createPairing.mutate());
 export const revokeDevice = (id: string) => orLogin(trpcClient.devices.revoke.mutate({ id }));
+export const mintDevice = (input: {
+  readonly name: string;
+  readonly platform: "ios" | "android" | "web" | "desktop" | "other";
+}) => orLogin(trpcClient.devices.create.mutate(input));
 export const approveCliAuth = (code: string) =>
   orLogin(trpcClient.devices.approveCliAuth.mutate({ code }));
 export const denyCliAuth = (code: string) =>
