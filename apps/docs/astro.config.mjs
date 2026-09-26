@@ -32,7 +32,22 @@ export default defineConfig({
             { label: "Connect provider accounts", slug: "guides/provider-accounts" },
             { label: "Adopt a project", slug: "getting-started/adopt-project" },
             { label: "Start a session", slug: "getting-started/first-session" },
+          ],
+        },
+        {
+          label: "Work with changes",
+          items: [
+            { label: "Review a change", slug: "guides/review-a-change" },
+            { label: "Land a change", slug: "guides/land-a-change" },
+          ],
+        },
+        {
+          label: "Clients",
+          items: [
             { label: "Work from another device", slug: "guides/remote-access" },
+            { label: "Terminal dashboard", slug: "clients/terminal" },
+            { label: "Desktop app", slug: "clients/desktop" },
+            { label: "VS Code extension", slug: "clients/vscode" },
           ],
         },
         {
@@ -44,13 +59,27 @@ export default defineConfig({
             { label: "Dotfiles", slug: "guides/dotfiles" },
             { label: "Git access", slug: "guides/git-access" },
             { label: "Development services", slug: "guides/services" },
+            { label: "Skills", slug: "guides/skills" },
           ],
+        },
+        {
+          label: "Organizations",
+          items: [
+            { label: "Organizations and members", slug: "organizations/overview" },
+            { label: "Folders", slug: "organizations/folders" },
+          ],
+        },
+        {
+          label: "Integrations",
+          items: [{ label: "Slack", slug: "integrations/slack" }],
         },
         {
           label: "Operate",
           items: [
             { label: "Deploy on a VPS", slug: "operate/deploy-vps" },
             { label: "Deploy on Kubernetes", slug: "operate/deploy-kubernetes" },
+            { label: "Exposure and the public gate", slug: "operate/exposure" },
+            { label: "Troubleshooting", slug: "operate/troubleshooting" },
           ],
         },
         {
@@ -65,6 +94,7 @@ export default defineConfig({
           items: [
             { label: "Feature status", slug: "reference/feature-status" },
             { label: "CLI", slug: "reference/cli" },
+            { label: "Server environment", slug: "reference/server-environment" },
             { label: "Product language", slug: "reference/product-language" },
           ],
         },
