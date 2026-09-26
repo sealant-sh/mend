@@ -217,7 +217,7 @@ export function MarketingPage() {
 
         {/* FAQ: ruled rows, the answer opens under its question. */}
         <section id="faq" className={`border-t-2 ${RULE}`}>
-          <BigHead title="FAQ" note="What people usually ask first." />
+          <BigHead title="FAQ" />
           <div className={`border-t ${RULE}`}>
             {FAQ.map((entry, i) => (
               <details
@@ -297,18 +297,13 @@ export function MarketingPage() {
   );
 }
 
-/** A section's opening: a giant title on the left, an optional note on the right. */
-function BigHead({ title, note }: { title: string; note?: string }) {
+/** A section's opening: its title, set giant. */
+function BigHead({ title }: { title: string }) {
   return (
-    <div className="flex flex-wrap items-end justify-between gap-x-10 gap-y-4 px-5 pt-14 pb-8 sm:px-8 sm:pt-20">
+    <div className="px-5 pt-14 pb-8 sm:px-8 sm:pt-20">
       <h2 className="font-display text-[15vw] leading-[0.8] font-bold tracking-[-0.055em] lg:text-[9rem]">
         {title}
       </h2>
-      {note === undefined ? null : (
-        <p className="max-w-[20rem] pb-2 font-mono text-[12px] leading-relaxed tracking-[0.06em] uppercase">
-          {note}
-        </p>
-      )}
     </div>
   );
 }
