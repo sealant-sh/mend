@@ -16,21 +16,23 @@ flowchart LR
   browser[Browser]
   desktop[Desktop app]
   phone[Phone]
-  private[Private network]
+  slack[Slack]
+  path[Loopback, private network, or TLS edge]
   mend[Mend machine]
   session[Session workspace]
 
-  laptop --> private
-  browser --> private
-  desktop --> private
-  phone --> private
-  private --> mend --> session
+  laptop --> path
+  browser --> path
+  desktop --> path
+  phone --> path
+  mend -. Socket Mode, outbound .-> slack
+  path --> mend --> session
 ```
 
-## Use a private network
+## Reach the server
 
-Web and workspace SSH bind to localhost by default. Exposing them on a private network is an
-explicit choice when you set up the server:
+Web and workspace SSH bind to localhost by default. Binding another address is an explicit choice
+when you set up the server:
 
 ```sh
 mend server setup --bind 0.0.0.0 --url http://mend-host:3105 \
@@ -44,18 +46,22 @@ create that account before anyone else can reach the server. Read
 
 A private network is one way to run Mend, not a requirement. Mend authenticates and authorizes every
 request itself, so a tailnet or a VPN in front of it is an extra gate you may add. Tell Mend how it
-is reached with `MEND_EXPOSURE`: `loopback` (the default), `private` (a network you control
-admission to) or `public`. A server cannot observe what is published in front of it, so this is your
-statement, and `mend doctor` reports what Mend observes beside it.
+is reached with `MEND_EXPOSURE`: `loopback`, `private` (the default: a network you control admission
+to) or `public`. A server cannot observe what is published in front of it, so this is your
+statement, and `mend doctor` reports what Mend observes beside it. `mend server setup` cannot set
+`MEND_EXPOSURE`, so a setup install runs as `private`.
 
 Plain HTTP on a LAN does not protect credentials from that network. Beyond the machine, put a TLS
-edge in front of Mend: the bundle ships an opt-in Caddy overlay, and the chart can render an Ingress
-to the web tier. Test a terminal through it before relying on it.
+edge in front of Mend. The repository has an opt-in Caddy overlay
+(`deploy/docker/compose.edge.yaml`) that `mend server setup` does not install, and the Kubernetes
+chart can render an Ingress to the web tier. Test a terminal through the edge before relying on it.
 
 `public` refuses to start while an item of the public exposure gate that Mend can observe is open.
-`mend operator exposure` lists them. The last items are yours to verify, an independent security
-reassessment of the exact release among them. Nothing in Mend says an instance is fit to expose to
-the Internet.
+`mend operator exposure` lists them. Two items, `core-private` and `edge-tls`, no build can observe;
+once you have verified one from outside, name it in `MEND_EXPOSURE_DECLARED` and the report shows it
+as declared. An independent security reassessment of the exact release is also yours to record.
+Nothing in Mend says an instance is fit to expose to the Internet. Read
+[Exposure](/operate/exposure/).
 
 ## Pair another device
 
@@ -78,8 +84,9 @@ mend pair --url http://mend-host.example:3105
 After a successful claim, the new device receives its own revocable token. Revoke devices from
 **Settings**.
 
-Current device tokens have normal authenticated API access. Read-only and control scopes are planned
-but not enforced yet. Pair only devices and users you trust with the whole Mend instance.
+A device token acts as your account, inside your organization, with everything your account may do.
+Read-only and control scopes are planned but not enforced yet. Pair only devices you trust with your
+account.
 
 ## Reattach from another terminal
 
@@ -93,12 +100,20 @@ mend attach <session-id-prefix>
 
 `mend attach` replays the terminal stream and then follows live output. Press `Ctrl+]` to detach
 without stopping the process. Set `MEND_DETACH_KEY=none` when an outer terminal multiplexer owns the
-detach key.
+detach key. Attaching takes back a session that was picked up on the phone. Read
+[Terminal dashboard and attach](/clients/terminal/).
+
+Only a session's owner steers it: sends turns, answers approvals, interrupts, and types in its
+terminal. Others who can see the project follow it read-only unless the owner turns on shared
+control, which lets them steer with the owner's provider logins and Git access. Read
+[Organizations](/organizations/overview/).
 
 ## Browser and desktop
 
 The web and desktop apps list the same projects and sessions. Use them to follow output, open a
-shell, inspect project setup, and review the current change.
+shell, inspect project setup, and review the current change. The desktop app can also resume a
+session, hand it between terminal and protocol modes, and land its change; it has no published
+release. Read [Desktop app](/clients/desktop/).
 
 A browser disconnect does not define session status. Reopening the session resumes from its durable
 record.
@@ -111,6 +126,12 @@ published yet.
 Mobile is for steering, terminal access, session status, development-service links, and review. It
 is not intended to replace a full editor.
 
+## Slack
+
+An organization can connect its own Slack app. A Slack thread then starts sessions and receives
+their reports, and `@mend <prompt>` in the thread sends a follow-up. Read
+[Slack](/integrations/slack/).
+
 ## Development services
 
 A declared Service runs in a session workspace. `mend service connect <name>` binds its port on your
@@ -119,6 +140,12 @@ network exposure. `mend service run` opens that tunnel by itself when the CLI po
 non-loopback server URL; against a server reached at `localhost` it prints the raw forward instead,
 so run `mend service connect` explicitly there. That raw host forward is bound by the Mend server
 process itself; in the Docker deployment that is the application container, not the Docker host.
+
+Services the agent or the web started need no command of yours. While `mend attach`, `mend codex`,
+`mend claude`, `mend rejoin`, or the dashboard is attached to a session on a remote server, each
+live Service declared `--http` or `--https` is tunneled to your loopback, on its own port when that
+port is free. `--no-tunnel` turns this off. Looking at a remote server, the web and desktop apps
+show `mend service connect <name>` where an Open link to the server's loopback would not load.
 
 Raw forwarded ports do not pass through Mend request authentication; when you expose one directly,
 the private network is the access boundary. Declare HTTP or HTTPS before presenting a Service as a

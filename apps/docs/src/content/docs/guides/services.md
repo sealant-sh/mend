@@ -23,7 +23,8 @@ mend service run --port 3000 --http -- pnpm dev
 
 Mend supervises the command, waits for port 3000 to answer, and opens a port on your machine (your
 laptop, not the Mend host), loopback only: `http://127.0.0.1:43127`. Open it. That is your app, hot
-reload and all, because Mend pipes raw bytes and rewrites nothing.
+reload and all, because Mend pipes raw bytes and rewrites nothing. Pass `--no-connect` to start the
+Service without opening that port here.
 
 One exception: when the CLI's server URL is `localhost`, `mend service run` treats the server's own
 forward as your machine and prints it instead of tunnelling. On the Docker deployment that forward
@@ -104,12 +105,14 @@ The fields:
 The table name is the lookup key (`mend service web`): lowercase letters and digits plus `.`, `_`,
 and `-`, up to 64 characters.
 
-Mend reads the file from the session's worktree, not from the project's main branch. Two things
-follow. An agent can add a recipe as part of its change, and the addition reviews like any other
-edit. And two sessions on different branches can carry different recipes. A malformed file is a
-named error, never a guess; a missing file means no declared recipes. Recipes declared on the
-project in the web app join the same set, and on a name collision the file wins, because it travels
-with the code.
+Mend reads the file from the session's worktree, not from the project's main branch. In a captured
+workspace (the default store) the worktree lives only in the workspace, so Mend reads
+`/workspace/repo/mend.toml` from the live workspace. A session with no live workspace lists only the
+project's recipes, and `mend service <name>` asks you to resume it first. Two things follow. An
+agent can add a recipe as part of its change, and the addition reviews like any other edit. And two
+sessions on different branches can carry different recipes. A malformed file is a named error, never
+a guess; a missing file means no declared recipes. Recipes declared on the project in the web app
+join the same set, and on a name collision the file wins, because it travels with the code.
 
 `mend service init` scaffolds the file from the package and Compose files it finds, and shows you
 the result before writing it.
@@ -122,11 +125,20 @@ being replaced. Status words are observations: "reachable" means the declared ta
 Mend checked, not a guarantee about the next request.
 
 A live Service also keeps the session workspace retained after the agent settles, the same way a
-detached shell does. Stopping the agent does not stop its Services; stop them when you are done, or
-let them hold the workspace deliberately.
+detached shell does. Stopping the agent does not stop its Services. The session then reads, for
+example, `agent stopped · 3 services keep the workspace up`, in the web app, the dashboard, and the
+output of `mend stop`. Stop them when you are done, or let them hold the workspace deliberately:
+
+- **Stop services** on the session page in the web app;
+- `mend stop --services [session]` from the terminal;
+- `⇧K` in the dashboard, on a row whose agent has stopped while its Services keep the workspace up.
+
+Once nothing is live, the workspace closes.
 
 ## Commands
 
 Every command is listed in the [CLI reference](/reference/cli/#service-commands):
-`mend service run`, `list`, `logs`, `restart`, `stop`, and `connect`, recipe scaffolding with
-`mend service init`, and the in-workspace helper's smaller set.
+`mend service run`, `add` (adopt a port something in the workspace already listens on), `list`,
+`logs`, `restart`, `stop`, and `connect`, recipe scaffolding with `mend service init`,
+`mend stop --services` for all of a session's Services at once, and the in-workspace helper's
+smaller set.
