@@ -142,6 +142,16 @@ describe("review prep: when a session has settled for review", () => {
     expect(settledForReview("starting", [])).toBe(false);
   });
 
+  it("prepares a protocol session Mend stopped for idleness, as it does a Stop", () => {
+    // Between turns the protocol agent is live and the session reads running: nothing to prepare.
+    const before = settledForReview("running", [processRow("agent-protocol", true)]);
+    expect(before).toBe(false);
+    // The idle stop ends the agent the way Stop does, and the session settles `stopped`.
+    const after = settledForReview("stopped", [processRow("agent-protocol", false)]);
+    expect(after).toBe(true);
+    expect(shouldPrepareReview(before, after)).toBe(true);
+  });
+
   it("prepares once, on the move from live work to settled", () => {
     expect(shouldPrepareReview(false, true)).toBe(true);
     // Unknown baseline, still live, or already settled (idle → stopped as the last Service ends).

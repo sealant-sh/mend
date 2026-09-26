@@ -223,6 +223,13 @@ mend continue 01MEND
 A resumed agent is another process in the same Mend session. Its Sealant run has its own record
 sequence, while Mend preserves the ordered process and run membership.
 
+A conversation session (started from Slack, or from the web or phone composer) waits between turns
+with its workspace up. After 15 idle minutes (no turn running, nothing waiting on you, no Service or
+open shell) Mend stops it the way Stop does, and it reads
+`idle · stopped after 15 min · reply to resume`. Send the next message, or resume it, to go on in
+the same conversation. The operator sets the minutes with `MEND_PROTOCOL_IDLE_STOP_MINUTES` (`0`
+turns the stop off).
+
 ## What happens to your files
 
 The workspace works on its own disk, and `sealantd` captures the worktree's files, uncommitted ones

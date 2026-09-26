@@ -323,7 +323,12 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         change === null
           ? null
           : reviewMoment(change, yield* passes.listForChange(change.id), thread.createdAt);
-      const state = slackSessionState({ status: session.status, currentAgent, turns });
+      const state = slackSessionState({
+        status: session.status,
+        currentAgent,
+        turns,
+        idleStoppedAt: session.idleStoppedAt,
+      });
       // Only what this thread asked for: a landing from before it is someone else's news.
       const landings =
         change === null
@@ -433,6 +438,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         // leaves with the edit that says so. The runner checks again on a click.
         switchSession: switchOffered(state, look.turns) ? session.id : null,
         landing: landingStatusLines({ landings: look.landings, latestTurn: look.decided }),
+        summary: session.summary,
       });
       yield* moveStatus(token, look, message);
     });

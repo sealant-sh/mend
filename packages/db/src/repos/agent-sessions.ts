@@ -19,13 +19,13 @@ import {
   type SessionReferenceMount,
   type SessionStatus,
 } from "@mend/domain/workbench";
-import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, ne, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
-import { agentSessions, projects } from "../schema/workbench.ts";
+import { agentRequests, agentSessions, agentTurns, projects } from "../schema/workbench.ts";
 
 export class SessionNotFoundError extends Schema.TaggedErrorClass<SessionNotFoundError>()(
   "SessionNotFoundError",
@@ -164,6 +164,15 @@ export class SessionsRepo extends Context.Service<
      * settled session's workspace. Same row, same worktree, same change.
      */
     readonly reopen: (id: SessionId, status: "running" | "idle") => Effect.Effect<void>;
+    /**
+     * The idle stop's claim (`protocolIdleReading`): stamps `idleStoppedAt` on an unsettled
+     * session with no turn in flight and no pending request, and answers true for the one caller
+     * whose stamp landed. A stamp older than `retryBefore` is taken again: its stop never landed.
+     * `reopen` clears it.
+     */
+    readonly claimIdleStop: (id: SessionId, retryBefore: Date) => Effect.Effect<boolean>;
+    /** Give the claim back when the stop it was for failed. */
+    readonly releaseIdleStop: (id: SessionId) => Effect.Effect<void>;
     /**
      * Rewrite the summary of a session without settling it — what was observed since the
      * last settle (a replacement executor answering after "executor lost"). `reopen` touches
@@ -746,10 +755,39 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         yield* db
           .update(agentSessions)
-          .set({ status, settledAt: null, updatedAt: new Date() })
+          .set({ status, settledAt: null, idleStoppedAt: null, updatedAt: new Date() })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
         yield* notify(id);
+      });
+
+      const claimIdleStop = Effect.fn("SessionsRepo.claimIdleStop")(function* (
+        id: SessionId,
+        retryBefore: Date,
+      ) {
+        const claimed = yield* db
+          .update(agentSessions)
+          .set({ idleStoppedAt: new Date() })
+          .where(
+            and(
+              eq(agentSessions.id, id),
+              isNull(agentSessions.settledAt),
+              or(isNull(agentSessions.idleStoppedAt), lt(agentSessions.idleStoppedAt, retryBefore)),
+              sql`NOT EXISTS (SELECT 1 FROM ${agentTurns} WHERE ${agentTurns.sessionId} = ${agentSessions.id} AND ${agentTurns.status} IN ('queued', 'running'))`,
+              sql`NOT EXISTS (SELECT 1 FROM ${agentRequests} WHERE ${agentRequests.sessionId} = ${agentSessions.id} AND ${agentRequests.status} = 'pending')`,
+            ),
+          )
+          .returning({ id: agentSessions.id })
+          .pipe(Effect.orDie);
+        return claimed.length > 0;
+      });
+
+      const releaseIdleStop = Effect.fn("SessionsRepo.releaseIdleStop")(function* (id: SessionId) {
+        yield* db
+          .update(agentSessions)
+          .set({ idleStoppedAt: null })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
       });
 
       return {
@@ -781,6 +819,8 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         notifyProgress,
         settle,
         reopen,
+        claimIdleStop,
+        releaseIdleStop,
         setSummary,
         setLabel,
         setSharedControl,

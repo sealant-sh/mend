@@ -258,13 +258,17 @@ Starting a session records the Slack thread (`team_id`, `channel_id`, `thread_ts
   thread as context, and says so.
 - A reply in the thread that does not mention `@mend` is conversation between people and never
   reaches the agent.
+- An agent that sits idle between turns is stopped after `MEND_PROTOCOL_IDLE_STOP_MINUTES` (15 by
+  default; docs/SELF-HOSTING.md, "Idle agents"). The status message reads
+  `idle · stopped after 15 min · reply to resume` and the next mention resumes the session, as for
+  any session that is no longer live.
 
 ### What Mend posts, and where
 
 Mend posts only into the thread the request came from.
 
 - **A reaction** on the request: ⏳ while the session runs, ✅ when it completes, ❌ when it fails
-  or is refused.
+  or is refused, 💤 once Mend stopped its idle agent (below).
 - **One status message**, which Mend edits in place (`chat.update`). It shows the project and why it
   was chosen, the harness, the worktree branch and the observed state, with an "Open in Mend"
   button. For example: `billing-api · from the thread · claude · running · mend/flaky-login-test`,

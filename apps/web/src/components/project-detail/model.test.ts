@@ -66,6 +66,7 @@ const session = (
   sharedControlEnabledByUserId: null,
   sharedControlEnabledAt: null,
   hasTranscript: null,
+  idleStoppedAt: null,
   status,
   summary: null,
   lastSeenSequence: 0n,

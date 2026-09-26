@@ -126,8 +126,13 @@ export const stateWords = (state: SlackSessionState, recorded: boolean): string 
       return recorded ? "failed · observed" : "failed";
     case "stopped":
       return "stopped";
+    case "idle-stopped":
+      return IDLE_STOPPED_WORDS;
   }
 };
+
+/** An idle-stopped session's state where its summary is not at hand (`@mend list`). */
+export const IDLE_STOPPED_WORDS = "idle · stopped · reply to resume";
 
 export interface ChangeCounts {
   readonly files: number;
@@ -161,6 +166,11 @@ export interface StatusInput {
    * under the status line; absent or empty says nothing about landing.
    */
   readonly landing?: ReadonlyArray<string>;
+  /**
+   * The session's summary, which words an `idle-stopped` state
+   * (`idle · stopped after 15 min · reply to resume`); other states ignore it.
+   */
+  readonly summary?: string | null;
 }
 
 /** `billing-api · from the thread · claude · running · mend/flaky-login-test`. */
@@ -169,7 +179,9 @@ export const statusLine = (input: StatusInput): string =>
     input.project,
     PROJECT_SOURCE_WORDS[input.source],
     input.harness,
-    stateWords(input.state, input.recorded),
+    input.state === "idle-stopped" && input.summary !== undefined && input.summary !== null
+      ? input.summary
+      : stateWords(input.state, input.recorded),
     input.branch,
     ...(input.change === null ? [] : [changeWords(input.change)]),
   ].join(" · ");
@@ -218,12 +230,13 @@ export const statusMessage = (input: StatusInput): SlackMessage => {
 };
 
 /** Every reaction Mend puts on a request, so the reporter can take the previous one off. */
-export const SLACK_REACTIONS = ["hourglass_flowing_sand", "white_check_mark", "x"] as const;
+export const SLACK_REACTIONS = ["hourglass_flowing_sand", "white_check_mark", "x", "zzz"] as const;
 export type SlackReaction = (typeof SLACK_REACTIONS)[number];
 
 /**
  * The reaction on the request: ⏳ while the session runs, ✅ when it completes, ❌ when it fails or
- * the request is refused. A stopped session is the person's own hand and carries none.
+ * the request is refused. A stopped session is the person's own hand and carries none. 💤 marks
+ * a session Mend stopped because its agent sat idle: no verdict, and a reply resumes it.
  */
 export const reactionFor = (state: SlackSessionState | "refused"): SlackReaction | null => {
   switch (state) {
@@ -238,6 +251,8 @@ export const reactionFor = (state: SlackSessionState | "refused"): SlackReaction
       return "x";
     case "stopped":
       return null;
+    case "idle-stopped":
+      return "zzz";
   }
 };
 

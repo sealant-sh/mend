@@ -2154,6 +2154,26 @@ const projectDefaultShellProfileMigration = Effect.gen(function* () {
       ADD COLUMN IF NOT EXISTS default_shell_profile boolean NOT NULL DEFAULT true`;
 });
 
+/**
+ * The idle stop (docs/SELF-HOSTING.md, "Idle agents"): Mend stops a protocol agent that sat idle
+ * past MEND_PROTOCOL_IDLE_STOP_MINUTES. `idle_stopped_at` is the claim that stops it once across
+ * workers, and what the session's surfaces read the stop as; a reopen clears it. The control log
+ * records the stop as `idle-stop`, the owner as its actor.
+ */
+const protocolIdleStopMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE agent_sessions ADD COLUMN idle_stopped_at timestamptz`;
+  yield* sql`
+    ALTER TABLE session_control_events
+      DROP CONSTRAINT IF EXISTS session_control_events_kind_check`;
+  yield* sql`
+    ALTER TABLE session_control_events
+      ADD CONSTRAINT session_control_events_kind_check CHECK (kind IN (
+        'interrupt', 'terminal-attach', 'shell-open', 'stop', 'services-stop', 'idle-stop',
+        'shared-control-on', 'shared-control-off'
+      ))`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2227,4 +2247,5 @@ export const migrations = {
   "0069_landing_adoption": landingAdoptionMigration,
   "0070_organization_settings": organizationSettingsMigration,
   "0071_project_default_shell_profile": projectDefaultShellProfileMigration,
+  "0072_protocol_idle_stop": protocolIdleStopMigration,
 };

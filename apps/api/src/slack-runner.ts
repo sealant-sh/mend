@@ -58,6 +58,7 @@ import {
   imageRefusal,
   imagesNotAttached,
   isDirectMessage,
+  isStoppedState,
   landedMessage,
   landingLine,
   LISTED_SESSIONS,
@@ -1035,7 +1036,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
      */
     const switchRefusal = (thread: SlackThreadSession) =>
       Effect.gen(function* () {
-        if (thread.reportedState === "stopped") return "the session is stopped";
+        if (isStoppedState(thread.reportedState)) return "the session is stopped";
         const turns = yield* conversations.listTurns(thread.sessionId);
         return switchOffered(thread.reportedState ?? "starting", turns)
           ? null
@@ -1178,7 +1179,7 @@ export const makeSlackRunner = (options: SlackRunnerOptions) =>
       // The reporter may be moving the message too: claim from what it shows, a few times over.
       let shown = (yield* threads.forSession(session.id)) ?? thread;
       for (let attempt = 0; attempt < 3; attempt++) {
-        if (shown.statusTs === null || shown.reportedState === "stopped") break;
+        if (shown.statusTs === null || isStoppedState(shown.reportedState)) break;
         const moved = yield* threads.claimStatus(session.id, shown.reportedStatus, {
           state: "stopped",
           line: stopped.text,

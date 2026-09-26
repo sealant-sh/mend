@@ -1171,6 +1171,8 @@ export const agentSessions = pgTable(
     sharedControlEnabledAt: timestamp({ mode: "date", withTimezone: true }),
     // Null until settle classifies it (0050); false = a dead end the dashboard hides.
     hasTranscript: boolean(),
+    // The idle stop's claim (0072): set when Mend stops an idle protocol agent, null on reopen.
+    idleStoppedAt: timestamp({ mode: "date", withTimezone: true }),
     status: text().$type<SessionStatus>().notNull().default("starting"),
     summary: text(),
     lastSeenSequence: bigint({ mode: "bigint" }).notNull().default(0n),

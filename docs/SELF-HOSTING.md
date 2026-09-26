@@ -396,6 +396,17 @@ live on one server, the caps of both must fit under its `max_connections`, less 
 reserved for superusers: a server that refuses a connection fails the requests and jobs that asked
 for it, and Mend logs `remaining connection slots are reserved` until a slot frees.
 
+### Idle agents
+
+A conversation session (one started from Slack, or from the web or phone composer) keeps its agent
+and its workspace up between turns, waiting for the next message. Mend stops an agent that has sat
+idle for `MEND_PROTOCOL_IDLE_STOP_MINUTES` (default `15`; `0` turns the stop off), the way Stop
+does: the executor flushes its captures, review prep runs as after any stop, and the workspace ends.
+Idle means no turn in flight, no question or approval waiting, no live Service and no open shell;
+the clock starts at the latest turn, request or process activity. The session reads
+`idle · stopped after 15 min · reply to resume`, its control log records an `idle-stop`, and the
+next message (a Slack reply, the composer, Resume) resumes the same conversation.
+
 ## Scope and evidence
 
 Docker setup is the current installer target. Kubernetes remains an
