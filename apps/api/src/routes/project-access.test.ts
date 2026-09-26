@@ -94,6 +94,8 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "organization.takeOverProject",
   "organization.audit",
   "organization.issuePasswordReset",
+  // Every member reads the defaults their projects inherit: organization.test.ts.
+  "organization.settings",
   "invitations.preview",
   // The caller's own Slack link and a link code from a mention: slack.test.ts.
   "slack.me",
@@ -266,6 +268,19 @@ const CASES: ReadonlyArray<AccessCase> = [
   })("operator.issuePasswordReset"),
   fixed("operator", "GET", "/api/runs/run-1/trace", "queue")("runs.trace"),
   fixed("operator", "GET", "/api/runs/run-1/sources", "queue")("runs.sources"),
+
+  // ── Organization defaults: its owners set them over the instance's ──
+  fixed("owner", "PUT", "/api/organization/settings", "organization", {
+    workspaceImage: null,
+    autoTour: null,
+    autoSuggest: null,
+    autoName: null,
+    autoLand: true,
+    backgroundSessions: null,
+  })("organization.setSettings"),
+  fixed("owner", "PUT", "/api/organization/settings/workspace-environment", "organization", {
+    workspaceImage: null,
+  })("organization.setWorkspaceEnvironment"),
 
   // ── Slack: the organization's app is its owners'; a default project must be visible ──
   fixed("owner", "GET", "/api/organization/slack", "slack")("slack.app"),

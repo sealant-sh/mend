@@ -1,4 +1,11 @@
-import { InvitationId, OrganizationId, ProjectId } from "@mend/domain";
+import {
+  InvitationId,
+  MendSettings,
+  OrganizationId,
+  OrganizationSettings,
+  ProjectId,
+  WorkspaceImage,
+} from "@mend/domain";
 import {
   AuditEvent,
   Invitation,
@@ -12,6 +19,7 @@ import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 
 import { NotFound } from "./accounts.ts";
 import { AuthMiddleware } from "./common.ts";
+import { SettingsFailure, WorkspacePackageResolutionView } from "./workbench-views.ts";
 
 /**
  * The caller's organization (docs/adr/0003-organizations-and-tenancy.md). Every route acts as the
@@ -96,6 +104,42 @@ export class OneTimeLink extends Schema.Class<OneTimeLink>("OneTimeLink")({
   expiresAt: Schema.Date,
 }) {}
 
+/**
+ * The defaults every project in the organization inherits (docs/adr/0003, "Resources that were
+ * instance-global"): the organization's own values, the instance's under them, and the result.
+ */
+export class OrganizationSettingsView extends Schema.Class<OrganizationSettingsView>(
+  "OrganizationSettingsView",
+)({
+  /** The organization's own values; each null follows the instance. */
+  organization: OrganizationSettings,
+  /** The instance's settings, which the operator sets. */
+  instance: MendSettings,
+  /** What a project on inherit gets: `organization` wherever it is set, else `instance`. */
+  effective: MendSettings,
+  /** Whether the caller may change `organization`: its owners may. */
+  editable: Schema.Boolean,
+}) {}
+
+/** The organization's workspace environment; null follows the instance's. */
+export class OrganizationWorkspaceEnvironmentRequest extends Schema.Class<OrganizationWorkspaceEnvironmentRequest>(
+  "OrganizationWorkspaceEnvironmentRequest",
+)({
+  workspaceImage: Schema.NullOr(WorkspaceImage),
+}) {}
+
+/**
+ * Saving resolves family-mode packages exactly like the instance save; `saved: false` reports the
+ * rejections and persists nothing.
+ */
+export class OrganizationWorkspaceEnvironmentSaveResult extends Schema.Class<OrganizationWorkspaceEnvironmentSaveResult>(
+  "OrganizationWorkspaceEnvironmentSaveResult",
+)({
+  saved: Schema.Boolean,
+  settings: OrganizationSettingsView,
+  resolutions: Schema.Array(WorkspacePackageResolutionView),
+}) {}
+
 export const organizationGroup = HttpApiGroup.make("organization")
   .add(
     HttpApiEndpoint.get("current", "/organization", {
@@ -168,6 +212,30 @@ export const organizationGroup = HttpApiGroup.make("organization")
       params: Schema.Struct({ id: ProjectId }),
       success: Project,
       error: [NotFound, OrganizationRejected],
+    }),
+  )
+  .add(
+    // Every member reads what their projects inherit; only owners may change it.
+    HttpApiEndpoint.get("settings", "/organization/settings", {
+      success: OrganizationSettingsView,
+      error: NotFound,
+    }),
+  )
+  .add(
+    // Owners only. Replaces the organization's own values; a changed workspace environment is
+    // resolved like the environment save below, and refused whole when a package does not resolve.
+    HttpApiEndpoint.put("setSettings", "/organization/settings", {
+      payload: OrganizationSettings,
+      success: OrganizationSettingsView,
+      error: [NotFound, SettingsFailure],
+    }),
+  )
+  .add(
+    // Owners only.
+    HttpApiEndpoint.put("setWorkspaceEnvironment", "/organization/settings/workspace-environment", {
+      payload: OrganizationWorkspaceEnvironmentRequest,
+      success: OrganizationWorkspaceEnvironmentSaveResult,
+      error: [NotFound, SettingsFailure],
     }),
   )
   .add(

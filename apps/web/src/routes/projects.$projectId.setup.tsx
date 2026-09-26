@@ -1,5 +1,5 @@
 import { ProjectEnvironmentVariableId } from "@mend/domain";
-import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
+import { useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute } from "@tanstack/react-router";
 import { useReducer, useRef, useState } from "react";
 
@@ -60,6 +60,7 @@ import {
   projectEnvironmentFormReducer,
 } from "#/lib/project-environment-form";
 import { useTRPC } from "#/lib/trpc";
+import { useInheritedSettings } from "#/lib/viewer";
 import { copyText } from "#/lib/workbench-menus";
 import {
   OS_LABELS,
@@ -87,7 +88,9 @@ export const Route = createFileRoute("/projects/$projectId/setup")({
       queryClient.ensureQueryData(
         trpc.environment.clusterBindings.queryOptions({ projectId: params.projectId }),
       ),
-      queryClient.ensureQueryData(trpc.settings.get.queryOptions()),
+      queryClient.prefetchQuery(
+        trpc.organization.settings.queryOptions(undefined, { retry: false }),
+      ),
       queryClient.ensureQueryData(trpc.git.references.queryOptions()),
       queryClient.ensureQueryData(trpc.projects.references.queryOptions({ id: params.projectId })),
       queryClient.ensureQueryData(trpc.projects.mounts.queryOptions({ id: params.projectId })),
@@ -167,14 +170,13 @@ const WORKSPACE_OS_CHOICES = ["arch", "fedora", "ubuntu", "nix"] as const;
  * The project's workspace image: a managed OS family, or a custom base image
  * with exactly three knobs — base ref, extra packages, setup commands. Not a
  * compose editor: the workspace is one container; compose already lives
- * inside it (the dind sidecar). Null inherits the Settings default; sessions
+ * inside it (the dind sidecar). Null inherits the organization's default (Settings); sessions
  * record the image they actually launched with.
  */
 function WorkspaceImagePanel({ project }: { readonly project: ProjectDto }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const settings = useQuery(trpc.settings.get.queryOptions());
-  const inherited = settings.data?.workspaceImage ?? null;
+  const inherited = useInheritedSettings()?.workspaceImage ?? null;
   const effective = project.workspaceImage ?? inherited;
   const [draft, setDraft] = useState<{
     readonly mode: "family" | "custom";
@@ -264,7 +266,7 @@ function WorkspaceImagePanel({ project }: { readonly project: ProjectDto }) {
       {draft === null ? (
         <>
           <p className="mt-2.5 font-mono text-xs text-ink-2">
-            {effective === null ? "settings default" : workspaceImageSummary(effective)}
+            {effective === null ? "inherited default" : workspaceImageSummary(effective)}
             {project.workspaceImage === null ? (
               <span className="text-faint"> · inherited</span>
             ) : (

@@ -3530,7 +3530,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         readonly onFailure: (message: string) => Effect.Effect<void>;
       }) {
         const { project, sessionId, socketDir, shape, ownerUserId } = input;
-        const settings = yield* settingsRepo.get();
+        // What the project inherits: its organization's defaults over the instance's.
+        const settings = yield* settingsRepo.forOrganization(project.organizationId);
         const report = <A, E extends { readonly message: string }>(
           effect: Effect.Effect<A, E>,
         ): Effect.Effect<A, E> =>
@@ -3613,9 +3614,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             },
           ]),
         ];
-        // The project's workspace-image override wins; null inherits the global default. The
-        // caller records whichever one it ACTUALLY provisioned with, so a later settings change
-        // never rewrites what a past session ran on.
+        // The project's workspace-image override wins; null inherits its organization's default,
+        // which inherits the instance's (`organizationDefaults`). The caller records whichever one
+        // it ACTUALLY provisioned with, so a later settings change never rewrites what a past
+        // session ran on.
         const workspaceImage = project.workspaceImage ?? settings.workspaceImage;
         // Dotfiles are the OWNER's. Both sources resolve server-side — the repo clone at
         // provision, the store snapshot as the exact commit the owner last synced — and the
@@ -6812,7 +6814,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         project: Project,
         ownerUserId: string | null,
       ) {
-        const settings = yield* settingsRepo.get();
+        const settings = yield* settingsRepo.forOrganization(project.organizationId);
         const workspaceImage = project.workspaceImage ?? settings.workspaceImage;
         const dotfilesEnabled =
           project.applyDotfiles && workspaceImage.mode !== "custom" && ownerUserId !== null;

@@ -365,8 +365,16 @@ export const processOutput = async (id: string): Promise<{ readonly text: string
 export const sessionTranscript = (id: string) =>
   call("GET", "/api/sessions/:id/transcript", { params: { id } });
 
-/** Instance settings; the composer reads "Land when a turn completes" from them. */
-export const getSettings = () => call("GET", "/api/settings");
+/**
+ * The defaults a project on inherit follows: the caller's organization's over the instance's. The
+ * composer reads "Land when a turn completes" from them. An account in no organization, or a
+ * server without organization defaults, reads the instance's.
+ */
+export const getSettings = () =>
+  call("GET", "/api/organization/settings").then(
+    (view) => view.effective,
+    () => call("GET", "/api/settings"),
+  );
 
 // ─── landing (docs/adr/0007-landing.md) ─────────────────────────────────────
 

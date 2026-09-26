@@ -31,6 +31,11 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 
 import { MemberRemoval } from "../member-removal.ts";
 import { TenancyConfig } from "../tenancy.ts";
+import {
+  organizationSettingsView,
+  saveOrganizationSettings,
+  saveOrganizationWorkspaceEnvironment,
+} from "./organization-settings.ts";
 
 /** The path a browser opens to accept an invitation; the web app owns the route. */
 export const invitationJoinPath = (token: string) => `/join/${token}`;
@@ -96,9 +101,10 @@ export const ownership = (id: string) =>
   });
 
 /**
- * The caller's organization (docs/adr/0003-organizations-and-tenancy.md). Members read the roster;
- * owners mint and revoke invitation links, remove members, change roles, take over projects a
- * departed member created, and read the audit log.
+ * The caller's organization (docs/adr/0003-organizations-and-tenancy.md). Members read the roster
+ * and the defaults their projects inherit; owners mint and revoke invitation links, remove members,
+ * change roles, take over projects a departed member created, set those defaults, and read the
+ * audit log.
  */
 export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization", (handlers) =>
   handlers
@@ -305,6 +311,25 @@ export const OrganizationGroupLive = HttpApiBuilder.group(MendApi, "organization
         });
         yield* (yield* SessionEngine).reconcileHotSessions(params.id);
         return taken;
+      }),
+    )
+    .handle("settings", () =>
+      Effect.gen(function* () {
+        return yield* organizationSettingsView(yield* membership);
+      }),
+    )
+    .handle("setSettings", ({ payload }) =>
+      Effect.gen(function* () {
+        const found = yield* ownership(ORGANIZATION);
+        const caller = yield* CurrentUser;
+        return yield* saveOrganizationSettings(found, caller.user.id, payload);
+      }),
+    )
+    .handle("setWorkspaceEnvironment", ({ payload }) =>
+      Effect.gen(function* () {
+        const found = yield* ownership(ORGANIZATION);
+        const caller = yield* CurrentUser;
+        return yield* saveOrganizationWorkspaceEnvironment(found, caller.user.id, payload);
       }),
     )
     .handle("audit", ({ query }) =>

@@ -25,6 +25,8 @@ export const AuditAction = Schema.Literals([
   "member.password_reset_issued",
   "organization.created",
   "organization.renamed",
+  // An owner changed the defaults every project in the organization inherits.
+  "organization.settings_changed",
   "recovery.owner_granted",
   "recovery.password_reset_issued",
   // docs/adr/0006-slack.md, "Audit".
@@ -63,7 +65,8 @@ export class AuditEvent extends Schema.Class<AuditEvent>("AuditEvent")({
   action: AuditAction,
   /**
    * What the action touched: `member`, `invitation`, `project`, `session`, `folder`, `reference`,
-   * `slack` (the organization's Slack app) or `change` (a landing).
+   * `organization` (its name or defaults), `slack` (the organization's Slack app) or `change` (a
+   * landing).
    */
   subjectType: Schema.String,
   subjectId: Schema.String,

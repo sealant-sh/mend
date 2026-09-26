@@ -210,8 +210,9 @@ export class MendSettings extends Schema.Class<MendSettings>("MendSettings")({
   /**
    * Review automation defaults — the machine-side prep that runs when a
    * session settles, so review opens ready. Each switch is overridable per
-   * project (`inherit` follows these): the cascade is settings → project,
-   * resolved per session at settle.
+   * organization and per project: the cascade is instance → organization →
+   * project (`organizationDefaults`, then `resolveAutomation`), resolved per
+   * session at settle.
    */
   /** Compose the tour when a session settles — description and walkthrough ready before review opens. */
   autoTour: onByDefault,
@@ -245,4 +246,83 @@ export const defaultSettings = new MendSettings({
   autoLand: false,
   workspaceImage: defaultWorkspaceImage,
   backgroundSessions: true,
+});
+
+/**
+ * An organization's own defaults (docs/adr/0003-organizations-and-tenancy.md, "Resources that were
+ * instance-global"). The instance's settings document is the operator's; an organization's owners
+ * set these instead, and every project in the organization inherits them unless it overrides a
+ * value itself. Null follows the instance. The queue-era `prMode` and `concurrency` stay
+ * instance-wide.
+ */
+export class OrganizationSettings extends Schema.Class<OrganizationSettings>(
+  "OrganizationSettings",
+)({
+  workspaceImage: Schema.NullOr(WorkspaceImage),
+  autoTour: Schema.NullOr(Schema.Boolean),
+  autoSuggest: Schema.NullOr(Schema.Boolean),
+  autoName: Schema.NullOr(Schema.Boolean),
+  autoLand: Schema.NullOr(Schema.Boolean),
+  backgroundSessions: Schema.NullOr(Schema.Boolean),
+}) {}
+
+/** An organization that set nothing of its own: every value follows the instance. */
+export const inheritedOrganizationSettings = new OrganizationSettings({
+  workspaceImage: null,
+  autoTour: null,
+  autoSuggest: null,
+  autoName: null,
+  autoLand: null,
+  backgroundSessions: null,
+});
+
+/** The values an organization may set; each one null follows the instance. */
+export const ORGANIZATION_SETTING_KEYS = [
+  "workspaceImage",
+  "autoTour",
+  "autoSuggest",
+  "autoName",
+  "autoLand",
+  "backgroundSessions",
+] as const satisfies ReadonlyArray<keyof OrganizationSettings>;
+export type OrganizationSettingKey = (typeof ORGANIZATION_SETTING_KEYS)[number];
+
+/** Where a default a project inherits came from. */
+export type SettingSource = "organization" | "instance";
+
+/**
+ * The defaults every project in an organization inherits: the organization's own value wherever it
+ * set one, else the instance's. This is the whole middle of the cascade project → organization →
+ * instance; a project's own choice (`resolveAutomation`, `project.workspaceImage`) sits on top of
+ * what this returns. A caller outside any organization passes null and gets the instance.
+ */
+export const organizationDefaults = (
+  instance: MendSettings,
+  organization: OrganizationSettings | null,
+): MendSettings =>
+  organization === null
+    ? instance
+    : new MendSettings({
+        ...instance,
+        workspaceImage: organization.workspaceImage ?? instance.workspaceImage,
+        autoTour: organization.autoTour ?? instance.autoTour,
+        autoSuggest: organization.autoSuggest ?? instance.autoSuggest,
+        autoName: organization.autoName ?? instance.autoName,
+        autoLand: organization.autoLand ?? instance.autoLand,
+        backgroundSessions: organization.backgroundSessions ?? instance.backgroundSessions,
+      });
+
+const sourceOf = (value: unknown): SettingSource =>
+  value === null || value === undefined ? "instance" : "organization";
+
+/** Which level decided each inherited default: the organization where it set one. */
+export const organizationDefaultSources = (
+  organization: OrganizationSettings | null,
+): Readonly<Record<OrganizationSettingKey, SettingSource>> => ({
+  workspaceImage: sourceOf(organization?.workspaceImage),
+  autoTour: sourceOf(organization?.autoTour),
+  autoSuggest: sourceOf(organization?.autoSuggest),
+  autoName: sourceOf(organization?.autoName),
+  autoLand: sourceOf(organization?.autoLand),
+  backgroundSessions: sourceOf(organization?.backgroundSessions),
 });

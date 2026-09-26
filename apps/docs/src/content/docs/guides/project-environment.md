@@ -30,13 +30,22 @@ flowchart LR
 Changes apply to new workspace launches, including a settled-session resume that needs a fresh
 workspace. Running workspaces keep the setup they started with.
 
+## Where defaults come from
+
+The workspace environment and the automation switches (background sessions, description and tour,
+fix suggestions, session naming, landing) resolve project, then organization, then instance. The
+instance's defaults belong to the operator, and only the operator sees them in Settings. An
+organization's owners set their own in Settings, value by value, over the instance's; members read
+what applies and where it came from. A project that inherits takes its organization's value. Each
+change to an organization's defaults is recorded in its audit log.
+
 ## Workspace image
 
 Choose a managed OS family or supply a custom OCI base image. Managed families let you select the
 OS, login shell, portable package names, and Docker service. Custom images accept a base reference,
 extra packages, setup commands, and the Docker service switch.
 
-A project can inherit the instance default or save its own override. Read
+A project can inherit its organization's default or save its own override. Read
 [Workspace images](/guides/workspace-images/) for the exact fields and defaults.
 
 ## Configuration and secrets
@@ -139,6 +148,6 @@ workspace receives a Git transport shim, not the host credential.
 
 ## Review automation
 
-Project switches can inherit instance defaults or override automatic session naming, review-tour
-composition, and suggestion generation. These jobs run after the relevant session event. They do not
-change the workspace environment.
+Project switches can inherit the organization's defaults or override automatic session naming,
+review-tour composition, and suggestion generation. These jobs run after the relevant session event.
+They do not change the workspace environment.

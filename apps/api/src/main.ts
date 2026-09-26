@@ -41,6 +41,7 @@ import {
   SessionControlEventsRepoLive,
   FoldersRepoLive,
   OrganizationsRepoLive,
+  OrganizationSettingsRepoLive,
   InstanceRolesRepoLive,
   ProjectsRepoLive,
   PushDevicesRepoLive,
@@ -244,6 +245,7 @@ const DrizzleRepositoriesLive = Layer.mergeAll(
   SessionControlEventsRepoLive,
   FoldersRepoLive,
   OrganizationsRepoLive,
+  OrganizationSettingsRepoLive,
   InstanceRolesRepoLive,
   ProjectsRepoLive,
   ProjectClusterBindingsRepoLive,
@@ -585,7 +587,7 @@ const InferenceWorkersLive = Layer.effectDiscard(
         .byId(session.projectId)
         .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
       if (project === null) return;
-      const settings = yield* settingsRepo.get();
+      const settings = yield* settingsRepo.forOrganization(project.organizationId);
       if (!resolveAutomation(project.autoName, settings.autoName)) return;
 
       const turns = hasInlinePrompt

@@ -19,6 +19,23 @@ const SLACK_SETTING_WORDS: Readonly<Record<string, string>> = {
   landAutomatically: "land automatically",
 };
 
+/** The organization's defaults by the words Settings uses for them. */
+export const ORGANIZATION_SETTING_WORDS: Readonly<Record<string, string>> = {
+  workspaceImage: "workspace environment",
+  autoTour: "description & tour",
+  autoSuggest: "fix suggestions",
+  autoName: "session naming",
+  autoLand: "land when a turn completes",
+  backgroundSessions: "background sessions",
+};
+
+/** One changed default as the audit states it: its new value, or that it follows the instance. */
+const organizationSettingFact = (value: string | number | boolean | null): string => {
+  if (value === null) return "follows the instance";
+  if (typeof value === "boolean") return value ? "on" : "off";
+  return String(value);
+};
+
 /** How a Slack-started session's project was chosen, as the status message in Slack words it. */
 const SLACK_PROJECT_SOURCE_WORDS: Readonly<Record<string, string>> = {
   message: "named in the request",
@@ -71,6 +88,17 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       return `created the organization${name === null ? "" : ` as ${name}`}`;
     case "organization.renamed":
       return `renamed the organization${name === null ? "" : ` to ${name}`}`;
+    case "organization.settings_changed": {
+      const changed = Object.entries(event.data)
+        .map(
+          ([key, value]) =>
+            `${ORGANIZATION_SETTING_WORDS[key] ?? key} ${organizationSettingFact(value)}`,
+        )
+        .join(", ");
+      return changed === ""
+        ? "changed the organization defaults"
+        : `set the organization defaults: ${changed}`;
+    }
     case "recovery.owner_granted":
       return `made ${subject} an owner, as the operator`;
     case "recovery.password_reset_issued":

@@ -30,6 +30,23 @@ export const useViewer = (): Viewer | null => {
 };
 
 /**
+ * What a project on inherit follows: the viewer's organization's defaults over the instance's
+ * (docs/adr/0003, "Resources that were instance-global"). An account in no organization reads the
+ * instance's. Undefined while loading.
+ */
+export const useInheritedSettings = () => {
+  const trpc = useTRPC();
+  const organization = useQuery(
+    trpc.organization.settings.queryOptions(undefined, { retry: false }),
+  );
+  const instance = useQuery({
+    ...trpc.settings.get.queryOptions(),
+    enabled: organization.isError,
+  });
+  return organization.data?.effective ?? instance.data;
+};
+
+/**
  * What a session row offers this viewer. Unknown viewers get read-only rows. Deleting stays the
  * owner's even while control is shared.
  */

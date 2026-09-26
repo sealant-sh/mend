@@ -69,7 +69,7 @@ export class ProjectsRepo extends Context.Service<
       id: ProjectId,
       userId: string,
     ) => Effect.Effect<Project, ProjectNotFoundError>;
-    /** The project's stance on the cascade switches (settings → project), replaced together. */
+    /** The project's stance on the cascade switches (instance → organization → project), replaced together. */
     readonly setAutomation: (
       id: ProjectId,
       choices: {

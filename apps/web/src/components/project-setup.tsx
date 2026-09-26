@@ -29,6 +29,7 @@ import {
   type ReferenceDto,
 } from "#/lib/api";
 import { useTRPC } from "#/lib/trpc";
+import { useInheritedSettings } from "#/lib/viewer";
 
 /**
  * The project's setup sections — references, mounted folders, services,
@@ -177,8 +178,8 @@ export function GitAccessSection({ project }: { readonly project: ProjectDto }) 
 export function DotfilesSection({ project }: { readonly project: ProjectDto }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const settings = useQuery(trpc.settings.get.queryOptions());
-  const customImage = (project.workspaceImage ?? settings.data?.workspaceImage)?.mode === "custom";
+  const settings = useInheritedSettings();
+  const customImage = (project.workspaceImage ?? settings?.workspaceImage)?.mode === "custom";
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 

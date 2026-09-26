@@ -83,7 +83,7 @@ export const isLandingsQuery = (query: { readonly queryKey: ReadonlyArray<unknow
 export const invalidateLandings = () =>
   queryClient.invalidateQueries({ predicate: isLandingsQuery });
 
-/** Instance settings change rarely, and only from the web app's Settings. */
+/** Settings change rarely, and only from the web app's Settings. */
 export const settingsQuery = queryOptions({
   queryKey: ["settings"],
   queryFn: getSettings,
