@@ -1570,3 +1570,57 @@ describe.skipIf(!reachable)("0066 landing description", () => {
     expect(columns).toEqual([{ column_name: "described_tour_id", is_nullable: "YES" }]);
   });
 });
+
+describe.skipIf(!reachable)("0071 project default shell profile", () => {
+  const PROFILE_DB = `${SCRATCH_DB}_shell_profile`;
+  const profileLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${PROFILE_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withProfileDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(profileLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${PROFILE_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${PROFILE_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("turns the default shell profile on for existing and new projects", async () => {
+    const rows = await withProfileDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0070_organization_settings");
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        const organizationId = organization?.id ?? "";
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('project-existing', 'existing', '/store/existing/repo.git', 'main', ${organizationId})`;
+        yield* migrations["0071_project_default_shell_profile"];
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('project-new', 'new', '/store/new/repo.git', 'main', ${organizationId})`;
+        return yield* sql<{
+          readonly id: string;
+          readonly default_shell_profile: boolean;
+        }>`SELECT id, default_shell_profile FROM projects ORDER BY id`;
+      }),
+    );
+    expect(rows).toEqual([
+      { id: "project-existing", default_shell_profile: true },
+      { id: "project-new", default_shell_profile: true },
+    ]);
+  });
+});

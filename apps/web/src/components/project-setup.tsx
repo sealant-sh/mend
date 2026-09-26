@@ -17,6 +17,7 @@ import {
   selectProjectReferences,
   setProjectAutomation,
   setProjectApplyDotfiles,
+  setProjectDefaultShellProfile,
   setProjectGitAuth,
   setProjectHotSessions,
   setProjectFolders,
@@ -168,61 +169,105 @@ export function GitAccessSection({ project }: { readonly project: ProjectDto }) 
   );
 }
 
+/** An on/off pair for a project switch; the current value is the lit one. */
+function OnOffSwitch({
+  value,
+  busy,
+  onChange,
+}: {
+  readonly value: boolean;
+  readonly busy: boolean;
+  readonly onChange: (value: boolean) => void;
+}) {
+  return (
+    <div className="flex shrink-0 gap-1">
+      {([true, false] as const).map((option) => (
+        <button
+          key={String(option)}
+          type="button"
+          disabled={busy}
+          onClick={() => onChange(option)}
+          className={`rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
+            value === option
+              ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
+              : "border-border bg-card text-muted-foreground hover:text-foreground"
+          }`}
+        >
+          {option ? "on" : "off"}
+        </button>
+      ))}
+    </div>
+  );
+}
+
 /**
  * Whether sessions in this project receive the launching user's dotfiles (repo + synced home
  * files, configured per account in Settings). A boolean, not a cascade: dotfiles are identity,
  * so the only project-level question is "does this project want them applied". Custom-image
  * projects skip dotfiles regardless — a BYO base brings its own environment, and the platform
  * rejects them there.
+ *
+ * Beside it, the default shell profile: Mend's `~/.zshrc` and starship prompt, written at launch
+ * into a zsh workspace only where the dotfiles left no file. Custom images skip it too.
  */
 export function DotfilesSection({ project }: { readonly project: ProjectDto }) {
   const trpc = useTRPC();
   const queryClient = useQueryClient();
   const settings = useInheritedSettings();
-  const customImage = (project.workspaceImage ?? settings?.workspaceImage)?.mode === "custom";
+  const image = project.workspaceImage ?? settings?.workspaceImage;
+  const customImage = image?.mode === "custom";
+  const shell = image?.mode === "family" ? image.shell : null;
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const save = (applyDotfiles: boolean) => {
+  const save = (write: Promise<unknown>, failure: string) => {
     setBusy(true);
     setError(null);
-    void setProjectApplyDotfiles(project.id, applyDotfiles)
+    void write
       .then(() => queryClient.invalidateQueries(trpc.projects.pathFilter()))
-      .catch((cause: unknown) =>
-        setError(cause instanceof Error ? cause.message : "Could not save the dotfiles switch."),
-      )
+      .catch((cause: unknown) => setError(cause instanceof Error ? cause.message : failure))
       .finally(() => setBusy(false));
   };
+  const saveDotfiles = (applyDotfiles: boolean) =>
+    save(setProjectApplyDotfiles(project.id, applyDotfiles), "Could not save the dotfiles switch.");
+  const saveShellProfile = (defaultShellProfile: boolean) =>
+    save(
+      setProjectDefaultShellProfile(project.id, defaultShellProfile),
+      "Could not save the default shell profile switch.",
+    );
 
   return (
     <section id="dotfiles" className="project-setup-card">
       <h2 className="font-sans text-sm font-semibold">Dotfiles</h2>
       {customImage ? (
-        <p className="mt-2.5 font-mono text-xs text-faint">custom image · dotfiles not applied</p>
+        <p className="mt-2.5 font-mono text-xs text-faint">
+          custom image · dotfiles and default shell profile not applied
+        </p>
       ) : (
-        <div className="mt-2.5 flex items-center justify-between gap-3">
-          <p className="min-w-0 font-mono text-xs text-ink-2">
-            {project.applyDotfiles ? "your dotfiles · applied at launch" : "dotfiles · off"}
-            <span className="text-faint"> · set up in Settings</span>
-          </p>
-          <div className="flex shrink-0 gap-1">
-            {([true, false] as const).map((value) => (
-              <button
-                key={String(value)}
-                type="button"
-                disabled={busy}
-                onClick={() => save(value)}
-                className={`rounded-lg border px-2 py-1 font-mono text-[11px] transition-colors disabled:opacity-50 ${
-                  project.applyDotfiles === value
-                    ? "border-[color-mix(in_oklab,var(--sw-accent)_45%,transparent)] bg-wash text-foreground"
-                    : "border-border bg-card text-muted-foreground hover:text-foreground"
-                }`}
-              >
-                {value ? "on" : "off"}
-              </button>
-            ))}
+        <>
+          <div className="mt-2.5 flex items-center justify-between gap-3">
+            <p className="min-w-0 font-mono text-xs text-ink-2">
+              {project.applyDotfiles ? "your dotfiles · applied at launch" : "dotfiles · off"}
+              <span className="text-faint"> · set up in Settings</span>
+            </p>
+            <OnOffSwitch value={project.applyDotfiles} busy={busy} onChange={saveDotfiles} />
           </div>
-        </div>
+          <div className="mt-2 flex items-center justify-between gap-3">
+            <p className="min-w-0 font-mono text-xs text-ink-2">
+              {project.defaultShellProfile
+                ? "default shell profile · written where dotfiles left no file"
+                : "default shell profile · off"}
+              {shell === null || shell === "zsh" ? null : (
+                <span className="text-faint"> · zsh only, this image runs {shell}</span>
+              )}
+            </p>
+            <OnOffSwitch
+              value={project.defaultShellProfile}
+              busy={busy}
+              onChange={saveShellProfile}
+            />
+          </div>
+        </>
       )}
       {error === null ? null : <p className="mt-2 text-xs leading-relaxed text-danger">{error}</p>}
     </section>

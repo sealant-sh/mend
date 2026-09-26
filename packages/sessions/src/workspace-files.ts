@@ -78,3 +78,59 @@ export const writeFilesExecs = (
   flush();
   return execs;
 };
+
+/**
+ * Writes each (path under `$HOME`, base64) pair only when nothing is at that path yet — no file,
+ * no directory, no symlink (a dangling one included) — and prints `written <path>` or
+ * `present <path>` per pair. `set -C` makes the redirect refuse an existing file, so even a file
+ * that appears between the test and the write is never overwritten. An existing directory keeps
+ * its mode.
+ */
+const ABSENT_HOME_FILES_SCRIPT =
+  'set -eC; while [ "$#" -gt 1 ]; do target="$HOME/$1"; ' +
+  'if [ -e "$target" ] || [ -L "$target" ]; then printf \'present %s\\n\' "$1"; ' +
+  'else mkdir -p "$(dirname "$target")"; printf \'%s\' "$2" | base64 -d > "$target"; ' +
+  'chmod 644 "$target"; printf \'written %s\\n\' "$1"; fi; shift 2; done';
+
+/** What `writeAbsentHomeFilesExecs` did with one file. */
+export interface HomeFileOutcome {
+  /** The path under `$HOME`, as given. */
+  readonly path: string;
+  readonly outcome: "written" | "present";
+}
+
+/**
+ * The execs that write `files` under the workspace user's `$HOME` without replacing anything:
+ * each `path` is relative to `$HOME`, and a path that already holds something is left alone and
+ * reported `present`. For small files: each file rides one argument, batched under
+ * `WORKSPACE_EXEC_ARG_CHARS`. Read each exec's stdout with `parseHomeFileOutcomes`.
+ */
+export const writeAbsentHomeFilesExecs = (
+  files: ReadonlyArray<WorkspaceFile>,
+): ReadonlyArray<ReadonlyArray<string>> => {
+  const execs: Array<ReadonlyArray<string>> = [];
+  let batch: Array<string> = [];
+  let batchChars = 0;
+  for (const file of files) {
+    const encoded = toBase64(file.bytes);
+    if (batch.length > 0 && batchChars + encoded.length > WORKSPACE_EXEC_ARG_CHARS) {
+      execs.push(["sh", "-c", ABSENT_HOME_FILES_SCRIPT, "mend-write-absent", ...batch]);
+      batch = [];
+      batchChars = 0;
+    }
+    batch.push(file.path, encoded);
+    batchChars += encoded.length + file.path.length;
+  }
+  if (batch.length > 0) {
+    execs.push(["sh", "-c", ABSENT_HOME_FILES_SCRIPT, "mend-write-absent", ...batch]);
+  }
+  return execs;
+};
+
+/** The `written` / `present` lines one `writeAbsentHomeFilesExecs` exec printed. */
+export const parseHomeFileOutcomes = (stdout: string): ReadonlyArray<HomeFileOutcome> =>
+  stdout.split("\n").flatMap((line): ReadonlyArray<HomeFileOutcome> => {
+    if (line.startsWith("written ")) return [{ path: line.slice(8), outcome: "written" }];
+    if (line.startsWith("present ")) return [{ path: line.slice(8), outcome: "present" }];
+    return [];
+  });

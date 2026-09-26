@@ -9,6 +9,7 @@ import {
   NewWorktree,
   ProcessLogPage,
   ProjectBranch,
+  ProjectDefaultShellProfileRequest,
   ProjectInheritUserSkillsRequest,
 } from "./index.ts";
 
@@ -139,6 +140,22 @@ describe("typed HTTP error contracts", () => {
         .inheritUserSkills,
     ).toBe(false);
     expect(() => Schema.decodeUnknownSync(ProjectInheritUserSkillsRequest)({})).toThrow();
+  });
+
+  it("exposes the project default-shell-profile switch", () => {
+    const endpoints = new Set<string>();
+    HttpApi.reflect(MendApi, {
+      onGroup: () => {},
+      onEndpoint: ({ group, endpoint }) => {
+        if (group.identifier === "projects") endpoints.add(endpoint.name);
+      },
+    });
+    expect(endpoints.has("defaultShellProfile")).toBe(true);
+    expect(
+      Schema.decodeUnknownSync(ProjectDefaultShellProfileRequest)({ defaultShellProfile: false })
+        .defaultShellProfile,
+    ).toBe(false);
+    expect(() => Schema.decodeUnknownSync(ProjectDefaultShellProfileRequest)({})).toThrow();
   });
 
   it("encodes a process-log response as the endpoint's class schema", () => {

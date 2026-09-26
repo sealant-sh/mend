@@ -210,6 +210,13 @@ export class ProjectApplyDotfilesRequest extends Schema.Class<ProjectApplyDotfil
   applyDotfiles: Schema.Boolean,
 }) {}
 
+/** Whether a zsh launch writes Mend's default shell profile where no file exists. */
+export class ProjectDefaultShellProfileRequest extends Schema.Class<ProjectDefaultShellProfileRequest>(
+  "ProjectDefaultShellProfileRequest",
+)({
+  defaultShellProfile: Schema.Boolean,
+}) {}
+
 /** Whether sessions inherit the launching user's skills in addition to project skills. */
 export class ProjectInheritUserSkillsRequest extends Schema.Class<ProjectInheritUserSkillsRequest>(
   "ProjectInheritUserSkillsRequest",

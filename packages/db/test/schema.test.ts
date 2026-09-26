@@ -124,7 +124,7 @@ describe("Mend Drizzle schema", () => {
       expect(column?.notNull, name).toBe(true);
       expect(column?.default, name).toBe("inherit");
     }
-    for (const name of ["apply_dotfiles", "inherit_user_skills"]) {
+    for (const name of ["apply_dotfiles", "default_shell_profile", "inherit_user_skills"]) {
       const column = projectColumns.find((candidate) => candidate.name === name);
       expect(column?.notNull, name).toBe(true);
       expect(column?.default, name).toBe(true);

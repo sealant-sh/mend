@@ -13,7 +13,9 @@
     "**/routeTree.gen.ts",
     ".turbo/**",
     ".direnv/**",
-    "deploy/helm/**/templates/**"
+    "deploy/helm/**/templates/**",
+    // Shipped into workspaces byte for byte (the default shell profile).
+    "packages/sessions/src/shell-profile/**"
   ],
   "sortImports": {
     "ignoreCase": true,

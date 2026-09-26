@@ -14,6 +14,11 @@ const offByDefault = Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.su
 export const WorkspaceImageOs = Schema.Literals(["fedora", "arch", "nix", "ubuntu"]);
 export type WorkspaceImageOs = typeof WorkspaceImageOs.Type;
 
+/**
+ * The code default for new installs. The last five are what Mend's default shell profile
+ * (`packages/sessions/src/shell-profile/zshrc`) looks for, which is why the default shell is zsh:
+ * the prompt, the three zsh plugins and direnv, beside `bat` and `fzf`.
+ */
 const DEFAULT_WORKSPACE_PACKAGES: ReadonlyArray<string> = [
   "pnpm",
   "python",
@@ -27,6 +32,11 @@ const DEFAULT_WORKSPACE_PACKAGES: ReadonlyArray<string> = [
   "ripgrep",
   "fd",
   "fzf",
+  "starship",
+  "zsh-autosuggestions",
+  "zsh-syntax-highlighting",
+  "zsh-history-substring-search",
+  "direnv",
 ];
 
 const workspaceImageServices = Schema.Struct({
@@ -84,7 +94,7 @@ export const defaultWorkspaceImage: WorkspaceImage = {
   mode: "family",
   os: "arch",
   packages: [...DEFAULT_WORKSPACE_PACKAGES],
-  shell: "bash",
+  shell: "zsh",
   services: { docker: true },
 };
 

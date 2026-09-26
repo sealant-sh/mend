@@ -28,7 +28,7 @@ For a managed family, choose:
 - portable package names;
 - whether the workspace receives a Docker service.
 
-The default is Arch Linux with `bash`, Docker enabled, and these packages:
+The default for a new install is Arch Linux with `zsh`, Docker enabled, and these packages:
 
 ```text
 pnpm
@@ -43,7 +43,15 @@ jq
 ripgrep
 fd
 fzf
+starship
+zsh-autosuggestions
+zsh-syntax-highlighting
+zsh-history-substring-search
+direnv
 ```
+
+The last five are what Mend's [default shell profile](/guides/dotfiles/#default-shell-profile) uses.
+A saved instance, organization or project environment keeps its own shell and packages.
 
 Mend sends portable package names to the platform resolver. Save is refused when a package cannot be
 resolved or is unsupported for the selected family. Fix or remove rejected entries before launching

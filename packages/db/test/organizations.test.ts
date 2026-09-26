@@ -416,6 +416,43 @@ describe.skipIf(!reachable)("organizations", () => {
     expect(result.elsewhere).toBe(true);
   });
 
+  it("a project starts with the default shell profile on, and the switch turns it off", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const projects = yield* ProjectsRepo;
+        const created = yield* projects.create({
+          id: ProjectId.make("p-acme-shell"),
+          organizationId: acme,
+          visibility: "private",
+          createdByUserId: "alice",
+          name: "shell",
+          originUrl: null,
+          storePath: "/store/p-acme-shell/repo.git",
+          defaultBranch: "main",
+          adoptedSha: null,
+          gitAuthMode: "ambient",
+        });
+        const turnedOff = yield* projects.setDefaultShellProfile(created.id, false);
+        const reread = yield* projects.byId(created.id);
+        const missing = yield* projects
+          .setDefaultShellProfile(ProjectId.make("p-none"), true)
+          .pipe(Effect.flip);
+        return {
+          created: created.defaultShellProfile,
+          turnedOff: turnedOff.defaultShellProfile,
+          reread: reread.defaultShellProfile,
+          missing: missing._tag,
+        };
+      }),
+    );
+    expect(result).toEqual({
+      created: true,
+      turnedOff: false,
+      reread: false,
+      missing: "ProjectNotFoundError",
+    });
+  });
+
   it("the last operator cannot be revoked", async () => {
     const result = await run(
       Effect.gen(function* () {

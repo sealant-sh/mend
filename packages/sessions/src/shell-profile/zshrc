@@ -1,0 +1,81 @@
+# Mend's default zsh profile. Mend writes this file only when ~/.zshrc does not exist, so your own
+# dotfiles always win. Turn it off per project under Setup -> Dotfiles -> Default shell profile.
+# Every tool below is optional: a missing package skips its block.
+
+# History
+HISTSIZE=100000
+SAVEHIST=100000
+mkdir -p "$HOME/.local/state/zsh"
+HISTFILE="$HOME/.local/state/zsh/history"
+
+setopt HIST_FCNTL_LOCK HIST_EXPIRE_DUPS_FIRST HIST_IGNORE_DUPS HIST_IGNORE_SPACE SHARE_HISTORY
+setopt autocd
+setopt NO_APPEND_HISTORY NO_EXTENDED_HISTORY NO_HIST_FIND_NO_DUPS NO_HIST_IGNORE_ALL_DUPS
+setopt NO_HIST_SAVE_NO_DUPS NOBEEP NUMERIC_GLOB_SORT
+
+# Source the first readable file among the arguments; say whether one was found.
+_mend_source_first() {
+  local candidate
+  for candidate in "$@"; do
+    if [[ -r "$candidate" ]]; then
+      source "$candidate"
+      return 0
+    fi
+  done
+  return 1
+}
+
+# Completion
+autoload -Uz compinit && compinit
+zstyle ':completion:*' menu select
+zstyle ':completion:*' matcher-list 'm:{a-z}={A-Za-z}'
+
+export VIRTUAL_ENV_DISABLE_PROMPT=1
+
+# fzf key bindings and completion. fzf before 0.48 has no --zsh; Ubuntu ships its scripts instead.
+if (( $+commands[fzf] )); then
+  if _mend_fzf_zsh="$(fzf --zsh 2>/dev/null)"; then
+    source <(print -r -- "$_mend_fzf_zsh")
+  else
+    _mend_source_first /usr/share/doc/fzf/examples/key-bindings.zsh
+    _mend_source_first /usr/share/doc/fzf/examples/completion.zsh
+  fi
+  unset _mend_fzf_zsh
+fi
+
+# direnv
+if (( $+commands[direnv] )); then
+  eval "$(direnv hook zsh)"
+fi
+
+# Plugins: the first path that exists wins (Fedora and Ubuntu, Arch, Nix).
+_mend_source_first \
+  /usr/share/zsh-autosuggestions/zsh-autosuggestions.zsh \
+  /usr/share/zsh/plugins/zsh-autosuggestions/zsh-autosuggestions.zsh \
+  "$HOME/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestions.zsh" \
+  /root/.nix-profile/share/zsh-autosuggestions/zsh-autosuggestions.zsh
+
+_mend_source_first \
+  /usr/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh \
+  /usr/share/zsh/plugins/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh \
+  "$HOME/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh" \
+  /root/.nix-profile/share/zsh-syntax-highlighting/zsh-syntax-highlighting.zsh
+
+if _mend_source_first \
+  /usr/local/share/zsh-history-substring-search/zsh-history-substring-search.zsh \
+  /usr/share/zsh/plugins/zsh-history-substring-search/zsh-history-substring-search.zsh \
+  "$HOME/.nix-profile/share/zsh-history-substring-search/zsh-history-substring-search.zsh" \
+  /root/.nix-profile/share/zsh-history-substring-search/zsh-history-substring-search.zsh
+then
+  bindkey '^[[A' history-substring-search-up
+  bindkey '^[[B' history-substring-search-down
+  bindkey '^[OA' history-substring-search-up
+  bindkey '^[OB' history-substring-search-down
+fi
+
+unfunction _mend_source_first
+
+# Prompt
+if (( $+commands[starship] )); then
+  eval "$(starship init zsh)"
+fi

@@ -39,6 +39,7 @@ export const projectFixture = (patch: Partial<ProjectDto> = {}): ProjectDto => (
   gitAuthMode: "ambient",
   workspaceImage: null,
   applyDotfiles: false,
+  defaultShellProfile: true,
   inheritUserSkills: true,
   hotSessions: 0,
   installCommand: null,

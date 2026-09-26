@@ -28,6 +28,7 @@ import {
   SetGitAccessRequest,
   SetGitAuthorRequest,
   ProjectApplyDotfilesRequest,
+  ProjectDefaultShellProfileRequest,
   ProjectAutomationRequest,
   ProjectDetail,
   ProjectVisibilityRequest,
@@ -121,6 +122,14 @@ export const projectsGroup = HttpApiGroup.make("projects")
     HttpApiEndpoint.put("applyDotfiles", "/projects/:id/apply-dotfiles", {
       params: { id: ProjectId },
       payload: ProjectApplyDotfilesRequest,
+      success: Project,
+      error: NotFound,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("defaultShellProfile", "/projects/:id/default-shell-profile", {
+      params: { id: ProjectId },
+      payload: ProjectDefaultShellProfileRequest,
       success: Project,
       error: NotFound,
     }),

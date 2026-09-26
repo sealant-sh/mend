@@ -4,6 +4,7 @@ import {
   AddProjectServiceRecipe,
   AdoptProject,
   ProjectApplyDotfilesRequest,
+  ProjectDefaultShellProfileRequest,
   ProjectAutomationRequest,
   ProjectGitAuthRequest,
   ProjectHotSessionsRequest,
@@ -85,6 +86,13 @@ export const projectsRouter = router({
     .input(input(Schema.Struct({ id: ProjectId, request: ProjectApplyDotfilesRequest })))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.projects.applyDotfiles({ params: { id: i.id }, payload: i.request })),
+    ),
+  setDefaultShellProfile: procedure
+    .input(input(Schema.Struct({ id: ProjectId, request: ProjectDefaultShellProfileRequest })))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.projects.defaultShellProfile({ params: { id: i.id }, payload: i.request }),
+      ),
     ),
   setInheritUserSkills: procedure
     .input(input(Schema.Struct({ id: ProjectId, request: ProjectInheritUserSkillsRequest })))

@@ -248,6 +248,14 @@ export const setProjectApplyDotfiles = (projectId: string, applyDotfiles: boolea
   orLogin(
     trpcClient.projects.setApplyDotfiles.mutate({ id: projectId, request: { applyDotfiles } }),
   );
+/** Persist whether zsh launches write Mend's default shell profile where no file exists. */
+export const setProjectDefaultShellProfile = (projectId: string, defaultShellProfile: boolean) =>
+  orLogin(
+    trpcClient.projects.setDefaultShellProfile.mutate({
+      id: projectId,
+      request: { defaultShellProfile },
+    }),
+  );
 /** Persist whether new sessions inherit the user's global skill library. */
 export const setProjectInheritUserSkills = (projectId: string, inheritUserSkills: boolean) =>
   orLogin(

@@ -10,8 +10,15 @@
  *
  * BUNDLE_EXTERNAL (comma-separated) keeps native or optional deps out of the bundle; those must be
  * installed in the runtime image. Anything else that ends up external is a build error.
+ *
+ * BUNDLE_ASSETS (comma-separated directories, relative to the app) are copied into `dist/` under
+ * their own names. A module that reads files beside itself (`new URL("./<dir>/…",
+ * import.meta.url)`) finds them there once bundled, since every module's `import.meta.url` is then
+ * the bundle's. A missing directory is a build error.
  */
+import { cpSync, existsSync } from "node:fs";
 import { createRequire, isBuiltin } from "node:module";
+import * as path from "node:path";
 import { pathToFileURL } from "node:url";
 
 // esbuild is a devDependency of the app being bundled, not of this shared script.
@@ -26,6 +33,7 @@ const list = (value) =>
     .filter(Boolean);
 
 const external = list(process.env.BUNDLE_EXTERNAL);
+const assets = list(process.env.BUNDLE_ASSETS);
 const entryPoints = list(process.env.BUNDLE_ENTRIES ?? "src/main.ts");
 
 const result = await build({
@@ -72,4 +80,9 @@ for (const output of Object.values(result.metafile.outputs)) {
 }
 if (undeclared.size > 0) {
   throw new Error(`Undeclared external imports in bundle: ${[...undeclared].join(", ")}`);
+}
+
+for (const directory of assets) {
+  if (!existsSync(directory)) throw new Error(`BUNDLE_ASSETS directory not found: ${directory}`);
+  cpSync(directory, path.join("dist", path.basename(directory)), { recursive: true });
 }

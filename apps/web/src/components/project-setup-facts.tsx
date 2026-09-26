@@ -46,7 +46,7 @@ export function useSetupFactValues(projectId: string) {
         : recipes.length === 0
           ? "none"
           : `${recipes.length} ${recipes.length === 1 ? "recipe" : "recipes"}`,
-    dotfiles: project.applyDotfiles ? "on" : "off",
+    dotfiles: `${project.applyDotfiles ? "on" : "off"} · shell profile ${project.defaultShellProfile ? "on" : "off"}`,
     hot:
       project.hotSessions === 0
         ? "off"
@@ -95,7 +95,7 @@ const EXPLANATIONS: Record<FactKey, string> = {
   services:
     "Commands sessions can run and expose — a dev server, a database — declared here or in the repo's mend.toml.",
   dotfiles:
-    "Whether sessions in this project receive your dotfiles (repo plus synced home files, set up in Settings) at launch.",
+    "Whether sessions in this project receive your dotfiles (repo plus synced home files, set up in Settings) at launch, and whether a zsh workspace gets Mend's default shell profile where your dotfiles left no ~/.zshrc or starship config.",
   hot: "How many workspaces this project keeps ready for new sessions. A new session claims one and attaches immediately; each ready workspace is a live container on this machine.",
   git: "How Mend reaches this project's remote: ambient uses your login user's git and ssh setup; mend key is this machine's own deploy key; bridge signs through an ssh-agent shared from another machine.",
   landing:

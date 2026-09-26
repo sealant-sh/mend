@@ -194,6 +194,12 @@ export class Project extends Schema.Class<Project>("Project")({
    */
   applyDotfiles: Schema.Boolean,
   /**
+   * Whether a launch into a zsh workspace writes Mend's default shell profile (`~/.zshrc`,
+   * `~/.config/starship.toml`) where the owner's dotfiles left no file. Never overwrites. Older
+   * values decode to on, the column's default.
+   */
+  defaultShellProfile: Schema.Boolean.pipe(Schema.withDecodingDefaultKey(Effect.succeed(true))),
+  /**
    * Whether sessions receive skills from the launching user's library. Project skills always
    * remain enabled and override inherited user skills with the same name. Older values decode to
    * enabled so adding this setting cannot silently drop an existing user's skills.
