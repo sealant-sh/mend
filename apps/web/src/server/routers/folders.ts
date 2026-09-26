@@ -1,4 +1,4 @@
-import { CreateFolderRequest, FolderUploadFile } from "@mend/api-contracts";
+import { CreateFolderRequest, FolderUploadFile, FolderUploadRequest } from "@mend/api-contracts";
 import { FolderId } from "@mend/domain";
 import { Schema } from "effect";
 
@@ -31,7 +31,10 @@ export const foldersRouter = router({
     )
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) =>
-        api.folders.upload({ params: { id: i.id }, payload: { files: i.files, merge: i.merge } }),
+        api.folders.upload({
+          params: { id: i.id },
+          payload: new FolderUploadRequest({ files: i.files, merge: i.merge }),
+        }),
       ),
     ),
   deleteFile: procedure

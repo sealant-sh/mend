@@ -28,7 +28,10 @@ export const organizationRouter = router({
     .input(input(Schema.Struct({ userId: Schema.String, role: MemberRoleRequest.fields.role })))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) =>
-        api.organization.setMemberRole({ params: { userId: i.userId }, payload: { role: i.role } }),
+        api.organization.setMemberRole({
+          params: { userId: i.userId },
+          payload: new MemberRoleRequest({ role: i.role }),
+        }),
       ),
     ),
   removeMember: procedure

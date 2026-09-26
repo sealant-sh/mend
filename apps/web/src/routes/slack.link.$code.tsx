@@ -4,9 +4,8 @@ import { createFileRoute, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
 
 import { SetupFrame } from "#/components/setup-frame";
-import { confirmSlackLink, type SlackLinkConfirmedDto } from "#/lib/api";
+import { confirmSlackLink, previewSlackLink, type SlackLinkConfirmedDto } from "#/lib/api";
 import { linkedLine, slackPersonLabel } from "#/lib/slack";
-import { useTRPC } from "#/lib/trpc";
 
 export const Route = createFileRoute("/slack/link/$code")({
   ssr: false,
@@ -26,8 +25,14 @@ const formatTime = (at: Date): string =>
 function SlackLinkPage() {
   const { code } = Route.useParams();
   const navigate = useNavigate();
-  const trpc = useTRPC();
-  const preview = useQuery(trpc.slack.previewLink.queryOptions({ code }, { retry: false }));
+  // The preview is a read, but the API route is a POST so the code stays out of request lines. A
+  // tRPC query is a GET, which browsers send without an Origin, and the API refuses a cookie-bearing
+  // POST without one (public-network-policy.ts). A mutation's POST carries the page's Origin.
+  const preview = useQuery({
+    queryKey: ["slack", "previewLink", code],
+    queryFn: () => previewSlackLink(code),
+    retry: false,
+  });
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [confirmed, setConfirmed] = useState<SlackLinkConfirmedDto | null>(null);

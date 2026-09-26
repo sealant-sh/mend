@@ -5,6 +5,7 @@ import {
   NewWorkbenchSession,
   PastedImageUpload,
   ResumeRequest,
+  SharedControlRequest,
 } from "@mend/api-contracts";
 import { ProjectId, SessionId } from "@mend/domain";
 import { Schema } from "effect";
@@ -48,7 +49,10 @@ export const sessionsRouter = router({
     .input(input(Schema.Struct({ id: SessionId, enabled: Schema.Boolean })))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) =>
-        api.sessions.sharedControl({ params: { id: i.id }, payload: { enabled: i.enabled } }),
+        api.sessions.sharedControl({
+          params: { id: i.id },
+          payload: new SharedControlRequest({ enabled: i.enabled }),
+        }),
       ),
     ),
   stop: procedure
