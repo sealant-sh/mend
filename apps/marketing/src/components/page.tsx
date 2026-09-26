@@ -89,12 +89,22 @@ export function MarketingPage() {
             >
               Apache-2.0 · self-hosted
             </p>
-            <h1 className="py-3 text-center font-display text-[34vw] leading-[0.78] font-bold tracking-[-0.055em] select-none sm:py-6 sm:text-[min(31vw,28rem)]">
-              mend
-            </h1>
-            <p className="pb-6 font-mono text-[13px] tracking-[0.08em] uppercase sm:pb-8 sm:text-[17px]">
-              Run your TUI agents anywhere you want.
-            </p>
+            {/* The wordmark and the slogan share one left edge: the slogan starts
+                under the stem of the m. The slogan's wrapper carries the
+                wordmark's font size so its em-based inset matches the m's
+                side bearing at every width. */}
+            <div className="flex justify-center">
+              <div className="inline-flex flex-col">
+                <h1 className="py-3 font-display text-[34vw] leading-[0.78] font-bold tracking-[-0.055em] select-none sm:py-6 sm:text-[min(31vw,28rem)]">
+                  mend
+                </h1>
+                <div className="pl-[0.07em] font-display text-[34vw] sm:text-[min(31vw,28rem)]">
+                  <p className="pb-6 font-mono text-[13px] tracking-[0.08em] uppercase sm:pb-8 sm:text-[17px]">
+                    Run your TUI agents anywhere you want.
+                  </p>
+                </div>
+              </div>
+            </div>
           </div>
           <div className="grid gap-8 py-10 sm:gap-10 sm:py-16 lg:grid-cols-[minmax(0,1fr)_minmax(0,26rem)] lg:items-end">
             <div className={`min-w-0 ${RULE} sm:border-l-2 sm:pl-6`}>
