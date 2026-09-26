@@ -147,7 +147,7 @@ export function MarketingPage() {
 
         {/* Capabilities: one row each, the title beside the explanation. */}
         <section id="features" className={`border-t-2 ${RULE}`}>
-          <BigHead title="How it works" note="One machine, your hardware, isolated sessions." />
+          <BigHead title="How it works" />
           {FEATURES.map((feature) => (
             <article
               key={feature.title}
