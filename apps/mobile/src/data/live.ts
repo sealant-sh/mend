@@ -6,7 +6,9 @@
  */
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import * as SecureStore from "expo-secure-store";
 import { useSyncExternalStore } from "react";
+import { Platform } from "react-native";
 
 import type { StatusTone } from "@/components/status";
 import type { LaunchOptions } from "@/data/harness-options";
@@ -55,7 +57,7 @@ const parseConfig = (raw: string): MendConfig | null => {
 // first read off disk) and `useConfig()` for screens (re-renders on save,
 // no effect). Hydrated once at import, same pattern as preferences.ts.
 //
-// null is a third state, not a missing value: "AsyncStorage has not answered
+// null is a third state, not a missing value: "the store has not answered
 // yet". Screens that render "not paired" have to wait for it, or a phone that
 // is paired flashes the pairing panel on every cold start.
 let current: MendConfig | null = null;
@@ -69,7 +71,43 @@ const settle = (config: MendConfig): void => {
   notifyConfig();
 };
 
-const hydrated: Promise<void> = AsyncStorage.getItem("mend-config")
+// ─── where the token lives ──────────────────────────────────────────────────
+//
+// The bearer token is a credential for the machine, so it sits in the OS
+// keychain (iOS Keychain, Android Keystore), readable only while the phone is
+// unlocked and never carried to another device by a backup — the machine
+// recorded THIS device, and a restore onto a new phone should pair again.
+// The web build has no keychain: it keeps the browser's storage, as before.
+// Phones that paired before this change hold the config in AsyncStorage;
+// the first read moves it across and clears the plain copy.
+
+const CONFIG_KEY = "mend-config";
+const KEYCHAIN = { keychainAccessible: SecureStore.WHEN_UNLOCKED_THIS_DEVICE_ONLY } as const;
+const keychainUsable = Platform.OS !== "web";
+
+const readStoredConfig = async (): Promise<string | null> => {
+  if (!keychainUsable) return AsyncStorage.getItem(CONFIG_KEY);
+  const secure = await SecureStore.getItemAsync(CONFIG_KEY, KEYCHAIN);
+  if (secure !== null) return secure;
+  const legacy = await AsyncStorage.getItem(CONFIG_KEY);
+  if (legacy === null) return null;
+  await SecureStore.setItemAsync(CONFIG_KEY, legacy, KEYCHAIN);
+  await AsyncStorage.removeItem(CONFIG_KEY);
+  return legacy;
+};
+
+const writeStoredConfig = (raw: string): Promise<void> =>
+  keychainUsable
+    ? SecureStore.setItemAsync(CONFIG_KEY, raw, KEYCHAIN)
+    : AsyncStorage.setItem(CONFIG_KEY, raw);
+
+const removeStoredConfig = async (): Promise<void> => {
+  // Both homes, so a pre-keychain copy cannot outlive an unpair.
+  if (keychainUsable) await SecureStore.deleteItemAsync(CONFIG_KEY, KEYCHAIN);
+  await AsyncStorage.removeItem(CONFIG_KEY);
+};
+
+const hydrated: Promise<void> = readStoredConfig()
   .then((raw) => {
     settle((raw === null ? null : parseConfig(raw)) ?? EMPTY);
     return undefined;
@@ -84,14 +122,14 @@ export const loadConfig = async (): Promise<MendConfig> => {
 export const saveConfig = async (config: MendConfig): Promise<void> => {
   current = config;
   notifyConfig();
-  await AsyncStorage.setItem("mend-config", JSON.stringify(config));
+  await writeStoredConfig(JSON.stringify(config));
 };
 
 /** Forget the machine on this device. The machine keeps its own record. */
 export const clearConfig = async (): Promise<void> => {
   current = EMPTY;
   notifyConfig();
-  await AsyncStorage.removeItem("mend-config");
+  await removeStoredConfig();
 };
 
 /** null until the stored config has been read — see the note on `current`. */
