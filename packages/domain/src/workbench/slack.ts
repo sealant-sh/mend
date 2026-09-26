@@ -55,6 +55,8 @@ export type SlackProjectSource = typeof SlackProjectSource.Type;
  * A Slack-started session as its thread hears it ("What Mend posts, and where"): the reporter folds
  * session, process and turn state into this, and the status message and the reaction show it.
  * `completed` and `failed` also cover a protocol turn that ended while the agent stays live.
+ * `idle-stopped` is a stop Mend made because the agent sat idle (`protocolIdleReading`); a reply in
+ * the thread resumes it.
  */
 export const SlackSessionState = Schema.Literals([
   "starting",
@@ -63,6 +65,7 @@ export const SlackSessionState = Schema.Literals([
   "completed",
   "failed",
   "stopped",
+  "idle-stopped",
 ]);
 export type SlackSessionState = typeof SlackSessionState.Type;
 

@@ -8,6 +8,8 @@ import type { OrganizationRole } from "./organization.ts";
  * Who did what to a session beyond sending turns (docs/adr/0003-organizations-and-tenancy.md).
  * Turns carry their author and approvals their decider; these are the other steering acts, so a
  * shared session always says who interrupted, attached or stopped it, or stopped its Services.
+ * `idle-stop` is Mend's own: the protocol agent sat idle past MEND_PROTOCOL_IDLE_STOP_MINUTES, and
+ * the actor is the session's owner, whose agent it was.
  */
 export const SessionControlKind = Schema.Literals([
   "interrupt",
@@ -15,6 +17,7 @@ export const SessionControlKind = Schema.Literals([
   "shell-open",
   "stop",
   "services-stop",
+  "idle-stop",
   "shared-control-on",
   "shared-control-off",
 ]);

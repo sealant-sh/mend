@@ -735,8 +735,13 @@ export class SessionEngine extends Context.Service<
      * reads `idle` while they hold the workspace; a stop with NO live agent left is aimed at
      * the session itself and closes the shells too, so an orphan shell can never hold a
      * stopped session open. Services keep their own lifecycle; `stopServices` is their verb.
+     * `summary` is what the settled session reads instead of the harness's own; the idle stop
+     * passes `idle · stopped after 15 min · reply to resume`.
      */
-    readonly stop: (sessionId: SessionId) => Effect.Effect<void, SessionNotFoundError>;
+    readonly stop: (
+      sessionId: SessionId,
+      summary?: string | null,
+    ) => Effect.Effect<void, SessionNotFoundError>;
     /**
      * The second pane (docs/SESSION-SERVICES.md): a shell PTY in the
      * session's live workspace, beside the agent — same repo, same
@@ -5777,7 +5782,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           : launchInternal(sessionId, argv, nativeImport, located);
       });
 
-      const stop = Effect.fn("SessionEngine.stop")(function* (sessionId: SessionId) {
+      const stop = Effect.fn("SessionEngine.stop")(function* (
+        sessionId: SessionId,
+        summary: string | null = null,
+      ) {
         const session = yield* sessions.byId(sessionId);
         const rows = yield* processes.listForSession(sessionId);
         const activeRun = yield* sessionRuns.activeForSession(sessionId);
@@ -5797,7 +5805,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             how: "stopped",
             exitCode: null,
             outcome: "stopped",
-            summary: null,
+            summary,
           });
           if (recorded) ended.push(agent);
         }
@@ -5817,11 +5825,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* processes.markExited(shell.id, "stopped", null);
           }
           if (activeRun !== null) {
-            yield* sessionRuns.settle(activeRun.sealantRunId, "stopped", null);
+            yield* sessionRuns.settle(activeRun.sealantRunId, "stopped", summary);
           }
           const after = liveShells.length > 0 ? yield* processes.listForSession(sessionId) : rows;
           if (foldSessionLiveness(after) === "settled") {
-            yield* sessions.settle(sessionId, "stopped", null);
+            yield* sessions.settle(sessionId, "stopped", summary);
           }
         }
         // A row that already carries settled_at but still reads active (rows
@@ -5833,6 +5841,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.annotateLogs({ sessionId, settledAt: String(afterSettle.settledAt) }),
           );
           yield* sessions.setStatus(sessionId, "stopped");
+        }
+        // The settle carries the summary through the agent's run; a stopped session whose run
+        // said otherwise (or that had none) still reads the one asked for.
+        if (
+          summary !== null &&
+          afterSettle.status === "stopped" &&
+          afterSettle.summary !== summary
+        ) {
+          yield* sessions.setSummary(sessionId, summary);
         }
         yield* tryCheckpoint(session, "user-mark", {
           sealantRunId: activeRun?.sealantRunId ?? null,
@@ -7875,7 +7892,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           owned(sessionId)(launchFollowUp(sessionId, instruction, launchCorrelationId, author)),
         reconcileHotSessions: requestHotReconcile,
         checkpointNow: (sessionId, trigger) => owned(sessionId)(checkpointNow(sessionId, trigger)),
-        stop: (sessionId) => owned(sessionId)(stop(sessionId)),
+        stop: (sessionId, summary) => owned(sessionId)(stop(sessionId, summary ?? null)),
         openShell: (sessionId) => owned(sessionId)(openShell(sessionId)),
         stopShell: (processId) => ownedByProcess(processId)(stopShell(processId)),
         renameShell: (processId, label) => ownedByProcess(processId)(renameShell(processId, label)),

@@ -2,7 +2,13 @@ import { SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
 import { SessionProcess, type AgentTurnStatus } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
-import { isSettledState, slackSessionState, statusMayMove, switchOffered } from "./state.ts";
+import {
+  isSettledState,
+  isStoppedState,
+  slackSessionState,
+  statusMayMove,
+  switchOffered,
+} from "./state.ts";
 
 const agent = (patch: Partial<SessionProcess> = {}) =>
   new SessionProcess({
@@ -38,6 +44,23 @@ describe("the state a thread hears", () => {
     for (const status of ["starting", "waiting", "completed", "failed", "stopped"] as const) {
       expect(slackSessionState({ status, currentAgent: agent(), turns: [] })).toBe(status);
     }
+  });
+
+  it("reads a stop Mend made for idleness as idle-stopped, and the person's own as stopped", () => {
+    const ended = agent({ status: "stopped", exitedAt: new Date("2026-09-23T10:20:00.000Z") });
+    const idleStoppedAt = new Date("2026-09-23T10:20:00.000Z");
+    expect(
+      slackSessionState({ status: "stopped", currentAgent: ended, turns: [], idleStoppedAt }),
+    ).toBe("idle-stopped");
+    expect(
+      slackSessionState({ status: "stopped", currentAgent: ended, turns: [], idleStoppedAt: null }),
+    ).toBe("stopped");
+    expect(isSettledState("idle-stopped")).toBe(true);
+    expect(isStoppedState("idle-stopped")).toBe(true);
+    expect(isStoppedState("completed")).toBe(false);
+    expect(switchOffered("idle-stopped", [])).toBe(false);
+    // The reply that resumes it moves the thread back to running.
+    expect(statusMayMove("idle-stopped", "running")).toBe(true);
   });
 
   it("reads a live protocol agent by its latest turn", () => {

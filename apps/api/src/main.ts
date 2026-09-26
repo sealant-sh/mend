@@ -109,6 +109,8 @@ import {
   InstallRunnerEngineLive,
   Dispatcher,
   JobRunner,
+  ProtocolIdleStopLive,
+  ProtocolIdleStopScheduleLive,
   ReviewPrepLive,
   runStarterLayer,
   SessionNotifierLive,
@@ -656,6 +658,8 @@ const WorkerLive = Layer.mergeAll(
   // and the hourly retention sweep. Both are inert under the co-located store.
   SummaryObserveWorkerLive.pipe(Layer.provide(SummaryObserverLive)),
   CaptureRetentionScheduleLive.pipe(Layer.provide(CaptureRetentionLive)),
+  // Stops a protocol agent idle past MEND_PROTOCOL_IDLE_STOP_MINUTES, once across workers.
+  ProtocolIdleStopScheduleLive.pipe(Layer.provide(ProtocolIdleStopLive)),
   // The Mend-controlled install that feeds the per-project dependency cache (decision 9).
   DependencyInstallWorkerLive.pipe(
     Layer.provide(DependencyInstallerLive.pipe(Layer.provide(InstallRunnerEngineLive))),

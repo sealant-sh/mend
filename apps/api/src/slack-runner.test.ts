@@ -45,6 +45,7 @@ import {
   AgentRequest,
   AgentTurn,
   ChangeLanding,
+  idleStopSummary,
   Project,
   Session,
   SessionProcess,
@@ -244,6 +245,8 @@ interface WorldOptions {
     readonly questions?: ReadonlyArray<AgentInputQuestion>;
     /** The owner lets others steer it. */
     readonly sharedControl?: boolean;
+    /** Mend stopped it because its protocol agent sat idle (MEND_PROTOCOL_IDLE_STOP_MINUTES). */
+    readonly idleStopped?: boolean;
   };
   /** Bob is linked too, and sees the shared projects. */
   readonly bobLinked?: boolean;
@@ -425,6 +428,9 @@ const world = (options: WorldOptions = {}) => {
           origin: "slack",
           sharedControlEnabledByUserId: earlier.sharedControl === true ? "alice" : null,
           sharedControlEnabledAt: earlier.sharedControl === true ? NOW : null,
+          ...(earlier.idleStopped === true
+            ? { summary: idleStopSummary(15), idleStoppedAt: NOW, settledAt: NOW }
+            : {}),
         });
   const question =
     earlier?.questions === undefined
@@ -1709,6 +1715,20 @@ describe("the Slack runner, following up a thread's session", () => {
       "start.launchAs:alice:session-earlier",
     ]);
     expect(w.launches).toMatchObject([{ mode: "protocol", prompt: "also cover the logout test" }]);
+    expect(w.slack.calls).toEqual([]);
+  });
+
+  it("resumes a session Mend stopped for idleness, with the reply as its opening turn", async () => {
+    const w = alices({ live: false, status: "stopped", idleStopped: true });
+    await w.deliver(followUp(w, "now the logout test"));
+
+    expect(
+      w.effects.filter((entry) => entry.startsWith("engine.") || entry.startsWith("start.")),
+    ).toEqual([
+      "engine.submitTurn:session-earlier:alice:now the logout test",
+      "start.launchAs:alice:session-earlier",
+    ]);
+    expect(w.launches).toMatchObject([{ mode: "protocol", prompt: "now the logout test" }]);
     expect(w.slack.calls).toEqual([]);
   });
 

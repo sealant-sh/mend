@@ -40,6 +40,7 @@ import {
   ChangeTour,
   Project,
   ReviewComment,
+  idleStopSummary,
   Session,
   SessionProcess,
   type AgentItemKind,
@@ -618,6 +619,50 @@ describe("the Slack thread reporter", () => {
     await w.observe(reporter);
     expect(w.reactions()).toEqual(new Set());
     expect(w.updates().at(-1)).toContain("· stopped ·");
+  });
+
+  it("reads an idle stop as idle-stopped: the summary on the status line, and 💤 for ⏳ or ✅", async () => {
+    const idleStopped = () =>
+      new Session({
+        ...sessionWith("stopped"),
+        summary: idleStopSummary(15),
+        idleStoppedAt: NOW,
+        settledAt: NOW,
+      });
+    const stoppedAgent = new SessionProcess({ ...agent, status: "stopped", exitedAt: NOW });
+
+    // A turn that completed, then the idle stop.
+    const w = world();
+    const reporter = w.worker();
+    w.state.turns = [turn(1, "completed", NOW)];
+    await w.observe(reporter);
+    expect(w.reactions()).toEqual(new Set(["white_check_mark"]));
+    w.state.session = idleStopped();
+    w.state.processes = [stoppedAgent];
+    await w.observe(reporter);
+    expect(w.updates().at(-1)).toBe(
+      "billing-api · from a link in the thread · claude · idle · stopped after 15 min · reply to resume · mend/flaky-login-test",
+    );
+    expect(w.reactions()).toEqual(new Set(["zzz"]));
+    expect(w.state.thread.reportedState).toBe("idle-stopped");
+
+    // An agent that never took a turn: ⏳ goes, and nothing reads ❌.
+    const quiet = world();
+    const quietReporter = quiet.worker();
+    await quiet.observe(quietReporter);
+    expect(quiet.reactions()).toEqual(new Set(["hourglass_flowing_sand"]));
+    quiet.state.session = idleStopped();
+    quiet.state.processes = [stoppedAgent];
+    await quiet.observe(quietReporter);
+    expect(quiet.reactions()).toEqual(new Set(["zzz"]));
+
+    // The reply that resumes it puts the thread back to running.
+    w.state.session = sessionWith("running");
+    w.state.processes = [agent];
+    w.state.turns = [turn(1, "completed", NOW), turn(2, "running")];
+    await w.observe(reporter);
+    expect(w.updates().at(-1)).toContain("· running ·");
+    expect(w.reactions()).toEqual(new Set(["hourglass_flowing_sand"]));
   });
 
   it("posts each turn's closing message, cut to 3,000 characters with a link", async () => {

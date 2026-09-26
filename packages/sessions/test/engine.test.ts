@@ -1542,7 +1542,10 @@ const sessionsLayer = (world: World) => {
     notifyProgress: () => Effect.void,
     settle: (id, outcome, summary) =>
       Effect.sync(() => update(id, { status: outcome, summary, settledAt: now() })),
-    reopen: (id, status) => Effect.sync(() => update(id, { status, settledAt: null })),
+    reopen: (id, status) =>
+      Effect.sync(() => update(id, { status, settledAt: null, idleStoppedAt: null })),
+    claimIdleStop: () => Effect.succeed(true),
+    releaseIdleStop: () => Effect.void,
     setSummary: (id, summary) => Effect.sync(() => update(id, { summary })),
     setHarness: (id, harness) => Effect.sync(() => update(id, { harness })),
     setLabel: (id, label) => Effect.sync(() => update(id, { label })),
@@ -2329,6 +2332,51 @@ describe("SessionEngine", () => {
           openedOptions,
         ),
         protocolHostLayer: recordingProtocolHostLayer(attached, submitted, authors),
+      },
+    );
+  });
+
+  it("settles a stop with the summary it was given: the idle stop's words", async () => {
+    const created: CreateOptions[] = [];
+    const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
+    const submitted: string[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launchProtocol(
+            session.id,
+            { mode: "protocol", prompt: "inspect replay", permissionMode: "bypass" },
+            "user-1",
+          );
+
+          yield* engine.stop(session.id, "idle · stopped after 15 min · reply to resume");
+
+          const settled = world.sessions.get(session.id);
+          expect(settled?.status).toBe("stopped");
+          expect(settled?.summary).toBe("idle · stopped after 15 min · reply to resume");
+          const agent = [...world.processes.values()].find(
+            (process) => process.kind === "agent-protocol",
+          );
+          expect(agent?.status).toBe("stopped");
+          expect(agent?.exitedAt).not.toBeNull();
+
+          // Resume works as after any stop.
+          yield* engine.resumeSession(session.id, null);
+          expect(attached[1]?.process.kind).toBe("agent-protocol");
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(created),
+        protocolHostLayer: recordingProtocolHostLayer(attached, submitted),
       },
     );
   });

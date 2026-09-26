@@ -91,6 +91,25 @@ describe("the status message", () => {
     expect(statusLine({ ...status, state: "waiting" })).toContain("waiting for input");
   });
 
+  it("words an idle stop with the session's summary, and without it where it is not at hand", () => {
+    expect(
+      statusLine({
+        ...status,
+        state: "idle-stopped",
+        summary: "idle · stopped after 15 min · reply to resume",
+      }),
+    ).toBe(
+      "billing-api · from the thread · claude · idle · stopped after 15 min · reply to resume · mend/flaky-login-test",
+    );
+    expect(statusLine({ ...status, state: "idle-stopped" })).toContain(
+      "· idle · stopped · reply to resume ·",
+    );
+    // Other states never read the summary.
+    expect(statusLine({ ...status, state: "stopped", summary: "anything" })).toContain(
+      "· stopped ·",
+    );
+  });
+
   it("counts one file in the singular", () => {
     expect(changeWords({ files: 1, additions: 2, deletions: 0 })).toBe("1 file · +2 −0");
   });
@@ -146,6 +165,8 @@ describe("the reaction on the request", () => {
     expect(reactionFor("failed")).toBe("x");
     expect(reactionFor("refused")).toBe("x");
     expect(reactionFor("stopped")).toBeNull();
+    // Mend's own stop for idleness: neither a verdict nor the person's hand.
+    expect(reactionFor("idle-stopped")).toBe("zzz");
   });
 });
 

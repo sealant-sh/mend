@@ -164,6 +164,12 @@ export class Session extends Schema.Class<Session>("Session")({
    * boot sweep has not classified yet).
    */
   hasTranscript: Schema.NullOr(Schema.Boolean),
+  /**
+   * When Mend stopped the session's protocol agent for idleness (MEND_PROTOCOL_IDLE_STOP_MINUTES,
+   * `protocolIdleReading`), and the claim that stops it once across workers. Null again once the
+   * session reopens.
+   */
+  idleStoppedAt: Schema.NullOr(Timestamp).pipe(Schema.withConstructorDefault(Effect.succeed(null))),
   status: SessionStatus,
   /** What the harness reported at settle, when anything. */
   summary: Schema.NullOr(Schema.String),

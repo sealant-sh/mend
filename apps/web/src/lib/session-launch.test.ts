@@ -41,6 +41,7 @@ const session: SessionDto = {
   sharedControlEnabledByUserId: null,
   sharedControlEnabledAt: null,
   hasTranscript: null,
+  idleStoppedAt: null,
   status: "idle",
   summary: null,
   lastSeenSequence: 0n,

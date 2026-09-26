@@ -182,6 +182,7 @@ describe("Mend Drizzle schema", () => {
       "shared_control_enabled_by_user_id",
       "shared_control_enabled_at",
       "has_transcript",
+      "idle_stopped_at",
       "status",
       "summary",
       "last_seen_sequence",
