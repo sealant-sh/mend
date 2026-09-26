@@ -1,5 +1,51 @@
 # @sealant/mend
 
+## 0.33.0
+
+### Minor Changes
+
+- baa5377: A default zsh profile for workspaces. When a session launches into a zsh workspace, Mend
+  writes `~/.zshrc` and `~/.config/starship.toml` wherever your dotfiles left no file: history and
+  completion settings, fzf and direnv hooks, the autosuggestions, syntax-highlighting and
+  history-substring-search plugins, and a starship prompt. Mend never overwrites a file that exists,
+  so your dotfiles always win. Every block checks for its tool first, so an image without one of the
+  packages still starts the shell. A project turns it off under Setup → Dotfiles → Default shell
+  profile.
+
+  New installs default to zsh and add `starship`, `zsh-autosuggestions`, `zsh-syntax-highlighting`,
+  `zsh-history-substring-search` and `direnv` to the default packages. A saved instance,
+  organization or project environment is not changed. These package names need a Sealant release
+  whose catalog has them.
+
+- 13b1f67: Organizations have their own defaults. An organization's owners set its workspace
+  environment and automation switches (background sessions, description and tour, fix suggestions,
+  session naming, landing) in Settings; every project in the organization inherits them unless it
+  overrides a value, and anything the organization leaves unset follows the instance. Members read
+  the values that apply and where each came from. Changes are recorded in the organization's audit
+  log.
+
+  The instance's defaults stay the operator's, and Settings now shows their editors only to the
+  operator instead of showing them to everyone and refusing the save.
+
+### Patch Changes
+
+- baa5377: Sealant 0.37.2: the package catalog gains `starship`, `zsh-autosuggestions`,
+  `zsh-syntax-highlighting`, `zsh-history-substring-search`, `direnv` and `eza` on every managed OS
+  family, which the default shell profile uses; and projects on the nix, Fedora and Ubuntu families
+  launch again with packages such as `python` and `github-cli`, which Sealant 0.37.1 renamed to
+  distro names and then refused. The image copies the released 0.37.2 Sealant API, worker and SSH
+  gateway by digest, and `@sealant/sdk` and `@sealant/api-contracts` move to 0.37.2.
+- 39bcdcd: Five web actions failed with "internal error": changing a project's visibility, turning
+  shared control on or off, changing a member's role, uploading files to a folder, and choosing a
+  project's folders. The web server passed plain objects where the API contract expects its request
+  classes, which Effect refuses to encode. It now builds the request classes.
+
+  The Slack link page confirmed nothing: its preview reached the API as a cookie-bearing POST
+  without an Origin and was refused. The preview now travels as a mutation, which carries the page's
+  Origin. Private Slack replies to a top-level mention (the link prompt, `settings` answers) were
+  posted into a thread nobody had opened, where Slack shows them nowhere; they now appear in the
+  channel.
+
 ## 0.32.1
 
 ### Patch Changes
