@@ -1,3 +1,4 @@
+import { MintDeviceRequest } from "@mend/api-contracts";
 import { Schema } from "effect";
 
 import { run } from "../api/index.ts";
@@ -9,6 +10,10 @@ export const devicesRouter = router({
   createPairing: procedure.mutation(({ ctx }) =>
     run(ctx, (api) => api.userDevices.createPairing()),
   ),
+  // A token minted by hand, for a device that cannot scan a code. Shown once.
+  create: procedure
+    .input(input(MintDeviceRequest))
+    .mutation(({ ctx, input: i }) => run(ctx, (api) => api.userDevices.create({ payload: i }))),
   revoke: procedure
     .input(input(Schema.Struct({ id: Schema.String })))
     .mutation(({ ctx, input: i }) =>

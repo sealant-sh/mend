@@ -221,6 +221,36 @@ describe.skipIf(!reachable)("device pairing", () => {
     expect(result.listedAfter).not.toContain(result.deviceId);
   });
 
+  it("mints a device by hand, with no code, that lists and revokes like a paired one", async () => {
+    const result = await withDevices(
+      Effect.gen(function* () {
+        const devices = yield* DevicesRepo;
+        const device = yield* devices.create({
+          userId: "user-1",
+          name: "App Review iPhone",
+          platform: "other",
+          tokenHash: hash("mdt_by-hand"),
+        });
+        const before = yield* resolveBearer("mdt_by-hand");
+        const listed = yield* devices.list("user-1");
+        yield* devices.revoke("user-1", device.id);
+        const after = yield* resolveBearer("mdt_by-hand");
+        return {
+          name: device.name,
+          before: before.length,
+          listed: listed.map((row) => row.id),
+          after: after.length,
+          deviceId: device.id,
+        };
+      }),
+    );
+
+    expect(result.name).toBe("App Review iPhone");
+    expect(result.before).toBe(1);
+    expect(result.listed).toContain(result.deviceId);
+    expect(result.after).toBe(0);
+  });
+
   it("refuses to revoke a device that belongs to someone else", async () => {
     const tag = await withDevices(
       Effect.gen(function* () {
