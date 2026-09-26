@@ -1,5 +1,8 @@
 # Docker inside workspaces on Kubernetes — implementation plan
 
+> Historical record (2026-09-26): never started. Superseded by Docker in MicroVM workspaces (#262,
+> Sealant 0.36.1 in #318).
+
 > Status: proposed 2026-09-03, not started. Evidence comes from the talos-ceph cluster (Talos
 > v1.13.9, Kubernetes v1.36.3, containerd 2.2.7, runc 1.3.3, kernel 6.18) and a fresh clone of
 > `sealant-sh/sealant` at `c1b3c65` (2026-09-02). The local `sealant-core` checkout is stale

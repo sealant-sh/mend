@@ -471,7 +471,7 @@ export class EnvironmentLoadReport extends Schema.Class<EnvironmentLoadReport>(
 }) {}
 
 /**
- * Project environment variables (`.plans/project-environment-variables.md`): project-owned,
+ * Project environment variables (`docs/archive/plans/project-environment-variables.md`): project-owned,
  * explicitly NON-SECRET configuration inherited by every process in the project's future
  * workspaces. Values ride only this group — project detail, session detail, and events carry
  * pointers or names, never values. Changes apply to new workspace launches (including

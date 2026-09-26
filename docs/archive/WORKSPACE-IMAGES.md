@@ -1,5 +1,9 @@
 # Workspace Images — facts and direction
 
+> Historical record (2026-09-26): notes from 2026-08-13. Superseded by Sealant's workspace image
+> builders design (sealant#266) and the shipped image settings documented at
+> https://docs.mend.run/guides/workspace-images/.
+
 Notes from the 2026-08-13 discussion. Most of this work lands in the Sealant platform (Core
 `buildkit-builder`), with Mend growing a per-project settings surface at the end.
 

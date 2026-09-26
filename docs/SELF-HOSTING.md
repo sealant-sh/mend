@@ -33,11 +33,10 @@ the same idempotent steps run on every start. Garage idles at about 7.5 MiB (mea
 the identical single-node configuration).
 
 A session's executor container must reach `mend:3106` (the session channel) and `garage:3900` (the
-bucket) by name on the bundle's Compose network. The Sealant Docker runtime does not attach
-workspace containers to that network yet; the bundle already sets
-`SEALANT_DOCKER_WORKSPACE_NETWORK=mend_default` for the Sealant release that does
-(`PLATFORM-FEEDBACK.md` 2026-09-13). Until that release is pinned, a session in the shipped bundle
-cannot fetch its plan — the workspace log says `capture plan.get failed`.
+bucket) by name on the bundle's Compose network. The bundle sets
+`SEALANT_DOCKER_WORKSPACE_NETWORK=mend_default`, and the pinned Sealant runtime (0.37.2; the attach
+shipped in 0.31.0) attaches every workspace container to that network. The Compose file names its
+project `mend`, which is where the network name comes from.
 
 Open `http://localhost:3105`. A fresh instance opens on registration: create the first account,
 choose how Mend reaches your repositories (a Mend key held on the server, or your own machine's

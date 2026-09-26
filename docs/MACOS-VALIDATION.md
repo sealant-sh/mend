@@ -1,11 +1,13 @@
 # macOS packaging validation
 
-The test target is the new two-container Mend deployment described in
-[PACKAGING-PLAN.md](PACKAGING-PLAN.md), not the retired host-process installer.
+The test target is the three-container Mend deployment (Mend, Postgres and Garage) that
+`mend server setup` installs, first planned in [PACKAGING-PLAN.md](archive/PACKAGING-PLAN.md), not
+the retired host-process installer.
 
-Sealant 0.28.0 supplies the volume-backed runtime capability. Its containerized-launcher E2E passed
-on Linux. No macOS-specific failure has been demonstrated in the proposed architecture. Actual Mac
-and installed VS Code acceptance remain unverified.
+Sealant 0.28.0 first supplied the volume-backed runtime capability; the bundle pins Sealant 0.37.2
+today (`deploy/docker/setup-contract.v2.json`). Its containerized-launcher E2E passed on Linux. No
+macOS-specific failure has been demonstrated in the proposed architecture. Actual Mac and installed
+VS Code acceptance remain unverified.
 
 ## Optional prerequisite probe
 
@@ -45,16 +47,16 @@ OrbStack need separate observations; one passing combination does not prove the 
 1. Install the CLI from npm. Verify no server starts. Repeat the shell bootstrap independently.
 2. Run `mend server setup`, selecting localhost. Do not set manual volume mappings, access the VM
    shell, or choose a Sealant version.
-3. Confirm only the Mend application and Postgres containers run at idle, with only intended ports
-   published. Workspace containers are additional only when workspaces exist.
+3. Confirm only the Mend application, Postgres and Garage containers run at idle, with only intended
+   ports published. Workspace containers are additional only when workspaces exist.
 4. Open the printed URL, create an account, and run `mend login`. Connect a provider normally.
 5. Repeat setup. Confirm accounts, secrets, selected context/ports, volumes, and SSH host keys
    remain.
 6. Adopt a Git URL. Local paths, `file://` sources, and folder selection must be rejected or absent;
    there is no local-repository import requirement. Existing-project/worktree selection still works.
 7. Start a session, edit a file, run Git commands and the workspace helper, then inspect its change
-   in Mend. Confirm linked Git metadata, dotfiles, harness state, and session sockets work without
-   the Mac opening a container socket or host-sharing the store.
+   in Mend. Confirm linked Git metadata, dotfiles, harness state, and the session channel work
+   without the Mac opening a container socket or host-sharing the store.
 8. Configure private-network access through setup. Sign in through the primary and each explicitly
    allowed alternate origin. An unlisted hostname, scheme, or port must not gain credentialed
    access.
@@ -80,7 +82,8 @@ OrbStack need separate observations; one passing combination does not prove the 
 
 ### MacBook client and Mac Mini server
 
-1. Install the server on the Mini with an explicitly configured LAN or tailnet URL.
+1. Install the server on the Mini with an explicitly configured LAN or other private-network URL.
+   Exposure stays at its default, `private`.
 2. On the MacBook, run `mend login` against that URL and open VS Code normally.
 3. Open a workspace through the extension. Its managed SSH hostname must address the Mini, not the
    MacBook's localhost. Verify browser login, terminal, file editing, and port forwarding.

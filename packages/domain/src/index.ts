@@ -1,6 +1,6 @@
 /**
  * @mend/domain — root barrel: the retiring queue-era model, kept compiling
- * while its reusable pieces migrate (docs/M0-INVENTORY.md). The canonical
+ * while its reusable pieces migrate (docs/archive/M0-INVENTORY.md). The canonical
  * workbench object model lives at `@mend/domain/workbench`
  * (MEND-AGENT-WORKBENCH-PLAN.md §5) — new code imports from there.
  */

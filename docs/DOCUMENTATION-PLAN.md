@@ -1,5 +1,11 @@
 # Mend documentation plan
 
+Status 2026-09-26: the published site is Astro Starlight in `apps/docs`, served at
+https://docs.mend.run/. Its sidebar (`apps/docs/astro.config.mjs`) has nine groups: Start here, Work
+with changes, Clients, Project setup, Organizations, Integrations, Operate, Concepts and Reference.
+The page tree and status labels below are the original plan. They are kept as a record and do not
+describe the published site.
+
 ## Purpose
 
 This plan defines the final documentation set for the Mend repository and the work needed to publish
@@ -125,17 +131,17 @@ because ordering and status-sensitive page names are part of the public route co
 - `apps/docs/src/content/docs/index.md` at `/` is **[Mixed] What is Mend?**, a factual summary of
   shipped behavior with a short, labeled planned-work section and no unsupported legacy workflow.
 - `apps/docs/src/content/docs/getting-started/requirements.md` at `/getting-started/requirements/`
-  is **[Shipped] Requirements**, covering Linux, x64 and arm64, Node.js 22 or newer for the CLI, a
-  local Docker daemon with API 1.45 or newer and Docker Compose v2, network trust, and disk
-  prerequisites verified against `mend server setup`.
+  is **[Shipped] Requirements**, covering Linux, x64 and arm64, Node.js 22 or newer for the CLI
+  (Node.js 26 for the terminal dashboard), a local Docker daemon with API 1.45 or newer and Docker
+  Compose v2, network trust, and disk prerequisites verified against `mend server setup`.
 - `apps/docs/src/content/docs/getting-started/install.md` at `/getting-started/install/` is
   **[Shipped] Install Mend**, covering CLI installation, `mend server setup`, the network boundary,
   account creation, `mend login`, account connection, `mend doctor`, and the `mend server`
   lifecycle.
 - `apps/docs/src/content/docs/getting-started/secure-your-instance.md` at
-  `/getting-started/secure-your-instance/` is **[Shipped] Secure your instance**, stating open
-  sign-up, trusted-user access, tailnet preference, LAN HTTP risk, bind behavior, bearer-token
-  handling, and the current absence of account isolation.
+  `/getting-started/secure-your-instance/` is **[Shipped] Secure your instance**, stating closed
+  registration after the first account (everyone else joins by invitation), organizations and
+  project visibility, exposure, LAN HTTP risk, bind behavior, and bearer-token handling.
 - `apps/docs/src/content/docs/getting-started/adopt-project.md` at `/getting-started/adopt-project/`
   is **[Shipped] Adopt a project**, documenting explicit `mend adopt`, local and remote sources,
   central-store behavior, and Git authentication modes.
@@ -155,14 +161,14 @@ because ordering and status-sensitive page names are part of the public route co
   development Service**, guiding explicit `mend service run`, `add`, logs, restart, stop, and
   private raw-port access without Mend request authentication.
 - `apps/docs/src/content/docs/guides/project-setup.md` at `/guides/project-setup/` is **[Mixed]
-  Configure project workspaces**, separating current image, variable, secret, reference, mount,
+  Configure project workspaces**, separating current image, variable, secret, reference, folder,
   recipe, dotfile, hot-session, Git-access, and review settings from planned options.
 - `apps/docs/src/content/docs/guides/git-access.md` at `/guides/git-access/` is **[Shipped]
   Configure Git access**, covering ambient credentials, a Mend key, the hardware-key bridge, the
   workspace shim, recovery, and the shared bare-repository risk.
 - `apps/docs/src/content/docs/guides/remote-access.md` at `/guides/remote-access/` is **[Mixed] Use
-  Mend from another device**, covering current browser access, tailnet observation, pairing and
-  revocation while labeling the unpublished native app and any unshipped scope controls.
+  Mend from another device**, covering current browser access, exposure (declared and observed),
+  pairing and revocation while labeling the unpublished native app and any unshipped scope controls.
 
 ### Operations
 
@@ -350,15 +356,15 @@ because ordering and status-sensitive page names are part of the public route co
 | Development topology                         | `apps/web/scripts/dev.mjs`, `compose.dev.yaml`, `.env.example`, and workspace scripts                                                                                         | `/contributing/local-setup/*`                                                                               | Document the command that CI and contributors run, not an inferred topology.                                                     |
 | Production topology                          | `deploy/docker/compose.v2.yaml` and `deploy/docker/setup-contract.v2.json`                                                                                                    | `/operations/*` and `/architecture/system-overview/`                                                        | The retired root `compose.yaml` and host-process installer are not supported topologies.                                         |
 | CLI commands and completion                  | Command parsers, registry, and help in `apps/cli/src/main.ts`                                                                                                                 | `/reference/cli/` and command samples                                                                       | Generate or snapshot the reference; do not claim fish completion while only zsh and bash exist.                                  |
-| HTTP API                                     | `packages/api/src/contract.ts`                                                                                                                                                | `/reference/generated/http-api/`                                                                            | Generate the contract section.                                                                                                   |
-| SSE, TTY, key bridge, and Better Auth routes | `packages/api/src/events.ts`, `packages/api/src/tty.ts`, `packages/api/src/keys-bridge.ts`, and `apps/web/src/entry/main.ts`                                                  | Manual-route manifest within `/reference/generated/http-api/`                                               | CI checks the manifest because these routes are outside `MendApi`.                                                               |
+| HTTP API                                     | `packages/api-contracts/src/api.ts`                                                                                                                                           | `/reference/generated/http-api/`                                                                            | Generate the contract section.                                                                                                   |
+| SSE, TTY, key bridge, and Better Auth routes | `apps/api/src/routes/events.ts`, `apps/api/src/routes/tty.ts`, `apps/api/src/routes/keys-bridge.ts`, and `apps/web/src/entry/main.ts`                                         | Manual-route manifest within `/reference/generated/http-api/`                                               | CI checks the manifest because these routes are outside `MendApi`.                                                               |
 | Workbench domain                             | `packages/domain/src/workbench/index.ts` and its modules                                                                                                                      | `/concepts/product-model/`, `/reference/generated/domain/`, `/architecture/domain-and-data-ownership/`      | New code and current docs use `@mend/domain/workbench`; retiring root exports are unsupported.                                   |
 | Database schema and migrations               | `packages/db/src/schema/workbench.ts`, `packages/db/src/schema/relations.ts`, `packages/db/src/migrations.ts`, and `packages/db/src/repos`                                    | `/reference/generated/database/` and contributor database workflow                                          | A real Postgres migration test must back current schema claims.                                                                  |
 | Session and process lifecycle                | `packages/domain/src/workbench/session*.ts`, `packages/domain/src/workbench/session-process.ts`, `packages/domain/src/workbench/session-fold.ts`, and `packages/sessions/src` | Session guide and architecture page                                                                         | Status wording must match the implemented fold and current client behavior.                                                      |
-| Review and checkpoints                       | Workbench review schemas, `packages/api/src/review-diff.ts`, store Git code, and review route tests                                                                           | Review guide, evidence concept, and store and review architecture page                                      | Document only comparison modes and evidence links exercised in the verified build.                                               |
+| Review and checkpoints                       | Workbench review schemas, `apps/api/src/routes/review-diff.ts`, store Git code, and review route tests                                                                        | Review guide, evidence concept, and store and review architecture page                                      | Document only comparison modes and evidence links exercised in the verified build.                                               |
 | Services                                     | Service and recipe schemas in `packages/domain/src/workbench`, `packages/sessions/src/service-host.ts`, `packages/sessions/src/recipes.ts`, CLI handlers, and tests           | Services guide and references                                                                               | `docs/SESSION-SERVICES.md` remains a decision record, not proof that every slice shipped.                                        |
 | Git access                                   | `packages/store/src/git.ts`, `packages/store/src/git-auth.ts`, key-bridge implementation, CLI behavior, and tests                                                             | Git guide and reference                                                                                     | `docs/GIT-ACCESS.md` records decisions and risks; code and tests establish current behavior.                                     |
-| Authentication and pairing                   | `packages/auth/src/auth.ts`, `packages/api/src/devices.ts`, `packages/db/src/repos/devices.ts`, and `apps/cli/src/pair.ts`                                                    | Secure-instance, remote-access, and security pages                                                          | State current trusted-user and unscoped-device boundaries until authorization tests prove otherwise.                             |
+| Authentication and pairing                   | `packages/auth/src/auth.ts`, `apps/api/src/routes/devices.ts`, `packages/db/src/repos/devices.ts`, and `apps/cli/src/pair.ts`                                                 | Secure-instance, remote-access, and security pages                                                          | State current trusted-user and unscoped-device boundaries until authorization tests prove otherwise.                             |
 | Per-user Sealant identity                    | `packages/sealant/src/principal.ts`, `packages/sealant/src/identity.ts`, account code, migrations, and current SDK behavior                                                   | Security and Sealant-boundary pages                                                                         | `docs/SEALANT-IDENTITY.md` records the decision; the installed SDK release determines availability.                              |
 | Workspace images                             | Current project setup API and UI, Sealant SDK image options, and acceptance tests                                                                                             | Project setup guide                                                                                         | `docs/WORKSPACE-IMAGES.md` is direction; custom images remain planned until selectable and tested.                               |
 | Inference and jobs                           | `packages/inference/src`, `packages/jobs/src`, and worker wiring in `apps/web/src/entry/main.ts`                                                                              | Evidence concept and inference architecture page                                                            | Generated claims need record links or runnable checks, and provider support needs released SDK evidence.                         |
@@ -447,7 +453,7 @@ file exists, reviewers assign the named role explicitly.
 | Documentation          | `apps/docs`, `docs/DOCUMENTATION-PLAN.md`, generators under `apps/docs/scripts`, and docs CI checks                                                 | Any public page, route, sidebar, docs schema, generator, origin, or publication workflow change.                                      |
 | Release and operations | `install.sh`, `deploy/docker/*`, `apps/cli/src/server-setup.ts`, `compose.dev.yaml`, release workflows, and `apps/docs/src/content/docs/operations` | Port, path, service name, minimum version, install, upgrade, backup, restore, uninstall, or bind change.                              |
 | CLI                    | `apps/cli/src/main.ts` and `/reference/cli/`                                                                                                        | Command, flag, help, output, status, selection, completion, exit, login, pairing, or configuration change.                            |
-| API                    | `packages/api/src/contract.ts`, `server.ts`, `events.ts`, `tty.ts`, and `keys-bridge.ts`                                                            | Endpoint, DTO, error, auth middleware, SSE event, WebSocket, or manual route change.                                                  |
+| API                    | `packages/api-contracts/src/api.ts`, `server.ts`, `events.ts`, `tty.ts`, and `keys-bridge.ts`                                                       | Endpoint, DTO, error, auth middleware, SSE event, WebSocket, or manual route change.                                                  |
 | Domain and database    | `packages/domain/src/workbench`, `packages/db/src/schema`, `packages/db/src/migrations.ts`, and `packages/db/src/repos`                             | Noun, status, schema, relation, migration, repository, or data ownership change.                                                      |
 | Sessions               | `packages/sessions`, Service domain modules, and session guides and references                                                                      | Session fold, process lifecycle, workspace retention, attach, resume, Service, recipe, forwarding, or lease change.                   |
 | Store and Git security | `packages/store`, key bridge code, Git decision record, and Git guide and reference                                                                 | Adoption, store path, worktree, checkpoint, remote operation, auth mode, key, shim, or shared repository change.                      |
@@ -458,21 +464,21 @@ file exists, reviewers assign the named role explicitly.
 
 Specific path triggers must update or explicitly mark these docs as unaffected:
 
-| Changed source                                                                                         | Required documentation impact                                                                                                                   |
-| ------------------------------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MEND-AGENT-WORKBENCH-PLAN.md`                                                                         | Review `/concepts/product-model/`, `/concepts/roadmap/`, `/reference/product-language/`, and `/reference/feature-status/`.                      |
-| `PLATFORM-FEEDBACK.md` or the `@sealant/sdk` version                                                   | Review `/architecture/sealant-boundary/`, `/reference/known-limitations/`, `/reference/feature-status/`, and any task page blocked by that gap. |
-| `install.sh`, `deploy/docker/*`, `apps/cli/src/server-setup.ts`, or `compose.dev.yaml`                 | Regenerate or review requirements, install, secure-instance, operations, configuration, system overview, and release pages.                     |
-| `apps/cli/src/main.ts`                                                                                 | Regenerate `/reference/cli/` and review all command samples plus shell completion claims.                                                       |
-| `packages/api/src/contract.ts`                                                                         | Regenerate HTTP reference, update client drift manifests, and review endpoint workflow docs.                                                    |
-| `packages/api/src/events.ts`, `tty.ts`, `keys-bridge.ts`, or `apps/web/src/entry/main.ts` route mounts | Update the manual-route manifest and API transport architecture page.                                                                           |
-| `packages/domain/src/workbench/**`                                                                     | Regenerate domain reference and review product model, language, lifecycle, and database workflow pages.                                         |
-| `packages/db/src/schema/**` or `packages/db/src/migrations.ts`                                         | Regenerate database reference and run mandatory clean Postgres migration checks.                                                                |
-| `packages/sessions/**`                                                                                 | Review session lifecycle, Services, project setup, configuration, and Services architecture pages.                                              |
-| `packages/store/**`                                                                                    | Review adoption, Git access, store and review architecture, security, and configuration pages.                                                  |
-| `packages/auth/**`, `packages/api/src/devices.ts`, or `packages/db/src/repos/devices.ts`               | Review secure-instance, remote access, security concept, security reference, and limitations pages.                                             |
-| `packages/inference/**` or `packages/jobs/**`                                                          | Review evidence and inference, feature status, known limitations, and inference architecture pages.                                             |
-| Any workspace `package.json`, `pnpm-workspace.yaml`, `turbo.json`, or `.node-version`                  | Regenerate package and scripts reference and review contributor prerequisites, apps, dependencies, and tests.                                   |
+| Changed source                                                                                            | Required documentation impact                                                                                                                   |
+| --------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND-AGENT-WORKBENCH-PLAN.md`                                                                            | Review `/concepts/product-model/`, `/concepts/roadmap/`, `/reference/product-language/`, and `/reference/feature-status/`.                      |
+| `PLATFORM-FEEDBACK.md` or the `@sealant/sdk` version                                                      | Review `/architecture/sealant-boundary/`, `/reference/known-limitations/`, `/reference/feature-status/`, and any task page blocked by that gap. |
+| `install.sh`, `deploy/docker/*`, `apps/cli/src/server-setup.ts`, or `compose.dev.yaml`                    | Regenerate or review requirements, install, secure-instance, operations, configuration, system overview, and release pages.                     |
+| `apps/cli/src/main.ts`                                                                                    | Regenerate `/reference/cli/` and review all command samples plus shell completion claims.                                                       |
+| `packages/api-contracts/src/api.ts`                                                                       | Regenerate HTTP reference, update client drift manifests, and review endpoint workflow docs.                                                    |
+| `apps/api/src/routes/events.ts`, `tty.ts`, `keys-bridge.ts`, or `apps/web/src/entry/main.ts` route mounts | Update the manual-route manifest and API transport architecture page.                                                                           |
+| `packages/domain/src/workbench/**`                                                                        | Regenerate domain reference and review product model, language, lifecycle, and database workflow pages.                                         |
+| `packages/db/src/schema/**` or `packages/db/src/migrations.ts`                                            | Regenerate database reference and run mandatory clean Postgres migration checks.                                                                |
+| `packages/sessions/**`                                                                                    | Review session lifecycle, Services, project setup, configuration, and Services architecture pages.                                              |
+| `packages/store/**`                                                                                       | Review adoption, Git access, store and review architecture, security, and configuration pages.                                                  |
+| `packages/auth/**`, `apps/api/src/routes/devices.ts`, or `packages/db/src/repos/devices.ts`               | Review secure-instance, remote access, security concept, security reference, and limitations pages.                                             |
+| `packages/inference/**` or `packages/jobs/**`                                                             | Review evidence and inference, feature status, known limitations, and inference architecture pages.                                             |
+| Any workspace `package.json`, `pnpm-workspace.yaml`, `turbo.json`, or `.node-version`                     | Regenerate package and scripts reference and review contributor prerequisites, apps, dependencies, and tests.                                   |
 
 A pull request that touches a trigger path must include a `Docs impact` section with one of two
 outcomes: named page changes, or `No docs change` with the exact source and test proving that public

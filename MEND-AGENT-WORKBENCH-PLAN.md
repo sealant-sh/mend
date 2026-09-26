@@ -1381,7 +1381,7 @@ understand the work.
   select only a Mend version. Adoption accepts Git URLs, replacing earlier local-path adoption.
   Remote-SSH uses per-server configuration and the client's Mend hostname by default. macOS and
   installed VS Code acceptance are release gates. Details and implementation sequence:
-  [Packaging plan](docs/PACKAGING-PLAN.md).
+  [Packaging plan](docs/archive/PACKAGING-PLAN.md).
 
 - **2026-08-28: externally-run agents are observed process rows.** An agent the user runs by hand —
   in a mend shell, an SSH session, an editor terminal — writes through the mounted harness home, and
@@ -1555,7 +1555,7 @@ understand the work.
   plan-hash build short-circuit, an ubuntu family, then `baseImage` custom images (sealant overlays
   one static binary + env + entrypoint) with a per-project three-field editor — base, packages,
   setup; not a compose editor (compose lives inside the workspace's docker sidecar). Facts and
-  sequence: `docs/WORKSPACE-IMAGES.md`.
+  sequence: `docs/archive/WORKSPACE-IMAGES.md`.
 
 - **2026-08-10 — Resumed sessions retain every Sealant run.** A Mend session is the stable logical
   conversation, worktree, and change; each launch or settled-session resume creates an ordered

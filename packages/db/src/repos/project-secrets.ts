@@ -49,7 +49,7 @@ export type ProjectSecretWriteError =
   | ProjectEnvironmentLimitError;
 
 /**
- * Project secrets (`.plans/project-environment-variables.md`, "Scope expansion"). Rows hold
+ * Project secrets (`docs/archive/plans/project-environment-variables.md`, "Scope expansion"). Rows hold
  * ciphertext only; the API never returns a value in any shape; the value-bearing read is
  * `sealedForLaunch`, consumed once per fresh workspace launch. Same project-row lock, aggregate
  * revision, and pointer-event discipline as the plaintext set. Name validation reuses the

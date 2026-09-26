@@ -551,7 +551,7 @@ export class SessionLaunchSetupError extends Schema.TaggedErrorClass<SessionLaun
 
 /**
  * The workbench session engine (plan §7.2, M1) — the supervisor extracted from
- * the queue-era run starter (docs/M0-INVENTORY.md), rewired onto sessions and
+ * the queue-era run starter (docs/archive/M0-INVENTORY.md), rewired onto sessions and
  * the central store:
  *
  * - `provision` creates the worktree, the session row, checkpoint 0

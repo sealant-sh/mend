@@ -2,9 +2,9 @@
 
 Status: proposed 2026-09-17. Commits Mend to the work that makes a private network layer a choice
 and not a prerequisite. It closes the Mend findings the organizations stack left open in
-[public exposure findings](../reviews/public-exposure-findings.md) (MEND-05, MEND-08, MEND-11, the
-event-stream lifecycle, and the edge), names the platform halves (CORE-01, -03, -04, -05, -08 and
-the executor channel's transport), and defines the **public exposure gate**.
+[public exposure findings](../archive/reviews/public-exposure-findings.md) (MEND-05, MEND-08,
+MEND-11, the event-stream lifecycle, and the edge), names the platform halves (CORE-01, -03, -04,
+-05, -08 and the executor channel's transport), and defines the **public exposure gate**.
 
 **This ADR does not authorize public exposure.** Public Mend is gate **G7** of the
 [access plan](../operations/aws-access-plan.md), and G7 needs an independent reassessment of the

@@ -123,7 +123,7 @@ export class ProjectSecretMutationResult extends Schema.Class<ProjectSecretMutat
 }) {}
 
 /**
- * Project SECRETS (`.plans/project-environment-variables.md`, "Scope expansion"): the encrypted,
+ * Project SECRETS (`docs/archive/plans/project-environment-variables.md`, "Scope expansion"): the encrypted,
  * write-only half of the project env store. Responses carry names and revisions only — a value
  * that has been written can never be read back through this API. At launch the current set goes
  * to Sealant's transient secret channel, which keeps it out of the blueprint, container env, and

@@ -1,5 +1,8 @@
 # Team support findings
 
+> Historical record (2026-09-26): a review from 2026-09-16. Its decisions are in
+> `docs/adr/0003-organizations-and-tenancy.md`, which says what shipped.
+
 Review date: 2026-09-16.
 
 ## Decision

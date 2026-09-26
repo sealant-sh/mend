@@ -14,7 +14,7 @@ import { Timestamp } from "../timestamp.ts";
 
 /**
  * A project-owned, explicitly NON-SECRET environment name/value pair (plan:
- * `.plans/project-environment-variables.md`). Values are ordinary configuration, persisted and
+ * `docs/archive/plans/project-environment-variables.md`). Values are ordinary configuration, persisted and
  * returned as plaintext by design; the UI states this before creation. Each fresh workspace launch
  * reads the project's complete current set once and passes it at workspace creation — a live
  * workspace never changes.

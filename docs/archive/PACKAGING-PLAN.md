@@ -1,5 +1,9 @@
 # Mend packaging plan
 
+> Historical record (2026-09-26): shipped as the packaging stack (#210 to #217). The current
+> contract is `docs/SELF-HOSTING.md`, `apps/cli/SERVER-RUNTIME.md` and `deploy/docker/`, and the
+> bundle now runs three containers (Mend, Postgres, Garage).
+
 Decided 2026-09-05. This replaces the earlier separate-service Compose proposal.
 
 ## Installation contract
@@ -114,5 +118,5 @@ The actual packaged product, not the retired host installer, is the test target.
 - A MacBook connects to a Mac Mini server through browser, CLI, and the installed VS Code extension.
 - Remote-SSH installs its server, opens files, runs a terminal, forwards a port, and reconnects.
 
-The reproducible Mac checklist is [MACOS-VALIDATION.md](MACOS-VALIDATION.md). Linux tests provide
+The reproducible Mac checklist is [MACOS-VALIDATION.md](../MACOS-VALIDATION.md). Linux tests provide
 Linux evidence. A generic volume/socket probe cannot establish macOS product or VS Code support.

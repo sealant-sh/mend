@@ -26,11 +26,20 @@ npx expo run:ios --device            # from apps/mobile; prebuild + build + inst
 
 First time: open `ios/Mend.xcworkspace` in Xcode → Signing & Capabilities → Team = your personal
 team; on the iPhone enable Developer Mode (Settings → Privacy & Security) and trust the certificate
-(Settings → General → VPN & Device Management). Bundle id is `com.yiannisp.mend` in `app.json`.
+(Settings → General → VPN & Device Management). The iOS bundle id is `com.yiannisp.sealant.mend` and
+the Android package is `com.yiannisp.mend`, both in `app.json`.
 
 Then on Linux: `pnpm --filter @mend/mobile dev`, and open the Mend dev build on the phone — it
-discovers Metro on the LAN (port 8081 must be allowed through the firewall) or connect via the
-machine's tailnet address.
+discovers Metro on the LAN (port 8081 must be allowed through the firewall), or connect to the
+machine's address by hand.
+
+## Builds and updates
+
+The app is not in the App Store or Google Play. `eas.json` defines three EAS build profiles:
+`development` (the dev client, internal distribution), `adhoc` (internal distribution) and
+`production`. `app.json` points `expo-updates` at an EAS Update URL with a fingerprint runtime
+version, so JavaScript-only changes can reach an installed build as an over-the-air update on its
+channel.
 
 ## Design
 
@@ -40,5 +49,12 @@ Evidence Review, same family as web (`DESIGN.md` at the repo root). Tokens come 
 `src/app/_layout.tsx` (Inter, Space Grotesk, JetBrains Mono via Expo Google Fonts). Light and dark
 are the same structure; scheme comes from `useEvidenceTheme()` in `src/theme/evidence.ts`.
 
-Screens currently render illustrative data from `src/data/mock.ts`, shaped after the product model
-(plan §5) — wire to `@mend/api` as the platform lands.
+## Data
+
+The app talks to a Mend server over its HTTP API. `src/data/live.ts` holds the server URL and a
+token stored on the device, minted by pairing (`src/data/pairing.ts`, the `mend pair` QR or code) or
+typed in by hand, and adapts the API's sessions, projects and changes for the screens.
+`src/data/review.ts` reads changes and posts review comments, `src/data/tty-socket.ts` holds the
+`/api/tty` WebSocket for the terminal, and `src/data/notifications.ts` registers the device for
+notifications. `src/data/review-routes.test.ts` checks the routes the review layer calls against
+`@mend/api-contracts`.

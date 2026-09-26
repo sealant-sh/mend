@@ -2,18 +2,28 @@
 
 Mend (by Sealant) is a `pnpm` + `turbo` monorepo. Mend is a **local-first workbench for developers
 who use coding agents heavily**: adopt a repository into Mend's central store, run your own agent
-(`mend codex`, `mend claude`, an arbitrary command) in a recorded per-session git worktree, review
-the accumulated local change with evidence beside every claim, send review comments back to the same
-session, and steer it all from any device over a private network. No issue tracker or PR required.
-Read `MEND-AGENT-WORKBENCH-PLAN.md` first; it is the canonical product direction and carries the
-decision log. The retired issue-to-PR/queue documents live in `docs/archive/` — do not implement
-against them.
+(`mend codex`, `mend claude`, an arbitrary command) in a recorded git worktree, review the
+accumulated local change with evidence beside every claim, send review comments back to the same
+session, and steer it all from any device, over loopback, a private network, or publicly behind an
+edge (ADR 0004). No issue tracker or PR required. Read `MEND-AGENT-WORKBENCH-PLAN.md` first; it is
+the canonical product direction and carries the decision log. The retired issue-to-PR/queue
+documents live in `docs/archive/` — do not implement against them.
 
-- `apps/marketing`: TanStack Start marketing site (Cloudflare Workers via wrangler). Pitches the
-  workbench direction (refreshed 2026-08-01).
+- `apps/api`: the Mend server (Effect HttpApi): sessions engine, store, landing, Slack, workers.
+- `apps/cli`: the `mend` CLI (`@sealant/mend` on npm): OpenTUI dashboard, sessions, `mend server`.
+- `apps/desktop`: Electron desktop app: every live session as a terminal, review beside it.
+- `apps/docs`: the docs site (Astro Starlight), published at docs.mend.run.
+- `apps/marketing`: TanStack Start marketing site (Cloudflare Workers via wrangler). The landing
+  page was replaced on 2026-09-26 (#383): install steps, how it works, integrations, FAQ.
+- `apps/mobile`: Expo app: steer sessions and review changes from a phone.
+- `apps/vscode`: VS Code extension: open and steer sessions, workspaces over Remote-SSH.
 - `apps/web`: TanStack Start product web app — Now · projects · sessions · review.
-- `packages/*`: shared libraries (`ui` design tokens, domain packages as they appear).
-- `tooling/*`: shared configs (`typescript`).
+- `packages/*`: shared libraries: `agent-conversation`, `agent-protocol` (Codex/Claude stdio
+  adapters), `api-contracts` (the HTTP API contract), `auth`, `db` (Postgres, migrations), `domain`,
+  `inference`, `jobs` (pg-boss), `landing`, `network`, `sealant` (the SDK behind Effect services),
+  `sessions` (the session engine), `slack`, `store` (repository store, worktrees, checkpoints), `ui`
+  (design tokens), `workspace-ssh`.
+- `tooling/*`: shared configs (`typescript`) and build scripts (`scripts`: the server bundler).
 
 Mend consumes the Sealant platform **only through the public SDK** (`@sealant/sdk` on npm):
 `workspaces.create({ repository, harness })`, blocking `harness.run(prompt)` or non-blocking
@@ -24,16 +34,17 @@ platform feedback (in `PLATFORM-FEEDBACK.md`) instead of working around it.
 ## Product Language Contract
 
 - The primary product nouns are `project` (a repository adopted into the machine's central store),
-  `session` (one supervised coding-agent process in its own git worktree; bring-your-own harness),
-  `change` (the reviewable object: session worktree versus its base), `checkpoint` (a hidden git ref
+  `session` (one supervised coding-agent conversation in a git worktree; bring-your-own harness),
+  `change` (the reviewable object: the worktree versus its base), `checkpoint` (a hidden git ref
   stamped with the record sequence; any two checkpoints define a reviewable slice), `context pack` /
   `context snapshot` (explicit, versioned selection; every session receives an immutable snapshot),
   and `handoff` (the editable end-of-session summary promoted into durable context). Interface-side
   inference deliberately has **no product noun** — write "Mend uses inference"; the machine review
   pass is phrased "Mend reads the change" (draft comments and proposed checks, never verdicts; every
   finding links to the record or ships a runnable check). Cardinality: sessions are many per
-  project, one worktree each; one change per session; landing a change (merge/commit/PR) is
-  publication, optional by definition.
+  project, each runs in one worktree and a worktree can hold several; one change per worktree (every
+  session in the worktree contributes to it; its owner is the owner of the worktree's first
+  session); landing a change (merge/commit/PR) is publication, optional by definition.
 - Tenancy nouns (`docs/adr/0003-organizations-and-tenancy.md`): `organization` (the tenant; owns its
   members, projects, folders, reference repositories and audit log; an account belongs to exactly
   one), `owner` and `member` (organization roles), `operator` (an instance role that administers the

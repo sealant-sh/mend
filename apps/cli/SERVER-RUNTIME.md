@@ -183,10 +183,10 @@ four-file writer could not safely be reused by lifecycle commands.
 ```sh
 mend server status
 mend server logs --tail 100         # 1..1000 lines per service; no follow
-mend server stop                    # stops Mend and Postgres, not workspaces
+mend server stop                    # stops Mend, Postgres and Garage, not workspaces
 mend server start --offline         # reuses the active generation and pin
-mend server restart --offline       # stops Mend only, leaves Postgres running
-mend server upgrade --version 0.24.0 --assets-dir ./release-0.24.0 --offline
+mend server restart --offline       # stops Mend only, leaves Postgres and Garage running
+mend server upgrade --version <target> --assets-dir ./release-<target> --offline
 mend server upgrade --version latest # explicit GitHub resolution and pull of missing images
 ```
 
@@ -273,8 +273,9 @@ override and retained unless the context is replaced or another override is supp
 daemon socket is the only Docker requirement: the application builds and launches workspace images
 through it, so there is no published registry a runtime has to reach.
 
-Before activation, the resolved Compose images must be exactly `ghcr.io/sealant-sh/mend:VERSION` and
-`postgres:17-alpine`. The Mend image must carry `org.opencontainers.image.version` equal to the
+Before activation, the resolved Compose images must be exactly `ghcr.io/sealant-sh/mend:VERSION`,
+`postgres:17-alpine` and, when the bundle carries the capture store's bucket,
+`dxflrs/garage:v2.4.1`. The Mend image must carry `org.opencontainers.image.version` equal to the
 requested pin, even for online setup and even after a pull. A cached wrong label is rejected, not
 silently replaced. Asset text checks alone do not establish what Compose will run.
 
@@ -346,12 +347,13 @@ container ID. It never uses canonical Mend resources or removes the cached image
 also cover a `077` umask and same-content retries with incompatible init modes. The full CLI suite
 needs a 15-second test budget for existing login polling.
 
-`test-fixtures/docker` copies the Compose and ownership contract from
-`../Mend-packaging/deploy/docker` at `91e1cf6`; Postgres init is unchanged from `1c2018b`. These are
-test inputs, not shipped CLI assets. Setup downloads the two assets from the selected GitHub release
-unless `--assets-dir DIR` supplies `compose.v2.yaml` and `postgres-init.sh`. Supplied files pass the
-same contract checks and are copied into the private generation. The source directory is not
-retained or needed on reruns. Fresh setup with local assets requires an explicit `--version`.
+`test-fixtures/docker` holds copies of `deploy/docker/compose.v2.yaml`, `postgres-init.sh` and
+`setup-contract.v2.json`, plus `compose.v2.before-garage.yaml`, a bundle from before the Garage
+bucket that the lifecycle tests upgrade from. These are test inputs, not shipped CLI assets. Setup
+downloads the two assets from the selected GitHub release unless `--assets-dir DIR` supplies
+`compose.v2.yaml` and `postgres-init.sh`. Supplied files pass the same contract checks and are
+copied into the private generation. The source directory is not retained or needed on reruns. Fresh
+setup with local assets requires an explicit `--version`.
 
 Lifecycle tests invoke public `serverCommand` with the production process runtime, a separate local
 Docker protocol fixture executable, real HTTP listeners and real files. They check order, exact
@@ -364,8 +366,9 @@ image/migration acceptance. That acceptance uses two genuinely stamped canonical
 and the public CLI flags above; changing a health response to an invented version is not an upgrade
 test.
 
-`--offline` forbids GitHub requests and runs Compose with `--pull never --no-build`. Preload both
-`postgres:17-alpine` and `ghcr.io/sealant-sh/mend:VERSION` in the selected daemon. The Mend image's
+`--offline` forbids GitHub requests and runs Compose with `--pull never --no-build`. Preload
+`postgres:17-alpine`, `dxflrs/garage:v2.4.1` (when the bundle carries the Garage bucket) and
+`ghcr.io/sealant-sh/mend:VERSION` in the selected daemon. The Mend image's
 `org.opencontainers.image.version` label and the health response must equal the exact pin. Local
 health checks still run; offline setup pulls nothing at all. This flag controls installation network
 access, not the running server's workspace/provider traffic.
@@ -374,7 +377,7 @@ access, not the running server's workspace/provider traffic.
 `2222`. Both must be valid and distinct. The bundle publishes no other host port:
 
 ```sh
-mend server setup --version 0.24.0 --assets-dir ./release-assets --offline --port 3205 --ssh-port 2322
+mend server setup --version <version> --assets-dir ./release-assets --offline --port 3205 --ssh-port 2322
 mend server setup --offline
 ```
 

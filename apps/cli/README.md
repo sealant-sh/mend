@@ -54,8 +54,8 @@ pin rather than automatically downgrading or restoring the database.
 For local release assets and preloaded images:
 
 ```sh
-mend server setup --version 0.23.0 --assets-dir ./release-0.23.0 --offline
-mend server upgrade --version 0.24.0 --assets-dir ./release-0.24.0 --offline
+mend server setup --version <version> --assets-dir ./release-<version> --offline
+mend server upgrade --version <target> --assets-dir ./release-<target> --offline
 ```
 
 Each asset directory must contain `compose.v2.yaml` and `postgres-init.sh`. Mend copies them into an
@@ -124,34 +124,95 @@ line that needs an action ends with the one command that takes it:
 
 It exits 1 when a `✗` is printed, so a setup script can gate on it. No request waits longer than 3s.
 
+```sh
+mend doctor --bundle [--out <path>] [--tail <n>]
+```
+
+`--bundle` writes one `tar.gz` for a bug report instead of printing the checklist: this CLI and its
+environment, the doctor lines, the server's health, the local server's compose file and the names of
+its `.env` keys (never their values), Docker facts, the Mend and workspace containers' inspect facts
+and logs, every session with its processes and recorded terminal output, the connected accounts, and
+the versions of `claude`, `codex`, `gh`, `git` and `docker`. A part that fails leaves a
+`<name>.error.txt` in the bundle. A redactor removes token, password and secret values from every
+file before it is written, and the archive is mode 0600. It still holds logs and configuration, so
+read it before you share it. The default path is `~/.config/mend/bundles/mend-bundle-<time>.tgz`;
+`--tail` sets lines per log, 1 to 2000, default 500.
+
 ## Commands
 
 ```text
-mend adopt [git-url] [--name <name>]  clone a network Git repository into the store
+start
+mend login [--url <server>]           sign this terminal in through the browser
+mend connect <claude|codex|github> [--use-my-login] [--from-stdin] [--remove]
+                                      send this machine's provider credential to the server
+mend adopt [git-url] [--name <name>] [--auth ambient|mend-key|bridge] [--private|--shared]
+                                      clone a network Git repository into the store
                                       (default: the current checkout's origin URL)
-mend codex|claude|opencode            new session worktree + launch the harness in it
-mend run -- <command...>              same, with an arbitrary command
-mend attach <session-id-prefix>       reattach this terminal to a running session
+mend codex|claude|opencode ["prompt"] new session worktree + launch the harness in it
+mend pair [--url <base url>]          pair a phone or a second machine: QR + code + URL
+mend doctor [--bundle]                read-only checklist, or a redacted archive for a bug report
+
+sessions
+mend ui [--no-tunnel]                 the dashboard (same as bare mend)
+mend attach [session-id-prefix]       reattach this terminal to a running session
+mend stop [session] | --all | --services [session]
+                                      stop the agent; the record and the review remain
+mend shell [session-id-prefix]        open a shell in a live session's workspace
+mend run [--project p] -- <command...>
+                                      run any command as a session
 mend continue [session-id]            resume a session with its pending review follow-up
 mend resume [session-id] [--with h]   rejoin a settled session (state restored; --with switches harness)
 mend rejoin [session-id] [--harness h] attach if live, otherwise resume; newest live wins
-mend sessions [--all] [--project p] [--json]
-mend status                           active sessions (alias of mend sessions)
-mend land <session> [--branch b] [--no-pr] [--title t]
+mend sessions [--all] [--project p] [--json | --json=v2]
+mend status                           alias of mend sessions
+mend worktrees [--project p] [--json] every worktree and the sessions inside it
+mend projects                         adopted projects and their live sessions
+mend refresh [project]                fetch origin's branches into the store
+mend land <session> [--branch b] [--no-pr] [--title t] | --check
                                       push the change to origin, open or update its pull request
 mend pull <session> [--force]         fetch the change into this clone as mend/<name>
-mend pair [--url <base url>]          pair a phone or a second machine: QR + code + URL
-mend doctor                           read-only checklist of this machine's setup
+
+services
+mend service run|add|connect|list|logs|restart|stop|init
+                                      supervise servers in a session's workspace and bring
+                                      them to this machine's loopback
+
+project setup
+mend env show|load|cluster            the project's environment: names, .env files, Kubernetes bindings
 mend skills [--project [p]]           your skill library on the server (or a project's)
 mend skills push [--project [p]] [--prune] [--dir <path>]
                                       upload ~/.agents/skills bundles; sessions receive
                                       them at launch (--prune removes what's gone)
+mend dotfiles [show] | repo | sync    your dotfiles on the server: repository and synced files
+mend git-author [<name> <email>] | --clear
+                                      the name and email your workspaces commit as
 mend keys init|show|mode|share        your Mend git key, default access mode, agent bridge
-mend ssh [setup]                      workspace SSH status; register a key + Host block
+
+organization
+mend members                          who belongs to your organization, and their roles
+mend invite [--role member|owner] [--email <address>] [--days <n>]
+                                      print a one-time invitation link
+mend folder list|create|push|rm       your organization's folders
+mend session share <session> on|off   shared control: let everyone who can see a session steer it
+
+this machine
+mend operator org list|create|rename|invite-owner
+mend operator exposure                how this instance is exposed, as declared and as observed
+mend operator gate                    what MEND_TENANCY=multi still needs on this instance
+mend operator grant-owner|reset-link  owner grants and one-time password reset links
 mend server <command>                 this machine's Docker server: setup, status, logs,
                                       start, stop, restart, upgrade
+mend ssh [setup]                      workspace SSH status; register a key + Host block
+mend accounts                         your connected accounts on the server
+mend logout                           revoke this terminal's device token and forget it
+mend uninstall [--all | --server | --home] [--yes]
+                                      remove the server, this machine's Mend files, or both
+mend completions zsh|bash             print the TAB-completion hook
 mend version                          this CLI's version, and the server's when it answers
+mend help|man [command...]            one command's page with usage, options and examples
 ```
+
+The sections follow `mend help`. `mend help <command>` prints each command's full usage.
 
 ## Signing in
 
@@ -178,7 +239,7 @@ dev instance with `MEND_STATIC_TOKEN` set, `MEND_TOKEN=<that value>` also works.
 mend ssh                          # inspect config and this client's key registration
 mend ssh setup                    # register a key and reconcile this server's Host block
 mend ssh setup --key ./my-key      # explicitly select private key or its .pub file
-mend ssh setup --host mini.tailnet.ts.net
+mend ssh setup --host mend.example.com
 ```
 
 Setup puts the managed block before wildcard defaults and restores all-host scope before your

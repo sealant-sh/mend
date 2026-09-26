@@ -1,10 +1,11 @@
 # Organizations and tenancy: one boundary for single-user, team and multi-tenant Mend
 
 Status: accepted 2026-09-17. Settles the product decisions that
-[team support findings](../reviews/team-support-findings.md) asked for before permissions are
-implemented, and the Mend half of the account and authorization blockers in
-[public exposure findings](../reviews/public-exposure-findings.md). Budgets (MEND-05, CORE-04) are
-deliberately deferred; see "Multi mode gate". Teams inside an organization are out of scope.
+[team support findings](../archive/reviews/team-support-findings.md) asked for before permissions
+are implemented, and the Mend half of the account and authorization blockers in
+[public exposure findings](../archive/reviews/public-exposure-findings.md). Budgets (MEND-05,
+CORE-04) are deliberately deferred; see "Multi mode gate". Teams inside an organization are out of
+scope.
 
 ## Context
 
