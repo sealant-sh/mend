@@ -2,8 +2,9 @@ import {
   CreateInvitationRequest,
   InvitationPreviewRequest,
   MemberRoleRequest,
+  OrganizationWorkspaceEnvironmentRequest,
 } from "@mend/api-contracts";
-import { InvitationId, ProjectId } from "@mend/domain";
+import { InvitationId, OrganizationSettings, ProjectId } from "@mend/domain";
 import { Schema } from "effect";
 
 import { run } from "../api/index.ts";
@@ -51,6 +52,25 @@ export const organizationRouter = router({
     .input(input(Schema.Struct({ id: ProjectId })))
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.organization.takeOverProject({ params: { id: i.id } })),
+    ),
+  // What the organization's projects inherit; owners change it, members read it.
+  settings: procedure.query(({ ctx }) => run(ctx, (api) => api.organization.settings())),
+  setSettings: procedure.input(input(OrganizationSettings)).mutation(({ ctx, input: i }) =>
+    run(ctx, (api) =>
+      // The API encodes the class, so it gets one, never the decoded plain shape.
+      api.organization.setSettings({ payload: new OrganizationSettings({ ...i }) }),
+    ),
+  ),
+  setWorkspaceEnvironment: procedure
+    .input(input(OrganizationWorkspaceEnvironmentRequest))
+    .mutation(({ ctx, input: i }) =>
+      run(ctx, (api) =>
+        api.organization.setWorkspaceEnvironment({
+          payload: new OrganizationWorkspaceEnvironmentRequest({
+            workspaceImage: i.workspaceImage,
+          }),
+        }),
+      ),
     ),
   audit: procedure
     .input(input(Schema.Struct({ before: Schema.optional(Schema.String) })))

@@ -574,9 +574,10 @@ const findProject = async (config: CliConfig, explicit: string | null, adoptCwd 
 };
 
 /**
- * Cascade for the launch lifecycle: per-launch flag → project stance → global
- * setting. Any read failure (an older server, a blip) stays background — a
- * network hiccup must never flip launch semantics to foreground.
+ * Cascade for the launch lifecycle: per-launch flag → project stance → the
+ * organization's default → the instance's. A server without organization
+ * defaults answers the instance's; any other read failure (a blip) stays
+ * background — a network hiccup must never flip launch semantics to foreground.
  */
 const resolvedBackgroundSessions = async (
   config: CliConfig,
@@ -585,14 +586,21 @@ const resolvedBackgroundSessions = async (
   if (project.backgroundSessions === "on") return true;
   if (project.backgroundSessions === "off") return false;
   try {
-    const settings = await request<{ readonly backgroundSessions?: boolean }>(
-      config,
-      "GET",
-      "/settings",
-    );
-    return settings.backgroundSessions !== false;
+    const organization = await request<{
+      readonly effective?: { readonly backgroundSessions?: boolean };
+    }>(config, "GET", "/organization/settings");
+    return organization.effective?.backgroundSessions !== false;
   } catch {
-    return true;
+    try {
+      const settings = await request<{ readonly backgroundSessions?: boolean }>(
+        config,
+        "GET",
+        "/settings",
+      );
+      return settings.backgroundSessions !== false;
+    } catch {
+      return true;
+    }
   }
 };
 

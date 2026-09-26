@@ -98,7 +98,7 @@ export const makeSessionStart = Effect.gen(function* () {
   const guardsLanding = Effect.fn("SessionStart.guardsLanding")(function* (session: Session) {
     if (session.origin !== "slack") {
       const project = yield* projects.byId(session.projectId);
-      const settings = yield* settingsRepo.get();
+      const settings = yield* settingsRepo.forOrganization(project.organizationId);
       const on = resolveAutoLand({
         origin: session.origin,
         project: project.autoLand,
@@ -184,7 +184,7 @@ export const makeSessionStart = Effect.gen(function* () {
     const queueAutoName = Effect.gen(function* () {
       if (session.label !== null) return;
       const project = yield* projects.byId(session.projectId);
-      const settings = yield* settingsRepo.get();
+      const settings = yield* settingsRepo.forOrganization(project.organizationId);
       if (!resolveAutomation(project.autoName, settings.autoName)) return;
       yield* jobs.enqueue({
         name: "name-session",

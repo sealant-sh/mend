@@ -3,6 +3,7 @@ import { Link } from "@tanstack/react-router";
 
 import { autoLandFact } from "#/lib/landing";
 import { useTRPC } from "#/lib/trpc";
+import { useInheritedSettings } from "#/lib/viewer";
 import { OS_LABELS } from "#/lib/workspace-environment";
 
 /**
@@ -15,7 +16,7 @@ import { OS_LABELS } from "#/lib/workspace-environment";
 export function useSetupFactValues(projectId: string) {
   const trpc = useTRPC();
   const detail = useQuery(trpc.projects.detail.queryOptions({ id: projectId })).data;
-  const settings = useQuery(trpc.settings.get.queryOptions()).data;
+  const settings = useInheritedSettings();
   const environment = useQuery(trpc.environment.environment.queryOptions({ projectId })).data;
   const secrets = useQuery(trpc.environment.secrets.queryOptions({ projectId })).data;
   const references = useQuery(trpc.projects.references.queryOptions({ id: projectId })).data;
@@ -31,7 +32,7 @@ export function useSetupFactValues(projectId: string) {
   return {
     image:
       effective === null
-        ? "settings default"
+        ? "inherited default"
         : effective.mode === "custom"
           ? effective.baseImage
           : `${OS_LABELS[effective.os].toLowerCase()} · ${effective.packages.length} pkgs`,
@@ -82,7 +83,7 @@ const FACT_ROWS: ReadonlyArray<{
  */
 const EXPLANATIONS: Record<FactKey, string> = {
   image:
-    "The workspace image sessions launch in — an OS family plus extra packages, or a custom base. Inherited from Settings unless this project overrides it.",
+    "The workspace image sessions launch in — an OS family plus extra packages, or a custom base. Inherited from the organization's defaults in Settings unless this project overrides it.",
   variables:
     "Environment variables every process in this project's workspaces starts with — plain configuration, readable back after saving.",
   secrets:

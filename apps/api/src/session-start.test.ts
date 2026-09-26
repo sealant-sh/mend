@@ -165,7 +165,7 @@ const startWorld = (
             ),
         }),
         Layer.mock(SettingsRepo, {
-          get: () =>
+          forOrganization: () =>
             Effect.succeed(
               new MendSettings({
                 ...defaultSettings,

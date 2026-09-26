@@ -178,7 +178,7 @@ export const ReviewPrepLive: Layer.Layer<
       const { tour: autoTour, suggest: autoSuggest } = reviewPassesFor({
         origin: session.origin,
         project,
-        settings: yield* settingsRepo.get(),
+        settings: yield* settingsRepo.forOrganization(project.organizationId),
       });
       if (!autoTour && !autoSuggest) return;
 

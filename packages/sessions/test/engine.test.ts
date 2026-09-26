@@ -222,7 +222,10 @@ const hotWorkspacesEmptyLayer = Layer.succeed(HotWorkspacesRepo, {
 
 const settingsLayer = (workspaceImage = defaultSettings.workspaceImage) =>
   Layer.succeed(SettingsRepo, {
-    get: () => Effect.succeed(new MendSettings({ ...defaultSettings, workspaceImage })),
+    // Launches read what the project inherits (its organization's defaults over the instance's),
+    // never the instance document alone.
+    get: () => Effect.die("a launch read the instance settings instead of its organization's"),
+    forOrganization: () => Effect.succeed(new MendSettings({ ...defaultSettings, workspaceImage })),
     modify: () => Effect.die("not in test"),
   });
 

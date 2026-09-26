@@ -6,9 +6,10 @@ import { Timestamp } from "../timestamp.ts";
 import { ProjectVisibility } from "./organization.ts";
 
 /**
- * A project's stance on one review-automation switch: follow the Settings
- * default, or override it either way. The cascade has exactly these two
- * levels — a session takes whatever its project resolves to at settle.
+ * A project's stance on one automation switch: follow the default it inherits,
+ * or override it either way. The default is its organization's own value over
+ * the instance's (`organizationDefaults`); a session takes whatever its project
+ * resolves to at settle.
  */
 export const AutomationChoice = Schema.Literals(["inherit", "on", "off"]);
 export type AutomationChoice = typeof AutomationChoice.Type;

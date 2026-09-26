@@ -2123,6 +2123,26 @@ const landingAdoptionMigration = Effect.gen(function* () {
       )`;
 });
 
+/**
+ * docs/adr/0003-organizations-and-tenancy.md, "Resources that were instance-global": the settings
+ * document stays the operator's, and each organization's owners set its own defaults over it. A
+ * null column follows the instance; no row means the organization set nothing.
+ */
+const organizationSettingsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE organization_settings (
+      organization_id text PRIMARY KEY REFERENCES organizations (id) ON DELETE CASCADE,
+      workspace_image jsonb,
+      auto_tour boolean,
+      auto_suggest boolean,
+      auto_name boolean,
+      auto_land boolean,
+      background_sessions boolean,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2194,4 +2214,5 @@ export const migrations = {
   "0067_services_stop_control": servicesStopControlMigration,
   "0068_user_git_author": userGitAuthorMigration,
   "0069_landing_adoption": landingAdoptionMigration,
+  "0070_organization_settings": organizationSettingsMigration,
 };

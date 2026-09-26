@@ -168,8 +168,9 @@ import { Budgets } from "../budgets.ts";
 import { GithubIdentity } from "../github-identity.ts";
 import { HostEnvironment } from "../services/host-environment.ts";
 import {
-  resolveWorkspaceEnvironment,
+  resolveWorkspaceEnvironmentWithSealant,
   saveResolvedWorkspaceEnvironment,
+  unresolvedPackagesMessage,
 } from "../services/workspace-environment.ts";
 import { budgetExceeded } from "../session-budgets.ts";
 import { makeSessionStart } from "../session-start.ts";
@@ -372,7 +373,8 @@ export const withSignerContext = <A, E, R>(
 
 /**
  * One settings document; PUT replaces it (clients edit what GET returned). Machine settings are
- * the operator's (docs/adr/0003); every member reads them.
+ * the operator's (docs/adr/0003); every member reads them. An organization's owners set their own
+ * defaults over them at `/organization/settings` (routes/organization-settings.ts).
  */
 export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (handlers) =>
   handlers
@@ -405,19 +407,8 @@ export const SettingsGroupLive = HttpApiBuilder.group(MendApi, "settings", (hand
           (_latest, workspaceImage) => new MendSettings({ ...payload, workspaceImage }),
         );
         if (!result.saved) {
-          const rejected = result.resolutions
-            .filter((resolution) => resolution.status !== "resolved" || !resolution.supported)
-            .map((resolution) =>
-              resolution.status === "resolved"
-                ? `${resolution.requested} (unsupported)`
-                : `${resolution.requested} (${resolution.status})`,
-            );
-          const target =
-            payload.workspaceImage.mode === "custom"
-              ? payload.workspaceImage.baseImage
-              : payload.workspaceImage.os;
           return yield* new SettingsFailure({
-            message: `Workspace packages did not resolve for ${target}: ${rejected.join(", ")}.`,
+            message: unresolvedPackagesMessage(payload.workspaceImage, result.resolutions),
           });
         }
         return result.settings;
@@ -715,15 +706,7 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           yield* rewarmHotSessions(params.id);
           return new ProjectWorkspaceImageSaveResult({ saved: true, project, resolutions: [] });
         }
-        const sealant = yield* SealantClient;
-        const resolved = yield* resolveWorkspaceEnvironment(
-          payload.workspaceImage,
-          sealant.resolveWorkspacePackage,
-        ).pipe(
-          Effect.catchTag("SealantPlatformError", (error) =>
-            Effect.fail(new SettingsFailure({ message: error.message })),
-          ),
-        );
+        const resolved = yield* resolveWorkspaceEnvironmentWithSealant(payload.workspaceImage);
         const resolutions = resolved.resolutions.map(
           (resolution) => new WorkspacePackageResolutionView(resolution),
         );

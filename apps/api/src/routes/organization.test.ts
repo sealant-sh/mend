@@ -5,16 +5,27 @@ import {
   InstanceRolesRepo,
   InvitationUnknownError,
   LastOwnerError,
+  OrganizationSettingsRepo,
   OrganizationsRepo,
   ProjectNotFoundError,
   ProjectsRepo,
+  SettingsRepo,
   UserFacts,
   UsersRepo,
   type NewAuditEvent,
   type OrganizationMembership,
 } from "@mend/db";
-import { InvitationId, OrganizationId, ProjectId } from "@mend/domain";
-import { Invitation, Organization, OrganizationMember, type Project } from "@mend/domain/workbench";
+import {
+  defaultSettings,
+  inheritedOrganizationSettings,
+  InvitationId,
+  MendSettings,
+  OrganizationId,
+  OrganizationSettings,
+  ProjectId,
+} from "@mend/domain";
+import { Invitation, Organization, OrganizationMember, Project } from "@mend/domain/workbench";
+import { SealantClient } from "@mend/sealant";
 import { SessionEngine } from "@mend/sessions";
 import { DeploymentConfig } from "@mend/store";
 import { Effect, Layer, ManagedRuntime, Option } from "effect";
@@ -159,14 +170,23 @@ const authLayer = Layer.succeed(Auth, {
 const projectOf = (id: string): Project | null => {
   const row = projectRows.get(id);
   if (row === undefined) return null;
-  return makeProject({
+  const project = makeProject({
     id: ProjectId.make(id),
     organizationId: row.organizationId,
     visibility: "private",
     createdByUserId: row.createdByUserId,
     storePath: `/store/${id}/repo.git`,
   });
+  // Carol's project keeps standbys on the inherited workspace environment.
+  return id === "p-carol" ? new Project({ ...project, hotSessions: 2 }) : project;
 };
+
+/** The instance's settings, the operator's; organizations set their own over them. */
+const instanceSettings = new MendSettings({ ...defaultSettings, autoLand: false, autoTour: true });
+/** Each organization's own defaults, as the repo stores them. */
+const organizationDefaultsStore = new Map<string, OrganizationSettings>();
+/** Projects whose hot workspaces were asked to rewarm. */
+const reconciled: Array<string> = [];
 
 const dependencies = Layer.mergeAll(
   authLayer,
@@ -205,7 +225,38 @@ const dependencies = Layer.mergeAll(
         return project;
       }),
   }),
-  Layer.mock(SessionEngine, { reconcileHotSessions: () => Effect.void }),
+  Layer.mock(SessionEngine, {
+    reconcileHotSessions: (projectId) => Effect.sync(() => void reconciled.push(projectId)),
+  }),
+  Layer.mock(SettingsRepo, { get: () => Effect.succeed(instanceSettings) }),
+  Layer.mock(OrganizationSettingsRepo, {
+    get: (organizationId) =>
+      Effect.sync(
+        () => organizationDefaultsStore.get(organizationId) ?? inheritedOrganizationSettings,
+      ),
+    modify: (organizationId, update) =>
+      Effect.sync(() => {
+        const next = update(
+          organizationDefaultsStore.get(organizationId) ?? inheritedOrganizationSettings,
+        );
+        writes.push(`organizationSettings:${organizationId}`);
+        organizationDefaultsStore.set(organizationId, next);
+        return next;
+      }),
+  }),
+  // Every package resolves to a canonical id except `nope`, which no catalog has.
+  Layer.mock(SealantClient, {
+    resolveWorkspacePackage: (packageName) =>
+      Effect.succeed({
+        requested: packageName,
+        normalized: packageName,
+        status: packageName === "nope" ? "not-found" : "resolved",
+        canonicalId: packageName === "nope" ? null : `${packageName}-canonical`,
+        supported: packageName !== "nope",
+        packageName: packageName === "nope" ? null : packageName,
+        alternatives: [],
+      }),
+  }),
   Layer.mock(UsersRepo, {
     byId: (id) =>
       Effect.succeed(
@@ -249,6 +300,8 @@ beforeEach(() => {
   audited.splice(0, audited.length);
   removals.splice(0, removals.length);
   resets.splice(0, resets.length);
+  reconciled.splice(0, reconciled.length);
+  organizationDefaultsStore.clear();
 });
 
 describe("organization routes (docs/adr/0003)", () => {
@@ -439,5 +492,155 @@ describe("invitation limits", () => {
     expect(invitationEmail("  ")).toEqual({ email: null });
     expect(invitationEmail(" A@B.io ")).toEqual({ email: "a@b.io" });
     expect(invitationEmail("nope")).toEqual({ issue: "That does not look like an email address." });
+  });
+});
+
+const fedora = (packages: ReadonlyArray<string>) => ({
+  mode: "family",
+  os: "fedora",
+  packages,
+  shell: "zsh",
+  services: { docker: true },
+});
+const inheritAll = {
+  workspaceImage: null,
+  autoTour: null,
+  autoSuggest: null,
+  autoName: null,
+  autoLand: null,
+  backgroundSessions: null,
+};
+const put = (user: string, path: string, body: unknown) =>
+  call(user, path, { method: "PUT", body: JSON.stringify(body) });
+
+describe("organization defaults (docs/adr/0003, instance-global resources)", () => {
+  it("shows a member what their projects inherit, read-only", async () => {
+    organizationDefaultsStore.set(
+      acme.id,
+      new OrganizationSettings({ ...inheritedOrganizationSettings, autoLand: true }),
+    );
+    const response = await call("carol", "/api/organization/settings");
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      organization: { ...inheritAll, autoLand: true },
+      instance: { autoLand: false, autoTour: true },
+      effective: { autoLand: true, autoTour: true },
+      editable: false,
+    });
+    const owner = await call("alice", "/api/organization/settings");
+    await expect(owner.json()).resolves.toMatchObject({ editable: true });
+    expect((await call("dave", "/api/organization/settings")).status).toBe(404);
+  });
+
+  it("refuses a member's changes as 404, before anything is written or recorded", async () => {
+    const statuses = [
+      (await put("carol", "/api/organization/settings", { ...inheritAll, autoLand: true })).status,
+      (
+        await put("carol", "/api/organization/settings/workspace-environment", {
+          workspaceImage: fedora(["jq"]),
+        })
+      ).status,
+    ];
+    expect({ statuses, writes, audited, reconciled }).toEqual({
+      statuses: [404, 404],
+      writes: [],
+      audited: [],
+      reconciled: [],
+    });
+  });
+
+  it("an owner sets values over the instance; each change is recorded once", async () => {
+    const response = await put("alice", "/api/organization/settings", {
+      ...inheritAll,
+      autoLand: true,
+      autoTour: false,
+      workspaceImage: fedora(["jq", "ripgrep"]),
+    });
+    expect(response.status).toBe(200);
+    await expect(response.json()).resolves.toMatchObject({
+      organization: {
+        autoLand: true,
+        autoTour: false,
+        autoName: null,
+        workspaceImage: { os: "fedora", packages: ["jq-canonical", "ripgrep-canonical"] },
+      },
+      effective: { autoLand: true, autoTour: false, autoName: true },
+      editable: true,
+    });
+    expect(audited.map((event) => [event.action, event.subjectType, event.data])).toEqual([
+      [
+        "organization.settings_changed",
+        "organization",
+        { workspaceImage: "fedora · 2 packages", autoTour: false, autoLand: true },
+      ],
+    ]);
+    // Carol's project inherits the environment and keeps standbys; they rewarm.
+    expect(reconciled).toEqual(["p-carol"]);
+
+    // Saving the same values again changes nothing, so nothing is recorded.
+    const again = await put("alice", "/api/organization/settings", {
+      ...inheritAll,
+      autoLand: true,
+      autoTour: false,
+      workspaceImage: fedora(["jq-canonical", "ripgrep-canonical"]),
+    });
+    expect(again.status).toBe(200);
+    expect(audited).toHaveLength(1);
+    expect(reconciled).toEqual(["p-carol"]);
+  });
+
+  it("refuses a whole save whose workspace packages do not resolve, writing nothing", async () => {
+    const response = await put("alice", "/api/organization/settings", {
+      ...inheritAll,
+      autoLand: true,
+      workspaceImage: fedora(["jq", "nope"]),
+    });
+    expect(response.status).toBe(422);
+    await expect(response.json()).resolves.toMatchObject({
+      _tag: "SettingsFailure",
+      message: "Workspace packages did not resolve for fedora: nope (not-found).",
+    });
+    expect({ writes, audited }).toEqual({ writes: [], audited: [] });
+  });
+
+  it("saves the workspace environment alone, reports rejections, and goes back to the instance", async () => {
+    const rejected = await put("alice", "/api/organization/settings/workspace-environment", {
+      workspaceImage: fedora(["nope"]),
+    });
+    expect(rejected.status).toBe(200);
+    await expect(rejected.json()).resolves.toMatchObject({
+      saved: false,
+      settings: { organization: { workspaceImage: null } },
+      resolutions: [{ requested: "nope", status: "not-found" }],
+    });
+    expect(writes).toEqual([]);
+
+    const saved = await put("alice", "/api/organization/settings/workspace-environment", {
+      workspaceImage: fedora(["jq"]),
+    });
+    await expect(saved.json()).resolves.toMatchObject({
+      saved: true,
+      settings: {
+        organization: { workspaceImage: { packages: ["jq-canonical"] } },
+        effective: { workspaceImage: { os: "fedora" } },
+      },
+    });
+
+    const inherited = await put("alice", "/api/organization/settings/workspace-environment", {
+      workspaceImage: null,
+    });
+    await expect(inherited.json()).resolves.toMatchObject({
+      saved: true,
+      settings: {
+        organization: { workspaceImage: null },
+        // The instance's own environment: Mend's default Arch image.
+        effective: { workspaceImage: { os: "arch" } },
+      },
+    });
+    expect(audited.map((event) => event.data)).toEqual([
+      { workspaceImage: "fedora · 1 package" },
+      { workspaceImage: null },
+    ]);
+    expect(reconciled).toEqual(["p-carol", "p-carol"]);
   });
 });

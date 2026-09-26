@@ -790,6 +790,24 @@ export const projectReferences = pgTable(
   (table) => [primaryKey({ columns: [table.projectId, table.referenceId] })],
 );
 
+/**
+ * An organization's own defaults over the instance's settings document
+ * (docs/adr/0003-organizations-and-tenancy.md). Each null column follows the instance.
+ */
+export const organizationSettings = pgTable("organization_settings", {
+  organizationId: text()
+    .$type<OrganizationId>()
+    .primaryKey()
+    .references(() => organizations.id, { onDelete: "cascade" }),
+  workspaceImage: jsonbOf(WorkspaceImage),
+  autoTour: boolean(),
+  autoSuggest: boolean(),
+  autoName: boolean(),
+  autoLand: boolean(),
+  backgroundSessions: boolean(),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
 export const settings = pgTable("settings", {
   key: text().primaryKey(),
   value: jsonbOf(MendSettings).notNull(),

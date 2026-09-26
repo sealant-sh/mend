@@ -308,7 +308,8 @@ const layer = Layer.mergeAll(
   }),
   Layer.mock(ProjectsRepo, { byId: () => Effect.sync(project) }),
   Layer.mock(SettingsRepo, {
-    get: () =>
+    // What the project's organization resolves to: its own defaults over the instance's.
+    forOrganization: () =>
       Effect.sync(() => new MendSettings({ ...defaultSettings, autoLand: world.settingsAutoLand })),
   }),
   Layer.mock(WorktreesRepo, { byId: () => Effect.succeed(worktree) }),

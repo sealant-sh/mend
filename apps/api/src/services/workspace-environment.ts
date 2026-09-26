@@ -65,6 +65,36 @@ export const resolveWorkspaceEnvironment = <E>(
   });
 
 /**
+ * `resolveWorkspaceEnvironment` against the platform's package catalog, as every save runs it: the
+ * instance's, an organization's and a project's. A platform failure is the save's failure.
+ */
+export const resolveWorkspaceEnvironmentWithSealant = (workspaceImage: WorkspaceImage) =>
+  Effect.gen(function* () {
+    const sealant = yield* SealantClient;
+    return yield* resolveWorkspaceEnvironment(workspaceImage, sealant.resolveWorkspacePackage);
+  }).pipe(
+    Effect.catchTag("SealantPlatformError", (error) =>
+      Effect.fail(new SettingsFailure({ message: error.message })),
+    ),
+  );
+
+/** Why a whole-settings save was refused: each package that did not resolve, and why. */
+export const unresolvedPackagesMessage = (
+  workspaceImage: WorkspaceImage,
+  resolutions: ReadonlyArray<WorkspacePackageResolution>,
+): string => {
+  const rejected = resolutions
+    .filter((resolution) => resolution.status !== "resolved" || !resolution.supported)
+    .map((resolution) =>
+      resolution.status === "resolved"
+        ? `${resolution.requested} (unsupported)`
+        : `${resolution.requested} (${resolution.status})`,
+    );
+  const target = workspaceImage.mode === "custom" ? workspaceImage.baseImage : workspaceImage.os;
+  return `Workspace packages did not resolve for ${target}: ${rejected.join(", ")}.`;
+};
+
+/**
  * Validate one complete environment draft, then merge it into the latest
  * settings snapshot. Reading after Sealant resolves prevents a slow save from
  * restoring settings that changed while validation was in flight.

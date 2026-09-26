@@ -125,6 +125,10 @@ export type InvitationDto = Outputs["organization"]["invitations"][number];
 export type InvitationCreatedDto = Outputs["organization"]["createInvitation"];
 export type InvitationPreviewDto = Outputs["organization"]["invitationPreview"];
 export type AuditEntryDto = Outputs["organization"]["audit"][number];
+export type OrganizationSettingsViewDto = Outputs["organization"]["settings"];
+export type OrganizationSettingsDto = OrganizationSettingsViewDto["organization"];
+export type OrganizationWorkspaceEnvironmentSaveResultDto =
+  Outputs["organization"]["setWorkspaceEnvironment"];
 export type SlackAppStatusDto = Outputs["slack"]["app"];
 export type SlackAppDto = NonNullable<SlackAppStatusDto["app"]>;
 export type SlackSettingsDto = SlackAppDto["settings"];
@@ -539,6 +543,12 @@ export const removeMember = (userId: string) =>
   orLogin(trpcClient.organization.removeMember.mutate({ userId }));
 export const takeOverProject = (id: ProjectDto["id"]) =>
   orLogin(trpcClient.organization.takeOverProject.mutate({ id }));
+/** Replace the organization's own defaults (owners); null values follow the instance. */
+export const putOrganizationSettings = (settings: OrganizationSettingsDto) =>
+  orLogin(trpcClient.organization.setSettings.mutate(settings));
+/** Save the organization's workspace environment (owners); null follows the instance's. */
+export const saveOrganizationWorkspaceEnvironment = (workspaceImage: WorkspaceImageDto | null) =>
+  orLogin(trpcClient.organization.setWorkspaceEnvironment.mutate({ workspaceImage }));
 
 // ─── Slack (docs/adr/0006-slack.md) ─────────────────────────────────────────
 

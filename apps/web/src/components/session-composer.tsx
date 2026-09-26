@@ -25,6 +25,7 @@ import {
 import { autoLandItems } from "#/lib/landing";
 import { HARNESSES, startComposedSessionInWorktree, type Harness } from "#/lib/session-launch";
 import { useTRPC } from "#/lib/trpc";
+import { useInheritedSettings } from "#/lib/viewer";
 
 /** Harnesses the composer offers — the promptable ones. */
 const COMPOSER_HARNESSES = HARNESSES.filter((choice) => choice !== "shell");
@@ -52,7 +53,7 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
   // "Land when a turn completes" for this one session; null follows the project. Not sticky: a
   // push speaks as you on GitHub, so each session starts from the project's stance.
   const [autoLand, setAutoLand] = useState<boolean | null>(null);
-  const settingsQuery = useQuery(trpc.settings.get.queryOptions());
+  const inherited = useInheritedSettings();
 
   const preferredProjectId = pickedProjectId ?? prefs.lastProjectId;
   const project = projects.find((row) => row.id === preferredProjectId) ?? projects[0];
@@ -108,7 +109,7 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
   const landing = autoLandItems({
     override: autoLand,
     project: project.autoLand,
-    settings: settingsQuery.data?.autoLand ?? null,
+    settings: inherited?.autoLand ?? null,
   });
   const settingsSummary = [
     harnessPrefs.effort,

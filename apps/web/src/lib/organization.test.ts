@@ -44,6 +44,25 @@ describe("describeAudit", () => {
   });
 });
 
+describe("describeAudit for organization defaults (docs/adr/0003)", () => {
+  it("names each changed default and its new value", () => {
+    expect(
+      describeAudit(
+        event("organization.settings_changed", {
+          workspaceImage: "fedora · 2 packages",
+          autoLand: true,
+          autoTour: null,
+        }),
+      ),
+    ).toBe(
+      "set the organization defaults: workspace environment fedora · 2 packages, land when a turn completes on, description & tour follows the instance",
+    );
+    expect(describeAudit(event("organization.settings_changed", {}))).toBe(
+      "changed the organization defaults",
+    );
+  });
+});
+
 describe("describeAudit for Slack (docs/adr/0006)", () => {
   it("names the workspace, what changed, and whose link", () => {
     expect(describeAudit(event("slack.installed", { teamName: "Acme HQ" }))).toBe(
