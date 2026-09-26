@@ -207,6 +207,30 @@ These commands never delete volumes or prune Docker resources. Stop, restart, an
 web and SSH connections. Workspace containers remain, but active sessions can lose connectivity and
 may need reconnection. Finish or pause important work before planned maintenance.
 
+### Sending a debug bundle
+
+When a session misbehaves on one machine and not another, one command collects what a maintainer
+would otherwise ask for piece by piece:
+
+```sh
+mend doctor --bundle
+mend doctor --bundle --out ./mend-bundle.tgz --tail 1000
+```
+
+The archive holds text and JSON files: the CLI and its environment (`cli.json`), the `mend doctor`
+lines, the server's health, this machine's server configuration with its compose file and the names
+of its `.env` keys (never their values), `docker version`, `docker info`, the contexts, the Mend and
+workspace containers with their inspect facts (`Env` as names only), the server's container logs,
+the running workspace containers' logs, every session with its processes, exit codes, argv and the
+tail of its recorded terminal output, the connected accounts, and the versions and paths of
+`claude`, `codex`, `gh`, `git` and `docker`. A part that cannot be collected leaves a
+`<name>.error.txt` saying why; the bundle is still written.
+
+Every file passes one redactor before it is written (bearer and header values, Slack, OpenAI, GitHub
+and AWS token shapes, JWTs, passwords in URLs, any `password`, `secret` or `token` value), and the
+file is created with mode 0600 under `~/.config/mend/bundles/`. It still contains logs and
+configuration. Read it before you attach it to an issue.
+
 ## Uninstall
 
 ```sh

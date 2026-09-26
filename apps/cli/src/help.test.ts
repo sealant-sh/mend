@@ -81,7 +81,9 @@ describe("usageOf", () => {
     expect(usageOf("stop")).toBe(
       "usage: mend stop [session-id-prefix]\n       mend stop --all [--project <p>]\n       mend stop --services [session-id-prefix]",
     );
-    expect(usageOf("doctor")).toBe("usage: mend doctor");
+    expect(usageOf("doctor")).toBe(
+      "usage: mend doctor\n       mend doctor --bundle [--out <path>] [--tail <n>]",
+    );
     expect(usageOf("unknown thing")).toBe("usage: mend unknown thing");
   });
 });
@@ -152,6 +154,18 @@ describe("renderCommand", () => {
     expect(pull).toContain("--force");
     expect(renderCommand(findCommand(["claude"])!, 80)).toContain("--land, --no-land");
     expect(renderManPage(findCommand(["pull"])!, "0.30.0")).toContain("mend\\-land(1)");
+  });
+
+  it("documents the doctor bundle: the options, the example, the redaction, the notice", () => {
+    const page = renderCommand(findCommand(["doctor"])!, 80).replace(/\s+/g, " ");
+    expect(page).toContain("--bundle [--out <path>] [--tail <n>]");
+    expect(page).toContain("--out <path>");
+    expect(page).toContain("--tail <n>");
+    expect(page).toContain("mend doctor --bundle");
+    expect(page).toContain("<name>.error.txt");
+    expect(page).toContain("names of its .env keys, never their values");
+    expect(page).toContain("read it before you share it");
+    expect(page).not.toMatch(/--session/);
   });
 
   it("lists a family's subcommands on the parent page", () => {
