@@ -20,6 +20,10 @@ cluster Secrets and ConfigMaps whose contents Mend never stores at all.
 Changes apply from the next workspace launch. Running agents, shells, and Services keep the values
 their workspace started with.
 
+Anyone who can see the project can read its names. Only the people who manage it, its creator and
+the organization's owners, can add, change, or remove entries, from the web app or the CLI.
+Organization defaults do not include environment variables; each project holds its own.
+
 ## Load a `.env` file
 
 From an adopted project:
@@ -76,7 +80,8 @@ lane. It labels configuration as plaintext and never prints secret values. Clust
 ## Edit in the web app
 
 Open the project's **Setup** page. The Configuration and Secrets sections support create, rename,
-replace, and remove operations. Secret rows only show whether a value is set.
+replace, and remove operations. Secret rows only show whether a value is set. Members who do not
+manage the project see a note in place of these sections.
 
 Renaming a secret without entering another value preserves the stored value. Replacing it writes a
 new encrypted value.
@@ -100,19 +105,31 @@ The boundaries:
 - On a local-runner install, bindings do not resolve. A declared binding blocks launches there
   rather than shipping an incomplete environment; remove the bindings to launch on that install.
 
-`mend env show` lists bindings and the service account alongside configuration and secret names. The
-Setup page's Cluster bindings panel is where you add and remove bindings and set the service
-account. At each fresh workspace launch Mend forwards the declared bindings to the platform
-verbatim; the worker resolves the objects server-side and their keys become workspace environment.
-An install that cannot resolve them refuses the launch with a failure naming every binding; remove
-the bindings in project setup to launch there.
+`mend env show` lists bindings and the service account alongside configuration and secret names. Add
+and remove bindings and set the service account on the Setup page's **Cluster bindings** panel, or
+from the terminal:
+
+```sh
+mend env cluster add secret app-env
+mend env cluster add configmap app-config
+mend env cluster remove secret/app-env
+mend env cluster sa workspace-runner
+mend env cluster sa --clear
+```
+
+Each command takes `--project` like `mend env load`. At each fresh workspace launch Mend forwards
+the declared bindings to the platform verbatim; the worker resolves the objects server-side and
+their keys become workspace environment. An install that cannot resolve them refuses the launch with
+a failure naming every binding; remove the bindings in project setup to launch there.
 
 ## Reserved names
 
 Mend rejects names that belong to the platform or can change process startup. Examples include:
 
 - `PATH`, shell startup variables, and runtime injection variables such as `NODE_OPTIONS`;
-- `GIT_SSH_COMMAND`, which Mend owns for the workspace Git transport;
+- Git and SSH controls such as `GIT_SSH_COMMAND`, `GIT_CONFIG_GLOBAL`, and `SSH_AUTH_SOCK`, which
+  the platform reserves. Mend wires the workspace [Git transport](/guides/git-access/) through
+  system Git config (`core.sshCommand`) instead;
 - `GITHUB_TOKEN` and `CLAUDE_CODE_OAUTH_TOKEN`, which come from connected accounts;
 - names beginning with `MEND_` or `SEALANT_`.
 

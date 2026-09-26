@@ -5,9 +5,10 @@ sidebar:
   order: 3
 ---
 
-Every session runs inside a Sealant workspace built from an image definition. Mend has an
-instance-wide default under **Settings** and an optional override under each project's **Setup**
-page.
+Every session runs inside a Sealant workspace built from an image definition. The definition
+resolves at three levels: a project's override on its **Setup** page, then its organization's
+default, then the instance default. See
+[Instance, organization and project](#instance-organization-and-project).
 
 A session records the image definition it launched with. Changing the setting affects later
 workspace launches, not a workspace that is already running.
@@ -20,6 +21,9 @@ Managed images support four OS families:
 - Ubuntu;
 - Fedora;
 - Nix.
+
+Each family builds for `amd64` and `arm64`. On ARM64, Arch Linux is built from Arch Linux ARM's
+signed root filesystem, because the Docker Hub `archlinux` image is x86_64 only.
 
 For a managed family, choose:
 
@@ -53,9 +57,17 @@ direnv
 The last five are what Mend's [default shell profile](/guides/dotfiles/#default-shell-profile) uses.
 A saved instance, organization or project environment keeps its own shell and packages.
 
-Mend sends portable package names to the platform resolver. Save is refused when a package cannot be
-resolved or is unsupported for the selected family. Fix or remove rejected entries before launching
-sessions with that definition.
+Mend checks each package name against the platform's package catalog when you save. Every id in the
+default list installs on all four families, on both x86_64 and ARM64, from the family's own
+repositories or from a pinned, checksum-verified release where the family has no package (`mise`,
+`lazygit`, `uv`). Save is refused when a package cannot be resolved or is unsupported for the
+selected family, and the refusal names each rejected entry. A saved definition stores each name as
+the catalog id it resolved to, so an alias you typed may come back under its canonical id.
+
+On the instance default, the operator also sees **Suggestions from this machine**. It checks a fixed
+list of executable and config paths on the machine running Mend and offers matching packages. It
+does not list your home directory or read config contents. Organization and project editors do not
+offer the scan.
 
 ## Custom base images
 
@@ -72,10 +84,14 @@ Custom mode does not expose the managed login-shell selector. It guarantees only
 by the base. Mend also does not apply user dotfiles to custom images. Put required shell setup in
 the image or its setup commands.
 
-Custom bases work because the platform overlays only static binaries onto your image: `sealantd`,
-the workspace supervisor that runs as PID 1, plus the harness CLIs. The base-image contract is any
-Linux `amd64`/`arm64` image with a POSIX shell at `/bin/sh`, Node.js with npm for the harness CLIs,
-and git. The build checks the contract and fails readably when the base misses a piece.
+Custom mode skips the managed package recipes. The build copies two static binaries into your image,
+`sealantd` (the workspace supervisor, PID 1) and `socat`, and installs the harness CLIs with the
+base's own `npm`. Extra packages pass verbatim to the base's package manager (`apt`, `apk`, `dnf`,
+or `pacman`, detected from the base).
+
+The base-image contract follows from that: any Linux `amd64`/`arm64` image with a POSIX shell at
+`/bin/sh`, Node.js and npm (the harness CLIs run on the base's Node.js), and git. The build checks
+the contract and fails with a readable message when the base misses a piece.
 
 ## Docker inside a workspace
 
@@ -85,8 +101,10 @@ run inside the workspace against the provided daemon.
 
 Changing the switch does not retrofit a workspace that is already running or retained. Joining or
 resuming a session that reuses that workspace keeps the Docker capability it was created with. A
-cold replacement uses the instance default or project override that applies when the replacement is
-created.
+cold replacement uses the definition that resolves when the replacement is created.
+
+On the AWS deployment, where sessions run in Lambda MicroVMs, the switch gives the MicroVM its own
+daemon on every managed family (Sealant 0.36.1 and later).
 
 On a Kubernetes deployment the operator has to enable the daemon (`workspaces.docker.enabled` on the
 Sealant chart); otherwise a launch with the switch on is refused at create and the session says so.
@@ -96,26 +114,34 @@ nested containers' own memory and CPU limits are not enforced (the workspace's l
 The image definition is not a Compose editor. It describes one workspace container plus optional
 platform services.
 
-## Instance default and project override
+## Instance, organization and project
 
-The instance default applies when a project has no image override. A project override remains fixed
-until you edit it or choose **Use default**.
+A launch uses the first definition it finds, in this order:
+
+1. the project's override, saved on its **Setup** page;
+2. the organization's default, which the organization's owners set in **Settings**;
+3. the instance default, which only the operator sees and edits in **Settings**.
+
+Members see the organization's resolved environment read-only, with where it came from. A project
+override remains fixed until you edit it or choose **Use default**, which returns the project to
+what it inherits. Each change to an organization's default is recorded in its audit log.
 
 ```mermaid
 flowchart TD
-  default[Settings default]
-  override{Project override?}
-  project[Project image]
+  project{Project override?}
+  organization{Organization default?}
+  instance[Instance default]
   resolved[Resolved image for next workspace]
 
-  default --> override
-  override -->|no| resolved
-  project -->|yes| override
-  override -->|yes| resolved
+  project -->|yes| resolved
+  project -->|no| organization
+  organization -->|yes| resolved
+  organization -->|no| instance
+  instance --> resolved
 ```
 
-Changing the default affects every inheriting project. Mend uses the resolved definition as part of
-the hot-workspace fingerprint, so incompatible ready workspaces are replaced.
+Changing a default affects every project that inherits it. Mend uses the resolved definition as part
+of the hot-workspace fingerprint, so incompatible ready workspaces are replaced.
 
 ## Private images
 

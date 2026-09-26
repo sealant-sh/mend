@@ -86,9 +86,9 @@ The clone uses your own [Git access](/guides/git-access/), never another account
 
 - **An SSH URL** (`git@github.com:you/dots.git` or `ssh://…`) signs with your Git access: your Mend
   key, or your connected signer if your Git access is the bridge. Add your Mend public key to your
-  Git account's SSH keys, or as a deploy key on the dotfiles repository. With the bridge, keep
-  `mend keys share` running when sessions launch; while no signer is connected, sessions launch
-  without the repository and say why.
+  Git account's SSH keys, or as a deploy key on the dotfiles repository. With the bridge, a signer
+  must be connected when sessions launch (an attaching `mend` command, the dashboard, or
+  `mend keys share`); while none is, sessions launch without the repository and say why.
 - **An HTTPS URL** clones without a credential, so only a public repository clones that way. Mend
   holds no HTTPS token for your account: a connected GitHub account's token stays with the platform
   and is never returned to the server. For a private repository, save its SSH URL instead.
@@ -175,6 +175,12 @@ Nix packages install them.
 The profile applies only to managed OS-family images whose shell is zsh, not to `bash`, `fish` or
 custom images. To turn it off for a project, open its **Setup** page and turn **Default shell
 profile** off under **Dotfiles**. A workspace that is already running keeps the files it has.
+
+## Git author and your `.gitconfig`
+
+Mend writes your [Git author](/guides/git-access/#git-author) into each workspace as system Git
+config before the agent starts. System config has the lowest precedence, so a `user` section in your
+dotfiles' `.gitconfig`, or in a repository's own config, still decides who commits.
 
 ## Launch timing
 

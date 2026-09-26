@@ -6,7 +6,7 @@ sidebar:
 ---
 
 A session is one supervised coding-agent conversation and its durable record, running inside a
-worktree — a durable named checkout in the project store. A worktree holds many sessions over its
+worktree: a durable named checkout in the project store. A worktree holds many sessions over its
 life, several live at once, and owns the one reviewable change they all contribute to. A session can
 contain several agent processes over time plus supporting shells and Services.
 
@@ -75,16 +75,20 @@ Mend normally disables the harness's approval prompts because the workspace is t
 boundary. `--ask` restores provider prompts. `--fast` requests Codex priority processing. OpenCode
 currently ignores model, effort, permission, and speed options.
 
+Press `Ctrl+V` with an image on your clipboard to send the image to the session and paste its path;
+Codex and Claude read it. This needs `wl-paste` on Wayland or `xclip` on X11, and nothing extra on
+macOS.
+
 ## Join an existing worktree
 
-Naming a worktree that already exists joins it — the launch becomes a second conversation in the
-same checkout, alongside anything already running there:
+Naming a worktree that already exists joins it. The launch becomes a second conversation in the same
+checkout, alongside anything already running there:
 
 ```sh
 mend claude "Review the auth changes so far" --name fix-auth
 ```
 
-`--worktree` joins only, and fails with the candidate names when nothing matches — use it in scripts
+`--worktree` joins only, and fails with the candidate names when nothing matches. Use it in scripts
 where creating a new worktree by typo would be worse than failing:
 
 ```sh
@@ -92,7 +96,8 @@ mend codex "Run the test suite and fix what breaks" --worktree fix-auth
 ```
 
 Requesting a different `--base` for an existing worktree is refused rather than silently re-basing
-it. In the dashboard, `s` starts a session inside the selected worktree.
+it. In the dashboard, `n` starts another session inside the selected worktree and `w` starts a new
+worktree. Read [Terminal dashboard and attach](/clients/terminal/).
 
 List worktrees and the sessions inside them:
 
@@ -111,14 +116,15 @@ flowchart LR
   record[Durable record]
 
   project --> worktree
-  worktree -->|mounted at /workspace/repo| workspace
+  worktree -->|latest capture laid down at /workspace/repo| workspace
   workspace --> agent
   agent --> record
+  workspace -->|captures| worktree
 ```
 
 Before the process starts, Mend resolves the workspace image, project environment, secrets,
-references, mounts, connected accounts, and dotfiles. It then opens a PTY or provider protocol
-process in the mounted worktree.
+references, folders, skills, connected accounts, Git author, and dotfiles. It then opens a PTY or
+provider protocol process in the worktree at `/workspace/repo`.
 
 ## Detach without stopping
 
@@ -139,8 +145,20 @@ with:
 mend stop 01MEND
 ```
 
-The record and review remain. The `Sessions` switch in Settings flips the default to foreground
-semantics — the session stops when the launching `mend` exits.
+The record and review remain. Services keep running after a stop, and a running Service keeps the
+workspace up; the stop then says so, for example `agent stopped · 3 services keep the workspace up`.
+Stop the Services too with:
+
+```sh
+mend stop --services 01MEND
+```
+
+Once nothing is live, the workspace closes.
+
+`--foreground` gives one launch foreground semantics: the session stops when the launching `mend`
+exits. The default is the "Run sessions in the background" switch. The operator sets the instance's
+default in Settings, an organization owner sets the organization's default over it, and a project's
+setup page can override both.
 
 ## Reattach
 
@@ -156,7 +174,13 @@ Attach with a full ID or unique prefix:
 mend attach 01MEND
 ```
 
-Mend replays recorded terminal output before following live frames.
+Mend replays recorded terminal output before following live frames. A session that was picked up on
+the phone is taken back into this terminal: the phone's agent ends and the same conversation
+continues here.
+
+On a remote server, attaching tunnels the session's live Services declared `--http` or `--https` to
+this machine's loopback, one line per tunnel, for example `web → http://localhost:5173`.
+`--no-tunnel` turns this off. Read [Development services](/guides/services/).
 
 ## Open a supporting shell
 
@@ -190,28 +214,47 @@ mend resume 01MEND --with claude
 mend rejoin 01MEND
 ```
 
+`mend continue` resumes a session with the review comments you sent to it as its first message:
+
+```sh
+mend continue 01MEND
+```
+
 A resumed agent is another process in the same Mend session. Its Sealant run has its own record
 sequence, while Mend preserves the ordered process and run membership.
 
 ## What happens to your files
 
-The worktree lives on the Mend machine, not inside the workspace container. When the agent settles,
-the workspace stops, or you resume days later, uncommitted files stay exactly where the last process
-left them. Nothing is committed, stashed, or cleaned automatically, and the reviewable change is the
-worktree against its base, committed or not.
+The workspace works on its own disk, and `sealantd` captures the worktree's files, uncommitted ones
+included, to the Mend store every few seconds while they change. When the agent settles, the
+workspace stops, or you resume days later, the next workspace starts from the latest capture.
+Nothing is committed, stashed, or cleaned automatically, and the reviewable change is the worktree
+against its base, committed or not.
 
-What does not survive a workspace replacement is everything outside the worktree: packages installed
-into the container, the workspace home directory, `/tmp`. Deleting a session removes only the
-conversation record — the worktree, its change, and its checkpoints remain. Removing the worktree is
-its own explicit act: it is refused while any session is live, refuses again while the worktree
-still holds any change against its base, and deletes uncommitted changes with it.
+What does not survive a workspace replacement is what the capture leaves out: system packages
+installed by hand, `/tmp`, and writes inside organization folders, which arrive as copies. Deleting
+a session removes only the conversation record; the worktree, its change, and its checkpoints
+remain. Removing the worktree is its own explicit act, and it deletes uncommitted changes with it.
+It is refused while any session is live, and refused again while the change is not on origin, naming
+the files and line counts that are not landed.
 
 Read [How Mend works](/concepts/how-mend-works/#where-uncommitted-files-live) for the full boundary.
+
+## Review and land
+
+The dashboard's `v`, the web app, and the desktop app show the worktree's change against its base
+with the record beside it. Comments you send go back to the same session. Read
+[Review a change](/guides/review-a-change/).
+
+Landing pushes the change to origin and opens its pull request. Run `mend land <session>`, or launch
+with `--land` so Mend lands after each turn that asked for a change; `--no-land` keeps one session
+from landing when the project's "Land when a turn completes" setting is on. Mend lands after turns
+it runs itself, so a session attached to your terminal lands on its own only once it is picked up on
+the phone. Read [Land a change](/guides/land-a-change/).
 
 ## See sessions from any client
 
 The CLI, browser, desktop app, and phone connect to the same Mend server. They do not create
 separate copies of the session.
 
-Read [Work from another device](/guides/remote-access/) for pairing and the private-network
-boundary.
+Read [Work from another device](/guides/remote-access/) for pairing and reattachment.

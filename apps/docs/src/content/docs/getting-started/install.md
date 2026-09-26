@@ -1,6 +1,6 @@
 ---
 title: Install Mend
-description: Install the CLI, then explicitly set up a two-container Mend server.
+description: Install the CLI, then explicitly set up a three-container Mend server.
 sidebar:
   order: 2
 ---
@@ -22,8 +22,9 @@ Install the CLI on each device. Set up the server on the machine that will keep 
 - Node.js 22 or newer for the CLI. The TUI, the dashboard `mend` opens in a terminal, requires
   Node.js 26 or newer.
 - For the server, a local Docker daemon with client/server API 1.45 or newer and Docker Compose v2.
-- Disk space for repositories, worktrees, images, databases, and backups.
-- A trusted private network for access from another device.
+- Disk space for repositories, session captures, images, databases, and backups.
+- For access from another device, a network path you choose: a private network you control admission
+  to, or a TLS edge in front of Mend. Read [Exposure](/operate/exposure/).
 
 Docker Desktop and OrbStack must pass the same capability checks as Docker Engine. Physical macOS
 and installed VS Code acceptance are recorded separately in the
@@ -46,16 +47,18 @@ On the server machine:
 mend server setup
 ```
 
-At idle, two product containers run:
+At idle, three product containers run:
 
 - The complete Mend application, including its pinned Sealant API/worker/SSH runtime. Sealant's job
   queue runs in Postgres; workspace images are built and launched in the host Docker Engine through
   the mounted daemon socket.
 - Official Postgres, with separate Mend and Sealant databases and users.
+- Garage, an S3-compatible object store that holds every session's captures: the worktree files and
+  harness state that workspaces upload as they work.
 
 You manage the Mend version. There is no separate Sealant installation or version choice for this
-Docker setup. Session workspaces may create additional containers. Repositories, worktrees, harness
-state, database data, and SSH identity persist in Docker-managed volumes.
+Docker setup. Session workspaces may create additional containers. Repositories, session captures,
+database data, and SSH identity persist in Docker-managed volumes.
 
 ## Network boundary
 
@@ -71,24 +74,37 @@ Use your server's reachable private hostname. The primary URL and additional exa
 authentication, CORS, WebSockets, pairing, and advertised URLs. Incoming forwarding headers and
 interface discovery cannot add trust.
 
-> Keep the instance private. Binding `0.0.0.0` exposes web and SSH on every IPv4 interface. Sign-up
-> remains open to anyone who can reach Mend. The application has administrative Docker socket
-> access. Configure your firewall or private network yourself; setup does not do it for you.
+> Binding `0.0.0.0` exposes web and SSH on every IPv4 interface. Registration closes after the first
+> account, so create that account before anyone else can reach Mend. The application has
+> administrative Docker socket access. Configure your firewall or private network yourself; setup
+> does not do it for you.
 
-Do not expose this default installation to the internet. Plain HTTP does not protect credentials on
-an untrusted network. Use an encrypted private network or properly configured HTTPS.
+Plain HTTP does not protect credentials on an untrusted network. Use an encrypted private network or
+a TLS edge. A setup install runs with `MEND_EXPOSURE` at its default, `private`: a network you
+control admission to. Setup cannot set another exposure and does not install the Caddy edge overlay,
+which lives in the repository only. Read [Exposure](/operate/exposure/) for the modes, the public
+exposure gate, and what Mend observes beside what you declare.
 
 ## Create your Mend account
 
-Open `http://localhost:3105`, create an account, then sign in:
+Open `http://localhost:3105` and create an account. The first account on an instance becomes the
+owner of its organization and the instance's operator. Registration then closes. The next page, Git
+access, asks how Mend reaches your repositories: with a key of yours held on the server, or through
+the ssh-agent on your machine. Read [Configure Git access](/guides/git-access/).
+
+Then sign in from the terminal:
 
 ```sh
 mend login --url http://localhost:3105
 ```
 
-For a remote server, use its configured private URL instead. `mend login` opens the authorization
-page. Compare its code with your terminal before approving. The CLI receives its own revocable
-device token; it does not ask for your password in the terminal.
+For a remote server, use its configured URL instead. `mend login` opens the authorization page.
+Compare its code with your terminal before approving. The CLI receives its own revocable device
+token; it does not ask for your password in the terminal.
+
+Everyone else joins by invitation. An owner runs `mend invite` (or uses Settings on the web) and
+shares the printed one-time `/join/<token>` link; whoever opens it creates an account in the
+organization. Read [Organizations](/organizations/overview/).
 
 ## Connect providers
 
@@ -104,6 +120,8 @@ mend doctor
 
 Use only the providers you need. Signing in to Mend and connecting a provider are separate actions.
 See [provider accounts](/guides/provider-accounts/) and [Git access](/guides/git-access/).
+`mend doctor --bundle` writes one redacted diagnostic archive to attach to a bug report; read
+[Troubleshooting](/operate/troubleshooting/).
 
 ## Operate and upgrade
 
@@ -115,8 +133,8 @@ mend server start
 mend server restart
 ```
 
-Stop stops both product containers without deleting volumes. Restart keeps Postgres running. These
-operations interrupt connections; workspace containers remain.
+Stop stops Mend, Postgres, and Garage without deleting volumes. Restart restarts Mend and keeps
+Postgres and Garage running. These operations interrupt connections; workspace containers remain.
 
 Setup reruns preserve the server pin, secrets, and data. Updating the CLI does not upgrade the
 server. To change the server, explicitly choose a published version:
@@ -128,7 +146,8 @@ mend server upgrade --version VERSION
 Upgrade validates the target, stops application writers, and saves a private database backup before
 target activation. A failure after target startup retains the target pin and recovery files. There
 is no automatic database restore or downgrade. Back up Docker volumes and private configuration too;
-the SQL dump is not a backup of repositories or SSH identity.
+the SQL dump is not a backup of repositories, session captures (the `mend-garage` volume), or SSH
+identity.
 
 The [self-hosting guide](https://github.com/sealant-sh/mend/blob/main/docs/SELF-HOSTING.md) covers
 offline assets, port selection, ownership conflicts, locks, and upgrade recovery. The retired host
@@ -141,8 +160,9 @@ mend uninstall
 ```
 
 Choose everything, the server only, or this machine's files only. The plan is printed before
-anything is removed; taking the server down deletes its volumes (repositories, worktrees, the
-database) and asks for the word `delete`. Workspace containers are listed, not removed.
+anything is removed; taking the server down deletes its volumes (repositories, the `mend-garage`
+session captures, the database) and asks for the word `delete`. Data volumes go only when they carry
+this installation's identity label. Workspace containers are listed, not removed.
 
 ## Next steps
 
