@@ -125,6 +125,7 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "devices.register",
   "devices.unregister",
   "userDevices.createPairing",
+  "userDevices.create",
   "userDevices.list",
   "userDevices.revoke",
   "userDevices.cliAuthRequest",

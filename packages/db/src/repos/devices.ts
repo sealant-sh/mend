@@ -115,6 +115,13 @@ export class DevicesRepo extends Context.Service<
       readonly platform: string;
       readonly tokenHash: string;
     }) => Effect.Effect<ClaimedPairing, PairingCodeUnknownError | PairingCodeSpentError>;
+    /** A device its owner mints directly, for one that cannot scan a code (a reviewer, a headless box). */
+    readonly create: (input: {
+      readonly userId: string;
+      readonly name: string;
+      readonly platform: string;
+      readonly tokenHash: string;
+    }) => Effect.Effect<PairedDevice>;
     readonly list: (userId: string) => Effect.Effect<ReadonlyArray<PairedDevice>>;
     readonly revoke: (
       userId: string,
@@ -203,7 +210,8 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
         return new DeviceOwner({ id: owner.id, name: owner.name, email: owner.email });
       });
 
-      // The one place a device row is born — pairing claims and CLI collections both end here.
+      // The one place a device row is born — pairing claims, CLI collections and by-hand
+      // tokens all end here.
       const insertDeviceToken = Effect.fn("DevicesRepo.insertDeviceToken")(function* (input: {
         readonly userId: string;
         readonly name: string;
@@ -463,6 +471,7 @@ export const DevicesRepoLive: Layer.Layer<DevicesRepo, never, MendDB | PgClient.
       return {
         createPairing,
         claim,
+        create: insertDeviceToken,
         list,
         revoke,
         revokeAllForUser,

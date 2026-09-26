@@ -12,6 +12,7 @@ import {
   DeviceView,
   MendApi,
   NotFound,
+  MintedDevice,
   PairClaimResult,
   PairingCodeNotFound,
   PairingCodeSpent,
@@ -240,6 +241,26 @@ const devicePairingGroups = Effect.gen(function* () {
             code: pairing.code,
             expiresAt: pairing.expiresAt.toISOString(),
             urls: network.allowedOrigins,
+          });
+        }),
+      )
+      // The owner mints the token themselves, for a device that cannot scan a
+      // code: an App Review tester, a headless box. Same row, same revoke.
+      .handle("create", ({ payload }) =>
+        Effect.gen(function* () {
+          const caller = yield* CurrentUser;
+          const name = payload.name.trim();
+          const token = mintDeviceToken();
+          const device = yield* devices.create({
+            userId: caller.user.id,
+            name: name === "" ? payload.platform : name,
+            platform: payload.platform,
+            tokenHash: hashDeviceToken(token),
+          });
+          return new MintedDevice({
+            token,
+            urls: network.allowedOrigins,
+            device: toDeviceView(device),
           });
         }),
       )

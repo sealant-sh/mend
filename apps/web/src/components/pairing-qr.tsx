@@ -1,6 +1,6 @@
 import { useState, useSyncExternalStore } from "react";
 
-import type { PairingDto } from "#/lib/api";
+import type { MintedDeviceDto, PairingDto } from "#/lib/api";
 
 /**
  * Pairing a phone: the machine mints a short-lived code, the phone reads it —
@@ -158,6 +158,74 @@ export function PairingQr({
             Done
           </button>
         </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * A token minted by hand, shown once. The device that cannot scan — an App
+ * Review tester, a headless box — takes the URL and this token into the app's
+ * Settings → Advanced. Mend keeps only the hash, so closing this loses it.
+ */
+export function MintedToken({
+  minted,
+  onDismiss,
+}: {
+  readonly minted: MintedDeviceDto;
+  readonly onDismiss: () => void;
+}) {
+  const [copied, setCopied] = useState(false);
+  const copy = () => {
+    void navigator.clipboard.writeText(minted.token).then(() => setCopied(true));
+  };
+  return (
+    <div className="mt-5 border-t border-[var(--sw-faint-rule)] pt-5">
+      <div className="min-w-0 space-y-4">
+        <div>
+          <p className="font-mono text-[12px] text-label">device</p>
+          <p className="mt-1 font-sans text-sm font-medium text-foreground">{minted.device.name}</p>
+        </div>
+        <div>
+          <p className="font-mono text-[12px] text-label">url</p>
+          {minted.urls.length === 0 ? (
+            <p className="mt-1 font-mono text-[12.5px] text-ink-2">
+              no public origin configured · use the address this page is open at
+            </p>
+          ) : (
+            minted.urls.map((url) => (
+              <p key={url} className="mt-1 font-mono text-[12.5px] break-all text-ink-2">
+                {url}
+              </p>
+            ))
+          )}
+        </div>
+        <div>
+          <p className="font-mono text-[12px] text-label">token · shown once</p>
+          <div className="mt-1 flex flex-wrap items-center gap-3">
+            <p className="font-mono text-[12.5px] break-all text-foreground select-all">
+              {minted.token}
+            </p>
+            <button
+              type="button"
+              onClick={copy}
+              className="shrink-0 font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+            >
+              {copied ? "Copied" : "Copy"}
+            </button>
+          </div>
+        </div>
+        <p className="max-w-[52ch] text-[13px] leading-relaxed text-muted-foreground">
+          In the app: Settings → Advanced → server URL and bearer token. Mend keeps only the hash of
+          this token; once this panel closes it cannot be shown again. Revoke the device to end it.
+        </p>
+        <button
+          type="button"
+          onClick={onDismiss}
+          className="font-sans text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
+        >
+          Done
+        </button>
       </div>
     </div>
   );
