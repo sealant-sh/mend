@@ -3,18 +3,20 @@
 Design notes from the 2026-08-13/14 discussion. Decisions here govern the git story for alpha; the
 delivery prompt lives with the session that builds it.
 
-## Where git actually runs today (verified against live containers)
+## Where git runs today (updated 2026-09-26)
 
-- Mend's clone/fetch happen **on the Mend server host** (`git clone --bare` into the store,
-  `GIT_TERMINAL_PROMPT=0`). If the login user's `git clone git@gitlab.com:…` works in a shell, it
-  works in Mend today — GitLab and custom servers included. What breaks: passphrase keys without an
-  agent, first-contact host-key prompts, and there is no readable failure surface.
-- Inside a workspace, **full local git already works with zero credentials**: the worktree mounts at
-  `/workspace/repo` and the bare `repo.git` is bind-mounted **path-identically, read-write**, so the
-  worktree's `gitdir:` pointer resolves and the object store is shared. Host-side fetches are
-  instantly visible inside every session through the filesystem.
-- Remote access from inside a workspace is today GitHub-only via the platform's injected
-  connected-account credential (`gh` / `GITHUB_TOKEN`).
+- Mend's clone/fetch happen **on the Mend server** (`git clone --bare` into the store,
+  `GIT_TERMINAL_PROMPT=0`), signed with the account's git access below.
+- The capture store is the default session store (`packages/store/src/deployment.ts`, #235). A
+  workspace materialises its worktree from the bucket onto its own disk and ships captures back.
+  Nothing from the store is mounted into it, so local git inside the workspace works on its own
+  repository copy with no credentials.
+- Remote git from inside a workspace goes through the transport shim (decision 3). Since #302 the
+  shim and the `mend` helper are written into captured workspaces at provisioning, and #305 added a
+  packaged acceptance check that a `git push` from inside a session reaches the remote.
+- The deprecated co-located store (`MEND_SESSION_STORE=colocated`, which logs a startup warning)
+  still bind-mounts the bare `repo.git` path-identically and read-write into the workspace. The
+  2026-08-13 notes that described this as the only shape are superseded.
 
 ## Decisions
 
@@ -61,9 +63,11 @@ delivery prompt lives with the session that builds it.
    signatures), and nothing about an agent response is ever persisted.
 
 3. **Remotes never enter the workspace; plain `git push` still works — the shim.** The container
-   gets no key, no agent socket, no token. Instead the workspace image sets `GIT_SSH_COMMAND` to a
-   small shim that carries git's transport bytes over the session socket (`/run/mend/mend.sock`) to
-   the host; the host opens the real authenticated connection and shuttles the pack protocol
+   gets no key, no agent socket, no token. Instead Mend sets `core.sshCommand` in the workspace's
+   system git config to a small shim (`/run/mend/bin/mend-git-ssh`) that carries git's transport
+   bytes to the host: over the session socket (`/run/mend/mend.sock`) where one exists, otherwise
+   over the authenticated network session endpoint (`MEND_SESSION_ENDPOINT`), which is the path in
+   capture mode. The host opens the real authenticated connection and shuttles the pack protocol
    (jump-host pattern, `ProxyCommand` shape). Stock git, every subcommand, no aliasing — one env var
    reroutes the transport layer git itself designed to be replaceable.
    - The host resolves _which_ credential per request: session → project → owner. That is the
@@ -84,11 +88,12 @@ is per-session, not per-process.
 
 ## Known independent risk (not caused by either option)
 
-The **read-write `repo.git` mount** means workspace code can already write refs/objects in the
-shared project store directly — including refs other sessions hang off. Confused-deputy shape: an
-agent rewrites a ref, the user later publishes it host-side. Review-before-landing is the mitigation
-today. Candidate fix, own timeline: read-only common dir + per-session writable admin/objects
-overlay.
+This applies only to the deprecated co-located store. A captured workspace has no mount of the
+project store. On the co-located store, the **read-write `repo.git` mount** means workspace code can
+already write refs/objects in the shared project store directly — including refs other sessions hang
+off. Confused-deputy shape: an agent rewrites a ref, the user later publishes it host-side.
+Review-before-landing is the mitigation today. Candidate fix, own timeline: read-only common dir +
+per-session writable admin/objects overlay.
 
 ## Which remotes Mend's git reaches
 
@@ -127,10 +132,16 @@ empty HOME, so no `.netrc`. Only the operator of a `single` tenancy install clon
 own setup, the same rule as the host's `gh` login below (`packages/sessions/src/dotfiles.ts`,
 `DotfilesCloner`).
 
-Calls to the GitHub API (repository discovery, pull request lists) have no per-account credential
-yet. On a single-organization install the operator may use the host's `gh` login; everyone else sees
-"no identity" with the reason. A per-account GitHub token, sealed like other credentials, is the
-planned follow-up.
+Calls to the GitHub API from the Mend server (repository discovery, pull request lists) have no
+per-account credential yet. On a single-organization install the operator may use the host's `gh`
+login; everyone else sees "no identity" with the reason. A per-account GitHub token, sealed like
+other credentials, is the planned follow-up.
+
+Landing (`docs/adr/0007-landing.md`) does not use that path. The push signs with the change owner's
+git access, like any host-side operation. The pull request step runs `gh` inside a workspace: the
+session's own when it is live, otherwise a short-lived one for the owner with the GitHub credential
+and nothing else. The owner's connected GitHub token exists only on the platform and in that
+workspace; it never reaches Mend's process or database (`packages/landing/src/pull-requests.ts`).
 
 ## Git author
 

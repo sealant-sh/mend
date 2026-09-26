@@ -1,5 +1,9 @@
 # AWS workspace Docker service
 
+> Historical record (2026-09-26): Docker service records from the EKS deployment. Docker in MicroVM
+> workspaces now ships on every managed family (Sealant 0.36.1, #318); the current deployment is the
+> single instance in `deploy/aws/README.md`.
+
 ## Status
 
 Mend [v0.28.0](https://github.com/sealant-sh/mend/releases/tag/v0.28.0) and Sealant

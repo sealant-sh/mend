@@ -197,7 +197,7 @@ const briefComments = Effect.gen(function* () {
  * The workbench object model (MEND-AGENT-WORKBENCH-PLAN.md §5): projects
  * adopted into the central store, sessions in per-session worktrees,
  * checkpoints, the session change, and review comments. Additive — the
- * queue-era tables stay until their surfaces retire (docs/M0-INVENTORY.md).
+ * queue-era tables stay until their surfaces retire (docs/archive/M0-INVENTORY.md).
  * The product Session lives in `agent_sessions`: better-auth owns `"session"`.
  */
 const workbench = Effect.gen(function* () {
@@ -649,7 +649,7 @@ const sessionGitOps = Effect.gen(function* () {
 });
 
 /**
- * Per-project workspace image (docs/WORKSPACE-IMAGES.md): NULL inherits the global
+ * Per-project workspace image (docs/archive/WORKSPACE-IMAGES.md): NULL inherits the global
  * settings.workspaceImage default. Sessions stamp the image they actually launched with, so a
  * later project-setting change never rewrites what a past session ran on.
  */
@@ -687,7 +687,7 @@ const dotfilesStore = Effect.gen(function* () {
 });
 
 /**
- * Project environment variables (`.plans/project-environment-variables.md`): project-owned,
+ * Project environment variables (`docs/archive/plans/project-environment-variables.md`): project-owned,
  * explicitly non-secret name/value rows plus an aggregate revision on the project. Session runs
  * stamp the SAFE manifest they launched with — revision and name list, never values; NULL on both
  * marks the explicit legacy/unknown state for runs created before the feature or attached

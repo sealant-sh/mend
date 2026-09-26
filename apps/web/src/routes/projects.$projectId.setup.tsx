@@ -70,7 +70,7 @@ import {
 } from "#/lib/workspace-environment";
 
 /**
- * Project environment (`.plans/project-environment-variables.md` §UI): the workspace image the
+ * Project environment (`docs/archive/plans/project-environment-variables.md` §UI): the workspace image the
  * project's sessions build from, and the project's ordinary environment variables. A child of the
  * project layout, so switching tabs keeps the shared ProjectShell mounted.
  */

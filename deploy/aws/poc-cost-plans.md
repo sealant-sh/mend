@@ -1,5 +1,8 @@
 # AWS POC costs and deployment plan
 
+> Historical record (2026-09-26): a snapshot from 2026-09-16, before the single-instance control
+> plane (#312). Current deployment: `README.md`.
+
 Updated 2026-09-16. This records the cost review and the path from the running POC to a customer
 installer. It does not authorize infrastructure changes, further acceptance VMs or team access.
 

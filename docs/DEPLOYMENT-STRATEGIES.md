@@ -27,27 +27,34 @@ deployment strategy is a **named, tested composition** that supplies each progra
 ports. Arbitrary mix-and-match is deliberately not offered; a strategy is a coherent bundle with
 known capabilities and invariants.
 
-| Port (what exists today)                                | `local` (default)         | `kubernetes`                      | `cloudflare-hosted` (in progress)    |
-| ------------------------------------------------------- | ------------------------- | --------------------------------- | ------------------------------------ |
-| Workspace runtime (`RuntimeAdapter`, sealant)           | Docker container          | Workspace Pod                     | Sandbox via bridge Worker            |
-| Session workspace authority (`SessionRepository`, mend) | capture store (Garage)    | capture store (RGW or Garage)     | capture store (R2)                   |
-| Control transport (`SealantTarget`, sealant)            | unix socket / docker-exec | mTLS WebSocket                    | bearer-token WebSocket via bridge    |
-| Session channel (mend)                                  | per-session unix socket   | authenticated network endpoint    | authenticated network endpoint       |
-| Launch material (sealant `LaunchMaterialStager`)        | host directories          | Secret projection                 | inline over the bridge's HTTPS       |
-| Image build (sealant `WorkspaceImageBuilder`)           | docker build/save         | rootless BuildKit Job             | prebuilt runtime class (deploy-time) |
-| Run record / product store                              | Postgres                  | Postgres                          | Postgres (Hyperdrive); R2 later      |
-| Service exposure                                        | loopback forwards         | forwards over the control channel | authenticated HTTP/WS previews only  |
-| Bucket, executor disk                                   | Garage volume, container  | RGW/Garage, `emptyDir`            | R2, sandbox disk                     |
+| Port (what exists today)                                | `local` (default)              | `kubernetes`                      | `aws-microvm` (alpha)                       | `cloudflare-hosted` (in progress)    |
+| ------------------------------------------------------- | ------------------------------ | --------------------------------- | ------------------------------------------- | ------------------------------------ |
+| Workspace runtime (`RuntimeAdapter`, sealant)           | Docker container               | Workspace Pod                     | Lambda MicroVM                              | Sandbox via bridge Worker            |
+| Session workspace authority (`SessionRepository`, mend) | capture store (Garage)         | capture store (RGW or Garage)     | capture store (S3)                          | capture store (R2)                   |
+| Control transport (`SealantTarget`, sealant)            | unix socket / docker-exec      | mTLS WebSocket                    | WebSocket through the VM's endpoint         | bearer-token WebSocket via bridge    |
+| Session channel (mend)                                  | network endpoint (`mend:3106`) | authenticated network endpoint    | authenticated network endpoint (3106)       | authenticated network endpoint       |
+| Launch material (sealant `LaunchMaterialStager`)        | host directories               | Secret projection                 | pushed to the in-VM agent over the endpoint | inline over the bridge's HTTPS       |
+| Image build (sealant `WorkspaceImageBuilder`)           | docker build/save              | rootless BuildKit Job             | AWS managed image build                     | prebuilt runtime class (deploy-time) |
+| Run record / product store                              | Postgres                       | Postgres                          | Postgres (PlanetScale)                      | Postgres (Hyperdrive); R2 later      |
+| Service exposure                                        | loopback forwards              | forwards over the control channel | loopback on the Mend host, CLI tunnel       | authenticated HTTP/WS previews only  |
+| Bucket, executor disk                                   | Garage volume, container       | RGW/Garage, `emptyDir`            | S3, MicroVM disk                            | R2, sandbox disk                     |
+
+`aws-microvm` is not a `MEND_DEPLOYMENT_MODE` value. It is the `deploy/aws` stack. Its control plane
+is one EC2 instance (`deploy/docker/compose.aws.yaml`: `local` mode,
+`DEFAULT_RUNTIME_ADAPTER: microvm`, the Docker runtime off) or, with `cluster_enabled`, the EKS
+cluster (the Helm chart's `kubernetes` mode). Either way Sealant's MicroVM adapter runs every
+session in a Lambda MicroVM. alpha.mend.run runs the single-instance form. See
+`deploy/aws/README.md`.
 
 Since the packaging work (`mend server setup`, see `docs/SELF-HOSTING.md`), the `local` strategy
 runs inside the Mend application container: the store directory and unix sockets above are container
 paths under `/var/lib/mend/store` and `/run/sealant/sockets`, which Sealant's Docker volume mappings
 lower onto named volumes. The bundle's bucket is a Garage container on its own volume
 (`mend-garage`), initialised once by setup; the session channel listens on the Compose network as
-`mend:3106` and presigned URLs name `garage:3900`. Executors reach both only when the Sealant Docker
-runtime attaches workspace containers to that network — recorded as platform feedback
-(`PLATFORM-FEEDBACK.md` 2026-09-13); until it ships, the bundle's workspace containers sit on the
-default bridge and cannot resolve those names.
+`mend:3106` and presigned URLs name `garage:3900`. The bundle sets
+`SEALANT_DOCKER_WORKSPACE_NETWORK=mend_default`, and the Sealant Docker runtime (since 0.31.0; the
+bundle pins 0.37.2) attaches every workspace container to that network, so executors resolve both
+names.
 
 Capabilities differ per strategy and are **reported, never assumed** — sealant's `supports()`
 already refuses what a runtime cannot do (the Docker service where the operator has not enabled it,
@@ -88,16 +95,17 @@ Tier 1.
 the executor works on its own disk, and Mend reads the chain head through a runner. The dev stack
 (`compose.dev.yaml`) and the shipped bundle (`compose.yaml` → `deploy/docker/compose.v2.yaml`) run
 Garage for it; on Kubernetes the bucket is a Rook `CephObjectStore` RGW or Garage (the chart's
-`captureStore` values, `docs/KUBERNETES.md`), on Cloudflare R2. Chart 0.2.0 renders only the capture
-store: the API Pod's claim is `ReadWriteOnce` and nothing is mirrored into workspace Pods; the RWX
-`mend-store` claim of chart 0.1.x is retired. Packs at or above 16 MiB go up as multipart uploads
-(`upload.urls` with `sizes`, then `upload.complete`; `MEND_CAPTURE_MULTIPART_THRESHOLD` /
-`_PART_SIZE`). An executor that dies between its part PUTs and the complete leaves an open upload
-whose parts are billed until aborted: Mend's hourly retention pass aborts every open upload under a
-fenced epoch and every one older than the URL TTL plus the grace (`MULTIPART_ORPHAN_MS`), and a real
-bucket should carry the matching lifecycle rule as a backstop for the hours Mend is down —
-`AbortIncompleteMultipartUpload` after 1 day on S3 (bucket lifecycle configuration), R2 (object
-lifecycle rules, "abort multipart uploads"), and Garage (bucket lifecycle, the same S3 rule shape).
+`captureStore` values, `docs/KUBERNETES.md`), on AWS S3, on Cloudflare R2. Chart 0.2.0 and later
+render only the capture store: the API Pod's claim is `ReadWriteOnce` and nothing is mirrored into
+workspace Pods; the RWX `mend-store` claim of chart 0.1.x is retired. Packs at or above 16 MiB go up
+as multipart uploads (`upload.urls` with `sizes`, then `upload.complete`;
+`MEND_CAPTURE_MULTIPART_THRESHOLD` / `_PART_SIZE`). An executor that dies between its part PUTs and
+the complete leaves an open upload whose parts are billed until aborted: Mend's hourly retention
+pass aborts every open upload under a fenced epoch and every one older than the URL TTL plus the
+grace (`MULTIPART_ORPHAN_MS`), and a real bucket should carry the matching lifecycle rule as a
+backstop for the hours Mend is down — `AbortIncompleteMultipartUpload` after 1 day on S3 (bucket
+lifecycle configuration), R2 (object lifecycle rules, "abort multipart uploads"), and Garage (bucket
+lifecycle, the same S3 rule shape).
 
 **Correctness pre-work (done, sealant #197):** at-least-once delivery with more than one consumer
 required the build-job claim to be race-free and run-exec to be at-most-once. Those hold now
@@ -107,11 +115,14 @@ regardless of strategy.
 
 1. **Where does the git authority live on Cloudflare?** Answered by ADR-0002: in R2 as captures,
    with the chain head in Postgres and `refs/mend/checkpoints/*` in `store_refs`. What remains is
-   the `cf` git cell in ops-only mode for the runner (`docs/CLOUDFLARE-HOSTED.md`).
-2. **Tenancy lives in Mend, not Sealant.** Hosted Mend needs organizations, `tenant_id` ownership,
-   per-tenant secrets, quotas and audit. Sealant stays the single-tenant runtime a deployment owns —
-   consistent with its "self-hosted, not SaaS" positioning; hosted Mend deploys a Sealant per cell
-   (or per tenant) rather than teaching Sealant multi-tenancy.
+   the `cf` git cell in ops-only mode for the runner.
+2. **Tenancy lives in Mend, not Sealant.** Answered by ADR 0003
+   (`docs/adr/0003-organizations-and-tenancy.md`): organizations own members, projects, folders,
+   reference repositories and the audit log, and `MEND_TENANCY` picks `single` or `multi`. The
+   question as first written: hosted Mend needs organizations, `tenant_id` ownership, per-tenant
+   secrets, quotas and audit. Sealant stays the single-tenant runtime a deployment owns — consistent
+   with its "self-hosted, not SaaS" positioning; hosted Mend deploys a Sealant per cell (or per
+   tenant) rather than teaching Sealant multi-tenancy.
 3. **Capability surfacing.** The SDK should expose what a workspace's runtime family can and cannot
    do so Mend can degrade UI honestly (no raw TCP forwards, disk ceilings, Docker off). Recorded as
    platform feedback; the typed create-time refusals are the first half of it.

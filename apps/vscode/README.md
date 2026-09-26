@@ -16,13 +16,19 @@ The extension reads the same `~/.config/mend/cli.json` connection used by the Me
 `Mend: Connect to server` to override it. Remote opening requires the Microsoft Remote SSH
 extension.
 
+The extension is not published to the Visual Studio Marketplace. Build a `.vsix` with
+`pnpm --filter mend build` followed by `pnpm --filter mend package`, and install it with
+**Extensions: Install from VSIX…**.
+
 ## Opening the workspace (recommended)
 
 Opening a session opens its workspace: the same worktree files, but the integrated terminal runs
-inside the workspace — its image, its environment, and the mounted harness home. A `claude` or
-`codex` you run there is observed by Mend: the session shows running, the workspace stays leased,
-and the conversation is recorded and natively resumable from any device. A settled session offers a
-shell resume first — the shell keeps the fresh workspace alive while the editor is attached.
+inside the workspace — its image, its environment, and the session's harness home (the directory
+that holds the harness's state and conversations, captured with the workspace and restored when the
+session launches again). A `claude` or `codex` you run there is observed by Mend: the session shows
+running, the workspace stays leased, and the conversation is recorded and natively resumable from
+any device. A settled session offers a shell resume first — the shell keeps the fresh workspace
+alive while the editor is attached.
 
 The first open offers "Set up workspace SSH?" Mend registers this client's key and adds a
 server-specific Host block at the start of `~/.ssh/config`, before wildcard defaults. Existing
@@ -53,9 +59,9 @@ from the phone — asks whether to open **alongside** it or **take it over in th
 has no terminal client for Mend's PTY, so a takeover goes the observed route: a shell holds the
 workspace lease, the running agent is stopped, the workspace opens (or the current window is
 reused), and a new integrated terminal runs the harness's own resume — `codex resume <id>` or
-`claude --resume <id>` (the most recent conversation when the id is not yet known). The harness home
-is mounted in the workspace, so that resume finds the conversation the agent was writing a moment
-ago, and Mend observes the new process under the same conversation.
+`claude --resume <id>` (the most recent conversation when the id is not yet known). The shell keeps
+the same workspace, and with it the session's harness home, so that resume finds the conversation
+the agent was writing a moment ago, and Mend observes the new process under the same conversation.
 `Mend: Take over session in the editor` on a live session does the same without the question.
 
 Cancelling the SSH setup or the confirmation leaves the agent running. The stop ends only the agent:

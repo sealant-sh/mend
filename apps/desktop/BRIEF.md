@@ -172,8 +172,13 @@ worth stealing verbatim:
   then +25). The active block and the shelf are flat — projects are the tree's job, not the inbox's.
 - **Jump pills.** Holding Ctrl paints 1..9 pills on the first nine rows; Ctrl+N jumps.
 
-Not copied (yet): pin, snooze/wake, drag-to-reorder pinned, multi-select. Worth revisiting once the
-daily rhythm shows a need.
+- **Snooze.** Also t3code's model (`lib/snooze.ts`): hovering an active row offers snooze with
+  presets (an hour, three hours, this evening, tomorrow, next week). A snoozed row moves to a
+  collapsed Snoozed shelf until its wake time, or until it needs you again: it starts waiting on
+  input, fails freshly, or settles after the snooze. Client-local, like read state.
+
+Not copied (yet): pin, drag-to-reorder pinned, multi-select. Worth revisiting once the daily rhythm
+shows a need.
 
 Shells never appear here. The inbox is about agents that may need you; a shell is you.
 
@@ -184,8 +189,7 @@ Shells never appear here. The inbox is about agents that may need you; a shell i
 line comments and change-level comments, read/suggest passes, edit-the-instruction send-back to the
 same session. The web app (`apps/web/src/routes/changes.$changeId.tsx`) is the reference
 implementation; port, don't reinvent, and extract shared pieces into a package only when the second
-consumer proves the shape. Until M2 lands, the review button deep-links to the web app so the loop
-is never broken.
+consumer proves the shape. The desktop review lives at `routes/review.$changeId.$sliceId.tsx`.
 
 ## Landing (docs/adr/0007-landing.md)
 
@@ -288,32 +292,31 @@ change in view.
 
 ## Milestones
 
-- **M0: connect (2026-09-24, branch `desktop/01-connect`).** Terminal sockets leave without the
-  page's Origin, ended sessions replay their record and stop reconnecting, sign-in is the device
-  flow with revocable sign-out. Live typing into a fresh PTY on alpha is still unproven: the proof
-  session's workspace reached "failed" before becoming ready on the linear-cli project, as an
-  earlier claude session there did.
-- **M1: honest ownership.** Tree, visible sessions, session-owned shells, terminal, inbox, launcher,
-  keybindings, and retained-workspace controls. Clean base (2026-09-24, branch
-  `desktop/02-contracts`): wire shapes and routes from `@mend/api-contracts`, the bench path
-  removed, controls gated on what the server says the caller may do.
-- **Conversations (2026-09-24, branch `desktop/03-conversations`).** Protocol-mode sessions read and
-  steer as a conversation (turns, approvals, questions, interrupt), the launcher starts claude and
-  codex in either mode, settled sessions resume, and the owner hands a session between modes. Proven
-  with unit tests on the data layer and a component harness driven in Chromium against fixtures; not
-  proven live: alpha has no protocol-mode session, and launching one spends the owner's credentials.
-- **Packaging (2026-09-24, branch `desktop/04-packaging`).** `pnpm -F @mend/desktop package` builds,
-  then runs electron-builder (`electron-builder.config.ts`) for the host: Linux AppImage and tar.gz,
-  macOS dmg and zip for arm64 and x64, unsigned and not notarized. Artifacts land in `release/`. The
-  app icon is the seam mark from `apps/mobile/assets/images/icon.png`, copied to
-  `resources/icon.png`. The package holds `out/` and `package.json` only (a 16 MB `app.asar`, no
-  node_modules), with the ghostty wasm, the Nerd Font symbols and the fontsource faces under
-  `out/renderer/assets`. Proven on Linux: the unpacked tar.gz ran against alpha read-only
-  (`app.isPackaged` true, renderer at `file://…/app.asar/out/renderer/index.html`), drew the tree,
-  loaded Space Grotesk, Inter and JetBrains Mono, and replayed a completed codex session's record
-  through the ghostty terminal. The AppImage was built but not launched: on NixOS it needs
-  `appimage-run`. On Linux the macOS `.app` and zip build, and the dmg stops at `sips`, a macOS
-  tool. No macOS artifact has been opened on a Mac yet.
+Merged:
+
+- **M0: connect (#359).** Terminal sockets leave without the page's Origin, ended sessions replay
+  their record and stop reconnecting, sign-in is the device flow with revocable sign-out. Live
+  typing into a fresh PTY on a remote server is not yet proven.
+- **M1: honest ownership (#360).** Tree, visible sessions, session-owned shells, terminal, inbox,
+  launcher, keybindings, and retained-workspace controls. Wire shapes and routes come from
+  `@mend/api-contracts`, the bench path is removed, and controls are gated on what the server says
+  the caller may do.
+- **Conversations (#361).** Protocol-mode sessions read and steer as a conversation (turns,
+  approvals, questions, interrupt), the launcher starts claude and codex in either mode, settled
+  sessions resume, and the owner hands a session between modes. Proven with unit tests on the data
+  layer and a component harness driven in Chromium against fixtures; not proven against a live
+  protocol-mode session.
+- **Packaging (#362).** `pnpm -F @mend/desktop package` builds, then runs electron-builder
+  (`electron-builder.config.ts`) for the host: Linux AppImage and tar.gz, macOS dmg and zip for
+  arm64 and x64, unsigned and not notarized. Artifacts land in `release/`. The app icon is the seam
+  mark from `apps/mobile/assets/images/icon.png`, copied to `resources/icon.png`. The package holds
+  `out/` and `package.json` only (a 16 MB `app.asar`, no node_modules), with the ghostty wasm, the
+  Nerd Font symbols and the fontsource faces under `out/renderer/assets`. Proven on Linux: the
+  unpacked tar.gz ran against a server read-only, drew the tree, loaded Space Grotesk, Inter and
+  JetBrains Mono, and replayed a completed codex session's record through the ghostty terminal. The
+  AppImage was built but not launched (on NixOS it needs `appimage-run`). On Linux the macOS `.app`
+  and zip build, and the dmg stops at `sips`, a macOS tool. No macOS artifact has been opened on a
+  Mac yet. No release workflow publishes desktop builds.
   - Proposed CI job, not wired: `release-desktop.yml`, on the same `v*.*.*` tag as
     `release-cli.yml`. A matrix of `ubuntu-latest` (AppImage, tar.gz) and `macos-latest` (dmg, zip,
     arm64 and x64). Each leg runs `pnpm install --frozen-lockfile --ignore-scripts`
@@ -326,17 +329,18 @@ change in view.
     and notarization (Developer ID secrets, `mac.identity`, `notarize: true`, hardened runtime
     entitlements) come later in their own change. So does auto-update: the release job publishes
     only files, and no `latest*.yml` feed.
-- **Landing (2026-09-24, local branch `desktop/05-landing`, on the landing stack's
-  `landing/07-web`).** The Land sheet from the session header and from Review, the header's landing
+- **Landing (#363).** The Land sheet from the session header and from Review, the header's landing
   strip, and the composer's automatic-landing override. Proven with unit tests (the fact words held
   to the domain's `landingFactLine`, the routes and bodies the calls send, the panel's markup for
   owner, viewer, held-back, refused and non-GitHub cases) and a component harness screenshotted in
-  Chromium against fixtures. Not proven live: alpha runs 0.29.2, which has no landing routes, and
-  landing pushes to a real origin.
-- **M2: Review in-app.** Immutable checkpoint-pair diff, P0 controls, comments, minimum evidence,
-  and recoverable send-back.
-- **M3: Services in-app.** Stable Services, attempt history, private forwards, read-only logs, and
-  factual controls beside the owning session.
+  Chromium against fixtures. Not proven against a live push to a real origin.
+- **M2: Review in-app.** The review screen (`routes/review.$changeId.$sliceId.tsx`) is in the app: a
+  checkpoint-pair diff, comments, and send-back to the same session.
+- **M3: Services in-app.** The Services sheet (`components/services-sheet.tsx`) and read-only logs
+  sit beside the owning session.
+
+Still to come:
+
 - **M4: store, settings, and polish.** Adopt, project settings, notifications, summon refinements,
   and keybinding configuration.
 

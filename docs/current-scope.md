@@ -1,9 +1,30 @@
 # Current scope
 
-Written 2026-09-20. A working list across `sealant-sh/mend`, `sealant-sh/sealant` (Core) and
-`sealant-sh/sealantd`. Update it as items land; delete it when it is empty.
+Written 2026-09-20, ticked 2026-09-26. A working list across `sealant-sh/mend`, `sealant-sh/sealant`
+(Core) and `sealant-sh/sealantd`. Update it as items land; delete it when it is empty.
+
+## Shipped since 2026-09-21
+
+Merged to `main` and released (Mend 0.30.0 to 0.33.0). "Alpha-unproven" means no record of it
+running on alpha.mend.run exists yet.
+
+- Slack (#324 to #335, ADR 0006), released in 0.30.0. Two faults found against a real Slack install
+  were fixed in #376 and #378. Alpha-unproven.
+- Landing (#341 to #349, ADR 0007), released in 0.30.0; adopting pull requests opened outside Mend
+  (#372) in 0.31.0. Alpha-unproven.
+- Dotfiles 1 to 7 (#351 to #357), released in 0.30.0. Alpha-unproven.
+- Desktop revival (#359 to #363). No published desktop release. Alpha-unproven.
+- Fixes from Anna's feedback (#368 to #372): Services that keep a stopped agent's workspace up, the
+  Git author setting, pasted images and skills in captured workspaces, review pass dedup and
+  concurrency, adopting outside pull requests. Released in 0.31.0. Alpha-unproven.
+- `mend doctor --bundle` (#374), released in 0.32.0. Alpha-unproven.
+- Organization defaults and the default zsh profile (#378 to #380, Sealant 0.37.2), released in
+  0.33.0. Alpha-unproven.
 
 ## What we are fixing now
+
+Done 2026-09-20: Core 0.36.0 builds each project's image on MicroVM, and Mend pins it (#314). The
+text below is the problem as it stood.
 
 Image customisation on MicroVM, in Core. A project's OS family, custom base image and packages do
 nothing on MicroVM today, and the build that is ignored still runs on the control plane's Docker.
@@ -46,21 +67,21 @@ Open as sealant#267.
 https://alpha.mend.run runs Mend 0.29.0 on Sealant 0.36.0 on one instance, `multi` and `public`, the
 EKS cluster taken down (`cluster_enabled = false`). What the first day found:
 
-- [ ] Arch, Mend's default family, cannot be built on the MicroVM runtime with Sealant 0.36.0:
+- [x] Arch, Mend's default family, cannot be built on the MicroVM runtime with Sealant 0.36.0:
       Docker Hub's `archlinux` is x86_64 only. sealant#276 builds Arch from Arch Linux ARM's signed
       rootfs, links glibc's loader on the nix image (no native harness binary ran there), and lets
       opencode's postinstall run. Until Core 0.36.1 and a Mend pin bump, alpha projects must pick
-      Fedora or Ubuntu.
+      Fedora or Ubuntu. Done: Sealant 0.36.1 is pinned (#318).
 - [ ] Mend defaults every project to Docker on, and to Arch, without asking the deployment what it
       serves. Sealant's health answers the runtime's support; the setup page should default the OS
       family and the Docker toggle from it and say why an option is off.
 - [x] Workspace-scoped Docker on every family, proven live on 2026-09-20 (sealant#276).
       `SEALANT_MICROVM_DOCKER_ENABLED=true` is set on alpha.
 - [ ] A real capture session through Mend on alpha, with its flush at stop, has still not run.
-- [ ] Services on alpha, after the release that carries the stack `services/01-capture` →
-      `services/03-open-links`: in a capture-mode session, `mend service run web` finds the
-      worktree's `mend.toml` recipe (read from the live executor), the agent's own
-      `mend service run --http …` gets an Open URL, `mend attach` on a laptop prints
+- [ ] Services on alpha. The stack merged as #336, #337 and #338 and shipped in Mend 0.30.0; the
+      live proof below has not been recorded. The check: in a capture-mode session,
+      `mend service run web` finds the worktree's `mend.toml` recipe (read from the live executor),
+      the agent's own `mend service run --http …` gets an Open URL, `mend attach` on a laptop prints
       `web → http://localhost:<port>` and the page loads through it (HMR included), stopping the
       Service closes the tunnel, and the web's Services card shows `mend service connect web`
       instead of a dead Open link. Only alpha can prove the executor-side read and the tunnel
@@ -70,7 +91,7 @@ EKS cluster taken down (`cluster_enabled = false`). What the first day found:
 - [ ] Tailnet: remove the cluster's Tailscale operator device and OAuth client. Orphan captures from
       the cluster's sessions sit in the capture bucket.
 
-## To get alpha running (done 2026-09-20)
+## To get alpha running (done 2026-09-20; ticked 2026-09-26)
 
 - [x] Core step two: merged as one stack of five (sealant#267, #268, #270, #271, #273).
   - #268: the MicroVM builder. One plan is one image, named `sealant-ws-<plan hash>`. The per-build
@@ -89,26 +110,28 @@ EKS cluster taken down (`cluster_enabled = false`). What the first day found:
       again took under a second. The adapter booted it in 7 s, and the OS, the package, `sealantd`,
       a working `sealantctl` and the repository were inside. A fenced stop took 3 s. Not covered: a
       capture-source flush at terminate (needs Mend), and the Docker variant.
-- [ ] sealant#275, open. The proof found two faults: image lookups need an ARN, and the create
-      request's token must be one per attempt. Until it merges, `main` builds no MicroVM image. Hold
-      the Core Version PR (sealant#274) until then.
+- [x] sealant#275, merged and released in Core 0.36.0. The proof found two faults: image lookups
+      need an ARN, and the create request's token must be one per attempt. Until it merges, `main`
+      builds no MicroVM image. Hold the Core Version PR (sealant#274) until then.
 - [ ] One proof image, `proof-ws-2f90f800473b7775fd29c642`, is stuck in `CREATING` in the AWS
       account and cannot be deleted in that state. Try `delete-microvm-image` again later.
 - [ ] Core step three: one read-only build role and one prefix per organization.
-- [ ] Core release, then the Mend pin bump (template: mend#307).
+- [x] Core release, then the Mend pin bump (template: mend#307). Core 0.36.0, pinned in #314.
 - [ ] Mend: a multi mode gate item that refuses `MEND_TENANCY=multi` while recipes run on the
       control plane's host.
-- [ ] Mend OpenTofu: per-organization build roles and prefixes. Also the worker's new permissions
-      (the four `lambda:*MicrovmImage` actions, `iam:PassRole` on the build role, `s3:PutObject` and
-      `s3:DeleteObject` on the prefix) and the new settings in `compose.aws.yaml`.
-- [ ] Apply `deploy/aws/tofu` with `instance_enabled = true`.
-- [ ] `alpha.mend.run` A record, DNS-only, at the instance's Elastic IP.
-- [ ] Fresh `mend` and `sealant_control_plane` databases on PlanetScale. No data carried over.
-- [ ] First boot in two steps: `single` and `private`, create the first account over an SSM
-      port-forward, then `multi` and `public`.
+- [ ] Mend OpenTofu: per-organization build roles and prefixes.
+- [x] The worker's new permissions (the four `lambda:*MicrovmImage` actions, `iam:PassRole` on the
+      build role, `s3:PutObject` and `s3:DeleteObject` on the prefix) and the new settings in
+      `compose.aws.yaml` (#314, #320; `deploy/aws/tofu/application.tf`).
+- [x] Apply `deploy/aws/tofu` with `instance_enabled = true`.
+- [x] `alpha.mend.run` A record, DNS-only, at the instance's Elastic IP.
+- [x] Fresh `mend` and `sealant_control_plane` databases on PlanetScale. No data carried over.
+- [x] First boot in two steps: `single` and `private`, create the first account over an SSM
+      port-forward, then `multi` and `public`. The order as it ran is in `deploy/aws/README.md`
+      (#316).
 - [ ] From outside the VPC: `mend doctor` against the origin, a sign-up without an invitation, and
       connection attempts to the database and Sealant.
-- [ ] Tear down EKS (`deploy/aws/TEARDOWN.md`).
+- [x] Tear down EKS (`deploy/aws/TEARDOWN.md`), with `cluster_enabled = false` (#315).
 
 ## A dead worker looks healthy
 
@@ -138,17 +161,21 @@ The packaged acceptance run takes about three minutes, and the whole workflow ab
 - [ ] Run the packaged acceptance on pull requests that touch sessions, the store, the API, the CLI,
       the Dockerfile or `deploy/`.
 - [ ] Stop the skipped "Release acceptance" entries on pull requests without the label.
-- [ ] Confirm `version.yml` dispatches the acceptance on the next Version PR. Unproven.
+- [x] Confirm `version.yml` dispatches the acceptance on the next Version PR. It does: the
+      `release-acceptance.yml` runs on `changeset-release/main` are `workflow_dispatch` runs.
 
 ## Smaller loose ends
 
-- [ ] Tag Mend 0.29.0. The acceptance run on `main` at `fef117c` passed on both architectures.
+- [x] Tag Mend 0.29.0. The acceptance run on `main` at `fef117c` passed on both architectures. Tags
+      now run to v0.33.0.
 - [ ] The capture warning `git section failed verification at register … not a git repository` on a
       suspend capture. Never investigated.
 - [ ] `install.sh` is still served by the marketing site and attached to every release. Only the
       references were removed (#311).
-- [ ] The docs install page still says "two product containers". It is three.
-- [ ] What `mend` prints when the TUI is opened on Node.js 22.
+- [x] The docs install page still says "two product containers". It is three. Fixed in the
+      2026-09-26 docs pass.
+- [x] What `mend` prints when the TUI is opened on Node.js 22. It says the dashboard needs Node 26
+      and that every other command still works (`apps/cli/src/main.ts`).
 - [ ] `mend server setup`, `start` and `upgrade` do not know the edge overlay or `compose.aws.yaml`.
       Alpha upgrades are by hand until they do.
 - [ ] Core's `format:check` fails on two generated changelogs on `main`.

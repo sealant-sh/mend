@@ -6,14 +6,14 @@ a separate Sealant installation.
 
 The original plan was recorded on 2026-08-29. Manual configuration shipped in mend#151. Self-service
 setup is implemented; certificates and attachment leases below remain proposals. The packaging stack
-adds persistent gateway keys, per-server client configuration, and explicit remote addressing.
-Installed VS Code and physical MacBook-to-Mac-Mini acceptance remain separate checks, not
-conclusions from the Linux process tests.
+(#210 to #217) shipped persistent gateway keys, per-server client configuration, and explicit remote
+addressing. Installed VS Code and physical MacBook-to-Mac-Mini acceptance remain separate checks,
+not conclusions from the Linux process tests.
 
 ## Current setup
 
 ```sh
-mend login --url http://mini.tailnet.ts.net:3105
+mend login --url http://mend-server.example:3105
 mend ssh setup
 mend ssh
 ```
@@ -60,7 +60,7 @@ Short-lived OpenSSH user certificates could replace public-key registration. A f
 would return a certificate binding the authenticated principal to one workspace. The gateway would
 trust the issuing CA; ordinary registered keys could remain available for plain SSH clients.
 
-This needs a platform contract and implementation. It is not part of the packaging stack. A
+This needs a platform contract and implementation. The packaging stack did not include it. A
 WebSocket SSH tunnel could separately support networks where the gateway port is unreachable; there
 is no such fallback in the current client.
 

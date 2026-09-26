@@ -1,5 +1,9 @@
 # Mend desktop: ownership, Services, and Review
 
+> Historical record (2026-09-26): closed out. Steps 1 to 10 shipped; step 10's desktop Services are
+> `apps/desktop/src/renderer/src/components/services-sheet.tsx` (#92, later #338 and #360). Step 11
+> (process frontiers and process-aware evidence) was not built, and step 12 stays unticked.
+
 **Status:** Approved; implementation in progress (Steps 1–8 complete)
 
 **Authority:** `MEND-AGENT-WORKBENCH-PLAN.md` remains canonical. This plan records the approved

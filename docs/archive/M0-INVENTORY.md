@@ -1,5 +1,8 @@
 # M0 Inventory — queue era → agent workbench
 
+> Historical record (2026-09-26): the 2026-07-25 M0 snapshot of the queue-era codebase. The code and
+> `MEND-AGENT-WORKBENCH-PLAN.md` superseded it; do not read it as current architecture.
+
 The M0 direction-reset inventory required by `MEND-AGENT-WORKBENCH-PLAN.md` §12/§19. Every
 significant module classified as **REUSE** (unchanged), **REFRAME** (works, wears queue-era names),
 **EXTRACT** (useful logic buried in a retiring surface — pull it out first), or **RETIRE later**

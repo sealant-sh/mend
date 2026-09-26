@@ -1,5 +1,9 @@
 # AWS owner-only access — observed 2026-09-16
 
+> Historical record (2026-09-26): the EKS deployment's owner-only Tailscale access. The EKS control
+> plane is off (`cluster_enabled = false`); alpha.mend.run runs on the single instance in
+> `deploy/aws/README.md`.
+
 Private HTTPS access is installed at **<https://mend-access.tailc79e49.ts.net>**. Connect Tailscale,
 then use the existing Mend login. This is an owner-only pilot, not public or teammate access, and
 not a claim that every gate in the [access plan](aws-access-plan.md) has passed.

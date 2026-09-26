@@ -1,5 +1,8 @@
 # Run Mend without Tailscale: progress
 
+> Historical record (2026-09-26): a progress log from 2026-09-18. The work merged as #285 to #291;
+> the decisions are in `docs/adr/0004-access-without-a-private-network.md`.
+
 Written 2026-09-18, at the end of the unattended run. Nothing was merged, tagged, published or
 deployed, and the cluster was not touched. Mend #281 (version packages) and #284 (Sealant 0.33.1)
 were left alone.

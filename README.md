@@ -83,6 +83,14 @@ Keep the host behind a private network or a firewall. Binding `0.0.0.0` exposes 
 IPv4 interface. Mend does not configure Tailscale or a firewall for you. Setup publishes the web and
 SSH ports only. Postgres has no published port.
 
+The server reports its exposure as the operator declared it (`MEND_EXPOSURE`: `loopback`, `private`,
+the default, or `public`) beside what it observed; `mend operator exposure` prints both. With
+`public`, the server refuses to start while a public exposure gate item it can observe is open, such
+as an `http` origin; an edge that terminates TLS in front of the web tier supplies the `https`
+origin. `mend server setup` does not set `MEND_EXPOSURE` or install the edge; the Caddy overlay
+(`deploy/docker/compose.edge.yaml`) is for a Compose install you run yourself. See
+[Exposure](https://docs.mend.run/operate/exposure/).
+
 On your laptop, install the CLI and run `mend login --url http://mac-mini.local:3105`.
 `mend connect` reads credentials from that laptop, never from the server. `mend pair` offers only
 the server URLs you configured. The native mobile app is unpublished, so build it yourself or use

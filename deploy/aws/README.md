@@ -1,8 +1,10 @@
 # AWS capture POC
 
-Mend on EKS, PlanetScale Postgres over PrivateLink, authoritative captures in S3, and disposable
-Lambda MicroVM executors. No FSx and no public application ingress. Account `954648881795`, region
-`eu-central-1`; the destroyed benchmark stack is not reused.
+Mend on EKS or on one EC2 instance, PlanetScale Postgres over PrivateLink, authoritative captures in
+S3, and disposable Lambda MicroVM executors. No FSx. The EKS control plane has no public application
+ingress. The single instance (which runs alpha.mend.run) is public behind the Caddy edge, as its
+steps below describe. Account `954648881795`, region `eu-central-1`; the destroyed benchmark stack
+is not reused.
 
 See the [capture-store ADR](../../docs/adr/0002-session-capture-store.md),
 [workbench plan](../../MEND-AGENT-WORKBENCH-PLAN.md), [Sealant manifests](kubernetes/README.md), and

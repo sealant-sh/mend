@@ -1,5 +1,8 @@
 # Mend project environment variables — implementation plan
 
+> Historical record (2026-09-26): shipped 2026-08-18 in Mend CLI 0.3.0. Current behaviour:
+> https://docs.mend.run/guides/environment-variables/.
+
 > Status: implemented across all three repos on 2026-08-17; every PR open, none merged. sealantd#55
 > (secret env file) → sealant#174 (env) → sealant#175 (secretEnv, pins sealantd 0.10.0) → mend#64
 > (domain/db/api) → mend#65 (UX) → mend#66 (secrets + launch wiring + `mend env load`). Mend pins

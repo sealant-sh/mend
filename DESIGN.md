@@ -10,9 +10,10 @@ Token references below to `packages/ui/src/styles/globals.css` mean this repo's 
 This is the visual language of an **evidence-backed review surface** for AI software runs: warm +
 premium, with real depth. It keeps the colour discipline and the "evidence beside the claim" ethos
 of the original review tool, but trades the flat/structural look for a polished, elevated, dev-infra
-aesthetic (think Linear / Vercel / Stripe-grade). The canonical built reference is
-**`apps/marketing/src/routes/index.tsx`** — match its depth, spacing, type, and the run-record
-motif. This document is the implementation contract.
+aesthetic (think Linear / Vercel / Stripe-grade). The canonical reference is the Sealant platform's
+Evidence Review surface, whose token sheet `@mend/ui` vendors; the run-record motif is described in
+§5. The marketing landing page (rebuilt in #383) no longer draws product screens, so it is not a
+reference for the motif. This document is the implementation contract.
 
 ---
 

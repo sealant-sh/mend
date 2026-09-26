@@ -18,7 +18,7 @@
  * ```
  *
  * Lives on a subpath while the queue-era model retires; promotes to the root
- * barrel when `issue.ts` and friends go (docs/M0-INVENTORY.md).
+ * barrel when `issue.ts` and friends go (docs/archive/M0-INVENTORY.md).
  */
 export * from "./audit.ts";
 export * from "./agent-protocol.ts";

@@ -16,7 +16,7 @@ shared filesystem.
 
 The **RWX `mend-store` claim is retired** as the session store. The API Pod still needs a
 `ReadWriteOnce` volume at `/var/lib/mend/store` for the bare repositories it adopts and fetches, the
-runner cache (`_cache/runner/<project>/repo.git`), references and the machine git key; chart 0.2.0
+runner cache (`_cache/runner/<project>/repo.git`), references and the machine git key; chart 0.3.0
 renders exactly that (`store.create` on the cluster's default class, 50Gi, or `store.existingClaim`;
 you choose one explicitly, the chart refuses to render with neither), mounts it into the API Pod
 alone, and mirrors nothing into the workspace namespace — the `workspaces.volumeMappings` pairing

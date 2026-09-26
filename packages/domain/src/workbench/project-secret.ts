@@ -12,7 +12,7 @@ import {
 } from "./project-environment.ts";
 
 /**
- * A project-owned SECRET environment variable (`.plans/project-environment-variables.md`, "Scope
+ * A project-owned SECRET environment variable (`docs/archive/plans/project-environment-variables.md`, "Scope
  * expansion"): the half of a real `.env` that the plaintext Configuration set refuses. Mend
  * stores the value encrypted at rest with a machine-local key and never returns it through the
  * API; at each fresh workspace launch the current set is decrypted once and handed to Sealant's

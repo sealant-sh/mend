@@ -635,7 +635,7 @@ export const projectMounts = pgTable(
 
 /**
  * Project-owned, explicitly NON-SECRET environment variables
- * (`.plans/project-environment-variables.md`): plaintext by design, read as one snapshot at each
+ * (`docs/archive/plans/project-environment-variables.md`): plaintext by design, read as one snapshot at each
  * fresh workspace launch, inherited by every process the platform starts in that workspace. Stable
  * IDs make rename an atomic update; the integer row revision drives stale-write checks.
  */
@@ -659,7 +659,7 @@ export const projectEnvironmentVariables = pgTable(
 );
 
 /**
- * Project-owned SECRET environment variables (`.plans/project-environment-variables.md`, "Scope
+ * Project-owned SECRET environment variables (`docs/archive/plans/project-environment-variables.md`, "Scope
  * expansion"): the value is sealed at rest with the machine's secrets key (`@mend/store`
  * SecretCipher) and never returned by any API; launch decrypts once and hands the set to Sealant's
  * transient secret channel. Same stable-ID / integer-revision discipline as the plaintext set.

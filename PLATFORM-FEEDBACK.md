@@ -334,11 +334,14 @@ Decisions 2, 6, 8 and 9 (`docs/adr/0002-session-capture-store.md`, amended 2026-
 capture store the only session store, the shipped Docker bundle included. Mend's side is built; four
 platform-side gaps decide how much of it runs today.
 
-- **Core, Docker runtime: workspace containers on a configurable network.** The bundle
-  (`deploy/docker/compose.v2.yaml`) runs Garage beside Postgres and tells executors to reach the
-  session channel as `http://mend:3106` and the bucket as `http://garage:3900` — Compose service
-  names on the project's `mend_default` network, which is the only way a presigned URL can name a
-  host the executor resolves without publishing Garage on the host. Today
+- **Core, Docker runtime: workspace containers on a configurable network.** **Shipped in 0.31.0**
+  (Core `feat(workspaces): attach Docker workspaces to a configured network`): the worker reads
+  `SEALANT_DOCKER_WORKSPACE_NETWORK` and attaches every workspace container to it. The bundle pinned
+  0.31.0 in #238 and pins 0.37.2 today, so a bundle session reaches `mend:3106` and `garage:3900`.
+  The bundle (`deploy/docker/compose.v2.yaml`) runs Garage beside Postgres and tells executors to
+  reach the session channel as `http://mend:3106` and the bucket as `http://garage:3900` — Compose
+  service names on the project's `mend_default` network, which is the only way a presigned URL can
+  name a host the executor resolves without publishing Garage on the host. Today
   `docker-runtime-adapter.ts` passes `--network` only for the docker-in-workspace service (a
   per-workspace network); every other workspace lands on the default bridge, where those names do
   not resolve, so a session in the bundle fails at `capture plan.get`. **Suggested:** a worker
@@ -682,8 +685,8 @@ lifted "Codex inference is not supported yet" 400. Tool-less v1: caller tools st
   re-binding one.
 - **Suggested:** either a standby shape (`workspaces.create` without a source, with the mount bound
   at first use) or a re-point operation on a live workspace's primary mount. Independently, the
-  plan-hash build short-circuit (docs/WORKSPACE-IMAGES.md direction item 1) compounds with any pool
-  by making the rebuild half of drain-and-rewarm cheap.
+  plan-hash build short-circuit (docs/archive/WORKSPACE-IMAGES.md direction item 1) compounds with
+  any pool by making the rebuild half of drain-and-rewarm cheap.
 
 ## 2026-08-20 · 0.19.0 · Nix-family workspace images cannot boot: `sealantd` is not on the base image's PATH
 

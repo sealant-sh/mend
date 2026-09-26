@@ -1,8 +1,8 @@
 # Per-user Sealant identity
 
-Status: decided 2026-08-22. Implemented across Sealant Core (`feat/service-principals`) and Mend
-(`yp/sealant-users`). Supersedes the `SEALANT_OWNER_USER_ID` hand-off in `DEVELOPMENT.md` and the
-2026-08-18 entry in `docs/BUGS.md`.
+Status: decided 2026-08-22. Shipped in Sealant Core (sealant-sh/sealant#189) and Mend (#105).
+Supersedes the `SEALANT_OWNER_USER_ID` hand-off in `DEVELOPMENT.md` and the 2026-08-18 entry in
+`docs/BUGS.md`.
 
 ## Problem
 
@@ -70,7 +70,11 @@ Sealant under the user's own Sealant id and never stores it.
    `POST /me/sealant/accounts`, `DELETE /me/sealant/accounts/:id`. Secrets pass through to Sealant
    and are never persisted or logged by Mend.
 5. Surfaces: Settings → "Connected accounts" on web and desktop; `mend connect claude|codex|github`
-   (reads the file the provider's CLI wrote at login, or `--from-stdin`) + `mend accounts`.
+   - `mend accounts`. For codex the CLI reads the file the provider's CLI wrote at login, for github
+     it asks `gh` for its token, or `--from-stdin` takes a pasted credential. Since ADR 0005
+     (`docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md`), `mend connect claude` logs in
+     once against a directory Mend keeps, so Mend holds a Claude grant of its own and the laptop's
+     login is left as it is; `--use-my-login` sends the machine's existing login instead.
 6. Hot-pool skeletons are provisioned as their owner and claimed only by that owner's sessions — a
    warmed workspace carries the owner's connected accounts. Since organizations
    (docs/adr/0003-organizations-and-tenancy.md) the pool warms for each account that ran a session
@@ -86,11 +90,10 @@ Sealant under the user's own Sealant id and never stores it.
   never silently borrows another's.
 - The Sealant web app is no longer part of a Mend deployment. Its remaining unique function (Better
   Auth sign-up) is not needed when Mend is the login.
-- Teams/organizations on Mend's side (coming next) do not need a Sealant counterpart: ownership on
-  the platform stays per user; sharing is a Mend concern.
-- Until the Core change ships as an SDK release, Mend's worktree links the locally built
-  `@sealant/sdk` / `@sealant/api-contracts` dist into `node_modules`; the catalog bump follows the
-  release.
+- Organizations on Mend's side (shipped, `docs/adr/0003-organizations-and-tenancy.md`) do not need a
+  Sealant counterpart: ownership on the platform stays per user; sharing is a Mend concern.
+- Mend takes `@sealant/sdk` and `@sealant/api-contracts` from npm through the catalog in
+  `pnpm-workspace.yaml` (0.37.2 today).
 - Open: revoking a Sealant user when a Mend user is deleted (archive connected accounts, expire
   workspaces); surfacing "launched without a <provider> account" on the session status line —
   tracked, not in this change.

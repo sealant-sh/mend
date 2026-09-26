@@ -1,5 +1,8 @@
 # Blockers to real high availability on AWS
 
+> Historical record (2026-09-26): a snapshot from 2026-09-16, before the single-instance control
+> plane (#312). Current deployment: `README.md`.
+
 Updated 2026-09-16. This records what stops the AWS installation from running more than one copy of
 each service, and what removing each blocker takes. It is a source review, not a tested design.
 Every claim below is source-inferred unless marked observed. Nothing here authorizes infrastructure
@@ -7,8 +10,8 @@ changes.
 
 See the [deployment overview](README.md), the [cost review](poc-cost-plans.md), the
 [capture store ADR](../../docs/adr/0002-session-capture-store.md) and the
-[public exposure](../../docs/reviews/public-exposure-findings.md) and
-[team support](../../docs/reviews/team-support-findings.md) reviews. The
+[public exposure](../../docs/archive/reviews/public-exposure-findings.md) and
+[team support](../../docs/archive/reviews/team-support-findings.md) reviews. The
 [workbench plan](../../MEND-AGENT-WORKBENCH-PLAN.md) remains the product source of truth.
 
 ## Summary

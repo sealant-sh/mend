@@ -87,7 +87,7 @@ export type ProjectEnvironmentWriteError =
   | ProjectEnvironmentLimitError;
 
 /**
- * Project environment variables (`.plans/project-environment-variables.md`). Every mutation locks
+ * Project environment variables (`docs/archive/plans/project-environment-variables.md`). Every mutation locks
  * the owning project row `FOR UPDATE`, re-checks the complete aggregate under that lock (unique
  * name, entry count, total bytes), applies the row change, and bumps
  * `projects.environment_revision` before commit — two concurrent creates at the final slot

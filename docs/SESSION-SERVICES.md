@@ -1,6 +1,6 @@
 # Session Services
 
-> **Status:** Decided architecture, amended 2026-08-21
+> **Status:** Decided architecture, amended 2026-08-21; status updated 2026-09-26
 >
 > **Date:** 2026-08-12
 >
@@ -46,9 +46,11 @@ produce a factual suggestion such as `Port 5173 started listening, observed`; ac
 suggestion is still explicit. No observation creates or exposes a Service by itself.
 
 **Private forwarding, no Mend request authentication.** A Service binds only to loopback and
-explicitly selected private interfaces by default, with Tailscale or a similar network for remote
-reachability. Mend adds no login or ticket in front of the raw port. The UI says that anyone who can
-reach the private address can connect. Wildcard and public bindings are refused unless a later
+explicitly selected private interfaces by default. A client elsewhere reaches a loopback-only
+Service with `mend service connect`, which tunnels it through the Mend server authenticated as the
+user and needs no private network; `mend attach` does the same for the attached session's browser
+Services (#337). Mend adds no login or ticket in front of the raw port. The UI says that anyone who
+can reach the private address can connect. Wildcard and public bindings are refused unless a later
 operator policy explicitly allows them.
 
 ## The model
@@ -404,22 +406,32 @@ clean exit.
 
 ## Delivery slices
 
+Slices 1 to 5 shipped, and the desktop half of slice 6 (status 2026-09-26). Later changes on top of
+them: in capture mode a Service's `mend.toml` recipe is read from the live workspace (#336);
+`mend attach`, the agent commands and the dashboard tunnel the attached session's browser Services
+to the client (#337); the web and desktop show `mend service connect <name>` where an Open link to
+the host's loopback would not load (#338); a stop leaves Services running, every surface says which
+Services keep the workspace up, and `mend stop --services` stops them (#368). Services on a MicroVM
+executor are not yet proven on alpha (`docs/current-scope.md`).
+
 Every platform capability flows sealantd → public SDK → Mend server → CLI → web/phone; each slice
 runs that full stack and ships something usable on its own.
 
-1. **Spike: prove concurrency.** No product code. Two PTYs in one workspace via the SDK, independent
-   detach/reattach, working directory, resize, signals, exit reporting. The go/no-go for everything
-   below.
-2. **Lifecycle foundation.** Session-owned shells, plural attempts, terminal-addressed attachment,
-   workspace leases, TTL renewal, and reconciliation after a Mend restart.
-3. **Stable Service history.** Separate Service, attempt, forward, and target observation records;
-   append attempts on restart and preserve every Sealant run pointer.
-4. **Private forward policy.** Public SDK forwarding, explicit interface selection, server-resolved
-   endpoints, browser-scheme declarations, endpoint movement, and read-only record logs.
-5. **Dogfood in CLI and web.** Correct post-completion controls, recipe collision visibility, event
-   invalidation, TCP, UDP, HMR, restart, and retained-workspace resume.
-6. **Desktop and phone.** Session-nested Services, factual state, explicit actions, stale
-   observation timestamps, and no standalone inbox rows for ordinary reachable Services.
+1. Done. **Spike: prove concurrency.** No product code. Two PTYs in one workspace via the SDK,
+   independent detach/reattach, working directory, resize, signals, exit reporting. The go/no-go for
+   everything below.
+2. Done. **Lifecycle foundation.** Session-owned shells, plural attempts, terminal-addressed
+   attachment, workspace leases, TTL renewal, and reconciliation after a Mend restart.
+3. Done. **Stable Service history.** Separate Service, attempt, forward, and target observation
+   records; append attempts on restart and preserve every Sealant run pointer.
+4. Done. **Private forward policy.** Public SDK forwarding, explicit interface selection,
+   server-resolved endpoints, browser-scheme declarations, endpoint movement, and read-only record
+   logs.
+5. Done. **Dogfood in CLI and web.** Correct post-completion controls, recipe collision visibility,
+   event invalidation, TCP, UDP, HMR, restart, and retained-workspace resume.
+6. Desktop done (`apps/desktop/src/renderer/src/components/services-sheet.tsx`); the phone app shows
+   no Services yet. **Desktop and phone.** Session-nested Services, factual state, explicit actions,
+   stale observation timestamps, and no standalone inbox rows for ordinary reachable Services.
 
 ## Acceptance scenarios
 
@@ -432,7 +444,8 @@ runs that full stack and ships something usable on its own.
 6. The agent settles while a Service runs; the workspace survives and states are reported separately
    (`Agent · completed`, `web · reachable`).
 7. A closed browser or detached CLI stops nothing; Mend restarts and reconciles the live Service.
-8. The same Service opens from a phone on the tailnet with no login step.
+8. The same Service opens from a phone that can reach the Service's private interface, with no login
+   step.
 9. On a `public` instance with MicroVM executors, `mend attach` on a laptop tunnels the agent's
    `--http` Service to `localhost:<port>`; the web shows `mend service connect <name>` rather than
    an Open link to the host's loopback.
