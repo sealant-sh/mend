@@ -375,13 +375,27 @@ export const bytesOfKey = (key: string): Buffer => {
   return Buffer.from(out);
 };
 
-/** `raw_name` / `raw_target` for a key: the hex of its bytes when the key was escaped. */
-export const rawOfKey = (key: string): string | undefined => {
-  for (const char of key) {
-    if ((char.codePointAt(0) ?? 0) >= ESCAPE_FIRST) return bytesOfKey(key).toString("hex");
-  }
-  return undefined;
+/** Whether a key holds a character of the escape range: its bytes are not the key's UTF-8. */
+export const isEscapedKey = (key: string): boolean => {
+  for (const char of key) if ((char.codePointAt(0) ?? 0) >= ESCAPE_FIRST) return true;
+  return false;
 };
+
+/**
+ * Whether a git section names a ref, a symbolic ref or `HEAD` by an escaped key (sealantd
+ * `gitpack.rs`: ref names and symbolic targets are keys of their bytes): a reader that does not
+ * decode them writes the escaped text as the ref's name.
+ */
+export const gitSectionHoldsRawNames = (section: GitSection): boolean =>
+  isEscapedKey(section.head) ||
+  Object.keys(section.refs).some(isEscapedKey) ||
+  Object.entries(section.symrefs ?? {}).some(
+    ([name, target]) => isEscapedKey(name) || isEscapedKey(target),
+  );
+
+/** `raw_name` / `raw_target` for a key: the hex of its bytes when the key was escaped. */
+export const rawOfKey = (key: string): string | undefined =>
+  isEscapedKey(key) ? bytesOfKey(key).toString("hex") : undefined;
 
 const HEX_BYTES = /^(?:[0-9a-fA-F]{2})*$/;
 
@@ -1765,6 +1779,21 @@ const MetaDocument = Schema.Struct({
       }),
     ),
   ),
+  /**
+   * Inodes the workspace and bulk classes both name and no tracked file does (sealantd
+   * `worktree_meta.rs` `cross_links`): each group every name those classes carry of one inode.
+   */
+  cross_links: Schema.optionalKey(
+    Schema.Array(
+      Schema.Array(
+        Schema.Struct({
+          class: Schema.Literals(["workspace", "bulk"]),
+          member: Schema.String,
+          raw_member: Schema.optionalKey(Schema.String),
+        }),
+      ),
+    ),
+  ),
 });
 
 /** `""` or a relative path of normal components (sealantd `worktree_meta.rs` `is_plain_relative`). */
@@ -1791,8 +1820,8 @@ const isPlainRelative = (bytes: Buffer): boolean => {
  * The document's own rules, as sealantd's `MetaDocument::decode` enforces them before a restore
  * writes anything: a format it reads, every path plain and relative with raw bytes that agree
  * with its key, a mode on everything but a symlink, hardlink groups of two or more files of the
- * document, shared links from a file of the document to a plain relative member. The reason, or
- * null when the document restores.
+ * document, shared links from a file of the document to a plain relative member, cross-class
+ * groups of two or more distinct plain members. The reason, or null when the document restores.
  */
 const metaDocumentProblem = (bytes: Uint8Array): string | null => {
   let document: typeof MetaDocument.Type;
@@ -1826,6 +1855,22 @@ const metaDocumentProblem = (bytes: Uint8Array): string | null => {
     const member = bytesOfPair(link.member, link.raw_member);
     if (!isFile(link.path) || member === null || member.length === 0 || !isPlainRelative(member)) {
       return `shared link ${JSON.stringify(link)}`;
+    }
+  }
+  // Each cross-class group: two or more distinct members (class and bytes), each a plain,
+  // non-empty relative path whose raw bytes agree with its key.
+  for (const group of document.cross_links ?? []) {
+    const seen = new Set<string>();
+    for (const link of group) {
+      const member = bytesOfPair(link.member, link.raw_member);
+      const id = member === null ? "" : `${link.class}:${member.toString("hex")}`;
+      if (member === null || member.length === 0 || !isPlainRelative(member) || seen.has(id)) {
+        return `cross-class link ${JSON.stringify(link)}`;
+      }
+      seen.add(id);
+    }
+    if (seen.size < 2) {
+      return `cross-class link group ${JSON.stringify(group)} names fewer than two members`;
     }
   }
   return null;

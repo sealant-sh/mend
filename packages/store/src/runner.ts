@@ -8,7 +8,13 @@ import { Effect, Layer, Schema, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
 import { type BlobNotFoundError, BlobStore, type BlobStoreError } from "./blob-store.ts";
-import { type CaptureManifest, digestOfKey, packIdxKeyOf, verifyGitPack } from "./captures.ts";
+import {
+  bytesOfKey,
+  type CaptureManifest,
+  digestOfKey,
+  packIdxKeyOf,
+  verifyGitPack,
+} from "./captures.ts";
 import { git, type GitError } from "./git.ts";
 import {
   type BundleEmptyError,
@@ -277,16 +283,29 @@ export const parseLog = (raw: string): ReadonlyArray<LogEntry> =>
           : [{ sha: Sha.make(sha), author, authoredAt, subject: subject.join("\t") }];
       });
 
-/** `packed-refs` in git's sorted, fully-peeled form; refnames are validated by git on read. */
-export const renderPackedRefs = (refs: Readonly<Record<string, string>>): string =>
-  [
-    "# pack-refs with: peeled fully-peeled sorted",
-    ...Object.entries(refs)
-      .filter(([, sha]) => HEX40.test(sha))
-      .toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
-      .map(([name, sha]) => `${sha} ${name}`),
-    "",
-  ].join("\n");
+/**
+ * `packed-refs` in git's sorted, fully-peeled form, as bytes. A capture names refs by key (sealantd
+ * `gitpack.rs`): a ref name that is not UTF-8 is escaped into `U+10FF80..=U+10FFFF`, and is
+ * written here as the bytes it stands for, never as the escaped text; lines sort by those bytes,
+ * as git reads a `sorted` file. A name whose bytes hold a newline, a carriage return or NUL would
+ * break the file's lines and is left out, as a value that is not a sha is. Refnames are otherwise
+ * validated by git on read.
+ */
+export const renderPackedRefs = (refs: Readonly<Record<string, string>>): Buffer => {
+  const lines = Object.entries(refs)
+    .filter(([, sha]) => HEX40.test(sha))
+    .map(([name, sha]) => ({ name: bytesOfKey(name), sha }))
+    .filter(({ name }) => !name.includes(0x0a) && !name.includes(0x0d) && !name.includes(0))
+    .toSorted((a, b) => Buffer.compare(a.name, b.name))
+    .map(({ name, sha }) => Buffer.concat([Buffer.from(`${sha} `), name, Buffer.from("\n")]));
+  return Buffer.concat([Buffer.from("# pack-refs with: peeled fully-peeled sorted\n"), ...lines]);
+};
+
+/** `HEAD`'s text: `ref: <name>` (the name's bytes, as `renderPackedRefs` writes them) or a sha. */
+export const renderHead = (head: string): Buffer =>
+  head.startsWith("refs/")
+    ? Buffer.concat([Buffer.from("ref: "), bytesOfKey(head), Buffer.from("\n")])
+    : Buffer.from(`${head}\n`);
 
 // ─── Live ───────────────────────────────────────────────────────────────────
 
@@ -412,10 +431,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
               const tmp = path.join(cache, `packed-refs.${process.pid}.${crypto.randomUUID()}`);
               fs.writeFileSync(tmp, renderPackedRefs(refs));
               fs.renameSync(tmp, path.join(cache, "packed-refs"));
-              fs.writeFileSync(
-                path.join(cache, "HEAD"),
-                head.startsWith("refs/") ? `ref: ${head}\n` : `${head}\n`,
-              );
+              fs.writeFileSync(path.join(cache, "HEAD"), renderHead(head));
               const marker = path.join(path.dirname(cache), LAST_USED);
               fs.writeFileSync(marker, "");
             });

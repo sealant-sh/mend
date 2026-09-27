@@ -13,6 +13,7 @@ import {
   GitOpsRunnerLive,
   parseLinePorcelain,
   parseLog,
+  renderHead,
   renderPackedRefs,
   runnerCachePathOf,
 } from "../src/runner.ts";
@@ -294,6 +295,9 @@ describe("GitOpsRunner", () => {
   });
 });
 
+/** The key character sealantd escapes byte `byte` to (`tree.rs` `key_of`). */
+const escape = (byte: number) => String.fromCodePoint(0x10_ff00 + byte);
+
 describe("runner parsers", () => {
   it("renders packed-refs sorted with git's header and drops non-sha values", () => {
     expect(
@@ -302,9 +306,36 @@ describe("runner parsers", () => {
         "refs/heads/a": "a".repeat(40),
         "refs/heads/bad": "not-a-sha",
       }),
-    ).toBe(
-      `# pack-refs with: peeled fully-peeled sorted\n${"a".repeat(40)} refs/heads/a\n${"b".repeat(40)} refs/heads/z\n`,
+    ).toEqual(
+      Buffer.from(
+        `# pack-refs with: peeled fully-peeled sorted\n${"a".repeat(40)} refs/heads/a\n${"b".repeat(40)} refs/heads/z\n`,
+      ),
     );
+  });
+
+  it("writes a ref name a capture escaped as the bytes it stands for, sorted by bytes (sealantd gitpack.rs)", () => {
+    // `refs/heads/caf\xe9` and `refs/heads/\xff`: not UTF-8, so the manifest names them by key.
+    const rendered = renderPackedRefs({
+      [`refs/heads/caf${escape(0xe9)}`]: "c".repeat(40),
+      [`refs/heads/${escape(0xff)}`]: "d".repeat(40),
+      "refs/heads/zeta": "e".repeat(40),
+      "refs/heads/bad\nline": "f".repeat(40),
+    });
+    // Compared as bytes whatever the type: what lands in the file.
+    expect(Buffer.from(rendered)).toEqual(
+      Buffer.concat([
+        Buffer.from("# pack-refs with: peeled fully-peeled sorted\n"),
+        Buffer.from(`${"c".repeat(40)} refs/heads/caf`),
+        Buffer.from([0xe9, 0x0a]),
+        Buffer.from(`${"e".repeat(40)} refs/heads/zeta\n`),
+        Buffer.from(`${"d".repeat(40)} refs/heads/`),
+        Buffer.from([0xff, 0x0a]),
+      ]),
+    );
+    expect(renderHead(`refs/heads/caf${escape(0xe9)}`)).toEqual(
+      Buffer.concat([Buffer.from("ref: refs/heads/caf"), Buffer.from([0xe9, 0x0a])]),
+    );
+    expect(renderHead("a".repeat(40))).toEqual(Buffer.from(`${"a".repeat(40)}\n`));
   });
 
   it("parses line-porcelain blame and tab-separated log output", () => {

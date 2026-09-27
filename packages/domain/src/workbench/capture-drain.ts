@@ -76,7 +76,10 @@ export interface CaptureReading {
 
 /**
  * sealantd's reasons for an incomplete final flush. `not-final`: the executor did not run a final
- * flush (an older daemon answers every flush this way); the rest name the step that failed.
+ * flush (an older daemon answers every flush this way); `sealing`: everything registered but the
+ * capture that seals the completed flush on the chain (`final_seal`; the flush returned at its
+ * deadline first) — the final flush asked again stages it, so a drain keeps asking; the rest name
+ * the step that failed.
  */
 export const CAPTURE_INCOMPLETE_REASONS = [
   "not-final",
@@ -90,6 +93,7 @@ export const CAPTURE_INCOMPLETE_REASONS = [
   "deadline",
   "ship-failed",
   "pending",
+  "sealing",
   "internal",
 ] as const;
 
@@ -297,6 +301,8 @@ export const captureIncompleteWords = (reason: string | null | undefined): strin
       return "deadline passed";
     case "ship-failed":
       return "upload failed";
+    case "sealing":
+      return "final seal not registered";
     case "internal":
       return "executor error";
     default:

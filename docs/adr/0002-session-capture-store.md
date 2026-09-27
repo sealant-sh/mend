@@ -743,4 +743,19 @@ Mend-side details the decision record left open, decided in this ADR:
       `raw_names` is found by walking the answered sections' dir objects, only for an executor that
       does not list it. The answer's `manifest_features` lists every feature Mend reads. Until
       sealantd sends the list (PLATFORM-FEEDBACK 2026-09-28), a head holding any of them is refused
-      and one holding none is handed out as before.
+      and one holding none is handed out as before. `raw_names` is also held by an escaped key in
+      the git section: a ref name, a symbolic ref or its target, or `head`.
+    - **`plan.get` names the executor** (`executor`, session and standby plans): the executor the
+      session token was issued for, the value register compares `final_seal.executor` against.
+      sealantd writes a seal only when it knows it. It is Mend's session id, the same for every
+      executor that session runs; the seal's `epoch` tells them apart.
+    - **Ref names a capture escaped are bytes in the runner's cache.** `renderPackedRefs` and the
+      cache's `HEAD` write an escaped ref name as the bytes it stands for (sealantd `gitpack.rs`),
+      sorted by bytes, and leave out a name whose bytes would break a line.
+    - **`cross_links` in the metadata document** (sealantd review 2 #10: an inode both the workspace
+      and the bulk class name, no tracked file) is checked as sealantd decodes it: each group two or
+      more distinct `{class, member, raw_member?}` members, each a plain non-empty relative path
+      whose raw bytes agree with its key.
+    - **`sealing`** is a reason an incomplete final flush can give: everything registered but the
+      sealing capture (the flush returned at its deadline first). A drain keeps asking; the status
+      line says `final seal not registered`.

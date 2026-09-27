@@ -366,6 +366,42 @@ describe("plan.get hands a head only to an executor that reads it", () => {
     expect(result.refused).toBe("CaptureRouteError:manifest-format");
     expect(result.answered).toBe(base.id);
   });
+
+  it("names the executor the token was issued for, on an empty chain, over a head and on a standby — what final_seal.executor must name", async () => {
+    const world = worldOf();
+    const wt = WorktreeId.make("wt-plan-executor");
+    const answers = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.init(wt);
+        const api = yield* apiOf(wt, "exec-named");
+        const empty = yield* api.planGet({ epoch: 0, manifest_format: 2 });
+        const zero = buildManifest({ worktreeId: wt, epoch: empty.epoch, n: 0, parent: null });
+        yield* uploadObjects(new Map([[zero.key, zero.bytes]]));
+        yield* api.register(registerInput(zero));
+        const overHead = yield* api.planGet({ epoch: empty.epoch, manifest_format: 2 });
+        const standby = (yield* CaptureChannel).standbyApiFor({
+          alias: "standby",
+          projectId: ProjectId.make("p"),
+          executorId: "standby-exec",
+          epoch: 7,
+          plan: () =>
+            Effect.succeed({ captureId: zero.id, manifestKey: zero.key, manifest: zero.manifest }),
+        });
+        const onStandby = yield* standby.planGet({ manifest_format: 2 });
+        return {
+          empty: empty.executor,
+          overHead: [overHead.head?.capture_id === zero.id, overHead.executor],
+          onStandby: onStandby.executor,
+        };
+      }).pipe(Effect.provide(world.layer)),
+    );
+    expect(answers).toEqual({
+      empty: "exec-named",
+      overHead: [true, "exec-named"],
+      onStandby: "standby-exec",
+    });
+  });
 });
 
 /** A workspace section whose pack holds `document` as one chunk, named by `worktree_meta`. */
@@ -530,6 +566,101 @@ describe("capture.register reads the worktree metadata a restore needs (review 2
       const wt = WorktreeId.make(owner);
       const result = await registerOnce(wt, section.workspace, section.objects);
       expect(result, label).toEqual({ said: `CaptureRouteError:${reason}`, head: null });
+    }
+  });
+
+  it("reads cross_links under sealantd's rules: groups of two or more distinct plain members", async () => {
+    const escapedMember = `ignored/caf${String.fromCodePoint(0x10_ffe9)}`;
+    const cases: ReadonlyArray<readonly [string, ReadonlyArray<ReadonlyArray<object>>, string]> = [
+      [
+        "a group across the classes",
+        [
+          [
+            { class: "workspace", member: "tree/ignored/x" },
+            { class: "bulk", member: "node_modules/pkg/x" },
+          ],
+        ],
+        "ok",
+      ],
+      [
+        "the same path in both classes",
+        [
+          [
+            { class: "workspace", member: "a/x" },
+            { class: "bulk", member: "a/x" },
+          ],
+        ],
+        "ok",
+      ],
+      [
+        "a member named by raw bytes that agree",
+        [
+          [
+            { class: "workspace", member: escapedMember, raw_member: "69676e6f7265642f636166e9" },
+            { class: "bulk", member: "node_modules/x" },
+          ],
+        ],
+        "ok",
+      ],
+      ["a group of one", [[{ class: "workspace", member: "tree/x" }]], "unrestorable"],
+      [
+        "a member listed twice",
+        [
+          [
+            { class: "bulk", member: "node_modules/x" },
+            { class: "bulk", member: "node_modules/x" },
+          ],
+        ],
+        "unrestorable",
+      ],
+      [
+        "a member that leaves the class root",
+        [
+          [
+            { class: "workspace", member: "../x" },
+            { class: "bulk", member: "node_modules/x" },
+          ],
+        ],
+        "unrestorable",
+      ],
+      [
+        "an empty member",
+        [
+          [
+            { class: "workspace", member: "" },
+            { class: "bulk", member: "node_modules/x" },
+          ],
+        ],
+        "unrestorable",
+      ],
+      [
+        "raw bytes that disagree with the member",
+        [
+          [
+            { class: "workspace", member: escapedMember, raw_member: "69676e6f7265642f636166e8" },
+            { class: "bulk", member: "node_modules/x" },
+          ],
+        ],
+        "unrestorable",
+      ],
+      [
+        "an unknown class",
+        [
+          [
+            { class: "harness", member: "x" },
+            { class: "bulk", member: "node_modules/x" },
+          ],
+        ],
+        "unrestorable",
+      ],
+    ];
+    let index = 0;
+    for (const [label, crossLinks, expected] of cases) {
+      index += 1;
+      const wt = WorktreeId.make(`wt-cross-links-${index}`);
+      const section = withMeta(wt, documentOf({ ...plainDocument, cross_links: crossLinks }));
+      const result = await registerOnce(wt, section.workspace, section.objects);
+      expect(result.said, label).toBe(expected === "ok" ? "ok" : `CaptureRouteError:${expected}`);
     }
   });
 
@@ -755,6 +886,58 @@ describe("plan.get hands a head only to an executor that reads what it means (ma
       expect(result.lease?.live, feature).toBe(false);
       expect(result.plan.head?.capture_id, feature).toBe(result.id);
       expect(result.plan.manifest_features, feature).toEqual(MANIFEST_FEATURES);
+    }
+  });
+
+  it("an escaped key in the git section — a ref name, a symbolic ref or its target, HEAD — holds raw_names", async () => {
+    const escapedRef = `refs/heads/caf${String.fromCodePoint(0x10_ffe9)}`;
+    const gits = {
+      ref: { refs: { [escapedRef]: "a".repeat(40) } },
+      "symref name": { symrefs: { [escapedRef]: "refs/heads/main" } },
+      "symref target": { symrefs: { "refs/remotes/origin/HEAD": escapedRef } },
+      head: { head: escapedRef },
+    };
+    const outcomes: Record<string, [string, string]> = {};
+    for (const [label, git] of Object.entries(gits)) {
+      const wt = WorktreeId.make(`wt-raw-ref-${label.replaceAll(" ", "-")}`);
+      const world = worldOf();
+      outcomes[label] = await Effect.runPromise(
+        Effect.gen(function* () {
+          const repo = yield* CaptureStoreRepo;
+          yield* repo.init(wt);
+          const writer = yield* apiOf(wt, "writer");
+          const { epoch } = yield* writer.planGet({ epoch: 0, manifest_format: 2 });
+          const built = buildManifest({
+            worktreeId: wt,
+            epoch,
+            n: 0,
+            parent: null,
+            git: { packs: [], refs: {}, head: "refs/heads/main", fsck: "unverified", ...git },
+          });
+          yield* uploadObjects(new Map([[built.key, built.bytes]]));
+          yield* writer.register(registerInput(built));
+          yield* repo.release(wt, epoch);
+          const reader = yield* apiOf(wt, "reader");
+          const everything = MANIFEST_FEATURES.filter((feature) => feature !== "raw_names");
+          const refused = yield* reader
+            .planGet({ epoch: 0, manifest_format: 2, manifest_features: everything })
+            .pipe(
+              Effect.map(() => "ok"),
+              Effect.catch((error) => Effect.succeed(`${error.reason}:${String(error.missing)}`)),
+            );
+          const answered = yield* outcome(
+            reader.planGet({
+              epoch: 0,
+              manifest_format: 2,
+              manifest_features: [...MANIFEST_FEATURES],
+            }),
+          );
+          return [refused, answered] as [string, string];
+        }).pipe(Effect.provide(world.layer)),
+      );
+    }
+    for (const label of Object.keys(gits)) {
+      expect(outcomes[label], label).toEqual(["manifest-features:raw_names", "ok"]);
     }
   });
 

@@ -24,3 +24,8 @@ epoch that registered it. It is what Mend reads as "saved".
 `plan.get` refuses a head holding `worktree_meta`, `symrefs`, `other_bulk`, raw names or a
 `final_seal` to an executor that does not list the feature in `manifest_features`, before it claims
 the lease (409 `manifest-features`), and answers the features Mend reads.
+
+`plan.get` names the executor a completed final flush must seal as. A ref name that is not UTF-8
+counts as a raw name, and the runner writes it into `packed-refs` and `HEAD` as its bytes. Register
+checks the metadata document's cross-class link groups, and a drain reads sealantd's `sealing` as
+"final seal not registered" and keeps asking.

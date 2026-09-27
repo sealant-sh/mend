@@ -35,6 +35,7 @@ import {
   verifySectionRestorable,
   verifyWorktreeMeta,
   sectionHoldsRawNames,
+  gitSectionHoldsRawNames,
 } from "@mend/store";
 import { Duration, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -104,7 +105,8 @@ export type PlanGetRequest = typeof PlanGetRequest.Type;
  *   every capture it writes — and needed as soon as the head's own bulk section was captured on
  *   another platform than the executor's, which then carries it there.
  * - `raw_names`: `raw_name` / `raw_target` on dir entries, the bytes of names and symlink texts
- *   that are not UTF-8.
+ *   that are not UTF-8; and escaped keys (characters of `U+10FF80..=U+10FFFF`) among the git
+ *   section's ref names, symbolic refs and targets, or `head`.
  * - `final_seal`: the manifest's `final_seal`, a completed final flush of the executor that wrote
  *   it.
  */
@@ -147,6 +149,7 @@ export const missingManifestFeatures = (
     if (!reads.has("raw_names")) {
       const bulk = planned.sections.bulk;
       const raw =
+        gitSectionHoldsRawNames(planned.sections.git) ||
         (yield* sectionHoldsRawNames(planned.sections.workspace)) ||
         (bulk !== "pending" && (yield* sectionHoldsRawNames(bulk)));
       holds("raw_names", raw);
@@ -215,6 +218,12 @@ export interface PlanGetResponse {
    * executor may write any of them. A sealantd that predates the list ignores it.
    */
   readonly manifest_features: ReadonlyArray<ManifestFeature>;
+  /**
+   * The executor the session token was issued for (`CaptureScope.executorId`): what a completed
+   * final flush's `final_seal.executor` must name for register to record the seal. sealantd seals
+   * only when it knows it (sealantd `registrar.rs` "`executor` on `plan.get`").
+   */
+  readonly executor: string;
   /**
    * Content to lay down beside the worktree — the project's folders and references, which a
    * captured workspace cannot bind-mount (`capture-sources.ts`). Absent when the project selected
@@ -818,6 +827,7 @@ export const CaptureChannelLive: Layer.Layer<
           get_urls: urls,
           manifest_format: answeredFormat(policy.manifestFormat, reads),
           manifest_features: MANIFEST_FEATURES,
+          executor: scope.executorId,
         } satisfies PlanGetResponse;
       });
       return {
@@ -1047,6 +1057,7 @@ export const CaptureChannelLive: Layer.Layer<
             get_urls: yield* sourceUrls(beside),
             manifest_format: manifestFormat,
             manifest_features: MANIFEST_FEATURES,
+            executor: scope.executorId,
             ...(beside.length === 0 ? {} : { sources: beside }),
             ...(origin.length === 0 ? {} : { remotes: origin }),
           };
@@ -1073,6 +1084,7 @@ export const CaptureChannelLive: Layer.Layer<
           get_urls: urls,
           manifest_format: manifestFormat,
           manifest_features: MANIFEST_FEATURES,
+          executor: scope.executorId,
           ...(beside.length === 0 ? {} : { sources: beside }),
           ...(origin.length === 0 ? {} : { remotes: origin }),
         } satisfies PlanGetResponse;
