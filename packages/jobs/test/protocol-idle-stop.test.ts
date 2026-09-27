@@ -22,6 +22,7 @@ import {
   Session,
   SessionProcess,
   type AgentTurnStatus,
+  type CaptureReading,
   type SessionProcessKind,
 } from "@mend/domain/workbench";
 import { SessionEngine } from "@mend/sessions";
@@ -141,6 +142,8 @@ interface WorldOptions {
   readonly shells?: boolean;
   readonly agentKind?: SessionProcessKind;
   readonly stopFails?: boolean;
+  /** What the executor answers when the idle stop reads its captures; null outside capture mode. */
+  readonly captures?: ReadonlyArray<CaptureReading | null>;
 }
 
 /** One pass of one worker. */
@@ -162,6 +165,7 @@ const world = (options: WorldOptions = {}) => {
     stops: [] as Array<{ readonly sessionId: SessionId; readonly summary: string | null }>,
     control: [] as Array<NewSessionControlEvent>,
     released: 0,
+    captureReads: 0,
   };
   const layer = Layer.mergeAll(
     Layer.mock(SessionsRepo, {
@@ -199,6 +203,12 @@ const world = (options: WorldOptions = {}) => {
       record: (event) => Effect.sync(() => void state.control.push(event)),
     }),
     Layer.mock(SessionEngine, {
+      readCaptures: () =>
+        Effect.sync(() => {
+          const answer = options.captures?.[state.captureReads] ?? options.captures?.at(-1) ?? null;
+          state.captureReads += 1;
+          return answer;
+        }),
       stop: (sessionId, summary) =>
         options.stopFails === true
           ? Effect.die(new Error("the platform did not answer"))
@@ -230,6 +240,20 @@ const world = (options: WorldOptions = {}) => {
     );
   return { state, worker, sweep };
 };
+
+/** What the executor answers when the idle stop reads its captures. */
+const captureReading = (pending: number, bulkDirty: boolean | null = null): CaptureReading => ({
+  pending,
+  pendingBytes: null,
+  pendingBulk: null,
+  refused: null,
+  headN: 4,
+  registered: 4,
+  uploadedBytes: 4000,
+  fenced: false,
+  paused: false,
+  bulkDirty,
+});
 
 describe("the protocol idle stop", () => {
   it("stops an idle protocol agent once across two workers and later sweeps", async () => {
@@ -282,6 +306,20 @@ describe("the protocol idle stop", () => {
       expect(w.state.stops).toEqual([]);
       expect(w.state.idleStoppedAt).toBeNull();
     }
+  });
+
+  it("leaves an agent alone while its executor still ships captures, then stops it once they are in", async () => {
+    const w = world({ captures: [captureReading(3), captureReading(0, true), captureReading(0)] });
+    const worker = w.worker();
+    expect(await w.sweep(worker)).toEqual([]);
+    expect(w.state.stops).toEqual([]);
+    expect(w.state.idleStoppedAt).toBeNull();
+    // Bulk changed since its last snapshot (once sealantd reports it) holds it too.
+    expect(await w.sweep(worker)).toEqual([]);
+    expect(w.state.stops).toEqual([]);
+    expect(await w.sweep(worker)).toEqual([SESSION]);
+    expect(w.state.stops).toHaveLength(1);
+    expect(w.state.captureReads).toBe(3);
   });
 
   it("gives the claim back when the stop fails, and records nothing", async () => {

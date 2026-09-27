@@ -296,6 +296,43 @@ killed, so a 30 s Mend outage costs nothing. The lease fences the store, not the
 own `git push` or `gh pr create` with a connected-account token is not fenced by a Postgres row.
 Stated, not hidden.
 
+### Stop drains, then terminates
+
+Amended 2026-09-27. Nothing an executor holds is lost to a stop Mend asks for: no compute holding a
+session goes away while it holds work product that was not shipped, source and git-ignored bulk
+alike, and a resumed session is byte-identical. Only an unannounced hard crash may cost the last
+cadence window.
+
+- **Drain.** A stop, an idle stop, a relaunch (a fresh resume replacing the workspace) and a
+  replacement ahead of the cap each drain first (`drainThenTerminate`): flush, record what is left
+  on the session, repeat, with no short deadline. The executor terminates only at `pending == 0`,
+  unfenced and with nothing refused. While it drains the session reads `saving · N left` (bytes once
+  sealantd reports `pending_bytes`) on the web, in the CLI, on the phone and in Slack, and the
+  workspace is kept. The intent is a row on the session, so a restart takes the drain up again.
+- **Stall.** A drain that moves nothing for `MEND_CAPTURE_DRAIN_STALL_SECONDS` (or cannot move:
+  fenced, refused) is recorded as `not saved · N pending · workspace kept`, the owner is told once,
+  and the workspace stays; the next sweep tries again. A relaunch behind it is refused. Only the
+  owner's "discard unsaved and stop" (confirmed in the request, recorded as a control event and in
+  the organization's audit log) terminates with captures pending.
+- **Idle.** The idle stop holds while captures are pending or bulk is dirty (`capture` hold), then
+  stops through the same drain.
+- **The cap.** A planned drain starts at `deadline − (drain estimate + margin)`, the deadline from
+  the platform once the SDK reports it, else `MEND_EXECUTOR_MAX_SECONDS` counted from the executor's
+  own start (not the latest run's), else the 7 h 30 fallback.
+- **The lease** is released only after the platform reports the workspace terminated (a terminal
+  status or a 404); unobserved, it lapses with the heartbeats.
+- **Dead means dead.** An executor is dead only on a terminal status or a missing workspace. A Core
+  error is `unknown`: no pickup, no fence, look again. An executor that answers with its lease
+  expired is paused: a resume waits for it and stops nothing.
+- **Handoffs** read the head once the small captures are in; bulk still uploading holds only a stop
+  (once sealantd reports `pending_bulk`).
+- **Removal** of a session whose workspace is up is recorded and happens after the workspace has
+  gone, so the workspace is never left unaddressable.
+
+What waits on the platform (PLATFORM-FEEDBACK.md 2026-09-27): the runtime deadline, a final flush
+that snapshots bulk with a deadline and no 10 s clamp, `pending_bytes` / `pending_bulk` / `refused`
+on the status, and Core's reapers draining before they terminate.
+
 ### Review
 
 The review page, tours, comments and the `read`/`suggest` passes read the posted change summary

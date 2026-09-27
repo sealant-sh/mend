@@ -67,6 +67,17 @@ const session = (
   sharedControlEnabledAt: null,
   hasTranscript: null,
   idleStoppedAt: null,
+  capturePending: null,
+  capturePendingBytes: null,
+  captureRefused: null,
+  captureRegisteredAt: null,
+  captureObservedAt: null,
+  captureDrain: null,
+  captureDrainRequestedAt: null,
+  captureDrainProgressAt: null,
+  captureNotSavedAt: null,
+  executorStartedAt: null,
+  removalRequestedAt: null,
   status,
   summary: null,
   lastSeenSequence: 0n,
@@ -158,5 +169,24 @@ describe("Project detail worktree groups", () => {
     expect(held?.holds.get("s-older")).toBe("agent stopped · 3 services keep the workspace up");
     expect(held?.live).toBe(1);
     expect(settledGroups(groups).map((group) => group.worktree.name)).toEqual(["newer"]);
+  });
+
+  it("keeps a worktree live while a stop is saving its workspace, and says what is left", () => {
+    const at = new Date("2026-09-27T10:00:00Z");
+    const saving = sessions.map((row) =>
+      row.id === "s-older"
+        ? {
+            ...row,
+            capturePending: 3,
+            captureDrain: "stop" as const,
+            captureDrainRequestedAt: at,
+            captureDrainProgressAt: at,
+          }
+        : row,
+    );
+    const groups = worktreeGroups([older, newer, live], saving, annotations, []);
+    const held = groups.find((group) => group.worktree.id === older.id);
+    expect(held?.holds.get("s-older")).toBe("saving · 3 left");
+    expect(held?.live).toBe(1);
   });
 });

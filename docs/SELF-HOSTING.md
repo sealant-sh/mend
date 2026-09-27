@@ -401,11 +401,34 @@ for it, and Mend logs `remaining connection slots are reserved` until a slot fre
 A conversation session (one started from Slack, or from the web or phone composer) keeps its agent
 and its workspace up between turns, waiting for the next message. Mend stops an agent that has sat
 idle for `MEND_PROTOCOL_IDLE_STOP_MINUTES` (default `15`; `0` turns the stop off), the way Stop
-does: the executor flushes its captures, review prep runs as after any stop, and the workspace ends.
-Idle means no turn in flight, no question or approval waiting, no live Service and no open shell;
-the clock starts at the latest turn, request or process activity. The session reads
-`idle · stopped after 15 min · reply to resume`, its control log records an `idle-stop`, and the
-next message (a Slack reply, the composer, Resume) resumes the same conversation.
+does: the executor drains its captures (below), review prep runs as after any stop, and the
+workspace ends. Idle means no turn in flight, no question or approval waiting, no live Service, no
+open shell and no captures still shipping; the clock starts at the latest turn, request or process
+activity. The session reads `idle · stopped after 15 min · reply to resume`, its control log records
+an `idle-stop`, and the next message (a Slack reply, the composer, Resume) resumes the same
+conversation.
+
+### Stops drain before the workspace goes
+
+In capture mode (the default) a session's executor holds whatever it has not shipped yet: small
+captures, and git-ignored bulk such as `node_modules` and build output. Mend never lets that compute
+go while anything is pending (docs/adr/0002-session-capture-store.md, "Stop drains, then
+terminates"). A stop, an idle stop, a relaunch and a replacement ahead of the platform's cap all
+drain first: Mend flushes, reads what is left and repeats until nothing is, with no short deadline.
+Meanwhile the session reads `saving · 3 left` on the web, in `mend status`, on the phone and in its
+Slack thread, and the workspace stays up.
+
+- `MEND_CAPTURE_DRAIN_STALL_SECONDS` (default `600`): a drain that moves nothing for this long reads
+  `not saved · 3 pending · workspace kept`, and its owner's phone is told once. The workspace is
+  kept; the next sweep tries again. Only the owner's **Discard unsaved and stop** on the session
+  page ends it with captures pending, and the organization's audit log records it.
+- `MEND_EXECUTOR_MAX_SECONDS` (unset = unknown): the platform's cap on one executor, counted from
+  its start. When set, Mend starts a planned drain and a replacement at the deadline minus
+  `MEND_CAPTURE_DRAIN_ESTIMATE_SECONDS` (default `300`) and `MEND_EXECUTOR_DEADLINE_MARGIN_SECONDS`
+  (default `300`). Unset, a replacement starts at 7 h 30, which fits an 8 h cap only. Set it to the
+  MicroVM runtime's maximum duration on AWS.
+- The worktree lease is released only after the platform reports the workspace gone. A session
+  removed while its workspace is up is removed once the workspace has gone.
 
 ## Scope and evidence
 

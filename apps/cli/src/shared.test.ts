@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  captureLineOf,
   isDetachChunk,
   isPasteChunk,
   parseLaunchArgs,
@@ -237,5 +238,27 @@ describe("matchProjectByCwd", () => {
     expect(
       matchProjectByCwd(projects, { cwd: "/tmp/Other", repoRoot: null, originUrl: null }),
     ).toBeUndefined();
+  });
+});
+
+describe("captureLineOf", () => {
+  it("says what a stop is still saving, what it kept, and nothing for an older server", () => {
+    expect(captureLineOf({ capturePending: 3, captureDrain: "stop" })).toBe("saving · 3 left");
+    expect(
+      captureLineOf({
+        capturePending: 3,
+        capturePendingBytes: 12_400_000,
+        captureDrain: "replacement",
+      }),
+    ).toBe("saving · 12 MB left");
+    expect(
+      captureLineOf({
+        capturePending: 3,
+        captureDrain: "stop",
+        captureNotSavedAt: "2026-09-27T10:00:00.000Z",
+      }),
+    ).toBe("not saved · 3 pending · workspace kept");
+    expect(captureLineOf({ capturePending: 0, captureDrain: null })).toBeNull();
+    expect(captureLineOf({})).toBeNull();
   });
 });

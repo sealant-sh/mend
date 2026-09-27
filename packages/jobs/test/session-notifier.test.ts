@@ -1,10 +1,23 @@
 import { OrganizationsRepo, PushDevice, type PushDevicesRepo } from "@mend/db";
-import { OrganizationId, SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
-import { Organization, SessionProcess } from "@mend/domain/workbench";
+import {
+  OrganizationId,
+  ProjectId,
+  SealantWorkspaceId,
+  SessionId,
+  SessionProcessId,
+  Sha,
+  WorktreeId,
+} from "@mend/domain";
+import { Organization, Session, SessionProcess } from "@mend/domain/workbench";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { latestSenderWhoSees, phaseOf, pushTargets } from "../src/session-notifier.ts";
+import {
+  latestSenderWhoSees,
+  notSavedNotificationBody,
+  phaseOf,
+  pushTargets,
+} from "../src/session-notifier.ts";
 
 const agent = (patch: Partial<SessionProcess>) =>
   new SessionProcess({
@@ -141,5 +154,53 @@ describe("latestSenderWhoSees", () => {
     ).toBeNull();
     members.delete("carol");
     expect(await Effect.runPromise(latestSenderWhoSees(organizations, shared, turns))).toBeNull();
+  });
+});
+
+describe("notSavedNotificationBody", () => {
+  it("tells the owner what is kept and why, in the words every surface uses", () => {
+    const at = new Date("2026-09-27T10:00:00.000Z");
+    const session = new Session({
+      id: SessionId.make("session-1"),
+      projectId: ProjectId.make("p-billing"),
+      worktreeId: WorktreeId.make("wt-1"),
+      harness: "claude",
+      providerSessionId: null,
+      label: "billing-fix",
+      worktree: "wt-1",
+      branch: "mend/wt-1",
+      baseSha: Sha.make("abc"),
+      baseRef: "main",
+      contextSnapshotId: null,
+      referenceMounts: [],
+      extraMounts: [],
+      sealantRunId: null,
+      sealantWorkspaceId: SealantWorkspaceId.make("ws-1"),
+      sealantSessionId: null,
+      workspaceExpiresAt: null,
+      workspaceTtlRenewedAt: null,
+      workspaceTtlRenewalFailedAt: null,
+      workspaceTtlRenewalError: null,
+      workspaceImage: null,
+      dotfiles: null,
+      ownerUserId: "alice",
+      hasTranscript: null,
+      status: "stopped",
+      summary: null,
+      lastSeenSequence: 0n,
+      recordHistoryComplete: true,
+      startedAt: at,
+      settledAt: at,
+      createdAt: at,
+      updatedAt: at,
+      capturePending: 3,
+      captureDrain: "stop",
+      captureDrainRequestedAt: at,
+      captureDrainProgressAt: at,
+      captureNotSavedAt: at,
+    });
+    expect(notSavedNotificationBody(session)).toBe(
+      "billing-fix not saved · 3 pending · workspace kept",
+    );
   });
 });

@@ -489,6 +489,10 @@ const CASES: ReadonlyArray<AccessCase> = [
   child("steer", "service", "POST", "/api/services", "/restart")("sessions.restartService"),
   child("steer", "service", "POST", "/api/services", "/stop")("sessions.stopService"),
   session("steer", "DELETE", "")("sessions.remove"),
+  // The owner's alone, like removal: what is not saved is theirs to discard.
+  session("steer", "POST", "/discard-unsaved", { confirm: "discard unsaved" })(
+    "sessions.discardUnsaved",
+  ),
   session("steer", "POST", "/label", { label: "renamed" })("sessions.label"),
   session("stop", "POST", "/stop")("sessions.stop"),
   session("stop", "POST", "/services/stop")("sessions.stopServices"),

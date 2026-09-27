@@ -98,6 +98,23 @@ export class SessionNotSteerable extends Schema.TaggedErrorClass<SessionNotSteer
   { httpApiStatus: 403 },
 ) {}
 
+/**
+ * "Discard unsaved and stop" asked of a session with no drain under way (docs/adr/0002, "Stop
+ * drains, then terminates"): nothing unsaved is holding a workspace up. A plain stop is the verb.
+ */
+export class NothingUnsaved extends Schema.TaggedErrorClass<NothingUnsaved>()(
+  "NothingUnsaved",
+  { sessionId: SessionId, message: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
+/** The owner's confirmation, in the request itself: what is not saved is gone once this lands. */
+export class DiscardUnsavedRequest extends Schema.Class<DiscardUnsavedRequest>(
+  "DiscardUnsavedRequest",
+)({
+  confirm: Schema.Literal("discard unsaved"),
+}) {}
+
 export class SharedControlRequest extends Schema.Class<SharedControlRequest>(
   "SharedControlRequest",
 )({
@@ -323,6 +340,16 @@ export const sessionsGroup = HttpApiGroup.make("sessions")
       params: { id: SessionId },
       success: Session,
       error: [NotFound, SessionNotSteerable],
+    }),
+  )
+  .add(
+    // docs/adr/0002, "Stop drains, then terminates": the owner's one way to end a workspace while
+    // its captures are still pending. Only while a drain is under way; audited.
+    HttpApiEndpoint.post("discardUnsaved", "/sessions/:id/discard-unsaved", {
+      params: { id: SessionId },
+      payload: DiscardUnsavedRequest,
+      success: Session,
+      error: [NotFound, SessionNotSteerable, NothingUnsaved, StoreFailure],
     }),
   )
   .add(

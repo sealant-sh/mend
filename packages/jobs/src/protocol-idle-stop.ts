@@ -27,7 +27,9 @@ import * as Context from "effect/Context";
  * minute this pass stops each protocol agent that has sat idle past
  * MEND_PROTOCOL_IDLE_STOP_MINUTES (`protocolIdleReading`), the way the Stop button does. The
  * session reads `idle · stopped after 15 min · reply to resume`, its control log records an
- * `idle-stop` by its owner, and the next message resumes it.
+ * `idle-stop` by its owner, and the next message resumes it. In capture mode an executor still
+ * shipping captures holds the stop (`capture`), and the stop itself drains before the workspace
+ * goes, as every stop does.
  */
 export class ProtocolIdleStop extends Context.Service<
   ProtocolIdleStop,
@@ -83,14 +85,33 @@ export const ProtocolIdleStopLive: Layer.Layer<
       liveServices: number,
       nowMs: number,
     ) {
-      const reading = protocolIdleReading({
+      const facts = {
         session,
         processes: rows,
         turns: yield* conversations.listTurns(session.id),
         requests: yield* conversations.listRequests(session.id, false),
         liveServices,
+      };
+      if (!protocolIdleStopDue(protocolIdleReading(facts), nowMs, minutes)) return false;
+      // Capture mode: an executor with captures still to ship is not idle — a stop now would only
+      // sit draining them (docs/adr/0002, "Stop drains, then terminates"). Asked only of a session
+      // otherwise due, so an idle pass flushes nobody else.
+      const captures = yield* engine
+        .readCaptures(session.id)
+        .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+      const reading = protocolIdleReading({
+        ...facts,
+        capture:
+          captures === null ? null : { pending: captures.pending, bulkDirty: captures.bulkDirty },
       });
-      if (!protocolIdleStopDue(reading, nowMs, minutes)) return false;
+      if (!protocolIdleStopDue(reading, nowMs, minutes)) {
+        if (reading.kind === "held" && reading.by === "capture") {
+          yield* Effect.logInfo("protocol idle stop: held · captures still shipping").pipe(
+            Effect.annotateLogs({ sessionId: session.id, pending: captures?.pending ?? null }),
+          );
+        }
+        return false;
+      }
       const retryBefore = new Date(nowMs - Duration.toMillis(IDLE_STOP_CLAIM_RETRY));
       if (!(yield* sessions.claimIdleStop(session.id, retryBefore))) return false;
       const stopped = yield* engine.stop(session.id, summary).pipe(Effect.exit);

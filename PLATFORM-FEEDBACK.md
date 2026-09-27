@@ -7,6 +7,55 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-27 · 0.37.2 · Nothing an executor holds may be lost to a stop
+
+Mend's rule (docs/adr/0002-session-capture-store.md, "Stop drains, then terminates"): no compute
+holding a session goes away while it holds work product that was not shipped, small captures and
+git-ignored bulk alike. Mend now drains before every stop it asks for: it flushes, reads what is
+left, and repeats until nothing is pending, with no short deadline; a drain that stops moving keeps
+the workspace and says `not saved · N pending · workspace kept`; only the owner's "discard unsaved
+and stop" ends it with captures pending. Four things it cannot do through the SDK today:
+
+- **The runtime deadline.**
+  - **Needed:** the time the platform will end this executor (the MicroVM cap, a TTL, a reaper's
+    expiry), so Mend can start a planned drain early enough: `deadline − (drain estimate + margin)`.
+  - **Today:** nothing in the SDK reports it; Core's MicroVM adapter computes it in `inspect`. Mend
+    falls back to `MEND_EXECUTOR_MAX_SECONDS` (unset = unknown) counted from the executor's own
+    start, and to the old 7 h 30 replacement age when neither is known (`planExecutorCap`,
+    `platformDeadline: null` in `SessionEngine.captureReaper`).
+  - **Suggested:** `workspace.runtimeDeadline(): string | null` (ISO time), or the same on the
+    workspace record. Mend reads it into `platformDeadline`, where it wins over the configuration.
+- **A final flush with a deadline.**
+  - **Needed:** a flush that snapshots bulk as well as small captures, ships everything, and returns
+    only at `pending == 0`, a fence or a refusal, bounded by a deadline Mend names (or none).
+  - **Today:** `capture.flush()` is sealantd's Suspend kind: it forces a small snap, ships the
+    queue, and is clamped to the daemon's 10 s shutdown grace. Bulk changed in the last cadence
+    window is never queued by a flush. Mend loops flushes until `pending` reads 0, which covers what
+    is staged, not bulk changed since the last bulk snap. Only SIGTERM and a harness exit run the
+    Final kind, and those are bounded at 10 s too.
+  - **Suggested:** `capture.flush({ kind: "final", deadlineMs })` and
+    `sealantctl capture flush --final --deadline`, with no clamp; the terminate hook calls the final
+    kind.
+- **What is pending, in bytes and by class.**
+  - **Needed:** `pendingBytes` (what is left to upload), `pendingBulk` (how many of `pending` are
+    bulk), whether bulk is dirty since its last snap, and `refused` (the byte quota refused a
+    class). Mend shows `saving · 12 MB left` instead of a capture count, lets a handoff proceed
+    while only bulk uploads (`captureHarvestReady`), and holds an idle stop while bulk is dirty.
+  - **Today:** `WorkspaceCaptureStatus` types `pending`, `stagedBytes` and the lifetime counters.
+    sealantd already reports `refused` as a list of classes, but the SDK does not type it. Mend
+    reads `pendingBytes`, `pendingBulk`, `bulkDirty` and `refused` when an answer carries them
+    (`readCaptureReport`), and reads null until then.
+  - **Suggested:** type them on `WorkspaceCaptureStatus`, and add a read-only
+    `workspace.capture.status()`, so a drain can poll without forcing a snapshot every few seconds.
+- **A stop that reports whether it drained.**
+  - **Needed:** a stop Mend can tell apart: terminated, or still draining with what is left.
+  - **Today:** `workspace.stop()` resolves with nothing. Mend then polls `status()` until a terminal
+    status (or a 404) and releases the worktree lease only after that; if the platform does not
+    report the termination within two minutes, the lease is left to lapse with the heartbeats.
+  - **Suggested:** `stop()` resolves `{ state: "stopped" }` or `{ state: "draining", capture }` and
+    throws only when neither can be observed. Core's reapers (expiry, stranded, superseded,
+    orphaned) drain a capture-sourced workspace before they terminate it too.
+
 ## 2026-09-25 · 0.37.0 · A file into a workspace
 
 - **Needed:** a capture-mode workspace (MicroVM executors, ADR-0002) mounts nothing, so what the

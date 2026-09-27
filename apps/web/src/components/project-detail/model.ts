@@ -1,4 +1,5 @@
 import {
+  sessionCaptureLine,
   sessionServicesHold,
   type SessionAnnotationDto,
   type SessionDto,
@@ -42,6 +43,12 @@ export const worktreeGroups = (
       const members = sessions.filter((session) => session.worktreeId === worktree.id);
       const holds = new Map<string, string>();
       for (const session of members) {
+        // A workspace kept up by a drain (docs/adr/0002) reads what it is saving, first.
+        const capture = sessionCaptureLine(session);
+        if (capture !== null) {
+          holds.set(session.id, capture);
+          continue;
+        }
         const facts = sessionAnnotations.find((row) => row.sessionId === session.id);
         if (facts === undefined) continue;
         const hold = sessionServicesHold(session, facts.currentAgent, facts.liveServices);

@@ -11,6 +11,7 @@ import {
 } from "../ids.ts";
 import { WorkspaceImage } from "../settings.ts";
 import { SequenceNumber, Timestamp } from "../timestamp.ts";
+import { CaptureDrainReason } from "./capture-drain.ts";
 import { SessionExtraMount } from "./mount.ts";
 import { SessionReferenceMount } from "./reference.ts";
 
@@ -170,6 +171,56 @@ export class Session extends Schema.Class<Session>("Session")({
    * session reopens.
    */
   idleStoppedAt: Schema.NullOr(Timestamp).pipe(Schema.withConstructorDefault(Effect.succeed(null))),
+  /**
+   * Capture mode (docs/adr/0002-session-capture-store.md, "Stop drains, then terminates"): what
+   * the session's executor last answered to a flush — captures staged and not yet registered
+   * (bulk included), the bytes left once sealantd reports them, captures its byte quota refused —
+   * when Mend asked, and the chain head's registration time as seen then. Null until asked.
+   */
+  capturePending: Schema.NullOr(Schema.Int).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  capturePendingBytes: Schema.NullOr(Schema.Number).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  captureRefused: Schema.NullOr(Schema.Int).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  captureRegisteredAt: Schema.NullOr(Timestamp).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  captureObservedAt: Schema.NullOr(Timestamp).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * A drain under way: why (a stop, a relaunch, a replacement before the platform's cap), since
+   * when, the last time anything moved, and when it stopped moving (`not saved · workspace kept`).
+   * The intent is durable: a Mend restart takes the drain up again. All null once the workspace
+   * is saved and terminated, or discarded by its owner.
+   */
+  captureDrain: Schema.NullOr(CaptureDrainReason).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  captureDrainRequestedAt: Schema.NullOr(Timestamp).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  captureDrainProgressAt: Schema.NullOr(Timestamp).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  captureNotSavedAt: Schema.NullOr(Timestamp).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * When the session's current executor started — what the platform's cap counts from, not the
+   * latest run. Null before launch and for rows from before the column.
+   */
+  executorStartedAt: Schema.NullOr(Timestamp).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /** Removal asked while the workspace was still up: the row goes once the workspace has. */
+  removalRequestedAt: Schema.NullOr(Timestamp).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
   status: SessionStatus,
   /** What the harness reported at settle, when anything. */
   summary: Schema.NullOr(Schema.String),

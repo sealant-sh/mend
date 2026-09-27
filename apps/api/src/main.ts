@@ -137,6 +137,7 @@ import {
   CaptureGitVerifierLive,
   CaptureRemotesLive,
   CaptureSourcesLive,
+  CaptureDrainPolicyLive,
   CaptureRuntimeLive,
   CaptureUploadPolicyLive,
   CaptureRuntimeOff,
@@ -330,6 +331,9 @@ const SessionChannelNetworkLayer = SessionChannelNetworkHostLive.pipe(
 // the capture store by default, the deprecated co-located adapters only on request. The engine
 // takes them as requirements and never knows which adapter answers.
 const SessionEngineLayer = SessionEngineBaseLive.pipe(
+  // docs/adr/0002, "Stop drains, then terminates": MEND_CAPTURE_DRAIN_STALL_SECONDS,
+  // MEND_EXECUTOR_MAX_SECONDS and the planning margins.
+  Layer.provide(CaptureDrainPolicyLive),
   Layer.provide(ProtocolHostLayer),
   Layer.provide(ServiceHostLayer),
   Layer.provide(SessionSocketHostLayer),
