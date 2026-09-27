@@ -2,10 +2,13 @@ import { describe, expect, it } from "vitest";
 
 import {
   type DockerDaemonFacts,
+  dockerdFactsOf,
   dockerShutdownCheck,
   dockerShutdownSetupLine,
   type HostFile,
+  observeDockerd,
   parseDockerInfo,
+  type ProcView,
   readShutdownTimeout,
 } from "./docker-shutdown.ts";
 
@@ -149,5 +152,166 @@ describe("the Docker daemon's shutdown timeout", () => {
     ).toEqual({ operatingSystem: "Docker Desktop", securityOptions: ["a"] });
     expect(parseDockerInfo("Docker Engine - Community")).toBeNull();
     expect(parseDockerInfo(JSON.stringify({ ServerVersion: "29" }))).toBeNull();
+  });
+});
+
+/** One process in a fake `/proc`. */
+interface FakeProcess {
+  readonly argv: ReadonlyArray<string>;
+  /** Its network namespace's `/proc/<pid>/net/unix` rows: [inode, path, listening]. */
+  readonly sockets?: ReadonlyArray<readonly [string, string, boolean]>;
+  /** `NSpid:` — more than one entry is a nested PID namespace (a container). */
+  readonly nsPid?: string;
+  /** Its fds' link targets; absent reads as unreadable (a root daemon, read as a user). */
+  readonly fds?: Readonly<Record<string, string>>;
+}
+
+const unixTable = (rows: ReadonlyArray<readonly [string, string, boolean]>): string =>
+  [
+    "Num       RefCount Protocol Flags    Type St Inode Path",
+    ...rows.map(
+      ([inode, bound, listening]) =>
+        `0000000000000000: 00000002 00000000 ${listening ? "00010000" : "00000000"} 0001 01 ${inode} ${bound}`,
+    ),
+  ].join("\n");
+
+const fakeProc = (
+  processes: Readonly<Record<string, FakeProcess>>,
+  self: ReadonlyArray<readonly [string, string, boolean]>,
+): ProcView => ({
+  list: (dir) => {
+    if (dir === "/proc") return ["1", ...Object.keys(processes), "self"];
+    const fds = /^\/proc\/(\d+)\/fd$/.exec(dir)?.[1];
+    const table = fds === undefined ? undefined : processes[fds]?.fds;
+    return table === undefined ? null : Object.keys(table);
+  },
+  read: (file) => {
+    if (file === "/proc/self/net/unix") return unixTable(self);
+    if (file === "/proc/1/cmdline") return "/sbin/init\0";
+    const [, pid, rest] = /^\/proc\/(\d+)\/(.+)$/.exec(file) ?? [];
+    const process = pid === undefined ? undefined : processes[pid];
+    if (process === undefined) return null;
+    if (rest === "cmdline") return `${process.argv.join("\0")}\0`;
+    if (rest === "net/unix") return unixTable(process.sockets ?? []);
+    if (rest === "status") return `Name:\tdockerd\nNSpid:\t${process.nsPid ?? pid}\n`;
+    return null;
+  },
+  link: (file) => {
+    const [, pid, fd] = /^\/proc\/(\d+)\/fd\/(\d+)$/.exec(file) ?? [];
+    return pid === undefined || fd === undefined ? null : (processes[pid]?.fds?.[fd] ?? null);
+  },
+});
+
+/** The host's own daemon: systemd-activated, its socket in the host's network namespace. */
+const HOST_DOCKERD: FakeProcess = {
+  argv: ["/usr/bin/dockerd", "-H", "fd://", "--config-file=/etc/docker/host.json"],
+  sockets: [["8416", "/run/docker.sock", true]],
+};
+/** A workspace's Docker: dockerd inside a container, its own /var/run/docker.sock. */
+const CONTAINER_DOCKERD: FakeProcess = {
+  argv: ["dockerd", "--host=unix:///var/run/docker.sock"],
+  sockets: [["5555", "/var/run/docker.sock", true]],
+  nsPid: "900\t57",
+};
+
+describe("which dockerd the docker client talks to", () => {
+  it("a host with two daemons reads the one serving the client's socket, not the first in /proc (e2e run 3)", () => {
+    const proc = fakeProc({ "900": CONTAINER_DOCKERD, "2052": HOST_DOCKERD }, [
+      ["8416", "/run/docker.sock", true],
+    ]);
+    // The first dockerd in /proc is the container's; the client's socket is the host's.
+    expect(observeDockerd(proc, "unix:///var/run/docker.sock")).toEqual({
+      kind: "observed",
+      pid: "2052",
+      argv: HOST_DOCKERD.argv,
+    });
+    // And the doctor reads that daemon's own --config-file.
+    const reading = readShutdownTimeout(
+      facts({
+        ...dockerdFactsOf(observeDockerd(proc, "unix:///var/run/docker.sock")),
+        files: { "/etc/docker/host.json": json({ "shutdown-timeout": 3600 }) },
+      }),
+    );
+    expect(dockerShutdownCheck(reading)).toMatchObject({
+      state: "ok",
+      detail: "shutdown-timeout 3600 s · /etc/docker/host.json · covers the 3600 s capture grace",
+    });
+  });
+
+  it("follows DOCKER_HOST to a second daemon on the host, by its -H", () => {
+    const second: FakeProcess = {
+      argv: ["dockerd", "-H", "unix:///run/docker-b.sock", "--shutdown-timeout=7200"],
+      sockets: [
+        ["8416", "/run/docker.sock", true],
+        ["8420", "/run/docker-b.sock", true],
+      ],
+    };
+    const proc = fakeProc({ "2052": HOST_DOCKERD, "3100": second }, [
+      ["8416", "/run/docker.sock", true],
+      ["8420", "/run/docker-b.sock", true],
+    ]);
+    expect(observeDockerd(proc, "unix:///run/docker-b.sock")).toMatchObject({ pid: "3100" });
+    expect(observeDockerd(proc, "unix:///var/run/docker.sock")).toMatchObject({ pid: "2052" });
+  });
+
+  it("takes the daemon holding the socket among its fds when they can be read", () => {
+    const a: FakeProcess = {
+      argv: ["dockerd", "-H", "fd://"],
+      sockets: [["8416", "/run/docker.sock", true]],
+      fds: { "3": "socket:[9999]" },
+    };
+    const b: FakeProcess = {
+      argv: ["dockerd", "-H", "fd://", "--shutdown-timeout=3600"],
+      sockets: [["8416", "/run/docker.sock", true]],
+      fds: { "3": "socket:[8416]" },
+    };
+    const proc = fakeProc({ "10": a, "11": b }, [["8416", "/run/docker.sock", true]]);
+    expect(observeDockerd(proc, "unix:///var/run/docker.sock")).toMatchObject({ pid: "11" });
+  });
+
+  it("guesses nothing when it cannot tell, and the doctor says so", () => {
+    const twin: FakeProcess = { argv: ["dockerd"], sockets: [["8416", "/run/docker.sock", true]] };
+    const proc = fakeProc({ "10": twin, "11": twin }, [["8416", "/run/docker.sock", true]]);
+    const observation = observeDockerd(proc, "unix:///var/run/docker.sock");
+    expect(observation).toEqual({
+      kind: "unresolved",
+      why: "2 dockerd processes · could not tell which serves /run/docker.sock",
+    });
+    expect(
+      dockerShutdownCheck(readShutdownTimeout(facts(dockerdFactsOf(observation)))).detail,
+    ).toBe(
+      "shutdown-timeout not observed · 2 dockerd processes · could not tell which serves /run/docker.sock",
+    );
+    // A daemon elsewhere: the local ones are not it.
+    expect(observeDockerd(proc, "ssh://op@build-host")).toEqual({
+      kind: "unresolved",
+      why: "docker talks to ssh://op@build-host · not a socket on this machine",
+    });
+    // Only a container's daemon here: not the one the client reaches.
+    expect(
+      observeDockerd(
+        fakeProc({ "900": CONTAINER_DOCKERD }, [["8416", "/run/docker.sock", true]]),
+        "unix:///var/run/docker.sock",
+      ),
+    ).toEqual({
+      kind: "unresolved",
+      why: "1 dockerd process · none observed serving /run/docker.sock",
+    });
+    expect(observeDockerd(fakeProc({}, []), "unix:///var/run/docker.sock")).toEqual({
+      kind: "none",
+    });
+  });
+
+  it("a rootless daemon, in its own network namespace, is found by its socket path", () => {
+    const rootless: FakeProcess = {
+      argv: ["dockerd"],
+      sockets: [["7000", "/run/user/1000/docker.sock", true]],
+    };
+    const proc = fakeProc({ "2052": HOST_DOCKERD, "4100": rootless }, [
+      ["8416", "/run/docker.sock", true],
+    ]);
+    expect(observeDockerd(proc, "unix:///run/user/1000/docker.sock")).toMatchObject({
+      pid: "4100",
+    });
   });
 });

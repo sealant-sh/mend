@@ -38,8 +38,13 @@ export interface DockerDaemonFacts {
     readonly operatingSystem: string;
     readonly securityOptions: ReadonlyArray<string>;
   } | null;
-  /** The running dockerd's argv on this machine; null when no dockerd process was observed. */
+  /**
+   * The argv of the dockerd the docker client talks to (`observeDockerd`); null when none was
+   * observed, or when it could not be told which one it is (`dockerdUnresolved` says why).
+   */
   readonly dockerdArgv: ReadonlyArray<string> | null;
+  /** Why no dockerd's argv is given although dockerd processes were seen; absent when not so. */
+  readonly dockerdUnresolved?: string | null;
   readonly readFile: (file: string) => HostFile;
   readonly home: string;
   /** `$XDG_CONFIG_HOME`, when set. */
@@ -116,6 +121,9 @@ export const readShutdownTimeout = (facts: DockerDaemonFacts): ShutdownTimeoutRe
   const daemon = daemonKindOf(facts.info);
   const managed = daemon === "desktop" || daemon === "orbstack";
   const argv = managed ? null : facts.dockerdArgv;
+  const unresolved = facts.dockerdUnresolved ?? null;
+  // Another daemon's flags or file would be read as this one's: say what was not seen instead.
+  if (argv === null && !managed && unresolved !== null) return { kind: "unknown", why: unresolved };
   const configPath =
     (argv === null ? null : flagValue(argv, "--config-file")) ?? defaultConfigPath(facts, daemon);
   if (argv !== null) {
@@ -275,31 +283,219 @@ export const readHostFile = (file: string): HostFile => {
   }
 };
 
-/** The argv of a dockerd process on this machine (Linux `/proc`); null when none is observed. */
-export const observeDockerdArgv = (): ReadonlyArray<string> | null => {
-  let entries: Array<string>;
-  try {
-    entries = fs.readdirSync("/proc");
-  } catch {
-    return null;
-  }
-  for (const entry of entries) {
-    if (!/^\d+$/.test(entry)) continue;
-    let argv: Array<string>;
+/** What `observeDockerd` reads of `/proc`: entries, file text and link targets; null where unreadable. */
+export interface ProcView {
+  readonly list: (dir: string) => ReadonlyArray<string> | null;
+  readonly read: (file: string) => string | null;
+  readonly link: (file: string) => string | null;
+}
+
+/** This machine's `/proc`. */
+export const hostProcView: ProcView = {
+  list: (dir) => {
     try {
-      argv = fs.readFileSync(path.join("/proc", entry, "cmdline"), "utf8").split("\0");
+      return fs.readdirSync(dir);
     } catch {
-      continue;
+      return null;
     }
-    if (path.basename(argv[0] ?? "") === "dockerd") return argv.filter((arg) => arg !== "");
+  },
+  read: (file) => {
+    try {
+      return fs.readFileSync(file, "utf8");
+    } catch {
+      return null;
+    }
+  },
+  link: (file) => {
+    try {
+      return fs.readlinkSync(file);
+    } catch {
+      return null;
+    }
+  },
+};
+
+/** docker's own default when neither DOCKER_HOST nor a context names another. */
+export const DOCKER_DEFAULT_HOST = "unix:///var/run/docker.sock";
+
+/** `/var/run` is `/run` on every Linux this reads: one spelling for a socket path. */
+const socketPath = (file: string): string => file.replace(/^\/var\/run\//, "/run/");
+
+/** The socket path of a `unix://` endpoint; null for anything else (tcp, ssh, npipe). */
+export const unixSocketOf = (host: string): string | null =>
+  host.startsWith("unix://") && host.length > "unix://".length
+    ? socketPath(host.slice("unix://".length))
+    : null;
+
+/** Every `-H` / `--host` value in a dockerd argv, in order. */
+const hostFlags = (argv: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const hosts: Array<string> = [];
+  for (let index = 1; index < argv.length; index += 1) {
+    const arg = argv[index] ?? "";
+    for (const name of ["-H", "--host"]) {
+      if (arg === name) hosts.push(argv[index + 1] ?? "");
+      else if (arg.startsWith(`${name}=`)) hosts.push(arg.slice(name.length + 1));
+    }
   }
-  return null;
+  return hosts;
+};
+
+/** The inodes of the listening sockets bound at `socket`, from a `/proc/<pid>/net/unix` text. */
+const listeningInodes = (table: string, socket: string): ReadonlySet<string> => {
+  const inodes = new Set<string>();
+  for (const line of table.split("\n").slice(1)) {
+    const fields = line.trim().split(/\s+/);
+    const flags = fields[3];
+    const inode = fields[6];
+    const bound = fields.slice(7).join(" ");
+    // __SO_ACCEPTCON: a socket something listens on.
+    if (flags === undefined || inode === undefined || bound === "") continue;
+    if ((Number.parseInt(flags, 16) & 0x10000) === 0) continue;
+    if (socketPath(bound) === socket) inodes.add(inode);
+  }
+  return inodes;
+};
+
+/** Which dockerd the docker client talks to, as far as `/proc` tells. */
+export type DockerdObservation =
+  | { readonly kind: "observed"; readonly pid: string; readonly argv: ReadonlyArray<string> }
+  | { readonly kind: "none" }
+  | { readonly kind: "unresolved"; readonly why: string };
+
+interface DockerdCandidate {
+  readonly pid: string;
+  readonly argv: ReadonlyArray<string>;
+  /** It holds a listening socket at the client's path (its fds were readable). */
+  readonly owns: boolean;
+  /** Its `-H` names the client's socket. */
+  readonly named: boolean;
+  /** It runs in a nested PID namespace: a daemon inside a container. */
+  readonly nested: boolean;
+}
+
+/**
+ * The dockerd serving `host` (DOCKER_HOST, else the current context's endpoint), among every
+ * dockerd in `/proc` — a host may run several: its own, a rootless one, one inside a container
+ * (a workspace's Docker). A daemon is ruled out on what `/proc` shows against it: `-H` values
+ * that name another socket, or a network namespace with no listening socket at that path (or
+ * not the one this process sees there). Of the rest, the one holding that socket among its fds,
+ * else the one whose `-H` names it, else the one outside a nested PID namespace — when exactly
+ * one is left. Otherwise nothing is guessed: `unresolved` says why.
+ */
+export const observeDockerd = (proc: ProcView, host: string): DockerdObservation => {
+  const daemons: Array<{ readonly pid: string; readonly argv: ReadonlyArray<string> }> = [];
+  for (const entry of proc.list("/proc") ?? []) {
+    if (!/^\d+$/.test(entry)) continue;
+    const cmdline = proc.read(`/proc/${entry}/cmdline`);
+    if (cmdline === null) continue;
+    const argv = cmdline.split("\0").filter((arg) => arg !== "");
+    if (path.basename(argv[0] ?? "") === "dockerd") daemons.push({ pid: entry, argv });
+  }
+  if (daemons.length === 0) return { kind: "none" };
+  const socket = unixSocketOf(host);
+  if (socket === null) {
+    return {
+      kind: "unresolved",
+      why: `docker talks to ${host} · not a socket on this machine`,
+    };
+  }
+  const selfTable = proc.read("/proc/self/net/unix");
+  const seenHere = selfTable === null ? new Set<string>() : listeningInodes(selfTable, socket);
+  const candidates: Array<DockerdCandidate> = [];
+  for (const daemon of daemons) {
+    const hosts = hostFlags(daemon.argv);
+    const named = hosts.some((value) => unixSocketOf(value) === socket);
+    const activated = hosts.some((value) => value.startsWith("fd://"));
+    if (hosts.length > 0 && !named && !activated) continue;
+    const table = proc.read(`/proc/${daemon.pid}/net/unix`);
+    const listening = table === null ? null : listeningInodes(table, socket);
+    if (listening !== null) {
+      if (listening.size === 0) continue;
+      // The same path in another network namespace is another socket.
+      if (seenHere.size > 0 && ![...listening].some((inode) => seenHere.has(inode))) continue;
+    }
+    // Its own fds, when this user may read them (a root daemon's usually not).
+    const fds = proc.list(`/proc/${daemon.pid}/fd`);
+    const held =
+      fds === null || listening === null
+        ? null
+        : fds.some((fd) => {
+            const target = proc.link(`/proc/${daemon.pid}/fd/${fd}`);
+            const inode = target?.match(/^socket:\[(\d+)\]$/)?.[1];
+            return inode !== undefined && listening.has(inode);
+          });
+    if (held === false) continue;
+    const nsPids = proc
+      .read(`/proc/${daemon.pid}/status`)
+      ?.split("\n")
+      .find((line) => line.startsWith("NSpid:"))
+      ?.slice("NSpid:".length)
+      .trim()
+      .split(/\s+/);
+    candidates.push({
+      ...daemon,
+      owns: held === true,
+      named,
+      nested: nsPids !== undefined && nsPids.length > 1,
+    });
+  }
+  const narrowed = [
+    (candidate: DockerdCandidate) => candidate.owns,
+    (candidate: DockerdCandidate) => candidate.named,
+    (candidate: DockerdCandidate) => !candidate.nested,
+  ].reduce<ReadonlyArray<DockerdCandidate>>((left, prefer) => {
+    const preferred = left.filter(prefer);
+    return preferred.length > 0 ? preferred : left;
+  }, candidates);
+  const [only, ...others] = narrowed;
+  if (only !== undefined && others.length === 0) {
+    return { kind: "observed", pid: only.pid, argv: only.argv };
+  }
+  const seen = `${daemons.length} dockerd process${daemons.length === 1 ? "" : "es"}`;
+  return {
+    kind: "unresolved",
+    why:
+      only === undefined
+        ? `${seen} · none observed serving ${socket}`
+        : `${seen} · could not tell which serves ${socket}`,
+  };
+};
+
+/** The endpoint the docker client uses: DOCKER_HOST, else the current context's, else docker's default. */
+export const hostDockerEndpoint = (): string => {
+  const fromEnv = process.env["DOCKER_HOST"];
+  if (fromEnv !== undefined && fromEnv.trim() !== "") return fromEnv.trim();
+  const context = spawnSync(
+    "docker",
+    ["context", "inspect", "--format", "{{.Endpoints.docker.Host}}"],
+    {
+      encoding: "utf8",
+      timeout: 3_000,
+      stdio: ["ignore", "pipe", "ignore"],
+    },
+  );
+  const endpoint = context.status === 0 ? context.stdout.trim() : "";
+  return endpoint === "" ? DOCKER_DEFAULT_HOST : endpoint;
+};
+
+/** The observation, as `DockerDaemonFacts` carries it. */
+export const dockerdFactsOf = (
+  observation: DockerdObservation,
+): Pick<DockerDaemonFacts, "dockerdArgv" | "dockerdUnresolved"> => {
+  switch (observation.kind) {
+    case "observed":
+      return { dockerdArgv: observation.argv, dockerdUnresolved: null };
+    case "none":
+      return { dockerdArgv: null, dockerdUnresolved: null };
+    case "unresolved":
+      return { dockerdArgv: null, dockerdUnresolved: observation.why };
+  }
 };
 
 /** This machine's facts, with `docker info`'s stdout already in hand (null when it failed). */
 export const hostDockerDaemonFacts = (infoStdout: string | null): DockerDaemonFacts => ({
   info: infoStdout === null ? null : parseDockerInfo(infoStdout),
-  dockerdArgv: observeDockerdArgv(),
+  ...dockerdFactsOf(observeDockerd(hostProcView, hostDockerEndpoint())),
   readFile: readHostFile,
   home: os.homedir(),
   xdgConfigHome: process.env["XDG_CONFIG_HOME"] ?? null,
