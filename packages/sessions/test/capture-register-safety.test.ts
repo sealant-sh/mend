@@ -366,3 +366,189 @@ describe("plan.get hands a head only to an executor that reads it", () => {
     expect(result.answered).toBe(base.id);
   });
 });
+
+/** A workspace section whose pack holds `document` as one chunk, named by `worktree_meta`. */
+const withMeta = (
+  wt: string,
+  document: Uint8Array,
+  meta: (chunk: string, pack: string) => Partial<Record<string, unknown>> = () => ({}),
+) => {
+  const keys = captureKeys(wt, 1);
+  const content = writeCdcPack([document]);
+  const contentKey = keys.pack(sha256Hex(content.bytes));
+  const chunk = sha256Hex(document);
+  const worktree_meta = {
+    format: 1,
+    size: document.byteLength,
+    sha256: sha256Hex(document),
+    chunks: [chunk],
+    packs: [contentKey],
+    ...meta(chunk, contentKey),
+  };
+  return {
+    objects: new Map([[contentKey, content.bytes]]),
+    workspace: { root: "", packs: [contentKey], worktree_meta },
+  };
+};
+const documentOf = (value: object) => utf8(JSON.stringify(value));
+const plainDocument = {
+  format: 1,
+  entries: [
+    { path: "", kind: "dir", mode: 0o755, mtime: 1_700_000_000_000_000_000 },
+    { path: "a", kind: "file", mode: 0o640, mtime: 1_700_000_000_000_000_000 },
+    { path: "b", kind: "file", mode: 0o644, mtime: 1_700_000_000_000_000_000 },
+    { path: "l", kind: "symlink", mtime: 1_700_000_000_000_000_000 },
+  ],
+  hardlinks: [["a", "b"]],
+};
+
+const registerOnce = async (
+  wt: WorktreeId,
+  workspace: object,
+  objects: ReadonlyMap<string, Uint8Array>,
+  requestManifest?: (manifest: CaptureManifest) => unknown,
+) => {
+  const world = worldOf();
+  const built = buildManifest({
+    worktreeId: wt,
+    epoch: 1,
+    n: 0,
+    parent: null,
+    kind: "final",
+    // The schema's workspace type does not say every shape a writer may send; the bytes do.
+    workspace: JSON.parse(JSON.stringify(workspace)),
+  });
+  return Effect.runPromise(
+    Effect.gen(function* () {
+      const repo = yield* CaptureStoreRepo;
+      yield* repo.init(wt);
+      yield* repo.claim(wt, "executor");
+      yield* uploadObjects(new Map([...objects, [built.key, built.bytes]]));
+      const api = yield* apiOf(wt);
+      const input = registerInput(built);
+      const said = yield* outcome(
+        api.register(
+          requestManifest === undefined
+            ? input
+            : { ...input, manifest: requestManifest(built.manifest) },
+        ),
+      );
+      return { said, head: (yield* repo.headOf(wt))?.head?.id ?? null };
+    }).pipe(Effect.provide(world.layer)),
+  );
+};
+
+describe("capture.register reads the worktree metadata a restore needs (review 2026-09-28 #17)", () => {
+  it("refuses a final manifest whose metadata document has no chunks behind its size and digest", async () => {
+    const wt = WorktreeId.make("wt-meta-empty");
+    const result = await registerOnce(
+      wt,
+      {
+        root: "",
+        packs: [],
+        worktree_meta: { format: 1, size: 42, sha256: "a".repeat(64), chunks: [], packs: [] },
+      },
+      new Map(),
+    );
+    expect(result).toEqual({ said: "CaptureRouteError:unrestorable", head: null });
+  });
+
+  it("registers a metadata document that restores, and refuses every way one would not", async () => {
+    const good = withMeta("wt-meta-good", documentOf(plainDocument));
+    expect(
+      (await registerOnce(WorktreeId.make("wt-meta-good"), good.workspace, good.objects)).said,
+    ).toBe("ok");
+
+    const cases: ReadonlyArray<readonly [string, ReturnType<typeof withMeta>, string]> = [
+      [
+        "a format Mend does not read",
+        withMeta("wt-meta-format", documentOf(plainDocument), () => ({ format: 2 })),
+        "unrestorable",
+      ],
+      [
+        "a digest the bytes do not have",
+        withMeta("wt-meta-digest", documentOf(plainDocument), () => ({ sha256: "b".repeat(64) })),
+        "unrestorable",
+      ],
+      [
+        "a size the chunks do not add up to",
+        withMeta("wt-meta-size", documentOf(plainDocument), () => ({ size: 1 })),
+        "unrestorable",
+      ],
+      [
+        "a chunk in no listed pack",
+        withMeta("wt-meta-chunk", documentOf(plainDocument), () => ({ chunks: ["c".repeat(64)] })),
+        "unrestorable",
+      ],
+      [
+        "a pack that is not the section's",
+        withMeta("wt-meta-pack", documentOf(plainDocument), () => ({
+          packs: [captureKeys("wt-meta-pack", 1).pack("d".repeat(64))],
+        })),
+        "unrestorable",
+      ],
+      [
+        "a path that leaves the worktree",
+        withMeta(
+          "wt-meta-path",
+          documentOf({
+            format: 1,
+            entries: [{ path: "../x", kind: "file", mode: 0o644, mtime: 1 }],
+          }),
+        ),
+        "unrestorable",
+      ],
+      [
+        "raw path bytes that disagree with the path",
+        withMeta(
+          "wt-meta-raw",
+          documentOf({
+            format: 1,
+            entries: [
+              {
+                path: `caf${String.fromCodePoint(0x10_ffe9)}`,
+                raw_path: "636166e8",
+                kind: "file",
+                mode: 0o644,
+                mtime: 1,
+              },
+            ],
+          }),
+        ),
+        "unrestorable",
+      ],
+      [
+        "a hardlink group naming no file",
+        withMeta("wt-meta-group", documentOf({ ...plainDocument, hardlinks: [["a", "missing"]] })),
+        "unrestorable",
+      ],
+      ["a document that is not JSON", withMeta("wt-meta-json", utf8("not json")), "unrestorable"],
+    ];
+    for (const [label, section, reason] of cases) {
+      const owner = section.workspace.packs[0]?.split("/")[1] ?? "";
+      const wt = WorktreeId.make(owner);
+      const result = await registerOnce(wt, section.workspace, section.objects);
+      expect(result, label).toEqual({ said: `CaptureRouteError:${reason}`, head: null });
+    }
+  });
+
+  it("validates the manifest as stored: a request whose copy differs from the stored bytes is refused", async () => {
+    const wt = WorktreeId.make("wt-meta-request-differs");
+    // The stored manifest names an impossible metadata document; the request's copy leaves it
+    // out, so a check of the request alone would pass.
+    const result = await registerOnce(
+      wt,
+      {
+        root: "",
+        packs: [],
+        worktree_meta: { format: 1, size: 42, sha256: "a".repeat(64), chunks: [], packs: [] },
+      },
+      new Map(),
+      (manifest) => ({
+        ...manifest,
+        sections: { ...manifest.sections, workspace: { root: "", packs: [] } },
+      }),
+    );
+    expect(result).toEqual({ said: "CaptureRouteError:bad-request", head: null });
+  });
+});

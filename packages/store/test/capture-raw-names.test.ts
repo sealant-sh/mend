@@ -17,6 +17,7 @@ import {
   rawOfKey,
   sha256Hex,
   verifySectionRestorable,
+  verifyWorktreeMeta,
 } from "../src/captures.ts";
 import { buildManifest, uploadObjects, writeCdcPack } from "./capture-fixture.ts";
 
@@ -275,6 +276,10 @@ describe("a store sealant-capture wrote with names that are not UTF-8", () => {
         if (bulk === "pending") throw new Error("bulk pending");
         yield* verifySectionRestorable(manifest.sections.workspace);
         yield* verifySectionRestorable(bulk);
+        // The overlay sealant-capture wrote (its tracked file's name is not UTF-8, so the
+        // document names it by `raw_path`) passes the check register runs on it.
+        expect(manifest.sections.workspace.worktree_meta).toBeDefined();
+        yield* verifyWorktreeMeta(manifest.sections.workspace);
         yield* materialize(manifest, "workspace", workspaceOut);
         yield* materialize(manifest, "bulk", bulkOut);
         // The writer escaped these names: the fixture holds what this test is about.

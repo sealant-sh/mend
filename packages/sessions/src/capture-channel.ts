@@ -1,3 +1,5 @@
+import { isDeepStrictEqual } from "node:util";
+
 import {
   type CaptureConflictError,
   CaptureStoreRepo,
@@ -31,6 +33,7 @@ import {
   type SectionFormat,
   treePrefixesOfSections,
   verifySectionRestorable,
+  verifyWorktreeMeta,
 } from "@mend/store";
 import { Duration, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -1271,25 +1274,6 @@ export const CaptureChannelLive: Layer.Layer<
             "manifest_key must be …/manifests/<sha256> under the caller's epoch prefix",
           );
         }
-        const manifest = yield* Effect.try({
-          try: () => Schema.decodeUnknownSync(Schema.Unknown)(input.manifest),
-          catch: () => bad("manifest is not JSON"),
-        }).pipe(
-          Effect.flatMap((raw) =>
-            decodeManifest(
-              input.manifest_key,
-              new Uint8Array(Buffer.from(JSON.stringify(raw), "utf8")),
-            ).pipe(Effect.mapError((error) => bad(`manifest: ${error.reason}`))),
-          ),
-        );
-        if (
-          manifest.worktree_id !== worktreeId ||
-          manifest.epoch !== input.epoch ||
-          manifest.n !== input.n ||
-          manifest.parent !== input.parent
-        ) {
-          return yield* bad("the manifest's identity fields disagree with the request");
-        }
         // The id is the digest of the bytes AS STORED — read them back rather than trust the
         // request's copy; a lost-ack retry re-registers the same id from identical bytes.
         const stored = yield* blobs.get(input.manifest_key).pipe(
@@ -1315,6 +1299,27 @@ export const CaptureChannelLive: Layer.Layer<
             reason: "capture-id-mismatch",
             message: "capture_id is not the sha256 of the manifest bytes at manifest_key",
           });
+        }
+        // Everything below reads the manifest AS STORED — what a restore will read — and the
+        // request's copy must be that same document: a register never validates one manifest
+        // and acknowledges another (review 2026-09-28 #17).
+        const storedJson = yield* Effect.try({
+          try: (): unknown => JSON.parse(Buffer.from(stored).toString("utf8")),
+          catch: () => bad("the manifest at manifest_key is not JSON"),
+        });
+        if (!isDeepStrictEqual(storedJson, input.manifest)) {
+          return yield* bad("the request's manifest is not the manifest stored at manifest_key");
+        }
+        const manifest = yield* decodeManifest(input.manifest_key, stored).pipe(
+          Effect.mapError((error) => bad(`manifest: ${error.reason}`)),
+        );
+        if (
+          manifest.worktree_id !== worktreeId ||
+          manifest.epoch !== input.epoch ||
+          manifest.n !== input.n ||
+          manifest.parent !== input.parent
+        ) {
+          return yield* bad("the manifest's identity fields disagree with the request");
         }
         // Every key the manifest names must be one capture object — a pack, its index, a dir
         // pack, a format-1 dir object root — before anything below asks the bucket about it: a
@@ -1531,6 +1536,13 @@ export const CaptureChannelLive: Layer.Layer<
                 Effect.catch(unrestorable(section)),
               );
             }
+            // The worktree metadata document is walked whatever the parent held: a restore
+            // needs it whenever the manifest names it, and a parent's row does not say it held
+            // this very document (review 2026-09-28 #17).
+            yield* verifyWorktreeMeta(manifest.sections.workspace, { sizes }).pipe(
+              Effect.provideService(BlobStore, blobs),
+              Effect.catch(unrestorable(manifest.sections.workspace)),
+            );
           }
           // The backstop for bytes that landed unpriced (keys the daemon sent no size for): a
           // 409 the executor's registrar reads as a refusal of THIS capture, not a transport

@@ -71,7 +71,30 @@ const chunkedSectionFields = {
   dir_packs: Schema.optionalKey(Schema.Array(Schema.String)),
 };
 
-export const WorkspaceSection = Schema.Struct(chunkedSectionFields);
+/** The worktree metadata document format Mend reads (sealantd `WORKTREE_META_FORMAT`). */
+export const WORKTREE_META_FORMAT = 1;
+
+/**
+ * `sections.workspace.worktree_meta` (sealantd `manifest.rs` `WorktreeMeta`): the worktree
+ * metadata overlay — exact modes, nanosecond mtimes, untracked directories and hardlink groups of
+ * the working tree the worktree pseudo-ref describes — a JSON document CDC chunked into the
+ * workspace section's own packs. A restore needs it whenever it is present: sealantd's
+ * materializer refuses a document whose chunks do not add up to `size` and `sha256`, or whose
+ * format it does not read.
+ */
+export const WorktreeMeta = Schema.Struct({
+  format: Schema.Int,
+  size: Schema.Int,
+  sha256: Schema.String,
+  chunks: Schema.Array(Schema.String),
+  packs: Schema.Array(Schema.String),
+});
+export type WorktreeMeta = typeof WorktreeMeta.Type;
+
+export const WorkspaceSection = Schema.Struct({
+  ...chunkedSectionFields,
+  worktree_meta: Schema.optionalKey(WorktreeMeta),
+});
 export type WorkspaceSection = typeof WorkspaceSection.Type;
 
 export const BulkSectionReady = Schema.Struct({
@@ -1671,6 +1694,158 @@ export const verifySectionRestorable = (
     return stats;
   });
 
+// ─── The worktree metadata overlay ──────────────────────────────────────────
+
+const MetaDocument = Schema.Struct({
+  format: Schema.Int,
+  entries: Schema.Array(
+    Schema.Struct({
+      path: Schema.String,
+      raw_path: Schema.optionalKey(Schema.String),
+      kind: Schema.Literals(["file", "symlink", "dir"]),
+      mode: Schema.optionalKey(Schema.Int),
+      mtime: Schema.Number,
+    }),
+  ),
+  hardlinks: Schema.optionalKey(Schema.Array(Schema.Array(Schema.String))),
+  shared: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        path: Schema.String,
+        class: Schema.Literals(["workspace", "bulk"]),
+        member: Schema.String,
+        raw_member: Schema.optionalKey(Schema.String),
+      }),
+    ),
+  ),
+});
+
+/** `""` or a relative path of normal components (sealantd `worktree_meta.rs` `is_plain_relative`). */
+const isPlainRelative = (bytes: Buffer): boolean => {
+  if (bytes.length === 0) return true;
+  let start = 0;
+  for (let at = 0; at <= bytes.length; at += 1) {
+    if (at < bytes.length && bytes[at] !== SLASH) continue;
+    const component = bytes.subarray(start, at);
+    if (
+      component.length === 0 ||
+      component.includes(0) ||
+      (component.length === 1 && component[0] === 0x2e) ||
+      (component.length === 2 && component[0] === 0x2e && component[1] === 0x2e)
+    ) {
+      return false;
+    }
+    start = at + 1;
+  }
+  return true;
+};
+
+/**
+ * The document's own rules, as sealantd's `MetaDocument::decode` enforces them before a restore
+ * writes anything: a format it reads, every path plain and relative with raw bytes that agree
+ * with its key, a mode on everything but a symlink, hardlink groups of two or more files of the
+ * document, shared links from a file of the document to a plain relative member. The reason, or
+ * null when the document restores.
+ */
+const metaDocumentProblem = (bytes: Uint8Array): string | null => {
+  let document: typeof MetaDocument.Type;
+  try {
+    document = Schema.decodeUnknownSync(MetaDocument)(
+      JSON.parse(Buffer.from(bytes).toString("utf8")),
+    );
+  } catch (cause) {
+    return cause instanceof Error ? cause.message : String(cause);
+  }
+  if (document.format < 1 || document.format > WORKTREE_META_FORMAT) {
+    return `format ${document.format}; Mend reads up to ${WORKTREE_META_FORMAT}`;
+  }
+  const kinds = new Map<string, string>();
+  for (const entry of document.entries) {
+    const bytesOfPath = bytesOfPair(entry.path, entry.raw_path);
+    if (bytesOfPath === null || !isPlainRelative(bytesOfPath))
+      return `path ${JSON.stringify(entry.path)}`;
+    if (entry.kind !== "symlink" && entry.mode === undefined) {
+      return `${JSON.stringify(entry.path)} has no mode`;
+    }
+    kinds.set(entry.path, entry.kind);
+  }
+  const isFile = (key: string) => kinds.get(key) === "file";
+  for (const group of document.hardlinks ?? []) {
+    if (group.length < 2 || !group.every(isFile)) {
+      return `hardlink group ${JSON.stringify(group)} does not name files of the document`;
+    }
+  }
+  for (const link of document.shared ?? []) {
+    const member = bytesOfPair(link.member, link.raw_member);
+    if (!isFile(link.path) || member === null || member.length === 0 || !isPlainRelative(member)) {
+      return `shared link ${JSON.stringify(link)}`;
+    }
+  }
+  return null;
+};
+
+/**
+ * Establish that a workspace section's worktree metadata document restores, as sealantd's
+ * materializer reads it: a format Mend reads, packs among the section's own, every chunk in one
+ * of them, the chunks adding up to `size` bytes whose sha256 is `sha256`, and a document that
+ * decodes under its own rules. Reads the listed packs' indexes and each chunk by ranged GET.
+ */
+export const verifyWorktreeMeta = (
+  section: WorkspaceSection,
+  options?: { readonly sizes?: ReadonlyMap<string, number> },
+): Effect.Effect<void, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    const meta = section.worktree_meta;
+    if (meta === undefined) return;
+    const key = `worktree_meta ${meta.sha256}`;
+    const fail = (reason: string) => Effect.fail(new CaptureFormatError({ key, reason }));
+    if (meta.format < 1 || meta.format > WORKTREE_META_FORMAT) {
+      return yield* fail(`format ${meta.format}; Mend reads up to ${WORKTREE_META_FORMAT}`);
+    }
+    if (!Number.isSafeInteger(meta.size) || meta.size < 0) return yield* fail(`size ${meta.size}`);
+    if (!HEX64.test(meta.sha256)) return yield* fail("sha256 is not a sha256 digest");
+    const outside = meta.packs.filter((pack) => !section.packs.includes(pack));
+    if (outside.length > 0) {
+      return yield* fail(`packs not among the section's: ${outside.slice(0, 3).join(", ")}`);
+    }
+    const store = yield* BlobStore;
+    const where = new Map<string, { readonly pack: string; readonly entry: PackIndexEntry }>();
+    for (const pack of new Set(meta.packs)) {
+      const size = options?.sizes?.get(pack) ?? (yield* store.head(pack))?.size;
+      if (size === undefined) return yield* new BlobNotFoundError({ key: pack });
+      for (const entry of yield* readPackIndexRemote(pack, size)) {
+        if (!where.has(entry.hash)) where.set(entry.hash, { pack, entry });
+      }
+    }
+    let total = 0;
+    for (const hash of meta.chunks) {
+      const location = where.get(hash);
+      if (location === undefined) return yield* new ChunkNotFoundError({ hash });
+      total += location.entry.size;
+    }
+    if (total !== meta.size) {
+      return yield* fail(`its chunks hold ${total} bytes, the section says ${meta.size}`);
+    }
+    const parts: Array<Uint8Array> = [];
+    for (const hash of meta.chunks) {
+      const location = where.get(hash);
+      if (location === undefined) return yield* new ChunkNotFoundError({ hash });
+      const compressed = yield* store.getRange(
+        location.pack,
+        location.entry.offset,
+        location.entry.length,
+      );
+      parts.push(yield* readChunk(location.pack, compressed, { ...location.entry, offset: 0 }));
+    }
+    const document = Buffer.concat(parts);
+    const actual = sha256Hex(document);
+    if (actual !== meta.sha256) {
+      return yield* new CaptureIntegrityError({ key, expected: meta.sha256, actual });
+    }
+    const problem = metaDocumentProblem(document);
+    if (problem !== null) return yield* fail(`document: ${problem}`);
+  });
+
 // ─── What a capture row names ───────────────────────────────────────────────
 
 /**
@@ -1728,7 +1903,18 @@ export const keysOfSections = (sections: unknown): ReadonlyArray<string> => {
       ...rowTreeOf(section),
       ...rowDirPacksOf(section),
     ]),
+    // The worktree metadata document's packs are the workspace section's own (sealantd), and
+    // register refuses one that is not; named anyway, since keeping one alive is never the loss.
+    ...rowPacksOf(worktreeMetaOf(sections)),
   ];
+};
+
+/** A row's `workspace.worktree_meta`, whatever it holds. */
+const worktreeMetaOf = (sections: object): unknown => {
+  const workspace: unknown = Reflect.get(sections, "workspace");
+  return typeof workspace === "object" && workspace !== null
+    ? Reflect.get(workspace, "worktree_meta")
+    : undefined;
 };
 
 /**
