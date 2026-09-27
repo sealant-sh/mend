@@ -9,6 +9,7 @@ import {
   WorktreeLeasedError,
   type CaptureSummaryRow,
   type PackState,
+  type SealedCompletion,
 } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
 import { Effect, Layer } from "effect";
@@ -29,6 +30,8 @@ export interface MemoryCaptureStore {
   readonly captures: Map<string, CaptureRow>;
   /** `capture_tombstones`: key → owning worktree and whether the bytes are gone. */
   readonly tombstones: Map<string, { worktreeId: string; deleted: boolean }>;
+  /** `capture_seals`: `<worktree>:<epoch>` → the sealed completion. */
+  readonly seals: Map<string, SealedCompletion>;
   /** `capture_deletion_claims`: key → token → when the claim lapses (store clock, ms). */
   readonly claims: Map<string, Map<string, number>>;
   readonly packs: Map<string, PackRow>;
@@ -54,6 +57,7 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
   const chains = new Map<string, MemoryChain>();
   const tombstones = new Map<string, { worktreeId: string; deleted: boolean }>();
   const claims = new Map<string, Map<string, number>>();
+  const seals = new Map<string, SealedCompletion>();
   /** A live deletion claim on `key`: some pass may still delete its bytes. */
   const claimed = (key: string) =>
     [...(claims.get(key)?.values() ?? [])].some((expiresAt) => expiresAt > clock.now());
@@ -148,6 +152,22 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
               claims.delete(key);
             }
           }
+          const sealKey = `${capture.worktreeId}:${capture.epoch}`;
+          const sealed = seals.get(sealKey);
+          if (
+            capture.seal !== undefined &&
+            lease?.executorId === capture.seal.executorId &&
+            (sealed === undefined || sealed.n < capture.n)
+          ) {
+            seals.set(sealKey, {
+              worktreeId: capture.worktreeId,
+              epoch: capture.epoch,
+              executorId: capture.seal.executorId,
+              captureId: capture.id,
+              n: capture.n,
+              sealedAt: new Date(clock.now()),
+            });
+          }
           captures.set(capture.id, {
             id: capture.id,
             worktreeId: capture.worktreeId,
@@ -231,6 +251,18 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
           head: chain.headCapture === null ? null : (captures.get(chain.headCapture) ?? null),
         };
       }),
+    sealedCompletion: (worktreeId, executorId, epoch) =>
+      Effect.sync(
+        () =>
+          [...seals.values()]
+            .filter(
+              (seal) =>
+                seal.worktreeId === worktreeId &&
+                seal.executorId === executorId &&
+                (epoch === undefined || seal.epoch === epoch),
+            )
+            .toSorted((a, b) => b.epoch - a.epoch)[0] ?? null,
+      ),
     listChain: (worktreeId) =>
       Effect.sync(() =>
         [...captures.values()]
@@ -345,5 +377,5 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
       }),
   });
 
-  return { layer, clock, leases, chains, captures, packs, summaries, tombstones, claims };
+  return { layer, clock, leases, chains, captures, packs, summaries, tombstones, claims, seals };
 };

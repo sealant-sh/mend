@@ -722,3 +722,15 @@ Mend-side details the decision record left open, decided in this ADR:
       document that holds to sealantd's `MetaDocument::decode` rules (plain relative paths, raw
       bytes agreeing with their keys, modes, hardlink groups and shared links naming files of the
       document). A failure is 422 `unrestorable` or `missing-objects`.
+    - **A completed final flush is a fact on the chain** (cross-repo decision 1; migration 0080).
+      sealantd, when a final flush completes (everything shipped, writers stopped), registers a
+      sealing capture whose manifest carries `final_seal: {complete: true, epoch, executor}` at the
+      top level. The register CAS records it in `capture_seals` (one per worktree and epoch, the
+      newest sealing capture of the epoch) in the same statement that lands the capture, so a seal
+      exists only for a capture on a chain registered up to it, and only while the lease names that
+      executor. The channel passes a seal only when it is `complete`, its `epoch` is the one the
+      capture registers under and its `executor` is the executor the session token is scoped to; any
+      other seal registers the capture and records nothing (logged).
+      `CaptureStoreRepo. sealedCompletion(worktree, executor, epoch?)` reads it: the only store-side
+      evidence that an executor's work is saved, and what Mend attests when it asks Sealant to stop
+      that executor.

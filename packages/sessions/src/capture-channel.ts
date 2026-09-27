@@ -1436,6 +1436,32 @@ export const CaptureChannelLive: Layer.Layer<
           ]),
         ];
 
+        // `final_seal` (cross-repo decision 1): sealantd's word that this executor's final flush
+        // completed. It is recorded with the CAS — so only on a capture that lands on a chain
+        // registered up to it — and only when complete and naming the executor this token is
+        // scoped to and the epoch it registers under. Anything else registers the capture and
+        // seals nothing: the bytes are kept, and no completion is claimed on their behalf.
+        const seal = manifest.final_seal ?? null;
+        const sealHolds =
+          seal !== null &&
+          seal.complete &&
+          seal.epoch === input.epoch &&
+          seal.executor === scope.executorId;
+        if (seal !== null && !sealHolds) {
+          yield* Effect.logWarning(
+            "capture channel: a final seal that does not hold · registered without it",
+          ).pipe(
+            Effect.annotateLogs({
+              worktreeId,
+              n: input.n,
+              captureId: input.capture_id,
+              epoch: input.epoch,
+              executorId: scope.executorId,
+              seal: JSON.stringify(seal),
+            }),
+          );
+        }
+
         // One attempt: read the guards and the tombstones, check the bucket and the trees, then
         // the CAS under those guards. A retention pass that condemned anything named here after
         // the read makes the CAS miss (`guard_moved`), and the next attempt sees its tombstones.
@@ -1579,6 +1605,7 @@ export const CaptureChannelLive: Layer.Layer<
           }
           const outcome = yield* repo
             .register({
+              ...(sealHolds ? { seal: { executorId: scope.executorId } } : {}),
               worktreeId,
               id: input.capture_id,
               n: input.n,

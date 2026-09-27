@@ -19,7 +19,8 @@ import { git, type GitError } from "./git.ts";
  * `sections.workspace.{root, packs, format?, dir_packs?}`,
  * `sections.bulk.{root, packs, platform, format?, dir_packs?} | "pending"`,
  * `sections.other_bulk?.<platform>` (each a ready bulk section),
- * `checkpoint?.{ordinal, sha, ref}`. Unknown fields pass through undecoded.
+ * `checkpoint?.{ordinal, sha, ref}`, `sections.workspace.worktree_meta?` (validated at register),
+ * `final_seal?.{complete, epoch, executor}`. Unknown fields are not decoded.
  *
  * The chunked sections are versioned one by one (sealantd `manifest.rs`, PR #99 "Dir packs"),
  * because one manifest can hold both: a capture staged over a head an older executor wrote
@@ -145,6 +146,20 @@ export const CaptureSections = Schema.Struct({
 });
 export type CaptureSections = typeof CaptureSections.Type;
 
+/**
+ * `final_seal` (cross-repo decision 1, 2026-09-28): sealantd, when a final flush completes —
+ * everything shipped, writers stopped — registers a sealing capture carrying it. `executor` is the
+ * executor sealantd was planned as, `epoch` the lease epoch it held. Register records it on the
+ * chain only when it is complete and names the registering executor and epoch; it is then the
+ * only store-side evidence that the executor's work is saved.
+ */
+export const FinalSeal = Schema.Struct({
+  complete: Schema.Boolean,
+  epoch: Schema.Int,
+  executor: Schema.String,
+});
+export type FinalSeal = typeof FinalSeal.Type;
+
 export const CaptureManifest = Schema.Struct({
   worktree_id: Schema.String,
   n: Schema.Int,
@@ -155,6 +170,7 @@ export const CaptureManifest = Schema.Struct({
   created_at: Schema.String,
   sections: CaptureSections,
   checkpoint: Schema.optionalKey(CaptureCheckpoint),
+  final_seal: Schema.optionalKey(FinalSeal),
 });
 export type CaptureManifest = typeof CaptureManifest.Type;
 

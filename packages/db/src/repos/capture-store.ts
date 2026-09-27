@@ -95,6 +95,25 @@ export interface RegisterCapture {
    * bucket again (uploaded anew): the CAS lifts their tombstones.
    */
   readonly revive?: ReadonlyArray<string>;
+  /**
+   * The capture's `final_seal`, validated by the caller (complete, this epoch, this executor):
+   * the CAS records it when it lands and the lease names `executorId` — so a seal exists only
+   * for a capture registered on a contiguous chain. Absent: the capture seals nothing.
+   */
+  readonly seal?: { readonly executorId: string };
+}
+
+/**
+ * A completed final flush, as the store holds it (migration 0080): the executor, the epoch it
+ * held, and the sealing capture — what "saved" rests on.
+ */
+export interface SealedCompletion {
+  readonly worktreeId: WorktreeId;
+  readonly epoch: number;
+  readonly executorId: string;
+  readonly captureId: string;
+  readonly n: number;
+  readonly sealedAt: Date;
 }
 
 export interface ChainGuard {
@@ -206,6 +225,16 @@ export class CaptureStoreRepo extends Context.Service<
     readonly setGitFsck: (captureId: string, outcome: CaptureGitFsck) => Effect.Effect<boolean>;
     readonly leaseOf: (worktreeId: WorktreeId) => Effect.Effect<WorktreeLease | null>;
     readonly headOf: (worktreeId: WorktreeId) => Effect.Effect<ChainHead | null>;
+    /**
+     * The sealed completion of `executorId`'s final flush on this worktree: under `epoch` when
+     * given, else the newest epoch it sealed. Null when that executor never registered a sealed
+     * capture — then nothing says its final flush completed.
+     */
+    readonly sealedCompletion: (
+      worktreeId: WorktreeId,
+      executorId: string,
+      epoch?: number,
+    ) => Effect.Effect<SealedCompletion | null>;
     /** Every registered capture of the worktree, oldest first. */
     readonly listChain: (worktreeId: WorktreeId) => Effect.Effect<ReadonlyArray<CaptureRow>>;
     readonly captureById: (captureId: string) => Effect.Effect<CaptureRow | null>;
@@ -351,6 +380,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       // A condemned key comes back only once its bytes are gone and no pass holds a live claim
       // on it: a pass still holding one may delete it after this lands (migration 0080).
       const revive = JSON.stringify(capture.revive ?? []);
+      const sealExecutor = capture.seal?.executorId ?? "";
       const rows = yield* sql<{ readonly id: string }>`
         WITH expected AS (
           SELECT e.worktree_id, e.guard
@@ -384,6 +414,19 @@ export const CaptureStoreRepoLive: Layer.Layer<
                SELECT epoch FROM worktree_leases
                 WHERE worktree_id = ${capture.worktreeId} AND expires_at > now())
            RETURNING worktree_id
+        ),
+        sealed AS (
+          INSERT INTO capture_seals (worktree_id, epoch, executor_id, capture_id, n)
+          SELECT ${capture.worktreeId}, ${capture.epoch}, ${sealExecutor}, ${capture.id}, ${capture.n}
+            FROM ch
+           WHERE ${capture.seal !== undefined}::boolean
+             AND ${sealExecutor} = (
+               SELECT executor_id FROM worktree_leases WHERE worktree_id = ${capture.worktreeId})
+          ON CONFLICT (worktree_id, epoch) DO UPDATE
+             SET executor_id = EXCLUDED.executor_id, capture_id = EXCLUDED.capture_id,
+                 n = EXCLUDED.n, sealed_at = now()
+           WHERE capture_seals.n < EXCLUDED.n
+          RETURNING worktree_id
         ),
         revived AS (
           DELETE FROM capture_tombstones t
@@ -527,6 +570,38 @@ export const CaptureStoreRepoLive: Layer.Layer<
         headEpoch: Number(chain.headEpoch),
         head,
       };
+    });
+
+    const sealedCompletion = Effect.fn("CaptureStoreRepo.sealedCompletion")(function* (
+      worktreeId: WorktreeId,
+      executorId: string,
+      epoch?: number,
+    ) {
+      const [row] = yield* sql<{
+        readonly worktreeId: WorktreeId;
+        readonly epoch: number;
+        readonly executorId: string;
+        readonly captureId: string;
+        readonly n: number;
+        readonly sealedAt: Date;
+      }>`
+        SELECT worktree_id, epoch::int AS epoch, executor_id, capture_id, n, sealed_at
+          FROM capture_seals
+         WHERE worktree_id = ${worktreeId}
+           AND executor_id = ${executorId}
+           AND (${epoch === undefined}::boolean OR epoch = ${epoch ?? 0})
+         ORDER BY epoch DESC
+         LIMIT 1`.pipe(Effect.orDie);
+      return row === undefined
+        ? null
+        : {
+            worktreeId: row.worktreeId,
+            epoch: Number(row.epoch),
+            executorId: row.executorId,
+            captureId: row.captureId,
+            n: Number(row.n),
+            sealedAt: row.sealedAt,
+          };
     });
 
     const listChain = Effect.fn("CaptureStoreRepo.listChain")(function* (worktreeId: WorktreeId) {
@@ -750,6 +825,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       setGitFsck,
       leaseOf,
       headOf,
+      sealedCompletion,
       listChain,
       captureById,
       recordPacks,

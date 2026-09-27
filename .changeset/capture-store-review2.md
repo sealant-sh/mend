@@ -16,3 +16,7 @@ Register validates the manifest as it is stored — a request carrying a differe
 and refuses a capture whose worktree metadata document would not restore: an unread format, packs
 outside the workspace section, chunks that do not add up to its size and digest, or a document
 sealantd would reject.
+
+A capture whose manifest carries sealantd's `final_seal` (a completed final flush) records it on the
+chain for that executor and epoch (migration 0080), when it is complete and names the executor and
+epoch that registered it. It is what Mend reads as "saved".

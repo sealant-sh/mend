@@ -546,6 +546,66 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     expect(result.revived).toBe("ok");
   });
 
+  it("seals (0080): the register CAS records a seal only when it lands and the lease names its executor; the newest epoch reads first", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const worktreeId = yield* freshWorktree;
+        const first = yield* repo.claim(worktreeId, "exec-a", 3600);
+        const zero = captureInput(worktreeId, 0, null, first.epoch);
+        yield* repo.register({ ...zero, seal: { executorId: "exec-a" } });
+        // A register whose CAS misses (a stale parent) seals nothing.
+        const missed = yield* reasonOf(
+          repo.register({
+            ...captureInput(worktreeId, 1, "not-the-head", first.epoch),
+            seal: { executorId: "exec-a" },
+          }),
+        );
+        // A seal naming an executor the lease does not name lands the capture, not the seal.
+        const one = captureInput(worktreeId, 1, zero.id, first.epoch);
+        yield* repo.register({ ...one, seal: { executorId: "exec-b" } });
+        const forB = yield* repo.sealedCompletion(worktreeId, "exec-b");
+        // The same executor seals again later in the epoch: the newer capture stands.
+        const two = captureInput(worktreeId, 2, one.id, first.epoch);
+        yield* repo.register({ ...two, seal: { executorId: "exec-a" } });
+        const inFirst = yield* repo.sealedCompletion(worktreeId, "exec-a", first.epoch);
+        // A new epoch, the same executor: the newest epoch reads first; the old one still reads.
+        yield* repo.release(worktreeId, first.epoch);
+        const second = yield* repo.claim(worktreeId, "exec-a", 3600);
+        const three = captureInput(worktreeId, 3, two.id, second.epoch);
+        yield* repo.register({ ...three, seal: { executorId: "exec-a" } });
+        const newest = yield* repo.sealedCompletion(worktreeId, "exec-a");
+        const old = yield* repo.sealedCompletion(worktreeId, "exec-a", first.epoch);
+        const none = yield* repo.sealedCompletion(worktreeId, "exec-a", second.epoch + 1);
+        return {
+          missed,
+          forB,
+          inFirst,
+          newest,
+          old,
+          none,
+          ids: { two: two.id, three: three.id },
+          epochs: { first: first.epoch, second: second.epoch },
+        };
+      }),
+    );
+    expect(result.missed).toBe("wrong_parent");
+    expect(result.forB).toBeNull();
+    expect(result.inFirst).toMatchObject({
+      epoch: result.epochs.first,
+      captureId: result.ids.two,
+      n: 2,
+      executorId: "exec-a",
+    });
+    expect(result.newest).toMatchObject({
+      epoch: result.epochs.second,
+      captureId: result.ids.three,
+      n: 3,
+    });
+    expect(result.old?.captureId).toBe(result.ids.two);
+    expect(result.none).toBeNull();
+  });
+
   it("guard (0076): a register naming another chain's objects bumps that chain's guard, and misses if it moved", async () => {
     const result = await run(
       Effect.gen(function* () {

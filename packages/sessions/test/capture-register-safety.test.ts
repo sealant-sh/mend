@@ -552,3 +552,81 @@ describe("capture.register reads the worktree metadata a restore needs (review 2
     expect(result).toEqual({ said: "CaptureRouteError:bad-request", head: null });
   });
 });
+
+describe("capture.register records a completed final flush on the chain (cross-repo decision 1)", () => {
+  const sealedRegister = async (
+    seal: object | undefined,
+    options?: { readonly executorId?: string },
+  ) => {
+    const wt = WorktreeId.make("wt-seal");
+    const world = worldOf();
+    const zero = buildManifest({ worktreeId: wt, epoch: 1, n: 0, parent: null, kind: "auto" });
+    const base = buildManifest({ worktreeId: wt, epoch: 1, n: 1, parent: zero.id, kind: "final" });
+    // The sealing capture: the final capture's manifest, carrying `final_seal`.
+    const manifest = seal === undefined ? base.manifest : { ...base.manifest, final_seal: seal };
+    const bytes = utf8(JSON.stringify(manifest));
+    const id = sha256Hex(bytes);
+    const key = captureKeys(wt, 1).manifest(id);
+    return Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.init(wt);
+        yield* repo.claim(wt, options?.executorId ?? "executor");
+        yield* uploadObjects(
+          new Map([
+            [zero.key, zero.bytes],
+            [key, bytes],
+          ]),
+        );
+        const api = yield* apiOf(wt, options?.executorId ?? "executor");
+        yield* api.register(registerInput(zero));
+        const said = yield* outcome(
+          api.register({
+            worktree_id: wt,
+            epoch: 1,
+            n: 1,
+            parent: zero.id,
+            capture_id: id,
+            manifest_key: key,
+            manifest: JSON.parse(JSON.stringify(manifest)),
+          }),
+        );
+        return {
+          said,
+          head: (yield* repo.headOf(wt))?.head?.id,
+          id,
+          sealed: yield* repo.sealedCompletion(wt, options?.executorId ?? "executor", 1),
+          newest: yield* repo.sealedCompletion(wt, options?.executorId ?? "executor"),
+        };
+      }).pipe(Effect.provide(world.layer)),
+    );
+  };
+
+  it("records a complete seal naming this executor and epoch, against the sealing capture", async () => {
+    const result = await sealedRegister({ complete: true, epoch: 1, executor: "executor" });
+    expect(result.said).toBe("ok");
+    expect(result.head).toBe(result.id);
+    expect(result.sealed).toMatchObject({
+      epoch: 1,
+      executorId: "executor",
+      captureId: result.id,
+      n: 1,
+    });
+    expect(result.newest?.captureId).toBe(result.id);
+  });
+
+  it("registers the capture but seals nothing when the seal is incomplete, of another epoch or another executor, or absent", async () => {
+    for (const seal of [
+      { complete: false, epoch: 1, executor: "executor" },
+      { complete: true, epoch: 2, executor: "executor" },
+      { complete: true, epoch: 1, executor: "someone-else" },
+      undefined,
+    ]) {
+      const result = await sealedRegister(seal);
+      expect(result.said, JSON.stringify(seal)).toBe("ok");
+      expect(result.head).toBe(result.id);
+      expect(result.sealed, JSON.stringify(seal)).toBeNull();
+      expect(result.newest).toBeNull();
+    }
+  });
+});

@@ -1938,6 +1938,29 @@ export const captureDeletionClaims = pgTable(
   ],
 );
 
+/**
+ * The `final_seal` a registered capture carried (migration 0080): sealantd's word that the final
+ * flush of `executorId` under `epoch` completed. One per worktree and epoch.
+ */
+export const captureSeals = pgTable(
+  "capture_seals",
+  {
+    worktreeId: text()
+      .$type<WorktreeId>()
+      .notNull()
+      .references(() => worktrees.id, { onDelete: "cascade" }),
+    epoch: bigint({ mode: "number" }).notNull(),
+    executorId: text().notNull(),
+    captureId: text().notNull(),
+    n: integer().notNull(),
+    sealedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.worktreeId, table.epoch] }),
+    index("capture_seals_executor_idx").on(table.worktreeId, table.executorId),
+  ],
+);
+
 /** One row per registered capture; `id` is the sha256 of the manifest bytes. */
 export const captures = pgTable(
   "captures",
