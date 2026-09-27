@@ -5,7 +5,7 @@
 
 import { useRouter } from "expo-router";
 import { useState } from "react";
-import { Pressable, StyleSheet, TextInput, View } from "react-native";
+import { Pressable, StyleSheet, Switch, TextInput, View } from "react-native";
 
 import { EvButton } from "@/components/button";
 import { Panel } from "@/components/panel";
@@ -13,6 +13,11 @@ import { Screen, ScreenHeader } from "@/components/screen";
 import { StatusWord } from "@/components/status";
 import { MonoText, UiText } from "@/components/typography";
 import { clearConfig, saveConfig, useConfig } from "@/data/live";
+import {
+  type NotificationSettingsDto,
+  useNotificationSettings,
+  useSetNotificationSettings,
+} from "@/data/notification-settings";
 import { enablePushNotifications } from "@/data/notifications";
 import type { ThemePreference } from "@/data/preferences";
 import { setDisplayPreferences, TEXT_SCALES, useDisplayPreferences } from "@/data/preferences";
@@ -52,6 +57,94 @@ function Segmented<T extends string | number>({
           </Pressable>
         );
       })}
+    </View>
+  );
+}
+
+/** The switches, in the order a person reads them; each hint says what it covers. */
+const NOTIFICATION_SWITCHES: ReadonlyArray<{
+  readonly key: keyof NotificationSettingsDto;
+  readonly label: string;
+  readonly hint: string;
+}> = [
+  {
+    key: "turnFinished",
+    label: "Turn finished",
+    hint: "the agent answered · the session completed",
+  },
+  { key: "needsInput", label: "Needs your input", hint: "a question or an approval waits on you" },
+  { key: "failed", label: "Failed", hint: "a turn or the session failed" },
+  {
+    key: "slackSessions",
+    label: "Sessions started from Slack",
+    hint: "off · the thread already says it; failures still push",
+  },
+];
+
+/** What this account hears about, per kind. Every phone of the account shares it. */
+function NotificationSwitches() {
+  const { colors } = useEvidenceTheme();
+  const settings = useNotificationSettings(true);
+  const save = useSetNotificationSettings();
+  if (settings.data === undefined) {
+    return settings.isError ? (
+      <View style={{ gap: 8 }}>
+        <MonoText tone="danger">notification settings · could not be read</MonoText>
+        <MonoText size={11} tone="ink2">
+          {settings.error.message}
+        </MonoText>
+        <View style={{ flexDirection: "row" }}>
+          <EvButton
+            size="sm"
+            variant="outline"
+            label={settings.isFetching ? "retrying…" : "Retry"}
+            disabled={settings.isFetching}
+            onPress={() => void settings.refetch()}
+          />
+        </View>
+      </View>
+    ) : (
+      <MonoText tone="faint">reading notification settings</MonoText>
+    );
+  }
+  const current = settings.data;
+  return (
+    <View>
+      {NOTIFICATION_SWITCHES.map((row, index) => (
+        <View
+          key={row.key}
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            gap: 12,
+            paddingVertical: 10,
+            borderTopWidth: index === 0 ? 0 : StyleSheet.hairlineWidth,
+            borderTopColor: colors.faintRule,
+          }}
+        >
+          <View style={{ flex: 1, gap: 2 }}>
+            <UiText>{row.label}</UiText>
+            <MonoText size={11} tone="faint">
+              {row.hint}
+            </MonoText>
+          </View>
+          <Switch
+            value={current[row.key]}
+            onValueChange={(on) => save.mutate({ ...current, [row.key]: on })}
+            trackColor={{ false: colors.rule, true: colors.accent }}
+            ios_backgroundColor={colors.rule}
+            accessibilityLabel={row.label}
+          />
+        </View>
+      ))}
+      {save.isError && (
+        <MonoText size={11} tone="danger">
+          not saved · {save.error.message}
+        </MonoText>
+      )}
+      <MonoText size={11} tone="faint">
+        A push about the session on screen stays silent.
+      </MonoText>
     </View>
   );
 }
@@ -303,7 +396,9 @@ export default function SettingsScreen() {
       </Panel>
       <Panel>
         <View style={{ padding: 16, gap: 12 }}>
-          <UiText>Notifications — a push when a session settles or waits on you</UiText>
+          <UiText>
+            Notifications — a push when a turn finishes, a session waits on you, or fails
+          </UiText>
           <View style={{ flexDirection: "row", alignItems: "center", gap: 12 }}>
             <EvButton
               variant="outline"
@@ -330,6 +425,7 @@ export default function SettingsScreen() {
             {push.state === "unavailable" && <StatusWord tone="breakage" word="unavailable" />}
           </View>
           {push.state === "unavailable" && <MonoText>{push.reason}</MonoText>}
+          {paired && <NotificationSwitches />}
         </View>
       </Panel>
     </Screen>

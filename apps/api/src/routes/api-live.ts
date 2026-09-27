@@ -28,6 +28,7 @@ import {
   BriefsRepo,
   ChangesRepo,
   IssuesRepo,
+  NotificationSettingsRepo,
   PushDevicesRepo,
   RunsRepo,
   UserEvents,
@@ -631,6 +632,18 @@ export const DevicesGroupLive = HttpApiBuilder.group(MendApi, "devices", (handle
         const devices = yield* PushDevicesRepo;
         const caller = yield* CurrentUser;
         yield* devices.removeOwned(caller.user.id, params.token);
+      }),
+    )
+    .handle("notificationSettings", () =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        return yield* (yield* NotificationSettingsRepo).forUser(caller.user.id);
+      }),
+    )
+    .handle("setNotificationSettings", ({ payload }) =>
+      Effect.gen(function* () {
+        const caller = yield* CurrentUser;
+        return yield* (yield* NotificationSettingsRepo).set(caller.user.id, payload);
       }),
     ),
 );

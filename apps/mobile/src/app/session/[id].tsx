@@ -3,7 +3,7 @@
 // their transcript projection and raw TTY composer.
 
 import { LegendList } from "@legendapp/list/react-native";
-import { Stack, useLocalSearchParams, useRouter } from "expo-router";
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, View } from "react-native";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
@@ -28,6 +28,7 @@ import {
   useTranscript,
   type TranscriptEventDto,
 } from "@/data/live";
+import { watchSession } from "@/data/notification-presence";
 import { useTtySocket, type TtyTarget } from "@/data/tty-socket";
 import { radius, spacing, useEvidenceTheme } from "@/theme/evidence";
 
@@ -353,6 +354,8 @@ function PtyConversation({
 export default function SessionScreen() {
   const { id, mode } = useLocalSearchParams<{ id: string; mode?: string }>();
   const router = useRouter();
+  // While this screen has focus, a push about this session is already on screen.
+  useFocusEffect(useCallback(() => watchSession(id), [id]));
   const { colors } = useEvidenceTheme();
   const insets = useSafeAreaInsets();
   const detail = useSession(id);

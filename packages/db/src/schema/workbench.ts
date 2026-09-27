@@ -566,6 +566,16 @@ export const userGitAuthor = pgTable("user_git_author", {
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 
+/** What each person hears about on their phones (packages/jobs/src/session-notifier.ts). */
+export const userNotificationSettings = pgTable("user_notification_settings", {
+  userId: text().primaryKey(),
+  slackSessions: boolean().notNull().default(false),
+  turnFinished: boolean().notNull().default(true),
+  needsInput: boolean().notNull().default(true),
+  failed: boolean().notNull().default(true),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
 export const userDotfiles = pgTable("user_dotfiles", {
   userId: text().primaryKey(),
   repository: jsonbOf(DotfilesRepository),

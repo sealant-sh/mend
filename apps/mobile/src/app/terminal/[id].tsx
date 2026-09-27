@@ -5,8 +5,8 @@
 // stuck to the top of the keyboard.
 
 import * as Clipboard from "expo-clipboard";
-import { Stack, useLocalSearchParams, useRouter } from "expo-router";
-import { useEffect, useRef, useState } from "react";
+import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Alert, Pressable, View } from "react-native";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
@@ -14,6 +14,7 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { GhosttyTerminal } from "@/components/ghostty-terminal";
 import { MonoText } from "@/components/typography";
 import { loadConfig, pasteSessionImage, useSessionActions } from "@/data/live";
+import { watchSession } from "@/data/notification-presence";
 import { useEvidenceTheme } from "@/theme/evidence";
 
 const ACCESSORY_HEIGHT = 44;
@@ -55,6 +56,8 @@ const applyCtrl = (data: string): string => {
 export default function TerminalScreen() {
   const { id, process } = useLocalSearchParams<{ id: string; process?: string }>();
   const router = useRouter();
+  // The session's terminal counts as the session on screen: its pushes stay silent here.
+  useFocusEffect(useCallback(() => watchSession(id), [id]));
   const { stopShell } = useSessionActions();
   const { colors } = useEvidenceTheme();
   const insets = useSafeAreaInsets();
