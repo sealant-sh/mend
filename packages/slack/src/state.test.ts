@@ -104,6 +104,24 @@ describe("the state a thread hears", () => {
     expect(slackSessionState({ status: "idle", currentAgent: null, turns: [] })).toBe("starting");
   });
 
+  it("reads a session still saving its workspace after the stop as its agent ended", () => {
+    const ended = new Date("2026-09-23T11:00:00.000Z");
+    expect(
+      slackSessionState({
+        status: "stopping",
+        currentAgent: agent({ status: "stopped", exitedAt: ended }),
+        turns: [turn(1, "completed")],
+      }),
+    ).toBe("stopped");
+    expect(
+      slackSessionState({
+        status: "stopping",
+        currentAgent: agent({ status: "exited", exitCode: 0, exitedAt: ended }),
+        turns: [],
+      }),
+    ).toBe("completed");
+  });
+
   it("never moves the status message back to starting once it moved on", () => {
     expect(statusMayMove(null, "starting")).toBe(true);
     expect(statusMayMove("starting", "running")).toBe(true);

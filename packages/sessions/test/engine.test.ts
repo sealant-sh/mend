@@ -133,6 +133,7 @@ import {
 import {
   AgentBridge,
   BlobStoreFsLive,
+  type CaptureKind,
   captureKeys,
   DeploymentConfig,
   type ExecutorTransport,
@@ -1605,7 +1606,12 @@ const sessionsLayer = (world: World) => {
       Effect.sync(() => update(id, { lastSeenSequence: sequence })),
     notifyProgress: () => Effect.void,
     settle: (id, outcome, summary) =>
-      Effect.sync(() => update(id, { status: outcome, summary, settledAt: now() })),
+      Effect.sync(() =>
+        // A stop drain holds the workspace: `stopping`, not settled (SessionsRepo.settle).
+        world.sessions.get(id)?.captureDrain === "stop"
+          ? update(id, { status: "stopping", summary, settledAt: null })
+          : update(id, { status: outcome, summary, settledAt: now() }),
+      ),
     reopen: (id, status) =>
       Effect.sync(() => update(id, { status, settledAt: null, idleStoppedAt: null })),
     claimIdleStop: () => Effect.succeed(true),
@@ -1636,10 +1642,14 @@ const sessionsLayer = (world: World) => {
     beginCaptureDrain: (id, reason, at) =>
       Effect.sync(() => {
         const current = world.sessions.get(id);
+        const drain = current?.captureDrain ?? reason;
         update(id, {
-          captureDrain: current?.captureDrain ?? reason,
+          captureDrain: drain,
           captureDrainRequestedAt: current?.captureDrainRequestedAt ?? at,
           captureDrainProgressAt: current?.captureDrainProgressAt ?? at,
+          ...(drain === "stop" && current?.settledAt != null
+            ? { status: "stopping" as const, settledAt: null }
+            : {}),
         });
       }),
     planRelaunch: (id, resume, at) =>
@@ -1656,7 +1666,12 @@ const sessionsLayer = (world: World) => {
     stopCaptureDrain: (id) =>
       Effect.sync(() => {
         world.relaunches.delete(id);
-        if (world.sessions.get(id)?.captureDrain != null) update(id, { captureDrain: "stop" });
+        const current = world.sessions.get(id);
+        if (current?.captureDrain == null) return;
+        update(id, {
+          captureDrain: "stop",
+          ...(current.settledAt !== null ? { status: "stopping" as const, settledAt: null } : {}),
+        });
       }),
     relaunchOf: (id) => Effect.sync(() => world.relaunches.get(id) ?? null),
     markFinalFlush: (id, workspaceId) =>
@@ -2037,6 +2052,8 @@ const testDrainPolicy = (overrides: Partial<CaptureDrainPolicyShape> = {}) =>
     executorMaxSeconds: null,
     deadlineMarginSeconds: 300,
     drainEstimateSeconds: 300,
+    keptRetryFirst: Duration.seconds(10),
+    keptRetryMax: Duration.minutes(5),
     ...overrides,
   });
 
@@ -5750,6 +5767,7 @@ const shipHarnessCapture = (
   worktreeId: WorktreeId,
   epoch: number,
   rolloutId: string,
+  kind: CaptureKind = "turn",
 ) =>
   Effect.gen(function* () {
     const chain = memory.chains.get(worktreeId);
@@ -5772,7 +5790,7 @@ const shipHarnessCapture = (
       parent: parent?.id ?? null,
       epoch,
       seq: 100,
-      kind: "turn",
+      kind,
       git: {
         packs: parent === null ? [] : (parent.sections as { git: { packs: string[] } }).git.packs,
         refs: {},
@@ -5780,6 +5798,8 @@ const shipHarnessCapture = (
         fsck: "verified",
       },
       workspace: { root: snapshot.root, packs: snapshot.packs },
+      // A final flush snapshots the bulk class too (empty here): its section is never pending.
+      ...(kind === "final" ? { bulk: { root: "", packs: [], platform: "linux-x86_64" } } : {}),
     });
     yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]])).pipe(
       Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
@@ -5792,7 +5812,7 @@ const shipHarnessCapture = (
       parent: built.manifest.parent,
       epoch,
       seq: 100n,
-      kind: "turn",
+      kind,
       manifestKey: built.key,
       sections: built.manifest.sections,
       gitFsck: "verified",
@@ -8776,6 +8796,224 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
     },
   );
 
+  it(
+    "a stopped session reads `stopping` and is not settled until the platform reports its workspace terminated; a kept one stays `stopping`",
+    { timeout: 20_000 },
+    async () => {
+      const world = makeWorld();
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mend-drain-test-"));
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      let pending = 2;
+      await withEngine(
+        (_world, dir) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, dir);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            // The agent ended; its container still runs and holds what is not saved.
+            const answered = world.sessions.get(session.id);
+            expect(answered?.status).toBe("stopping");
+            expect(answered?.settledAt).toBeNull();
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the drain kept its workspace",
+            );
+            const kept = world.sessions.get(session.id);
+            expect(kept?.status).toBe("stopping");
+            expect(kept?.settledAt).toBeNull();
+            expect(events).not.toContain("workspace-1");
+            // The next sweep: still kept, still not settled.
+            yield* engine.reapCaptureLeases();
+            yield* Effect.sleep(Duration.millis(100));
+            expect(world.sessions.get(session.id)?.status).toBe("stopping");
+            expect(world.sessions.get(session.id)?.settledAt).toBeNull();
+            // It saves after all; the stop is asked, and only the observed termination settles.
+            pending = 0;
+            yield* engine.stop(session.id);
+            yield* until(() => events.includes("workspace-1"), "the workspace stop");
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the settle after the termination",
+            );
+            const settled = world.sessions.get(session.id);
+            expect(settled?.status).toBe("stopped");
+            expect(settled?.captureDrain).toBeNull();
+          }),
+        {
+          fixture: { world, tmp },
+          captured: memory,
+          drainPolicy: { stallSeconds: 1, terminationWait: Duration.seconds(5) },
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            events,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              status: (stopAsked) => (stopAsked ? "stopped" : "ready"),
+              flush: () => Effect.succeed(flushReport(pending, 1)),
+            },
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "saved but its termination not observed: the session stays `stopping` until the platform reports the workspace gone",
+    { timeout: 20_000 },
+    async () => {
+      const world = makeWorld();
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mend-drain-test-"));
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      let gone = false;
+      await withEngine(
+        (_world, dir) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, dir);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(() => events.includes("workspace-1"), "the workspace stop");
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === null,
+              "the drain's end",
+            );
+            // Stop asked, the platform still reports it up: not settled.
+            expect(world.sessions.get(session.id)?.status).toBe("stopping");
+            expect(world.sessions.get(session.id)?.settledAt).toBeNull();
+            yield* engine.reapCaptureLeases();
+            expect(world.sessions.get(session.id)?.settledAt).toBeNull();
+            // The platform reports it gone: the next sweep settles it.
+            gone = true;
+            yield* engine.reapCaptureLeases();
+            const settled = world.sessions.get(session.id);
+            expect(settled?.status).toBe("stopped");
+            expect(settled?.settledAt).not.toBeNull();
+          }),
+        {
+          fixture: { world, tmp },
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            events,
+            undefined,
+            () => gone,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { status: () => "ready", flush: () => Effect.succeed(flushReport(0, 1)) },
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "a kept drain backs off while nothing changes — 10 s doubling to its cap — and looks again at once when something does",
+    { timeout: 20_000 },
+    async () => {
+      const world = makeWorld();
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mend-drain-test-"));
+      const created: Array<CreateOptions> = [];
+      const flushed: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (_world, dir) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, dir);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the drain kept its workspace",
+            );
+            yield* Effect.sleep(Duration.millis(50));
+            const rounds = () => flushed.length;
+            const quiet = (label: string) =>
+              Effect.gen(function* () {
+                const before = rounds();
+                yield* engine.reapCaptureLeases();
+                yield* Effect.sleep(Duration.millis(60));
+                expect(rounds(), label).toBe(before);
+              });
+            const looks = (label: string) =>
+              Effect.gen(function* () {
+                const before = rounds();
+                yield* engine.reapCaptureLeases();
+                yield* until(() => rounds() > before, label);
+                yield* until(
+                  () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+                  `${label} · kept again`,
+                );
+                yield* Effect.sleep(Duration.millis(50));
+              });
+            // Nothing changed: every sweep inside the first wait leaves it alone.
+            yield* quiet("a sweep right after the drain was kept");
+            yield* quiet("a second sweep inside the first wait");
+            // The first wait (300 ms here) has passed: one more round.
+            yield* Effect.sleep(Duration.millis(300));
+            yield* looks("the round after the first wait");
+            // Still nothing changed: the wait doubled, so the first wait is no longer enough.
+            yield* Effect.sleep(Duration.millis(320));
+            yield* quiet("a sweep after one first-wait into the doubled wait");
+            // Something changed (the executor registered a capture on its own): looked at once.
+            yield* shipHarnessCapture(
+              dir,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+            );
+            yield* looks("the round after the head moved");
+            yield* quiet("a sweep right after that round");
+            expect(world.sessions.get(session.id)?.captureDrain).toBe("stop");
+          }),
+        {
+          fixture: { world, tmp },
+          captured: memory,
+          drainPolicy: {
+            stallSeconds: 1,
+            keptRetryFirst: Duration.millis(300),
+            keptRetryMax: Duration.seconds(5),
+          },
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              flushed,
+              // An executor that cannot report `complete`: every round is kept at once.
+              finalCompletion: "unreported",
+              flush: () => Effect.succeed(flushReport(2, 1)),
+            },
+          ),
+        },
+      );
+    },
+  );
+
   it("an executor the platform does not answer for is unknown, never dead: no pickup, no stop; one that answers is paused and left alone; only a 404 is a pickup", async () => {
     const created: Array<CreateOptions> = [];
     const events: string[] = [];
@@ -10120,8 +10358,10 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
       await withEngine(
         (world) =>
           Effect.sync(() => {
-            // Settled, still draining: its executor calls in all the same.
-            expect(world.sessions.get(id)?.settledAt).not.toBeNull();
+            // Stopping, still draining (not settled while its container runs): its executor
+            // calls in all the same.
+            expect(world.sessions.get(id)?.status).toBe("stopping");
+            expect(world.sessions.get(id)?.settledAt).toBeNull();
             expect(servedSocketApis.has(id)).toBe(true);
           }),
         { fixture, captured: memory, sealantLayer: layer() },
@@ -10225,6 +10465,134 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
             () => killed,
             undefined,
             ptyStates,
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "a `docker stop` whose final capture registered last reads `stopped outside Mend · saved at …`, never failed or lost",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const ptyStates = new Map<string, InteractiveSessionStatus>();
+      const memory = makeMemoryCaptureStore();
+      let stopped = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            // sealantd's SIGTERM path: admission closed, processes ended, then the final captures.
+            yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+              "final",
+            );
+            const agent = [...world.processes.values()].find(
+              (process) => process.sessionId === session.id && process.kind === "agent-pty",
+            );
+            if (agent === undefined || agent.sealantSessionId === null) {
+              throw new Error("the launch recorded no agent PTY");
+            }
+            stopped = true;
+            ptyStates.set(agent.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the session's settle",
+            );
+            const settled = world.sessions.get(session.id);
+            expect(settled?.status).toBe("stopped");
+            expect(settled?.summary).toMatch(
+              /^stopped outside Mend · saved at \d\d:\d\d:\d\d UTC$/,
+            );
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            () => stopped,
+            undefined,
+            ptyStates,
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "a kill -9 says when it last saved, that later changes were not saved, and what Mend last read pending — only when it read it after that save",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const ptyStates = new Map<string, InteractiveSessionStatus>();
+      const memory = makeMemoryCaptureStore();
+      let killed = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+              "auto",
+            );
+            yield* Effect.sleep(Duration.millis(20));
+            // A reading after that save: 3 captures still queued in the executor.
+            const reading = yield* engine.readCaptures(session.id);
+            expect(reading?.pending).toBe(3);
+            const agent = [...world.processes.values()].find(
+              (process) => process.sessionId === session.id && process.kind === "agent-pty",
+            );
+            if (agent === undefined || agent.sealantSessionId === null) {
+              throw new Error("the launch recorded no agent PTY");
+            }
+            killed = true;
+            ptyStates.set(agent.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the session's settle",
+            );
+            const settled = world.sessions.get(session.id);
+            expect(settled?.status).toBe("failed");
+            expect(settled?.summary).toMatch(
+              /^executor lost · last saved \d\d:\d\d:\d\d UTC · changes after that were not saved · 3 pending at \d\d:\d\d:\d\d UTC$/,
+            );
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            () => killed,
+            undefined,
+            ptyStates,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { flush: () => Effect.succeed(flushReport(3, 1)) },
           ),
         },
       );

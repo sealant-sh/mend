@@ -193,7 +193,7 @@ export interface SessionDto {
 
 /**
  * The session's status line: its status, then what a stop is still saving when it is
- * (`stopped · saving · 3 left`, `stopped · not saved · 3 pending · workspace kept`).
+ * (`stopping · saving · 3 left`, `stopping · not saved · 3 pending · workspace kept`).
  */
 export const statusLineOf = (dto: SessionDto): string => {
   const drain = dto.captureDrain;

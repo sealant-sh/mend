@@ -278,6 +278,101 @@ export const captureStatusLine = (facts: SessionCaptureFacts): string | null => 
   return null;
 };
 
+/** `16:29:51 UTC`: the time of day every capture line names. */
+const utcTime = (at: Date): string => `${at.toISOString().slice(11, 19)} UTC`;
+
+/**
+ * What Mend knows when an executor ended without Mend asking (a `docker stop`, a SIGKILL, a lost
+ * machine) and the platform confirmed it gone.
+ */
+export interface ExecutorEndFacts {
+  /**
+   * The chain head as registered when the end was observed: its capture kind, its registration
+   * time, and whether its bulk section was still `pending`. Null when nothing ever registered.
+   */
+  readonly head: {
+    readonly kind: string;
+    readonly registeredAt: Date;
+    readonly bulkPending: boolean;
+  } | null;
+  /** When this executor started; null when not recorded. */
+  readonly executorStartedAt: Date | null;
+  /** Mend's last reading of the executor's queue (a flush answer) and when it was taken. */
+  readonly reading: {
+    readonly pending: number | null;
+    readonly pendingBytes: number | null;
+    readonly observedAt: Date | null;
+  };
+}
+
+/**
+ * How such an end reads:
+ * - `saved`: the executor's own final flush registered last — sealantd takes a final capture only
+ *   after it has stopped admitting processes and ended the running ones — this executor took it,
+ *   its bulk section is not pending, and nothing Mend read after it was pending;
+ * - `lost`: anything else. `lastSavedAt` is the head's registration; `pending` is Mend's last
+ *   reading of the queue, only when it was taken by this executor after that registration and
+ *   saw something pending. Mend never counts what it did not observe.
+ */
+export type ExecutorEnd =
+  | { readonly kind: "saved"; readonly savedAt: Date }
+  | {
+      readonly kind: "lost";
+      readonly lastSavedAt: Date | null;
+      readonly pending: { readonly words: string; readonly observedAt: Date } | null;
+    };
+
+export const executorEndOf = (facts: ExecutorEndFacts): ExecutorEnd => {
+  const { head, reading, executorStartedAt } = facts;
+  const byThisExecutor = (at: Date) =>
+    executorStartedAt === null || at.getTime() >= executorStartedAt.getTime();
+  const pendingAfter = (at: Date | null) =>
+    reading.observedAt !== null &&
+    reading.pending !== null &&
+    reading.pending > 0 &&
+    byThisExecutor(reading.observedAt) &&
+    (at === null || reading.observedAt.getTime() > at.getTime());
+  if (
+    head !== null &&
+    head.kind === "final" &&
+    !head.bulkPending &&
+    byThisExecutor(head.registeredAt) &&
+    !pendingAfter(head.registeredAt)
+  ) {
+    return { kind: "saved", savedAt: head.registeredAt };
+  }
+  const lastSavedAt = head?.registeredAt ?? null;
+  const pending =
+    reading.observedAt !== null && reading.pending !== null && pendingAfter(lastSavedAt)
+      ? {
+          words:
+            reading.pendingBytes !== null
+              ? captureBytesWords(reading.pendingBytes)
+              : `${reading.pending}`,
+          observedAt: reading.observedAt,
+        }
+      : null;
+  return { kind: "lost", lastSavedAt, pending };
+};
+
+/**
+ * `stopped outside Mend · saved at 16:29:51 UTC`, or `executor lost · last saved 16:32:06 UTC ·
+ * changes after that were not saved · 3 pending at 16:32:00 UTC` (the last part only when Mend
+ * read the queue after that save). Every "executor lost" line starts with `executor lost`.
+ */
+export const executorEndWords = (end: ExecutorEnd): string => {
+  if (end.kind === "saved") return `stopped outside Mend · saved at ${utcTime(end.savedAt)}`;
+  const saved =
+    end.lastSavedAt === null
+      ? ["nothing saved"]
+      : [`last saved ${utcTime(end.lastSavedAt)}`, "changes after that were not saved"];
+  const pending =
+    end.pending === null
+      ? []
+      : [`${end.pending.words} pending at ${utcTime(end.pending.observedAt)}`];
+  return ["executor lost", ...saved, ...pending].join(" · ");
+};
+
 /**
  * What one executor was observed to ship, as rates (`observeCaptureThroughput`): bytes uploaded
  * and captures registered per second, smoothed over the samples seen. Null rates until two samples

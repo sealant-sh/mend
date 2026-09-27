@@ -284,9 +284,14 @@ interface ProjectSessionVisibility<SessionRow> {
   readonly hiddenEndedSessions: number;
 }
 
+/** Not ended: live, or `stopping` — its workspace still saving, or kept because it could not. */
+const notEnded = (status: SessionStatus): boolean =>
+  LIVE_STATES.has(status) || status === "stopping";
+
 /**
  * Apply project detail's transcript filter and report how many ended sessions it omitted.
- * Live sessions and sessions whose transcript state is still unknown always remain visible.
+ * Sessions not ended (`notEnded`) and sessions whose transcript state is still unknown always
+ * remain visible.
  */
 const projectSessionVisibility = <
   SessionRow extends { readonly status: SessionStatus; readonly hasTranscript: boolean | null },
@@ -297,11 +302,11 @@ const projectSessionVisibility = <
   if (includeDeadEnds) return { sessions, hiddenEndedSessions: 0 };
 
   const hiddenEndedSessions = sessions.filter(
-    (session) => !LIVE_STATES.has(session.status) && session.hasTranscript === false,
+    (session) => !notEnded(session.status) && session.hasTranscript === false,
   );
   return {
     sessions: sessions.filter(
-      (session) => LIVE_STATES.has(session.status) || session.hasTranscript !== false,
+      (session) => notEnded(session.status) || session.hasTranscript !== false,
     ),
     hiddenEndedSessions: hiddenEndedSessions.length,
   };

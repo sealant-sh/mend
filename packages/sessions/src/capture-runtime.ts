@@ -80,6 +80,13 @@ export interface CaptureDrainPolicyShape {
   readonly deadlineMarginSeconds: number;
   /** MEND_CAPTURE_DRAIN_ESTIMATE_SECONDS: how long a planned drain is given before the deadline. */
   readonly drainEstimateSeconds: number;
+  /**
+   * A kept drain (`not saved · workspace kept`) is looked at again after this long while nothing
+   * about it changes, and each unchanged look doubles the wait up to `keptRetryMax`. Anything that
+   * changes (the head, the reason, what is pending, the workspace going) is looked at at once.
+   */
+  readonly keptRetryFirst: Duration.Duration;
+  readonly keptRetryMax: Duration.Duration;
 }
 
 export class CaptureDrainPolicy extends Context.Service<
@@ -95,6 +102,8 @@ const DEFAULT_DRAIN_POLICY: CaptureDrainPolicyShape = {
   executorMaxSeconds: null,
   deadlineMarginSeconds: DEFAULT_EXECUTOR_DEADLINE_MARGIN_SECONDS,
   drainEstimateSeconds: DEFAULT_CAPTURE_DRAIN_ESTIMATE_SECONDS,
+  keptRetryFirst: Duration.seconds(10),
+  keptRetryMax: Duration.minutes(5),
 };
 
 /** The defaults, with nothing read from the environment. */

@@ -52,12 +52,17 @@ export type SessionDotfiles = typeof SessionDotfiles.Type;
  * Lifecycle of a supervised coding-agent process (plan §5.5). `waiting` and
  * `idle` are workbench states the queue-era RunStatus never had: waiting means
  * the harness asked for input; idle means the PTY is alive with no activity.
+ * `stopping` (capture mode): the agent has ended and its workspace is being
+ * saved before it goes (`saving · 3 left`), or was kept because it could not
+ * be (`not saved · … · workspace kept`). Not settled: the session settles once
+ * the platform reports the workspace terminated.
  */
 export const SessionStatus = Schema.Literals([
   "starting",
   "running",
   "waiting",
   "idle",
+  "stopping",
   "completed",
   "failed",
   "stopped",

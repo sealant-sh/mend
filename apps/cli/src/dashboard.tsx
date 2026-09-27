@@ -73,6 +73,7 @@ import { reviewTargetForSession } from "./review-workflow.ts";
 import { ReviewScreen } from "./review.tsx";
 import type { OpenTunnel, ServiceTunnels } from "./service-tunnels.ts";
 import {
+  captureLineOf,
   cwdFacts,
   HARNESS_COMMANDS,
   isPendingId,
@@ -1525,6 +1526,11 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         return;
       case "settled":
         say(`settled · ${sessionDisplayName(plan.session)} — r resumes it, ⇧D removes it`);
+        return;
+      case "stopping":
+        say(
+          `stopping · ${sessionDisplayName(plan.session)} · ${captureLineOf(plan.session) ?? "saving"}`,
+        );
         return;
       case "pending":
         say("still provisioning — the row fills in when the workspace answers");

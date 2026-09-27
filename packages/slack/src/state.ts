@@ -15,7 +15,8 @@ import {
  * carries ✅, and the next turn puts the thread back to `running`. An agent process that ended
  * speaks for itself. Nothing here is a verdict: `completed` says the turn ended as the harness
  * reported it. A stop Mend made because the agent sat idle reads `idle-stopped` (💤), and a reply
- * in the thread resumes the session.
+ * in the thread resumes the session. A session still saving its workspace after a stop
+ * (`stopping`) reads as its agent ended.
  */
 export const slackSessionState = (input: {
   readonly status: SessionStatus;
@@ -34,6 +35,9 @@ export const slackSessionState = (input: {
       return input.idleStoppedAt === undefined || input.idleStoppedAt === null
         ? "stopped"
         : "idle-stopped";
+    // `stopping`: the agent ended and its workspace is saving (or kept) before it goes; the
+    // agent's own outcome speaks, and the capture line beside it says what is left.
+    case "stopping":
     case "running":
     case "idle": {
       if (input.turns.some((turn) => turn.status === "queued" || turn.status === "running")) {

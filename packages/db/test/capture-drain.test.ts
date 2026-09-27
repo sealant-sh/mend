@@ -48,6 +48,7 @@ const PROJECT = ProjectId.make("p-web");
 const WORKTREE = WorktreeId.make("wt-1");
 const DRAINING = SessionId.make("s-draining");
 const REMOVING = SessionId.make("s-removing");
+const STOPPING = SessionId.make("s-stopping");
 
 describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
   beforeAll(async () => {
@@ -70,7 +71,7 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
         yield* sql`
           INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
           VALUES (${WORKTREE}, ${PROJECT}, 'wt-1', 'wt-1', 'mend/wt-1', 'abc')`;
-        for (const id of [DRAINING, REMOVING]) {
+        for (const id of [DRAINING, REMOVING, STOPPING]) {
           yield* sessions.create({
             id,
             projectId: PROJECT,
@@ -191,5 +192,46 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
     );
     expect(result.listed).toEqual([[REMOVING, first]]);
     expect(result.after).toBe(0);
+  });
+  it("a session whose stop drain holds its workspace reads `stopping` and is not settled until the drain ends", async () => {
+    const t0 = new Date("2026-09-27T11:00:00.000Z");
+    const result = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        // Settled first (the agent's own exit), then the sweep's stop drain begins: unsettled.
+        yield* sessions.settle(STOPPING, "completed", "exited with code 0");
+        const settledFirst = yield* sessions.byId(STOPPING);
+        yield* sessions.beginCaptureDrain(STOPPING, "stop", t0);
+        const draining = yield* sessions.byId(STOPPING);
+        // Any settle while the stop drain holds it keeps it `stopping`.
+        yield* sessions.settle(STOPPING, "stopped", null);
+        const held = yield* sessions.byId(STOPPING);
+        // The drain ends once the termination is observed: now it settles.
+        yield* sessions.endCaptureDrain(STOPPING);
+        yield* sessions.settle(STOPPING, "completed", "exited with code 0");
+        const settled = yield* sessions.byId(STOPPING);
+        // A relaunch drain is not a stop: a settle while it runs settles.
+        yield* sessions.reopen(STOPPING, "running");
+        yield* sessions.planRelaunch(STOPPING, "claude", t0);
+        yield* sessions.settle(STOPPING, "failed", "resume failed");
+        const relaunching = yield* sessions.byId(STOPPING);
+        // The owner's stop turns it into a stop drain: unsettled again.
+        yield* sessions.stopCaptureDrain(STOPPING);
+        const stopped = yield* sessions.byId(STOPPING);
+        return { settledFirst, draining, held, settled, relaunching, stopped };
+      }),
+    );
+    expect(result.settledFirst.status).toBe("completed");
+    expect(result.settledFirst.settledAt).not.toBeNull();
+    expect(result.draining.status).toBe("stopping");
+    expect(result.draining.settledAt).toBeNull();
+    expect(result.held.status).toBe("stopping");
+    expect(result.held.settledAt).toBeNull();
+    expect(result.settled.status).toBe("completed");
+    expect(result.settled.settledAt).not.toBeNull();
+    expect(result.relaunching.status).toBe("failed");
+    expect(result.relaunching.settledAt).not.toBeNull();
+    expect(result.stopped.status).toBe("stopping");
+    expect(result.stopped.settledAt).toBeNull();
   });
 });

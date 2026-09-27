@@ -58,6 +58,8 @@ export const phaseOf = (status: string, currentAgent: SessionProcess | null): Ph
   switch (status) {
     case "waiting":
       return "attention";
+    // `stopping`: the agent ended and its workspace is saving; it settles to that same outcome.
+    case "stopping":
     case "idle": {
       const outcome = currentAgent === null ? null : agentProcessOutcome(currentAgent);
       return outcome === "completed" || outcome === "failed" ? outcome : null;

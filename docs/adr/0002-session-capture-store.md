@@ -315,24 +315,35 @@ cadence window.
   0.37.2 cannot ask for the final kind) reads
   `not saved · final flush not reported · workspace kept`; an incomplete one names sealantd's
   reason. A drain that is not forced yields to a process or Service in the workspace before its
-  first final flush, never after. While it drains the session reads `saving · N left` (bytes once
-  sealantd reports `pending_bytes`) on the web, in the CLI, on the phone and in Slack, and the
-  workspace is kept. The intent is a row on the session, so a restart takes the drain up again; a
-  relaunch records the launch it was asked for beside it — the harness, or the exact argv, protocol
-  start and opening prompt with a correlation id — so a restart between the terminate and the launch
-  finishes it, launching and asking the opening turn exactly once (0077). A shutdown interrupts a
-  drain's waiters rather than reading as `kept`. The owner's stop wins over a relaunch or a
-  replacement under way: the drain finishes and the executor ends, and nothing launches after it,
-  here or after a restart.
+  first final flush, never after. While it drains the session reads `stopping · saving · N left`
+  (bytes once sealantd reports `pending_bytes`) on the web, in the CLI, on the phone and in Slack,
+  and the workspace is kept. The intent is a row on the session, so a restart takes the drain up
+  again; a relaunch records the launch it was asked for beside it — the harness, or the exact argv,
+  protocol start and opening prompt with a correlation id — so a restart between the terminate and
+  the launch finishes it, launching and asking the opening turn exactly once (0077). A shutdown
+  interrupts a drain's waiters rather than reading as `kept`. The owner's stop wins over a relaunch
+  or a replacement under way: the drain finishes and the executor ends, and nothing launches after
+  it, here or after a restart.
 - **Channels outlive the session's status.** A stopped session still drains, so its executor's
   channel is registered for as long as a drain runs or it holds the lease, and again on every boot;
   a restart mid-drain never leaves the executor refused.
 - **Discard asks for a discarding stop.** The owner's discard sends a stop that does not drain; if
   the platform keeps the workspace anyway, nothing is discarded and the session says so.
-- **Executor lost reads as lost.** An agent whose executor went away without Mend asking (a SIGKILL,
-  `docker stop`, a lost machine) settles
-  `failed · executor lost · last saved HH:MM:SS UTC · N captures not saved`, never `completed`, and
-  the owner is told.
+- **Executor lost reads as lost; saved reads as saved.** An agent whose executor went away without
+  Mend asking (a SIGKILL, `docker stop`, a lost machine) reads what was observed. When the chain's
+  last registered capture is the executor's own final one (sealantd takes it after it stopped
+  admitting processes and ended the running ones on SIGTERM), taken by this executor, with its bulk
+  section captured and nothing Mend read pending after it, the session settles
+  `stopped · stopped outside Mend · saved at HH:MM:SS UTC`. Otherwise it settles
+  `failed · executor lost · last saved HH:MM:SS UTC · changes after that were not saved`, never
+  `completed`, and adds `· N pending at HH:MM:SS UTC` only when Mend read the executor's queue after
+  that save. Mend never states a count it did not observe.
+- **A stop is not settled while its workspace runs.** A session whose stop drain holds its workspace
+  reads `stopping` (with `saving · N left`, or `not saved · … · workspace kept`) and is not settled;
+  it settles once the platform reports the workspace terminated or gone.
+- **A kept drain backs off.** Every round is a final flush, and a final flush registers captures.
+  The reaper looks at a kept drain again after 10 s, doubling to 5 min while nothing about it
+  changes (the reason, what is pending, the head, the workspace), and at once when something does.
 - **A launch that ran no executor frees the worktree.** When the create never reached the platform,
   the launch's own lease claim is released.
 - **Ending means ending.** An executor Mend sent a final flush to admits nothing after it: no join,
@@ -340,9 +351,9 @@ cadence window.
   executor.
 - **Stall.** A drain that moves nothing for `MEND_CAPTURE_DRAIN_STALL_SECONDS` (or cannot move:
   fenced, refused) is recorded as `not saved · N pending · workspace kept`, the owner is told once,
-  and the workspace stays; the next sweep tries again. A relaunch behind it is refused. Only the
-  owner's "discard unsaved and stop" (confirmed in the request, recorded as a control event and in
-  the organization's audit log) terminates with captures pending.
+  and the workspace stays; the next sweep tries again, backing off while nothing changes. A relaunch
+  behind it is refused. Only the owner's "discard unsaved and stop" (confirmed in the request,
+  recorded as a control event and in the organization's audit log) terminates with captures pending.
 - **Idle.** The idle stop holds while captures are pending or bulk is dirty (`capture` hold), then
   stops through the same drain.
 - **The cap.** A planned drain starts at `deadline − (lead + margin)`, the deadline from the

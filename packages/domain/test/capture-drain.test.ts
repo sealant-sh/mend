@@ -9,6 +9,8 @@ import {
   captureStatusLine,
   type CaptureReading,
   executorCapDue,
+  executorEndOf,
+  executorEndWords,
   observeCaptureThroughput,
   planExecutorCap,
 } from "../src/workbench/capture-drain.ts";
@@ -364,5 +366,89 @@ describe("planExecutorCap", () => {
     expect(plan.kind === "planned" && plan.drainAt).toEqual(new Date("2026-09-27T17:30:00Z"));
     expect(planExecutorCap({ ...base, executorStartedAt: null })).toEqual({ kind: "unknown" });
     expect(executorCapDue({ kind: "unknown" }, Date.now())).toBe(false);
+  });
+});
+
+const endAt = (time: string) => new Date(`2026-09-27T${time}.000Z`);
+const endWords = (endFacts: Parameters<typeof executorEndOf>[0]) =>
+  executorEndWords(executorEndOf(endFacts));
+
+describe("executorEndOf / executorEndWords (an executor that ended without Mend asking)", () => {
+  const started = new Date("2026-09-27T16:20:00.000Z");
+  const at = endAt;
+  const never = { pending: null, pendingBytes: null, observedAt: null };
+
+  it("a final capture that registered last, taken by this executor, reads saved — never lost", () => {
+    const end = executorEndOf({
+      head: { kind: "final", registeredAt: at("16:29:51"), bulkPending: false },
+      executorStartedAt: started,
+      reading: { pending: 1, pendingBytes: 743_474_373, observedAt: at("16:29:20") },
+    });
+    expect(executorEndWords(end)).toBe("stopped outside Mend · saved at 16:29:51 UTC");
+  });
+
+  it("a final head is not a save when its bulk is pending, a previous executor took it, or Mend saw work pending after it", () => {
+    const words = endWords;
+    expect(
+      words({
+        head: { kind: "final", registeredAt: at("16:29:51"), bulkPending: true },
+        executorStartedAt: started,
+        reading: never,
+      }),
+    ).toBe("executor lost · last saved 16:29:51 UTC · changes after that were not saved");
+    expect(
+      words({
+        head: { kind: "final", registeredAt: at("16:10:00"), bulkPending: false },
+        executorStartedAt: started,
+        reading: never,
+      }),
+    ).toBe("executor lost · last saved 16:10:00 UTC · changes after that were not saved");
+    expect(
+      words({
+        head: { kind: "final", registeredAt: at("16:29:51"), bulkPending: false },
+        executorStartedAt: started,
+        reading: { pending: 2, pendingBytes: null, observedAt: at("16:30:05") },
+      }),
+    ).toBe(
+      "executor lost · last saved 16:29:51 UTC · changes after that were not saved · 2 pending at 16:30:05 UTC",
+    );
+  });
+
+  it("a kill -9 says when it last saved and that later changes were not, never a count it did not observe", () => {
+    const words = (observed: Parameters<typeof executorEndOf>[0]["reading"]) =>
+      endWords({
+        head: { kind: "auto", registeredAt: at("16:32:06"), bulkPending: false },
+        executorStartedAt: started,
+        reading: observed,
+      });
+    // Never read: nothing about pending.
+    expect(words(never)).toBe(
+      "executor lost · last saved 16:32:06 UTC · changes after that were not saved",
+    );
+    // Read before the last save: stale, left out.
+    expect(words({ pending: 3, pendingBytes: null, observedAt: at("16:31:00") })).toBe(
+      "executor lost · last saved 16:32:06 UTC · changes after that were not saved",
+    );
+    // Read after it: what was pending then, and when.
+    expect(words({ pending: 1, pendingBytes: 675_321_064, observedAt: at("16:32:09") })).toBe(
+      "executor lost · last saved 16:32:06 UTC · changes after that were not saved · 675 MB pending at 16:32:09 UTC",
+    );
+    expect(words({ pending: 3, pendingBytes: null, observedAt: at("16:32:09") })).toBe(
+      "executor lost · last saved 16:32:06 UTC · changes after that were not saved · 3 pending at 16:32:09 UTC",
+    );
+    // Nothing pending read: nothing claimed either way.
+    expect(words({ pending: 0, pendingBytes: 0, observedAt: at("16:32:09") })).toBe(
+      "executor lost · last saved 16:32:06 UTC · changes after that were not saved",
+    );
+    // A reading a previous executor took says nothing of this one.
+    expect(
+      executorEndWords(
+        executorEndOf({
+          head: null,
+          executorStartedAt: started,
+          reading: { pending: 4, pendingBytes: null, observedAt: at("16:00:00") },
+        }),
+      ),
+    ).toBe("executor lost · nothing saved");
   });
 });

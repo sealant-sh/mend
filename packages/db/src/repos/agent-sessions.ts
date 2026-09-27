@@ -169,6 +169,11 @@ export class SessionsRepo extends Context.Service<
     readonly saveLastSeenSequence: (id: SessionId, sequence: bigint) => Effect.Effect<void>;
     /** Live progress pointer for the Now feed and session page (plan §9.4). */
     readonly notifyProgress: (id: SessionId, sequence: bigint, line: string) => Effect.Effect<void>;
+    /**
+     * First settle wins. Capture mode: a session whose stop drain still holds its workspace
+     * (`captureDrain` `stop`) is not settled — it reads `stopping`, with the summary, until the
+     * drain ends on an observed termination and the engine settles it again.
+     */
     readonly settle: (
       id: SessionId,
       outcome: SessionOutcome,
@@ -221,7 +226,8 @@ export class SessionsRepo extends Context.Service<
      * The durable drain intent (docs/adr/0002, "Stop drains, then terminates"). The first reason
      * stands, with the first request and progress times: a restart, or a sweep's stop, does not
      * reset a drain's history or turn a relaunch into a stop. A relaunch is asked with
-     * `planRelaunch`.
+     * `planRelaunch`. A stop drain unsettles a settled session into `stopping`: its container
+     * still runs until the drain ends.
      */
     readonly beginCaptureDrain: (
       id: SessionId,
@@ -238,7 +244,8 @@ export class SessionsRepo extends Context.Service<
     /**
      * The user's stop wins over a drain under way for another reason (a replacement, a
      * relaunch): the drain goes on, and what follows it is a stop — here and after a restart.
-     * History (request and progress times, `not saved`) stands.
+     * History (request and progress times, `not saved`) stands. A settled session reads
+     * `stopping` again, as any stop drain does.
      */
     readonly stopCaptureDrain: (id: SessionId) => Effect.Effect<void>;
     /** The harness a planned relaunch resumes with, or null. */
@@ -688,9 +695,16 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         // stop read as a crash. `reopen` clears settled_at, so a resumed
         // session settles again normally.
         const now = new Date();
+        // A stop drain holds the workspace: `stopping`, not settled, until the drain ends.
+        const holding = sql`${agentSessions.captureDrain} = 'stop'`;
         yield* db
           .update(agentSessions)
-          .set({ status: outcome, summary, settledAt: now, updatedAt: now })
+          .set({
+            status: sql`CASE WHEN ${holding} THEN 'stopping' ELSE ${outcome}::text END`,
+            summary,
+            settledAt: sql`CASE WHEN ${holding} THEN NULL ELSE ${now}::timestamptz END`,
+            updatedAt: now,
+          })
           .where(and(eq(agentSessions.id, id), isNull(agentSessions.settledAt)))
           .pipe(Effect.orDie);
         yield* notify(id);
@@ -917,8 +931,23 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
+        yield* holdSettledForStopDrain(id);
         yield* notify(id);
       });
+
+      /** A settled session under a stop drain reads `stopping` again, unsettled (`settle`). */
+      const holdSettledForStopDrain = (id: SessionId) =>
+        db
+          .update(agentSessions)
+          .set({ status: "stopping", settledAt: null })
+          .where(
+            and(
+              eq(agentSessions.id, id),
+              eq(agentSessions.captureDrain, "stop"),
+              isNotNull(agentSessions.settledAt),
+            ),
+          )
+          .pipe(Effect.orDie);
 
       const planRelaunch = Effect.fn("SessionsRepo.planRelaunch")(function* (
         id: SessionId,
@@ -956,7 +985,10 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .where(and(eq(agentSessions.id, id), isNotNull(agentSessions.captureDrain)))
           .returning({ id: agentSessions.id })
           .pipe(Effect.orDie);
-        if (rows.length > 0) yield* notify(id);
+        if (rows.length > 0) {
+          yield* holdSettledForStopDrain(id);
+          yield* notify(id);
+        }
       });
 
       const relaunchOf = Effect.fn("SessionsRepo.relaunchOf")(function* (id: SessionId) {

@@ -476,12 +476,15 @@ export type AttachPlan =
   | { readonly kind: "attach"; readonly session: SessionDto }
   | { readonly kind: "starting"; readonly session: SessionDto }
   | { readonly kind: "settled"; readonly session: SessionDto }
+  | { readonly kind: "stopping"; readonly session: SessionDto }
   | { readonly kind: "pending"; readonly session: SessionDto }
   | { readonly kind: "none" };
 
 export const planAttach = (session: SessionDto | null): AttachPlan => {
   if (session === null) return { kind: "none" };
   if (isPendingId(session.id)) return { kind: "pending", session };
+  // Stopped, its workspace still saving (or kept): nothing to attach to, and not settled yet.
+  if (session.status === "stopping") return { kind: "stopping", session };
   if (!LIVE_STATUSES.has(session.status)) return { kind: "settled", session };
   if (session.status === "starting") return { kind: "starting", session };
   return { kind: "attach", session };

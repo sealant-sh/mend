@@ -61,6 +61,14 @@ describe("phaseOf", () => {
     expect(phaseOf("idle", agent({ status: "stopped", exitedAt: ended }))).toBeNull();
   });
 
+  it("hears a session still saving its workspace as its agent's own end, so the settle after it does not ring again", () => {
+    const ended = new Date("2026-08-21T11:00:00.000Z");
+    const exited = agent({ status: "exited", exitCode: 0, exitedAt: ended });
+    expect(phaseOf("stopping", exited)).toBe("completed");
+    expect(phaseOf("stopping", exited)).toBe(phaseOf("completed", exited));
+    expect(phaseOf("stopping", agent({ status: "stopped", exitedAt: ended }))).toBeNull();
+  });
+
   it("keeps the settled and waiting phases", () => {
     expect(phaseOf("waiting", null)).toBe("attention");
     expect(phaseOf("completed", null)).toBe("completed");

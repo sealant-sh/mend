@@ -97,7 +97,9 @@ const slotFor = (
     case "completed":
     case "stopped":
       return unseen ? { word: "done", tone: "green" } : null;
+    // Stopped, its workspace still saving: nothing to announce until it settles.
     case "idle":
+    case "stopping":
       return null;
     default:
       return unexpectedStatus(status);
