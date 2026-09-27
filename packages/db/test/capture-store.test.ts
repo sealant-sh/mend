@@ -424,8 +424,8 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
         const tombstonesAfterRace = (yield* repo.referenceState([worktreeId], [key])).tombstones;
 
         // 3. In order: a condemnation lands, a register that read before it misses, one that
-        //    reads after it sees the tombstone; once the bytes are gone, a register that saw
-        //    them again revives the key with its CAS.
+        //    reads after it sees the tombstone; once the bytes are gone, a register naming the
+        //    key still misses — a condemned key never comes back (cross-repo decision 6).
         const before = yield* guardOf;
         const condemned = yield* repo.condemn(worktreeId, before, [key], claimOf("order"));
         const staleRegister = yield* reasonOf(
@@ -438,7 +438,7 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
           repo.register({
             ...one,
             guards: [{ worktreeId, guard: gone.guards.get(worktreeId) ?? -1 }],
-            revive: [key],
+            names: [key],
           }),
         );
         const after = yield* repo.referenceState([worktreeId], [key]);
@@ -468,11 +468,11 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     expect(result.staleRegister).toBe("guard_moved");
     expect(result.seen).toEqual([{ key: expect.any(String), deleted: false }]);
     expect(result.gone).toEqual([{ key: expect.any(String), deleted: true }]);
-    expect(result.revived).toBe("ok");
-    expect(result.after).toEqual([]);
+    expect(result.revived).toBe("guard_moved");
+    expect(result.after).toEqual([{ key: expect.any(String), deleted: true }]);
   });
 
-  it("deletion claims (0080): a key comes back only once every pass that condemned it has finished, or its claim lapsed", async () => {
+  it("deletion claims (0080): a condemned key never comes back — not while a claim holds, not once every pass finished, not once a claim lapsed (review 3 #2)", async () => {
     const result = await run(
       Effect.gen(function* () {
         const repo = yield* CaptureStoreRepo;
@@ -493,7 +493,7 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
             repo.register({
               ...one,
               guards: [{ worktreeId, guard: state.guards.get(worktreeId) ?? -1 }],
-              revive: [key],
+              names: [key],
             }),
           );
         });
@@ -543,7 +543,7 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     expect(result.renewedAfterFinish).toBe(0);
     expect(result.renewedLapsed).toBe(0);
     expect(result.lapsed).toEqual([{ key: expect.any(String), deleted: true }]);
-    expect(result.revived).toBe("ok");
+    expect(result.revived).toBe("guard_moved");
   });
 
   it("seals (0080): the register CAS records a seal only when it lands and the lease names its executor; the newest epoch reads first", async () => {

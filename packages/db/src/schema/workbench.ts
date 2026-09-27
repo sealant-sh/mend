@@ -1906,8 +1906,8 @@ export const worktreeChain = pgTable("worktree_chain", {
 
 /**
  * Objects retention condemned (key → owning worktree): `deletedAt` null while their bytes may
- * still be going, set once they are gone. A register naming a key here is refused until the
- * bytes are gone and it has seen them uploaded again.
+ * still be going, set once they are gone. Permanent: a register naming a key here is refused for
+ * good (cross-repo decision 6); the content comes back only under a new key.
  */
 export const captureTombstones = pgTable(
   "capture_tombstones",

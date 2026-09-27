@@ -685,12 +685,6 @@ const sameTree = (a: ChunkedSection, b: ChunkedSection): boolean =>
   sameKeys(a.packs, b.packs) &&
   sameKeys(dirPacksOf(a), dirPacksOf(b));
 
-/** The objects (and the format-1 `trees/` prefix) a chunked section names. */
-const objectsOfSection = (section: ChunkedSection): ReadonlyArray<string> => [
-  ...keysOfSections({ workspace: section }),
-  ...treePrefixesOfSections({ workspace: section }),
-];
-
 export const CaptureChannelLive: Layer.Layer<
   CaptureChannel,
   never,
@@ -1605,32 +1599,25 @@ export const CaptureChannelLive: Layer.Layer<
               missing: ownerless,
             });
           }
-          const retiring = state.tombstones.filter((tombstone) => !tombstone.deleted);
-          if (retiring.length > 0) {
+          // A key retention condemned is never registered again, whatever became of its bytes
+          // since (cross-repo decision 6): a pass that checked, stalled and deleted after its
+          // claim lapsed can still remove the bytes at that key, so bytes uploaded there again
+          // are never a capture's. The executor uploads the content under a new key — a new
+          // generation (`captures/<worktree>/<epoch>/g<generation>/…`) — and registers that.
+          if (state.tombstones.length > 0) {
             return yield* new CaptureRouteError({
               status: 422,
               reason: "missing-objects",
-              message: `retention is removing ${retiring.length} object(s) the manifest names: no capture named them when it looked`,
-              missing: retiring.map((tombstone) => tombstone.key),
+              message: `retention condemned ${state.tombstones.length} object(s) the manifest names: a condemned key is never registered again — upload the content under a new key`,
+              missing: state.tombstones.map((tombstone) => tombstone.key),
             });
           }
-          // Condemned objects whose bytes retention removed: the capture may name them again
-          // only if they are in the bucket again (read after the tombstone was), and a tree
-          // below one is walked below whatever the parent held.
-          const revive = state.tombstones.map((tombstone) => tombstone.key);
-          const reviveSet = new Set(revive);
-          const toHead = [
-            ...packKeys,
-            ...revive
-              .filter((key) => isCaptureObjectKey(key) && !seen.has(key))
-              .map((key) => ({ key, cls: null, platform: null })),
-          ];
           const missing: Array<string> = [];
           const records: Array<PackRecord> = [];
           const sizes = new Map<string, number>();
           const priced = new Map(ledger);
           let newBytes = 0;
-          for (const { key, cls, platform } of toHead) {
+          for (const { key, cls, platform } of packKeys) {
             const head = yield* blobs
               .head(key)
               .pipe(Effect.catch(storeError("HEAD on a pack", key)));
@@ -1639,7 +1626,7 @@ export const CaptureChannelLive: Layer.Layer<
               continue;
             }
             sizes.set(key, head.size);
-            if (cls === null || key.endsWith(".idx")) continue;
+            if (key.endsWith(".idx")) continue;
             if (underOwnPrefix(key, input.epoch)) {
               const reserved = ledger.get(key);
               if (reserved !== undefined && reserved !== head.size) {
@@ -1675,15 +1662,13 @@ export const CaptureChannelLive: Layer.Layer<
           const already = yield* repo.captureById(input.capture_id);
           let metaDocument: WorktreeMetaDocument | null = null;
           // Restorability before acknowledgement: every chunked section this capture brings —
-          // one the parent did not hold, or one naming an object it revives — must restore from
-          // what it names: its root and every dir object below it, every chunk in a listed pack,
-          // every hardlink's canonical member. A register acknowledges preservation; a capture
-          // Mend could not restore is refused, never registered.
+          // one the parent did not hold — must restore from what it names: its root and every
+          // dir object below it, every chunk in a listed pack, every hardlink's canonical member.
+          // A register acknowledges preservation; a capture Mend could not restore is refused,
+          // never registered.
           if (already === null) {
             for (const section of chunked) {
-              const carried = parentTrees.some((parent) => sameTree(parent, section));
-              const revived = objectsOfSection(section).some((key) => reviveSet.has(key));
-              if (carried && !revived) continue;
+              if (parentTrees.some((parent) => sameTree(parent, section))) continue;
               yield* verifySectionRestorable(section, { sizes }).pipe(
                 Effect.provideService(BlobStore, blobs),
                 Effect.catch(unrestorable(section)),
@@ -1789,7 +1774,7 @@ export const CaptureChannelLive: Layer.Layer<
                 worktreeId: owner,
                 guard: state.guards.get(owner) ?? 0,
               })),
-              revive,
+              names: referenced,
             })
             .pipe(
               Effect.catch(

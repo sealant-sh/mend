@@ -1,6 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import type { WorktreeId } from "@mend/domain";
-import { asc, eq, inArray } from "drizzle-orm";
+import { asc, eq, inArray, sql as drizzleSql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -35,10 +35,10 @@ import {
  *
  * Deletion then owns what it condemned (migration 0080): the condemnation takes a claim on every
  * key (`capture_deletion_claims`, one token per condemnation) that lasts until the pass has
- * deleted the bytes and settled the tombstone. A register brings a condemned key back only while
- * its tombstone reads deleted and no claim on it is live — a second pass that deleted the same
- * objects and finished first leaves the first pass's claim standing, so nothing is revived that
- * the first pass may still delete (review 2026-09-28 #1).
+ * deleted the bytes and settled the tombstone. A tombstone is permanent: no register ever names a
+ * condemned key again (cross-repo decision 6, review 2026-09-28 (3) #2) — a pass that stalled past
+ * its claim can still delete whatever sits at that key, so content retention condemned comes back
+ * only under a new key (a new generation, `captures/<worktree>/<epoch>/g<n>/…`).
  */
 
 /** 409 `worktree_leased`: someone holds the worktree and the lease has not expired. */
@@ -91,10 +91,12 @@ export interface RegisterCapture {
    */
   readonly guards?: ReadonlyArray<ChainGuard>;
   /**
-   * Tombstoned keys whose bytes retention removed, which the register has since seen in the
-   * bucket again (uploaded anew): the CAS lifts their tombstones.
+   * Every key the capture names: the CAS lands only while retention has condemned none of them
+   * (`capture_tombstones`). A condemned key is never registered again, whatever became of its
+   * bytes since (cross-repo decision 6): a pass that stalled past its claim may still delete
+   * them, so bytes uploaded there again are never a capture's.
    */
-  readonly revive?: ReadonlyArray<string>;
+  readonly names?: ReadonlyArray<string>;
   /**
    * The capture's `final_seal`, validated by the caller (complete, this epoch, this executor):
    * the CAS records it when it lands and the lease names `executorId` — so a seal exists only
@@ -238,7 +240,10 @@ export class CaptureStoreRepo extends Context.Service<
     /** Every registered capture of the worktree, oldest first. */
     readonly listChain: (worktreeId: WorktreeId) => Effect.Effect<ReadonlyArray<CaptureRow>>;
     readonly captureById: (captureId: string) => Effect.Effect<CaptureRow | null>;
-    /** Upsert pack rows (state `uploaded` unless already further along; a `retired` one is revived). */
+    /**
+     * Upsert pack rows (state `uploaded` unless already further along). A `retired` row whose
+     * content a capture names again under a new key is live again at that key.
+     */
     readonly recordPacks: (records: ReadonlyArray<PackRecord>) => Effect.Effect<void>;
     /** The posted summary row for a capture, if one was accepted. */
     readonly summaryOf: (captureId: string) => Effect.Effect<CaptureSummaryRow | null>;
@@ -377,9 +382,9 @@ export const CaptureStoreRepoLive: Layer.Layer<
       const guards = capture.guards ?? [];
       const ownGuard = guards.find((entry) => entry.worktreeId === capture.worktreeId);
       const foreign = guards.filter((entry) => entry.worktreeId !== capture.worktreeId);
-      // A condemned key comes back only once its bytes are gone and no pass holds a live claim
-      // on it: a pass still holding one may delete it after this lands (migration 0080).
-      const revive = JSON.stringify(capture.revive ?? []);
+      // A condemned key never comes back (cross-repo decision 6): a pass that stalled past its
+      // claim may still delete it after this lands.
+      const names = JSON.stringify(capture.names ?? []);
       const sealExecutor = capture.seal?.executorId ?? "";
       const rows = yield* sql<{ readonly id: string }>`
         WITH expected AS (
@@ -406,10 +411,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
              AND (SELECT count(*) FROM foreign_guards) = ${foreign.length}
              AND NOT EXISTS (
                SELECT 1 FROM capture_tombstones t
-                WHERE t.key IN (SELECT jsonb_array_elements_text(${revive}::jsonb))
-                  AND (t.deleted_at IS NULL
-                       OR EXISTS (SELECT 1 FROM capture_deletion_claims d
-                                   WHERE d.key = t.key AND d.expires_at > now())))
+                WHERE t.key IN (SELECT jsonb_array_elements_text(${names}::jsonb)))
              AND ${capture.epoch} = (
                SELECT epoch FROM worktree_leases
                 WHERE worktree_id = ${capture.worktreeId} AND expires_at > now())
@@ -427,13 +429,6 @@ export const CaptureStoreRepoLive: Layer.Layer<
                  n = EXCLUDED.n, sealed_at = now()
            WHERE capture_seals.n < EXCLUDED.n
           RETURNING worktree_id
-        ),
-        revived AS (
-          DELETE FROM capture_tombstones t
-           WHERE t.key IN (SELECT jsonb_array_elements_text(${revive}::jsonb))
-             AND t.deleted_at IS NOT NULL
-             AND EXISTS (SELECT 1 FROM ch)
-           RETURNING t.key
         )
         INSERT INTO captures (id, worktree_id, n, parent, epoch, seq, kind, manifest_key,
                               sections, git_fsck)
@@ -646,11 +641,12 @@ export const CaptureStoreRepoLive: Layer.Layer<
             platform: record.platform,
           })),
         )
-        // A pack retention retired whose bytes a register saw uploaded again (and revived) is
-        // live again, so a later pass can retire it again.
+        // A retired pack (its key condemned for good) whose content a register names again under
+        // a new key — a new generation or epoch — is live again at that key, so a later pass
+        // weighs and retires it there.
         .onConflictDoUpdate({
           target: packs.id,
-          set: { state: "uploaded", updatedAt: new Date() },
+          set: { state: "uploaded", key: drizzleSql`excluded.key`, updatedAt: new Date() },
           setWhere: eq(packs.state, "retired"),
         })
         .pipe(Effect.orDie);

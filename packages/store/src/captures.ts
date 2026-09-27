@@ -512,9 +512,18 @@ export const sha256Hex = (bytes: Uint8Array): string =>
 /** ADR-0015's capture id: the digest of the manifest's bytes as stored. */
 export const captureIdOf = (manifestBytes: Uint8Array): string => sha256Hex(manifestBytes);
 
-/** Key layout, fixed with ADR-0015; `<sha256>` is the lowercase hex digest of the object. */
-export const captureKeys = (worktreeId: string, epoch: number) => {
-  const base = `captures/${worktreeId}/${epoch}`;
+/**
+ * Key layout, fixed with ADR-0015; `<sha256>` is the lowercase hex digest of the object. A
+ * `generation` puts the objects under `captures/<worktree>/<epoch>/g<generation>/` (cross-repo
+ * decision 6): content retention condemned is uploaded again under a key no condemnation named, so
+ * a delete still in flight for the old key can only reach bytes no capture names. Both forms are
+ * read and registered alike; the epoch is always the segment after the worktree.
+ */
+export const captureKeys = (worktreeId: string, epoch: number, generation?: number) => {
+  const base =
+    generation === undefined
+      ? `captures/${worktreeId}/${epoch}`
+      : `captures/${worktreeId}/${epoch}/g${generation}`;
   return {
     pack: (sha: string) => `${base}/packs/${sha}`,
     packIdx: (sha: string) => `${base}/packs/${sha}.idx`,
