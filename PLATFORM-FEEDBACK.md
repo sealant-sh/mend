@@ -95,6 +95,24 @@ and stop" ends it with captures pending. Four things it cannot do through the SD
     throws only when neither can be observed. Core's reapers (expiry, stranded, superseded,
     orphaned) drain a capture-sourced workspace before they terminate it too.
 
+## 2026-09-27 · 0.37.2 · A stop that discards, and a workspace with no agent
+
+- **A stop that discards.**
+  - **Needed:** the owner's "discard unsaved and stop" (audited on Mend's side) ends a workspace
+    whose captures cannot be saved. With Core draining every capture workspace before it stops it,
+    and keeping one whose queue does not move, a plain `workspace.stop()` never ends it.
+  - **Today:** `stop()` takes no options. Mend sends `stop({ discardUnsaved: true })` for the
+    discard (`SealantClient.stopWorkspace`); SDK 0.37.2 ignores it, Core drains and keeps the
+    workspace, and Mend answers
+    `discard asked · the platform has not ended the workspace · nothing discarded yet`.
+  - **Suggested:** `workspace.stop({ discardUnsaved: true })`: an explicit force stop that skips the
+    drain, audited on Core's side, answering `{ state: "stopped" }` once the runtime is gone.
+- **A workspace with no agent.**
+  - **Needed:** a shell session is an open workbench with no harness of its own.
+  - **Today:** `workspaces.create` requires a harness, so Mend names `codex()` for a shell and
+    sealantd logs `Starting codex workspace` for it.
+  - **Suggested:** a harness-less create (or a `shell` harness) whose banner says what started.
+
 ## 2026-09-25 · 0.37.0 · A file into a workspace
 
 - **Needed:** a capture-mode workspace (MicroVM executors, ADR-0002) mounts nothing, so what the

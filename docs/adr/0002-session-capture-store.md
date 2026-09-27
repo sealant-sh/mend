@@ -324,6 +324,17 @@ cadence window.
   drain's waiters rather than reading as `kept`. The owner's stop wins over a relaunch or a
   replacement under way: the drain finishes and the executor ends, and nothing launches after it,
   here or after a restart.
+- **Channels outlive the session's status.** A stopped session still drains, so its executor's
+  channel is registered for as long as a drain runs or it holds the lease, and again on every boot;
+  a restart mid-drain never leaves the executor refused.
+- **Discard asks for a discarding stop.** The owner's discard sends a stop that does not drain; if
+  the platform keeps the workspace anyway, nothing is discarded and the session says so.
+- **Executor lost reads as lost.** An agent whose executor went away without Mend asking (a SIGKILL,
+  `docker stop`, a lost machine) settles
+  `failed · executor lost · last saved HH:MM:SS UTC · N captures not saved`, never `completed`, and
+  the owner is told.
+- **A launch that ran no executor frees the worktree.** When the create never reached the platform,
+  the launch's own lease claim is released.
 - **Ending means ending.** An executor Mend sent a final flush to admits nothing after it: no join,
   no shell, no resume and no retained-workspace launch goes into it again. The next run is a fresh
   executor.

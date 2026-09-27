@@ -19,3 +19,9 @@ Capture mode: nothing an executor holds is let go on an empty queue alone.
 - A relaunch interrupted by a restart finishes: drain, terminate, then the launch it was asked for,
   opening prompt included, exactly once (migration 0077).
 - The owner's stop during a replacement wins: the executor saves and ends, and no new one starts.
+- After a restart, a session still draining gets its executor channel back, so the drain can finish.
+- "Discard unsaved and stop" asks the platform for a stop that does not drain, and says so when the
+  platform keeps the workspace.
+- An agent whose executor went away without Mend asking reads
+  `failed · executor lost · last saved …`, never `completed`.
+- A launch that failed before any executor existed releases its worktree lease.

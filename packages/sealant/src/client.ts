@@ -96,6 +96,25 @@ export type CaptureFlushKind = "suspend" | "final";
  */
 export type WorkspaceStopState = "stopped" | "draining" | "kept" | "requested";
 
+/**
+ * `discardUnsaved`: the owner's audited "discard unsaved and stop" — the platform ends the
+ * workspace without draining its captures. SDK 0.37.2's `stop()` takes no options and drains
+ * (Core keeps a workspace whose queue does not move), so until the SDK carries it the option is
+ * sent and ignored, and the stop reads what the platform did (PLATFORM-FEEDBACK.md 2026-09-27,
+ * "A stop that discards").
+ */
+export interface WorkspaceStopOptions {
+  readonly discardUnsaved?: boolean;
+}
+
+/** A workspace whose `stop` may take options: every SDK's, the older ones ignoring them. */
+interface StoppableWorkspace {
+  readonly stop: (options?: WorkspaceStopOptions) => Promise<unknown>;
+}
+
+const stopWith = (workspace: StoppableWorkspace, options: WorkspaceStopOptions | undefined) =>
+  options === undefined ? workspace.stop() : workspace.stop(options);
+
 const STOP_STATES: ReadonlyArray<WorkspaceStopState> = ["stopped", "draining", "kept", "requested"];
 
 /** The state a stop's answer carries, when it carries one Mend knows; `requested` otherwise. */
@@ -161,6 +180,7 @@ export interface SealantClientShape {
    */
   readonly stopWorkspace: (
     workspace: Workspace,
+    options?: WorkspaceStopOptions,
   ) => Effect.Effect<WorkspaceStopState, SealantPlatformError>;
   /**
    * Capture-sourced workspaces (0.31.0, sealantd ADR-0015): ship and register what the executor
@@ -370,8 +390,9 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
 
     // SDK 0.37.2 resolves `stop()` with nothing; Core's next SDK resolves what it observed. Both
     // are read through `workspaceStopStateOf`, so the newer answer needs no change here.
-    const stopWorkspace = Effect.fn("SealantClient.stopWorkspace")((workspace: Workspace) =>
-      wrap(async (): Promise<unknown> => workspace.stop()).pipe(Effect.map(workspaceStopStateOf)),
+    const stopWorkspace = Effect.fn("SealantClient.stopWorkspace")(
+      (workspace: Workspace, options?: WorkspaceStopOptions) =>
+        wrap(() => stopWith(workspace, options)).pipe(Effect.map(workspaceStopStateOf)),
     );
 
     // The kind has nowhere to go on this SDK (see `captureFlush` above): both kinds call the
@@ -921,7 +942,7 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
         via((c) => c.openSession(workspace, argv, options)),
       forward: (workspace, port, host, protocol) =>
         via((c) => c.forward(workspace, port, host, protocol)),
-      stopWorkspace: (workspace) => via((c) => c.stopWorkspace(workspace)),
+      stopWorkspace: (workspace, options) => via((c) => c.stopWorkspace(workspace, options)),
       captureFlush: (workspace, kind) => via((c) => c.captureFlush(workspace, kind)),
       captureReplan: (workspace) => via((c) => c.captureReplan(workspace)),
       expireWorkspace: (workspaceId, ttlSeconds) =>

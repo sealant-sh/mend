@@ -8,10 +8,10 @@
 #
 # The kill is forced on purpose (`docker kill` = SIGKILL; on Kubernetes the equivalent is
 # `kubectl delete pod --grace-period=0 --force`). A graceful stop — `docker stop`, a plain
-# `kubectl delete pod` — sends SIGTERM: sealantd flushes a `final` capture, the harness exits,
-# and the session settles `completed` through the run's exit, which is the planned-stop path
-# and proves nothing about pickup. Only an executor that vanishes without an exit takes the
-# lease-expiry path ("executor lost · lease expired") this step asserts.
+# `kubectl delete pod` — sends SIGTERM: sealantd flushes a `final` capture and the harness
+# exits; Mend did not ask for it, so the session settles `failed · executor lost · last saved …`
+# through the run's exit, not the lease expiry, and proves nothing about pickup. Only an executor
+# that vanishes without an exit takes the lease-expiry path this step asserts.
 #
 # Every step checks an observable fact and stops at the first one that does not hold, so a
 # partial run reports exactly how far the stack got. Nothing here fakes a pass.
