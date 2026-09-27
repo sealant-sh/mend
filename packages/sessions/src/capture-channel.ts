@@ -7,7 +7,10 @@ import {
 import type { ProjectId, WorktreeId } from "@mend/domain";
 import {
   BlobStore,
+  bulkSectionFor,
+  type BulkSectionReady,
   type CaptureManifest,
+  CaptureSections,
   changeSummaryKey,
   decodeChangeSummary,
   decodeManifest,
@@ -19,6 +22,7 @@ import {
   keysNeededBy,
   MAX_SECTION_FORMAT,
   packIdxKeyOf,
+  sameBulkSection,
   sectionFormatOf,
   type SectionFormat,
 } from "@mend/store";
@@ -51,11 +55,12 @@ export const PlanGetRequest = Schema.Struct({
   /** 0 = "not claimed yet": the first plan of a booting executor claims the lease. */
   epoch: Schema.optional(Schema.Int),
   /**
-   * The executor's `<os>-<arch>-<libc>` (sealantd follow-up, PLATFORM-FEEDBACK.md 2026-09-13).
-   * When named and different from the head's bulk platform, the answer's bulk section is
-   * `"pending"` and its packs are not presigned: the executor must not restore a dependency
-   * tree built for another platform (decision 2); the engine runs the install command instead.
-   * Absent = the whole head, unchanged (today's sealantd).
+   * The executor's `<os>-<arch>-<libc>` (sealantd follow-up, PLATFORM-FEEDBACK.md 2026-09-13;
+   * the key its bulk class stamps on its captures). When named, the answer's bulk section is the
+   * head's `bulk` if it was captured on that platform, else the section the head's `other_bulk`
+   * carries for it (sealantd PR #101), else `"pending"` with no packs presigned: the executor
+   * never restores a dependency tree built for another platform (decision 2), and the engine
+   * runs the install command instead. Absent = the whole head, unchanged (an older sealantd).
    */
   platform: Schema.optional(Schema.String),
 });
@@ -461,6 +466,12 @@ const bad = (message: string) =>
 
 const SHA256_HEX = /^[0-9a-f]{64}$/;
 
+/** Every pack and dir pack a bulk section names. */
+const bulkKeysOf = (section: BulkSectionReady): ReadonlyArray<string> => [
+  ...section.packs,
+  ...dirPacksOf(section),
+];
+
 /** Bytes priced in a ledger (key → bytes). */
 const sumOf = (ledger: ReadonlyMap<string, number>): number => {
   let total = 0;
@@ -468,16 +479,24 @@ const sumOf = (ledger: ReadonlyMap<string, number>): number => {
   return total;
 };
 
-/** The head as this executor may restore it: its bulk section only for its own platform. */
+/**
+ * The head as this executor may restore it: as `bulk`, the bulk section captured on its own
+ * platform — the head's `bulk`, else the one `other_bulk` carries for it — else `"pending"`.
+ * `other_bulk` is answered as stored: sealantd reads the head's stored manifest for what it
+ * carries on, and takes only the bulk section from this answer (`boot/capture.rs`
+ * `continue_bulk`), which it restores only when it is one of the head's own, stamped for its
+ * platform.
+ */
 export const planForPlatform = (
   manifest: CaptureManifest,
   platform: string | undefined,
-): CaptureManifest =>
-  platform === undefined ||
-  manifest.sections.bulk === "pending" ||
-  manifest.sections.bulk.platform === platform
+): CaptureManifest => {
+  if (platform === undefined) return manifest;
+  const bulk = bulkSectionFor(manifest.sections, platform);
+  return bulk === manifest.sections.bulk
     ? manifest
-    : { ...manifest, sections: { ...manifest.sections, bulk: "pending" } };
+    : { ...manifest, sections: { ...manifest.sections, bulk } };
+};
 
 /**
  * A bucket or pointer-store failure inside a route is a defect: 500, which the executor
@@ -1081,6 +1100,22 @@ export const CaptureChannelLive: Layer.Layer<
           });
         });
 
+      /**
+       * Every bulk section the capture a register names as its parent holds, whatever its
+       * platform; none for capture 0, a parent that is not on this chain, or a row that does not
+       * decode (then nothing counts as carried and everything is checked).
+       */
+      const parentBulkSections = (parent: string | null) =>
+        Effect.gen(function* () {
+          if (parent === null) return [];
+          const row = yield* repo.captureById(parent);
+          if (row === null || row.worktreeId !== worktreeId) return [];
+          const decoded = Schema.decodeUnknownOption(CaptureSections)(row.sections);
+          if (Option.isNone(decoded)) return [];
+          const { bulk, other_bulk } = decoded.value;
+          return [...(bulk === "pending" ? [] : [bulk]), ...Object.values(other_bulk ?? {})];
+        });
+
       const register = Effect.fn("SessionCaptureApi.register")(function* (input: RegisterRequest) {
         yield* requireWorktree(input.worktree_id);
         const lease = yield* requireLease(input.epoch);
@@ -1141,12 +1176,16 @@ export const CaptureChannelLive: Layer.Layer<
         // pack, a format-1 dir object root — before anything below asks the bucket about it: a
         // prefix, an empty entry or a stray word in a packs list is refused here, never HEAD-ed.
         // A format-2 root is a dir object digest, not a key (its bytes are in the dir packs),
-        // and must be one. A pending bulk section names nothing and needs nothing.
+        // and must be one. A pending bulk section names nothing and needs nothing. Every bulk
+        // section captured on another platform (`other_bulk`, sealantd PR #101) is checked the
+        // same way.
         const bulk = manifest.sections.bulk === "pending" ? null : manifest.sections.bulk;
-        const chunked = [manifest.sections.workspace, ...(bulk === null ? [] : [bulk])];
-        const bulkPacks = bulk?.packs ?? [];
-        const workspaceDirPacks = dirPacksOf(manifest.sections.workspace);
-        const bulkDirPacks = bulk === null ? [] : dirPacksOf(bulk);
+        const otherBulk = Object.values(manifest.sections.other_bulk ?? {});
+        const chunked = [
+          manifest.sections.workspace,
+          ...(bulk === null ? [] : [bulk]),
+          ...otherBulk,
+        ];
         const rootKeys = chunked
           .filter((section) => sectionFormatOf(section) === FORMAT_DIR_OBJECTS)
           .map((section) => section.root)
@@ -1154,9 +1193,9 @@ export const CaptureChannelLive: Layer.Layer<
         const malformed = [
           ...manifest.sections.git.packs,
           ...manifest.sections.workspace.packs,
-          ...bulkPacks,
-          ...workspaceDirPacks,
-          ...bulkDirPacks,
+          ...dirPacksOf(manifest.sections.workspace),
+          ...(bulk === null ? [] : bulkKeysOf(bulk)),
+          ...otherBulk.flatMap(bulkKeysOf),
           ...rootKeys,
         ].filter((key) => !isCaptureObjectKey(key));
         if (malformed.length > 0) {
@@ -1183,27 +1222,54 @@ export const CaptureChannelLive: Layer.Layer<
               .join(", ")}`,
           );
         }
+        // Another platform's bulk section the parent already holds — as its `bulk` or in its
+        // `other_bulk` — was registered with the parent or before it: HEAD-ed, priced and
+        // recorded then, and kept alive by retention since through every row that names it. It
+        // is carried, not new, and asks nothing more of the bucket or the byte budget. One the
+        // parent does not hold is checked below like a bulk section.
+        const held = yield* parentBulkSections(input.parent);
+        const newOtherBulk = otherBulk.filter(
+          (section) => !held.some((parentSection) => sameBulkSection(parentSection, section)),
+        );
         // HEAD every pack the manifest names (across epochs) before the CAS, and price the
         // ones under this epoch against the session's byte budget — once per key, at the size
         // the bucket reports (a reservation `upload.urls` took at the declared size is replaced;
         // a pack priced by an earlier register of this epoch costs nothing again).
-        const packKeys: Array<{ readonly key: string; readonly cls: PackRecord["class"] }> = [
+        const bulkPackKeys = (section: BulkSectionReady) =>
+          bulkKeysOf(section).map((key) => ({
+            key,
+            cls: "bulk" as const,
+            platform: section.platform,
+          }));
+        const named: Array<{
+          readonly key: string;
+          readonly cls: PackRecord["class"];
+          readonly platform: string | null;
+        }> = [
           ...manifest.sections.git.packs.flatMap((key) => [
-            { key, cls: "git" as const },
-            { key: packIdxKeyOf(key), cls: "git" as const },
+            { key, cls: "git" as const, platform: null },
+            { key: packIdxKeyOf(key), cls: "git" as const, platform: null },
           ]),
-          ...manifest.sections.workspace.packs.map((key) => ({ key, cls: "workspace" as const })),
-          ...bulkPacks.map((key) => ({ key, cls: "bulk" as const })),
           // Dir packs are packs like any other: HEAD-ed, priced, recorded (and so kept alive by
           // retention through their row) under their section's class.
-          ...workspaceDirPacks.map((key) => ({ key, cls: "workspace" as const })),
-          ...bulkDirPacks.map((key) => ({ key, cls: "bulk" as const })),
+          ...[...manifest.sections.workspace.packs, ...dirPacksOf(manifest.sections.workspace)].map(
+            (key) => ({ key, cls: "workspace" as const, platform: null }),
+          ),
+          ...(bulk === null ? [] : bulkPackKeys(bulk)),
+          ...newOtherBulk.flatMap(bulkPackKeys),
         ];
+        // A key two sections share is asked about, priced and recorded once.
+        const seen = new Set<string>();
+        const packKeys = named.filter(({ key }) => {
+          if (seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
         const missing: Array<string> = [];
         const records: Array<PackRecord> = [];
         const priced = new Map(ledger);
         let newBytes = 0;
-        for (const { key, cls } of packKeys) {
+        for (const { key, cls, platform } of packKeys) {
           const head = yield* blobs.head(key).pipe(Effect.catch(storeError("HEAD on a pack", key)));
           if (head === null) {
             missing.push(key);
@@ -1231,10 +1297,7 @@ export const CaptureChannelLive: Layer.Layer<
             bytes: head.size,
             worktreeId: underOwnWorktree(key) ? worktreeId : null,
             epoch: underOwnPrefix(key, input.epoch) ? input.epoch : null,
-            platform:
-              cls === "bulk" && manifest.sections.bulk !== "pending"
-                ? manifest.sections.bulk.platform
-                : null,
+            platform,
           });
         }
         if (missing.length > 0) {

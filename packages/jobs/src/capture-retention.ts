@@ -18,6 +18,9 @@ import * as Context from "effect/Context";
  * - A fenced epoch prefix (`captures/<worktree>/<epoch>/` with `epoch` below the head's) is
  *   swept of everything no on-chain row references, once the head has stood for the grace
  *   period: a manifest whose CAS never ran is off-chain by definition.
+ * - A row references what every one of its sections names, `other_bulk` included (sealantd PR
+ *   #101): another platform's dependency tree is built under an epoch that is fenced as soon as
+ *   the session moves, and is carried from capture to capture so that platform can restore it.
  *
  * - An open multipart upload nobody completed (an executor died between its part PUTs and
  *   `upload.complete`, or under a fenced epoch, where no complete can ever pass the lease
@@ -99,19 +102,35 @@ const treeOf = (section: unknown): ReadonlyArray<string> => {
   return typeof root === "string" && root.includes("/trees/") ? [root] : [];
 };
 
+/**
+ * The bulk sections captured on other platforms that a row carries (`other_bulk`, sealantd PR
+ * #101), whatever their keys say: each is another platform's dependency tree, restorable only
+ * while every object it names lives, however many captures ago it was built.
+ */
+const otherBulkOf = (sections: object): ReadonlyArray<unknown> => {
+  const other: unknown = Reflect.get(sections, "other_bulk");
+  if (typeof other !== "object" || other === null || Array.isArray(other)) return [];
+  const entries: ReadonlyArray<unknown> = Object.values(other);
+  return entries;
+};
+
+/** Every chunked section a row names: the workspace, the bulk section, every other platform's. */
+const chunkedSectionsOf = (sections: object): ReadonlyArray<unknown> => [
+  Reflect.get(sections, "workspace"),
+  Reflect.get(sections, "bulk"),
+  ...otherBulkOf(sections),
+];
+
 /** Every object key a capture row's sections name. */
 export const keysOfSections = (sections: unknown): ReadonlyArray<string> => {
   if (typeof sections !== "object" || sections === null) return [];
-  const workspace: unknown = Reflect.get(sections, "workspace");
-  const bulk: unknown = Reflect.get(sections, "bulk");
   return [
     ...packsOf(Reflect.get(sections, "git")).flatMap((key) => [key, packIdxKeyOf(key)]),
-    ...packsOf(workspace),
-    ...treeOf(workspace),
-    ...dirPacksOf(workspace),
-    ...packsOf(bulk),
-    ...treeOf(bulk),
-    ...dirPacksOf(bulk),
+    ...chunkedSectionsOf(sections).flatMap((section) => [
+      ...packsOf(section),
+      ...treeOf(section),
+      ...dirPacksOf(section),
+    ]),
   ];
 };
 
@@ -120,11 +139,12 @@ export const keysOfSections = (sections: unknown): ReadonlyArray<string> => {
  * by key, and sealantd writes every dir object of one tree under the prefix its root has (the
  * epoch that built it), so a root that lives keeps every `trees/` object under its prefix alive
  * — without reading one dir object. A section carried from an older epoch (a bulk section that
- * rides along until the next bulk snap) keeps its whole tree that way.
+ * rides along until the next bulk snap, or another platform's in `other_bulk`, which rides along
+ * for good) keeps its whole tree that way.
  */
 export const treePrefixesOfSections = (sections: unknown): ReadonlyArray<string> => {
   if (typeof sections !== "object" || sections === null) return [];
-  return [Reflect.get(sections, "workspace"), Reflect.get(sections, "bulk")]
+  return chunkedSectionsOf(sections)
     .flatMap(treeOf)
     .map((root) => root.slice(0, root.lastIndexOf("/trees/") + "/trees/".length));
 };

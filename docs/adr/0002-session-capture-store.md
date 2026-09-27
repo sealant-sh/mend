@@ -152,7 +152,8 @@ statement and no URL that can move them.
   Mend reads these fields and no others: `worktree_id`, `n`, `parent`, `epoch`, `seq`, `kind`,
   `created_at`, `sections.git.{packs, refs, head, fsck}`,
   `sections.workspace.{root, packs, format?, dir_packs?}`,
-  `sections.bulk.{root, packs, platform, format?, dir_packs?} | "pending"`, and
+  `sections.bulk.{root, packs, platform, format?, dir_packs?} | "pending"`,
+  `sections.other_bulk?.<platform>` (each a ready bulk section: decision 29), and
   `checkpoint?.{ordinal, sha, ref}` (section formats: decision 28). The capture id is the sha256 of
   the manifest bytes; the manifest does not carry it. Key layout, fixed with ADR-0015:
   `captures/<worktree>/<epoch>/packs/<sha256>` (a git pack's index at `packs/<sha256>.idx`),
@@ -563,3 +564,20 @@ Mend-side details the decision record left open, decided in this ADR:
     by key under its own epoch prefix, and only the root is on the row, so a carried format-1
     section under a fenced epoch lost its subtree to the sweep before this. The dependency cache
     copies a format-2 section's dir packs as it copies packs and keeps its root.
+29. (2026-09-27) A manifest carries the bulk sections captured on other platforms
+    (`sections.other_bulk`, keyed by `<os>-<arch>-<libc>`, sealantd PR #101), absent when empty so
+    every manifest before it is unchanged byte for byte. Before, an executor answered `"pending"`
+    for a head built on another platform dropped that tree from its next capture, and a session
+    moved from arm64 to amd64 and back reinstalled on both. `plan.get` answers an executor that
+    names its platform the head's `bulk` when it was captured there, else `other_bulk[platform]`
+    (its packs, dir packs or format-1 dir objects presigned), else `"pending"` — never another
+    platform's tree (`bulkSectionFor`); `other_bulk` itself is answered as stored, since sealantd
+    reads what it carries on from the stored head. Register validates every entry like a bulk
+    section (keys, format, a format-2 root digest with its dir packs). An entry the parent capture
+    already holds, as its `bulk` or in its `other_bulk`, was HEAD-ed, priced and recorded when it
+    was first registered and is not asked about again; an entry the parent does not hold is HEAD-ed
+    and recorded under its own platform like a bulk section. Retention keeps every pack, dir pack
+    and format-1 `trees/` prefix an entry of a live row names, under fenced epochs too. The engine's
+    install decision reads the head's tree for the executor's platform the same way, and the
+    dependency cache serves a record only for the platform it names and promotes only a head's own
+    `bulk`.

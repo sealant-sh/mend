@@ -129,6 +129,44 @@ describe("thinningPlan", () => {
       }),
     ).toEqual(["captures/w/1/trees/"]);
   });
+
+  it("names every object another platform's bulk section names (other_bulk), in either format", () => {
+    const digest = "e".repeat(64);
+    const sections = {
+      git: { packs: [] },
+      workspace: { root: "", packs: [] },
+      bulk: { root: "captures/w/3/trees/x", packs: ["captures/w/3/packs/x"], platform: "x86" },
+      other_bulk: {
+        arm: { root: "captures/w/1/trees/a", packs: ["captures/w/1/packs/a"], platform: "arm" },
+        riscv: {
+          root: digest,
+          packs: ["captures/w/2/packs/r"],
+          platform: "riscv",
+          format: 2,
+          dir_packs: ["captures/w/2/packs/rd"],
+        },
+      },
+    };
+    expect(keysOfSections(sections)).toEqual([
+      "captures/w/3/packs/x",
+      "captures/w/3/trees/x",
+      "captures/w/1/packs/a",
+      "captures/w/1/trees/a",
+      "captures/w/2/packs/r",
+      "captures/w/2/packs/rd",
+    ]);
+    expect(treePrefixesOfSections(sections)).toEqual([
+      "captures/w/3/trees/",
+      "captures/w/1/trees/",
+    ]);
+    // Anything but a map of sections names nothing.
+    for (const other_bulk of [null, "pending", ["captures/w/1/packs/a"]]) {
+      expect(keysOfSections({ ...sections, other_bulk })).toEqual([
+        "captures/w/3/packs/x",
+        "captures/w/3/trees/x",
+      ]);
+    }
+  });
 });
 
 describe("CaptureRetention over dir://", () => {
@@ -350,6 +388,92 @@ describe("CaptureRetention over dir://", () => {
     expect(memory.packs.get(sha("dirpack3"))?.state).toBe("uploaded");
     // A dir object under a fenced prefix no live root lives under still goes.
     expect(exists(strayTree)).toBe(false);
+  });
+
+  it("keeps another platform's dependency tree under a fenced epoch while a live head carries it in other_bulk", async () => {
+    // The session moved: an arm64 executor built a format-1 tree under epoch 1, a riscv one a
+    // format-2 tree under epoch 2, and the head, on amd64 at epoch 4, carries both in
+    // other_bulk. Every older capture row is gone: only the head names them.
+    const wt = WorktreeId.make("wt-ret-other-bulk");
+    const now = 50 * 24 * HOUR;
+    memory.clock.now = () => now;
+    const keys1 = captureKeys(wt, 1);
+    const keys2 = captureKeys(wt, 2);
+    const keys4 = captureKeys(wt, 4);
+    const armRoot = keys1.tree(sha("armroot"));
+    const armChild = keys1.tree(sha("armchild"));
+    const armPack = keys1.pack(sha("armpack"));
+    const riscvPack = keys2.pack(sha("riscvpack"));
+    const riscvDirPack = keys2.pack(sha("riscvdir"));
+    const x86Pack = keys4.pack(sha("x86pack"));
+    const x86DirPack = keys4.pack(sha("x86dir"));
+    // Off-chain leftovers under the same fenced epochs: these still go.
+    const strayPack = keys2.pack(sha("straypack"));
+    const strayManifest = keys1.manifest(sha("straymanifest"));
+    const head: CaptureRow = {
+      ...row(7, "turn", now - 2 * HOUR, 4, {
+        git: { packs: [] },
+        workspace: { root: "", packs: [] },
+        bulk: {
+          root: sha("x86root"),
+          packs: [x86Pack],
+          platform: "linux-x86_64-gnu",
+          format: 2,
+          dir_packs: [x86DirPack],
+        },
+        other_bulk: {
+          "linux-aarch64-gnu": { root: armRoot, packs: [armPack], platform: "linux-aarch64-gnu" },
+          "linux-riscv64-gnu": {
+            root: sha("riscvroot"),
+            packs: [riscvPack],
+            platform: "linux-riscv64-gnu",
+            format: 2,
+            dir_packs: [riscvDirPack],
+          },
+        },
+      }),
+      worktreeId: wt,
+      manifestKey: keys4.manifest(sha("ob7")),
+      id: sha("obcap7"),
+      parent: sha("obcap6"),
+    };
+    memory.leases.set(wt, { executorId: "executor", epoch: 4, expiresAt: now + 10_000 });
+    memory.chains.set(wt, { headCapture: head.id, headN: 7, headEpoch: 4 });
+    memory.captures.set(head.id, head);
+    const kept = [armRoot, armChild, armPack, riscvPack, riscvDirPack, x86Pack, x86DirPack];
+    await run(
+      Effect.gen(function* () {
+        const store = yield* BlobStore;
+        for (const key of [...kept, strayPack, strayManifest, head.manifestKey]) {
+          yield* store.put(key, new Uint8Array([1, 2, 3]));
+        }
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.recordPacks(
+          [
+            { key: armPack, epoch: 1, platform: "linux-aarch64-gnu" },
+            { key: riscvPack, epoch: 2, platform: "linux-riscv64-gnu" },
+            { key: riscvDirPack, epoch: 2, platform: "linux-riscv64-gnu" },
+            { key: x86Pack, epoch: 4, platform: "linux-x86_64-gnu" },
+            { key: x86DirPack, epoch: 4, platform: "linux-x86_64-gnu" },
+          ].map(({ key, epoch, platform }) => ({
+            key,
+            class: "bulk" as const,
+            bytes: 3,
+            worktreeId: wt,
+            epoch,
+            platform,
+          })),
+        );
+      }),
+    );
+    const later = now + RETENTION_GRACE_MS + 1;
+    await run(Effect.flatMap(CaptureRetention, (retention) => retention.run(later)));
+    for (const key of [...kept, head.manifestKey]) expect(exists(key)).toBe(true);
+    for (const digest of ["armpack", "riscvpack", "riscvdir", "x86pack", "x86dir"]) {
+      expect(memory.packs.get(sha(digest))?.state).toBe("uploaded");
+    }
+    expect(exists(strayPack)).toBe(false);
+    expect(exists(strayManifest)).toBe(false);
   });
 
   it("aborts orphaned multipart uploads: under a fenced epoch at once, under the live epoch once the part URLs have lapsed", async () => {
