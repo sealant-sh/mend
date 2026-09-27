@@ -1,6 +1,13 @@
 import { StoreRefsRepo } from "@mend/db";
 import type { ProjectId } from "@mend/domain";
-import { type CaptureManifest, type GitFsckOutcome, git, GitOpsRunner } from "@mend/store";
+import {
+  type CaptureManifest,
+  type GitFsckOutcome,
+  git,
+  gitBytes,
+  GitOpsRunner,
+  type WorktreeTreeKind,
+} from "@mend/store";
 import { Effect, Layer, Result } from "effect";
 import * as Context from "effect/Context";
 
@@ -31,14 +38,57 @@ export class CaptureGitVerifier extends Context.Service<
       projectId: ProjectId,
       manifest: CaptureManifest,
     ) => Effect.Effect<GitVerification>;
+    /**
+     * Every path of the tree `tree` names, from the section's packs on the runner: the hex of its
+     * bytes → what it is (`WorktreeTreeKind`). What the worktree metadata document is checked
+     * against at register (`metaNamespaceProblem`). Null when nothing could be observed (no
+     * runner, the cache could not be prepared, git failed): never an empty tree.
+     */
+    readonly treePaths: (
+      projectId: ProjectId,
+      manifest: CaptureManifest,
+      tree: string,
+    ) => Effect.Effect<ReadonlyMap<string, WorktreeTreeKind> | null>;
   }
 >()("@mend/sessions/CaptureGitVerifier") {}
 
 /** No runner at hand (tests of the routes alone): every capture stays `unverified`. */
 export const CaptureGitVerifierOff: Layer.Layer<CaptureGitVerifier> = Layer.succeed(
   CaptureGitVerifier,
-  { verify: () => Effect.succeed({ outcome: "unverified", detail: "no git verifier configured" }) },
+  {
+    verify: () => Effect.succeed({ outcome: "unverified", detail: "no git verifier configured" }),
+    treePaths: () => Effect.succeed(null),
+  },
 );
+
+/** A git mode (`ls-tree`) as what the path is on disk after a checkout. */
+const kindOfMode = (mode: string): WorktreeTreeKind | null => {
+  if (mode === "040000") return "dir";
+  if (mode === "120000") return "symlink";
+  if (mode === "160000") return "gitlink";
+  return mode.startsWith("100") ? "file" : null;
+};
+
+/**
+ * `git ls-tree -r -t -z --full-tree` output: `<mode> SP <type> SP <object> TAB <path> NUL`, the
+ * path as bytes. Answers hex of the path → its kind.
+ */
+export const parseTreeListing = (output: Buffer): ReadonlyMap<string, WorktreeTreeKind> => {
+  const paths = new Map<string, WorktreeTreeKind>();
+  let start = 0;
+  while (start < output.length) {
+    let end = output.indexOf(0, start);
+    if (end < 0) end = output.length;
+    const record = output.subarray(start, end);
+    start = end + 1;
+    const tab = record.indexOf(0x09);
+    if (tab < 0) continue;
+    const mode = record.subarray(0, record.indexOf(0x20)).toString("latin1");
+    const kind = kindOfMode(mode);
+    if (kind !== null) paths.set(record.subarray(tab + 1).toString("hex"), kind);
+  }
+  return paths;
+};
 
 const HEX40 = /^[0-9a-f]{40}$/;
 
@@ -107,6 +157,22 @@ export const CaptureGitVerifierLive: Layer.Layer<
         : ({ outcome: "verified", detail: null } satisfies GitVerification);
     });
 
-    return { verify };
+    const treePaths = Effect.fn("CaptureGitVerifier.treePaths")(function* (
+      projectId: ProjectId,
+      manifest: CaptureManifest,
+      tree: string,
+    ) {
+      if (!HEX40.test(tree)) return null;
+      const storeRefs = yield* refs.refsMap(projectId);
+      const ensured = yield* runner.ensure({ projectId, manifest, storeRefs }).pipe(Effect.result);
+      if (Result.isFailure(ensured)) return null;
+      const listed = yield* gitBytes(
+        ["ls-tree", "-r", "-t", "-z", "--full-tree", tree],
+        ensured.success.path,
+      ).pipe(Effect.result);
+      return Result.isFailure(listed) ? null : parseTreeListing(listed.success);
+    });
+
+    return { verify, treePaths };
   }),
 );

@@ -36,6 +36,9 @@ import {
   verifyWorktreeMeta,
   sectionHoldsRawNames,
   gitSectionHoldsRawNames,
+  metaNamespaceProblem,
+  WORKTREE_TREE_REF,
+  type WorktreeMetaDocument,
 } from "@mend/store";
 import { Duration, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -960,8 +963,11 @@ export const CaptureChannelLive: Layer.Layer<
                 gitFromCaptureId: row.id,
               }),
             );
+            // The head's seal says the head restores; this plan restores other git state, so
+            // it carries no seal (review 2026-09-28 (3) #18).
+            const { final_seal: _headSeal, ...unsealed } = stored;
             return {
-              ...stored,
+              ...unsealed,
               sections: { ...stored.sections, git: manifest.sections.git },
             } satisfies CaptureManifest;
           }
@@ -1556,8 +1562,11 @@ export const CaptureChannelLive: Layer.Layer<
         // `final_seal` (cross-repo decision 1): sealantd's word that this executor's final flush
         // completed. It is recorded with the CAS — so only on a capture that lands on a chain
         // registered up to it — and only when complete and naming the executor this token is
-        // scoped to and the epoch it registers under. Anything else registers the capture and
-        // seals nothing: the bytes are kept, and no completion is claimed on their behalf.
+        // scoped to and the epoch it registers under, and only once Mend observed every section
+        // restore: the chunked ones walked below, the git section verified, the worktree
+        // metadata checked against the tree it applies to (`sealed`, in the attempt). Anything
+        // else registers the capture and seals nothing: the bytes are kept, and no completion is
+        // claimed on their behalf.
         const seal = manifest.final_seal ?? null;
         const sealHolds =
           seal !== null &&
@@ -1664,6 +1673,7 @@ export const CaptureChannelLive: Layer.Layer<
             });
           }
           const already = yield* repo.captureById(input.capture_id);
+          let metaDocument: WorktreeMetaDocument | null = null;
           // Restorability before acknowledgement: every chunked section this capture brings —
           // one the parent did not hold, or one naming an object it revives — must restore from
           // what it names: its root and every dir object below it, every chunk in a listed pack,
@@ -1682,7 +1692,7 @@ export const CaptureChannelLive: Layer.Layer<
             // The worktree metadata document is walked whatever the parent held: a restore
             // needs it whenever the manifest names it, and a parent's row does not say it held
             // this very document (review 2026-09-28 #17).
-            yield* verifyWorktreeMeta(manifest.sections.workspace, { sizes }).pipe(
+            metaDocument = yield* verifyWorktreeMeta(manifest.sections.workspace, { sizes }).pipe(
               Effect.provideService(BlobStore, blobs),
               Effect.catch(unrestorable(manifest.sections.workspace)),
             );
@@ -1720,9 +1730,51 @@ export const CaptureChannelLive: Layer.Layer<
               }),
             );
           }
+          // The worktree metadata document against the namespace it applies to (review
+          // 2026-09-28 (3) #20): sealantd applies it over the worktree tree the git class checked
+          // out, and fails the whole materialize on a file or a symlink it names that is not
+          // there. A capture with no worktree tree has nothing tracked; otherwise the tree's paths
+          // are listed from the packs the verification installed. A document that names what the
+          // tree does not hold is refused (422 `unrestorable`); one Mend could not list (git not
+          // verified, the runner unavailable) registers unchecked and seals nothing.
+          const metaNamespace = yield* Effect.gen(function* () {
+            if (metaDocument === null) return "verified" as const;
+            const tree = manifest.sections.git.refs[WORKTREE_TREE_REF];
+            const tracked =
+              tree === undefined
+                ? new Map()
+                : verification?.outcome === "verified"
+                  ? yield* verifier.treePaths(scope.projectId, manifest, tree)
+                  : null;
+            if (tracked === null) return "unverified" as const;
+            const problem = metaNamespaceProblem(metaDocument, tracked);
+            if (problem !== null) {
+              return yield* new CaptureRouteError({
+                status: 422,
+                reason: "unrestorable",
+                message: `the worktree metadata would not apply over the worktree tree: ${problem}`,
+              });
+            }
+            return "verified" as const;
+          });
+          const sealed = sealHolds && gitFsck === "verified" && metaNamespace === "verified";
+          if (sealHolds && !sealed) {
+            yield* Effect.logWarning(
+              "capture channel: a final seal over sections not verified restorable · registered without it",
+            ).pipe(
+              Effect.annotateLogs({
+                worktreeId,
+                n: input.n,
+                captureId: input.capture_id,
+                epoch: input.epoch,
+                gitFsck,
+                worktreeMeta: metaNamespace,
+              }),
+            );
+          }
           const outcome = yield* repo
             .register({
-              ...(sealHolds ? { seal: { executorId: scope.executorId } } : {}),
+              ...(sealed ? { seal: { executorId: scope.executorId } } : {}),
               worktreeId,
               id: input.capture_id,
               n: input.n,

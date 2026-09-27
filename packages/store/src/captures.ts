@@ -1869,6 +1869,46 @@ const MetaDocument = Schema.Struct({
   ),
 });
 
+/** The worktree metadata document (sealantd `worktree_meta.rs` `MetaDocument`), decoded. */
+export type WorktreeMetaDocument = typeof MetaDocument.Type;
+
+/** What a path of the worktree tree is, from its git mode: a blob, a symlink, a tree, a gitlink. */
+export type WorktreeTreeKind = "file" | "symlink" | "dir" | "gitlink";
+
+/**
+ * Whether the worktree metadata document names only paths the restore will find as it says
+ * (review 2026-09-28 (3) #20). sealantd applies the document after the git class checked out the
+ * worktree tree (`worktree_meta.rs` `apply`): it creates a missing directory, but a file or a
+ * symlink the document names must already be there, of that kind, or the materialize fails. The
+ * document's scope is the worktree tree's own paths, so `tracked` — every path of that tree, hex
+ * of its bytes → its kind — is the namespace a file, a symlink (and so every hardlink member) must
+ * be found in; a directory the document names must not be a file or a link there. The reason, or
+ * null when the document applies.
+ */
+export const metaNamespaceProblem = (
+  document: WorktreeMetaDocument,
+  tracked: ReadonlyMap<string, WorktreeTreeKind>,
+): string | null => {
+  for (const entry of document.entries) {
+    const bytes = bytesOfPair(entry.path, entry.raw_path);
+    if (bytes === null) return `path ${JSON.stringify(entry.path)}`;
+    if (bytes.length === 0) continue;
+    const found = tracked.get(bytes.toString("hex"));
+    if (entry.kind === "dir") {
+      if (found !== undefined && found !== "dir") {
+        return `${JSON.stringify(entry.path)} is a directory in the document, a ${found} in the worktree tree`;
+      }
+      continue;
+    }
+    if (found !== entry.kind) {
+      return `${JSON.stringify(entry.path)} is a ${entry.kind} in the document, ${
+        found === undefined ? "absent from" : `a ${found} in`
+      } the worktree tree`;
+    }
+  }
+  return null;
+};
+
 /** `""` or a relative path of normal components (sealantd `worktree_meta.rs` `is_plain_relative`). */
 const isPlainRelative = (bytes: Buffer): boolean => {
   if (bytes.length === 0) return true;
@@ -1896,15 +1936,22 @@ const isPlainRelative = (bytes: Buffer): boolean => {
  * document, shared links from a file of the document to a plain relative member, cross-class
  * groups of two or more distinct plain members. The reason, or null when the document restores.
  */
-const metaDocumentProblem = (bytes: Uint8Array): string | null => {
-  let document: typeof MetaDocument.Type;
+const decodeMetaDocument = (
+  bytes: Uint8Array,
+): { readonly document: WorktreeMetaDocument } | { readonly problem: string } => {
+  let document: WorktreeMetaDocument;
   try {
     document = Schema.decodeUnknownSync(MetaDocument)(
       JSON.parse(Buffer.from(bytes).toString("utf8")),
     );
   } catch (cause) {
-    return cause instanceof Error ? cause.message : String(cause);
+    return { problem: cause instanceof Error ? cause.message : String(cause) };
   }
+  const problem = metaDocumentProblem(document);
+  return problem === null ? { document } : { problem };
+};
+
+const metaDocumentProblem = (document: WorktreeMetaDocument): string | null => {
   if (document.format < 1 || document.format > WORKTREE_META_FORMAT) {
     return `format ${document.format}; Mend reads up to ${WORKTREE_META_FORMAT}`;
   }
@@ -1954,14 +2001,16 @@ const metaDocumentProblem = (bytes: Uint8Array): string | null => {
  * materializer reads it: a format Mend reads, packs among the section's own, every chunk in one
  * of them, the chunks adding up to `size` bytes whose sha256 is `sha256`, and a document that
  * decodes under its own rules. Reads the listed packs' indexes and each chunk by ranged GET.
+ * Answers the document (null when the section has none), for the caller to check it against the
+ * worktree tree it applies to (`metaNamespaceProblem`).
  */
 export const verifyWorktreeMeta = (
   section: WorkspaceSection,
   options?: { readonly sizes?: ReadonlyMap<string, number> },
-): Effect.Effect<void, CaptureReadError, BlobStore> =>
+): Effect.Effect<WorktreeMetaDocument | null, CaptureReadError, BlobStore> =>
   Effect.gen(function* () {
     const meta = section.worktree_meta;
-    if (meta === undefined) return;
+    if (meta === undefined) return null;
     const key = `worktree_meta ${meta.sha256}`;
     const fail = (reason: string) => Effect.fail(new CaptureFormatError({ key, reason }));
     if (meta.format < 1 || meta.format > WORKTREE_META_FORMAT) {
@@ -2007,8 +2056,9 @@ export const verifyWorktreeMeta = (
     if (actual !== meta.sha256) {
       return yield* new CaptureIntegrityError({ key, expected: meta.sha256, actual });
     }
-    const problem = metaDocumentProblem(document);
-    if (problem !== null) return yield* fail(`document: ${problem}`);
+    const decoded = decodeMetaDocument(document);
+    if ("problem" in decoded) return yield* fail(`document: ${decoded.problem}`);
+    return decoded.document;
   });
 
 // ─── What a capture row names ───────────────────────────────────────────────

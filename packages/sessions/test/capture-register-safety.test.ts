@@ -13,6 +13,8 @@ import {
   FORMAT_DIR_PACKS,
   listCaptureDir,
   sha256Hex,
+  WORKTREE_TREE_REF,
+  type WorktreeTreeKind,
 } from "@mend/store";
 import {
   buildManifest,
@@ -34,7 +36,7 @@ import {
 } from "../src/capture-channel.ts";
 import { CaptureRemotesOff } from "../src/capture-remotes.ts";
 import { CaptureSourcesOff } from "../src/capture-sources.ts";
-import { CaptureGitVerifierOff } from "../src/capture-verify.ts";
+import { CaptureGitVerifier, CaptureGitVerifierOff } from "../src/capture-verify.ts";
 import { makeMemoryCaptureStore } from "./capture-store-memory.ts";
 
 /**
@@ -53,13 +55,47 @@ const freshDir = (label: string) => {
   return at;
 };
 
-const worldOf = (manifestFormat: 1 | 2 = 2) => {
+/** The worktree tree the metadata tests' manifests name (`WORKTREE_TREE_REF`). */
+const WORKTREE_TREE = "e".repeat(40);
+const gitWithTree = {
+  packs: [],
+  refs: { [WORKTREE_TREE_REF]: WORKTREE_TREE },
+  head: "refs/heads/main",
+  fsck: "unverified" as const,
+};
+
+/**
+ * A git verifier that observed every git section verify and the worktree tree hold `tracked`
+ * (path → kind): what the metadata document is checked against at register.
+ */
+const verifierObserving = (tracked: Readonly<Record<string, WorktreeTreeKind>>) =>
+  Layer.succeed(CaptureGitVerifier, {
+    verify: () => Effect.succeed({ outcome: "verified" as const, detail: null }),
+    treePaths: () =>
+      Effect.succeed(
+        new Map(
+          Object.entries(tracked).map(([at, kind]) => [Buffer.from(at).toString("hex"), kind]),
+        ),
+      ),
+  });
+
+/** What `plainDocument` names, as the worktree tree holds it. */
+const plainTree: Readonly<Record<string, WorktreeTreeKind>> = {
+  a: "file",
+  b: "file",
+  l: "symlink",
+};
+
+const worldOf = (
+  manifestFormat: 1 | 2 = 2,
+  verifier: Layer.Layer<CaptureGitVerifier> = CaptureGitVerifierOff,
+) => {
   const memory = makeMemoryCaptureStore();
   const blobs = BlobStoreFsLive(freshDir("blobs"));
   const channel = CaptureChannelLive.pipe(
     Layer.provide(memory.layer),
     Layer.provide(blobs),
-    Layer.provide(CaptureGitVerifierOff),
+    Layer.provide(verifier),
     Layer.provide(CaptureSourcesOff),
     Layer.provide(CaptureRemotesOff),
     Layer.provide(
@@ -444,14 +480,21 @@ const registerOnce = async (
   workspace: object,
   objects: ReadonlyMap<string, Uint8Array>,
   requestManifest?: (manifest: CaptureManifest) => unknown,
+  tree: { readonly tracked: Readonly<Record<string, WorktreeTreeKind>> | null } = {
+    tracked: plainTree,
+  },
 ) => {
-  const world = worldOf();
+  const world = worldOf(
+    2,
+    tree.tracked === null ? CaptureGitVerifierOff : verifierObserving(tree.tracked),
+  );
   const built = buildManifest({
     worktreeId: wt,
     epoch: 1,
     n: 0,
     parent: null,
     kind: "final",
+    git: gitWithTree,
     // The schema's workspace type does not say every shape a writer may send; the bytes do.
     workspace: JSON.parse(JSON.stringify(workspace)),
   });
@@ -685,13 +728,56 @@ describe("capture.register reads the worktree metadata a restore needs (review 2
   });
 });
 
+describe("capture.register checks the metadata against the tree it applies to (review 2026-09-28 (3) #20)", () => {
+  it("refuses a final whose metadata names a file no captured class holds", async () => {
+    const wt = WorktreeId.make("wt-review3-missing-meta-file");
+    const section = withMeta(
+      wt,
+      documentOf({
+        format: 1,
+        entries: [{ path: "missing-work.txt", kind: "file", mode: 0o644, mtime: 0 }],
+      }),
+    );
+    // Over the tree the git section names, observed without that path.
+    const observed = await registerOnce(wt, section.workspace, section.objects, undefined, {
+      tracked: {},
+    });
+    expect(observed).toEqual({ said: "CaptureRouteError:unrestorable", head: null });
+  });
+
+  it("refuses a file named as a symlink, and a directory over a file", async () => {
+    for (const [label, entry] of [
+      ["a file named as a symlink", { path: "a", kind: "symlink", mtime: 0 }],
+      ["a directory over a file", { path: "b", kind: "dir", mode: 0o755, mtime: 0 }],
+    ] as const) {
+      const wt = WorktreeId.make(`wt-review3-kind-${label.length}`);
+      const section = withMeta(wt, documentOf({ format: 1, entries: [entry] }));
+      const result = await registerOnce(wt, section.workspace, section.objects);
+      expect(result, label).toEqual({ said: "CaptureRouteError:unrestorable", head: null });
+    }
+  });
+
+  it("registers, unsealed, a document it could not check (the tree could not be listed)", async () => {
+    const wt = WorktreeId.make("wt-review3-meta-unlisted");
+    const section = withMeta(wt, documentOf(plainDocument));
+    const result = await registerOnce(wt, section.workspace, section.objects, undefined, {
+      tracked: null,
+    });
+    expect(result.said).toBe("ok");
+  });
+});
+
 describe("capture.register records a completed final flush on the chain (cross-repo decision 1)", () => {
   const sealedRegister = async (
     seal: object | undefined,
-    options?: { readonly executorId?: string },
+    options?: {
+      readonly executorId?: string;
+      readonly verifier?: Layer.Layer<CaptureGitVerifier>;
+    },
   ) => {
     const wt = WorktreeId.make("wt-seal");
-    const world = worldOf();
+    // Mend observed the git section verify: a seal rests on nothing less (review 3 #18).
+    const world = worldOf(2, options?.verifier ?? verifierObserving({}));
     const zero = buildManifest({ worktreeId: wt, epoch: 1, n: 0, parent: null, kind: "auto" });
     const base = buildManifest({ worktreeId: wt, epoch: 1, n: 1, parent: zero.id, kind: "final" });
     // The sealing capture: the final capture's manifest, carrying `final_seal`.
@@ -745,6 +831,16 @@ describe("capture.register records a completed final flush on the chain (cross-r
       n: 1,
     });
     expect(result.newest?.captureId).toBe(result.id);
+  });
+
+  it("registers the capture but seals nothing over a git section Mend did not observe verify (review 3 #18)", async () => {
+    const result = await sealedRegister(
+      { complete: true, epoch: 1, executor: "executor" },
+      { verifier: CaptureGitVerifierOff },
+    );
+    expect(result.said).toBe("ok");
+    expect(result.head).toBe(result.id);
+    expect(result.sealed).toBeNull();
   });
 
   it("registers the capture but seals nothing when the seal is incomplete, of another epoch or another executor, or absent", async () => {
