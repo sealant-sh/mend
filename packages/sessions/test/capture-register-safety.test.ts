@@ -27,6 +27,7 @@ import { afterAll, describe, expect, it } from "vitest";
 import {
   CaptureChannel,
   CaptureChannelLive,
+  MANIFEST_FEATURES,
   CaptureUploadPolicy,
   CaptureUploadPolicyDefault,
   resolveCaptureUploadPolicy,
@@ -628,5 +629,181 @@ describe("capture.register records a completed final flush on the chain (cross-r
       expect(result.sealed, JSON.stringify(seal)).toBeNull();
       expect(result.newest).toBeNull();
     }
+  });
+});
+
+describe("plan.get hands a head only to an executor that reads what it means (manifest_features)", () => {
+  const escaped = `caf${String.fromCodePoint(0x10_ffe9)}`;
+  /** A head (capture 0, registered by `writer`, lease released) holding one feature. */
+  const headWith = (wt: WorktreeId, feature: string) =>
+    Effect.gen(function* () {
+      const repo = yield* CaptureStoreRepo;
+      yield* repo.init(wt);
+      const writer = yield* apiOf(wt, "writer");
+      const { epoch } = yield* writer.planGet({
+        epoch: 0,
+        manifest_format: 2,
+        manifest_features: [...MANIFEST_FEATURES],
+      });
+      const body = utf8("raw file");
+      const plain: DirEntry = {
+        name: "plain.txt",
+        kind: "file",
+        mode: 0o100644,
+        size: body.byteLength,
+        mtime: 1,
+        chunks: [sha256Hex(body)],
+      };
+      const entries: ReadonlyArray<DirEntry> =
+        feature === "raw_names" ? [{ ...plain, name: escaped, raw_name: "636166e9" }] : [plain];
+      const hand = handWorkspace(wt, epoch, entries, [body]);
+      const meta =
+        feature === "worktree_meta"
+          ? withMeta(
+              wt,
+              documentOf({
+                format: 1,
+                entries: [{ path: "", kind: "dir", mode: 0o755, mtime: 1 }],
+              }),
+            )
+          : null;
+      const workspace =
+        meta === null
+          ? hand.workspace
+          : {
+              ...hand.workspace,
+              packs: [...hand.workspace.packs, ...meta.workspace.packs],
+              worktree_meta: meta.workspace.worktree_meta,
+            };
+      const base = buildManifest({
+        worktreeId: wt,
+        epoch,
+        n: 0,
+        parent: null,
+        kind: "final",
+        workspace,
+        ...(feature === "other_bulk"
+          ? {
+              otherBulk: {
+                "linux-aarch64-gnu": { root: "", packs: [], platform: "linux-aarch64-gnu" },
+              },
+            }
+          : {}),
+        ...(feature === "symrefs"
+          ? {
+              git: {
+                packs: [],
+                refs: {},
+                head: "refs/heads/main",
+                fsck: "unverified" as const,
+                symrefs: { "refs/remotes/origin/HEAD": "refs/remotes/origin/main" },
+              },
+            }
+          : {}),
+      });
+      const manifest =
+        feature === "final_seal"
+          ? { ...base.manifest, final_seal: { complete: true, epoch, executor: "writer" } }
+          : base.manifest;
+      const bytes = utf8(JSON.stringify(manifest));
+      const id = sha256Hex(bytes);
+      const key = captureKeys(wt, epoch).manifest(id);
+      yield* uploadObjects(new Map([...hand.objects, ...(meta?.objects ?? []), [key, bytes]]));
+      yield* writer.register({
+        worktree_id: wt,
+        epoch,
+        n: 0,
+        parent: null,
+        capture_id: id,
+        manifest_key: key,
+        manifest: JSON.parse(JSON.stringify(manifest)),
+      });
+      yield* repo.release(wt, epoch);
+      return { id, epoch };
+    });
+
+  it("refuses each feature to an executor that does not list it, before the claim, and answers one that does", async () => {
+    for (const feature of MANIFEST_FEATURES) {
+      const wt = WorktreeId.make(`wt-feature-${feature}`);
+      const world = worldOf();
+      const result = await Effect.runPromise(
+        Effect.gen(function* () {
+          const { id, epoch } = yield* headWith(wt, feature);
+          const repo = yield* CaptureStoreRepo;
+          const reader = yield* apiOf(wt, "reader");
+          const others = MANIFEST_FEATURES.filter((other) => other !== feature);
+          const refused = yield* reader
+            .planGet({ epoch: 0, manifest_format: 2, manifest_features: others })
+            .pipe(
+              Effect.map(() => null),
+              Effect.catch((error) => Effect.succeed(error)),
+            );
+          const lease = yield* repo.leaseOf(wt);
+          const plan = yield* reader.planGet({
+            epoch: 0,
+            manifest_format: 2,
+            manifest_features: [...MANIFEST_FEATURES],
+          });
+          return { refused, lease, epoch, id, plan };
+        }).pipe(Effect.provide(world.layer)),
+      );
+      expect(result.refused?.reason, feature).toBe("manifest-features");
+      expect(result.refused?.status, feature).toBe(409);
+      expect(result.refused?.missing, feature).toEqual([feature]);
+      // Refused before the claim: the epoch did not move, nobody holds the lease.
+      expect(result.lease?.epoch, feature).toBe(result.epoch);
+      expect(result.lease?.live, feature).toBe(false);
+      expect(result.plan.head?.capture_id, feature).toBe(result.id);
+      expect(result.plan.manifest_features, feature).toEqual(MANIFEST_FEATURES);
+    }
+  });
+
+  it("an executor that names no features is handed a head that holds none", async () => {
+    const wt = WorktreeId.make("wt-feature-none");
+    const world = worldOf();
+    const plan = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* headWith(wt, "none");
+        return yield* (yield* apiOf(wt, "reader")).planGet({ epoch: 0, manifest_format: 2 });
+      }).pipe(Effect.provide(world.layer)),
+    );
+    expect(plan.head).not.toBeNull();
+  });
+
+  it("an executor on another platform than the head's bulk section must carry other_bulk", async () => {
+    const wt = WorktreeId.make("wt-feature-platform");
+    const world = worldOf();
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.init(wt);
+        const writer = yield* apiOf(wt, "writer");
+        const { epoch } = yield* writer.planGet({ epoch: 0, manifest_format: 2 });
+        const built = buildManifest({
+          worktreeId: wt,
+          epoch,
+          n: 0,
+          parent: null,
+          kind: "final",
+          bulk: { root: "", packs: [], platform: "linux-aarch64-gnu" },
+        });
+        yield* uploadObjects(new Map([[built.key, built.bytes]]));
+        yield* writer.register(registerInput(built));
+        yield* repo.release(wt, epoch);
+        const reader = yield* apiOf(wt, "reader");
+        const samePlatform = yield* outcome(
+          reader.planGet({ epoch: 0, manifest_format: 2, platform: "linux-aarch64-gnu" }),
+        );
+        yield* repo.release(wt, epoch + 1);
+        const otherPlatform = yield* outcome(
+          reader.planGet({ epoch: 0, manifest_format: 2, platform: "linux-x86_64-gnu" }),
+        );
+        return { samePlatform, otherPlatform };
+      }).pipe(Effect.provide(world.layer)),
+    );
+    expect(result).toEqual({
+      samePlatform: "ok",
+      otherPlatform: "CaptureRouteError:manifest-features",
+    });
   });
 });

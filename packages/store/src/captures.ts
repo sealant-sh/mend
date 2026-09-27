@@ -49,6 +49,11 @@ export const GitSection = Schema.Struct({
   refs: Schema.Record(Schema.String, Schema.String),
   head: Schema.String,
   fsck: GitFsckOutcome,
+  /**
+   * Symbolic refs other than `HEAD`, name → target (sealantd `manifest.rs`); each is in `refs`
+   * too, by the sha it resolved to. Absent when there are none.
+   */
+  symrefs: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
 });
 export type GitSection = typeof GitSection.Type;
 
@@ -902,6 +907,32 @@ export const makeDirReader = (
         return yield* decodeDirObject(digest, bytes);
       });
     return { read };
+  });
+
+/**
+ * Whether any dir object of a section names an entry by raw bytes (`raw_name` / `raw_target`):
+ * a reader that ignores those fields would lay down the escaped key instead. Walks every dir
+ * object; stops at the first one found.
+ */
+export const sectionHoldsRawNames = (
+  section: ChunkedSection,
+): Effect.Effect<boolean, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    if (section.root === "") return false;
+    const dirs = yield* makeDirReader(section);
+    const visited = new Set<string>();
+    const queue = [section.root];
+    while (queue.length > 0) {
+      const ref = queue.pop();
+      if (ref === undefined) break;
+      if (visited.has(ref)) continue;
+      visited.add(ref);
+      for (const entry of yield* dirs.read(ref)) {
+        if (entry.raw_name !== undefined || entry.raw_target !== undefined) return true;
+        if (entry.kind === "dir" && entry.child !== undefined) queue.push(entry.child);
+      }
+    }
+    return false;
   });
 
 // ─── Materialize ────────────────────────────────────────────────────────────

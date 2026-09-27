@@ -34,6 +34,7 @@ import {
   treePrefixesOfSections,
   verifySectionRestorable,
   verifyWorktreeMeta,
+  sectionHoldsRawNames,
 } from "@mend/store";
 import { Duration, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -82,8 +83,85 @@ export const PlanGetRequest = Schema.Struct({
    * no higher than it, so an executor never writes what it could not restore.
    */
   manifest_format: Schema.optional(Schema.Int),
+  /**
+   * The manifest features the executor READS (`MANIFEST_FEATURES`), beside `manifest_format`:
+   * the format gate negotiates how dir objects are stored, not what a manifest means. A head
+   * holding a feature the executor does not list is refused (409 `manifest-features`, naming
+   * them in `missing`) before the claim, because an executor that ignores one restores less
+   * than was saved or drops it from the captures it writes next. Absent = none.
+   */
+  manifest_features: Schema.optional(Schema.Array(Schema.String)),
 });
 export type PlanGetRequest = typeof PlanGetRequest.Type;
+
+/**
+ * What a manifest can say beyond its sections' formats, each of which a reader must act on:
+ *
+ * - `worktree_meta`: `sections.workspace.worktree_meta`, the metadata overlay a restore applies
+ *   (modes, nanosecond mtimes, untracked directories, hardlink groups of the working tree).
+ * - `symrefs`: `sections.git.symrefs`, symbolic refs other than `HEAD` a restore writes.
+ * - `other_bulk`: `sections.other_bulk`, other platforms' bulk sections an executor carries into
+ *   every capture it writes — and needed as soon as the head's own bulk section was captured on
+ *   another platform than the executor's, which then carries it there.
+ * - `raw_names`: `raw_name` / `raw_target` on dir entries, the bytes of names and symlink texts
+ *   that are not UTF-8.
+ * - `final_seal`: the manifest's `final_seal`, a completed final flush of the executor that wrote
+ *   it.
+ */
+export const MANIFEST_FEATURES = [
+  "worktree_meta",
+  "symrefs",
+  "other_bulk",
+  "raw_names",
+  "final_seal",
+] as const;
+export type ManifestFeature = (typeof MANIFEST_FEATURES)[number];
+
+/**
+ * The features a plan's head holds that the executor did not say it reads. `stored` is the head
+ * as registered, `planned` as this executor would restore it; the dir objects are walked for raw
+ * names only when the executor does not read them.
+ */
+export const missingManifestFeatures = (
+  stored: CaptureManifest,
+  planned: CaptureManifest,
+  input: PlanGetRequest,
+): Effect.Effect<ReadonlyArray<ManifestFeature>, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    const reads = new Set(input.manifest_features ?? []);
+    const held: Array<ManifestFeature> = [];
+    const holds = (feature: ManifestFeature, present: boolean) => {
+      if (present && !reads.has(feature)) held.push(feature);
+    };
+    holds("worktree_meta", planned.sections.workspace.worktree_meta !== undefined);
+    holds("symrefs", Object.keys(planned.sections.git.symrefs ?? {}).length > 0);
+    const storedBulk = stored.sections.bulk;
+    holds(
+      "other_bulk",
+      Object.keys(stored.sections.other_bulk ?? {}).length > 0 ||
+        (input.platform !== undefined &&
+          storedBulk !== "pending" &&
+          storedBulk.platform !== input.platform),
+    );
+    holds("final_seal", planned.final_seal !== undefined);
+    if (!reads.has("raw_names")) {
+      const bulk = planned.sections.bulk;
+      const raw =
+        (yield* sectionHoldsRawNames(planned.sections.workspace)) ||
+        (bulk !== "pending" && (yield* sectionHoldsRawNames(bulk)));
+      holds("raw_names", raw);
+    }
+    return held;
+  });
+
+/** 409 `manifest-features`: the plan holds manifest features the executor did not say it reads. */
+const featuresRefusal = (missing: ReadonlyArray<ManifestFeature>) =>
+  new CaptureRouteError({
+    status: 409,
+    reason: "manifest-features",
+    message: `the head holds ${missing.join(", ")}; this executor does not say it reads ${missing.length === 1 ? "it" : "them"} (plan.get manifest_features) — run a sealantd that does`,
+    missing,
+  });
 
 /** What an executor says it reads: 1 unless it names a higher format (capped at what Mend reads). */
 export const readerFormatOf = (input: PlanGetRequest): SectionFormat =>
@@ -132,6 +210,11 @@ export interface PlanGetResponse {
    * only decides what the executor writes next.
    */
   readonly manifest_format: SectionFormat;
+  /**
+   * Every manifest feature this registrar reads, validates and keeps (`MANIFEST_FEATURES`): an
+   * executor may write any of them. A sealantd that predates the list ignores it.
+   */
+  readonly manifest_features: ReadonlyArray<ManifestFeature>;
   /**
    * Content to lay down beside the worktree — the project's folders and references, which a
    * captured workspace cannot bind-mount (`capture-sources.ts`). Absent when the project selected
@@ -220,6 +303,8 @@ export type HeartbeatRequest = typeof HeartbeatRequest.Type;
  * `unrestorable` (422 on `capture.register`): a section's tree would not restore from what the
  * manifest names — nothing is registered. `manifest-format` (409 on `plan.get`): the head holds
  * a section format the executor did not say it reads — refused before the claim.
+ * `manifest-features` (409 on `plan.get`): the head holds manifest features the executor did not
+ * say it reads (`missing` names them) — refused before the claim.
  */
 export const CaptureRefusalReason = Schema.Literals([
   "stale-epoch",
@@ -237,6 +322,7 @@ export const CaptureRefusalReason = Schema.Literals([
   "size-mismatch",
   "unrestorable",
   "manifest-format",
+  "manifest-features",
 ]);
 export type CaptureRefusalReason = typeof CaptureRefusalReason.Type;
 
@@ -705,6 +791,11 @@ export const CaptureChannelLive: Layer.Layer<
         const reads = readerFormatOf(input);
         const holds = planFormatOf(plan.manifest);
         if (holds > reads) return yield* formatRefusal(reads, holds);
+        const missing = yield* missingManifestFeatures(plan.manifest, plan.manifest, input).pipe(
+          Effect.provideService(BlobStore, blobs),
+          Effect.catch(storeError("reading the standby plan's features", plan.manifestKey)),
+        );
+        if (missing.length > 0) return yield* featuresRefusal(missing);
         const keys = yield* keysNeededBy(plan.manifest).pipe(
           Effect.provideService(BlobStore, blobs),
           Effect.catch(storeError("walking the standby plan", plan.manifestKey)),
@@ -726,6 +817,7 @@ export const CaptureChannelLive: Layer.Layer<
           },
           get_urls: urls,
           manifest_format: answeredFormat(policy.manifestFormat, reads),
+          manifest_features: MANIFEST_FEATURES,
         } satisfies PlanGetResponse;
       });
       return {
@@ -901,17 +993,28 @@ export const CaptureChannelLive: Layer.Layer<
         // register needs the live lease the claim below is the only way to take.
         const chain = yield* repo.headOf(worktreeId);
         const head = chain?.head ?? null;
+        const stored = head === null ? null : yield* readManifest(head);
         const manifest =
-          head === null
+          head === null || stored === null
             ? null
-            : planForPlatform(yield* planManifest(head, yield* readManifest(head)), input.platform);
-        if (manifest !== null) {
+            : planForPlatform(yield* planManifest(head, stored), input.platform);
+        if (manifest !== null && stored !== null && head !== null) {
           const holds = planFormatOf(manifest);
           if (holds > reads) {
             yield* Effect.logWarning(
               "capture channel: plan refused · the head holds a section format this executor does not read",
             ).pipe(Effect.annotateLogs({ worktreeId, reads, holds }));
             return yield* formatRefusal(reads, holds);
+          }
+          const missing = yield* missingManifestFeatures(stored, manifest, input).pipe(
+            Effect.provideService(BlobStore, blobs),
+            Effect.catch(storeError("reading the head's manifest features", head.manifestKey)),
+          );
+          if (missing.length > 0) {
+            yield* Effect.logWarning(
+              "capture channel: plan refused · the head holds manifest features this executor does not read",
+            ).pipe(Effect.annotateLogs({ worktreeId, missing: missing.join(",") }));
+            return yield* featuresRefusal(missing);
           }
         }
         let epoch: number;
@@ -943,6 +1046,7 @@ export const CaptureChannelLive: Layer.Layer<
             head: null,
             get_urls: yield* sourceUrls(beside),
             manifest_format: manifestFormat,
+            manifest_features: MANIFEST_FEATURES,
             ...(beside.length === 0 ? {} : { sources: beside }),
             ...(origin.length === 0 ? {} : { remotes: origin }),
           };
@@ -968,6 +1072,7 @@ export const CaptureChannelLive: Layer.Layer<
           },
           get_urls: urls,
           manifest_format: manifestFormat,
+          manifest_features: MANIFEST_FEATURES,
           ...(beside.length === 0 ? {} : { sources: beside }),
           ...(origin.length === 0 ? {} : { remotes: origin }),
         } satisfies PlanGetResponse;

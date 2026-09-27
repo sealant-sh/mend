@@ -7,6 +7,43 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-28 · 0.37.2 · sealantd: say which manifest features it reads; seal a completed final flush
+
+Two wire points on the session channel (sealantd `crates/sealant-capture/src/registrar.rs`,
+`manifest.rs`).
+
+- **The features the executor reads.**
+  - **Needed:** `manifest_format` negotiates how dir objects are stored, not what a manifest means.
+    An executor that ignores `worktree_meta`, `symrefs`, `other_bulk`, `raw_name`/`raw_target` or
+    `final_seal` restores less than was saved (modes, mtimes, empty directories, hardlinks, symbolic
+    refs, names that are not UTF-8) or drops them from the captures it writes next (another
+    platform's dependency tree).
+  - **Today:** Mend reads a request field `manifest_features` (a list of strings). `plan.get`
+    refuses a head holding a feature the list leaves out — 409 `manifest-features` with `missing`
+    naming them — before it claims the lease, exactly as it refuses a format, and answers
+    `manifest_features` listing every feature Mend reads, validates and keeps. Until sealantd sends
+    the list, every head holding one of them is refused to it; a head holding none is handed out as
+    before.
+  - **Suggested:** `PlanGetRequest.booting` sends
+    `"manifest_features": ["worktree_meta", "symrefs", "other_bulk", "raw_names", "final_seal"]`
+    (each one this build reads), beside `"manifest_format": 2`. A feature is held when:
+    `worktree_meta` — the answered workspace section has `worktree_meta`; `symrefs` — the git
+    section has a non-empty `symrefs`; `other_bulk` — the stored head has a non-empty `other_bulk`,
+    or the request names a `platform` and the stored head's ready `bulk` was captured on another
+    platform (the executor must carry it into `other_bulk`); `raw_names` — any dir entry of the
+    answered workspace or bulk section carries `raw_name` or `raw_target`; `final_seal` — the head
+    manifest carries `final_seal`. Mirror the refusal in the registrar test double.
+- **A completed final flush, sealed.**
+  - **Needed:** cross-repo decision 1: "saved" is a store-side fact, never only an RPC reply.
+  - **Today:** Mend records a top-level manifest field
+    `"final_seal": {"complete": true, "epoch": <lease epoch>, "executor": "<executor id>"}` with the
+    register CAS (migration 0080), only when `complete` is true, `epoch` is the epoch the capture
+    registers under and `executor` is the executor the session token was issued for (the Sealant
+    workspace id Mend planned it as). Any other seal registers the capture and records nothing.
+  - **Suggested:** after the final flush completes, register one more capture (the final head's
+    sections unchanged, `kind: "final"`, `n` = head + 1) carrying `final_seal`, and report
+    `complete: true` only once that register is acknowledged.
+
 ## 2026-09-27 · 0.37.2 · A capture status read, and a snap that fails says so
 
 - **A capture status read.**

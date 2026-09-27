@@ -731,6 +731,16 @@ Mend-side details the decision record left open, decided in this ADR:
       executor. The channel passes a seal only when it is `complete`, its `epoch` is the one the
       capture registers under and its `executor` is the executor the session token is scoped to; any
       other seal registers the capture and records nothing (logged).
-      `CaptureStoreRepo. sealedCompletion(worktree, executor, epoch?)` reads it: the only store-side
-      evidence that an executor's work is saved, and what Mend attests when it asks Sealant to stop
-      that executor.
+      `sealedCompletion(worktree, executor, epoch?)` reads it: the only store-side evidence that an
+      executor's work is saved, and what Mend attests when it asks Sealant to stop that executor.
+    - **`plan.get` negotiates what a manifest means, not only how it is stored.** `manifest_format`
+      lets an old reader restore a head whose meaning it ignores. The request now carries
+      `manifest_features` (`MANIFEST_FEATURES`: `worktree_meta`, `symrefs`, `other_bulk`,
+      `raw_names`, `final_seal`); a head holding a feature the executor does not list is refused 409
+      `manifest-features` (`missing` names them) before the claim, like a format. `other_bulk` is
+      held by a head with a non-empty `other_bulk`, and by any head whose ready bulk section was
+      captured on another platform than the one the request names (the executor must carry it).
+      `raw_names` is found by walking the answered sections' dir objects, only for an executor that
+      does not list it. The answer's `manifest_features` lists every feature Mend reads. Until
+      sealantd sends the list (PLATFORM-FEEDBACK 2026-09-28), a head holding any of them is refused
+      and one holding none is handed out as before.

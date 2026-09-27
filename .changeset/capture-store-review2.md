@@ -20,3 +20,7 @@ sealantd would reject.
 A capture whose manifest carries sealantd's `final_seal` (a completed final flush) records it on the
 chain for that executor and epoch (migration 0080), when it is complete and names the executor and
 epoch that registered it. It is what Mend reads as "saved".
+
+`plan.get` refuses a head holding `worktree_meta`, `symrefs`, `other_bulk`, raw names or a
+`final_seal` to an executor that does not list the feature in `manifest_features`, before it claims
+the lease (409 `manifest-features`), and answers the features Mend reads.
