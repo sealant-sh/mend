@@ -1,8 +1,10 @@
+import * as crypto from "node:crypto";
+
 import type { CaptureRow, PackRow } from "@mend/db";
 import { WorktreeId } from "@mend/domain";
 import { CaptureRuntime, PRESIGN_TTL_SECONDS } from "@mend/sessions";
 import { captureKeyOwner, keysOfSections, packIdxKeyOf, treePrefixesOfSections } from "@mend/store";
-import { Duration, Effect, Layer, Schedule } from "effect";
+import { Clock, Duration, Effect, Layer, Schedule } from "effect";
 import * as Context from "effect/Context";
 
 /**
@@ -39,6 +41,16 @@ import * as Context from "effect/Context";
  */
 
 export const RETENTION_GRACE_MS = 30 * 60 * 1000;
+/**
+ * How long a condemnation's claim lives unless renewed: far longer than any one delete may take,
+ * so a pass that renewed it and then deletes still holds it when the delete lands. A crashed
+ * pass's claim lapses after this, and its keys may come back.
+ */
+export const DELETION_CLAIM_TTL_SECONDS = 60 * 60;
+/** A pass renews its claim at least this often while it deletes. */
+export const CLAIM_RENEW_MS = 60 * 1000;
+/** One object delete that has not answered in this long counts as failed (its tombstone stays). */
+export const REMOVE_TIMEOUT = Duration.minutes(5);
 export const KEEP_ALL_MS = 24 * 60 * 60 * 1000;
 export const KEEP_HOURLY_MS = 7 * 24 * 60 * 60 * 1000;
 const HOUR_MS = 60 * 60 * 1000;
@@ -120,6 +132,7 @@ export const CaptureRetentionLive: Layer.Layer<CaptureRetention, never, CaptureR
         /** Remove one object; false (logged) when the store refused. */
         const remove = (key: string) =>
           blobs.remove(key).pipe(
+            Effect.timeout(REMOVE_TIMEOUT),
             Effect.tap(() => Effect.sync(() => (report.objectsRemoved += 1))),
             Effect.as(true),
             Effect.catch((error) =>
@@ -234,12 +247,25 @@ export const CaptureRetentionLive: Layer.Layer<CaptureRetention, never, CaptureR
         //    until the bytes are gone and it has seen them uploaded again. A chain that moved
         //    keeps everything until the next pass. Objects of a worktree with no chain left
         //    need no tombstone: no register can name them (its guard is gone).
+        //
+        //    The condemnation holds a claim on every key it tombstones until this pass has
+        //    deleted them and settled the tombstones (`finishDeletion`): no register brings a
+        //    key back while the claim is live, whatever another pass did with the same keys in
+        //    between (review 2026-09-28 #1). The claim is renewed before the deletes and at
+        //    least every `CLAIM_RENEW_MS` while they run; once a renewal fails — the claim
+        //    lapsed, so a register may have brought a key back — this pass deletes nothing more
+        //    of that chain and leaves its tombstones undeleted for the next pass.
         for (const [owner, plan] of doomed) {
           const guard = guards.get(owner);
+          const token = crypto.randomUUID();
+          const claimed = plan.condemned.size;
           if (guard !== undefined) {
-            const condemned = yield* repo.condemn(WorktreeId.make(owner), guard, [
-              ...plan.condemned,
-            ]);
+            const condemned = yield* repo.condemn(
+              WorktreeId.make(owner),
+              guard,
+              [...plan.condemned],
+              { token, ttlSeconds: DELETION_CLAIM_TTL_SECONDS },
+            );
             if (!condemned) {
               yield* Effect.logInfo(
                 "capture retention: a register moved the chain during the pass · kept for the next",
@@ -254,10 +280,46 @@ export const CaptureRetentionLive: Layer.Layer<CaptureRetention, never, CaptureR
             );
             report.packsRetired += plan.retire.length;
           }
+          let renewedAt = Number.NEGATIVE_INFINITY;
+          /** The claim still holds (renewed now if it is due); always true without a chain. */
+          const holds = Effect.gen(function* () {
+            if (guard === undefined) return true;
+            const at = yield* Clock.currentTimeMillis;
+            if (at - renewedAt < CLAIM_RENEW_MS) return true;
+            const renewed = yield* repo.renewDeletion(token, DELETION_CLAIM_TTL_SECONDS);
+            if (renewed < claimed) return false;
+            renewedAt = at;
+            return true;
+          });
           const failed: Array<string> = [];
+          let lost = false;
           for (const key of plan.keys) {
+            if (!(yield* holds)) {
+              lost = true;
+              break;
+            }
             const removed = yield* remove(key);
             if (!removed) failed.push(key);
+          }
+          // A retired pack row whose bytes may still be there goes back to `uploaded`, so the
+          // next pass weighs it again (a retired row is never condemned twice by step 2).
+          const unfinished = plan.retire.filter(
+            (pack) =>
+              lost || failed.some((key) => key === pack.key || key === packIdxKeyOf(pack.key)),
+          );
+          if (unfinished.length > 0) {
+            yield* repo.setPackState(
+              unfinished.map((pack) => pack.id),
+              "uploaded",
+            );
+          }
+          if (lost) {
+            // The tombstones stay undeleted (a register naming them is refused) and the claim
+            // rows lapse on their own; the next pass condemns and removes the rest.
+            yield* Effect.logWarning(
+              "capture retention: the deletion claim lapsed during the pass · stopped deleting, kept for the next",
+            ).pipe(Effect.annotateLogs({ worktreeId: owner }));
+            continue;
           }
           // A tombstone's bytes are gone once every object it stands for is: a pack with its
           // index, a `trees/` prefix with every object below it that this pass deleted. One
@@ -265,7 +327,7 @@ export const CaptureRetentionLive: Layer.Layer<CaptureRetention, never, CaptureR
           const settled = [...plan.condemned].filter(
             (condemned) => !failed.some((key) => key === condemned || key.startsWith(condemned)),
           );
-          if (guard !== undefined) yield* repo.markDeleted(settled);
+          if (guard !== undefined) yield* repo.finishDeletion(token, settled);
         }
 
         // 5. Abort orphaned multipart uploads: every one under a fenced epoch, and every one

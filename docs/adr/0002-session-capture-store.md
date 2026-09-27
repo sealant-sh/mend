@@ -683,3 +683,22 @@ Mend-side details the decision record left open, decided in this ADR:
       capture snaps both); (3) only then roll sealantd back. A session whose head still holds a
       format-2 section is not lost: its plan is refused with `manifest-format` before the older
       executor touches anything, and it resumes on a sealantd that reads format 2.
+31. (2026-09-28) Deletion owns what it condemned until it is done, a register reads what the bucket
+    holds, and a completed final flush is a fact on the chain (review 2026-09-28, findings 1, 12,
+    17).
+    - **Deletion claims** (migration 0080). The guard orders one register against one condemnation;
+      it did not own the delete that follows. Pass A condemned and retired a pack and paused before
+      deleting it; pass B, seeing the row retired, swept the same objects from the fenced epoch,
+      deleted them and marked their tombstones deleted; the executor uploaded them again and its
+      final capture revived them; A resumed and deleted the new head's bytes. Now every condemnation
+      holds a claim on each key it tombstones (`capture_deletion_claims`, a fresh token per
+      condemnation) until its pass has deleted the bytes and settled the tombstones in one statement
+      (`finishDeletion`). A tombstone reads `deleted` to a register only while no live claim is on
+      its key, and the register CAS refuses to lift one that has a live claim, so while any pass may
+      still delete a key, no register brings it back. A claim lives an hour
+      (`DELETION_CLAIM_TTL_SECONDS`) and its pass renews it before its first delete and at least
+      every minute after; a renewal after a lapse fails (a register may already have revived the
+      key), and the pass then deletes nothing more of that chain and returns the pack rows it
+      retired to `uploaded` so the next pass weighs them again. A delete that has not answered in
+      five minutes counts as failed. What remains is a delete issued before a lapse that lands more
+      than an hour later; nothing here can fence a request the bucket already holds.

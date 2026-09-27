@@ -1918,6 +1918,26 @@ export const captureTombstones = pgTable(
   (table) => [index("capture_tombstones_worktree_idx").on(table.worktreeId)],
 );
 
+/**
+ * A retention pass's hold on a key it condemned (migration 0080): from the condemnation until the
+ * pass has deleted the bytes and settled the tombstone. While one is live, no register brings the
+ * key back.
+ */
+export const captureDeletionClaims = pgTable(
+  "capture_deletion_claims",
+  {
+    key: text()
+      .notNull()
+      .references(() => captureTombstones.key, { onDelete: "cascade" }),
+    token: text().notNull(),
+    expiresAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+  },
+  (table) => [
+    primaryKey({ columns: [table.key, table.token] }),
+    index("capture_deletion_claims_token_idx").on(table.token),
+  ],
+);
+
 /** One row per registered capture; `id` is the sha256 of the manifest bytes. */
 export const captures = pgTable(
   "captures",

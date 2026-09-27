@@ -70,6 +70,9 @@ const freshWorktree = Effect.gen(function* () {
   return id;
 });
 
+/** A deletion claim for a test condemnation: `token` names it, an hour to live. */
+const claimOf = (token: string, ttlSeconds = 3600) => ({ token, ttlSeconds });
+
 const captureInput = (
   worktreeId: WorktreeId,
   n: number,
@@ -412,7 +415,7 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
           sql`UPDATE worktree_chain SET guard = guard + 1 WHERE worktree_id = ${worktreeId}`,
         );
         const blockedCondemn = yield* Effect.forkChild(
-          repo.condemn(worktreeId, readBeforeRegister, [key]),
+          repo.condemn(worktreeId, readBeforeRegister, [key], claimOf("race")),
         );
         yield* Effect.sleep("300 millis");
         const condemnWaited = blockedCondemn.pollUnsafe() === undefined;
@@ -424,12 +427,12 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
         //    reads after it sees the tombstone; once the bytes are gone, a register that saw
         //    them again revives the key with its CAS.
         const before = yield* guardOf;
-        const condemned = yield* repo.condemn(worktreeId, before, [key]);
+        const condemned = yield* repo.condemn(worktreeId, before, [key], claimOf("order"));
         const staleRegister = yield* reasonOf(
           repo.register({ ...one, guards: [{ worktreeId, guard: before }] }),
         );
         const seen = yield* repo.referenceState([worktreeId], [key]);
-        yield* repo.markDeleted([key]);
+        yield* repo.finishDeletion("order", [key]);
         const gone = yield* repo.referenceState([worktreeId], [key]);
         const revived = yield* reasonOf(
           repo.register({
@@ -469,6 +472,80 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     expect(result.after).toEqual([]);
   });
 
+  it("deletion claims (0080): a key comes back only once every pass that condemned it has finished, or its claim lapsed", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const worktreeId = yield* freshWorktree;
+        const key = `captures/${worktreeId}/1/packs/${"e".repeat(64)}`;
+        const { epoch } = yield* repo.claim(worktreeId, "exec", 3600);
+        const guardOf = Effect.map(
+          repo.referenceState([worktreeId], [key]),
+          (state) => state.guards.get(worktreeId) ?? -1,
+        );
+        const zero = captureInput(worktreeId, 0, null, epoch);
+        yield* repo.register({ ...zero, guards: [{ worktreeId, guard: yield* guardOf }] });
+        const one = captureInput(worktreeId, 1, zero.id, epoch);
+        const tryRevive = Effect.gen(function* () {
+          const state = yield* repo.referenceState([worktreeId], [key]);
+          return yield* reasonOf(
+            repo.register({
+              ...one,
+              guards: [{ worktreeId, guard: state.guards.get(worktreeId) ?? -1 }],
+              revive: [key],
+            }),
+          );
+        });
+        const deletedOf = Effect.map(repo.referenceState([worktreeId], [key]), (state) =>
+          state.tombstones.map((tombstone) => tombstone.deleted),
+        );
+
+        // Pass A condemns; pass B condemns the same key, deletes it, and finishes first.
+        yield* repo.condemn(worktreeId, yield* guardOf, [key], claimOf(`a-${worktreeId}`));
+        yield* repo.condemn(worktreeId, yield* guardOf, [key], claimOf(`b-${worktreeId}`));
+        yield* repo.finishDeletion(`b-${worktreeId}`, [key]);
+        const whileAHolds = yield* deletedOf;
+        // The channel refuses on `deleted: false`; the CAS refuses the revive on its own too.
+        const reviveWhileAHolds = yield* tryRevive;
+        const renewedA = yield* repo.renewDeletion(`a-${worktreeId}`, 3600);
+        yield* repo.finishDeletion(`a-${worktreeId}`, [key]);
+        const afterA = yield* deletedOf;
+        const renewedAfterFinish = yield* repo.renewDeletion(`a-${worktreeId}`, 3600);
+
+        // A crashed pass: its claim lapses, it can never renew it, and the key comes back.
+        const other = `captures/${worktreeId}/1/packs/${"f".repeat(64)}`;
+        yield* repo.condemn(worktreeId, yield* guardOf, [other], claimOf(`c-${worktreeId}`));
+        yield* repo.condemn(worktreeId, yield* guardOf, [other], claimOf(`d-${worktreeId}`));
+        yield* repo.finishDeletion(`d-${worktreeId}`, [other]);
+        yield* sql`
+          UPDATE capture_deletion_claims SET expires_at = now() - interval '1 second'
+           WHERE token = ${`c-${worktreeId}`}`;
+        const renewedLapsed = yield* repo.renewDeletion(`c-${worktreeId}`, 3600);
+        const lapsed = (yield* repo.referenceState([worktreeId], [other])).tombstones;
+        const revived = yield* tryRevive;
+        return {
+          whileAHolds,
+          reviveWhileAHolds,
+          renewedA,
+          afterA,
+          renewedAfterFinish,
+          renewedLapsed,
+          lapsed,
+          revived,
+        };
+      }),
+    );
+    expect(result.whileAHolds).toEqual([false]);
+    expect(result.reviveWhileAHolds).toBe("guard_moved");
+    expect(result.renewedA).toBe(1);
+    expect(result.afterA).toEqual([true]);
+    expect(result.renewedAfterFinish).toBe(0);
+    expect(result.renewedLapsed).toBe(0);
+    expect(result.lapsed).toEqual([{ key: expect.any(String), deleted: true }]);
+    expect(result.revived).toBe("ok");
+  });
+
   it("guard (0076): a register naming another chain's objects bumps that chain's guard, and misses if it moved", async () => {
     const result = await run(
       Effect.gen(function* () {
@@ -482,9 +559,12 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
           guard: state.guards.get(worktreeId) ?? -1,
         }));
         // Retention condemns something of the other chain after the register read.
-        const condemned = yield* repo.condemn(other, state.guards.get(other) ?? -1, [
-          `captures/${other}/1/packs/${"d".repeat(64)}`,
-        ]);
+        const condemned = yield* repo.condemn(
+          other,
+          state.guards.get(other) ?? -1,
+          [`captures/${other}/1/packs/${"d".repeat(64)}`],
+          claimOf(`other-${other}`),
+        );
         const zero = captureInput(own, 0, null, epoch);
         const missed = yield* repo.register({ ...zero, guards }).pipe(
           Effect.map(() => "ok"),
