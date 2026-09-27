@@ -98,12 +98,20 @@ import {
   type CaptureReading,
   captureDrainStep,
   captureHarvestReady,
+  captureIncompleteReasonOf,
   captureSaved,
   captureStatusLine,
+  type CaptureThroughput,
   executorCapDue,
+  observeCaptureThroughput,
   planExecutorCap,
 } from "@mend/domain/workbench";
-import { asSealantUser, SealantClient, SealantPlatformError } from "@mend/sealant";
+import {
+  asSealantUser,
+  type CaptureFlushKind,
+  SealantClient,
+  SealantPlatformError,
+} from "@mend/sealant";
 import {
   AgentBridge,
   DotfilesStore,
@@ -424,6 +432,9 @@ const EXECUTOR_REPLACED_SUMMARY = "picked up · executor replaced";
  * head is registered: a full ship of a large small-class delta, not a cadence window.
  */
 const CHECKPOINT_FLUSH_TIMEOUT = Duration.seconds(20);
+/** A landing asks the executor this many times for its captures before it says they are behind. */
+const LANDING_FLUSH_ATTEMPTS = 4;
+const LANDING_FLUSH_PAUSE = Duration.seconds(2);
 /**
  * How long a claimed standby's `capture.replan` may take before the launch goes cold: a delta
  * materialise of the head over the project base (the base itself is already on disk).
@@ -518,6 +529,16 @@ export class NothingUnsavedError extends Schema.TaggedErrorClass<NothingUnsavedE
 ) {}
 
 /**
+ * A landing asked for the worktree as its executor holds it now, and the registered captures did
+ * not catch up (`SessionEngine.landingCheckpoint`): the flush was refused, timed out or partial,
+ * or nobody could say whether an executor still holds work. Nothing was checkpointed or landed.
+ */
+export class CapturesBehindError extends Schema.TaggedErrorClass<CapturesBehindError>()(
+  "CapturesBehindError",
+  { worktreeId: Schema.String, attempts: Schema.Int },
+) {}
+
+/**
  * Joining an existing worktree with a different base is refused — a durable
  * worktree is never silently re-based. Drop the base to join as it stands.
  */
@@ -607,11 +628,43 @@ export class SessionLaunchSetupError extends Schema.TaggedErrorClass<SessionLaun
  */
 /**
  * What a capture flush came to (`SessionEngine.flushCaptures`): `flushed` when the executor
- * shipped and registered everything it held; `none` when there is nothing to flush (the store is
- * co-located, nobody holds the worktree, or its holder has no workspace yet), so the registered
- * head is all there is; `incomplete` when the flush was refused, timed out or was partial.
+ * shipped and registered everything it held; `none` when it is known that no executor holds
+ * anything more (the store is co-located, the worktree was never claimed, its holder was released
+ * after it ended, or the platform confirmed the holder ended), so the registered head is all there
+ * is; `incomplete` when the flush was refused, timed out or was partial — and whenever nobody can
+ * say (a lapsed lease whose executor may still run, a holder being launched, a lookup that failed).
+ * Unknown is never `none`.
  */
 export type CaptureFlushObservation = "flushed" | "none" | "incomplete";
+
+/**
+ * What keeps a worktree's durable identity (its rows, lease and chain) from being removed in
+ * capture mode (`SessionEngine.captureHolds`): an executor that may still hold work not yet saved.
+ * `saving` a drain is under way; `not-saved` a drain stopped moving and kept its workspace;
+ * `executor` a workspace the platform still reports up, or did not answer for; `lease` an
+ * executor's lease, live or lapsed without a confirmed end.
+ */
+export interface CaptureHold {
+  readonly sessionId: SessionId | null;
+  readonly kind: "saving" | "not-saved" | "executor" | "lease";
+}
+
+const sessionsWord = (n: number) => `${n} ${n === 1 ? "session" : "sessions"}`;
+
+/** `saving · 2 sessions · not saved · 1 session`: what holds a removal, in the status words. */
+export const captureHoldWords = (holds: ReadonlyArray<CaptureHold>): string => {
+  const count = (kind: CaptureHold["kind"]) => holds.filter((hold) => hold.kind === kind).length;
+  const parts: Array<string> = [];
+  if (count("saving") > 0) parts.push(`saving · ${sessionsWord(count("saving"))}`);
+  if (count("not-saved") > 0) {
+    parts.push(`not saved · ${sessionsWord(count("not-saved"))} · workspace kept`);
+  }
+  if (count("executor") > 0) {
+    parts.push(`executor not ended · ${sessionsWord(count("executor"))}`);
+  }
+  if (count("lease") > 0) parts.push("executor lease held");
+  return parts.join(" · ");
+};
 
 export class SessionEngine extends Context.Service<
   SessionEngine,
@@ -775,6 +828,20 @@ export class SessionEngine extends Context.Service<
       sessionId: SessionId,
       trigger: CheckpointTrigger,
     ) => Effect.Effect<Checkpoint, SessionNotFoundError | ProjectNotFoundError | GitError>;
+    /**
+     * A landing's checkpoint (docs/adr/0007-landing.md, step 1): in capture mode taken only once
+     * the executor's captures caught up — a flush that registered what it holds, or a known
+     * absence of anything more — and refused with `CapturesBehindError` otherwise, never taken
+     * from a stale head. `captureId` is the capture it was derived from (null co-located): the
+     * landing reads that capture and nothing newer.
+     */
+    readonly landingCheckpoint: (
+      sessionId: SessionId,
+      trigger: CheckpointTrigger,
+    ) => Effect.Effect<
+      { readonly checkpoint: Checkpoint; readonly captureId: string | null },
+      SessionNotFoundError | ProjectNotFoundError | GitError | CapturesBehindError
+    >;
     /**
      * Ask the executor holding the session's worktree to ship and register what its disk holds
      * (`capture.flush`), once any checkpoint under way has finished, and say what was observed.
@@ -964,6 +1031,12 @@ export class SessionEngine extends Context.Service<
     readonly removeWhenStopped: (
       sessionId: SessionId,
     ) => Effect.Effect<"removed" | "pending", SessionNotFoundError>;
+    /**
+     * Capture mode: what still holds the worktree's durable identity (`CaptureHold`). A removal
+     * that deletes rows goes only when this is empty — once every drain saved and every executor
+     * was observed ended — or after the owner's "discard unsaved and stop". Empty co-located.
+     */
+    readonly captureHolds: (worktreeId: WorktreeId) => Effect.Effect<ReadonlyArray<CaptureHold>>;
     /**
      * The session's conversation as the canonical record — read LIVE from the
      * running workspace's harness state (or from the store once settled).
@@ -1366,22 +1439,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
       };
 
+      /** What each executor was observed to ship, per workspace (`observeCaptureThroughput`). */
+      const throughputs = new Map<string, CaptureThroughput>();
+
       /**
-       * `workspace.capture.flush()` (SDK 0.31.0, sealantd ADR-0015) on one executor: a small-class
-       * capture, then everything staged is shipped and registered, bounded by the daemon's grace
-       * window and by `timeout` here. The answer is recorded on `session` as observed (pending,
-       * bytes and refusals once sealantd reports them, the head's registration time) and logged —
-       * null when the flush was refused or timed out. Runs as the executor's owner, whatever the
-       * caller's principal.
+       * `workspace.capture.flush()` (SDK 0.31.0, sealantd ADR-0015) on one executor. `suspend`: a
+       * small-class capture, then everything staged is shipped and registered; processes keep
+       * running (checkpoints, handoffs, readings). `final`: the executor is ending — it stops
+       * admitting processes, ends the running ones, snapshots both classes and ships everything;
+       * only its `complete: true` is saved (`captureSaved`). Bounded by the daemon and by `timeout`
+       * here. The answer is recorded on `session` as observed (pending, bytes and refusals once
+       * sealantd reports them, the head's registration time), folded into the executor's
+       * throughput, and logged — null when the flush was refused or timed out. Runs as the
+       * executor's owner, whatever the caller's principal.
        */
       const observeCaptureFlush = Effect.fn("SessionEngine.observeCaptureFlush")(function* (
         session: Session,
         workspace: Workspace,
         why: string,
         timeout: Duration.Duration,
+        kind: CaptureFlushKind,
       ) {
         const outcome = yield* sealant
-          .captureFlush(workspace)
+          .captureFlush(workspace, kind)
           .pipe(Effect.timeoutOption(timeout), Effect.result, asSealantUser(session.ownerUserId));
         const annotations = {
           sessionId: session.id,
@@ -1403,12 +1483,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         const report = outcome.success.value;
         const reading = readCaptureReport(report);
-        const saved = captureSaved(reading);
-        yield* Effect.logInfo(
-          `session engine: capture flush · ${saved ? "completed" : "partial"} · observed`,
-        ).pipe(
+        throughputs.set(
+          workspace.id,
+          observeCaptureThroughput(throughputs.get(workspace.id) ?? null, {
+            atMs: Date.now(),
+            uploadedBytes: reading.uploadedBytes,
+            registered: reading.registered,
+          }),
+        );
+        const words =
+          kind === "final"
+            ? captureSaved(reading)
+              ? "final · completed"
+              : reading.complete === null
+                ? "final · completion not reported"
+                : "final · incomplete"
+            : reading.pending === 0 && !reading.fenced
+              ? "completed"
+              : "partial";
+        yield* Effect.logInfo(`session engine: capture flush · ${words} · observed`).pipe(
           Effect.annotateLogs({
             ...annotations,
+            kind,
+            complete: reading.complete,
+            incompleteReason: reading.incompleteReason,
             epoch: report.epoch,
             headN: report.headN ?? null,
             pending: report.pending,
@@ -1431,6 +1529,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             refused: reading.refused,
             registeredAt: head?.head?.createdAt ?? null,
             observedAt: new Date(),
+            ...(kind === "final" ? { incompleteReason: captureIncompleteReasonOf(reading) } : {}),
           });
         }
         return reading;
@@ -1439,11 +1538,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * Flush whoever holds a worktree's lease, when that is a session's live executor: the
        * head a checkpoint is observed from is then the disk as of now, not the last cadence
-       * tick. `none` when there is no capture store, nobody holds the lease, or the holder has no
-       * workspace yet: the registered head is all there is. `incomplete` when the flush was
-       * refused, timed out or left small captures behind — the caller then observes whatever head
-       * is registered, or waits (`flushCaptures`). Bulk still uploading does not hold a checkpoint
-       * up once sealantd says which pending captures are bulk (`captureHarvestReady`).
+       * tick. `none` only when it is known that no executor holds anything more
+       * (`CaptureFlushObservation`); `incomplete` when the flush was refused, timed out or left
+       * small captures behind, and whenever that cannot be known — the caller then observes
+       * whatever head is registered, or waits (`flushCaptures`, `landingCheckpoint`). Bulk still
+       * uploading does not hold a checkpoint up once sealantd says which pending captures are bulk
+       * (`captureHarvestReady`).
        */
       const flushLeaseHolder = Effect.fn("SessionEngine.flushLeaseHolder")(function* (
         worktreeId: WorktreeId,
@@ -1451,29 +1551,45 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         if (capture === null) return "none" satisfies CaptureFlushObservation;
         const lease = yield* capture.repo.leaseOf(worktreeId);
-        if (
-          lease === null ||
-          !lease.live ||
-          lease.executorId === null ||
-          lease.executorId.startsWith("mend:")
-        ) {
+        // Never claimed, or released after its holder ended: the registered head is everything.
+        if (lease === null || lease.executorId === null) {
           return "none" satisfies CaptureFlushObservation;
+        }
+        // Mend's own short claim (capture 0 registering): nothing of an executor, but the chain is
+        // moving under it right now.
+        if (lease.executorId.startsWith("mend:")) {
+          return (lease.live ? "incomplete" : "none") satisfies CaptureFlushObservation;
         }
         const holder = yield* sessions
           .byId(SessionId.make(lease.executorId))
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (!lease.live) {
+          // A lapse is not an end. With no row or no workspace nothing of that executor can
+          // register any more; otherwise only the platform's word that it ended says so.
+          if (holder === null || holder.sealantWorkspaceId === null) {
+            return "none" satisfies CaptureFlushObservation;
+          }
+          const state = yield* workspaceState(holder.sealantWorkspaceId).pipe(
+            asSealantUser(holder.ownerUserId),
+          );
+          return (state === "dead" ? "none" : "incomplete") satisfies CaptureFlushObservation;
+        }
         if (holder === null || holder.sealantWorkspaceId === null) {
-          return "none" satisfies CaptureFlushObservation;
+          return "incomplete" satisfies CaptureFlushObservation;
         }
         const workspace = yield* sealant
           .getWorkspace(holder.sealantWorkspaceId)
           .pipe(Effect.option, asSealantUser(holder.ownerUserId));
-        if (Option.isNone(workspace)) return "none" satisfies CaptureFlushObservation;
+        if (Option.isNone(workspace)) return "incomplete" satisfies CaptureFlushObservation;
+        // An executor already sent a final flush takes nothing else; asking the final kind again
+        // ships what it holds.
+        const ending = yield* workspaceFinalFlushed(worktreeId, holder.sealantWorkspaceId);
         const reading = yield* observeCaptureFlush(
           holder,
           workspace.value,
           why,
           CHECKPOINT_FLUSH_TIMEOUT,
+          ending ? "final" : "suspend",
         );
         return (
           reading !== null && captureHarvestReady(reading) ? "flushed" : "incomplete"
@@ -1532,10 +1648,34 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
 
       /**
-       * Who holds a worktree in capture mode: `free` (no live lease, or Mend's own short claim),
-       * `held` (another session's executor, reachable — a join runs inside it), or
-       * `unreachable` (a live lease whose executor the platform no longer answers for — refused
-       * until the heartbeat lapses and the reaper clears it).
+       * Whether a final flush was sent to `workspaceId` by any session of the worktree: such an
+       * executor admits nothing more (no exec, no session, no replan), so nothing is started,
+       * joined or resumed in it — the next run is a fresh executor.
+       */
+      const workspaceFinalFlushed = Effect.fn("SessionEngine.workspaceFinalFlushed")(function* (
+        worktreeId: WorktreeId,
+        workspaceId: SealantWorkspaceId,
+      ) {
+        if (capture === null) return false;
+        for (const member of yield* sessions.listForWorktree(worktreeId)) {
+          if ((yield* sessions.finalFlushedWorkspace(member.id)) === workspaceId) return true;
+        }
+        return false;
+      });
+
+      /**
+       * Who holds a worktree in capture mode, for a session that is not the holder:
+       * - `free`: nobody (never claimed, released after its holder ended, or Mend's own short
+       *   claim), or a holder whose end the platform confirmed — its lapsed lease is released here
+       *   so the next claim may take a new epoch;
+       * - `held`: another session's executor, reachable and not ending — a join runs inside it;
+       * - `ending`: that executor is saving before it ends (a drain under way): nothing new may
+       *   start in it, and no other executor may take the worktree until it has ended;
+       * - `unreachable`: a live lease whose executor the platform no longer answers for — refused
+       *   until the heartbeat lapses and its end is confirmed;
+       * - `lapsed`: another executor's lease lapsed without a release (a partition) and the
+       *   platform does not say it ended: it may still hold work it has not shipped, so no new
+       *   epoch is granted over it (ADR-0002 "Replacement and pickup").
        */
       const leaseHolderWorkspace = Effect.fn("SessionEngine.leaseHolderWorkspace")(function* (
         session: Session,
@@ -1544,7 +1684,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const lease = yield* capture.repo.leaseOf(session.worktreeId);
         if (
           lease === null ||
-          !lease.live ||
           lease.executorId === null ||
           lease.executorId === session.id ||
           lease.executorId.startsWith("mend:")
@@ -1555,6 +1694,41 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           .byId(SessionId.make(lease.executorId))
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
         const workspaceId = holder?.sealantWorkspaceId ?? null;
+        if (!lease.live) {
+          // No row, or no workspace, means nothing of that executor can register any more: its
+          // channel identity is the row. Otherwise only a positively ended executor is released.
+          const state =
+            holder === null || workspaceId === null
+              ? ("dead" as const)
+              : yield* workspaceState(workspaceId).pipe(asSealantUser(holder.ownerUserId));
+          if (state === "dead") {
+            yield* capture.repo.release(session.worktreeId, lease.epoch);
+            yield* Effect.logInfo(
+              "session engine: capture mode · the previous holder ended · lease released",
+            ).pipe(
+              Effect.annotateLogs({
+                sessionId: session.id,
+                holderSessionId: lease.executorId,
+                epoch: lease.epoch,
+              }),
+            );
+            return { kind: "free" as const };
+          }
+          return {
+            kind: "lapsed" as const,
+            sessionId: lease.executorId,
+            epoch: lease.epoch,
+            state,
+          };
+        }
+        if (
+          holder !== null &&
+          (holder.captureDrain !== null ||
+            (workspaceId !== null &&
+              (yield* workspaceFinalFlushed(session.worktreeId, workspaceId))))
+        ) {
+          return { kind: "ending" as const, sessionId: lease.executorId, epoch: lease.epoch };
+        }
         const workspace =
           workspaceId === null
             ? null
@@ -1708,17 +1882,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * The terminate half: stop the workspace, watch for the platform to report it gone, reap
        * what ran in it, and only then release the lease — an executor still running under a
-       * released lease would be fenced out mid-ship (sealantd registrar: 409 → WrongParent). If
+       * released lease would be fenced out mid-ship (sealantd registrar: 409 → WrongParent). Only
+       * the platform's `stopped` (from the stop itself, or a terminal status or a 404 after it) is
+       * a termination; `draining`, `kept` and `requested` are watched like any other answer. If
        * the termination is not observed in time the lease is left to lapse on its own, once the
-       * executor's heartbeats stop.
+       * executor's heartbeats stop, and the caller keeps the session's identity. True once
+       * observed.
        */
       const terminateWorkspace = Effect.fn("SessionEngine.terminateWorkspace")(function* (
         sessionId: SessionId,
         workspace: Workspace,
       ) {
         const workspaceId = SealantWorkspaceId.make(workspace.id);
-        yield* sealant.stopWorkspace(workspace);
-        const confirmed = yield* awaitTerminated(workspaceId);
+        const stopState = yield* sealant.stopWorkspace(workspace);
+        const confirmed = stopState === "stopped" || (yield* awaitTerminated(workspaceId));
         yield* processes.reapLiveForWorkspace(workspaceId);
         yield* socketHost.stop(sessionId);
         yield* channelTokens.revoke(sessionId).pipe(Effect.ignore);
@@ -1727,9 +1904,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* releaseLeaseOfWorkspace(session, workspaceId);
         } else {
           yield* Effect.logWarning(
-            "session engine: workspace stop asked · termination not observed yet · the lease lapses on its own",
-          ).pipe(Effect.annotateLogs({ sessionId, workspaceId }));
+            `session engine: workspace stop asked · ${stopState} · termination not observed yet · the lease lapses on its own`,
+          ).pipe(Effect.annotateLogs({ sessionId, workspaceId, stopState }));
         }
+        return confirmed;
       });
 
       /** The platform ended it already: nothing to save or stop; tidy up behind it. */
@@ -1746,11 +1924,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
-       * One drain, start to end: flush, read what is left, record it, repeat — no deadline while
-       * anything moves. Saved → terminate. No movement for the stall window (or nothing can move:
-       * fenced, refused) → `not saved · workspace kept`, recorded once for the owner and every
-       * surface, and the intent stays for the next sweep. `force` skips the in-use check: a
-       * relaunch or a replacement is replacing this workspace on purpose.
+       * Whether anything Mend placed in the workspace still runs there: a live process or an open
+       * Service forward. A drain that is not forced yields to it.
+       */
+      const workspaceInUse = Effect.fn("SessionEngine.workspaceInUse")(function* (
+        workspaceId: SealantWorkspaceId,
+      ) {
+        return (
+          (yield* processes.listLiveForWorkspace(workspaceId)).length +
+          (yield* serviceForwards.listOpen()).filter(
+            (forward) => forward.sealantWorkspaceId === workspaceId,
+          ).length
+        );
+      });
+
+      /**
+       * One drain, start to end: a FINAL flush (the executor stops admitting processes, ends the
+       * running ones, then snapshots both classes and ships), read what is left, record it, repeat
+       * — no deadline while anything moves. Saved (`complete`, nothing pending) → terminate. No
+       * movement for the stall window, or nothing can move (fenced, refused, an executor that
+       * cannot report `complete`) → `not saved · workspace kept`, recorded once for the owner and
+       * every surface, and the intent stays for the next sweep. The final flush ends whatever runs
+       * in the executor, so a drain that is not `force`d yields to anything in use BEFORE its first
+       * flush, never after; a relaunch or a replacement is replacing this workspace on purpose.
        */
       const runDrain = Effect.fn("SessionEngine.runDrain")(function* (
         sessionId: SessionId,
@@ -1785,8 +1981,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           if (!begun) {
             begun = true;
+            // Durable first, then the in-use look: a join reads the intent and stays out
+            // (`leaseHolderWorkspace`), and whatever started before it is seen here.
             yield* sessions.beginCaptureDrain(sessionId, reason, new Date(progressAtMs));
+            // An executor already sent a final flush ended whatever ran in it and admits nothing
+            // new: whatever reads live there is stale, and the drain goes on.
+            const ending = yield* workspaceFinalFlushed(session.worktreeId, workspaceId);
+            if (!force && !ending && lookup.kind === "found") {
+              const inUse = yield* workspaceInUse(workspaceId);
+              if (inUse > 0) {
+                yield* sessions.endCaptureDrain(sessionId);
+                yield* Effect.logInfo(
+                  "session engine: capture drain · the workspace is in use · nothing stopped",
+                ).pipe(Effect.annotateLogs({ sessionId, workspaceId, leases: inUse }));
+                return "in-use" as const;
+              }
+            }
           }
+          // Recorded before it is sent: from here on this executor is ending, whatever the
+          // answer, and nothing is started in it again.
+          if (lookup.kind === "found") yield* sessions.markFinalFlush(sessionId, workspaceId);
           const reading =
             lookup.kind === "found"
               ? yield* observeCaptureFlush(
@@ -1794,6 +2008,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   lookup.workspace,
                   `drain · ${reason}`,
                   drainPolicy.flushTimeout,
+                  "final",
                 )
               : null;
           const nowMs = Date.now();
@@ -1806,26 +2021,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
           if (reading !== null) previous = reading;
           if (step.kind === "saved" && lookup.kind === "found") {
-            if (!force) {
-              const inUse =
-                (yield* processes.listLiveForWorkspace(workspaceId)).length +
-                (yield* serviceForwards.listOpen()).filter(
-                  (forward) => forward.sealantWorkspaceId === workspaceId,
-                ).length;
-              if (inUse > 0) {
-                yield* sessions.endCaptureDrain(sessionId);
-                yield* Effect.logInfo(
-                  "session engine: capture drain · the workspace was reopened · nothing stopped",
-                ).pipe(Effect.annotateLogs({ sessionId, workspaceId, leases: inUse }));
-                return "in-use" as const;
-              }
-            }
             yield* Effect.logInfo("session engine: capture drain · saved · terminating").pipe(
               Effect.annotateLogs({ sessionId, workspaceId, reason }),
             );
-            yield* terminateWorkspace(sessionId, lookup.workspace);
+            const ended = yield* terminateWorkspace(sessionId, lookup.workspace);
             yield* sessions.endCaptureDrain(sessionId);
-            yield* removeIfRequested(sessionId);
+            // Saved, but its end not observed: the row stays until it is (the reaper's removal
+            // pass looks again), so nothing the executor registers under goes early.
+            if (ended) yield* removeIfRequested(sessionId);
             return "terminated" as const;
           }
           if (step.kind !== "saved" && step.progressAtMs !== progressAtMs) {
@@ -1928,13 +2131,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               cause: null,
             });
           }
-          if (lookup.kind === "found") {
-            yield* terminateWorkspace(sessionId, lookup.workspace);
-          } else {
-            yield* tidyAfterGone(sessionId, workspaceId);
-          }
+          const ended =
+            lookup.kind === "found"
+              ? yield* terminateWorkspace(sessionId, lookup.workspace)
+              : yield* tidyAfterGone(sessionId, workspaceId).pipe(Effect.as(true));
           yield* sessions.endCaptureDrain(sessionId);
-          yield* removeIfRequested(sessionId);
+          if (ended) yield* removeIfRequested(sessionId);
         }).pipe(Effect.ensuring(Effect.sync(() => discards.delete(workspaceId))));
         return yield* sessions
           .byId(sessionId)
@@ -1961,6 +2163,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           lookup.workspace,
           "capture reading",
           CHECKPOINT_FLUSH_TIMEOUT,
+          (yield* workspaceFinalFlushed(session.worktreeId, session.sealantWorkspaceId))
+            ? "final"
+            : "suspend",
         );
       });
 
@@ -1978,9 +2183,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const inFlight =
           stopTails.has(sessionId) || (workspaceId !== null && drains.has(workspaceId));
         if (!inFlight && session.captureDrain === null) {
-          // A workspace another session's live process runs in (a joined executor) is theirs:
-          // it stays addressable through them, and this row may go.
+          // Co-located: a workspace another session's live process runs in (a joined executor)
+          // is theirs — it stays addressable through them, and this row may go. Capture mode:
+          // this row IS the executor's identity — every capture call it makes (upload, register,
+          // plan, heartbeat) resolves it — so it stays until the workspace has gone, whoever
+          // still works in it; the sweep removes it then.
           const othersLive =
+            capture === null &&
             workspaceId !== null &&
             (yield* processes.listLiveForWorkspace(workspaceId)).some(
               (process) => process.sessionId !== sessionId,
@@ -2001,8 +2210,60 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return "pending" as const;
       });
 
+      const captureHolds = Effect.fn("SessionEngine.captureHolds")(function* (
+        worktreeId: WorktreeId,
+      ) {
+        if (capture === null) return [];
+        const members = yield* sessions.listForWorktree(worktreeId);
+        const holds: Array<CaptureHold> = [];
+        const looked = new Set<SealantWorkspaceId>();
+        for (const member of members) {
+          if (member.captureDrain !== null) {
+            holds.push({
+              sessionId: member.id,
+              kind: member.captureNotSavedAt === null ? "saving" : "not-saved",
+            });
+            if (member.sealantWorkspaceId !== null) looked.add(member.sealantWorkspaceId);
+          }
+        }
+        for (const member of members) {
+          const workspaceId = member.sealantWorkspaceId;
+          if (workspaceId === null || looked.has(workspaceId)) continue;
+          looked.add(workspaceId);
+          const lookup = yield* lookupWorkspace(workspaceId).pipe(
+            asSealantUser(member.ownerUserId),
+          );
+          // Found or not answered for: nobody observed it end, so it may hold what it did not ship.
+          if (lookup.kind !== "gone") holds.push({ sessionId: member.id, kind: "executor" });
+        }
+        const lease = yield* capture.repo.leaseOf(worktreeId);
+        if (
+          lease !== null &&
+          lease.executorId !== null &&
+          !lease.executorId.startsWith("mend:") &&
+          !holds.some((hold) => hold.sessionId === lease.executorId)
+        ) {
+          const holder = members.find((member) => member.id === lease.executorId) ?? null;
+          const workspaceId = holder?.sealantWorkspaceId ?? null;
+          const ended =
+            holder === null ||
+            workspaceId === null ||
+            (!lease.live &&
+              (yield* workspaceState(workspaceId).pipe(asSealantUser(holder.ownerUserId))) ===
+                "dead");
+          if (ended) {
+            if (!lease.live) yield* capture.repo.release(worktreeId, lease.epoch);
+          } else {
+            holds.push({ sessionId: holder.id, kind: "lease" });
+          }
+        }
+        return holds;
+      });
+
       /** Sessions the reaper is already replacing; one replacement at a time per session. */
       const replacing = new Set<SessionId>();
+      /** Sessions whose planned relaunch a launch in this process is carrying out. */
+      const relaunching = new Set<SessionId>();
 
       /**
        * Replacement ahead of the platform's cap (`planExecutorCap`): drain, then terminate, then a
@@ -2060,17 +2321,46 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const resumeDrain = (session: Session) =>
         Effect.gen(function* () {
           const workspaceId = session.sealantWorkspaceId;
+          // A relaunch's last step: launch with the harness it planned. Taken up only when no
+          // launch here is carrying it out; cleared first, so a relaunch that fails again is not
+          // retried forever, and the launch plans its own if it drains again.
+          const finishRelaunch = Effect.gen(function* () {
+            const resume = yield* sessions.relaunchOf(session.id);
+            if (resume === null || relaunching.has(session.id)) return;
+            yield* sessions.clearRelaunch(session.id);
+            yield* Effect.logInfo(
+              "session engine: capture mode · finishing a relaunch after a restart",
+            ).pipe(Effect.annotateLogs({ sessionId: session.id, resume }));
+            yield* resumeSession(session.id, resume).pipe(
+              Effect.catch((error) =>
+                Effect.logWarning("session engine: the relaunch could not be finished").pipe(
+                  Effect.annotateLogs({ sessionId: session.id, error: String(error) }),
+                ),
+              ),
+            );
+          });
+          if (session.captureDrain === null) {
+            yield* finishRelaunch;
+            return;
+          }
           if (workspaceId === null) {
             yield* sessions.endCaptureDrain(session.id);
             yield* removeIfRequested(session.id);
+            yield* finishRelaunch;
             return;
           }
           if (session.captureDrain === "replacement") {
             yield* replaceExecutor(session);
             return;
           }
-          if (session.captureDrain === "relaunch") {
-            yield* drainThenTerminate(session.id, workspaceId, "relaunch", true);
+          // A relaunch the owner's stop cancelled drains as a stop does: whatever runs in the
+          // workspace now is theirs.
+          if (
+            session.captureDrain === "relaunch" &&
+            (yield* sessions.relaunchOf(session.id)) !== null
+          ) {
+            const outcome = yield* drainThenTerminate(session.id, workspaceId, "relaunch", true);
+            if (outcome === "terminated" || outcome === "gone") yield* finishRelaunch;
             return;
           }
           yield* sweepWorkspace(session.id);
@@ -2099,6 +2389,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         for (const session of yield* sessions.listCaptureDrains()) {
           const workspaceId = session.sealantWorkspaceId;
           if (stopTails.has(session.id) || replacing.has(session.id)) continue;
+          if (relaunching.has(session.id)) continue;
           if (workspaceId !== null && drains.has(workspaceId)) continue;
           yield* Effect.forkIn(resumeDrain(session), scope);
         }
@@ -2125,16 +2416,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               session.executorStartedAt ??
               (yield* sessionRuns.latestForSession(session.id))?.startedAt ??
               null;
+            // What this executor was observed to ship (`observeCaptureThroughput`), against what
+            // it was last seen holding: the lead grows with what is pending at that rate.
+            const throughput = throughputs.get(session.sealantWorkspaceId) ?? null;
             const plan = planExecutorCap({
               executorStartedAt,
-              // The SDK does not report the platform's deadline yet (PLATFORM-FEEDBACK.md
-              // 2026-09-27); once it does, it goes here and wins over the configuration.
+              // SDK 0.37.2 does not report the platform's deadline (PLATFORM-FEEDBACK.md
+              // 2026-09-27, "The runtime deadline"). Core's next SDK adds
+              // `workspace.runtimeDeadline()`; its answer goes here and wins over the
+              // configuration and the fallback age.
               platformDeadline: null,
               maxSeconds: drainPolicy.executorMaxSeconds,
               drainEstimateSeconds: drainPolicy.drainEstimateSeconds,
               marginSeconds: drainPolicy.deadlineMarginSeconds,
               fallbackAgeSeconds: REPLACEMENT_AGE_SECONDS,
               pendingBytes: session.capturePendingBytes,
+              bytesPerSecond: throughput?.bytesPerSecond ?? null,
+              pendingObjects: session.capturePending,
+              objectsPerSecond: throughput?.objectsPerSecond ?? null,
             });
             if (executorCapDue(plan, Date.now())) {
               yield* Effect.logInfo("session engine: capture mode · planned drain due").pipe(
@@ -2305,21 +2604,34 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * is returned as it stands; a different one re-reads the chain and takes
        * the next ordinal, once.
        */
-      const takeWorktreeCheckpoint = Effect.fn("SessionEngine.takeWorktreeCheckpoint")(function* (
+      const takeWorktreeSnapshot = Effect.fn("SessionEngine.takeWorktreeSnapshot")(function* (
         worktree: Worktree,
         trigger: CheckpointTrigger,
         sessionId: SessionId | null,
         cursor: { readonly sealantRunId: SealantRunId | null; readonly sequence: bigint },
+        /**
+         * A landing's checkpoint: refused (`CapturesBehindError`) unless the flush caught the
+         * registered head up with the executor, or it is known nothing more is held.
+         */
+        requireCaughtUp: boolean,
       ) {
-        const attempt = (retry: boolean): Effect.Effect<Checkpoint, SessionRepositoryError> =>
+        const attempt = (
+          retry: boolean,
+        ): Effect.Effect<
+          { readonly checkpoint: Checkpoint; readonly captureId: string | null },
+          SessionRepositoryError | CapturesBehindError
+        > =>
           Effect.gen(function* () {
             const previous = yield* checkpoints.latestForWorktree(worktree.id);
             const ordinal = yield* checkpoints.countForWorktree(worktree.id);
             // Capture mode: the lease holder flushes first, so the head this checkpoint is
             // observed from is the disk as of now. A flush that does not complete costs nothing
-            // but the wait for a capture to land.
-            const flushed =
-              (yield* flushLeaseHolder(worktree.id, `checkpoint · ${trigger}`)) === "flushed";
+            // but the wait for a capture to land — except for a landing, which needs the disk.
+            const observed = yield* flushLeaseHolder(worktree.id, `checkpoint · ${trigger}`);
+            if (requireCaughtUp && observed === "incomplete") {
+              return yield* new CapturesBehindError({ worktreeId: worktree.id, attempts: 1 });
+            }
+            const flushed = observed === "flushed";
             const snapshot = yield* sessionRepo.checkpoint({
               projectId: worktree.projectId,
               scope: worktree.id,
@@ -2328,7 +2640,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               parent: previous?.sha ?? null,
               flushed,
             });
-            return yield* checkpoints
+            const captureId = snapshot.captureId ?? null;
+            const checkpoint = yield* checkpoints
               .create({
                 worktreeId: worktree.id,
                 sessionId,
@@ -2338,7 +2651,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 sealantRunId: cursor.sealantRunId,
                 seq: cursor.sequence,
                 trigger,
-                captureId: snapshot.captureId ?? null,
+                captureId,
               })
               .pipe(
                 Effect.catchTag("CheckpointOrdinalTakenError", (taken) =>
@@ -2365,15 +2678,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     yield* Effect.logWarning(
                       "session engine: checkpoint ordinal taken · re-reading the chain",
                     ).pipe(Effect.annotateLogs(annotations));
-                    return yield* attempt(false);
+                    return (yield* attempt(false)).checkpoint;
                   }),
                 ),
               );
+            return { checkpoint, captureId };
           });
         return yield* capture === null
           ? checkpoints.withWorktreeLock(worktree.id, attempt(true))
           : withCheckpointWriter(worktree.id, attempt(true));
       });
+
+      const takeWorktreeCheckpoint = (
+        worktree: Worktree,
+        trigger: CheckpointTrigger,
+        sessionId: SessionId | null,
+        cursor: { readonly sealantRunId: SealantRunId | null; readonly sequence: bigint },
+      ): Effect.Effect<Checkpoint, SessionRepositoryError> =>
+        takeWorktreeSnapshot(worktree, trigger, sessionId, cursor, false).pipe(
+          Effect.map((taken) => taken.checkpoint),
+          // Only a landing's snapshot requires the captures caught up.
+          Effect.catchTag("CapturesBehindError", (error) => Effect.die(error)),
+        );
 
       const takeCheckpoint = Effect.fn("SessionEngine.takeCheckpoint")(function* (
         session: Session,
@@ -3465,11 +3791,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           return false;
         }
+        // An executor already sent a final flush takes that kind only.
         const reading = yield* observeCaptureFlush(
           session,
           workspace.value,
           why,
           CHECKPOINT_FLUSH_TIMEOUT,
+          (yield* workspaceFinalFlushed(session.worktreeId, workspaceId)) ? "final" : "suspend",
         );
         return reading !== null && captureHarvestReady(reading);
       });
@@ -5165,7 +5493,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return { path: target, mediaType: checked.mediaType, bytes: bytes.byteLength };
       });
 
-      const launchInternal = Effect.fn("SessionEngine.launchInternal")(function* (
+      const launchInternalBody = Effect.fn("SessionEngine.launchInternal")(function* (
         sessionId: SessionId,
         argv: ReadonlyArray<string>,
         nativeImport: ConvertedNativeSession | null,
@@ -5214,6 +5542,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               (process) => process.sessionId !== sessionId,
             );
           if (!othersLive) {
+            // Capture mode: the whole transition is durable — drain, terminate, then this launch —
+            // so a restart in between finishes it (`resumeDrain`). Cleared when this launch has
+            // run its course, whichever way (`launchInternal`).
+            if (capture !== null) {
+              yield* sessions.planRelaunch(
+                sessionId,
+                argv[0] === "bash" ? "shell" : session.harness,
+                new Date(),
+              );
+              relaunching.add(sessionId);
+            }
             const outcome = yield* stopWorkspaceQuietly(sessionId, {
               force: true,
               reason: "relaunch",
@@ -5228,6 +5567,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               });
               yield* sessions.settle(sessionId, "stopped", error.message).pipe(Effect.ignore);
               return yield* error;
+            }
+            // The owner stopped the session while its old executor saved: nothing relaunches.
+            if (capture !== null && (yield* sessions.relaunchOf(sessionId)) === null) {
+              return yield* new SealantPlatformError({
+                code: "relaunch_cancelled",
+                status: 409,
+                message: "stopped while the previous workspace saved · nothing relaunched",
+                cause: null,
+              });
             }
           }
         }
@@ -5304,11 +5652,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             );
           }
-          if (holder.kind === "unreachable") {
+          if (holder.kind !== "free") {
+            const message =
+              holder.kind === "unreachable"
+                ? `worktree leased · held by session ${holder.sessionId} under epoch ${holder.epoch} · the lease expires at ${holder.expiresAt} unless its heartbeat continues`
+                : holder.kind === "ending"
+                  ? `worktree leased · session ${holder.sessionId}'s executor is saving before it ends · start again once it has`
+                  : `worktree leased · session ${holder.sessionId}'s lease lapsed under epoch ${holder.epoch} · its executor ${holder.state === "answering" ? "still answers" : "was not answered for"} · nothing stopped · it may hold work not yet saved`;
             const error = new SealantPlatformError({
               code: "worktree_leased",
               status: 409,
-              message: `worktree leased · held by session ${holder.sessionId} under epoch ${holder.epoch} · the lease expires at ${holder.expiresAt} unless its heartbeat continues`,
+              message,
               cause: null,
             });
             yield* sessions.settle(sessionId, "failed", error.message).pipe(Effect.ignore);
@@ -5765,6 +6119,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return yield* sessions.byId(sessionId);
       });
 
+      /**
+       * A launch, and the end of any relaunch it planned: once it has run its course — launched,
+       * refused or failed — nothing is left for a restart to finish. A process that dies first
+       * leaves the plan for the reaper (`resumeDrain`).
+       */
+      const launchInternal: typeof launchInternalBody = (sessionId, ...rest) =>
+        launchInternalBody(sessionId, ...rest).pipe(
+          Effect.ensuring(
+            Effect.suspend(() =>
+              relaunching.delete(sessionId) ? sessions.clearRelaunch(sessionId) : Effect.void,
+            ),
+          ),
+        );
+
       /** The engine-side observations a protocol adapter reports back; both launch paths and rehydrate share them. */
       const protocolHooksFor = (agentProcess: SessionProcess): ProtocolHostHooks => ({
         onRequestChanged: (changedSessionId) =>
@@ -5885,6 +6253,49 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           session.worktreeId,
           flushLeaseHolder(session.worktreeId, why),
         );
+      });
+
+      /**
+       * A landing's step 1 in capture mode: the checkpoint is taken only once the registered head
+       * has caught up with the executor (`requireCaughtUp`), asked again after a pause while it has
+       * not; `CapturesBehindError` after the last attempt. Answers the capture the checkpoint was
+       * derived from, so the landing reads exactly that capture and nothing registered after it.
+       */
+      const landingCheckpoint = Effect.fn("SessionEngine.landingCheckpoint")(function* (
+        sessionId: SessionId,
+        trigger: CheckpointTrigger,
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        const worktree = yield* worktreesRepo.byId(session.worktreeId).pipe(Effect.orDie);
+        const latestRun = yield* sessionRuns.latestForSession(sessionId);
+        const cursor = {
+          sealantRunId: latestRun?.sealantRunId ?? null,
+          sequence: latestRun?.lastSeenSequence ?? 0n,
+        };
+        for (let attempt = 1; ; attempt += 1) {
+          const taken = yield* takeWorktreeSnapshot(
+            worktree,
+            trigger,
+            session.id,
+            cursor,
+            capture !== null,
+          ).pipe(Effect.result);
+          if (Result.isSuccess(taken)) {
+            yield* refreshChangeHead(session).pipe(Effect.ignore);
+            return taken.success;
+          }
+          if (taken.failure._tag !== "CapturesBehindError") return yield* taken.failure;
+          if (attempt >= LANDING_FLUSH_ATTEMPTS) {
+            yield* Effect.logWarning(
+              "session engine: landing checkpoint · the captures did not catch up · nothing taken",
+            ).pipe(Effect.annotateLogs({ sessionId, worktreeId: worktree.id, attempts: attempt }));
+            return yield* new CapturesBehindError({ worktreeId: worktree.id, attempts: attempt });
+          }
+          yield* Effect.logInfo(
+            "session engine: landing checkpoint · the captures have not caught up",
+          ).pipe(Effect.annotateLogs({ sessionId, attempt, attempts: LANDING_FLUSH_ATTEMPTS }));
+          yield* Effect.sleep(LANDING_FLUSH_PAUSE);
+        }
       });
 
       const checkpointNow = Effect.fn("SessionEngine.checkpointNow")(function* (
@@ -6153,6 +6564,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             (forward) => forward.sealantWorkspaceId === session.sealantWorkspaceId,
           );
           if (supportingLeases.length === 0 && forwardLeases.length === 0) return false;
+          if (yield* workspaceFinalFlushed(session.worktreeId, session.sealantWorkspaceId)) {
+            return false;
+          }
           return yield* Effect.gen(function* () {
             const workspace = yield* sealant.getWorkspace(session.sealantWorkspaceId ?? "");
             const status = yield* Effect.promise(() => workspace.status());
@@ -6523,6 +6937,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // session reads `saving` from this answer on. The intent is durable: if this process
         // dies before the tail below reaches it, the reaper takes it up after the restart.
         const current = yield* sessions.byId(sessionId);
+        // The owner's stop wins over a relaunch still saving the old executor: nothing
+        // relaunches after it, here or after a restart.
+        if (capture !== null) yield* sessions.clearRelaunch(sessionId);
         if (capture !== null && current.sealantWorkspaceId !== null) {
           const workspaceId = current.sealantWorkspaceId;
           const held =
@@ -6695,6 +7112,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       )(function* (session: Session) {
         const workspaceId = session.sealantWorkspaceId;
         if (workspaceId === null) return yield* new SessionNotLiveError({ sessionId: session.id });
+        // A final flush ended it: it admits nothing more.
+        if (yield* workspaceFinalFlushed(session.worktreeId, workspaceId)) {
+          return yield* new SessionNotLiveError({ sessionId: session.id });
+        }
         const workspace = yield* sealant.getWorkspace(workspaceId);
         const status = yield* Effect.tryPromise({
           try: () => workspace.status(),
@@ -7938,10 +8359,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // executor holds is a join — it runs inside the holder, which the cold path finds at
         // launch — so no standby is spent on it. Mend's own short claims hold nothing.
         if (capture !== null) {
+          // A holder whose lease lapsed without a release may still be running: the cold path
+          // confirms its end before any new epoch (`leaseHolderWorkspace`).
           const lease = yield* capture.repo.leaseOf(worktree.id);
           if (
             lease !== null &&
-            lease.live &&
             lease.executorId !== null &&
             !lease.executorId.startsWith("mend:")
           ) {
@@ -8585,6 +9007,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           owned(sessionId)(launchFollowUp(sessionId, instruction, launchCorrelationId, author)),
         reconcileHotSessions: requestHotReconcile,
         checkpointNow: (sessionId, trigger) => owned(sessionId)(checkpointNow(sessionId, trigger)),
+        landingCheckpoint: (sessionId, trigger) =>
+          owned(sessionId)(landingCheckpoint(sessionId, trigger)),
         flushCaptures: (sessionId, why) => owned(sessionId)(flushCaptures(sessionId, why)),
         stop: (sessionId, summary) => owned(sessionId)(stop(sessionId, summary ?? null)),
         openShell: (sessionId) => owned(sessionId)(openShell(sessionId)),
@@ -8608,6 +9032,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         discardUnsavedAndStop: (sessionId) => owned(sessionId)(discardUnsavedAndStop(sessionId)),
         readCaptures: (sessionId) => owned(sessionId)(readCaptures(sessionId)),
         removeWhenStopped: (sessionId) => owned(sessionId)(removeWhenStopped(sessionId)),
+        captureHolds,
         transcript,
       };
     }),

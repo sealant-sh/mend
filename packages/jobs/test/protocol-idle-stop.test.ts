@@ -253,6 +253,9 @@ const captureReading = (pending: number, bulkDirty: boolean | null = null): Capt
   fenced: false,
   paused: false,
   bulkDirty,
+  // A reading's flush is the suspend kind: it says nothing about a final one.
+  complete: null,
+  incompleteReason: null,
 });
 
 describe("the protocol idle stop", () => {

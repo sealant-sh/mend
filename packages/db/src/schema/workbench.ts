@@ -1186,6 +1186,12 @@ export const agentSessions = pgTable(
     captureDrainRequestedAt: timestamp({ mode: "date", withTimezone: true }),
     captureDrainProgressAt: timestamp({ mode: "date", withTimezone: true }),
     captureNotSavedAt: timestamp({ mode: "date", withTimezone: true }),
+    // Why the last final flush did not complete, as sealantd said (0077).
+    captureIncompleteReason: text(),
+    // The harness a relaunch resumes with once its drain has terminated the old executor (0077).
+    captureDrainResume: text(),
+    // The executor a final flush was sent to: it admits nothing more (0077).
+    captureFinalWorkspaceId: text(),
     // When the current executor started: what the platform's cap counts from (0075).
     executorStartedAt: timestamp({ mode: "date", withTimezone: true }),
     // Removal asked while the workspace was up; the row goes once it has (0075).

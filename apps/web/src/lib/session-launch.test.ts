@@ -51,6 +51,7 @@ const session: SessionDto = {
   captureDrainRequestedAt: null,
   captureDrainProgressAt: null,
   captureNotSavedAt: null,
+  captureIncompleteReason: null,
   executorStartedAt: null,
   removalRequestedAt: null,
   status: "idle",

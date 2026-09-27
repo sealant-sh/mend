@@ -25,6 +25,9 @@ export { landedRefOf };
 const stepError = (step: LandingStepError["step"], message: string) =>
   new LandingStepError({ step, message });
 
+/** How many checkpoints a landing takes while captures keep registering under it. */
+const HEAD_MOVED_ATTEMPTS = 3;
+
 export const LandingGitCapturedLive: Layer.Layer<
   LandingGit,
   never,
@@ -40,17 +43,18 @@ export const LandingGitCapturedLive: Layer.Layer<
     const checkpoints = yield* CheckpointsRepo;
 
     /** The cache over the worktree's chain head, with Mend's derived packs installed. */
-    const cacheOf = (place: LandingPlace, step: LandingStepError["step"]) =>
+    const ensureOf = (place: LandingPlace, step: LandingStepError["step"]) =>
       ensureCaptureCache(place.project.id, place.worktree.id).pipe(
         Effect.provideService(CaptureStoreRepo, repo),
         Effect.provideService(BlobStore, blobs),
         Effect.provideService(GitOpsRunner, runner),
         Effect.provideService(StoreRefsRepo, refs),
-        Effect.map((ready) => ready.cache),
         Effect.mapError((error) =>
           stepError(step, error._tag === "GitError" ? gitWords(error, null) : error.message),
         ),
       );
+    const cacheOf = (place: LandingPlace, step: LandingStepError["step"]) =>
+      ensureOf(place, step).pipe(Effect.map((ready) => ready.cache));
 
     /** H: the agent's branch head as the chain head's capture holds it. */
     const agentHeadOf = (cache: RunnerCache, place: LandingPlace) =>
@@ -65,20 +69,43 @@ export const LandingGitCapturedLive: Layer.Layer<
         : Effect.succeed(place.project.originUrl);
 
     return {
+      // Every landing comes through here — the Land panel, Slack's button, `mend land` and a
+      // completed turn — so this is where it waits for the executor's captures
+      // (`landingCheckpoint`): a flush that caught up, or a known absence of anything more.
+      // Unknown is not caught up. The agent's head is read from the very capture the checkpoint
+      // was derived from; a capture registered in between is read again, and a head that keeps
+      // moving refuses the landing rather than pair one capture's tree with another's branch.
       checkpoint: (scope, trigger) =>
         Effect.gen(function* () {
-          const checkpoint = yield* engine
-            .checkpointNow(scope.session.id, trigger)
-            .pipe(
-              Effect.mapError((error) =>
-                stepError(
-                  "checkpoint",
-                  error._tag === "GitError" ? gitWords(error, null) : `${error._tag} · checkpoint`,
+          for (let attempt = 1; ; attempt += 1) {
+            const taken = yield* engine
+              .landingCheckpoint(scope.session.id, trigger)
+              .pipe(
+                Effect.mapError((error) =>
+                  stepError(
+                    "checkpoint",
+                    error._tag === "GitError"
+                      ? gitWords(error, null)
+                      : error._tag === "CapturesBehindError"
+                        ? `the workspace's captures have not caught up · asked ${error.attempts} times · nothing landed · try again`
+                        : `${error._tag} · checkpoint`,
+                  ),
                 ),
-              ),
-            );
-          const cache = yield* cacheOf(scope, "checkpoint");
-          return { checkpoint, agentHead: yield* agentHeadOf(cache, scope) };
+              );
+            const ready = yield* ensureOf(scope, "checkpoint");
+            if (taken.captureId === null || ready.head.id === taken.captureId) {
+              return {
+                checkpoint: taken.checkpoint,
+                agentHead: yield* agentHeadOf(ready.cache, scope),
+              };
+            }
+            if (attempt >= HEAD_MOVED_ATTEMPTS) {
+              return yield* stepError(
+                "checkpoint",
+                "the workspace's captures kept moving while landing · nothing landed · try again",
+              );
+            }
+          }
         }),
       latest: (scope) =>
         Effect.gen(function* () {

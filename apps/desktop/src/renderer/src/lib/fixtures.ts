@@ -87,6 +87,7 @@ export const sessionFixture = (patch: Partial<SessionDto> = {}): SessionDto => (
   captureDrainRequestedAt: null,
   captureDrainProgressAt: null,
   captureNotSavedAt: null,
+  captureIncompleteReason: null,
   executorStartedAt: null,
   removalRequestedAt: null,
   status: "running",

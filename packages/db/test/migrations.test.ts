@@ -1836,3 +1836,59 @@ describe.skipIf(!reachable)("0075 capture drain", () => {
     });
   });
 });
+
+describe.skipIf(!reachable)("0077 capture drain resume", () => {
+  const RESUME_DB = `${SCRATCH_DB}_capture_drain_resume`;
+  const resumeLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${RESUME_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withResumeDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(resumeLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${RESUME_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${RESUME_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("gives a session draining before it no relaunch to finish", async () => {
+    const existing = await withResumeDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0075_capture_drain");
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-1', 'api', '/store/p-1/repo.git', 'main', ${organization?.id ?? ""})`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc')`;
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, status,
+             capture_drain, capture_drain_requested_at)
+          VALUES ('s-1', 'p-1', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running',
+                  'relaunch', '2026-09-27T10:00:00Z')`;
+        yield* migrations["0077_capture_drain_resume"];
+        const [row] = yield* sql<{ readonly resume: string | null; readonly drain: string }>`
+          SELECT capture_drain_resume AS resume, capture_drain AS drain
+            FROM agent_sessions WHERE id = 's-1'`;
+        return row;
+      }),
+    );
+    expect(existing).toEqual({ resume: null, drain: "relaunch" });
+  });
+});

@@ -1,7 +1,7 @@
 import { SealantApiError } from "@sealant/sdk";
 import { describe, expect, it } from "vitest";
 
-import { platformErrorCode } from "./client.ts";
+import { platformErrorCode, workspaceStopStateOf } from "./client.ts";
 
 /**
  * The engine branches on the platform's STABLE codes (`workspace-docker-unsupported`,
@@ -37,5 +37,20 @@ describe("platformErrorCode", () => {
     );
     expect(platformErrorCode({ _tag: "SomethingElse", message: "x" })).toBe("SomethingElse");
     expect(platformErrorCode(new Error("plain"))).toBe("UNKNOWN");
+  });
+});
+
+/**
+ * A stop's answer (Core's `WorkspaceStopResult`): only `stopped` is a termination. SDK 0.37.2
+ * resolves nothing, which is a stop asked and nothing more known.
+ */
+describe("workspaceStopStateOf", () => {
+  it("reads the platform's four states and nothing else", () => {
+    expect(workspaceStopStateOf({ state: "stopped" })).toBe("stopped");
+    expect(workspaceStopStateOf({ state: "draining", drain: {} })).toBe("draining");
+    expect(workspaceStopStateOf({ state: "kept" })).toBe("kept");
+    expect(workspaceStopStateOf({ state: "requested" })).toBe("requested");
+    expect(workspaceStopStateOf(undefined)).toBe("requested");
+    expect(workspaceStopStateOf({ state: "gone" })).toBe("requested");
   });
 });

@@ -307,11 +307,22 @@ alike, and a resumed session is byte-identical. Only an unannounced hard crash m
 cadence window.
 
 - **Drain.** A stop, an idle stop, a relaunch (a fresh resume replacing the workspace) and a
-  replacement ahead of the cap each drain first (`drainThenTerminate`): flush, record what is left
-  on the session, repeat, with no short deadline. The executor terminates only at `pending == 0`,
-  unfenced and with nothing refused. While it drains the session reads `saving · N left` (bytes once
+  replacement ahead of the cap each drain first (`drainThenTerminate`): a **final** flush, record
+  what is left on the session, repeat, with no short deadline. A final flush quiesces first:
+  sealantd stops admitting processes, ends the running ones, then snapshots the small and the bulk
+  class and ships. The executor terminates only on the executor's own `complete: true` with nothing
+  pending, fenced or refused; an empty queue alone is not proof. An answer without `complete` (SDK
+  0.37.2 cannot ask for the final kind) reads
+  `not saved · final flush not reported · workspace kept`; an incomplete one names sealantd's
+  reason. A drain that is not forced yields to a process or Service in the workspace before its
+  first final flush, never after. While it drains the session reads `saving · N left` (bytes once
   sealantd reports `pending_bytes`) on the web, in the CLI, on the phone and in Slack, and the
-  workspace is kept. The intent is a row on the session, so a restart takes the drain up again.
+  workspace is kept. The intent is a row on the session, so a restart takes the drain up again; a
+  relaunch records the harness it resumes with beside it, so a restart between the terminate and the
+  launch finishes the relaunch (0077).
+- **Ending means ending.** An executor Mend sent a final flush to admits nothing after it: no join,
+  no shell, no resume and no retained-workspace launch goes into it again. The next run is a fresh
+  executor.
 - **Stall.** A drain that moves nothing for `MEND_CAPTURE_DRAIN_STALL_SECONDS` (or cannot move:
   fenced, refused) is recorded as `not saved · N pending · workspace kept`, the owner is told once,
   and the workspace stays; the next sweep tries again. A relaunch behind it is refused. Only the
@@ -319,16 +330,29 @@ cadence window.
   the organization's audit log) terminates with captures pending.
 - **Idle.** The idle stop holds while captures are pending or bulk is dirty (`capture` hold), then
   stops through the same drain.
-- **The cap.** A planned drain starts at `deadline − (drain estimate + margin)`, the deadline from
-  the platform once the SDK reports it, else `MEND_EXECUTOR_MAX_SECONDS` counted from the executor's
-  own start (not the latest run's), else the 7 h 30 fallback.
+- **The cap.** A planned drain starts at `deadline − (lead + margin)`, the deadline from the
+  platform once the SDK reports it, else `MEND_EXECUTOR_MAX_SECONDS` counted from the executor's own
+  start (not the latest run's), else the 7 h 30 fallback. The lead is the configured drain estimate,
+  or what is pending at the executor's observed throughput (bytes uploaded and captures registered
+  per second, from its flush answers) when that is longer.
 - **The lease** is released only after the platform reports the workspace terminated (a terminal
-  status or a 404); unobserved, it lapses with the heartbeats.
+  status or a 404); unobserved, it lapses with the heartbeats. A release clears the holder; a lapse
+  does not. No other executor claims a worktree over a lapsed lease: Mend first confirms the holder
+  ended (a terminal status, a 404, or no session row left to register under) and releases it.
+- **Removal holds.** Deleting a worktree or a project deletes the rows an executor registers under.
+  Both are refused while a drain runs, a drain kept its workspace, an executor was not observed to
+  end, or a lease is held; `force` overrides unlanded work, never unsaved work. The session that
+  owns an executor stays while another session works in it.
 - **Dead means dead.** An executor is dead only on a terminal status or a missing workspace. A Core
   error is `unknown`: no pickup, no fence, look again. An executor that answers with its lease
   expired is paused: a resume waits for it and stops nothing.
 - **Handoffs** read the head once the small captures are in; bulk still uploading holds only a stop
   (once sealantd reports `pending_bulk`).
+- **Landing** checkpoints only once the executor's captures caught up (a flush that registered what
+  it holds, or a known absence of any executor that could hold more) and lands exactly that
+  checkpoint's capture. Unknown is never caught up: the landing says so and pushes nothing.
+- **Turns and the idle stop** serialize on one per-session lock: a turn asked after the idle stop's
+  claim is refused (the next message resumes the session), and a queued turn keeps the claim away.
 - **Removal** of a session whose workspace is up is recorded and happens after the workspace has
   gone, so the workspace is never left unaddressable.
 

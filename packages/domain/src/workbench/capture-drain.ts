@@ -30,7 +30,7 @@ export const FALLBACK_REPLACEMENT_AGE_SECONDS = 7 * 60 * 60 + 30 * 60;
  * One flush answer, read as Mend uses it. `pending` counts every capture staged and not yet
  * registered — bulk included on today's sealantd. The fields sealantd does not report yet are null
  * until it does: `pendingBytes` (what is left to upload), `pendingBulk` (how many of `pending` are
- * bulk) and `refused` (captures the byte quota refused).
+ * bulk), `refused` (captures the byte quota refused) and `complete`.
  */
 export interface CaptureReading {
   readonly pending: number;
@@ -47,11 +47,77 @@ export interface CaptureReading {
   readonly paused: boolean;
   /** Bulk changed since its last snapshot; null until sealantd reports it. */
   readonly bulkDirty: boolean | null;
+  /**
+   * The executor's own word on a final flush (the `capture.flush` FINAL kind): true only when it
+   * stopped admitting processes, ended every managed process, snapshotted the small and the bulk
+   * class after that, and registered everything. False: it tried and something failed. Null: the
+   * answer did not say — an older sealantd, an SDK that cannot ask for the final kind, or a
+   * suspend flush. Only `true` is saved; `pending == 0` alone is not.
+   */
+  readonly complete: boolean | null;
+  /**
+   * Why a final flush did not complete, in sealantd's words (`CaptureIncompleteReason`), when it
+   * says; null otherwise.
+   */
+  readonly incompleteReason: string | null;
 }
 
-/** Everything registered, nothing refused, nobody fenced: the compute may go. */
+/**
+ * sealantd's reasons for an incomplete final flush. `not-final`: the executor did not run a final
+ * flush (an older daemon answers every flush this way); the rest name the step that failed.
+ */
+export const CAPTURE_INCOMPLETE_REASONS = [
+  "not-final",
+  "processes-remain",
+  "snapshot-failed",
+  "fenced",
+  "conflict",
+  "deadline",
+  "ship-failed",
+  "pending",
+  "internal",
+] as const;
+
+/** What Mend records when a final flush's answer carries no `complete` at all. */
+export const CAPTURE_COMPLETION_UNREPORTED = "unreported";
+
+/**
+ * The reason a final flush's answer leaves on the session: null when it completed; sealantd's own
+ * reason when it gave one; `not-final` for an incomplete answer with none (an older daemon);
+ * `unreported` when the answer did not say whether it completed.
+ */
+export const captureIncompleteReasonOf = (reading: CaptureReading): string | null => {
+  if (reading.complete === true) return null;
+  if (reading.complete === null) return CAPTURE_COMPLETION_UNREPORTED;
+  return reading.incompleteReason ?? "not-final";
+};
+
+/**
+ * The executor said its final flush completed, and nothing is pending, refused or fenced: the
+ * compute may go. Nothing else is proof — an empty queue says nothing of bytes written after the
+ * last snapshot, or of bulk that was never queued.
+ */
 export const captureSaved = (reading: CaptureReading): boolean =>
-  reading.pending === 0 && !reading.fenced && (reading.refused ?? 0) === 0;
+  reading.complete === true &&
+  reading.pending === 0 &&
+  !reading.fenced &&
+  (reading.refused ?? 0) === 0;
+
+/**
+ * An answer that can never become `complete`, however long the drain waits: the executor did not
+ * run a final flush (`complete` absent, `not-final`, or incomplete with no reason — an older
+ * daemon), or it was fenced or conflicted. A drain reads `not saved` at once and keeps the
+ * workspace.
+ */
+const finalFlushCannotComplete = (reading: CaptureReading): boolean => {
+  const reason = captureIncompleteReasonOf(reading);
+  return (
+    reason === CAPTURE_COMPLETION_UNREPORTED ||
+    reason === "not-final" ||
+    reason === "fenced" ||
+    reason === "conflict"
+  );
+};
 
 /**
  * Whether a harvest or a handoff may read the chain head: the small captures are in. Once
@@ -85,10 +151,11 @@ export const captureProgressed = (
 
 /**
  * One step of a drain, from the latest reading:
- * - `saved`: nothing pending; terminate.
+ * - `saved`: the final flush completed and nothing is pending (`captureSaved`); terminate.
  * - `saving`: something moved within the stall window, or the window has not run out.
- * - `not-saved`: no movement for the whole window, or nothing can move (fenced, refused).
- *   The workspace is kept.
+ * - `not-saved`: no movement for the whole window, or nothing can move (fenced, refused, or an
+ *   executor that cannot complete a final flush: `finalFlushCannotComplete`). The workspace is
+ *   kept.
  */
 export type CaptureDrainStep =
   | { readonly kind: "saved" }
@@ -109,7 +176,10 @@ export const captureDrainStep = (input: {
   const progressAtMs = moved ? input.nowMs : input.progressAtMs;
   // A fenced executor's captures are never accepted, and a refusal does not lift on its own:
   // waiting out the window changes nothing.
-  if (reading !== null && (reading.fenced || (reading.refused ?? 0) > 0)) {
+  if (
+    reading !== null &&
+    (reading.fenced || (reading.refused ?? 0) > 0 || finalFlushCannotComplete(reading))
+  ) {
     return { kind: "not-saved", progressAtMs };
   }
   if (input.nowMs - progressAtMs >= input.stallSeconds * 1000) {
@@ -126,7 +196,39 @@ export interface SessionCaptureFacts {
   readonly captureDrain: CaptureDrainReason | null;
   /** A Date on the server; the encoded string on clients that read the wire as it is. */
   readonly captureNotSavedAt: Date | string | null;
+  /** Why the last final flush did not complete (`captureIncompleteReasonOf`); absent reads none. */
+  readonly captureIncompleteReason?: string | null;
 }
+
+/** An incomplete final flush's reason, as the status line words it; null says nothing more. */
+export const captureIncompleteWords = (reason: string | null | undefined): string | null => {
+  switch (reason) {
+    case undefined:
+    case null:
+    case "pending":
+      return null;
+    case CAPTURE_COMPLETION_UNREPORTED:
+      return "final flush not reported";
+    case "not-final":
+      return "final flush not supported";
+    case "processes-remain":
+      return "processes remain";
+    case "snapshot-failed":
+      return "snapshot failed";
+    case "fenced":
+      return "fenced";
+    case "conflict":
+      return "conflict";
+    case "deadline":
+      return "deadline passed";
+    case "ship-failed":
+      return "upload failed";
+    case "internal":
+      return "executor error";
+    default:
+      return reason;
+  }
+};
 
 const UNITS = ["B", "KB", "MB", "GB", "TB"] as const;
 
@@ -152,7 +254,9 @@ const leftWords = (facts: SessionCaptureFacts): string | null => {
 /**
  * The capture line every surface shows beside a session (web, CLI, phone, Slack):
  * - `saving · 3 left` (`saving · 12 MB left` once sealantd reports bytes) while a drain runs;
- * - `not saved · 3 pending · workspace kept` once a drain stalled, or cannot move;
+ * - `not saved · 3 pending · workspace kept` once a drain stalled, or cannot move, with the
+ *   executor's reason when its final flush said why (`not saved · snapshot failed · 3 pending ·
+ *   workspace kept`);
  * - `not saved · 2 refused` when the byte quota refused captures and nothing is draining.
  * Null when there is nothing to say.
  */
@@ -160,9 +264,13 @@ export const captureStatusLine = (facts: SessionCaptureFacts): string | null => 
   const left = leftWords(facts);
   if (facts.captureDrain !== null) {
     if (facts.captureNotSavedAt !== null) {
-      return left === null
-        ? "not saved · workspace kept"
-        : `not saved · ${left} pending · workspace kept`;
+      const why = captureIncompleteWords(facts.captureIncompleteReason);
+      return [
+        "not saved",
+        ...(why === null ? [] : [why]),
+        ...(left === null ? [] : [`${left} pending`]),
+        "workspace kept",
+      ].join(" · ");
     }
     return left === null ? "saving" : `saving · ${left} left`;
   }
@@ -171,11 +279,71 @@ export const captureStatusLine = (facts: SessionCaptureFacts): string | null => 
 };
 
 /**
+ * What one executor was observed to ship, as rates (`observeCaptureThroughput`): bytes uploaded
+ * and captures registered per second, smoothed over the samples seen. Null rates until two samples
+ * a known interval apart moved something.
+ */
+export interface CaptureThroughput {
+  readonly atMs: number;
+  /** Lifetime counters at `atMs`. */
+  readonly uploadedBytes: number;
+  readonly registered: number;
+  readonly bytesPerSecond: number | null;
+  readonly objectsPerSecond: number | null;
+}
+
+/** Weight of the newest interval in the smoothed rate. */
+const THROUGHPUT_WEIGHT = 0.3;
+/** Samples closer than this say nothing reliable about a rate. */
+const THROUGHPUT_MIN_INTERVAL_MS = 1000;
+
+const smoothed = (previous: number | null, sample: number): number =>
+  previous === null ? sample : previous + THROUGHPUT_WEIGHT * (sample - previous);
+
+/**
+ * Fold one observation of an executor's lifetime counters into its throughput. An interval in
+ * which nothing moved says nothing about the rate (the executor may simply have had nothing to
+ * ship), so it leaves the rates as they were; counters that went backwards (a new executor) start
+ * over.
+ */
+export const observeCaptureThroughput = (
+  previous: CaptureThroughput | null,
+  sample: { readonly atMs: number; readonly uploadedBytes: number; readonly registered: number },
+): CaptureThroughput => {
+  const fresh: CaptureThroughput = {
+    atMs: sample.atMs,
+    uploadedBytes: sample.uploadedBytes,
+    registered: sample.registered,
+    bytesPerSecond: previous?.bytesPerSecond ?? null,
+    objectsPerSecond: previous?.objectsPerSecond ?? null,
+  };
+  if (previous === null) return fresh;
+  if (sample.uploadedBytes < previous.uploadedBytes || sample.registered < previous.registered) {
+    return { ...fresh, bytesPerSecond: null, objectsPerSecond: null };
+  }
+  const intervalMs = sample.atMs - previous.atMs;
+  if (intervalMs < THROUGHPUT_MIN_INTERVAL_MS) return previous;
+  const seconds = intervalMs / 1000;
+  const bytes = sample.uploadedBytes - previous.uploadedBytes;
+  const objects = sample.registered - previous.registered;
+  return {
+    ...fresh,
+    bytesPerSecond:
+      bytes > 0 ? smoothed(previous.bytesPerSecond, bytes / seconds) : previous.bytesPerSecond,
+    objectsPerSecond:
+      objects > 0
+        ? smoothed(previous.objectsPerSecond, objects / seconds)
+        : previous.objectsPerSecond,
+  };
+};
+
+/**
  * When to start saving ahead of the platform's cap on one executor. The deadline comes from the
  * platform once the SDK reports it; until then from MEND_EXECUTOR_MAX_SECONDS counted from the
  * executor's own start; failing both, the fallback replacement age. The drain starts
- * `drainEstimateSeconds + marginSeconds` before the deadline, and a bytes-based estimate
- * (`pendingBytes / bytesPerSecond`) wins over the configured one when it is larger.
+ * `drainEstimateSeconds + marginSeconds` before the deadline, and an estimate from what is pending
+ * at the observed throughput (`pendingBytes / bytesPerSecond`, `pendingObjects /
+ * objectsPerSecond`) wins over the configured one when it is larger.
  */
 export type ExecutorCapPlan =
   | { readonly kind: "unknown" }
@@ -186,6 +354,12 @@ export type ExecutorCapPlan =
       readonly deadline: Date | null;
       readonly drainAt: Date;
     };
+
+/** How long `amount` takes at `rate` per second; 0 when either is unknown. */
+const secondsAt = (amount: number | null | undefined, rate: number | null | undefined): number =>
+  amount !== undefined && amount !== null && rate !== undefined && rate !== null && rate > 0
+    ? amount / rate
+    : 0;
 
 export const planExecutorCap = (input: {
   readonly executorStartedAt: Date | null;
@@ -198,15 +372,14 @@ export const planExecutorCap = (input: {
   readonly fallbackAgeSeconds: number;
   readonly pendingBytes?: number | null;
   readonly bytesPerSecond?: number | null;
+  /** Captures staged and not registered. */
+  readonly pendingObjects?: number | null;
+  readonly objectsPerSecond?: number | null;
 }): ExecutorCapPlan => {
-  const measured =
-    input.pendingBytes !== undefined &&
-    input.pendingBytes !== null &&
-    input.bytesPerSecond !== undefined &&
-    input.bytesPerSecond !== null &&
-    input.bytesPerSecond > 0
-      ? input.pendingBytes / input.bytesPerSecond
-      : 0;
+  const measured = Math.max(
+    secondsAt(input.pendingBytes, input.bytesPerSecond),
+    secondsAt(input.pendingObjects, input.objectsPerSecond),
+  );
   const leadMs = (Math.max(input.drainEstimateSeconds, measured) + input.marginSeconds) * 1000;
   if (input.platformDeadline !== null) {
     return {
@@ -227,11 +400,16 @@ export const planExecutorCap = (input: {
       drainAt: new Date(Math.max(startedMs, deadline.getTime() - leadMs)),
     };
   }
+  // The fallback age already leaves the configured lead before an assumed cap; what is pending
+  // at the observed throughput moves it earlier by whatever that needs beyond the estimate.
+  const beyondEstimateMs = Math.max(0, measured - input.drainEstimateSeconds) * 1000;
   return {
     kind: "planned",
     source: "fallback",
     deadline: null,
-    drainAt: new Date(startedMs + input.fallbackAgeSeconds * 1000),
+    drainAt: new Date(
+      Math.max(startedMs, startedMs + input.fallbackAgeSeconds * 1000 - beyondEstimateMs),
+    ),
   };
 };
 

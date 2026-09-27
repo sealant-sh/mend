@@ -2275,6 +2275,27 @@ const captureGuardsMigration = Effect.gen(function* () {
   yield* sql`CREATE INDEX capture_tombstones_worktree_idx ON capture_tombstones (worktree_id)`;
 });
 
+/**
+ * 0077: the rest of a drain's transition (docs/adr/0002, "Stop drains, then terminates").
+ * - `capture_drain_resume`: a relaunch drains the previous executor first; the harness it resumes
+ *   with is durable beside the drain, so a restart mid-drain finishes the relaunch instead of
+ *   stopping at the terminate. Cleared once the launch has run its course, or by the user's stop.
+ * - `capture_final_workspace_id`: the executor Mend sent a final flush to. It admits nothing after
+ *   that, so nothing is started, joined or resumed in it again; the next run is a fresh executor.
+ * - `capture_incomplete_reason`: why its last final flush did not complete, as sealantd said.
+ */
+const captureDrainResumeMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE agent_sessions
+      ADD COLUMN capture_drain_resume text,
+      ADD COLUMN capture_final_workspace_id text,
+      ADD COLUMN capture_incomplete_reason text`;
+  yield* sql`
+    CREATE INDEX agent_sessions_capture_drain_resume_idx ON agent_sessions (id)
+      WHERE capture_drain_resume IS NOT NULL`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2352,4 +2373,5 @@ export const migrations = {
   "0073_landing_reasons": landingReasonsMigration,
   "0075_capture_drain": captureDrainMigration,
   "0076_capture_guards": captureGuardsMigration,
+  "0077_capture_drain_resume": captureDrainResumeMigration,
 };

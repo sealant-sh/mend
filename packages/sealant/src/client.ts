@@ -81,6 +81,29 @@ export interface WorkspacePackageResolution {
  *   it here would be exactly the workaround PLATFORM-FEEDBACK.md forbids
  *   (see the 0.5.0 entry, "composition layer not exported").
  */
+/**
+ * Which `capture.flush` an executor is asked for: `suspend` (processes keep running) or `final`
+ * (the executor is ending: quiesce, snapshot both classes, ship everything).
+ */
+export type CaptureFlushKind = "suspend" | "final";
+
+/**
+ * What a stop came to, as the platform observed it (Core's `WorkspaceStopResult`): `stopped` the
+ * runtime is gone — the only termination; `draining` the platform is saving the executor's
+ * captures before it removes the runtime; `kept` it keeps the runtime because they did not save;
+ * `requested` the stop was accepted and nothing more is known. SDK 0.37.2's `stop()` resolves with
+ * nothing, which reads `requested`.
+ */
+export type WorkspaceStopState = "stopped" | "draining" | "kept" | "requested";
+
+const STOP_STATES: ReadonlyArray<WorkspaceStopState> = ["stopped", "draining", "kept", "requested"];
+
+/** The state a stop's answer carries, when it carries one Mend knows; `requested` otherwise. */
+export const workspaceStopStateOf = (answer: unknown): WorkspaceStopState => {
+  if (typeof answer !== "object" || answer === null || !("state" in answer)) return "requested";
+  return STOP_STATES.find((state) => state === answer.state) ?? "requested";
+};
+
 export interface SealantClientShape {
   readonly createWorkspace: (
     options: CreateOptions,
@@ -132,16 +155,29 @@ export interface SealantClientShape {
     host?: "127.0.0.1" | "docker",
     protocol?: "tcp" | "udp",
   ) => Effect.Effect<WorkspaceForward, SealantPlatformError>;
-  /** Reattach to a PTY session by id — works from any workspace handle. */
-  /** Stop the workspace: remove its container, settle it "stopped". */
-  readonly stopWorkspace: (workspace: Workspace) => Effect.Effect<void, SealantPlatformError>;
   /**
-   * Capture-sourced workspaces (0.31.0, sealantd ADR-0015): a final small-class capture, then
-   * ship and register everything staged — bounded by the daemon's grace window. The report is
-   * what was observed; `pending === 0 && !fenced` is what a planned stop looks for.
+   * Ask the platform to stop the workspace, and say what it observed (`WorkspaceStopState`). Only
+   * `stopped` is a termination; anything else is watched until the platform reports one.
+   */
+  readonly stopWorkspace: (
+    workspace: Workspace,
+  ) => Effect.Effect<WorkspaceStopState, SealantPlatformError>;
+  /**
+   * Capture-sourced workspaces (0.31.0, sealantd ADR-0015): ship and register what the executor
+   * holds. `suspend` (a checkpoint, a handoff) forces a small-class capture and ships the queue;
+   * processes keep running. `final` is for an executor that is ending: sealantd stops admitting
+   * processes, ends every managed one, snapshots the small and the bulk class, then ships until
+   * nothing is pending, and says `complete: true` only when all of that happened.
+   *
+   * SDK 0.37.2's `capture.flush()` takes no kind and is the suspend kind, so a `final` request
+   * reaches the executor as a suspend flush and its answer carries no `complete`: Mend reads that
+   * as not saved (`captureSaved`), never as saved. Once the SDK takes the kind
+   * (PLATFORM-FEEDBACK.md 2026-09-27, "A final flush with a deadline"), `final` is passed through
+   * here and nowhere else changes.
    */
   readonly captureFlush: (
     workspace: Workspace,
+    kind: CaptureFlushKind,
   ) => Effect.Effect<WorkspaceCaptureStatus, SealantPlatformError>;
   /**
    * Capture-sourced workspaces (0.31.0, sealantd 0.15 `capture.replan`): the daemon asks the
@@ -332,12 +368,16 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
         ),
     );
 
+    // SDK 0.37.2 resolves `stop()` with nothing; Core's next SDK resolves what it observed. Both
+    // are read through `workspaceStopStateOf`, so the newer answer needs no change here.
     const stopWorkspace = Effect.fn("SealantClient.stopWorkspace")((workspace: Workspace) =>
-      wrap(() => workspace.stop()),
+      wrap(async (): Promise<unknown> => workspace.stop()).pipe(Effect.map(workspaceStopStateOf)),
     );
 
-    const captureFlush = Effect.fn("SealantClient.captureFlush")((workspace: Workspace) =>
-      wrap(() => workspace.capture.flush()),
+    // The kind has nowhere to go on this SDK (see `captureFlush` above): both kinds call the
+    // suspend flush, and a final request's answer carries no `complete`.
+    const captureFlush = Effect.fn("SealantClient.captureFlush")(
+      (workspace: Workspace, _kind: CaptureFlushKind) => wrap(() => workspace.capture.flush()),
     );
 
     const captureReplan = Effect.fn("SealantClient.captureReplan")((workspace: Workspace) =>
@@ -882,7 +922,7 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
       forward: (workspace, port, host, protocol) =>
         via((c) => c.forward(workspace, port, host, protocol)),
       stopWorkspace: (workspace) => via((c) => c.stopWorkspace(workspace)),
-      captureFlush: (workspace) => via((c) => c.captureFlush(workspace)),
+      captureFlush: (workspace, kind) => via((c) => c.captureFlush(workspace, kind)),
       captureReplan: (workspace) => via((c) => c.captureReplan(workspace)),
       expireWorkspace: (workspaceId, ttlSeconds) =>
         via((c) => c.expireWorkspace(workspaceId, ttlSeconds)),

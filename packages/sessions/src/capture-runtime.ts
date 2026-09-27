@@ -140,8 +140,8 @@ const reportedCount = (value: unknown): number | null => {
 
 /**
  * A flush answer as Mend reads it (`CaptureReading`). The SDK types what sealantd reported when
- * it was cut; `pendingBytes`, `pendingBulk`, `bulkDirty` and `refused` are read when the answer
- * carries them (a newer sealantd behind the same SDK) and are null otherwise
+ * it was cut; `pendingBytes`, `pendingBulk`, `bulkDirty`, `refused`, `complete` and
+ * `incompleteReason` (sealantd's `incomplete_reason`) are read when the answer carries them (a newer sealantd behind the same SDK) and are null otherwise
  * (PLATFORM-FEEDBACK.md 2026-09-27).
  */
 export const readCaptureReport = (report: WorkspaceCaptureStatus): CaptureReading => ({
@@ -156,4 +156,11 @@ export const readCaptureReport = (report: WorkspaceCaptureStatus): CaptureReadin
   paused: report.paused,
   bulkDirty:
     "bulkDirty" in report && typeof report.bulkDirty === "boolean" ? report.bulkDirty : null,
+  // Absent reads null, and null is never saved (`captureSaved`): an answer that does not say a
+  // final flush completed is not proof that one did.
+  complete: "complete" in report && typeof report.complete === "boolean" ? report.complete : null,
+  incompleteReason:
+    "incompleteReason" in report && typeof report.incompleteReason === "string"
+      ? report.incompleteReason
+      : null,
 });

@@ -27,6 +27,7 @@ import * as Context from "effect/Context";
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
 import { agentRequests, agentSessions, agentTurns, projects } from "../schema/workbench.ts";
+import { agentConversationLockKey } from "./agent-conversation.ts";
 
 export class SessionNotFoundError extends Schema.TaggedErrorClass<SessionNotFoundError>()(
   "SessionNotFoundError",
@@ -70,6 +71,11 @@ export interface CaptureObservation {
   readonly refused: number | null;
   readonly registeredAt: Date | null;
   readonly observedAt: Date;
+  /**
+   * A final flush's answer only: why it did not complete (null once it did). Absent leaves the
+   * recorded reason as it was — a suspend flush says nothing about a final one.
+   */
+  readonly incompleteReason?: string | null;
 }
 
 /** Terminal session states; `stopped` is the user's stop, not a failure. */
@@ -212,22 +218,42 @@ export class SessionsRepo extends Context.Service<
       observation: CaptureObservation,
     ) => Effect.Effect<void>;
     /**
-     * The durable drain intent (docs/adr/0002, "Stop drains, then terminates"): the reason is the
-     * latest ask; the request and progress times keep the first ones, so a restart does not reset
-     * a drain's history.
+     * The durable drain intent (docs/adr/0002, "Stop drains, then terminates"). The first reason
+     * stands, with the first request and progress times: a restart, or a sweep's stop, does not
+     * reset a drain's history or turn a relaunch into a stop. A relaunch is asked with
+     * `planRelaunch`.
      */
     readonly beginCaptureDrain: (
       id: SessionId,
       reason: CaptureDrainReason,
       at: Date,
     ) => Effect.Effect<void>;
+    /**
+     * A relaunch drains the old executor, then launches `resume` (a harness, or `shell`): both
+     * steps durable, so a restart between them finishes the relaunch.
+     */
+    readonly planRelaunch: (id: SessionId, resume: string, at: Date) => Effect.Effect<void>;
+    /** The relaunch ran its course, or the user's stop cancelled it. */
+    readonly clearRelaunch: (id: SessionId) => Effect.Effect<void>;
+    /** The harness a planned relaunch resumes with, or null. */
+    readonly relaunchOf: (id: SessionId) => Effect.Effect<string | null>;
+    /**
+     * A final flush is about to be sent to `workspaceId`: from then on it admits nothing, so
+     * nothing is started, joined or resumed in it again.
+     */
+    readonly markFinalFlush: (id: SessionId, workspaceId: string) => Effect.Effect<void>;
+    /** The executor this session sent a final flush to, or null. */
+    readonly finalFlushedWorkspace: (id: SessionId) => Effect.Effect<string | null>;
     /** Something moved: the stall window starts again and `not saved` clears. */
     readonly recordCaptureDrainProgress: (id: SessionId, at: Date) => Effect.Effect<void>;
     /** Nothing moved for the stall window: true only for the write that set it (one alert). */
     readonly markCaptureNotSaved: (id: SessionId, at: Date) => Effect.Effect<boolean>;
     /** The workspace is saved and terminated, or discarded: no drain is under way. */
     readonly endCaptureDrain: (id: SessionId) => Effect.Effect<void>;
-    /** Every session with a drain under way, oldest first: what the reaper takes up again. */
+    /**
+     * Every session with a drain under way or a relaunch not yet launched, oldest first: what the
+     * reaper takes up again.
+     */
     readonly listCaptureDrains: () => Effect.Effect<ReadonlyArray<Session>>;
     /** Stamp the current executor's start — what the platform's cap counts from. */
     readonly setExecutorStartedAt: (id: SessionId, at: Date) => Effect.Effect<void>;
@@ -259,10 +285,14 @@ type ExactKeys<A, B> = [Exclude<keyof A, keyof B> | Exclude<keyof B, keyof A>] e
   : never;
 /**
  * Persistence-only bookkeeping deliberately absent from the Session surface:
- * the mode-handoff ingest cursor is read and written through its own repo
- * methods, never carried on the domain object. Everything else stays exact.
+ * the mode-handoff ingest cursor and a relaunch's harness are read and written
+ * through their own repo methods, never carried on the domain object.
+ * Everything else stays exact.
  */
-type SessionBookkeepingColumns = "nativeIngestCursor";
+type SessionBookkeepingColumns =
+  | "nativeIngestCursor"
+  | "captureDrainResume"
+  | "captureFinalWorkspaceId";
 const sessionSeamIntact: ExactKeys<Omit<SessionRow, SessionBookkeepingColumns>, Session> = true;
 void sessionSeamIntact;
 
@@ -807,19 +837,33 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         id: SessionId,
         retryBefore: Date,
       ) {
+        // Turn admission takes the same lock (`AgentConversationRepo.submitTurn`), and each
+        // statement here reads after it is held: a turn queued before the claim is seen by the
+        // NOT EXISTS below, and one asked after it reads the claim and is refused.
         const claimed = yield* db
-          .update(agentSessions)
-          .set({ idleStoppedAt: new Date() })
-          .where(
-            and(
-              eq(agentSessions.id, id),
-              isNull(agentSessions.settledAt),
-              or(isNull(agentSessions.idleStoppedAt), lt(agentSessions.idleStoppedAt, retryBefore)),
-              sql`NOT EXISTS (SELECT 1 FROM ${agentTurns} WHERE ${agentTurns.sessionId} = ${agentSessions.id} AND ${agentTurns.status} IN ('queued', 'running'))`,
-              sql`NOT EXISTS (SELECT 1 FROM ${agentRequests} WHERE ${agentRequests.sessionId} = ${agentSessions.id} AND ${agentRequests.status} = 'pending')`,
-            ),
+          .transaction((tx) =>
+            Effect.gen(function* () {
+              yield* tx.execute(
+                sql`select pg_advisory_xact_lock(hashtext(${agentConversationLockKey(id)}))`,
+              );
+              return yield* tx
+                .update(agentSessions)
+                .set({ idleStoppedAt: new Date() })
+                .where(
+                  and(
+                    eq(agentSessions.id, id),
+                    isNull(agentSessions.settledAt),
+                    or(
+                      isNull(agentSessions.idleStoppedAt),
+                      lt(agentSessions.idleStoppedAt, retryBefore),
+                    ),
+                    sql`NOT EXISTS (SELECT 1 FROM ${agentTurns} WHERE ${agentTurns.sessionId} = ${agentSessions.id} AND ${agentTurns.status} IN ('queued', 'running'))`,
+                    sql`NOT EXISTS (SELECT 1 FROM ${agentRequests} WHERE ${agentRequests.sessionId} = ${agentSessions.id} AND ${agentRequests.status} = 'pending')`,
+                  ),
+                )
+                .returning({ id: agentSessions.id });
+            }),
           )
-          .returning({ id: agentSessions.id })
           .pipe(Effect.orDie);
         return claimed.length > 0;
       });
@@ -842,6 +886,9 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
               captureRefused: observation.refused,
               captureRegisteredAt: observation.registeredAt,
               captureObservedAt: observation.observedAt,
+              ...(observation.incompleteReason === undefined
+                ? {}
+                : { captureIncompleteReason: observation.incompleteReason }),
             })
             .where(eq(agentSessions.id, id))
             .pipe(Effect.orDie);
@@ -857,7 +904,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* db
           .update(agentSessions)
           .set({
-            captureDrain: reason,
+            captureDrain: sql`COALESCE(${agentSessions.captureDrain}, ${reason})`,
             captureDrainRequestedAt: sql`COALESCE(${agentSessions.captureDrainRequestedAt}, ${at})`,
             captureDrainProgressAt: sql`COALESCE(${agentSessions.captureDrainProgressAt}, ${at})`,
             updatedAt: at,
@@ -865,6 +912,66 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
         yield* notify(id);
+      });
+
+      const planRelaunch = Effect.fn("SessionsRepo.planRelaunch")(function* (
+        id: SessionId,
+        resume: string,
+        at: Date,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({
+            captureDrain: "relaunch",
+            captureDrainResume: resume,
+            captureDrainRequestedAt: sql`COALESCE(${agentSessions.captureDrainRequestedAt}, ${at})`,
+            captureDrainProgressAt: sql`COALESCE(${agentSessions.captureDrainProgressAt}, ${at})`,
+            updatedAt: at,
+          })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+        yield* notify(id);
+      });
+
+      const clearRelaunch = Effect.fn("SessionsRepo.clearRelaunch")(function* (id: SessionId) {
+        yield* db
+          .update(agentSessions)
+          .set({ captureDrainResume: null })
+          .where(and(eq(agentSessions.id, id), isNotNull(agentSessions.captureDrainResume)))
+          .pipe(Effect.orDie);
+      });
+
+      const relaunchOf = Effect.fn("SessionsRepo.relaunchOf")(function* (id: SessionId) {
+        const [row] = yield* db
+          .select({ resume: agentSessions.captureDrainResume })
+          .from(agentSessions)
+          .where(eq(agentSessions.id, id))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return row?.resume ?? null;
+      });
+
+      const markFinalFlush = Effect.fn("SessionsRepo.markFinalFlush")(function* (
+        id: SessionId,
+        workspaceId: string,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({ captureFinalWorkspaceId: workspaceId })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+      });
+
+      const finalFlushedWorkspace = Effect.fn("SessionsRepo.finalFlushedWorkspace")(function* (
+        id: SessionId,
+      ) {
+        const [row] = yield* db
+          .select({ workspaceId: agentSessions.captureFinalWorkspaceId })
+          .from(agentSessions)
+          .where(eq(agentSessions.id, id))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return row?.workspaceId ?? null;
       });
 
       const recordCaptureDrainProgress = Effect.fn("SessionsRepo.recordCaptureDrainProgress")(
@@ -907,6 +1014,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             captureDrainRequestedAt: null,
             captureDrainProgressAt: null,
             captureNotSavedAt: null,
+            captureIncompleteReason: null,
             updatedAt: new Date(),
           })
           .where(eq(agentSessions.id, id))
@@ -918,7 +1026,9 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         const rows = yield* db
           .select()
           .from(agentSessions)
-          .where(isNotNull(agentSessions.captureDrain))
+          .where(
+            or(isNotNull(agentSessions.captureDrain), isNotNull(agentSessions.captureDrainResume)),
+          )
           .orderBy(asc(agentSessions.captureDrainRequestedAt))
           .pipe(Effect.orDie);
         return rows.map(toSession);
@@ -1000,6 +1110,11 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         setHarness,
         recordCaptureObservation,
         beginCaptureDrain,
+        planRelaunch,
+        clearRelaunch,
+        relaunchOf,
+        markFinalFlush,
+        finalFlushedWorkspace,
         recordCaptureDrainProgress,
         markCaptureNotSaved,
         endCaptureDrain,

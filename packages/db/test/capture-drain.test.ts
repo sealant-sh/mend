@@ -108,8 +108,11 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
         const sessions = yield* SessionsRepo;
         yield* sessions.setExecutorStartedAt(DRAINING, t0);
         yield* sessions.beginCaptureDrain(DRAINING, "stop", t0);
-        // A relaunch behind the stop is the latest ask; the drain's history stands.
-        yield* sessions.beginCaptureDrain(DRAINING, "relaunch", t1);
+        // A relaunch behind the stop is asked explicitly; the drain's history stands.
+        yield* sessions.planRelaunch(DRAINING, "claude", t1);
+        // A sweep's stop after it (a restart's settle) does not turn the relaunch into a stop.
+        yield* sessions.beginCaptureDrain(DRAINING, "stop", t2);
+        const resumeAsked = yield* sessions.relaunchOf(DRAINING);
         yield* sessions.recordCaptureObservation(DRAINING, {
           pending: 3,
           pendingBytes: null,
@@ -126,9 +129,27 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
         const moving = yield* sessions.byId(DRAINING);
         yield* sessions.endCaptureDrain(DRAINING);
         const ended = yield* sessions.byId(DRAINING);
+        // The drain ended; the relaunch is still to run, and the reaper lists it until it has.
+        const listedAfterEnd = (yield* sessions.listCaptureDrains()).map((session) => session.id);
+        const resumeAfterEnd = yield* sessions.relaunchOf(DRAINING);
+        yield* sessions.clearRelaunch(DRAINING);
+        const listedAfterClear = (yield* sessions.listCaptureDrains()).length;
         // Nothing to mark once no drain is under way.
         const afterEnd = yield* sessions.markCaptureNotSaved(DRAINING, t2);
-        return { asked, listed, firstStall, secondStall, stalled, moving, ended, afterEnd };
+        return {
+          asked,
+          listed,
+          firstStall,
+          secondStall,
+          stalled,
+          moving,
+          ended,
+          afterEnd,
+          resumeAsked,
+          listedAfterEnd,
+          resumeAfterEnd,
+          listedAfterClear,
+        };
       }),
     );
     expect(result.asked.captureDrain).toBe("relaunch");
@@ -146,6 +167,10 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
     expect(result.ended.captureDrainRequestedAt).toBeNull();
     expect(result.ended.capturePending).toBe(3);
     expect(result.afterEnd).toBe(false);
+    expect(result.resumeAsked).toBe("claude");
+    expect(result.listedAfterEnd).toEqual([DRAINING]);
+    expect(result.resumeAfterEnd).toBe("claude");
+    expect(result.listedAfterClear).toBe(0);
   });
 
   it("keeps the first removal request, and lists what waits on its workspace", async () => {

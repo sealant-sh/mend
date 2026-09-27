@@ -76,6 +76,7 @@ const session = (
   captureDrainRequestedAt: null,
   captureDrainProgressAt: null,
   captureNotSavedAt: null,
+  captureIncompleteReason: null,
   executorStartedAt: null,
   removalRequestedAt: null,
   status,

@@ -211,6 +211,14 @@ export class Session extends Schema.Class<Session>("Session")({
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
   /**
+   * Why the executor's last final flush did not complete, in sealantd's words
+   * (`captureIncompleteReasonOf`): what `not saved · … · workspace kept` names. Null once one
+   * completed, and outside a drain.
+   */
+  captureIncompleteReason: Schema.NullOr(Schema.String).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
    * When the session's current executor started — what the platform's cap counts from, not the
    * latest run. Null before launch and for rows from before the column.
    */

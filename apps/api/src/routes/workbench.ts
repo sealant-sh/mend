@@ -137,6 +137,7 @@ import { JobRunner, queueReviewPass } from "@mend/jobs";
 import { asSealantUser, SealantClient } from "@mend/sealant";
 import {
   CaptureRuntime,
+  captureHoldWords,
   DotfilesCloner,
   FollowUpDelivery,
   RECIPE_NAME,
@@ -623,6 +624,20 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           (session) => engine.stop(session.id).pipe(Effect.ignore),
           { concurrency: 4 },
         );
+        // Capture mode: a stop drains before its workspace goes, and the rows deleted below are
+        // what that drain registers under. Nothing is deleted while a drain runs, a drain kept its
+        // workspace, or an executor was not observed to end: the stops stand, and removal is asked
+        // again once they have saved (docs/adr/0002, "Stop drains, then terminates").
+        const holds = (yield* Effect.forEach(
+          [...new Set(projectSessions.map((session) => session.worktreeId))],
+          (worktreeId) => engine.captureHolds(worktreeId),
+          { concurrency: 4 },
+        )).flat();
+        if (holds.length > 0) {
+          return yield* new StoreFailure({
+            message: `not removed · ${captureHoldWords(holds)} · stops asked · remove the project again once its workspaces have saved and ended, or their owners discard what is unsaved`,
+          });
+        }
         // Hot workspaces too: their rows cascade with the project, but the containers would
         // otherwise burn until the platform TTL. Worktrees go with the store directory below.
         const hotWorkspaces = yield* HotWorkspacesRepo;

@@ -188,6 +188,7 @@ export interface SessionDto {
   readonly captureRefused?: number | null;
   readonly captureDrain?: string | null;
   readonly captureNotSavedAt?: string | null;
+  readonly captureIncompleteReason?: string | null;
 }
 
 /**
@@ -203,6 +204,7 @@ export const statusLineOf = (dto: SessionDto): string => {
     captureDrain:
       drain === "stop" || drain === "relaunch" || drain === "replacement" ? drain : null,
     captureNotSavedAt: dto.captureNotSavedAt ?? null,
+    captureIncompleteReason: dto.captureIncompleteReason ?? null,
   });
   return capture === null ? dto.status : `${dto.status} · ${capture}`;
 };

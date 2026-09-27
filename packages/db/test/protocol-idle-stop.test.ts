@@ -1,11 +1,15 @@
 import { PgClient } from "@effect/sql-pg";
-import { ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
+import { ProjectId, SessionId, SessionProcessId, Sha, WorktreeId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import { MendDBLive } from "../src/client.ts";
 import { migrations } from "../src/migrations.ts";
+import {
+  AgentConversationRepo,
+  AgentConversationRepoLive,
+} from "../src/repos/agent-conversation.ts";
 import { SessionsRepo, SessionsRepoLive } from "../src/repos/agent-sessions.ts";
 import {
   SessionControlEventsRepo,
@@ -28,11 +32,13 @@ const scratchUrl = (() => {
 })();
 const adminLayer = PgClient.layer({ url: Redacted.make(ADMIN_URL) });
 const scratchLayer = PgClient.layer({ url: Redacted.make(scratchUrl) });
-const reposLayer = Layer.mergeAll(SessionsRepoLive, SessionControlEventsRepoLive).pipe(
-  Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(scratchLayer))),
-);
+const reposLayer = Layer.mergeAll(
+  SessionsRepoLive,
+  SessionControlEventsRepoLive,
+  AgentConversationRepoLive,
+).pipe(Layer.provideMerge(MendDBLive.pipe(Layer.provideMerge(scratchLayer))));
 
-type Repos = SessionsRepo | SessionControlEventsRepo | SqlClient.SqlClient;
+type Repos = SessionsRepo | SessionControlEventsRepo | AgentConversationRepo | SqlClient.SqlClient;
 
 const withAdmin = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
   Effect.runPromise(effect.pipe(Effect.provide(adminLayer), Effect.scoped));
@@ -56,6 +62,8 @@ const IDLE = SessionId.make("s-idle");
 const TURNING = SessionId.make("s-turning");
 const ASKING = SessionId.make("s-asking");
 const SETTLED = SessionId.make("s-settled");
+const QUIET = SessionId.make("s-quiet");
+const RACES = Array.from({ length: 12 }, (_, i) => SessionId.make(`s-race-${i}`));
 
 /** Long before any claim a test makes: nothing is stale. */
 const LONG_AGO = new Date("2020-01-01T00:00:00Z");
@@ -97,7 +105,7 @@ describe.skipIf(!reachable)("the idle stop's claim, in Postgres", () => {
           ownerUserId: "alice",
           origin: "slack" as const,
         };
-        for (const id of [IDLE, TURNING, ASKING, SETTLED]) {
+        for (const id of [IDLE, TURNING, ASKING, SETTLED, QUIET, ...RACES]) {
           yield* sessions.create({ ...base, id });
           yield* sessions.setStatus(id, "running");
           yield* sql`
@@ -183,6 +191,70 @@ describe.skipIf(!reachable)("the idle stop's claim, in Postgres", () => {
         expect(yield* sessions.claimIdleStop(IDLE, LONG_AGO)).toBe(true);
       }),
     );
+  });
+
+  it("refuses a turn once the stop is claimed, and a queued turn keeps the claim away", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const conversations = yield* AgentConversationRepo;
+        const claimed = yield* sessions.claimIdleStop(QUIET, LONG_AGO);
+        // The host was read before the claim; the turn arrives after it.
+        const refused = yield* conversations
+          .submitTurn(QUIET, SessionProcessId.make(`agent-${QUIET}`), "one more thing", "alice")
+          .pipe(
+            Effect.map(() => "queued"),
+            Effect.catchTag("SessionStoppingError", (error) => Effect.succeed(error._tag)),
+          );
+        const queued = (yield* conversations.openTurns(QUIET)).length;
+        // Resumed: the claim is gone, a turn is queued, and it keeps a new claim away.
+        yield* sessions.reopen(QUIET, "running");
+        const admitted = yield* conversations.submitTurn(
+          QUIET,
+          SessionProcessId.make(`agent-${QUIET}`),
+          "one more thing",
+          "alice",
+        );
+        const claimedWithTurn = yield* sessions.claimIdleStop(QUIET, LONG_AGO);
+        return { claimed, refused, queued, admitted: admitted.status, claimedWithTurn };
+      }),
+    );
+    expect(result.claimed).toBe(true);
+    expect(result.refused).toBe("SessionStoppingError");
+    expect(result.queued).toBe(0);
+    expect(result.admitted).toBe("queued");
+    expect(result.claimedWithTurn).toBe(false);
+  });
+
+  it("a turn and a stop claim racing: never both — a queued turn behind a claimed stop", async () => {
+    const outcomes = await run(
+      Effect.forEach(
+        RACES,
+        (id) =>
+          Effect.gen(function* () {
+            const sessions = yield* SessionsRepo;
+            const conversations = yield* AgentConversationRepo;
+            const [claimed, turn] = yield* Effect.all(
+              [
+                sessions.claimIdleStop(id, LONG_AGO),
+                conversations
+                  .submitTurn(id, SessionProcessId.make(`agent-${id}`), "go on", "alice")
+                  .pipe(
+                    Effect.map(() => true),
+                    Effect.catchTag("SessionStoppingError", () => Effect.succeed(false)),
+                  ),
+              ],
+              { concurrency: "unbounded" },
+            );
+            return { claimed, turn };
+          }),
+        { concurrency: "unbounded" },
+      ),
+    );
+    for (const outcome of outcomes) {
+      expect(outcome.claimed && outcome.turn).toBe(false);
+      expect(outcome.claimed || outcome.turn).toBe(true);
+    }
   });
 
   it("records the stop in the control log as idle-stop", async () => {

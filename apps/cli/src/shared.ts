@@ -309,6 +309,7 @@ export interface SessionCaptureLike {
   readonly captureRefused?: number | null;
   readonly captureDrain?: string | null;
   readonly captureNotSavedAt?: string | null;
+  readonly captureIncompleteReason?: string | null;
 }
 
 /**
@@ -325,6 +326,7 @@ export const captureLineOf = (session: SessionCaptureLike): string | null => {
     captureDrain:
       drain === "stop" || drain === "relaunch" || drain === "replacement" ? drain : null,
     captureNotSavedAt: session.captureNotSavedAt ?? null,
+    captureIncompleteReason: session.captureIncompleteReason ?? null,
   });
 };
 

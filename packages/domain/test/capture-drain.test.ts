@@ -9,6 +9,7 @@ import {
   captureStatusLine,
   type CaptureReading,
   executorCapDue,
+  observeCaptureThroughput,
   planExecutorCap,
 } from "../src/workbench/capture-drain.ts";
 
@@ -23,6 +24,8 @@ const reading = (patch: Partial<CaptureReading> = {}): CaptureReading => ({
   fenced: false,
   paused: false,
   bulkDirty: null,
+  complete: true,
+  incompleteReason: null,
   ...patch,
 });
 
@@ -35,11 +38,17 @@ const facts = {
 } as const;
 
 describe("captureSaved", () => {
-  it("needs nothing pending, nobody fenced and nothing refused", () => {
+  it("needs a completed final flush, nothing pending, nobody fenced and nothing refused", () => {
     expect(captureSaved(reading())).toBe(true);
     expect(captureSaved(reading({ pending: 1 }))).toBe(false);
     expect(captureSaved(reading({ fenced: true }))).toBe(false);
     expect(captureSaved(reading({ refused: 1 }))).toBe(false);
+  });
+
+  it("never reads an empty queue as saved without the executor's `complete`", () => {
+    // The queue is empty, but nothing says the executor quiesced and snapshotted both classes.
+    expect(captureSaved(reading({ complete: null }))).toBe(false);
+    expect(captureSaved(reading({ complete: false }))).toBe(false);
   });
 });
 
@@ -141,6 +150,97 @@ describe("captureDrainStep", () => {
   });
 });
 
+describe("captureDrainStep without a completed final flush", () => {
+  it("keeps the workspace at once when the executor cannot report `complete`", () => {
+    expect(
+      captureDrainStep({
+        previous: null,
+        reading: reading({ complete: null }),
+        progressAtMs: 0,
+        nowMs: 1,
+        stallSeconds: 600,
+      }).kind,
+    ).toBe("not-saved");
+  });
+
+  it("keeps the workspace at once when the executor cannot run a final flush, or is fenced", () => {
+    for (const stuck of [
+      // An older daemon: incomplete, no reason.
+      reading({ complete: false }),
+      reading({ complete: false, incompleteReason: "not-final" }),
+      reading({ complete: false, incompleteReason: "conflict" }),
+    ]) {
+      expect(
+        captureDrainStep({
+          previous: null,
+          reading: stuck,
+          progressAtMs: 0,
+          nowMs: 1,
+          stallSeconds: 600,
+        }).kind,
+      ).toBe("not-saved");
+    }
+  });
+
+  it("keeps saving while a reported final flush is incomplete, until the stall window", () => {
+    const incomplete = reading({ complete: false, incompleteReason: "snapshot-failed" });
+    expect(
+      captureDrainStep({
+        previous: incomplete,
+        reading: incomplete,
+        progressAtMs: 0,
+        nowMs: 1000,
+        stallSeconds: 600,
+      }).kind,
+    ).toBe("saving");
+    expect(
+      captureDrainStep({
+        previous: incomplete,
+        reading: incomplete,
+        progressAtMs: 0,
+        nowMs: 600_000,
+        stallSeconds: 600,
+      }).kind,
+    ).toBe("not-saved");
+  });
+});
+
+describe("observeCaptureThroughput", () => {
+  it("reads bytes and captures per second from lifetime counters, smoothed", () => {
+    const first = observeCaptureThroughput(null, { atMs: 0, uploadedBytes: 0, registered: 0 });
+    expect(first.bytesPerSecond).toBeNull();
+    const second = observeCaptureThroughput(first, {
+      atMs: 10_000,
+      uploadedBytes: 10_000_000,
+      registered: 5,
+    });
+    expect(second.bytesPerSecond).toBe(1_000_000);
+    expect(second.objectsPerSecond).toBe(0.5);
+    const third = observeCaptureThroughput(second, {
+      atMs: 20_000,
+      uploadedBytes: 30_000_000,
+      registered: 5,
+    });
+    // 2 MB/s over the new interval, weighted into 1 MB/s; nothing registered keeps the rate.
+    expect(third.bytesPerSecond).toBeCloseTo(1_300_000);
+    expect(third.objectsPerSecond).toBe(0.5);
+  });
+
+  it("starts over when the counters go backwards: a new executor", () => {
+    const moving = observeCaptureThroughput(
+      observeCaptureThroughput(null, { atMs: 0, uploadedBytes: 0, registered: 0 }),
+      { atMs: 10_000, uploadedBytes: 1000, registered: 1 },
+    );
+    const replaced = observeCaptureThroughput(moving, {
+      atMs: 20_000,
+      uploadedBytes: 10,
+      registered: 0,
+    });
+    expect(replaced.bytesPerSecond).toBeNull();
+    expect(replaced.objectsPerSecond).toBeNull();
+  });
+});
+
 describe("captureStatusLine", () => {
   it("says what a drain has left, in captures until sealantd reports bytes", () => {
     expect(captureStatusLine({ ...facts, captureDrain: "stop" })).toBe("saving");
@@ -166,6 +266,21 @@ describe("captureStatusLine", () => {
         captureNotSavedAt: new Date("2026-09-27T10:00:00Z"),
       }),
     ).toBe("not saved · 3 pending · workspace kept");
+  });
+
+  it("says why a final flush did not complete, in plain words", () => {
+    const kept = {
+      ...facts,
+      capturePending: 3,
+      captureDrain: "stop" as const,
+      captureNotSavedAt: new Date("2026-09-27T10:00:00Z"),
+    };
+    expect(captureStatusLine({ ...kept, captureIncompleteReason: "snapshot-failed" })).toBe(
+      "not saved · snapshot failed · 3 pending · workspace kept",
+    );
+    expect(
+      captureStatusLine({ ...kept, capturePending: 0, captureIncompleteReason: "unreported" }),
+    ).toBe("not saved · final flush not reported · 0 pending · workspace kept");
   });
 
   it("names refusals outside a drain, and says nothing otherwise", () => {
@@ -220,6 +335,27 @@ describe("planExecutorCap", () => {
     });
     // 1200 s to upload + 300 s margin before 11:00.
     expect(plan.kind === "planned" && plan.drainAt).toEqual(new Date("2026-09-27T10:35:00Z"));
+  });
+
+  it("gives many pending captures the time their registration rate needs", () => {
+    const plan = planExecutorCap({
+      ...base,
+      maxSeconds: 3600,
+      pendingObjects: 600,
+      objectsPerSecond: 0.5,
+    });
+    // 1200 s at half a capture a second + 300 s margin before 11:00.
+    expect(plan.kind === "planned" && plan.drainAt).toEqual(new Date("2026-09-27T10:35:00Z"));
+  });
+
+  it("moves the fallback replacement earlier by what the pending bytes need beyond the estimate", () => {
+    const plan = planExecutorCap({
+      ...base,
+      pendingBytes: 1_200_000_000,
+      bytesPerSecond: 1_000_000,
+    });
+    // 1200 s needed, 300 s already in the estimate: 900 s before 17:30.
+    expect(plan.kind === "planned" && plan.drainAt).toEqual(new Date("2026-09-27T17:15:00Z"));
   });
 
   it("falls back to the replacement age when nothing states the cap, and knows nothing unlaunched", () => {

@@ -52,6 +52,9 @@ and stop" ends it with captures pending. Four things it cannot do through the SD
     `platformDeadline: null` in `SessionEngine.captureReaper`).
   - **Suggested:** `workspace.runtimeDeadline(): string | null` (ISO time), or the same on the
     workspace record. Mend reads it into `platformDeadline`, where it wins over the configuration.
+    Core's pending SDK (sealant#285) adds `runtimeDeadline()`; the swap-in is that one argument in
+    `SessionEngine.captureReaper`. Until then the lead before a stated cap also grows with what is
+    pending at the executor's observed throughput.
 - **A final flush with a deadline.**
   - **Needed:** a flush that snapshots bulk as well as small captures, ships everything, and returns
     only at `pending == 0`, a fence or a refusal, bounded by a deadline Mend names (or none).
@@ -63,6 +66,15 @@ and stop" ends it with captures pending. Four things it cannot do through the SD
   - **Suggested:** `capture.flush({ kind: "final", deadlineMs })` and
     `sealantctl capture flush --final --deadline`, with no clamp; the terminate hook calls the final
     kind.
+  - **Agreed with sealantd (2026-09-27):** the final kind quiesces first (no new processes, every
+    managed process ended), then snapshots both classes and ships; the answer carries `complete`
+    and, when false, `incompleteReason` (`not-final`, `processes-remain`, `snapshot-failed`,
+    `fenced`, `conflict`, `deadline`, `ship-failed`, `pending`, `internal`). The executor refuses
+    exec, sessions and replan after it. Mend asks `captureFlush(workspace, "final")` for every drain
+    and treats only `complete: true` as saved; until the SDK passes the kind and the fields through,
+    the answer has no `complete` and every drain keeps its workspace
+    (`not saved · final flush not reported`). Mend never starts anything in an executor it sent a
+    final flush to.
 - **What is pending, in bytes and by class.**
   - **Needed:** `pendingBytes` (what is left to upload), `pendingBulk` (how many of `pending` are
     bulk), whether bulk is dirty since its last snap, and `refused` (the byte quota refused a
