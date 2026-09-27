@@ -256,10 +256,13 @@ export const DirEntryKind = Schema.Literals(["file", "symlink", "dir", "hardlink
 export type DirEntryKind = typeof DirEntryKind.Type;
 
 /**
- * One entry of a directory listing. `mtime` is seconds since the epoch (fractional allowed);
- * an RFC 3339 string is accepted too — ADR-0015 fixes the field, not its unit, and both are
- * unambiguous to read. `chunks` for files, `target` for symlinks and hardlink groups (the
- * group's canonical path, relative to the class root), `child` for directories.
+ * One entry of a directory listing. `mtime` is nanoseconds since the epoch, an i64 (sealantd
+ * `tree.rs` `DirEntry.mtime`): decoded from a dir object's bytes it is a `bigint` holding the
+ * integer exactly as written (`decodeDirObject`) — a double cannot hold today's nanosecond
+ * counts — and written back the same digits (`encodeDirObject`). A `number` is nanoseconds too
+ * (an entry built in memory); an RFC 3339 string is accepted as a time. `chunks` for files,
+ * `target` for symlinks and hardlink groups (the group's canonical path, relative to the class
+ * root), `child` for directories.
  *
  * `name` and `target` are keys (sealantd `tree.rs`, "Names that are not UTF-8"): a name that is
  * not UTF-8, or holds a character of `U+10FF80..=U+10FFFF`, is escaped byte by byte into that
@@ -272,7 +275,7 @@ export const DirEntry = Schema.Struct({
   kind: DirEntryKind,
   mode: Schema.Int,
   size: Schema.Int,
-  mtime: Schema.Union([Schema.Number, Schema.String]),
+  mtime: Schema.Union([Schema.BigInt, Schema.Number, Schema.String]),
   chunks: Schema.optionalKey(Schema.Array(Schema.String)),
   target: Schema.optionalKey(Schema.String),
   child: Schema.optionalKey(Schema.String),
@@ -301,9 +304,25 @@ const DirObjectWire = Schema.Union([
   Schema.Array(DirEntry),
 ]);
 
-/** The bytes of a dir object as the daemon writes and reads them. */
+/** `JSON.rawJSON` (ES2025, Node 21+), which TypeScript's lib does not type yet. */
+interface JsonWithRawText {
+  readonly rawJSON: (text: string) => unknown;
+}
+const writesRawText = (json: JSON): json is JSON & JsonWithRawText =>
+  "rawJSON" in json && typeof Reflect.get(json, "rawJSON") === "function";
+
+/** `JSON.stringify`, with every `bigint` written as its digits (an i64 nanosecond mtime). */
+export const stringifyExact = (value: unknown): string => {
+  const json = JSON;
+  if (!writesRawText(json)) throw new Error("dir objects need JSON.rawJSON (Node 21 or later)");
+  return JSON.stringify(value, (_key: string, field: unknown) =>
+    typeof field === "bigint" ? json.rawJSON(field.toString()) : field,
+  );
+};
+
+/** The bytes of a dir object as the daemon writes and reads them; a `bigint` goes out as its digits. */
 export const encodeDirObject = (entries: DirObject): Uint8Array =>
-  new Uint8Array(Buffer.from(JSON.stringify({ entries }), "utf8"));
+  new Uint8Array(Buffer.from(stringifyExact({ entries }), "utf8"));
 
 // ─── Names that are not UTF-8 ───────────────────────────────────────────────
 
@@ -570,7 +589,37 @@ const decodeJson =
     });
 
 export const decodeManifest = decodeJson(CaptureManifest, "manifest");
-const decodeDirObjectWire = decodeJson(DirObjectWire, "dir object");
+
+/**
+ * A dir object's JSON, with every integer `mtime` read from its source text as a `bigint`
+ * (`JSON.parse` source text access, Node 21+): nanoseconds since the epoch overflow a double's
+ * 53 bits, and a rounded mtime is a changed one.
+ */
+const parseDirObjectJson = (text: string): unknown =>
+  JSON.parse(text, (key: string, value: unknown, context?: { readonly source?: string }) =>
+    key === "mtime" &&
+    typeof value === "number" &&
+    context?.source !== undefined &&
+    /^-?\d+$/.test(context.source)
+      ? BigInt(context.source)
+      : value,
+  );
+
+const decodeDirObjectWire = (
+  key: string,
+  bytes: Uint8Array,
+): Effect.Effect<typeof DirObjectWire.Type, CaptureFormatError> =>
+  Effect.try({
+    try: () =>
+      Schema.decodeUnknownSync(DirObjectWire)(
+        parseDirObjectJson(Buffer.from(bytes).toString("utf8")),
+      ),
+    catch: (cause) =>
+      new CaptureFormatError({
+        key,
+        reason: `dir object: ${cause instanceof Error ? cause.message : String(cause)}`,
+      }),
+  });
 const isWrappedDirObject = (
   wire: typeof DirObjectWire.Type,
 ): wire is { readonly entries: DirObject } => !Array.isArray(wire);
@@ -959,8 +1008,24 @@ export interface MaterializeStats {
   readonly bytes: number;
 }
 
-const mtimeSeconds = (value: number | string): number =>
-  typeof value === "number" ? value : Date.parse(value) / 1000;
+const NS_PER_SECOND = 1_000_000_000n;
+
+/** An entry's mtime in nanoseconds since the epoch, exact (`DirEntry.mtime`). */
+export const mtimeNanos = (value: bigint | number | string): bigint => {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? BigInt(Math.trunc(value)) : 0n;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? 0n : BigInt(ms) * 1_000_000n;
+};
+
+/**
+ * Nanoseconds as the seconds `fs.utimesSync` takes. Node sets a time from a double of seconds,
+ * which holds today's times to about a quarter of a microsecond: this reader lays a class down
+ * for Mend to read, never to restore an executor's disk — sealantd's materializer is the restore
+ * path, and it sets every nanosecond.
+ */
+const secondsOf = (ns: bigint): number =>
+  Number(ns / NS_PER_SECOND) + Number(ns % NS_PER_SECOND) / 1e9;
 
 const isSafeName = (name: string) =>
   name !== "" && name !== "." && name !== ".." && !name.includes("/") && !name.includes("\0");
@@ -976,6 +1041,10 @@ const joinBytes = (dir: Buffer, name: Uint8Array): Buffer =>
  * mtimes are applied last so the writes beneath do not disturb them. Every path is bytes: a name
  * or a symlink's text that is not UTF-8 is written as the bytes `raw_name` / `raw_target` carry,
  * never as its escaped key.
+ *
+ * Not a restore path: an mtime lands to within a microsecond of the recorded nanoseconds (what
+ * Node's `utimes` can set, `secondsOf`), and no worktree metadata overlay or cross-class link is
+ * applied. Restoring an executor's disk is sealantd's materializer.
  */
 export const materialize = (
   manifest: CaptureManifest,
@@ -1027,7 +1096,7 @@ export const materialize = (
             reason: `${entry.name}: wrote ${written} bytes, entry says ${entry.size}`,
           });
         }
-        const mtime = mtimeSeconds(entry.mtime);
+        const mtime = secondsOf(mtimeNanos(entry.mtime));
         yield* io(at, () => fs.utimesSync(at, mtime, mtime));
         stats.files += 1;
         stats.bytes += written;
@@ -1083,7 +1152,7 @@ export const materialize = (
               stats.dirs += 1;
               yield* walk(child, at);
               yield* io(at, () => fs.chmodSync(at, mode));
-              dirTimes.push({ at, mtime: mtimeSeconds(entry.mtime) });
+              dirTimes.push({ at, mtime: secondsOf(mtimeNanos(entry.mtime)) });
               break;
             }
             case "file": {
@@ -1098,7 +1167,7 @@ export const materialize = (
                   reason: `${entry.name}: symlink without a well-formed target`,
                 });
               }
-              const mtime = mtimeSeconds(entry.mtime);
+              const mtime = secondsOf(mtimeNanos(entry.mtime));
               yield* io(at, () => {
                 fs.symlinkSync(target, at);
                 fs.lutimesSync(at, mtime, mtime);
@@ -1546,7 +1615,11 @@ export const listCaptureFiles = (
         }
       }
     }
-    return out.toSorted((a, b) => mtimeSeconds(b.entry.mtime) - mtimeSeconds(a.entry.mtime));
+    return out.toSorted((a, b) => {
+      const left = mtimeNanos(a.entry.mtime);
+      const right = mtimeNanos(b.entry.mtime);
+      return left === right ? 0 : right > left ? 1 : -1;
+    });
   });
 
 // ─── Restorability ──────────────────────────────────────────────────────────

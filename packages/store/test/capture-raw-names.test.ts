@@ -10,10 +10,14 @@ import {
   bytesOfKey,
   captureIdOf,
   captureKeys,
+  type DirEntry,
+  decodeDirObject,
   decodeManifest,
+  encodeDirObject,
   keyOfBytes,
   makeDirReader,
   materialize,
+  mtimeNanos,
   rawOfKey,
   sha256Hex,
   verifySectionRestorable,
@@ -213,6 +217,8 @@ interface ExpectedEntry {
   readonly nlink?: number;
   /** A symlink's text, hex. */
   readonly target?: string;
+  /** Its mtime on the executor's disk, nanoseconds since the epoch, as decimal digits. */
+  readonly mtime_ns: string;
 }
 
 interface ExpectedHead {
@@ -232,13 +238,15 @@ const observedListing = (base: Buffer, dir: Buffer): Record<string, ExpectedEntr
       const full = joinBytes(at, name);
       const rel = full.subarray(base.length + 1).toString("hex");
       const stat = fs.lstatSync(full);
+      const mtime_ns = fs.lstatSync(full, { bigint: true }).mtimeNs.toString();
       if (stat.isSymbolicLink()) {
         out[rel] = {
           kind: "symlink",
           target: fs.readlinkSync(full, { encoding: "buffer" }).toString("hex"),
+          mtime_ns,
         };
       } else if (stat.isDirectory()) {
-        out[rel] = { kind: "dir", mode: stat.mode & 0o7777 };
+        out[rel] = { kind: "dir", mode: stat.mode & 0o7777, mtime_ns };
         walk(full);
       } else {
         const bytes = fs.readFileSync(full);
@@ -248,6 +256,7 @@ const observedListing = (base: Buffer, dir: Buffer): Record<string, ExpectedEntr
           nlink: stat.nlink,
           sha256: sha256Hex(bytes),
           size: bytes.length,
+          mtime_ns,
         };
       }
     }
@@ -295,12 +304,94 @@ describe("a store sealant-capture wrote with names that are not UTF-8", () => {
       Buffer.from(path.join(workspaceOut, "tree")),
       Buffer.from(path.join(workspaceOut, "tree", "ignored")),
     );
-    expect(tree).toEqual(expected.tree);
+    expect(withoutTimes(tree)).toEqual(withoutTimes(expected.tree));
     const bulk = observedListing(
       Buffer.from(bulkOut),
       Buffer.from(path.join(bulkOut, "node_modules")),
     );
-    expect(bulk).toEqual(expected.bulk);
+    expect(withoutTimes(bulk)).toEqual(withoutTimes(expected.bulk));
     expect(escaped).toBeGreaterThan(0);
+    // Every file, symlink and directory lands on its recorded time — to the microsecond, all
+    // Node's `utimes` sets (sealantd's own restore sets the nanoseconds). A nanosecond count read
+    // as seconds lands a billion times later (review 2026-09-28 #14).
+    for (const [listing, want] of [
+      [tree, expected.tree],
+      [bulk, expected.bulk],
+    ] as const) {
+      expect(Object.keys(listing).toSorted()).toEqual(Object.keys(want).toSorted());
+      for (const [rel, entry] of Object.entries(want)) {
+        const landed = BigInt(listing[rel]?.mtime_ns ?? "0");
+        const drift = landed - BigInt(entry.mtime_ns);
+        expect(drift < 0n ? -drift : drift, `${rel} landed at ${landed}`).toBeLessThan(1000n);
+      }
+    }
+  });
+
+  it("reads every mtime as the exact nanoseconds written, and writes the same digits back", async () => {
+    const expected: ExpectedHead = JSON.parse(
+      fs.readFileSync(path.join(FIXTURE, "head.json"), "utf8"),
+    );
+    const blobRoot = freshDir("rust-blobs");
+    fs.cpSync(path.join(FIXTURE, "store"), blobRoot, { recursive: true });
+    const decoded = await runIn(
+      blobRoot,
+      Effect.gen(function* () {
+        const store = yield* BlobStore;
+        const manifest = yield* decodeManifest(
+          expected.manifest_key,
+          yield* store.get(expected.manifest_key),
+        );
+        const bulk = manifest.sections.bulk;
+        if (bulk === "pending") throw new Error("bulk pending");
+        const times: Record<string, bigint> = {};
+        const listings: Array<ReadonlyArray<DirEntry>> = [];
+        for (const section of [manifest.sections.workspace, bulk]) {
+          const reader = yield* makeDirReader(section);
+          const pending: Array<{ readonly ref: string; readonly at: Buffer }> = [
+            { ref: section.root, at: Buffer.alloc(0) },
+          ];
+          for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+            const entries = yield* reader.read(next.ref);
+            listings.push(entries);
+            for (const entry of entries) {
+              const name =
+                entry.raw_name === undefined
+                  ? Buffer.from(entry.name)
+                  : Buffer.from(entry.raw_name, "hex");
+              const at = next.at.length === 0 ? name : joinBytes(next.at, name);
+              times[at.toString("hex")] = mtimeNanos(entry.mtime);
+              if (entry.kind === "dir" && entry.child !== undefined) {
+                pending.push({ ref: entry.child, at });
+              }
+            }
+          }
+        }
+        // What `promoteBulkToCache` does to a format-1 dir object: decode, then encode again.
+        const again = yield* Effect.forEach(listings, (entries) =>
+          decodeDirObject("again", encodeDirObject(entries)),
+        );
+        return { times, listings, again };
+      }),
+    );
+    const wanted = [...prefixed(expected.tree, "tree/"), ...prefixed(expected.bulk, "")];
+    expect(wanted.length).toBeGreaterThan(0);
+    for (const [key, ns] of wanted) {
+      expect(decoded.times[key]?.toString(), Buffer.from(key, "hex").toString()).toBe(ns);
+    }
+    expect(decoded.again.map((entries) => entries.map((entry) => entry.mtime))).toEqual(
+      decoded.listings.map((entries) => entries.map((entry) => entry.mtime)),
+    );
   });
 });
+
+/** A recorded listing's times keyed as a class walk keys them: `prefix` + the path, hex. */
+const prefixed = (listing: Readonly<Record<string, ExpectedEntry>>, prefix: string) =>
+  Object.entries(listing).map(
+    ([rel, entry]) => [Buffer.from(prefix).toString("hex") + rel, entry.mtime_ns] as const,
+  );
+
+/** A listing without its times: the structure compared exactly, the times apart. */
+const withoutTimes = (listing: Readonly<Record<string, ExpectedEntry>>) =>
+  Object.fromEntries(
+    Object.entries(listing).map(([rel, { mtime_ns: _mtime, ...rest }]) => [rel, rest]),
+  );

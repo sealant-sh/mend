@@ -3,58 +3,68 @@
     "6e6f64655f6d6f64756c65732f636f70792dff2e6a73": {
       "kind": "file",
       "mode": 420,
+      "mtime_ns": "1790544318481864709",
       "nlink": 2,
       "sha256": "6e66e366f0aefb84ad8110afcd9b2245702c643c831edf8316ff048fec739d2e",
       "size": 20
     },
     "6e6f64655f6d6f64756c65732f6c696e6b2de9": {
       "kind": "symlink",
+      "mtime_ns": "1790544318482864712",
       "target": "706b672de9"
     },
     "6e6f64655f6d6f64756c65732f706b672de9": {
       "kind": "dir",
-      "mode": 493
+      "mode": 493,
+      "mtime_ns": "1790544318480864706"
     },
     "6e6f64655f6d6f64756c65732f706b672de92f696e6465782e6a73": {
       "kind": "file",
       "mode": 420,
+      "mtime_ns": "1790544318481864709",
       "nlink": 2,
       "sha256": "6e66e366f0aefb84ad8110afcd9b2245702c643c831edf8316ff048fec739d2e",
       "size": 20
     }
   },
-  "capture_id": "6d4e15d71bd5a7c897ce7451223364e238411a782e5722bad31d9ff7b9379079",
-  "manifest_key": "captures/wt-raw/1/manifests/6d4e15d71bd5a7c897ce7451223364e238411a782e5722bad31d9ff7b9379079",
+  "capture_id": "d2b0939160b483a38697edf62328e18efe0bd4d13be333af4eaf633625be46ab",
+  "manifest_key": "captures/wt-raw/1/manifests/d2b0939160b483a38697edf62328e18efe0bd4d13be333af4eaf633625be46ab",
   "tree": {
     "69676e6f7265642f636166e9": {
       "kind": "file",
       "mode": 420,
+      "mtime_ns": "1790544318481764707",
       "nlink": 1,
       "sha256": "53f0d43c2e4fbc7ac8fa0f77bfc56eddd4554ce1d7fbc2cab0bf429c727c5971",
       "size": 13
     },
     "69676e6f7265642f6469722dfe": {
       "kind": "dir",
-      "mode": 493
+      "mode": 493,
+      "mtime_ns": "1790544318480764704"
     },
     "69676e6f7265642f6469722dfe2f696e6e6572": {
       "kind": "file",
       "mode": 420,
+      "mtime_ns": "1790544318479764701",
       "nlink": 1,
       "sha256": "8e633d02bd6c07b3e43be364287f2de90909fc7523191241b3231816ea9ab2fa",
       "size": 37
     },
     "69676e6f7265642f6c696e6b2d657363617065": {
       "kind": "symlink",
+      "mtime_ns": "1790544318484764716",
       "target": "78f48fbea079"
     },
     "69676e6f7265642f6c696e6b2d6666": {
       "kind": "symlink",
+      "mtime_ns": "1790544318483764713",
       "target": "ff"
     },
     "69676e6f7265642f78f48fbea079": {
       "kind": "file",
       "mode": 420,
+      "mtime_ns": "1790544318482764710",
       "nlink": 1,
       "sha256": "4e5b450166234c4d4ca2c98e4dcc5abf2004fefe67f5d95bfc236bbd337e8491",
       "size": 18
