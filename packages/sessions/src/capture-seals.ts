@@ -28,13 +28,10 @@ export interface CaptureCompletionSeal {
  * that epoch (a capture staged after it — a turn boundary — unseals the chain until the next
  * final flush seals it again).
  *
- * INTEGRATION POINT: the store records the seal on the capture-store stack (migration 0080,
- * `CaptureStoreRepo.sealedCompletion`). Once this branch stacks on it, the API provides
- * `Layer.effect(CaptureSeals, Effect.map(CaptureStoreRepo, (repo) => ({ sealedCompletion:
- * repo.sealedCompletion })))` beside the capture runtime. Until then,
+ * The API provides it from `CaptureStoreRepo.sealedCompletion` (migration 0080) beside the capture
+ * runtime (`apps/api/src/main.ts`). Where nothing provides it — the co-located store, tests —
  * the engine reads `CaptureSealsNone`: no seal is ever found, so nothing reads saved on a seal
- * — every drain still needs the executor's own `complete: true`, and an end outside Mend reads
- * `completion unknown`. Never the other way round.
+ * and every drain still needs the executor's own `complete: true`. Never the other way round.
  */
 export class CaptureSeals extends Context.Service<
   CaptureSeals,
