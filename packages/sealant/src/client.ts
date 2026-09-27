@@ -275,36 +275,86 @@ export const workspaceStopAnswerOf = (answer: unknown): WorkspaceStopAnswer => {
   return { state, retained, completion };
 };
 
-/** A workspace that can report its runtime (Core's next SDK: `workspace.details()`). */
-interface DetailsReadable {
-  readonly details: () => Promise<unknown>;
+/** A workspace that reads its executor now (Core's next SDK: `workspace.runtime()`). */
+interface RuntimeReadable {
+  readonly runtime: () => Promise<unknown>;
 }
 
-const readsDetails = (workspace: object): workspace is DetailsReadable =>
-  "details" in workspace && typeof workspace.details === "function";
+const readsRuntime = (workspace: object): workspace is RuntimeReadable =>
+  "runtime" in workspace && typeof workspace.runtime === "function";
+
+/** `resourceId` of a runtime record (`WorkspaceRuntimeInfo`), when it carries one. */
+const resourceIdIn = (runtime: unknown): string | null =>
+  typeof runtime === "object" && runtime !== null ? textIn(runtime, "resourceId") : null;
 
 /**
- * The executor's runtime identity (`details().runtime.resourceId`: the Docker container, the
- * Pod, the MicroVM) when the SDK reports it; null on an SDK without `details()` (0.37.2), before
- * the runtime is launched, and for an answer without one.
+ * The executor's runtime identity (`resourceId`: the Docker container, the Pod, the MicroVM) on
+ * Core's next SDK: from the handle's `launch.runtime` (what `create()` saw become ready, or a
+ * replayed create's executor), else `workspace.runtime()` read now. Null on SDK 0.37.2, which has
+ * neither, and while no runtime is launched.
  */
 export const runtimeResourceIdOf = (
   workspace: object,
 ): Effect.Effect<string | null, SealantPlatformError> => {
-  if (!readsDetails(workspace)) return Effect.succeed(null);
-  return wrap(() => workspace.details()).pipe(
-    Effect.map((details) => {
-      if (typeof details !== "object" || details === null) return null;
-      const runtime: unknown = Reflect.get(details, "runtime");
-      return typeof runtime === "object" && runtime !== null ? textIn(runtime, "resourceId") : null;
+  const launch: unknown = Reflect.get(workspace, "launch");
+  const launched =
+    typeof launch === "object" && launch !== null
+      ? resourceIdIn(Reflect.get(launch, "runtime"))
+      : null;
+  if (launched !== null) return Effect.succeed(launched);
+  if (!readsRuntime(workspace)) return Effect.succeed(null);
+  return wrap(() => workspace.runtime()).pipe(Effect.map(resourceIdIn));
+};
+
+/** Core's next SDK: `workspaces.findByIdempotencyKey(key)`. */
+interface IdempotentLookup {
+  readonly findByIdempotencyKey: (key: string) => Promise<unknown>;
+}
+
+const looksUpByKey = (workspaces: object): workspaces is IdempotentLookup =>
+  "findByIdempotencyKey" in workspaces && typeof workspaces.findByIdempotencyKey === "function";
+
+/**
+ * What an idempotent create's key finds: the workspace it made (`found`), that none was made
+ * (`none`), or that the SDK cannot say (`unsupported`: 0.37.2, which neither sends the key nor
+ * looks it up).
+ */
+export type WorkspaceByKey =
+  | { readonly kind: "found"; readonly workspaceId: string }
+  | { readonly kind: "none" }
+  | { readonly kind: "unsupported" };
+
+/** `findByIdempotencyKey` on any SDK's `workspaces`, read as `WorkspaceByKey`. */
+export const workspaceByKeyOf = (
+  workspaces: object,
+  key: string,
+): Effect.Effect<WorkspaceByKey, SealantPlatformError> => {
+  if (!looksUpByKey(workspaces)) return Effect.succeed({ kind: "unsupported" });
+  return wrap(() => workspaces.findByIdempotencyKey(key)).pipe(
+    Effect.map((found): WorkspaceByKey => {
+      const id = typeof found === "object" && found !== null ? textIn(found, "id") : null;
+      return id === null ? { kind: "none" } : { kind: "found", workspaceId: id };
     }),
   );
 };
 
+/** What makes a create idempotent: the key Mend persisted before it asked (`idempotencyKey`). */
+export interface WorkspaceCreateLaunch {
+  readonly idempotencyKey: string;
+}
+
 export interface SealantClientShape {
+  /**
+   * `launch.idempotencyKey` makes the create idempotent for the owner on Core's next SDK: a
+   * repeated create returns the workspace the first one made, and `findWorkspaceByKey` finds it
+   * when the answer was lost. SDK 0.37.2 ignores it (PLATFORM-FEEDBACK.md 2026-09-28).
+   */
   readonly createWorkspace: (
     options: CreateOptions,
+    launch?: WorkspaceCreateLaunch,
   ) => Effect.Effect<Workspace, SealantPlatformError>;
+  /** The workspace a keyed create made (`workspaceByKeyOf`); `unsupported` on SDK 0.37.2. */
+  readonly findWorkspaceByKey: (key: string) => Effect.Effect<WorkspaceByKey, SealantPlatformError>;
   readonly getWorkspace: (id: string) => Effect.Effect<Workspace, SealantPlatformError>;
   /** Runs outlive workspaces — records are replayable long after close-out. */
   readonly getRun: (runId: string) => Effect.Effect<Run, SealantPlatformError>;
@@ -361,8 +411,8 @@ export interface SealantClientShape {
     options?: WorkspaceStopOptions,
   ) => Effect.Effect<WorkspaceStopAnswer, SealantPlatformError>;
   /**
-   * The executor's runtime identity (`runtimeResourceIdOf`): what a completion attestation names.
-   * Null where the SDK cannot say (0.37.2 — PLATFORM-FEEDBACK.md 2026-09-28).
+   * The executor's runtime identity (`runtimeResourceIdOf`: `launch.runtime`, else `runtime()`):
+   * what a completion attestation names. Null where the SDK cannot say (0.37.2).
    */
   readonly runtimeResourceId: (
     workspace: Workspace,
@@ -552,8 +602,18 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
     const apiContext = yield* Layer.build(sealantApiClientLayer(internalConfig));
     const ownerUserId = internalConfig.hostLocal.ownerUserId;
 
-    const createWorkspace = Effect.fn("SealantClient.createWorkspace")((options: CreateOptions) =>
-      wrap(() => sealant.workspaces.create(options)),
+    const createWorkspace = Effect.fn("SealantClient.createWorkspace")((
+      options: CreateOptions,
+      launch?: WorkspaceCreateLaunch,
+    ) => {
+      // SDK 0.37.2 builds its request field by field and drops the key; Core's next SDK sends it.
+      const keyed: CreateOptions & { readonly idempotencyKey?: string } =
+        launch === undefined ? options : { ...options, idempotencyKey: launch.idempotencyKey };
+      return wrap(() => sealant.workspaces.create(keyed));
+    });
+
+    const findWorkspaceByKey = Effect.fn("SealantClient.findWorkspaceByKey")((key: string) =>
+      workspaceByKeyOf(sealant.workspaces, key),
     );
 
     const getWorkspace = Effect.fn("SealantClient.getWorkspace")((id: string) =>
@@ -845,6 +905,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
 
     return {
       createWorkspace,
+      findWorkspaceByKey,
       getWorkspace,
       getRun,
       runHarness,
@@ -1151,7 +1212,8 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
     ): Stream.Stream<A, SealantPlatformError> => Stream.unwrap(Effect.map(current, call));
 
     return {
-      createWorkspace: (options) => via((c) => c.createWorkspace(options)),
+      createWorkspace: (options, launch) => via((c) => c.createWorkspace(options, launch)),
+      findWorkspaceByKey: (key) => via((c) => c.findWorkspaceByKey(key)),
       getWorkspace: (id) => via((c) => c.getWorkspace(id)),
       getRun: (runId) => via((c) => c.getRun(runId)),
       runHarness: (workspace, prompt, options) =>

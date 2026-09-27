@@ -7,6 +7,7 @@ import {
   platformErrorCode,
   runtimeDeadlineOf,
   runtimeResourceIdOf,
+  workspaceByKeyOf,
   workspaceStopAnswerOf,
   workspaceStopStateOf,
 } from "./client.ts";
@@ -153,17 +154,42 @@ describe("workspaceStopAnswerOf", () => {
 });
 
 describe("runtimeResourceIdOf", () => {
-  it("names the runtime's resource when `details()` reports it, and nothing on 0.37.2", async () => {
+  it("names the executor from the handle's launch, else from `runtime()`, and nothing on 0.37.2", async () => {
     await expect(
       Effect.runPromise(
         runtimeResourceIdOf({
-          details: async () => ({ runtime: { adapter: "docker", resourceId: "c0ffee" } }),
+          launch: { replayed: false, runtime: { kind: "docker", resourceId: "c0ffee" } },
+          runtime: async () => ({ kind: "docker", resourceId: "other" }),
         }),
       ),
     ).resolves.toBe("c0ffee");
     await expect(
-      Effect.runPromise(runtimeResourceIdOf({ details: async () => ({ runtime: null }) })),
+      Effect.runPromise(
+        runtimeResourceIdOf({
+          launch: undefined,
+          runtime: async () => ({ kind: "microvm", resourceId: "vm-1" }),
+        }),
+      ),
+    ).resolves.toBe("vm-1");
+    await expect(
+      Effect.runPromise(runtimeResourceIdOf({ runtime: async () => null })),
     ).resolves.toBeNull();
     await expect(Effect.runPromise(runtimeResourceIdOf({}))).resolves.toBeNull();
+  });
+});
+
+describe("workspaceByKeyOf", () => {
+  it("finds what a keyed create made, says when it made none, and says 0.37.2 cannot look", async () => {
+    await expect(
+      Effect.runPromise(
+        workspaceByKeyOf({ findByIdempotencyKey: async () => ({ id: "ws-9" }) }, "k"),
+      ),
+    ).resolves.toEqual({ kind: "found", workspaceId: "ws-9" });
+    await expect(
+      Effect.runPromise(workspaceByKeyOf({ findByIdempotencyKey: async () => null }, "k")),
+    ).resolves.toEqual({ kind: "none" });
+    await expect(
+      Effect.runPromise(workspaceByKeyOf({ create: async () => ({}) }, "k")),
+    ).resolves.toEqual({ kind: "unsupported" });
   });
 });

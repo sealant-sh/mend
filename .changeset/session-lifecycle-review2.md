@@ -23,3 +23,9 @@ hold it, however empty the queue; a failing bulk snap does not. An agent whose e
 answered reads `executor not answering · … · completion unknown`, never the harness's `completed`.
 The planned drain ahead of a platform's cap counts back from `workspace.runtimeDeadline()` once the
 SDK has it, and every drained stop tells Core the completion the store sealed.
+
+Every capture-mode executor create carries an idempotency key written on the session before the
+create is asked (migration 0082). A create whose answer was lost, in the launch or across a restart,
+is found by that key once the SDK can look (Core's next SDK): the executor goes on the session and
+drains, or, when none was made, the worktree is free again. The executor's runtime identity comes
+from the create's `launch.runtime`, else `workspace.runtime()`.

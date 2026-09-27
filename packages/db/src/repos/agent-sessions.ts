@@ -334,6 +334,20 @@ export class SessionsRepo extends Context.Service<
       workspaceId: SealantWorkspaceId,
       resourceId: string,
     ) => Effect.Effect<void>;
+    /**
+     * An executor create is about to be asked under `key` (idempotent on the platform): until its
+     * answer is on the row (`recordAcceptedWorkspace`) or it was refused (`clearExecutorCreate`),
+     * an executor may exist that Mend has not seen.
+     */
+    readonly recordExecutorCreate: (id: SessionId, key: string) => Effect.Effect<void>;
+    /** The create was refused: nothing was made under `key`. Only while `key` still stands. */
+    readonly clearExecutorCreate: (id: SessionId, key: string) => Effect.Effect<void>;
+    /** The key of the session's create not yet answered on the row, or null. */
+    readonly executorCreateOf: (id: SessionId) => Effect.Effect<string | null>;
+    /** Every session with a create not yet answered on its row. */
+    readonly listExecutorCreates: () => Effect.Effect<
+      ReadonlyArray<{ readonly sessionId: SessionId; readonly key: string }>
+    >;
     /** The session's current executor's runtime identity, with the workspace it belongs to. */
     readonly executorResourceOf: (id: SessionId) => Effect.Effect<{
       readonly workspaceId: SealantWorkspaceId;
@@ -379,7 +393,8 @@ type SessionBookkeepingColumns =
   | "captureSavedAt"
   | "captureSavedN"
   | "captureSavedEpoch"
-  | "executorResourceId";
+  | "executorResourceId"
+  | "executorCreateKey";
 const sessionSeamIntact: ExactKeys<Omit<SessionRow, SessionBookkeepingColumns>, Session> = true;
 void sessionSeamIntact;
 
@@ -1242,6 +1257,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             sealantWorkspaceId: workspaceId,
             executorStartedAt,
             executorResourceId: null,
+            executorCreateKey: null,
             workspaceExpiresAt: null,
             workspaceTtlRenewedAt: null,
             workspaceTtlRenewalFailedAt: null,
@@ -1263,6 +1279,51 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .set({ executorResourceId: resourceId })
           .where(and(eq(agentSessions.id, id), eq(agentSessions.sealantWorkspaceId, workspaceId)))
           .pipe(Effect.orDie);
+      });
+
+      const recordExecutorCreate = Effect.fn("SessionsRepo.recordExecutorCreate")(function* (
+        id: SessionId,
+        key: string,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({ executorCreateKey: key })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+      });
+
+      const clearExecutorCreate = Effect.fn("SessionsRepo.clearExecutorCreate")(function* (
+        id: SessionId,
+        key: string,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({ executorCreateKey: null })
+          .where(and(eq(agentSessions.id, id), eq(agentSessions.executorCreateKey, key)))
+          .pipe(Effect.orDie);
+      });
+
+      const executorCreateOf = Effect.fn("SessionsRepo.executorCreateOf")(function* (
+        id: SessionId,
+      ) {
+        const [row] = yield* db
+          .select({ key: agentSessions.executorCreateKey })
+          .from(agentSessions)
+          .where(eq(agentSessions.id, id))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return row?.key ?? null;
+      });
+
+      const listExecutorCreates = Effect.fn("SessionsRepo.listExecutorCreates")(function* () {
+        const rows = yield* db
+          .select({ sessionId: agentSessions.id, key: agentSessions.executorCreateKey })
+          .from(agentSessions)
+          .where(isNotNull(agentSessions.executorCreateKey))
+          .pipe(Effect.orDie);
+        return rows.flatMap((row) =>
+          row.key === null ? [] : [{ sessionId: row.sessionId, key: row.key }],
+        );
       });
 
       const executorResourceOf = Effect.fn("SessionsRepo.executorResourceOf")(function* (
@@ -1362,6 +1423,10 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         recordAcceptedWorkspace,
         recordExecutorResource,
         executorResourceOf,
+        recordExecutorCreate,
+        clearExecutorCreate,
+        executorCreateOf,
+        listExecutorCreates,
         requestRemoval,
         listRemovalRequested,
       };

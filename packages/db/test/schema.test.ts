@@ -205,6 +205,7 @@ describe("Mend Drizzle schema", () => {
       "capture_saved_n",
       "capture_saved_epoch",
       "executor_resource_id",
+      "executor_create_key",
       "executor_started_at",
       "removal_requested_at",
       "status",

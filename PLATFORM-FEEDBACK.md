@@ -63,26 +63,29 @@ Two wire points on the session channel (sealantd `crates/sealant-capture/src/reg
   - **Today:** every stop Mend sends through a drain carries
     `completion: { captureN, epoch, executorId }` when the store holds that seal for the executor
     and its epoch (`WorkspaceStopOptions.completion`). Core names an executor by its runtime
-    identity (`details().runtime.resourceId`: the container, the Pod, the MicroVM), so Mend records
-    it on the session at launch (migration 0081, `executor_resource_id`) and maps the seal (which
-    names the session the lease names) to it. No SDK exposes `details()` yet — neither 0.37.2 nor
-    Core's `fix/capture-retention-policy` facade, whose docs refer to it — so Mend reads it
-    structurally when it appears and, until then, sends no completion at all (Core keeps what it
-    cannot confirm). SDK 0.37.2's `stop()` takes no options either. A seal alone still ends a drain
-    whose answer was lost. A stop whose answer says `drain.retained` reads
+    identity (`resourceId`: the container, the Pod, the MicroVM), so Mend records it on the session
+    at launch (migration 0081, `executor_resource_id`) from the create's `workspace.launch.runtime`,
+    else `workspace.runtime()`, and maps the seal (which names the session the lease names) to it.
+    Core's `fix/capture-retention-policy` (fe06102, unreleased) has both; SDK 0.37.2 has neither, so
+    there Mend sends no completion at all and Core keeps what it cannot confirm. A seal alone still
+    ends a drain whose answer was lost. A stop whose answer says `drain.retained` reads
     `not saved · executor kept for recovery · <reason>` and stays a kept drain.
-  - **Suggested:** `workspace.details()` on the facade with `runtime.resourceId`, and
-    `workspace.stop({ completion })` answering `completion.outcome`.
+  - **Suggested:** release the SDK with `runtime()`, `launch` and `stop({ completion })`; nothing
+    else changes here.
 - **An executor whose create answer was lost.**
-  - **Needed:** Mend now writes an executor's workspace id on the session the moment
-    `workspaces.create` answers, before anything runs in it. If Mend restarts inside that window, or
-    the create's answer never arrives, an executor may exist that Mend cannot name; the lease that
-    names the session then holds the worktree and its removal (unresolved, never ended).
-  - **Today:** the SDK has no way to find a workspace by what Mend asked for (no listing, no
-    idempotency key on create), so that ownership stays unresolved until the lease is released by
-    hand.
-  - **Suggested:** an idempotency key on `workspaces.create` (Mend passes the session id and the
-    launch's correlation id), answered with the existing workspace on a retry, or a lookup by it.
+  - **Needed:** Mend writes an executor's workspace id on the session the moment `workspaces.create`
+    answers, before anything runs in it. If Mend restarts inside that window, or the create's answer
+    never arrives, an executor may exist that Mend cannot name; the lease that names the session
+    then holds the worktree and its removal (unresolved, never ended).
+  - **Today:** every capture-mode create carries an idempotency key
+    (`launch:<session>:<asked at ms>:<nonce>`), written on the session (migration 0082,
+    `executor_create_key`) before the create is asked and cleared by its answer. A refusal (4xx)
+    clears it and frees the worktree; a lost answer, in the launch or after a restart (the reaper),
+    asks `workspaces.findByIdempotencyKey(key)`: an executor found goes on the row and drains, none
+    found clears the key and releases the launch's claim. Core's `fix/capture-retention-policy`
+    (fe06102) has the key and the lookup; SDK 0.37.2 drops the key and cannot look, so there the
+    ownership stays unresolved until the lease is released by hand.
+  - **Suggested:** release the SDK with `create({ idempotencyKey })` and `findByIdempotencyKey`.
 - **Unreadable paths by class (sealantd).**
   - **Needed:** a landing publishes only the small class; a carried unreadable bulk path should not
     hold it up.

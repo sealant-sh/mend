@@ -106,6 +106,7 @@ const sealantFakeLayer = Layer.succeed(SealantClient, {
   captureStatus: () => Effect.succeed(null),
   runtimeDeadline: () => Effect.succeed(null),
   runtimeResourceId: () => Effect.succeed(null),
+  findWorkspaceByKey: () => Effect.succeed({ kind: "unsupported" as const }),
   captureReplan: () => Effect.die("not in test"),
   expireWorkspace: () => Effect.die("not in test"),
   getSession: () => Effect.die("not in test"),

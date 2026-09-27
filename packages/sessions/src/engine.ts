@@ -441,6 +441,16 @@ const ptyOutputTail = (pty: {
 const SERVICE_START_TIMEOUT_MS = 60_000;
 /** What the reaper writes when a lease lapsed and the platform no longer answers. */
 const EXECUTOR_LOST_SUMMARY = "executor lost · lease expired";
+/** The key an executor create is asked under: the session, when it was asked, a nonce. */
+const executorCreateKeyFor = (sessionId: SessionId, askedAt: Date) =>
+  `launch:${sessionId}:${askedAt.getTime()}:${crypto.randomUUID()}`;
+
+/** When a create under `key` was asked (`executorCreateKeyFor`); null for any other key. */
+const createAskedAtOf = (key: string): Date | null => {
+  const ms = Number(key.split(":")[2]);
+  return Number.isFinite(ms) && ms > 0 ? new Date(ms) : null;
+};
+
 /** A planned launch's opening prompt no process accepted yet: its plan stays. */
 const OPENING_PROMPT_NOT_DELIVERED = "opening prompt not delivered";
 /** How many launches a planned relaunch tries in one process before it only keeps its plan. */
@@ -1863,7 +1873,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // still hold work (`launchUnresolved`); otherwise only the platform's word that it
           // ended says so.
           if (holder === null) return "none" satisfies CaptureFlushObservation;
-          if (holder.sealantWorkspaceId === null) {
+          if (holder.sealantWorkspaceId === null || (yield* createUnanswered(holder.id))) {
             return "incomplete" satisfies CaptureFlushObservation;
           }
           const state = yield* workspaceState(holder.sealantWorkspaceId).pipe(
@@ -2022,10 +2032,26 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const launchUnresolved = Effect.fn("SessionEngine.launchUnresolved")(function* (
         session: Session,
       ) {
-        if (capture === null || session.sealantWorkspaceId !== null) return false;
+        if (capture === null) return false;
+        if (session.sealantWorkspaceId !== null && !(yield* createUnanswered(session.id))) {
+          return false;
+        }
         const lease = yield* capture.repo.leaseOf(session.worktreeId);
         return lease !== null && lease.executorId === session.id;
       });
+
+      /**
+       * An executor create the session asked for whose answer is not on its row
+       * (`executor_create_key`): whatever its row names, the lease that names the session may
+       * belong to an executor Mend has not seen (`resolveExecutorCreates` finds it).
+       */
+      const createUnanswered = (sessionId: SessionId) =>
+        capture === null
+          ? Effect.succeed(false)
+          : sessions.executorCreateOf(sessionId).pipe(Effect.map((key) => key !== null));
+
+      /** Sessions whose executor create is being asked in this process right now. */
+      const creatingExecutors = new Set<SessionId>();
 
       /**
        * Who holds a worktree in capture mode, for a session that is not the holder:
@@ -2066,7 +2092,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const state =
             holder === null
               ? ("dead" as const)
-              : workspaceId === null
+              : workspaceId === null || (yield* createUnanswered(holder.id))
                 ? ("unknown" as const)
                 : yield* workspaceState(workspaceId).pipe(asSealantUser(holder.ownerUserId));
           if (state === "dead") {
@@ -2272,6 +2298,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (lease === null || lease.executorId === null || lease.executorId.startsWith("mend:")) {
           return;
         }
+        // The holder asked for an executor whose answer is not on its row: the lease may be that
+        // executor's, whatever ended here.
+        if (yield* createUnanswered(SessionId.make(lease.executorId))) return;
         if (lease.executorId !== session.id) {
           const holder = yield* sessions
             .byId(SessionId.make(lease.executorId))
@@ -2861,9 +2890,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // No workspace on the row is gone only when no lease names the session either: a
           // launch cut short around its create may have left an executor (`launchUnresolved`).
           const gone =
-            workspaceId === null
-              ? !(yield* launchUnresolved(session))
-              : othersLive || (yield* lookupWorkspace(workspaceId)).kind === "gone";
+            !(yield* launchUnresolved(session)) &&
+            (workspaceId === null ||
+              othersLive ||
+              (yield* lookupWorkspace(workspaceId)).kind === "gone");
           if (gone) {
             yield* sessions.remove(sessionId);
             return "removed" as const;
@@ -2917,6 +2947,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             holder === null ||
             (workspaceId !== null &&
               !lease.live &&
+              !(yield* createUnanswered(holder.id)) &&
               (yield* workspaceState(workspaceId).pipe(asSealantUser(holder.ownerUserId))) ===
                 "dead");
           if (ended) {
@@ -2966,6 +2997,88 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
           Effect.ensuring(Effect.sync(() => deadlineReading.delete(workspaceId))),
         );
+
+      /**
+       * A session's executor create whose answer is not on its row (`executor_create_key`): a
+       * create whose answer was lost (a timeout, a restart mid-create). The key finds what it
+       * made (Core's `workspaces.findByIdempotencyKey`):
+       * - `adopted`: an executor exists — it goes on the row as the session's, and drains (it
+       *   may hold work only it has; nothing ran in it that Mend asked for);
+       * - `none`: nothing was made — the key clears, and the launch's own claim on the worktree
+       *   is released when no other executor of the session can hold it;
+       * - `unsupported`: the SDK cannot look (0.37.2) — ownership stays unresolved, holding the
+       *   worktree and removal;
+       * - `unknown`: the platform did not answer — looked at again next tick.
+       */
+      const resolveExecutorCreate = (sessionId: SessionId, key: string) =>
+        Effect.gen(function* () {
+          if (capture === null) return "none" as const;
+          const found = yield* sealant
+            .findWorkspaceByKey(key)
+            .pipe(
+              Effect.catch((error) =>
+                Effect.logWarning(
+                  "session engine: capture mode · executor create · lookup failed",
+                ).pipe(
+                  Effect.annotateLogs({ sessionId, key, error: error.message }),
+                  Effect.as(null),
+                ),
+              ),
+            );
+          if (found === null) return "unknown" as const;
+          if (found.kind === "unsupported") return "unsupported" as const;
+          const session = yield* sessions.byId(sessionId);
+          if (found.kind === "none") {
+            yield* sessions.clearExecutorCreate(sessionId, key);
+            const lease = yield* capture.repo.leaseOf(session.worktreeId);
+            const previousEnded =
+              session.sealantWorkspaceId === null ||
+              (yield* workspaceState(session.sealantWorkspaceId)) === "dead";
+            if (lease !== null && lease.executorId === sessionId && previousEnded) {
+              yield* capture.repo.release(session.worktreeId, lease.epoch);
+            }
+            yield* Effect.logInfo(
+              "session engine: capture mode · executor create · none was made · lease released",
+            ).pipe(Effect.annotateLogs({ sessionId, key, epoch: lease?.epoch ?? null }));
+            return "none" as const;
+          }
+          const workspaceId = SealantWorkspaceId.make(found.workspaceId);
+          if (session.sealantWorkspaceId === workspaceId) {
+            yield* sessions.clearExecutorCreate(sessionId, key);
+            return "adopted" as const;
+          }
+          yield* sessions.recordAcceptedWorkspace(
+            sessionId,
+            workspaceId,
+            createAskedAtOf(key) ?? new Date(),
+          );
+          const workspace = yield* sealant.getWorkspace(workspaceId).pipe(Effect.option);
+          if (Option.isSome(workspace)) yield* noteExecutorResource(sessionId, workspace.value);
+          yield* Effect.logWarning(
+            "session engine: capture mode · executor create · its answer was lost · the executor it made is the session's · draining it",
+          ).pipe(Effect.annotateLogs({ sessionId, key, workspaceId }));
+          yield* Effect.forkIn(
+            stopWorkspaceIfUnleased(sessionId, { force: true, reason: "stop" }).pipe(
+              asSealantUser(session.ownerUserId),
+            ),
+            scope,
+          );
+          return "adopted" as const;
+        }).pipe(
+          owned(sessionId),
+          Effect.catchTag("SessionNotFoundError", () => Effect.succeed("none" as const)),
+        );
+
+      /** Every create whose answer is not on its row and that no launch here is asking. */
+      const resolveExecutorCreates = Effect.fn("SessionEngine.resolveExecutorCreates")(
+        function* () {
+          if (capture === null) return;
+          for (const pending of yield* sessions.listExecutorCreates()) {
+            if (creatingExecutors.has(pending.sessionId)) continue;
+            yield* resolveExecutorCreate(pending.sessionId, pending.key);
+          }
+        },
+      );
 
       /** Sessions the reaper is already replacing; one replacement at a time per session. */
       const replacing = new Set<SessionId>();
@@ -3235,6 +3348,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const captureReaper = Effect.fn("SessionEngine.captureReaper")(function* () {
         if (capture === null) return;
+        yield* resolveExecutorCreates();
+        const unanswered = new Set(
+          (yield* sessions.listExecutorCreates()).map((pending) => pending.sessionId),
+        );
         for (const session of yield* sessions.listCaptureDrains()) {
           const workspaceId = session.sealantWorkspaceId;
           if (stopTails.has(session.id) || replacing.has(session.id)) continue;
@@ -3270,6 +3387,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const active = unsettled.filter((session) => ACTIVE_STATUSES.has(session.status));
         for (const session of active) {
           if (session.sealantWorkspaceId === null) continue;
+          // Its row names a previous executor while a create's answer is not on it: the lease is
+          // the unseen one's (`resolveExecutorCreate`).
+          if (unanswered.has(session.id)) continue;
           const lease = yield* capture.repo.leaseOf(session.worktreeId);
           if (lease === null || lease.executorId !== session.id) continue;
           if (lease.live) {
@@ -5596,6 +5716,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          * work only that executor holds.
          */
         readonly abandon?: (workspace: Workspace, message: string) => Effect.Effect<void>;
+        /**
+         * Makes the create idempotent on the platform (Core's next SDK): `onAsking` runs once,
+         * right before the first create is asked, so the key is on the row before any executor
+         * can exist under it.
+         */
+        readonly createKey?: {
+          readonly key: string;
+          readonly onAsking: Effect.Effect<void>;
+        };
       }) {
         const { project, sessionId, socketDir, shape, ownerUserId } = input;
         // What the project inherits: its organization's defaults over the instance's.
@@ -5841,63 +5970,75 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           clusterBindingNames,
           clusterServiceAccount: clusterBindings.serviceAccount,
         };
+        let createAsked = false;
         const createWorkspace = (credentials: WorkspaceCredentialsOptions | undefined) =>
-          sealant.createWorkspace({
-            // Standby (ADR-0001, sealantd ADR-0014): the ROOT is mounted, hidden; /workspace/repo
-            // does not exist until the launch binds it to one worktree. Neither Docker nor
-            // Kubernetes can add a mount later, and this is what lets a pooled workspace serve
-            // any worktree of the project. Capture (ADR-0002): no mounts at all.
-            ...(captureSource === null
-              ? {
-                  source: { kind: "standby", rootPath: worktreesRootOf(project.storePath) },
-                  ...(workspaceMounts.length === 0 ? {} : { mounts: workspaceMounts }),
-                }
-              : captureSource),
-            harness: shape.harness,
-            name: `mend-${sessionId.slice(0, 8)}`,
-            ...(workspaceImage.mode === "custom"
-              ? { baseImage: workspaceImage.baseImage }
-              : { os: workspaceImage.os }),
-            ...(workspaceImage.mode === "family" && workspaceImage.shell !== "bash"
-              ? { shell: workspaceImage.shell }
-              : {}),
-            ...(dotfilesArchives.length === 0
-              ? {}
-              : {
-                  dotfiles: {
-                    archives: dotfilesArchives.map((archive) => ({
-                      data: archive.data,
-                      manager: archive.manager,
-                      bootstrap: archive.bootstrap,
-                    })),
-                  },
-                }),
-            packages: workspaceImage.packages,
-            services: workspaceImage.services,
-            ...(Object.keys(env).length === 0 ? {} : { env }),
-            ...(Object.keys(secretEnv).length === 0 ? {} : { secretEnv }),
-            // Cluster bindings (and the Docker service above) pass through unconditionally — no
-            // Mend-side capability pre-check. The platform validates at create: a runtime that
-            // cannot serve them refuses synchronously with a stable code
-            // (`runtime-env-references-unsupported`, `workspace-docker-unsupported`), mapped to
-            // a readable refusal below.
-            ...(clusterBindings.bindings.length === 0
-              ? {}
-              : {
-                  envFrom: clusterBindings.bindings.map((binding) => ({
-                    kind: binding.kind,
-                    name: binding.objectName,
-                  })),
-                }),
-            ...(clusterBindings.serviceAccount === null
-              ? {}
-              : { kubernetes: { serviceAccountName: clusterBindings.serviceAccount } }),
-            // Belt for every path that forgets to stop: the platform reaper.
-            ttl: "12h",
-            // Requires the platform at 0.7.1+ (sealant#114): 0.7.0 dropped every
-            // mount create that carried credentials at the worker's blueprint parse.
-            ...(credentials === undefined ? {} : { credentials }),
-          });
+          Effect.suspend(() => {
+            if (createAsked || input.createKey === undefined) return Effect.void;
+            createAsked = true;
+            return input.createKey.onAsking;
+          }).pipe(
+            Effect.andThen(
+              sealant.createWorkspace(
+                {
+                  // Standby (ADR-0001, sealantd ADR-0014): the ROOT is mounted, hidden; /workspace/repo
+                  // does not exist until the launch binds it to one worktree. Neither Docker nor
+                  // Kubernetes can add a mount later, and this is what lets a pooled workspace serve
+                  // any worktree of the project. Capture (ADR-0002): no mounts at all.
+                  ...(captureSource === null
+                    ? {
+                        source: { kind: "standby", rootPath: worktreesRootOf(project.storePath) },
+                        ...(workspaceMounts.length === 0 ? {} : { mounts: workspaceMounts }),
+                      }
+                    : captureSource),
+                  harness: shape.harness,
+                  name: `mend-${sessionId.slice(0, 8)}`,
+                  ...(workspaceImage.mode === "custom"
+                    ? { baseImage: workspaceImage.baseImage }
+                    : { os: workspaceImage.os }),
+                  ...(workspaceImage.mode === "family" && workspaceImage.shell !== "bash"
+                    ? { shell: workspaceImage.shell }
+                    : {}),
+                  ...(dotfilesArchives.length === 0
+                    ? {}
+                    : {
+                        dotfiles: {
+                          archives: dotfilesArchives.map((archive) => ({
+                            data: archive.data,
+                            manager: archive.manager,
+                            bootstrap: archive.bootstrap,
+                          })),
+                        },
+                      }),
+                  packages: workspaceImage.packages,
+                  services: workspaceImage.services,
+                  ...(Object.keys(env).length === 0 ? {} : { env }),
+                  ...(Object.keys(secretEnv).length === 0 ? {} : { secretEnv }),
+                  // Cluster bindings (and the Docker service above) pass through unconditionally — no
+                  // Mend-side capability pre-check. The platform validates at create: a runtime that
+                  // cannot serve them refuses synchronously with a stable code
+                  // (`runtime-env-references-unsupported`, `workspace-docker-unsupported`), mapped to
+                  // a readable refusal below.
+                  ...(clusterBindings.bindings.length === 0
+                    ? {}
+                    : {
+                        envFrom: clusterBindings.bindings.map((binding) => ({
+                          kind: binding.kind,
+                          name: binding.objectName,
+                        })),
+                      }),
+                  ...(clusterBindings.serviceAccount === null
+                    ? {}
+                    : { kubernetes: { serviceAccountName: clusterBindings.serviceAccount } }),
+                  // Belt for every path that forgets to stop: the platform reaper.
+                  ttl: "12h",
+                  // Requires the platform at 0.7.1+ (sealant#114): 0.7.0 dropped every
+                  // mount create that carried credentials at the worker's blueprint parse.
+                  ...(credentials === undefined ? {} : { credentials }),
+                },
+                input.createKey === undefined ? undefined : { idempotencyKey: input.createKey.key },
+              ),
+            ),
+          );
         const createWithCredentialFallback = (
           attempts: ReadonlyArray<WorkspaceCredentialsOptions | undefined>,
         ): Effect.Effect<Workspace, SealantPlatformError> => {
@@ -6891,6 +7032,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ),
                 Effect.asVoid,
               );
+        // The key this launch's create is asked under, written on the row right before it is
+        // asked (`createKey.onAsking`); null until then.
+        let createKey: string | null = null;
         const releaseUnusedClaim = Effect.gen(function* () {
           if (capture === null || launchClaim === null || executorCreated) return;
           const lease = yield* capture.repo.leaseOf(session.worktreeId);
@@ -6911,7 +7055,39 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               sessions.settle(sessionId, "failed", `launch failed: ${message}`).pipe(Effect.ignore),
             onCreated: acceptExecutor,
             abandon: abandonExecutor,
-          }).pipe(Effect.tapError(() => releaseUnusedClaim));
+            ...(capture === null
+              ? {}
+              : {
+                  createKey: (() => {
+                    const askedAt = new Date();
+                    const key = executorCreateKeyFor(sessionId, askedAt);
+                    return {
+                      key,
+                      onAsking: Effect.gen(function* () {
+                        creatingExecutors.add(sessionId);
+                        yield* sessions.recordExecutorCreate(sessionId, key);
+                        createKey = key;
+                      }),
+                    };
+                  })(),
+                }),
+          }).pipe(
+            Effect.tapError((error) =>
+              createKey === null || executorCreated
+                ? releaseUnusedClaim
+                : // The create was asked and did not answer with a workspace. A refusal (4xx)
+                  // made none; anything else may have made one Mend has not seen.
+                  error._tag === "SealantPlatformError" &&
+                    error.status !== null &&
+                    error.status >= 400 &&
+                    error.status < 500
+                  ? sessions
+                      .clearExecutorCreate(sessionId, createKey)
+                      .pipe(Effect.andThen(releaseUnusedClaim))
+                  : resolveExecutorCreate(sessionId, createKey).pipe(Effect.asVoid),
+            ),
+            Effect.ensuring(Effect.sync(() => creatingExecutors.delete(sessionId))),
+          );
         // What the platform's cap counts from: a claimed standby's own creation (it has been
         // running since it warmed), else the moment before the create — never later than the
         // executor's real start.
