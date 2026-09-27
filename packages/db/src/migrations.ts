@@ -2406,6 +2406,31 @@ const executorCreateKeyMigration = Effect.gen(function* () {
       WHERE executor_create_key IS NOT NULL`;
 });
 
+/**
+ * 0083: every physical executor has its own launch identity (cross-repo decision 5, review
+ * 2026-09-28 (3) #1 and #5): its create's idempotency key, minted before the create.
+ * - `session_channel_tokens`: one row per token, keyed by its hash, naming the session and the
+ *   launch it was issued for. A new launch adds a token and never rotates another's: an executor
+ *   whose stop was kept, or whose create was never answered, keeps its own until its end is
+ *   observed. A row from before carries its session id as its launch — what that executor's
+ *   plan answered, and so what its seal names.
+ * - `agent_sessions.executor_launch_id`: the current executor's launch, recorded beside its
+ *   workspace; what a seal must name to be attested for it.
+ */
+const executorLaunchIdentityMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE session_channel_tokens ADD COLUMN launch_id text`;
+  yield* sql`UPDATE session_channel_tokens SET launch_id = session_id`;
+  yield* sql`ALTER TABLE session_channel_tokens ALTER COLUMN launch_id SET NOT NULL`;
+  yield* sql`ALTER TABLE session_channel_tokens DROP CONSTRAINT session_channel_tokens_pkey`;
+  yield* sql`ALTER TABLE session_channel_tokens ADD PRIMARY KEY (token_hash)`;
+  yield* sql`CREATE INDEX session_channel_tokens_session_idx ON session_channel_tokens (session_id)`;
+  yield* sql`CREATE INDEX session_channel_tokens_launch_idx ON session_channel_tokens (launch_id)`;
+  yield* sql`ALTER TABLE agent_sessions ADD COLUMN executor_launch_id text`;
+  yield* sql`
+    UPDATE agent_sessions SET executor_launch_id = id WHERE sealant_workspace_id IS NOT NULL`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2489,4 +2514,5 @@ export const migrations = {
   "0080_capture_claims_and_seals": captureClaimsAndSealsMigration,
   "0081_capture_executor_identity": captureExecutorIdentityMigration,
   "0082_executor_create_key": executorCreateKeyMigration,
+  "0083_executor_launch_identity": executorLaunchIdentityMigration,
 };

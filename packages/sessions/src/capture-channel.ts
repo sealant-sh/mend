@@ -222,9 +222,10 @@ export interface PlanGetResponse {
    */
   readonly manifest_features: ReadonlyArray<ManifestFeature>;
   /**
-   * The executor the session token was issued for (`CaptureScope.executorId`): what a completed
-   * final flush's `final_seal.executor` must name for register to record the seal. sealantd seals
-   * only when it knows it (sealantd `registrar.rs` "`executor` on `plan.get`").
+   * The physical executor the session token was issued for — its launch identity
+   * (`CaptureScope.launchId`, cross-repo decision 5): what a completed final flush's
+   * `final_seal.executor` must name for register to record the seal. sealantd seals only when it
+   * knows it (sealantd `registrar.rs` "`executor` on `plan.get`").
    */
   readonly executor: string;
   /**
@@ -559,6 +560,13 @@ export interface CaptureScope {
   readonly projectId: ProjectId;
   /** Who a claim is recorded for — the session whose executor this is. */
   readonly executorId: string;
+  /**
+   * Which physical executor of that session is asking: its launch identity, the create's
+   * idempotency key its channel token was issued for (cross-repo decision 5). `plan.get` names
+   * it as the executor; a `final_seal` is recorded only when it names it. Absent: the session id,
+   * what an executor launched before launch identities was planned as.
+   */
+  readonly launchId?: string;
   /** The project's compressed footprint in bytes (its base git packs); 0 = unknown, floor applies. */
   readonly footprintBytes: number;
 }
@@ -581,6 +589,8 @@ export interface StandbyScope {
   readonly alias: string;
   readonly projectId: ProjectId;
   readonly executorId: string;
+  /** The standby executor's launch identity (`CaptureScope.launchId`). */
+  readonly launchId?: string;
   readonly epoch: number;
   /** The plan for the platform the executor names, when it names one. */
   readonly plan: (platform: string | undefined) => Effect.Effect<StandbyPlan, unknown>;
@@ -824,7 +834,7 @@ export const CaptureChannelLive: Layer.Layer<
           get_urls: urls,
           manifest_format: answeredFormat(policy.manifestFormat, reads),
           manifest_features: MANIFEST_FEATURES,
-          executor: scope.executorId,
+          executor: scope.launchId ?? scope.executorId,
         } satisfies PlanGetResponse;
       });
       return {
@@ -839,6 +849,8 @@ export const CaptureChannelLive: Layer.Layer<
 
     const apiFor = (scope: CaptureScope): SessionCaptureApi => {
       const worktreeId = scope.worktreeId;
+      /** The physical executor asking (cross-repo decision 5). */
+      const launchId = scope.launchId ?? scope.executorId;
       /** The one prefix this executor may write under: its worktree's, at the caller's epoch. */
       const underOwnPrefix = (key: string, epoch: number) =>
         key.startsWith(`captures/${worktreeId}/${epoch}/`);
@@ -1057,7 +1069,7 @@ export const CaptureChannelLive: Layer.Layer<
             get_urls: yield* sourceUrls(beside),
             manifest_format: manifestFormat,
             manifest_features: MANIFEST_FEATURES,
-            executor: scope.executorId,
+            executor: launchId,
             ...(beside.length === 0 ? {} : { sources: beside }),
             ...(origin.length === 0 ? {} : { remotes: origin }),
           };
@@ -1084,7 +1096,7 @@ export const CaptureChannelLive: Layer.Layer<
           get_urls: urls,
           manifest_format: manifestFormat,
           manifest_features: MANIFEST_FEATURES,
-          executor: scope.executorId,
+          executor: launchId,
           ...(beside.length === 0 ? {} : { sources: beside }),
           ...(origin.length === 0 ? {} : { remotes: origin }),
         } satisfies PlanGetResponse;
@@ -1566,7 +1578,7 @@ export const CaptureChannelLive: Layer.Layer<
           seal !== null &&
           seal.complete &&
           seal.epoch === input.epoch &&
-          seal.executor === scope.executorId;
+          seal.executor === launchId;
         if (seal !== null && !sealHolds) {
           yield* Effect.logWarning(
             "capture channel: a final seal that does not hold · registered without it",
@@ -1577,6 +1589,7 @@ export const CaptureChannelLive: Layer.Layer<
               captureId: input.capture_id,
               epoch: input.epoch,
               executorId: scope.executorId,
+              launchId,
               seal: JSON.stringify(seal),
             }),
           );
@@ -1759,7 +1772,7 @@ export const CaptureChannelLive: Layer.Layer<
           }
           const outcome = yield* repo
             .register({
-              ...(sealed ? { seal: { executorId: scope.executorId } } : {}),
+              ...(sealed ? { seal: { executorId: launchId, holder: scope.executorId } } : {}),
               worktreeId,
               id: input.capture_id,
               n: input.n,

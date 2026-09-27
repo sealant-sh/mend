@@ -225,6 +225,7 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
   executorCreateOf: () => Effect.succeed(null),
   listExecutorCreates: () => Effect.succeed([]),
   executorResourceOf: () => Effect.succeed(null),
+  executorLaunchOf: () => Effect.succeed(null),
   requestRemoval: () => Effect.void,
   listRemovalRequested: () => Effect.succeed([]),
 });

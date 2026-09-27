@@ -60,6 +60,9 @@ const WORKTREE = WorktreeId.make("wt-cap-1");
 const ORIGIN = "git@example.invalid:acme/api.git";
 const PROJECT = ProjectId.make("proj-cap");
 const SESSION = SessionId.make("sess-cap-1");
+/** The launch the executor under test was created as, and another launch of the same session. */
+const LAUNCH = "launch:sess-cap-1:1:a";
+const OTHER_LAUNCH = "launch:sess-cap-1:2:b";
 
 const inertApi: Omit<SessionSocketApi, "capture"> = {
   recipes: () => Effect.succeed([]),
@@ -215,6 +218,7 @@ describe("capture channel routes", () => {
   );
   let address = "";
   let token = "";
+  let otherLaunchToken = "";
   let cap0 = { id: "", key: "", manifest: {} as CaptureManifest };
   const keys1 = captureKeys(WORKTREE, 1);
   let channel: CaptureChannel["Service"];
@@ -285,15 +289,20 @@ describe("capture channel routes", () => {
         const registryService = yield* SessionChannelRegistry;
         const tokensRepo = yield* SessionChannelTokensRepo;
         channel = yield* CaptureChannel;
-        token = yield* tokensRepo.issue(SESSION);
-        registryService.register(SESSION, {
-          ...inertApi,
-          capture: channel.apiFor({
+        token = yield* tokensRepo.issue(SESSION, LAUNCH);
+        otherLaunchToken = yield* tokensRepo.issue(SESSION, OTHER_LAUNCH);
+        const scopedTo = (launchId: string) =>
+          channel.apiFor({
             worktreeId: WORKTREE,
             projectId: PROJECT,
             executorId: SESSION,
+            launchId,
             footprintBytes: 1_000_000,
-          }),
+          });
+        registryService.register(SESSION, {
+          ...inertApi,
+          capture: scopedTo(SESSION),
+          captureAs: scopedTo,
         });
         const bogus = yield* Effect.promise(() =>
           post(address, "/lease.heartbeat", "not-the-token-at-all", { worktree_id: WORKTREE }),
@@ -301,7 +310,7 @@ describe("capture channel routes", () => {
         expect(bogus.status).toBe(401);
         // A colocated session (no capture api) answers 404 on the same routes.
         const other = SessionId.make("sess-colocated");
-        const otherToken = yield* tokensRepo.issue(other);
+        const otherToken = yield* tokensRepo.issue(other, other);
         registryService.register(other, { ...inertApi });
         const missing = yield* Effect.promise(() =>
           post(address, "/plan.get", otherToken, { epoch: 0 }),
@@ -315,6 +324,11 @@ describe("capture channel routes", () => {
     const first = await post(address, "/plan.get", token, { worktree_id: null, epoch: 0 });
     expect(first.status).toBe(200);
     expect(first.json["epoch"]).toBe(2);
+    // The executor is the launch the token was issued for (cross-repo decision 5): another
+    // launch's token of the same session is answered as that launch.
+    expect(first.json["executor"]).toBe(LAUNCH);
+    const other = await post(address, "/plan.get", otherLaunchToken, { epoch: 2 });
+    expect(other.json["executor"]).toBe(OTHER_LAUNCH);
     expect(first.json["worktree_id"]).toBe(WORKTREE);
     const head = first.json["head"] as Record<string, unknown>;
     expect(head["n"]).toBe(0);

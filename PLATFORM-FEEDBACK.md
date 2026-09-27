@@ -7,6 +7,55 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-28 · 0.37.2 · Review 3: one launch per executor, a create fenced by its key, keys never reused, health never assumed
+
+What Mend now builds to (cross-repo decisions 5, 6 and 9). Core's `fix/capture-review3` and
+sealantd's `fix/capture-review3` carry the other halves; nothing here works around a gap.
+
+- **One launch identity per physical executor (decision 5).**
+  - **Needed:** a seal must speak for exactly one executor; the session id and the epoch do not (a
+    standby and the cold executor after it shared both).
+  - **Today:** every create is asked under a key minted before it (`launch:<session>:<ms>:<nonce>`,
+    `standby:<pooled id>` for a standby) and that key is the executor's `launchId`: its channel
+    token is issued for it (migration 0083, one token per launch; a new launch never rotates
+    another's), `plan.get` answers `executor: <launchId>`, register records a `final_seal` only when
+    it names that launch, and a stop attests
+    `completion: { captureN, epoch, executorId: <resourceId of that launch>, launchId }`. Every
+    physical executor takes a fresh epoch; a claimed standby is the session's executor before its
+    replan and drains like any.
+  - **Suggested:** release the SDK with `create({ idempotencyKey, launchId })`, `runtime.launchId`
+    and `stop({ completion: { …, launchId } })` (Core `fix/capture-review3`); Mend sends all three
+    already and reads `runtime.launchId` to record only that launch's runtime. SDK 0.37.2 drops
+    them: no completion is attested there, and Core keeps what it cannot confirm.
+- **A create whose answer was lost, fenced.**
+  - **Needed:** `findByIdempotencyKey → none` is a point in time; the original request can still
+    commit after it (review 3 #21).
+  - **Today:** Mend reads `workspaces.createState(key)` (else `findByIdempotencyKey`): `found`
+    adopts, `cancelled` frees; `pending`/`none` are not proof — Mend calls
+    `workspaces.cancelCreate(key)` and frees the lease only on `cancelled` (or adopts on `found`).
+    An answer it does not read is `unknown`, never `none`. On SDK 0.37.2 (neither method) the key
+    stays reserved: the worktree stays held and the session's next launch asks the very same create
+    again under it — which can only ever make that one executor.
+  - **Suggested:** release `createState` and `cancelCreate` in the SDK Mend pins.
+- **A condemned key is never registered again (decision 6).**
+  - **Today:** register refuses any key retention tombstoned, whatever became of its bytes (422
+    `missing-objects` naming it); tombstones are permanent. Mend reads and registers both key forms:
+    `captures/<worktree>/<epoch>/{packs,trees,manifests}/<sha256>` and sealantd's
+    `captures/<worktree>/<epoch>/g<generation>/{packs,trees,manifests}/<sha256>`.
+  - **Suggested:** nothing more; sealantd rebuilds a refused capture under the next generation.
+- **Snapshot health is never assumed (decision 9).**
+  - **Needed:** `@sealant/sdk` 0.37.2's `capture.flush()` rebuilds its answer without `unreadable`,
+    `carried`, `unreadablePaths`, `lastSnapError`, `snaps` or `complete`.
+  - **Today:** an answer without `unreadable` reads `snapshot health not reported`: the landing
+    barrier stays closed (`captureCaughtUp` is false) and a landing with a live capture executor is
+    refused until the SDK Mend pins forwards those fields.
+  - **Suggested:** pin the SDK whose facade forwards every `WorkspaceCaptureStatus` field; the
+    facade test (`packages/sessions/test/capture-sdk-facade.test.ts`) then reads the carried path.
+- **A seal rests on sections Mend observed restore.** Register records `final_seal` only when the
+  git section verified (`index-pack --verify` and a connectivity walk on the runner) and the
+  worktree metadata document names only paths the worktree tree holds as that kind; a plan that
+  restores older git under a failed head carries no seal.
+
 ## 2026-09-28 · 0.37.2 · sealantd: say which manifest features it reads; seal a completed final flush
 
 Two wire points on the session channel (sealantd `crates/sealant-capture/src/registrar.rs`,

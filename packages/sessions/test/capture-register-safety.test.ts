@@ -110,12 +110,13 @@ const worldOf = (
   return { memory, layer: Layer.mergeAll(channel, memory.layer, blobs) };
 };
 
-const apiOf = (wt: WorktreeId, executorId = "executor") =>
+const apiOf = (wt: WorktreeId, executorId = "executor", launchId?: string) =>
   Effect.map(CaptureChannel, (channel) =>
     channel.apiFor({
       worktreeId: wt,
       projectId: ProjectId.make("p"),
       executorId,
+      ...(launchId === undefined ? {} : { launchId }),
       footprintBytes: 0,
     }),
   );
@@ -436,6 +437,75 @@ describe("plan.get hands a head only to an executor that reads it", () => {
       empty: "exec-named",
       overHead: [true, "exec-named"],
       onStandby: "standby-exec",
+    });
+  });
+});
+
+describe("the launch is the executor (review 2026-09-28 (3) #1, cross-repo decision 5)", () => {
+  it("plan.get names the launch its token was issued for, and a seal is recorded only when it names that launch", async () => {
+    const world = worldOf(2, verifierObserving({}));
+    const wt = WorktreeId.make("wt-launch-seal");
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.init(wt);
+        const api = yield* apiOf(wt, "session-1", "launch:session-1:1:a");
+        const plan = yield* api.planGet({ epoch: 0, manifest_format: 2 });
+        const zero = buildManifest({ worktreeId: wt, epoch: plan.epoch, n: 0, parent: null });
+        yield* uploadObjects(new Map([[zero.key, zero.bytes]]));
+        yield* api.register(registerInput(zero));
+        const sealing = (n: number, parent: string, executor: string) => {
+          const base = buildManifest({
+            worktreeId: wt,
+            epoch: plan.epoch,
+            n,
+            parent,
+            kind: "final",
+          });
+          const manifest = {
+            ...base.manifest,
+            final_seal: { complete: true, epoch: plan.epoch, executor },
+          };
+          const bytes = utf8(JSON.stringify(manifest));
+          const id = sha256Hex(bytes);
+          return { manifest, bytes, id, key: captureKeys(wt, plan.epoch).manifest(id) };
+        };
+        // A seal naming the session — another launch of it, or none at all — seals nothing.
+        const bySession = sealing(1, zero.id, "session-1");
+        const byLaunch = sealing(2, bySession.id, "launch:session-1:1:a");
+        yield* uploadObjects(
+          new Map([
+            [bySession.key, bySession.bytes],
+            [byLaunch.key, byLaunch.bytes],
+          ]),
+        );
+        const register = (built: typeof bySession) =>
+          api.register({
+            worktree_id: wt,
+            epoch: plan.epoch,
+            n: built.manifest.n,
+            parent: built.manifest.parent,
+            capture_id: built.id,
+            manifest_key: built.key,
+            manifest: JSON.parse(JSON.stringify(built.manifest)),
+          });
+        yield* register(bySession);
+        const afterSession = yield* repo.sealedCompletion(wt, "session-1", plan.epoch);
+        yield* register(byLaunch);
+        return {
+          executor: plan.executor,
+          afterSession,
+          byLaunch: yield* repo.sealedCompletion(wt, "launch:session-1:1:a", plan.epoch),
+          byLaunchId: byLaunch.id,
+        };
+      }).pipe(Effect.provide(world.layer)),
+    );
+    expect(result.executor).toBe("launch:session-1:1:a");
+    expect(result.afterSession).toBeNull();
+    expect(result.byLaunch).toMatchObject({
+      executorId: "launch:session-1:1:a",
+      captureId: result.byLaunchId,
+      n: 2,
     });
   });
 });

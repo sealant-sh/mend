@@ -241,7 +241,7 @@ describe("SessionChannelNetworkHost", () => {
           expect(fs.existsSync(path.join(dir, "bin", "mend"))).toBe(true);
           expect(fs.existsSync(path.join(dir, "mend.sock"))).toBe(false);
 
-          const token = yield* tokens.issue(SESSION);
+          const token = yield* tokens.issue(SESSION, SESSION);
           const auth = { authorization: `Bearer ${token}`, "x-mend-session-id": SESSION };
 
           // No credentials / wrong token / right token for another session: uniform 401.
@@ -316,7 +316,7 @@ describe("SessionChannelNetworkHost", () => {
           const address = network.address ?? "";
           const seen: unknown[] = [];
           yield* sockets.start(SESSION, api(seen));
-          const token = yield* tokens.issue(SESSION);
+          const token = yield* tokens.issue(SESSION, SESSION);
           const [host, port] = address.split(":");
 
           const result = yield* Effect.promise(
@@ -411,7 +411,7 @@ describe("SessionChannelNetworkHost", () => {
           const address = network.address ?? "";
           const seen: unknown[] = [];
           const dir = yield* sockets.start(SESSION, api(seen));
-          const token = yield* tokens.issue(SESSION);
+          const token = yield* tokens.issue(SESSION, SESSION);
           const env = {
             MEND_SESSION_ENDPOINT: `http://${address}`,
             MEND_SESSION_ID: SESSION,
@@ -487,7 +487,7 @@ describe("SessionChannelNetworkHost", () => {
                 return outcome;
               }),
           });
-          const token = yield* tokens.issue(SESSION);
+          const token = yield* tokens.issue(SESSION, SESSION);
           const env = {
             MEND_SESSION_ENDPOINT: `http://${address}`,
             MEND_SESSION_ID: SESSION,
@@ -544,7 +544,7 @@ describe("SessionChannelNetworkHost", () => {
           const address = network.address ?? "";
           const seen: unknown[] = [];
           const dir = yield* sockets.start(SESSION, api(seen));
-          const token = yield* tokens.issue(SESSION);
+          const token = yield* tokens.issue(SESSION, SESSION);
           const auth = { authorization: `Bearer ${token}`, "x-mend-session-id": SESSION };
           const env = {
             MEND_SESSION_ENDPOINT: `http://${address}`,

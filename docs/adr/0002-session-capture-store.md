@@ -759,3 +759,40 @@ Mend-side details the decision record left open, decided in this ADR:
     - **`sealing`** is a reason an incomplete final flush can give: everything registered but the
       sealing capture (the flush returned at its deadline first). A drain keeps asking; the status
       line says `final seal not registered`.
+32. (2026-09-28) One launch per executor, keys never reused, a seal only over what restores (review
+    2026-09-28 (3); cross-repo decisions 5, 6 and 9).
+    - **The launch is the executor.** The session id and the epoch did not name one executor: a
+      claimed standby whose replan answer was lost was drained without regard to Core's answer, and
+      the cold executor after it inherited its epoch and its seal. Every create is now asked under a
+      key minted before it, and that key is the executor's launch identity: its channel token is
+      issued for it (migration 0083: one row per token, a new launch never rotates another's),
+      `plan.get` answers `executor: <launch>`, register records `final_seal` only when it names that
+      launch (the lease must still name its session), and a stop attests the seal only with the
+      runtime recorded for that very launch, never whichever runtime the workspace answers for now.
+      A claimed standby is the session's executor, under its own launch, before its replan; a replan
+      that fails drains it like any executor, a kept standby refuses the launch, and only an end the
+      platform confirmed lets a cold executor start, under a fresh epoch. The launch's tokens are
+      revoked when its end is observed, never before.
+    - **A lost create answer holds its session too.** A create whose answer is not on the row holds
+      every relaunch, the owning session's included: its key is reconciled first (Core's
+      `createState`, else `findByIdempotencyKey`). Found, the executor drains as any before anything
+      new starts; nothing on record is not proof — Core's `cancelCreate` must say `cancelled` before
+      the key clears and the lease is released. Without it the key stays reserved and the session's
+      next launch asks the same create again under it (same launch, same token, the claim it still
+      holds). An answer Mend does not read is unknown, never none.
+    - **A condemned key is never registered again.** Tombstones are permanent: register refuses a
+      key retention condemned, deleted or not (422 `missing-objects` naming it), because a pass that
+      stalled past its claim can still delete whatever is at that key. sealantd uploads the content
+      again under the next key generation (`captures/<worktree>/<epoch>/g<n>/…`); both key forms
+      read and register alike.
+    - **A seal rests on what Mend observed restore.** Register records a seal only when the git
+      section verified (never failed, timed out or unverified) and the worktree metadata document
+      names only files and symlinks the worktree tree holds as that kind (and no directory over a
+      file); a document naming anything else is refused 422 `unrestorable`. A plan that restores
+      older git under a failed head carries no seal.
+    - **Snapshot health is never assumed.** An answer without `unreadable` (an older daemon, or SDK
+      0.37.2's facade) reads `snapshot health not reported`: not caught up, so a landing waits. A
+      suspend flush logs `completed` only when caught up, else `partial · <reason>`.
+    - **mtimes are nanoseconds.** A dir entry's integer `mtime` is decoded exactly (a bigint from
+      its source text) and written back digit for digit; Mend's TypeScript materializer is a reader,
+      not a restore path, and lands times to the microsecond Node can set.

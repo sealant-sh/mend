@@ -505,6 +505,7 @@ const testLayer = (world: TestWorld) => {
     executorCreateOf: () => Effect.succeed(null),
     listExecutorCreates: () => Effect.succeed([]),
     executorResourceOf: () => Effect.succeed(null),
+    executorLaunchOf: () => Effect.succeed(null),
     requestRemoval: () => Effect.die("not in test"),
     listRemovalRequested: () => Effect.die("not in test"),
   });

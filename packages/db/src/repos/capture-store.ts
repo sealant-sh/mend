@@ -98,11 +98,14 @@ export interface RegisterCapture {
    */
   readonly names?: ReadonlyArray<string>;
   /**
-   * The capture's `final_seal`, validated by the caller (complete, this epoch, this executor):
-   * the CAS records it when it lands and the lease names `executorId` — so a seal exists only
-   * for a capture registered on a contiguous chain. Absent: the capture seals nothing.
+   * The capture's `final_seal`, validated by the caller (complete, this epoch, this executor,
+   * every section observed restorable): the CAS records it when it lands and the lease names
+   * `holder` — so a seal exists only for a capture registered on a contiguous chain, by the
+   * executor holding the worktree. `executorId` is that executor's launch identity (cross-repo
+   * decision 5): the one physical executor the seal speaks for. Absent: the capture seals
+   * nothing.
    */
-  readonly seal?: { readonly executorId: string };
+  readonly seal?: { readonly executorId: string; readonly holder: string };
 }
 
 /**
@@ -386,6 +389,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       // claim may still delete it after this lands.
       const names = JSON.stringify(capture.names ?? []);
       const sealExecutor = capture.seal?.executorId ?? "";
+      const sealHolder = capture.seal?.holder ?? "";
       const rows = yield* sql<{ readonly id: string }>`
         WITH expected AS (
           SELECT e.worktree_id, e.guard
@@ -422,7 +426,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
           SELECT ${capture.worktreeId}, ${capture.epoch}, ${sealExecutor}, ${capture.id}, ${capture.n}
             FROM ch
            WHERE ${capture.seal !== undefined}::boolean
-             AND ${sealExecutor} = (
+             AND ${sealHolder} = (
                SELECT executor_id FROM worktree_leases WHERE worktree_id = ${capture.worktreeId})
           ON CONFLICT (worktree_id, epoch) DO UPDATE
              SET executor_id = EXCLUDED.executor_id, capture_id = EXCLUDED.capture_id,

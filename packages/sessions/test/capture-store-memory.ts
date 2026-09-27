@@ -150,7 +150,7 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
           const sealed = seals.get(sealKey);
           if (
             capture.seal !== undefined &&
-            lease?.executorId === capture.seal.executorId &&
+            lease?.executorId === capture.seal.holder &&
             (sealed === undefined || sealed.n < capture.n)
           ) {
             seals.set(sealKey, {
