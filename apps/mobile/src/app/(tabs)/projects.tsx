@@ -63,11 +63,33 @@ export default function ProjectsScreen() {
           <ScreenHeader
             eyebrow="mend"
             title="Projects"
-            meta={`${projects.data?.length ?? 0} adopted`}
+            meta={
+              projects.data !== undefined
+                ? `${projects.data.length} adopted`
+                : projects.isError
+                  ? "projects could not be read"
+                  : "reading projects…"
+            }
           />
         </View>
         <EvButton size="sm" label="Adopt" onPress={() => router.push("/adopt")} />
       </View>
+      {projects.isError && (
+        <Panel>
+          <View style={{ padding: 16, gap: 10 }}>
+            <MonoText tone="ink2">{projects.error.message}</MonoText>
+            <View style={{ flexDirection: "row" }}>
+              <EvButton
+                size="sm"
+                variant="outline"
+                label={projects.isFetching ? "retrying…" : "Retry"}
+                disabled={projects.isFetching}
+                onPress={() => void projects.refetch()}
+              />
+            </View>
+          </View>
+        </Panel>
+      )}
       {(projects.data ?? []).map((project) => {
         const sessions = (all.data ?? [])
           .filter(({ session }) => session.projectId === project.id)

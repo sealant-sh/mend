@@ -412,11 +412,31 @@ export default function SessionScreen() {
       onError: (error) => setShellError(error instanceof Error ? error.message : String(error)),
     });
   };
-  let conversation = (
-    <View style={{ flex: 1, paddingHorizontal: 16, paddingTop: 8 }}>
-      <MonoText tone="faint">loading session…</MonoText>
-    </View>
-  );
+  // A session that could not be read says so, with the server's words and a
+  // retry — never "loading" forever, and never a screen with no Review button
+  // and no reason.
+  let conversation =
+    detail.isError && session === undefined ? (
+      <View style={{ flex: 1, paddingHorizontal: 16, paddingTop: 8, gap: 8 }}>
+        <MonoText tone="danger">session · could not be read</MonoText>
+        <MonoText size={11} tone="ink2" numberOfLines={6}>
+          {detail.error.message}
+        </MonoText>
+        <View style={{ flexDirection: "row" }}>
+          <EvButton
+            size="sm"
+            variant="outline"
+            label={detail.isFetching ? "retrying…" : "Retry"}
+            disabled={detail.isFetching}
+            onPress={() => void detail.refetch()}
+          />
+        </View>
+      </View>
+    ) : (
+      <View style={{ flex: 1, paddingHorizontal: 16, paddingTop: 8 }}>
+        <MonoText tone="faint">loading session…</MonoText>
+      </View>
+    );
   if (session !== undefined) {
     conversation = protocol ? (
       <ProtocolConversation
@@ -537,6 +557,11 @@ export default function SessionScreen() {
               only the owner steers this session · you can read it and review the change
             </MonoText>
           )}
+          {detail.isError && session !== undefined ? (
+            <MonoText tone="warning" size={11} numberOfLines={2}>
+              last refresh failed · {detail.error.message}
+            </MonoText>
+          ) : null}
           {shellError === null ? null : (
             <MonoText tone="danger" size={11} numberOfLines={2}>
               {shellError}

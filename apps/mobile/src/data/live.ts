@@ -13,6 +13,7 @@ import { Platform } from "react-native";
 
 import type { StatusTone } from "@/components/status";
 import type { LaunchOptions } from "@/data/harness-options";
+import type { CheckpointDto } from "@/data/review-state";
 
 // ─── config ─────────────────────────────────────────────────────────────────
 
@@ -234,12 +235,6 @@ export interface SessionProcessDto {
   readonly exitedAt: string | null;
 }
 
-export interface ChangedFileDto {
-  readonly path: string;
-  readonly additions: number;
-  readonly deletions: number;
-}
-
 export interface SessionChangeDto {
   readonly id: string;
   readonly projectId: string;
@@ -272,6 +267,19 @@ export class ApiError extends Error {
   }
 }
 
+/**
+ * The server's own words when it gave any; otherwise the request, the status
+ * and the error's tag ("GET /changes/…/diff → 404 · NotFound") — never a
+ * bare "failed".
+ */
+const failureMessage = (method: string, route: string, status: number, body: unknown): string => {
+  const record = typeof body === "object" && body !== null ? body : null;
+  const message = record !== null && "message" in record ? record.message : null;
+  if (typeof message === "string" && message !== "") return message;
+  const tag = record !== null && "_tag" in record ? record._tag : null;
+  return `${method} ${route} → ${status}${typeof tag === "string" ? ` · ${tag}` : ""}`;
+};
+
 /** Shared by the review data module — one transport, one error shape. */
 export const api = async <T>(
   method: "GET" | "POST" | "DELETE",
@@ -289,14 +297,13 @@ export const api = async <T>(
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
   if (!response.ok) {
-    let message = `${method} ${route} → ${response.status}`;
+    let parsed: unknown = null;
     try {
-      const parsed = (await response.json()) as { readonly message?: unknown };
-      if (typeof parsed.message === "string" && parsed.message !== "") message = parsed.message;
+      parsed = await response.json();
     } catch {
       // Not JSON — the status line stands.
     }
-    throw new ApiError(message, response.status);
+    throw new ApiError(failureMessage(method, route, response.status, parsed), response.status);
   }
   return (await response.json()) as T;
 };
@@ -458,7 +465,8 @@ export const useSession = (id: string | null) =>
     queryFn: () =>
       api<{
         readonly session: SessionDto;
-        readonly checkpoints: ReadonlyArray<{ readonly sha: string; readonly trigger: string }>;
+        /** The worktree's whole chain, every conversation's checkpoints in it. */
+        readonly checkpoints: ReadonlyArray<CheckpointDto>;
         readonly change: SessionChangeDto | null;
         readonly processes: ReadonlyArray<SessionProcessDto>;
         readonly currentAgent: SessionProcessDto | null;
@@ -471,18 +479,6 @@ export const useSession = (id: string | null) =>
         };
       }>("GET", `/sessions/${id}`),
     refetchInterval: 5_000,
-  });
-
-export const useChangeDiff = (changeId: string | null) =>
-  useQuery({
-    queryKey: ["change", changeId],
-    enabled: changeId !== null,
-    queryFn: () =>
-      api<{
-        readonly change: SessionChangeDto;
-        readonly diff: string;
-        readonly files: ReadonlyArray<ChangedFileDto>;
-      }>("GET", `/changes/${changeId}/diff`),
   });
 
 export interface TranscriptEventDto {

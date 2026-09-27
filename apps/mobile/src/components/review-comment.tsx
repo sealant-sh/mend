@@ -32,19 +32,22 @@ const ACTIONS: Record<
 export function CommentCard({
   comment,
   showAnchor = false,
+  writtenOn = null,
 }: {
   readonly comment: ReviewCommentDto;
   /** Name the anchor when the card renders away from its line. */
   readonly showAnchor?: boolean;
+  /** The checkpoint of the slice it was written on, when that is not the slice on screen. */
+  readonly writtenOn?: number | null;
 }) {
   const { colors } = useEvidenceTheme();
   const { setState } = useReviewActions(comment.changeId);
   const sent = comment.sentToSessionId !== null;
   const author = comment.authorKind === "mend" ? "Mend" : comment.authorName;
   const anchor =
-    showAnchor && comment.file !== null
+    (showAnchor && comment.file !== null
       ? `${comment.file}${comment.line === null ? "" : `:${comment.line}`} · `
-      : "";
+      : "") + (writtenOn === null ? "" : `checkpoint ${writtenOn} · `);
   const actions = sent ? [] : ACTIONS[comment.state];
 
   return (
