@@ -1,7 +1,8 @@
 import { SealantApiError } from "@sealant/sdk";
+import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { platformErrorCode, workspaceStopStateOf } from "./client.ts";
+import { captureStatusOf, platformErrorCode, workspaceStopStateOf } from "./client.ts";
 
 /**
  * The engine branches on the platform's STABLE codes (`workspace-docker-unsupported`,
@@ -52,5 +53,42 @@ describe("workspaceStopStateOf", () => {
     expect(workspaceStopStateOf({ state: "requested" })).toBe("requested");
     expect(workspaceStopStateOf(undefined)).toBe("requested");
     expect(workspaceStopStateOf({ state: "gone" })).toBe("requested");
+  });
+});
+
+describe("captureStatusOf", () => {
+  const status = {
+    epoch: 3,
+    worktreeId: "wt-1",
+    pending: 1,
+    stagedBytes: 10,
+    uploadedObjects: 2,
+    uploadedBytes: 20,
+    registered: 2,
+    fenced: false,
+    paused: false,
+    lastSnapError: "EIO: tree/db.sqlite",
+    snapFailingSinceUnixMs: 1_790_000_000_000,
+  };
+
+  it("asks nothing of an SDK without `capture.status()` (0.37.2)", async () => {
+    const answer = await Effect.runPromise(
+      captureStatusOf({ capture: { flush: async () => status } }),
+    );
+    expect(answer).toBeNull();
+  });
+
+  it("reads Core's `capture.status()` as it is, with the fields the SDK does not type yet", async () => {
+    const answer = await Effect.runPromise(
+      captureStatusOf({ capture: { status: async () => status } }),
+    );
+    expect(answer).toEqual(status);
+  });
+
+  it("refuses an answer without what Mend reads", async () => {
+    const error = await Effect.runPromise(
+      Effect.flip(captureStatusOf({ capture: { status: async () => ({ pending: 1 }) } })),
+    );
+    expect(error.code).toBe("capture_status_unreadable");
   });
 });

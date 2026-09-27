@@ -2296,6 +2296,27 @@ const captureDrainResumeMigration = Effect.gen(function* () {
       WHERE capture_drain_resume IS NOT NULL`;
 });
 
+/**
+ * 0078: what a failing capture looks like while it happens, and what a discard ended
+ * (docs/adr/0002, "Stop drains, then terminates").
+ * - `capture_incomplete_detail`: what sealantd named behind an incomplete final flush — the
+ *   snap's error, the first path it could not read.
+ * - `capture_failing_since` / `capture_failing_error`: a running executor whose snaps fail,
+ *   observed from its status or a flush; cleared once its snaps succeed again.
+ * - `capture_discarded_at` / `capture_discarded_by`: the owner's "discard unsaved and stop" —
+ *   when, and who; cleared once the session runs again.
+ */
+const captureFailingMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE agent_sessions
+      ADD COLUMN capture_incomplete_detail text,
+      ADD COLUMN capture_failing_since timestamptz,
+      ADD COLUMN capture_failing_error text,
+      ADD COLUMN capture_discarded_at timestamptz,
+      ADD COLUMN capture_discarded_by text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2374,4 +2395,5 @@ export const migrations = {
   "0075_capture_drain": captureDrainMigration,
   "0076_capture_guards": captureGuardsMigration,
   "0077_capture_drain_resume": captureDrainResumeMigration,
+  "0078_capture_failing": captureFailingMigration,
 };

@@ -76,6 +76,23 @@ export interface CaptureObservation {
    * recorded reason as it was — a suspend flush says nothing about a final one.
    */
   readonly incompleteReason?: string | null;
+  /**
+   * With `incompleteReason`: what sealantd named behind it (the snap's error, the first path it
+   * could not read). Absent leaves it as it was.
+   */
+  readonly incompleteDetail?: string | null;
+  /**
+   * Whether the executor's snaps are failing, from any reading (a status read, a flush): since
+   * when and sealantd's last error; null once they succeed again. Absent leaves it as it was.
+   */
+  readonly failing?: { readonly since: Date; readonly error: string | null } | null;
+}
+
+/** The owner's "discard unsaved and stop", as the session keeps it: when, and who. */
+export interface CaptureDiscard {
+  readonly at: Date;
+  /** The owner's display name. */
+  readonly by: string;
 }
 
 /** Terminal session states; `stopped` is the user's stop, not a failure. */
@@ -262,7 +279,11 @@ export class SessionsRepo extends Context.Service<
     /** Nothing moved for the stall window: true only for the write that set it (one alert). */
     readonly markCaptureNotSaved: (id: SessionId, at: Date) => Effect.Effect<boolean>;
     /** The workspace is saved and terminated, or discarded: no drain is under way. */
-    readonly endCaptureDrain: (id: SessionId) => Effect.Effect<void>;
+    /**
+     * The drain is over. `discarded`: it ended because the owner discarded what the executor had
+     * not saved — kept on the session (`unsaved work discarded by … at …`) until it runs again.
+     */
+    readonly endCaptureDrain: (id: SessionId, discarded?: CaptureDiscard) => Effect.Effect<void>;
     /**
      * Every session with a drain under way or a relaunch not yet launched, oldest first: what the
      * reaper takes up again.
@@ -847,7 +868,15 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
       ) {
         yield* db
           .update(agentSessions)
-          .set({ status, settledAt: null, idleStoppedAt: null, updatedAt: new Date() })
+          .set({
+            status,
+            settledAt: null,
+            idleStoppedAt: null,
+            // Running again: a discard of an earlier executor's work is history (the audit log).
+            captureDiscardedAt: null,
+            captureDiscardedBy: null,
+            updatedAt: new Date(),
+          })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
         yield* notify(id);
@@ -909,6 +938,18 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
               ...(observation.incompleteReason === undefined
                 ? {}
                 : { captureIncompleteReason: observation.incompleteReason }),
+              ...(observation.incompleteDetail === undefined
+                ? {}
+                : { captureIncompleteDetail: observation.incompleteDetail }),
+              ...(observation.failing === undefined
+                ? {}
+                : observation.failing === null
+                  ? { captureFailingSince: null, captureFailingError: null }
+                  : {
+                      // The first time it was seen failing stays, whatever later readings say.
+                      captureFailingSince: sql`COALESCE(${agentSessions.captureFailingSince}, ${observation.failing.since})`,
+                      captureFailingError: observation.failing.error,
+                    }),
             })
             .where(eq(agentSessions.id, id))
             .pipe(Effect.orDie);
@@ -1056,7 +1097,10 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return true;
       });
 
-      const endCaptureDrain = Effect.fn("SessionsRepo.endCaptureDrain")(function* (id: SessionId) {
+      const endCaptureDrain = Effect.fn("SessionsRepo.endCaptureDrain")(function* (
+        id: SessionId,
+        discarded?: CaptureDiscard,
+      ) {
         yield* db
           .update(agentSessions)
           .set({
@@ -1065,6 +1109,13 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             captureDrainProgressAt: null,
             captureNotSavedAt: null,
             captureIncompleteReason: null,
+            captureIncompleteDetail: null,
+            // The executor is gone: whatever it was failing at is over.
+            captureFailingSince: null,
+            captureFailingError: null,
+            ...(discarded === undefined
+              ? {}
+              : { captureDiscardedAt: discarded.at, captureDiscardedBy: discarded.by }),
             updatedAt: new Date(),
           })
           .where(eq(agentSessions.id, id))

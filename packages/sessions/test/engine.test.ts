@@ -198,6 +198,7 @@ const sealantDeadLayer = Layer.succeed(SealantClient, {
   forward: () => Effect.die("not in test"),
   stopWorkspace: () => Effect.die("not in test"),
   captureFlush: () => Effect.die("not in test"),
+  captureStatus: () => Effect.succeed(null),
   captureReplan: () => Effect.die("not in test"),
   expireWorkspace: () => Effect.die("not in test"),
   getSession: () => Effect.die("not in test"),
@@ -324,6 +325,13 @@ const sealantLaunchLayer = (
     readonly flush?: (
       workspace: Workspace,
     ) => Effect.Effect<WorkspaceCaptureStatus, SealantPlatformError>;
+    /**
+     * Stands in for `capture.status()` (Core's next SDK); absent answers null, as SDK 0.37.2's
+     * seam does.
+     */
+    readonly captureStatus?: (
+      workspace: Workspace,
+    ) => Effect.Effect<WorkspaceCaptureStatus | null, SealantPlatformError>;
     readonly replan?: (
       workspace: Workspace,
     ) => Effect.Effect<WorkspaceCaptureReplanned, SealantPlatformError>;
@@ -502,6 +510,10 @@ const sealantLaunchLayer = (
         if (kind !== "final" || captureOps?.finalCompletion === "unreported") return answer;
         return { ...answer, ...finalCompletionOf(answer) };
       }),
+    captureStatus: (target) =>
+      captureOps?.captureStatus === undefined
+        ? Effect.succeed(null)
+        : captureOps.captureStatus(target),
     captureReplan: (target) =>
       captureOps?.replan === undefined
         ? Effect.die("capture.replan not in this test world")
@@ -1613,7 +1625,15 @@ const sessionsLayer = (world: World) => {
           : update(id, { status: outcome, summary, settledAt: now() }),
       ),
     reopen: (id, status) =>
-      Effect.sync(() => update(id, { status, settledAt: null, idleStoppedAt: null })),
+      Effect.sync(() =>
+        update(id, {
+          status,
+          settledAt: null,
+          idleStoppedAt: null,
+          captureDiscardedAt: null,
+          captureDiscardedBy: null,
+        }),
+      ),
     claimIdleStop: () => Effect.succeed(true),
     releaseIdleStop: () => Effect.void,
     setSummary: (id, summary) => Effect.sync(() => update(id, { summary })),
@@ -1637,6 +1657,18 @@ const sessionsLayer = (world: World) => {
           ...(observation.incompleteReason === undefined
             ? {}
             : { captureIncompleteReason: observation.incompleteReason }),
+          ...(observation.incompleteDetail === undefined
+            ? {}
+            : { captureIncompleteDetail: observation.incompleteDetail }),
+          ...(observation.failing === undefined
+            ? {}
+            : observation.failing === null
+              ? { captureFailingSince: null, captureFailingError: null }
+              : {
+                  captureFailingSince:
+                    world.sessions.get(id)?.captureFailingSince ?? observation.failing.since,
+                  captureFailingError: observation.failing.error,
+                }),
         }),
       ),
     beginCaptureDrain: (id, reason, at) =>
@@ -1690,7 +1722,7 @@ const sessionsLayer = (world: World) => {
         update(id, { captureNotSavedAt: at });
         return true;
       }),
-    endCaptureDrain: (id) =>
+    endCaptureDrain: (id, discarded) =>
       Effect.sync(() =>
         update(id, {
           captureDrain: null,
@@ -1698,6 +1730,12 @@ const sessionsLayer = (world: World) => {
           captureDrainProgressAt: null,
           captureNotSavedAt: null,
           captureIncompleteReason: null,
+          captureIncompleteDetail: null,
+          captureFailingSince: null,
+          captureFailingError: null,
+          ...(discarded === undefined
+            ? {}
+            : { captureDiscardedAt: discarded.at, captureDiscardedBy: discarded.by }),
         }),
       ),
     listCaptureDrains: () =>
@@ -2054,6 +2092,8 @@ const testDrainPolicy = (overrides: Partial<CaptureDrainPolicyShape> = {}) =>
     drainEstimateSeconds: 300,
     keptRetryFirst: Duration.seconds(10),
     keptRetryMax: Duration.minutes(5),
+    statusInterval: Duration.seconds(45),
+    statusMinInterval: Duration.seconds(10),
     ...overrides,
   });
 
@@ -10622,6 +10662,198 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
         {
           captured: memory,
           sealantLayer: sealantLaunchLayer(created, () => refuse),
+        },
+      );
+    },
+  );
+});
+
+describe("SessionEngine capture failures shown while they happen (e2e run 3, 2026-09-27)", () => {
+  it(
+    "a final flush whose snapshot failed keeps the workspace at once, with sealantd's error and path, and asks again only on the kept backoff",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const kinds: CaptureFlushKind[] = [];
+      const memory = makeMemoryCaptureStore();
+      let shipped = 0;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            // The default stall window is 600 s: only a reason that cannot complete keeps it now.
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept workspace",
+            );
+            const finals = () => kinds.filter((kind) => kind === "final").length;
+            expect(finals()).toBe(1);
+            const kept = world.sessions.get(session.id);
+            expect(kept === undefined ? null : captureStatusLine(kept)).toBe(
+              "not saved · snapshot failed · EACCES: permission denied · unreadable tree/secrets.pem · 0 pending · workspace kept",
+            );
+            expect(events).not.toContain("workspace-1");
+            expect(leaseHeld(memory, session.worktreeId, session.id)).toBe(true);
+            // Nothing changed: the next sweep inside the first wait sends no FINAL.
+            yield* engine.reapCaptureLeases();
+            yield* Effect.sleep(Duration.millis(60));
+            expect(finals()).toBe(1);
+            // The first wait has passed: one more FINAL, kept again at once.
+            yield* Effect.sleep(Duration.millis(300));
+            yield* engine.reapCaptureLeases();
+            yield* until(() => finals() > 1, "the retry after the first wait");
+            yield* Effect.sleep(Duration.millis(60));
+            const afterRetry = finals();
+            // Kept again at once: nothing more until the doubled wait, however many ticks.
+            yield* engine.reapCaptureLeases();
+            yield* Effect.sleep(Duration.millis(100));
+            expect(finals()).toBe(afterRetry);
+            expect(world.sessions.get(session.id)?.captureNotSavedAt).not.toBeNull();
+            expect(events).not.toContain("workspace-1");
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            keptRetryFirst: Duration.millis(300),
+            keptRetryMax: Duration.seconds(5),
+          },
+          sealantLayer: lifecycleLayer(created, {
+            events,
+            captureOps: {
+              flushKinds: kinds,
+              // The daemon's own answer, as it gave it: its final snapshot failed.
+              finalCompletion: "unreported",
+              flush: () =>
+                Effect.sync(() => {
+                  // Every round ships something (the counters grow): movement is not progress
+                  // toward `complete` when the snapshot itself fails.
+                  shipped += 1;
+                  return {
+                    ...flushReport(0, shipped),
+                    complete: false,
+                    incompleteReason: "snapshot-failed",
+                    lastSnapError: "EACCES: permission denied",
+                    unreadable: 1,
+                    unreadablePaths: ["tree/secrets.pem"],
+                  };
+                }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "a running session whose snaps fail reads `capture failing since … · <error>` from a status read, and not once they succeed again",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const since = Date.parse("2026-09-27T16:29:51.000Z");
+      let failing = true;
+      let reads = 0;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            expect(world.sessions.get(session.id)?.status).toBe("running");
+            // Nothing has read it yet: nothing to say.
+            const before = world.sessions.get(session.id);
+            expect(before === undefined ? "gone" : captureStatusLine(before)).toBeNull();
+            // The reaper reads a running executor's status on its own.
+            yield* engine.reapCaptureLeases();
+            yield* until(
+              () => world.sessions.get(session.id)?.captureFailingSince != null,
+              "the failing snap on the session",
+            );
+            const shown = world.sessions.get(session.id);
+            expect(shown === undefined ? null : captureStatusLine(shown)).toBe(
+              "capture failing since 16:29:51 UTC · EIO: tree/db.sqlite",
+            );
+            // Within the interval the reaper does not ask again.
+            yield* engine.reapCaptureLeases();
+            yield* Effect.sleep(Duration.millis(60));
+            expect(reads).toBe(1);
+            // A client's view asks (throttled per session); the snaps succeed again.
+            failing = false;
+            yield* engine.refreshCaptureStatus(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureFailingSince === null,
+              "the failure cleared",
+            );
+            const cleared = world.sessions.get(session.id);
+            expect(cleared === undefined ? "gone" : captureStatusLine(cleared)).toBeNull();
+            expect(reads).toBe(2);
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            statusInterval: Duration.minutes(1),
+            statusMinInterval: Duration.millis(0),
+          },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              captureStatus: () =>
+                Effect.sync(() => {
+                  reads += 1;
+                  return failing
+                    ? {
+                        ...flushReport(1, 1),
+                        lastSnapError: "EIO: tree/db.sqlite",
+                        snapFailingSinceUnixMs: since,
+                        snapsFailed: 4,
+                      }
+                    : flushReport(0, 2);
+                }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "after the owner's discard the session reads `stopped · unsaved work discarded by <name> at …`",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept workspace",
+            );
+            yield* engine.discardUnsavedAndStop(session.id, "Ada Lovelace");
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the settle after the discard",
+            );
+            const settled = world.sessions.get(session.id);
+            if (settled === undefined) throw new Error("the session went");
+            const line = captureStatusLine(settled);
+            expect(`${settled.status} · ${line}`).toMatch(
+              /^stopped · unsaved work discarded by Ada Lovelace at \d\d:\d\d:\d\d UTC$/,
+            );
+          }),
+        {
+          captured: memory,
+          drainPolicy: { stallSeconds: 1, terminationWait: Duration.millis(300) },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stopAnswer: (discard) => (discard ? "stopped" : "kept"),
+              flush: () => Effect.succeed(flushReport(2, 1)),
+            },
+          }),
         },
       );
     },

@@ -224,6 +224,34 @@ export class Session extends Schema.Class<Session>("Session")({
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
   /**
+   * What sealantd named behind that reason (`captureSnapDetailOf`): the snap's error, the first
+   * path it could not read. Null when it named nothing, and outside a drain.
+   */
+  captureIncompleteDetail: Schema.NullOr(Schema.String).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * A running executor whose snaps are failing (`capture failing since … · <error>`): since when,
+   * as sealantd said or as Mend first observed it, and sealantd's last error. Both null once a
+   * reading shows its snaps succeed again.
+   */
+  captureFailingSince: Schema.NullOr(Timestamp).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  captureFailingError: Schema.NullOr(Schema.String).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * The owner's "discard unsaved and stop" ended this executor with work not saved: when, and
+   * who (their display name). Null until then, and again once the session runs again.
+   */
+  captureDiscardedAt: Schema.NullOr(Timestamp).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  captureDiscardedBy: Schema.NullOr(Schema.String).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
    * When the session's current executor started — what the platform's cap counts from, not the
    * latest run. Null before launch and for rows from before the column.
    */

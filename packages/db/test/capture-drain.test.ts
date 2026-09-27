@@ -49,6 +49,16 @@ const WORKTREE = WorktreeId.make("wt-1");
 const DRAINING = SessionId.make("s-draining");
 const REMOVING = SessionId.make("s-removing");
 const STOPPING = SessionId.make("s-stopping");
+const FAILING = SessionId.make("s-failing");
+
+/** A reading with one capture pending, taken at `at`. */
+const observed = (at: Date) => ({
+  pending: 1,
+  pendingBytes: null,
+  refused: null,
+  registeredAt: null,
+  observedAt: at,
+});
 
 describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
   beforeAll(async () => {
@@ -71,7 +81,7 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
         yield* sql`
           INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
           VALUES (${WORKTREE}, ${PROJECT}, 'wt-1', 'wt-1', 'mend/wt-1', 'abc')`;
-        for (const id of [DRAINING, REMOVING, STOPPING]) {
+        for (const id of [DRAINING, REMOVING, STOPPING, FAILING]) {
           yield* sessions.create({
             id,
             projectId: PROJECT,
@@ -233,5 +243,59 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
     expect(result.relaunching.settledAt).not.toBeNull();
     expect(result.stopped.status).toBe("stopping");
     expect(result.stopped.settledAt).toBeNull();
+  });
+
+  it("keeps when a snap first failed and what sealantd said, clears it once snaps succeed or the executor is gone, and keeps a discard until the session runs again", async () => {
+    const t0 = new Date("2026-09-27T16:29:51.000Z");
+    const t1 = new Date("2026-09-27T16:30:36.000Z");
+    const t2 = new Date("2026-09-27T16:40:02.000Z");
+    const result = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        yield* sessions.recordCaptureObservation(FAILING, {
+          ...observed(t0),
+          failing: { since: t0, error: "EIO: tree/db.sqlite" },
+        });
+        // A later reading of the same failure keeps when it started, and its latest error.
+        yield* sessions.recordCaptureObservation(FAILING, {
+          ...observed(t1),
+          failing: { since: t1, error: "EIO: tree/db.sqlite (2)" },
+        });
+        const failing = yield* sessions.byId(FAILING);
+        // A reading that says nothing of snaps leaves it as it was.
+        yield* sessions.recordCaptureObservation(FAILING, observed(t1));
+        const unsaid = yield* sessions.byId(FAILING);
+        yield* sessions.recordCaptureObservation(FAILING, { ...observed(t1), failing: null });
+        const recovered = yield* sessions.byId(FAILING);
+        // A final flush's incomplete reason carries what sealantd named behind it.
+        yield* sessions.beginCaptureDrain(FAILING, "stop", t1);
+        yield* sessions.recordCaptureObservation(FAILING, {
+          ...observed(t1),
+          failing: { since: t1, error: "EACCES" },
+          incompleteReason: "snapshot-failed",
+          incompleteDetail: "EACCES · unreadable tree/secrets.pem",
+        });
+        const kept = yield* sessions.byId(FAILING);
+        yield* sessions.endCaptureDrain(FAILING, { at: t2, by: "Ada Lovelace" });
+        const discarded = yield* sessions.byId(FAILING);
+        yield* sessions.reopen(FAILING, "running");
+        const reopened = yield* sessions.byId(FAILING);
+        return { failing, unsaid, recovered, kept, discarded, reopened };
+      }),
+    );
+    expect(result.failing.captureFailingSince).toEqual(t0);
+    expect(result.failing.captureFailingError).toBe("EIO: tree/db.sqlite (2)");
+    expect(result.unsaid.captureFailingSince).toEqual(t0);
+    expect(result.recovered.captureFailingSince).toBeNull();
+    expect(result.recovered.captureFailingError).toBeNull();
+    expect(result.kept.captureIncompleteReason).toBe("snapshot-failed");
+    expect(result.kept.captureIncompleteDetail).toBe("EACCES · unreadable tree/secrets.pem");
+    expect(result.discarded.captureDrain).toBeNull();
+    expect(result.discarded.captureIncompleteDetail).toBeNull();
+    expect(result.discarded.captureFailingSince).toBeNull();
+    expect(result.discarded.captureDiscardedAt).toEqual(t2);
+    expect(result.discarded.captureDiscardedBy).toBe("Ada Lovelace");
+    expect(result.reopened.captureDiscardedAt).toBeNull();
+    expect(result.reopened.captureDiscardedBy).toBeNull();
   });
 });

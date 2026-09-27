@@ -115,6 +115,56 @@ interface StoppableWorkspace {
 const stopWith = (workspace: StoppableWorkspace, options: WorkspaceStopOptions | undefined) =>
   options === undefined ? workspace.stop() : workspace.stop(options);
 
+/** A capture surface that can read its status without flushing (Core's next SDK). */
+interface CaptureStatusReadable {
+  readonly status: () => Promise<unknown>;
+}
+
+const readsCaptureStatus = (capture: object): capture is CaptureStatusReadable =>
+  "status" in capture && typeof capture.status === "function";
+
+const numberIn = (value: object, key: string): boolean =>
+  key in value && typeof Reflect.get(value, key) === "number";
+
+/** An answer with every field `WorkspaceCaptureStatus` requires, of the type it requires. */
+export const isCaptureStatus = (value: unknown): value is WorkspaceCaptureStatus =>
+  typeof value === "object" &&
+  value !== null &&
+  ["epoch", "pending", "stagedBytes", "uploadedObjects", "uploadedBytes", "registered"].every(
+    (key) => numberIn(value, key),
+  ) &&
+  "worktreeId" in value &&
+  typeof value.worktreeId === "string" &&
+  "fenced" in value &&
+  typeof value.fenced === "boolean" &&
+  "paused" in value &&
+  typeof value.paused === "boolean";
+
+/**
+ * `workspace.capture.status()` when the SDK has it (Core's next SDK), checked for what Mend reads;
+ * null on an SDK without it (0.37.2), where nothing is asked.
+ */
+export const captureStatusOf = (workspace: {
+  readonly capture: object;
+}): Effect.Effect<WorkspaceCaptureStatus | null, SealantPlatformError> => {
+  const capture = workspace.capture;
+  if (!readsCaptureStatus(capture)) return Effect.succeed(null);
+  return wrap(() => capture.status()).pipe(
+    Effect.flatMap((answer) =>
+      isCaptureStatus(answer)
+        ? Effect.succeed(answer)
+        : Effect.fail(
+            new SealantPlatformError({
+              code: "capture_status_unreadable",
+              status: null,
+              message: "the capture status answer is not one Mend can read",
+              cause: null,
+            }),
+          ),
+    ),
+  );
+};
+
 const STOP_STATES: ReadonlyArray<WorkspaceStopState> = ["stopped", "draining", "kept", "requested"];
 
 /** The state a stop's answer carries, when it carries one Mend knows; `requested` otherwise. */
@@ -199,6 +249,19 @@ export interface SealantClientShape {
     workspace: Workspace,
     kind: CaptureFlushKind,
   ) => Effect.Effect<WorkspaceCaptureStatus, SealantPlatformError>;
+  /**
+   * Capture-sourced workspaces: the daemon's capture queue as it stands, nothing flushed and
+   * nothing snapped — `pending`, what registered, and (from a daemon that reports them) a snap
+   * that is failing (`lastSnapError`, `snapFailingSinceUnixMs`, `snapsFailed`), unreadable paths,
+   * a bulk build under way. Cheap: what Mend polls while a session runs.
+   *
+   * SDK 0.37.2 has no `capture.status()`: this answers null there and Mend reads nothing between
+   * flushes (PLATFORM-FEEDBACK.md 2026-09-27, "A capture status read"). Core's next SDK adds it,
+   * and it is picked up here as it is, with nothing else changing.
+   */
+  readonly captureStatus: (
+    workspace: Workspace,
+  ) => Effect.Effect<WorkspaceCaptureStatus | null, SealantPlatformError>;
   /**
    * Capture-sourced workspaces (0.31.0, sealantd 0.15 `capture.replan`): the daemon asks the
    * session channel for its plan again with no worktree named, delta-materialises the answer
@@ -399,6 +462,10 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
     // suspend flush, and a final request's answer carries no `complete`.
     const captureFlush = Effect.fn("SealantClient.captureFlush")(
       (workspace: Workspace, _kind: CaptureFlushKind) => wrap(() => workspace.capture.flush()),
+    );
+
+    const captureStatus = Effect.fn("SealantClient.captureStatus")((workspace: Workspace) =>
+      captureStatusOf(workspace),
     );
 
     const captureReplan = Effect.fn("SealantClient.captureReplan")((workspace: Workspace) =>
@@ -635,6 +702,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       forward,
       stopWorkspace,
       captureFlush,
+      captureStatus,
       captureReplan,
       expireWorkspace,
       getSession,
@@ -944,6 +1012,7 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
         via((c) => c.forward(workspace, port, host, protocol)),
       stopWorkspace: (workspace, options) => via((c) => c.stopWorkspace(workspace, options)),
       captureFlush: (workspace, kind) => via((c) => c.captureFlush(workspace, kind)),
+      captureStatus: (workspace) => via((c) => c.captureStatus(workspace)),
       captureReplan: (workspace) => via((c) => c.captureReplan(workspace)),
       expireWorkspace: (workspaceId, ttlSeconds) =>
         via((c) => c.expireWorkspace(workspaceId, ttlSeconds)),

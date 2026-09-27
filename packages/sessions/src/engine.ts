@@ -103,6 +103,8 @@ import {
   captureHarvestReady,
   captureIncompleteReasonOf,
   captureSaved,
+  captureSnapDetailOf,
+  captureSnapFailing,
   captureStatusLine,
   type CaptureThroughput,
   executorCapDue,
@@ -454,6 +456,8 @@ const EXECUTOR_REPLACED_SUMMARY = "picked up · executor replaced";
  * head is registered: a full ship of a large small-class delta, not a cadence window.
  */
 const CHECKPOINT_FLUSH_TIMEOUT = Duration.seconds(20);
+/** A status read reads a counter; it never waits on a ship. */
+const CAPTURE_STATUS_TIMEOUT = Duration.seconds(10);
 /** A landing asks the executor this many times for its captures before it says they are behind. */
 const LANDING_FLUSH_ATTEMPTS = 4;
 const LANDING_FLUSH_PAUSE = Duration.seconds(2);
@@ -1111,7 +1115,18 @@ export class SessionEngine extends Context.Service<
      */
     readonly discardUnsavedAndStop: (
       sessionId: SessionId,
+      /** Who discarded it (the owner's display name), kept on the session's line. */
+      discardedBy?: string | null,
     ) => Effect.Effect<Session, SessionNotFoundError | NothingUnsavedError | SealantPlatformError>;
+    /**
+     * Capture mode: read the session's running executor's capture status (nothing flushed) and
+     * record it — a snap that is failing reads `capture failing since … · <error>` on every
+     * surface. At most once per `statusMinInterval` per session; skipped outside capture mode,
+     * for a session that does not hold its worktree, and while a drain runs. The reaper does the
+     * same on its own every `statusInterval`; this is the read a client's view asks for. Returns
+     * at once; the read runs in the engine's scope.
+     */
+    readonly refreshCaptureStatus: (sessionId: SessionId) => Effect.Effect<void>;
     /**
      * Capture mode: flush the session's own executor and answer what it still holds, recorded on
      * the session. Null outside capture mode, when the session does not hold its worktree, or
@@ -1618,19 +1633,140 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             paused: report.paused,
           }),
         );
-        if (capture !== null) {
-          const head = yield* capture.repo.headOf(session.worktreeId);
-          yield* sessions.recordCaptureObservation(session.id, {
-            pending: reading.pending,
-            pendingBytes: reading.pendingBytes,
-            refused: reading.refused,
-            registeredAt: head?.head?.createdAt ?? null,
-            observedAt: new Date(),
-            ...(kind === "final" ? { incompleteReason: captureIncompleteReasonOf(reading) } : {}),
-          });
-        }
+        yield* recordReading(session, workspace.id, reading, kind);
         return reading;
       });
+
+      /**
+       * Record one reading on the session (a flush's or a status read's): what is pending, and
+       * whether a snap is failing (`capture failing since … · <error>`, logged once when it
+       * starts). A final flush's answer also leaves why it did not complete, with what sealantd
+       * named behind it.
+       */
+      const recordReading = Effect.fn("SessionEngine.recordReading")(function* (
+        session: Session,
+        workspaceId: string,
+        reading: CaptureReading,
+        kind: CaptureFlushKind | "status",
+      ) {
+        if (capture === null) return;
+        const head = yield* capture.repo.headOf(session.worktreeId);
+        const observedAt = new Date();
+        const failing = captureSnapFailing(reading)
+          ? {
+              since: reading.snapFailingSince ?? observedAt,
+              error: reading.snapError ?? captureSnapDetailOf(reading),
+            }
+          : null;
+        const incompleteReason = kind === "final" ? captureIncompleteReasonOf(reading) : undefined;
+        const before = yield* sessions
+          .byId(session.id)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        yield* sessions.recordCaptureObservation(session.id, {
+          pending: reading.pending,
+          pendingBytes: reading.pendingBytes,
+          refused: reading.refused,
+          registeredAt: head?.head?.createdAt ?? null,
+          observedAt,
+          failing,
+          ...(incompleteReason === undefined
+            ? {}
+            : {
+                incompleteReason,
+                incompleteDetail: incompleteReason === null ? null : captureSnapDetailOf(reading),
+              }),
+        });
+        if (failing !== null && before !== null && before.captureFailingSince === null) {
+          yield* Effect.logWarning("session engine: capture failing · observed").pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              worktreeId: session.worktreeId,
+              workspaceId,
+              since: failing.since.toISOString(),
+              error: failing.error,
+              snapsFailed: reading.snapsFailed,
+              unreadable: reading.unreadable,
+              unreadablePaths: reading.unreadablePaths.slice(0, 5).join(" "),
+              via: kind,
+            }),
+          );
+        }
+      });
+
+      /** When each session's executor was last asked for its capture status (ms). */
+      const statusReads = new Map<SessionId, number>();
+
+      /**
+       * `workspace.capture.status()` on the session's running executor: nothing flushed, nothing
+       * snapped. Recorded like a flush answer. Null when the SDK cannot ask (SDK 0.37.2), the
+       * daemon refused or did not answer in time.
+       */
+      const observeCaptureStatus = Effect.fn("SessionEngine.observeCaptureStatus")(function* (
+        session: Session,
+        workspace: Workspace,
+      ) {
+        const outcome = yield* sealant
+          .captureStatus(workspace)
+          .pipe(
+            Effect.timeoutOption(CAPTURE_STATUS_TIMEOUT),
+            Effect.result,
+            asSealantUser(session.ownerUserId),
+          );
+        if (Result.isFailure(outcome)) {
+          yield* Effect.logDebug("session engine: capture status · refused").pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              workspaceId: workspace.id,
+              error: outcome.failure.message,
+            }),
+          );
+          return null;
+        }
+        if (Option.isNone(outcome.success) || outcome.success.value === null) return null;
+        const reading = readCaptureReport(outcome.success.value);
+        yield* recordReading(session, workspace.id, reading, "status");
+        return reading;
+      });
+
+      /**
+       * A status read of a running session's own executor, at most once per `minIntervalMs`:
+       * the executor holds the worktree's live lease and nothing is draining it.
+       */
+      const readCaptureStatusOf = Effect.fn("SessionEngine.readCaptureStatusOf")(function* (
+        sessionId: SessionId,
+        minIntervalMs: number,
+      ) {
+        if (capture === null) return;
+        const last = statusReads.get(sessionId);
+        const nowMs = Date.now();
+        if (last !== undefined && nowMs - last < minIntervalMs) return;
+        const session = yield* sessions
+          .byId(sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (session === null || session.sealantWorkspaceId === null) return;
+        if (session.captureDrain !== null || drains.has(session.sealantWorkspaceId)) return;
+        const lease = yield* capture.repo.leaseOf(session.worktreeId);
+        if (lease === null || !lease.live || lease.executorId !== session.id) return;
+        statusReads.set(sessionId, nowMs);
+        const workspace = yield* sealant
+          .getWorkspace(session.sealantWorkspaceId)
+          .pipe(Effect.option, asSealantUser(session.ownerUserId));
+        if (Option.isNone(workspace)) return;
+        yield* observeCaptureStatus(session, workspace.value);
+      });
+
+      /** Asked by a client's view: the read runs in the engine's scope, and the caller goes on. */
+      const refreshCaptureStatus = (sessionId: SessionId): Effect.Effect<void> =>
+        Effect.forkIn(
+          readCaptureStatusOf(sessionId, Duration.toMillis(drainPolicy.statusMinInterval)).pipe(
+            Effect.catchCause((cause) =>
+              Effect.logWarning("session engine: capture status read failed").pipe(
+                Effect.annotateLogs({ sessionId, cause: String(cause) }),
+              ),
+            ),
+          ),
+          scope,
+        ).pipe(Effect.asVoid);
 
       /**
        * Flush whoever holds a worktree's lease, when that is a session's live executor: the
@@ -2100,9 +2236,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
-      /** The drain is over (saved and terminated, gone, in use, or discarded): settle what it held. */
-      const endDrain = Effect.fn("SessionEngine.endDrain")(function* (sessionId: SessionId) {
-        yield* sessions.endCaptureDrain(sessionId);
+      /**
+       * The drain is over (saved and terminated, gone, in use, or discarded): settle what it held.
+       * A discard stays on the session: `stopped · unsaved work discarded by … at …`.
+       */
+      const endDrain = Effect.fn("SessionEngine.endDrain")(function* (
+        sessionId: SessionId,
+        discarded?: { readonly at: Date; readonly by: string },
+      ) {
+        yield* sessions.endCaptureDrain(sessionId, discarded);
         yield* settleIfStopping(sessionId);
       });
 
@@ -2311,6 +2453,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const discardUnsavedAndStop = Effect.fn("SessionEngine.discardUnsavedAndStop")(function* (
         sessionId: SessionId,
+        discardedBy?: string | null,
       ) {
         const session = yield* sessions.byId(sessionId);
         const workspaceId = session.sealantWorkspaceId;
@@ -2360,7 +2503,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               cause: null,
             });
           }
-          yield* endDrain(sessionId);
+          yield* endDrain(sessionId, {
+            at: new Date(),
+            by:
+              discardedBy === undefined || discardedBy === null || discardedBy.trim() === ""
+                ? "the owner"
+                : discardedBy.trim(),
+          });
           yield* removeIfRequested(sessionId);
         }).pipe(Effect.ensuring(Effect.sync(() => discards.delete(workspaceId))));
         return yield* sessions
@@ -2487,6 +2636,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /** Sessions the reaper is already replacing; one replacement at a time per session. */
       const replacing = new Set<SessionId>();
+      /** Sessions whose capture status a reaper tick is reading right now. */
+      const statusReading = new Set<SessionId>();
       /** Sessions the owner stopped while this process replaced their executor: none relaunches. */
       const stoppedDuringReplacement = new Set<SessionId>();
       /** Sessions whose planned relaunch a launch in this process is carrying out. */
@@ -2729,6 +2880,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (lease === null || lease.executorId !== session.id) continue;
           if (lease.live) {
             if (drains.has(session.sealantWorkspaceId) || session.captureDrain !== null) continue;
+            // What the executor holds between flushes, and whether its snaps are failing: a
+            // status read every `statusInterval` (nothing flushed, nothing snapped).
+            const lastRead = statusReads.get(session.id);
+            if (
+              !statusReading.has(session.id) &&
+              (lastRead === undefined ||
+                Date.now() - lastRead >= Duration.toMillis(drainPolicy.statusInterval))
+            ) {
+              statusReading.add(session.id);
+              yield* Effect.forkIn(
+                readCaptureStatusOf(session.id, Duration.toMillis(drainPolicy.statusInterval)).pipe(
+                  Effect.catchCause((cause) =>
+                    Effect.logWarning("session engine: capture status read failed").pipe(
+                      Effect.annotateLogs({ sessionId: session.id, cause: String(cause) }),
+                    ),
+                  ),
+                  Effect.ensuring(Effect.sync(() => statusReading.delete(session.id))),
+                ),
+                scope,
+              );
+            }
             // Rows from before the executor's start was stamped count from their latest run.
             const executorStartedAt =
               session.executorStartedAt ??
@@ -9526,7 +9698,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           owned(sessionId)(handoff(sessionId, to, start, author)),
         observeExternalAgents,
         reapCaptureLeases: captureReaper,
-        discardUnsavedAndStop: (sessionId) => owned(sessionId)(discardUnsavedAndStop(sessionId)),
+        discardUnsavedAndStop: (sessionId, discardedBy) =>
+          owned(sessionId)(discardUnsavedAndStop(sessionId, discardedBy)),
+        refreshCaptureStatus,
         readCaptures: (sessionId) => owned(sessionId)(readCaptures(sessionId)),
         removeWhenStopped: (sessionId) => owned(sessionId)(removeWhenStopped(sessionId)),
         captureHolds,

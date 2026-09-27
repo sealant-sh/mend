@@ -60,6 +60,18 @@ export interface CaptureReading {
    * says; null otherwise.
    */
   readonly incompleteReason: string | null;
+  /**
+   * A snap that is failing, as sealantd reports it (`last_snap_error`, `snap_failing_since`,
+   * `snaps_failed`): its last error, since when the class's snaps have failed, and how many
+   * have. Null (and 0 paths) until sealantd reports them, and while every class's last snap
+   * succeeded.
+   */
+  readonly snapError: string | null;
+  readonly snapFailingSince: Date | null;
+  readonly snapsFailed: number | null;
+  /** Paths the last snap could not read (`unreadable`), and the first of them sealantd names. */
+  readonly unreadable: number | null;
+  readonly unreadablePaths: ReadonlyArray<string>;
 }
 
 /**
@@ -104,10 +116,19 @@ export const captureSaved = (reading: CaptureReading): boolean =>
   (reading.refused ?? 0) === 0;
 
 /**
+ * A snap is failing on the executor: sealantd said why (`last_snap_error`), since when, or that
+ * the last snap met paths it could not read. A final flush over such a tree fails again however
+ * long a drain waits; only the next retry (after the kept backoff) may find it fixed.
+ */
+export const captureSnapFailing = (reading: CaptureReading): boolean =>
+  reading.snapError !== null || reading.snapFailingSince !== null;
+
+/**
  * An answer that can never become `complete`, however long the drain waits: the executor did not
  * run a final flush (`complete` absent, `not-final`, or incomplete with no reason — an older
- * daemon), or it was fenced or conflicted. A drain reads `not saved` at once and keeps the
- * workspace.
+ * daemon), it was fenced or conflicted, or its final snapshot failed (`snapshot-failed`,
+ * `unreadable`, or any answer that reports a failing snap). A drain reads `not saved` at once and
+ * keeps the workspace; the kept backoff (10 s doubling to 5 min) asks again.
  */
 const finalFlushCannotComplete = (reading: CaptureReading): boolean => {
   const reason = captureIncompleteReasonOf(reading);
@@ -115,8 +136,40 @@ const finalFlushCannotComplete = (reading: CaptureReading): boolean => {
     reason === CAPTURE_COMPLETION_UNREPORTED ||
     reason === "not-final" ||
     reason === "fenced" ||
-    reason === "conflict"
+    reason === "conflict" ||
+    reason === "snapshot-failed" ||
+    reason === "unreadable" ||
+    (reading.complete !== true && captureSnapFailing(reading))
   );
+};
+
+/** Longest error Mend keeps from sealantd for a status line. */
+const DETAIL_MAX = 200;
+
+const clipped = (text: string): string => {
+  const flat = text.replace(/\s+/g, " ").trim();
+  return flat.length <= DETAIL_MAX ? flat : `${flat.slice(0, DETAIL_MAX - 1)}…`;
+};
+
+/**
+ * What sealantd said about a failing snap, as one clause: its error, then the first path it
+ * could not read (`unreadable tree/secrets.pem +2 more`). Null when it said nothing.
+ */
+export const captureSnapDetailOf = (reading: CaptureReading): string | null => {
+  const parts: Array<string> = [];
+  if (reading.snapError !== null && reading.snapError.trim() !== "") {
+    parts.push(clipped(reading.snapError));
+  }
+  const count = Math.max(reading.unreadable ?? 0, reading.unreadablePaths.length);
+  const first = reading.unreadablePaths[0];
+  if (count > 0) {
+    parts.push(
+      first === undefined
+        ? `${count} unreadable`
+        : `unreadable ${clipped(first)}${count > 1 ? ` +${count - 1} more` : ""}`,
+    );
+  }
+  return parts.length === 0 ? null : parts.join(" · ");
 };
 
 /**
@@ -198,6 +251,17 @@ export interface SessionCaptureFacts {
   readonly captureNotSavedAt: Date | string | null;
   /** Why the last final flush did not complete (`captureIncompleteReasonOf`); absent reads none. */
   readonly captureIncompleteReason?: string | null;
+  /** sealantd's error or unreadable path behind it (`captureSnapDetailOf`); absent reads none. */
+  readonly captureIncompleteDetail?: string | null;
+  /**
+   * A running executor whose snaps are failing (`captureSnapFailing`): since when, and sealantd's
+   * error. Absent or null: none observed.
+   */
+  readonly captureFailingSince?: Date | string | null;
+  readonly captureFailingError?: string | null;
+  /** The owner discarded what the executor had not saved: when, and who. */
+  readonly captureDiscardedAt?: Date | string | null;
+  readonly captureDiscardedBy?: string | null;
 }
 
 /** An incomplete final flush's reason, as the status line words it; null says nothing more. */
@@ -215,6 +279,8 @@ export const captureIncompleteWords = (reason: string | null | undefined): strin
       return "processes remain";
     case "snapshot-failed":
       return "snapshot failed";
+    case "unreadable":
+      return "unreadable paths";
     case "fenced":
       return "fenced";
     case "conflict":
@@ -251,13 +317,25 @@ const leftWords = (facts: SessionCaptureFacts): string | null => {
   return null;
 };
 
+/** `16:29:51 UTC`: the time of day every capture line names. */
+const utcTime = (at: Date): string => `${at.toISOString().slice(11, 19)} UTC`;
+
+/** A time the wire may carry encoded; null when absent or unreadable. */
+const timeOf = (at: Date | string | null | undefined): Date | null => {
+  if (at === null || at === undefined) return null;
+  const date = typeof at === "string" ? new Date(at) : at;
+  return Number.isNaN(date.getTime()) ? null : date;
+};
+
 /**
  * The capture line every surface shows beside a session (web, CLI, phone, Slack):
  * - `saving · 3 left` (`saving · 12 MB left` once sealantd reports bytes) while a drain runs;
  * - `not saved · 3 pending · workspace kept` once a drain stalled, or cannot move, with the
- *   executor's reason when its final flush said why (`not saved · snapshot failed · 3 pending ·
- *   workspace kept`);
- * - `not saved · 2 refused` when the byte quota refused captures and nothing is draining.
+ *   executor's reason when its final flush said why and what sealantd named behind it (`not
+ *   saved · snapshot failed · EACCES: tree/secrets.pem · 3 pending · workspace kept`);
+ * - `capture failing since 16:29:51 UTC · <error>` while a running executor's snaps fail;
+ * - `not saved · 2 refused` when the byte quota refused captures and nothing is draining;
+ * - `unsaved work discarded by Ada at 16:40:02 UTC` once the owner discarded it.
  * Null when there is nothing to say.
  */
 export const captureStatusLine = (facts: SessionCaptureFacts): string | null => {
@@ -265,21 +343,33 @@ export const captureStatusLine = (facts: SessionCaptureFacts): string | null => 
   if (facts.captureDrain !== null) {
     if (facts.captureNotSavedAt !== null) {
       const why = captureIncompleteWords(facts.captureIncompleteReason);
+      const detail = facts.captureIncompleteDetail ?? null;
       return [
         "not saved",
         ...(why === null ? [] : [why]),
+        ...(detail === null || detail === "" ? [] : [detail]),
         ...(left === null ? [] : [`${left} pending`]),
         "workspace kept",
       ].join(" · ");
     }
     return left === null ? "saving" : `saving · ${left} left`;
   }
+  const failingSince = timeOf(facts.captureFailingSince);
+  if (failingSince !== null) {
+    const error = facts.captureFailingError ?? null;
+    return [
+      `capture failing since ${utcTime(failingSince)}`,
+      ...(error === null || error === "" ? [] : [error]),
+    ].join(" · ");
+  }
   if ((facts.captureRefused ?? 0) > 0) return `not saved · ${facts.captureRefused} refused`;
+  const discardedAt = timeOf(facts.captureDiscardedAt);
+  if (discardedAt !== null) {
+    const by = facts.captureDiscardedBy ?? null;
+    return `unsaved work discarded${by === null || by === "" ? "" : ` by ${by}`} at ${utcTime(discardedAt)}`;
+  }
   return null;
 };
-
-/** `16:29:51 UTC`: the time of day every capture line names. */
-const utcTime = (at: Date): string => `${at.toISOString().slice(11, 19)} UTC`;
 
 /**
  * What Mend knows when an executor ended without Mend asking (a `docker stop`, a SIGKILL, a lost

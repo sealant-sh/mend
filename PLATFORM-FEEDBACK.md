@@ -7,6 +7,33 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-27 · 0.37.2 · A capture status read, and a snap that fails says so
+
+- **A capture status read.**
+  - **Needed:** a running session whose captures are failing must say so while it runs
+    (`capture failing since 16:29:51 UTC · <error>` on web, CLI, phone and Slack, and one
+    notification to its owner). Mend reads a running executor's capture status every 45 s
+    (MEND_CAPTURE_STATUS_SECONDS) and when someone opens the session, without flushing or snapping
+    anything.
+  - **Today:** SDK 0.37.2 has only `capture.flush()`; a flush forces a snap and ships, so it is not
+    a cheap read. `SealantClient.captureStatus` calls `workspace.capture.status()` when the SDK has
+    it and answers null otherwise: on 0.37.2 Mend learns of a failing snap only from a flush (a
+    checkpoint, a handoff, a stop).
+  - **Suggested:** `workspace.capture.status()` (Core `fix/drain-before-stop` adds it), carrying
+    sealantd's `last_snap_error`, `snap_failing_since` (unix ms, `snapFailingSinceUnixMs`),
+    `snaps_failed`, `unreadable` / `carried` / `unreadable_paths`, `bulk_building` and
+    `register_refused` / `repairing`, with `complete` false while a class's last snap failed. Mend
+    reads those fields structurally from any answer already, so the new SDK needs no change beyond
+    the version.
+- **A final flush whose snapshot failed.**
+  - **Needed:** `snapshot-failed` and `unreadable` do not heal while a drain waits. Mend now keeps
+    the workspace at once on either (or on any answer reporting a failing snap), names sealantd's
+    error and first unreadable path on the session, and asks again on the kept backoff (10 s
+    doubling to 5 min) instead of a FINAL every few seconds for the 10 min stall window (e2e run 3:
+    80 FINALs in 606.7 s).
+  - **Suggested:** keep `last_snap_error` and `unreadable_paths` on the final flush's answer too, so
+    the owner sees which path to fix before discarding.
+
 ## 2026-09-27 · 0.37.2 · sealantd: say which manifest format it reads; re-upload what register says is missing
 
 Two wire points on the session channel (sealantd `crates/sealant-capture/src/registrar.rs`).

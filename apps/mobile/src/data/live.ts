@@ -189,6 +189,11 @@ export interface SessionDto {
   readonly captureDrain?: string | null;
   readonly captureNotSavedAt?: string | null;
   readonly captureIncompleteReason?: string | null;
+  readonly captureIncompleteDetail?: string | null;
+  readonly captureFailingSince?: string | null;
+  readonly captureFailingError?: string | null;
+  readonly captureDiscardedAt?: string | null;
+  readonly captureDiscardedBy?: string | null;
 }
 
 /**
@@ -205,6 +210,11 @@ export const statusLineOf = (dto: SessionDto): string => {
       drain === "stop" || drain === "relaunch" || drain === "replacement" ? drain : null,
     captureNotSavedAt: dto.captureNotSavedAt ?? null,
     captureIncompleteReason: dto.captureIncompleteReason ?? null,
+    captureIncompleteDetail: dto.captureIncompleteDetail ?? null,
+    captureFailingSince: dto.captureFailingSince ?? null,
+    captureFailingError: dto.captureFailingError ?? null,
+    captureDiscardedAt: dto.captureDiscardedAt ?? null,
+    captureDiscardedBy: dto.captureDiscardedBy ?? null,
   });
   return capture === null ? dto.status : `${dto.status} · ${capture}`;
 };

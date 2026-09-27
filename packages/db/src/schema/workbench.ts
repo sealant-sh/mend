@@ -1188,6 +1188,14 @@ export const agentSessions = pgTable(
     captureNotSavedAt: timestamp({ mode: "date", withTimezone: true }),
     // Why the last final flush did not complete, as sealantd said (0077).
     captureIncompleteReason: text(),
+    // What sealantd named behind it: the snap's error, the first unreadable path (0078).
+    captureIncompleteDetail: text(),
+    // A running executor whose snaps are failing: since when, and sealantd's error (0078).
+    captureFailingSince: timestamp({ mode: "date", withTimezone: true }),
+    captureFailingError: text(),
+    // The owner discarded what the executor had not saved: when, and who (0078).
+    captureDiscardedAt: timestamp({ mode: "date", withTimezone: true }),
+    captureDiscardedBy: text(),
     // The harness a relaunch resumes with once its drain has terminated the old executor (0077).
     captureDrainResume: text(),
     // The executor a final flush was sent to: it admits nothing more (0077).

@@ -2201,6 +2201,10 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const changes = yield* WorktreeChangesRepo;
         const landings = yield* ChangeLandingsRepo;
         const session = yield* (yield* ProjectAccess).session(params.id);
+        // Someone is looking: read the running executor's capture status (throttled, in the
+        // background) so a failing snap shows now, not at the reaper's next read. The answer
+        // reaches the view as a session event.
+        yield* (yield* SessionEngine).refreshCaptureStatus(params.id);
         // The chain and the change belong to the worktree: this is what makes
         // slices spanning several conversations reviewable from any of them.
         const sessionCheckpoints = yield* checkpoints.listForWorktree(session.worktreeId);
@@ -2713,24 +2717,30 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const steering = yield* SessionSteering;
         const before = yield* steering.owned(params.id);
         const engine = yield* SessionEngine;
-        const session = yield* engine.discardUnsavedAndStop(params.id).pipe(
-          Effect.catchTag("SessionNotFoundError", () =>
-            Effect.fail(new NotFound({ id: params.id })),
-          ),
-          Effect.catchTag("NothingUnsavedError", () =>
-            Effect.fail(
-              new NothingUnsaved({
-                sessionId: params.id,
-                message: "nothing unsaved · no drain under way · stop the session instead",
-              }),
+        const caller = yield* CurrentUser;
+        const session = yield* engine
+          .discardUnsavedAndStop(
+            params.id,
+            caller.user.name.trim() === "" ? caller.user.email : caller.user.name,
+          )
+          .pipe(
+            Effect.catchTag("SessionNotFoundError", () =>
+              Effect.fail(new NotFound({ id: params.id })),
             ),
-          ),
-          Effect.catchTag("SealantPlatformError", (error) =>
-            Effect.fail(
-              new StoreFailure({ message: `the workspace was not stopped: ${error.message}` }),
+            Effect.catchTag("NothingUnsavedError", () =>
+              Effect.fail(
+                new NothingUnsaved({
+                  sessionId: params.id,
+                  message: "nothing unsaved · no drain under way · stop the session instead",
+                }),
+              ),
             ),
-          ),
-        );
+            Effect.catchTag("SealantPlatformError", (error) =>
+              Effect.fail(
+                new StoreFailure({ message: `the workspace was not stopped: ${error.message}` }),
+              ),
+            ),
+          );
         yield* recordControl(params.id, "discard-unsaved-stop", before.sealantWorkspaceId);
         const viewer = yield* (yield* ProjectAccess).viewer();
         if (viewer !== null) {

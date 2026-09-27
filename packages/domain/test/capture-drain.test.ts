@@ -6,6 +6,7 @@ import {
   captureHarvestReady,
   captureProgressed,
   captureSaved,
+  captureSnapDetailOf,
   captureStatusLine,
   type CaptureReading,
   executorCapDue,
@@ -28,6 +29,11 @@ const reading = (patch: Partial<CaptureReading> = {}): CaptureReading => ({
   bulkDirty: null,
   complete: true,
   incompleteReason: null,
+  snapError: null,
+  snapFailingSince: null,
+  snapsFailed: null,
+  unreadable: null,
+  unreadablePaths: [],
   ...patch,
 });
 
@@ -184,8 +190,33 @@ describe("captureDrainStep without a completed final flush", () => {
     }
   });
 
+  it("keeps the workspace at once when the final snapshot failed or met unreadable paths (e2e run 3: 80 FINALs over 606.7 s)", () => {
+    for (const failed of [
+      reading({ complete: false, incompleteReason: "snapshot-failed" }),
+      reading({ complete: false, incompleteReason: "unreadable", unreadable: 1 }),
+      // Any other reason, from a daemon that says a snap is failing.
+      reading({ complete: false, incompleteReason: "pending", snapError: "EIO: tree/a" }),
+      reading({
+        complete: false,
+        incompleteReason: "deadline",
+        snapFailingSince: new Date("2026-09-27T10:00:00Z"),
+      }),
+    ]) {
+      // Something moved (the executor shipped what it had), and still nothing will complete.
+      expect(
+        captureDrainStep({
+          previous: reading({ pending: 3, registered: 1, complete: false }),
+          reading: { ...failed, registered: 2 },
+          progressAtMs: 0,
+          nowMs: 1,
+          stallSeconds: 600,
+        }).kind,
+      ).toBe("not-saved");
+    }
+  });
+
   it("keeps saving while a reported final flush is incomplete, until the stall window", () => {
-    const incomplete = reading({ complete: false, incompleteReason: "snapshot-failed" });
+    const incomplete = reading({ complete: false, incompleteReason: "ship-failed" });
     expect(
       captureDrainStep({
         previous: incomplete,
@@ -204,6 +235,26 @@ describe("captureDrainStep without a completed final flush", () => {
         stallSeconds: 600,
       }).kind,
     ).toBe("not-saved");
+  });
+});
+
+describe("captureSnapDetailOf", () => {
+  it("names sealantd's error, then the first path it could not read", () => {
+    expect(captureSnapDetailOf(reading())).toBeNull();
+    expect(captureSnapDetailOf(reading({ snapError: "EIO reading tree/db.sqlite" }))).toBe(
+      "EIO reading tree/db.sqlite",
+    );
+    expect(
+      captureSnapDetailOf(
+        reading({ unreadable: 3, unreadablePaths: ["tree/secrets.pem", "tree/b", "tree/c"] }),
+      ),
+    ).toBe("unreadable tree/secrets.pem +2 more");
+    expect(
+      captureSnapDetailOf(
+        reading({ snapError: "permission denied", unreadable: 1, unreadablePaths: ["tree/k"] }),
+      ),
+    ).toBe("permission denied · unreadable tree/k");
+    expect(captureSnapDetailOf(reading({ unreadable: 2 }))).toBe("2 unreadable");
   });
 });
 
@@ -283,6 +334,49 @@ describe("captureStatusLine", () => {
     expect(
       captureStatusLine({ ...kept, capturePending: 0, captureIncompleteReason: "unreported" }),
     ).toBe("not saved · final flush not reported · 0 pending · workspace kept");
+  });
+
+  it("names what sealantd said behind a failed snapshot", () => {
+    expect(
+      captureStatusLine({
+        ...facts,
+        capturePending: 0,
+        captureDrain: "stop",
+        captureNotSavedAt: new Date("2026-09-27T10:00:00Z"),
+        captureIncompleteReason: "snapshot-failed",
+        captureIncompleteDetail: "unreadable tree/secrets.pem",
+      }),
+    ).toBe(
+      "not saved · snapshot failed · unreadable tree/secrets.pem · 0 pending · workspace kept",
+    );
+  });
+
+  it("says when a running executor's capture started failing, and why", () => {
+    expect(
+      captureStatusLine({
+        ...facts,
+        captureFailingSince: "2026-09-27T16:29:51.000Z",
+        captureFailingError: "EIO: tree/db.sqlite",
+      }),
+    ).toBe("capture failing since 16:29:51 UTC · EIO: tree/db.sqlite");
+    // A drain says what it says; the failure is behind its reason.
+    expect(
+      captureStatusLine({
+        ...facts,
+        captureDrain: "stop",
+        captureFailingSince: new Date("2026-09-27T16:29:51Z"),
+      }),
+    ).toBe("saving");
+  });
+
+  it("says who discarded unsaved work, and when", () => {
+    expect(
+      captureStatusLine({
+        ...facts,
+        captureDiscardedAt: new Date("2026-09-27T16:40:02Z"),
+        captureDiscardedBy: "Ada Lovelace",
+      }),
+    ).toBe("unsaved work discarded by Ada Lovelace at 16:40:02 UTC");
   });
 
   it("names refusals outside a drain, and says nothing otherwise", () => {

@@ -310,6 +310,11 @@ export interface SessionCaptureLike {
   readonly captureDrain?: string | null;
   readonly captureNotSavedAt?: string | null;
   readonly captureIncompleteReason?: string | null;
+  readonly captureIncompleteDetail?: string | null;
+  readonly captureFailingSince?: string | null;
+  readonly captureFailingError?: string | null;
+  readonly captureDiscardedAt?: string | null;
+  readonly captureDiscardedBy?: string | null;
 }
 
 /**
@@ -327,6 +332,11 @@ export const captureLineOf = (session: SessionCaptureLike): string | null => {
       drain === "stop" || drain === "relaunch" || drain === "replacement" ? drain : null,
     captureNotSavedAt: session.captureNotSavedAt ?? null,
     captureIncompleteReason: session.captureIncompleteReason ?? null,
+    captureIncompleteDetail: session.captureIncompleteDetail ?? null,
+    captureFailingSince: session.captureFailingSince ?? null,
+    captureFailingError: session.captureFailingError ?? null,
+    captureDiscardedAt: session.captureDiscardedAt ?? null,
+    captureDiscardedBy: session.captureDiscardedBy ?? null,
   });
 };
 
