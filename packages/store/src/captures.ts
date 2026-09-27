@@ -982,6 +982,83 @@ export const listCaptureDir = (
     return yield* walkToDir(dirs, section.root, relPath);
   });
 
+/**
+ * The kernel refuses a path of this many bytes or more in one call (`PATH_MAX`). Git runs in the
+ * worktree and passes each path whole, so it cannot reach a file whose worktree-relative path is
+ * this long, nor anything under a directory one byte shorter (sealantd `GitRepo::beyond_reach`).
+ */
+export const GIT_PATH_MAX_BYTES = 4096;
+
+/** Where the workspace class carries the worktree's files git does not: `tree/<path>`. */
+const WORKSPACE_WORKTREE_DIR = "tree";
+
+/** Paths beyond git's reach a capture carries: how many, and the first few (worktree-relative). */
+export interface PathsBeyondGit {
+  readonly count: number;
+  readonly paths: ReadonlyArray<string>;
+}
+
+/**
+ * A dir entry name's length on disk, in bytes. A byte that is not UTF-8 is carried as the
+ * character `U+10FF00 + byte` (sealantd's name encoding, always `U+10FF80` and above): one byte.
+ */
+const nameBytes = (name: string): number => {
+  let bytes = 0;
+  for (const character of name) {
+    const point = character.codePointAt(0) ?? 0;
+    bytes += point >= 0x10ff80 && point <= 0x10ffff ? 1 : Buffer.byteLength(character, "utf8");
+  }
+  return bytes;
+};
+
+/**
+ * The worktree paths a capture carries that git cannot reach (`GIT_PATH_MAX_BYTES` or longer):
+ * sealantd keeps them out of the git class and carries them in the workspace class under
+ * `tree/`, saved and restored — but no diff git computes lists them. Every non-directory entry
+ * under `tree/` whose worktree-relative path is that long counts; `limit` bounds the paths named.
+ */
+export const pathsBeyondGit = (
+  manifest: CaptureManifest,
+  options?: { readonly limit?: number },
+): Effect.Effect<PathsBeyondGit, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    const limit = options?.limit ?? 5;
+    const section = manifest.sections.workspace;
+    if (section.root === "") return { count: 0, paths: [] };
+    const dirs = yield* makeDirReader(section);
+    const top = (yield* dirs.read(section.root)).find(
+      (entry) => entry.name === WORKSPACE_WORKTREE_DIR && entry.kind === "dir",
+    );
+    if (top?.child === undefined) return { count: 0, paths: [] };
+    let count = 0;
+    const paths: Array<string> = [];
+    const pending: Array<{ readonly ref: string; readonly path: string; readonly bytes: number }> =
+      [{ ref: top.child, path: "", bytes: 0 }];
+    for (let next = pending.pop(); next !== undefined; next = pending.pop()) {
+      for (const entry of yield* dirs.read(next.ref)) {
+        const relPath = next.path === "" ? entry.name : `${next.path}/${entry.name}`;
+        const bytes = next.bytes + (next.path === "" ? 0 : 1) + nameBytes(entry.name);
+        if (entry.kind === "dir") {
+          if (entry.child !== undefined) pending.push({ ref: entry.child, path: relPath, bytes });
+          continue;
+        }
+        if (bytes < GIT_PATH_MAX_BYTES) continue;
+        count += 1;
+        if (paths.length < limit) paths.push(relPath);
+      }
+    }
+    return { count, paths: paths.toSorted() };
+  });
+
+/**
+ * What the change view says of them: `3 paths outside git (too long) · saved, not shown in the
+ * diff`. Null when there are none.
+ */
+export const pathsBeyondGitWords = (found: PathsBeyondGit): string | null =>
+  found.count === 0
+    ? null
+    : `${found.count} ${found.count === 1 ? "path" : "paths"} outside git (too long) · saved, not shown in the diff`;
+
 /** Follow `relPath` from the dir object `root` names; null when it names no directory. */
 const walkToDir = (
   dirs: DirReader,

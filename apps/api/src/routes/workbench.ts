@@ -40,6 +40,7 @@ import {
   HandoffUnsupported,
   ObservationStamp,
   OpenReviewResult,
+  PathsOutsideGit,
   ProtocolSessionNotLive,
   AgentRequestResolved,
   RemovalReport,
@@ -162,6 +163,7 @@ import {
   worktreePathOf,
   type DiffFileFact,
   type GitError,
+  pathsBeyondGitWords,
   SourcePolicy,
 } from "@mend/store";
 import { Effect, Option, Result, Schema } from "effect";
@@ -232,6 +234,29 @@ const observationOf = (stamp: ReadStamp, state: "claimed" | "observed" = "observ
     observedAt: stamp.observedAt,
     label: state === "claimed" ? `claimed at capture ${stamp.captureN ?? "?"}` : stampLabel(stamp),
   });
+
+/**
+ * The worktree paths the change view cannot show because git cannot reach them (sealantd
+ * carries them in the workspace class): null when there are none, or Mend cannot tell.
+ */
+const outsideGitOf = (
+  reads: WorktreeReads["Service"],
+  projectId: ProjectId,
+  worktreeId: WorktreeId,
+) =>
+  reads.pathsBeyondGit(projectId, worktreeId).pipe(
+    Effect.map((found) => {
+      const label = found === null ? null : pathsBeyondGitWords(found.value);
+      return found === null || label === null
+        ? null
+        : new PathsOutsideGit({
+            count: found.value.count,
+            paths: found.value.paths,
+            captureN: found.stamp.captureN,
+            label,
+          });
+    }),
+  );
 
 /** The pull-request answer for a project that cannot have any on GitHub. */
 const noPullRequests = (origin: "none" | "not-github", availability: "no-origin" | "not-github") =>
@@ -3284,6 +3309,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
           anchorFiles,
           worktreeChangedSinceSnapshot: !worktreeMatches.value,
           observation: observationOf(worktreeMatches.stamp),
+          outsideGit: yield* outsideGitOf(reads, project.id, worktreeRow.id),
         });
       }),
     )
@@ -3434,6 +3460,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
                 diff: posted.value.diff,
                 files: posted.value.files.map((file) => new ChangedFileView(file)),
                 observation: observationOf(stamp, summaryRow.state),
+                outsideGit: yield* outsideGitOf(reads, project.id, worktreeRow.id),
               });
             }
           }
@@ -3449,6 +3476,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
           diff: diff.value,
           files: files.value.map((file) => new ChangedFileView(file)),
           observation: observationOf(diff.stamp),
+          outsideGit: yield* outsideGitOf(reads, project.id, worktreeRow.id),
         });
       }),
     )

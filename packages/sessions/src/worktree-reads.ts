@@ -17,6 +17,8 @@ import {
   type FileListing,
   type GitError,
   GitOpsRunner,
+  type PathsBeyondGit,
+  pathsBeyondGit,
   type RunnerCache,
   Store,
   WORKTREE_TREE_REF,
@@ -134,6 +136,15 @@ export class WorktreeReads extends Context.Service<
       worktreeId: WorktreeId,
       limit: number,
     ) => Effect.Effect<Stamped<FileListing>, WorktreeReadError>;
+    /**
+     * Worktree paths too long for git that the chain head carries (`pathsBeyondGit`): saved and
+     * restored in the workspace class, and in no diff git computes. Null where Mend cannot tell
+     * (a co-located worktree, a worktree with no capture yet).
+     */
+    readonly pathsBeyondGit: (
+      projectId: ProjectId,
+      worktreeId: WorktreeId,
+    ) => Effect.Effect<Stamped<PathsBeyondGit> | null>;
   }
 >()("@mend/sessions/WorktreeReads") {}
 
@@ -187,6 +198,7 @@ export const WorktreeReadsColocatedLive: Layer.Layer<
           Effect.flatMap((dir) => store.listWorktreeFiles(dir, limit)),
           Effect.map(stamped),
         ),
+      pathsBeyondGit: () => Effect.succeed(null),
     };
   }),
 );
@@ -292,6 +304,9 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
     const blobs = yield* BlobStore;
     const runner = yield* GitOpsRunner;
     const refs = yield* StoreRefsRepo;
+    /** Per capture: a capture never changes, so its count is read once. */
+    const beyondGit = new Map<string, PathsBeyondGit>();
+    const BEYOND_GIT_CACHE = 256;
     const prepared = (projectId: ProjectId, worktreeId: WorktreeId) =>
       ensureCaptureCache(projectId, worktreeId).pipe(
         Effect.provideService(CaptureStoreRepo, repo),
@@ -352,6 +367,29 @@ export const WorktreeReadsCapturedLive: Layer.Layer<
             runner
               .listTreeFiles(ready.cache, ready.worktreeTree, limit)
               .pipe(Effect.map((value) => ({ value, stamp: ready.stamp }))),
+          ),
+        ),
+      pathsBeyondGit: (_projectId, worktreeId) =>
+        Effect.gen(function* () {
+          const head = (yield* repo.headOf(worktreeId))?.head ?? null;
+          if (head === null) return null;
+          const known = beyondGit.get(head.id);
+          if (known !== undefined) return { value: known, stamp: stampOf(head) };
+          const bytes = yield* blobs.get(head.manifestKey);
+          const manifest = yield* decodeManifest(head.manifestKey, bytes);
+          const value = yield* pathsBeyondGit(manifest).pipe(
+            Effect.provideService(BlobStore, blobs),
+          );
+          if (beyondGit.size >= BEYOND_GIT_CACHE) beyondGit.clear();
+          beyondGit.set(head.id, value);
+          return { value, stamp: stampOf(head) };
+        }).pipe(
+          // Unreadable is not none: the caller says nothing rather than `0 paths`.
+          Effect.catch((error) =>
+            Effect.logWarning("capture reads: paths beyond git unreadable").pipe(
+              Effect.annotateLogs({ worktreeId, error: error._tag }),
+              Effect.as(null),
+            ),
           ),
         ),
     };

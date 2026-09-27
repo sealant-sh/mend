@@ -48,6 +48,7 @@ import {
 } from "./project-environment.ts";
 import {
   ObservationStamp,
+  PathsOutsideGit,
   RemovalReport,
   SessionActive,
   SessionNotLive,
@@ -458,6 +459,8 @@ export class ChangeDiff extends Schema.Class<ChangeDiff>("ChangeDiff")({
   files: Schema.Array(ChangedFileView),
   /** Absent for clients that predate captures; always present from a capture-mode API. */
   observation: Schema.optionalKey(ObservationStamp),
+  /** Paths the diff cannot show because git cannot reach them; absent or null when none. */
+  outsideGit: Schema.optionalKey(Schema.NullOr(PathsOutsideGit)),
 }) {}
 
 /**
@@ -534,6 +537,11 @@ export class ReviewDiffView extends Schema.Class<ReviewDiffView>("ReviewDiffView
   worktreeChangedSinceSnapshot: Schema.Boolean,
   /** Which capture (or live worktree) `worktreeChangedSinceSnapshot` was observed on. */
   observation: Schema.optionalKey(ObservationStamp),
+  /**
+   * Worktree paths git cannot reach, counted in the current capture: saved, and in no patch
+   * (this one included). Absent or null when none.
+   */
+  outsideGit: Schema.optionalKey(Schema.NullOr(PathsOutsideGit)),
 }) {}
 
 /** Null paths = change target; paths plus null side/lines = file target. */

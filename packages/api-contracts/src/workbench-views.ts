@@ -40,6 +40,19 @@ export class ObservationStamp extends Schema.Class<ObservationStamp>("Observatio
   label: Schema.String,
 }) {}
 
+/**
+ * Worktree paths too long for git that the capture carries (sealantd keeps them in the workspace
+ * class): saved and restored, and in no diff git computes. `label` is the line a change view
+ * shows — `3 paths outside git (too long) · saved, not shown in the diff`; `paths` names the
+ * first few, worktree-relative; `captureN` is the capture they were counted in.
+ */
+export class PathsOutsideGit extends Schema.Class<PathsOutsideGit>("PathsOutsideGit")({
+  count: Schema.Int,
+  paths: Schema.Array(Schema.String),
+  captureN: Schema.NullOr(Schema.Int),
+  label: Schema.String,
+}) {}
+
 /** A store or git operation that could not complete — the observed reason, verbatim. */
 export class StoreFailure extends Schema.TaggedErrorClass<StoreFailure>()(
   "StoreFailure",
