@@ -77,7 +77,10 @@ import {
   type AgentInputAnswers,
   type AgentRequest,
   type AgentTurn,
+  EFFORT_LEVELS,
   type LaunchStart,
+  PERMISSION_MODES,
+  SPEED_MODES,
   ProtocolHarnessUnsupportedError,
   composeProtocolArgv,
   agentProcessesOf,
@@ -145,10 +148,12 @@ import type {
 } from "@sealant/sdk";
 import { claudeCode, codex, opencode } from "@sealant/sdk";
 import {
+  Cause,
   Config,
   Deferred,
   Duration,
   Effect,
+  Exit,
   Layer,
   Option,
   Result,
@@ -527,6 +532,81 @@ export class NothingUnsavedError extends Schema.TaggedErrorClass<NothingUnsavedE
   "NothingUnsavedError",
   { sessionId: Schema.String },
 ) {}
+
+/**
+ * What a relaunch launches once its old executor has drained, kept beside the drain so a restart
+ * in between finishes it (`SessionsRepo.planRelaunch`):
+ * - `resume`: a plain resume with the harness (or `shell`); nothing was asked of the agent;
+ * - `launch`: the exact launch that was asked — its argv (a PTY follow-up's prompt rides in it),
+ *   the protocol start with its opening prompt, who asked, and the correlation id the process and
+ *   the opening turn carry, so the launch and its opening turn happen exactly once.
+ */
+const RelaunchStart = Schema.Struct({
+  mode: Schema.optional(Schema.Literals(["pty", "protocol"])),
+  prompt: Schema.optional(Schema.String),
+  model: Schema.optional(Schema.String),
+  effort: Schema.optional(Schema.Literals(EFFORT_LEVELS)),
+  permissionMode: Schema.optional(Schema.Literals(PERMISSION_MODES)),
+  speed: Schema.optional(Schema.Literals(SPEED_MODES)),
+});
+const RelaunchPlan = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("resume"), harness: Schema.String }),
+  Schema.Struct({
+    kind: Schema.Literal("launch"),
+    argv: Schema.Array(Schema.String),
+    launchCorrelationId: Schema.String,
+    start: Schema.NullOr(RelaunchStart),
+    author: Schema.NullOr(Schema.String),
+    resumeId: Schema.NullOr(Schema.String),
+  }),
+]);
+type RelaunchPlan = typeof RelaunchPlan.Type;
+const RelaunchPlanJson = Schema.fromJsonString(RelaunchPlan);
+const encodeRelaunchPlan = Schema.encodeSync(RelaunchPlanJson);
+const decodeRelaunchPlan = Schema.decodeUnknownOption(RelaunchPlanJson);
+
+/** An exit that is nothing but an interruption: a shutdown, not an outcome. */
+const interruptedOnly = <A, E>(exit: Exit.Exit<A, E>): boolean =>
+  Exit.isFailure(exit) && Cause.hasInterruptsOnly(exit.cause);
+
+/**
+ * A launch asked while a previous executor still has to drain: a `launch` plan when anything was
+ * asked of the agent (a correlation id, a protocol start), else a plain `resume`.
+ */
+const relaunchPlanOf = (input: {
+  readonly harness: string;
+  readonly argv: ReadonlyArray<string>;
+  readonly hasNativeImport: boolean;
+  readonly launchCorrelationId: string | null;
+  readonly start: LaunchStart | null;
+  readonly author: string | null;
+  readonly resumeId: string | null;
+}): RelaunchPlan => {
+  const resume: RelaunchPlan = {
+    kind: "resume",
+    harness: input.argv[0] === "bash" ? "shell" : input.harness,
+  };
+  if (input.hasNativeImport) return resume;
+  if (input.launchCorrelationId === null && input.start === null) return resume;
+  return {
+    kind: "launch",
+    argv: [...input.argv],
+    launchCorrelationId: input.launchCorrelationId ?? `relaunch:${crypto.randomUUID()}`,
+    start: input.start,
+    author: input.author,
+    resumeId: input.resumeId,
+  };
+};
+
+/** A stored plan; a bare harness is a `resume` of it (the first shape 0077 stored). */
+const readRelaunchPlan = (stored: string): RelaunchPlan =>
+  Option.getOrElse(
+    decodeRelaunchPlan(stored),
+    (): RelaunchPlan => ({
+      kind: "resume",
+      harness: stored,
+    }),
+  );
 
 /**
  * A landing asked for the worktree as its executor holds it now, and the registered captures did
@@ -2078,14 +2158,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           drains.set(workspaceId, done);
           return runDrain(sessionId, workspaceId, reason, force).pipe(
             Effect.catchCause((cause) =>
-              Effect.logWarning("session engine: capture drain failed · workspace kept").pipe(
-                Effect.annotateLogs({ sessionId, workspaceId, reason, cause: String(cause) }),
-                Effect.as("kept" as const),
-              ),
+              // A shutdown is not an outcome: whoever waits on this drain (a relaunch) is
+              // interrupted with it, and its durable intent stays for the next start.
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.interrupt
+                : Effect.logWarning("session engine: capture drain failed · workspace kept").pipe(
+                    Effect.annotateLogs({ sessionId, workspaceId, reason, cause: String(cause) }),
+                    Effect.as("kept" as const),
+                  ),
             ),
             Effect.onExit((exit) =>
               Effect.sync(() => {
-                Deferred.doneUnsafe(done, exit._tag === "Success" ? exit : Effect.succeed("kept"));
+                Deferred.doneUnsafe(done, exit);
                 drains.delete(workspaceId);
               }),
             ),
@@ -2262,6 +2346,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /** Sessions the reaper is already replacing; one replacement at a time per session. */
       const replacing = new Set<SessionId>();
+      /** Sessions the owner stopped while this process replaced their executor: none relaunches. */
+      const stoppedDuringReplacement = new Set<SessionId>();
       /** Sessions whose planned relaunch a launch in this process is carrying out. */
       const relaunching = new Set<SessionId>();
 
@@ -2297,10 +2383,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // The lease is released once the termination is observed; when it was not, it lapses
           // with the executor's heartbeats. Wait for either, bounded.
           const deadline = Date.now() + 60_000;
-          while (Date.now() < deadline) {
+          while (Date.now() < deadline && !stoppedDuringReplacement.has(session.id)) {
             const lease = yield* capture.repo.leaseOf(session.worktreeId);
             if (lease === null || !lease.live) break;
             yield* Effect.sleep(Duration.seconds(2));
+          }
+          // The owner stopped the session while it was being saved: saved and ended, and that is
+          // all — no new executor.
+          if (stoppedDuringReplacement.has(session.id)) {
+            yield* Effect.logInfo(
+              "session engine: capture mode · stopped during the replacement · nothing relaunched",
+            ).pipe(Effect.annotateLogs({ sessionId: session.id }));
+            return;
           }
           yield* resumeSession(session.id, null).pipe(
             Effect.catch((error) =>
@@ -2310,8 +2404,63 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
         });
-        yield* attempt.pipe(Effect.ensuring(Effect.sync(() => replacing.delete(session.id))));
+        yield* attempt.pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              replacing.delete(session.id);
+              stoppedDuringReplacement.delete(session.id);
+            }),
+          ),
+        );
       });
+
+      /**
+       * A planned `launch` after a restart, exactly once: a process already carrying its
+       * correlation id means the launch happened, and only an opening turn it never received is
+       * asked; otherwise the launch runs as it was asked.
+       */
+      const finishPlannedLaunch = (
+        sessionId: SessionId,
+        plan: Extract<RelaunchPlan, { readonly kind: "launch" }>,
+      ): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          const prompt = plan.start?.prompt?.trim() ?? "";
+          const correlated = yield* processes.byLaunchCorrelation(plan.launchCorrelationId);
+          const live =
+            correlated ??
+            (yield* processes.listForSession(sessionId)).find(
+              (row) => isLiveAgentProcess(row) && row.kind === "agent-protocol",
+            ) ??
+            null;
+          if (correlated === null && !(yield* agentIsLive(yield* sessions.byId(sessionId)))) {
+            yield* launchInternal(
+              sessionId,
+              plan.argv,
+              null,
+              undefined,
+              plan.launchCorrelationId,
+              plan.start,
+              plan.author,
+              plan.resumeId,
+            );
+            return;
+          }
+          // Launched already, or the session came back another way: the opening turn is asked of
+          // the live protocol agent once, never of a stopped one, and never twice.
+          if (prompt === "" || live === null || live.kind !== "agent-protocol") return;
+          const asked = yield* conversations.byLaunchCorrelation(
+            sessionId,
+            plan.launchCorrelationId,
+          );
+          if (asked !== null || !(yield* protocolHost.has(live.id))) return;
+          yield* protocolHost.submitTurn(sessionId, prompt, plan.author, plan.launchCorrelationId);
+        }).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: the planned launch could not be finished").pipe(
+              Effect.annotateLogs({ sessionId, error: String(error) }),
+            ),
+          ),
+        );
 
       /**
        * Take up a durable drain intent no fiber in this process is running — after a restart, or
@@ -2321,21 +2470,35 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const resumeDrain = (session: Session) =>
         Effect.gen(function* () {
           const workspaceId = session.sealantWorkspaceId;
-          // A relaunch's last step: launch with the harness it planned. Taken up only when no
-          // launch here is carrying it out; cleared first, so a relaunch that fails again is not
-          // retried forever, and the launch plans its own if it drains again.
+          // A relaunch's last step: the launch it planned (`RelaunchPlan`). Taken up only when no
+          // launch here is carrying it out.
           const finishRelaunch = Effect.gen(function* () {
-            const resume = yield* sessions.relaunchOf(session.id);
-            if (resume === null || relaunching.has(session.id)) return;
-            yield* sessions.clearRelaunch(session.id);
+            const stored = yield* sessions.relaunchOf(session.id);
+            if (stored === null || relaunching.has(session.id)) return;
+            const plan = readRelaunchPlan(stored);
+            relaunching.add(session.id);
             yield* Effect.logInfo(
               "session engine: capture mode · finishing a relaunch after a restart",
-            ).pipe(Effect.annotateLogs({ sessionId: session.id, resume }));
-            yield* resumeSession(session.id, resume).pipe(
-              Effect.catch((error) =>
-                Effect.logWarning("session engine: the relaunch could not be finished").pipe(
-                  Effect.annotateLogs({ sessionId: session.id, error: String(error) }),
-                ),
+            ).pipe(Effect.annotateLogs({ sessionId: session.id, kind: plan.kind }));
+            // Kept until the attempt has run its course, so a restart in the middle tries again;
+            // the correlation id makes the launch and its opening turn happen once.
+            const attempt: Effect.Effect<void> =
+              plan.kind === "launch"
+                ? finishPlannedLaunch(session.id, plan)
+                : resumeSession(session.id, plan.harness).pipe(
+                    Effect.asVoid,
+                    Effect.catch((error) =>
+                      Effect.logWarning("session engine: the relaunch could not be finished").pipe(
+                        Effect.annotateLogs({ sessionId: session.id, error: String(error) }),
+                      ),
+                    ),
+                  );
+            yield* attempt.pipe(
+              Effect.onExit((exit) =>
+                Effect.suspend(() => {
+                  relaunching.delete(session.id);
+                  return interruptedOnly(exit) ? Effect.void : sessions.clearRelaunch(session.id);
+                }),
               ),
             );
           });
@@ -5530,6 +5693,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // is being replaced. This must precede socket creation because teardown
         // removes the old socket directory.
         //
+        // The id the process row and the opening turn carry; a relaunch planned below may mint one,
+        // so a restart that finishes it launches and asks exactly once.
+        let correlationId = launchCorrelationId;
         // Capture mode: the old executor drains first — the relaunch waits until nothing is
         // pending (the session reads `saving`), and a drain that does not save refuses the
         // relaunch and keeps the old workspace. A workspace another session's live process
@@ -5546,11 +5712,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // so a restart in between finishes it (`resumeDrain`). Cleared when this launch has
             // run its course, whichever way (`launchInternal`).
             if (capture !== null) {
-              yield* sessions.planRelaunch(
-                sessionId,
-                argv[0] === "bash" ? "shell" : session.harness,
-                new Date(),
-              );
+              const plan = relaunchPlanOf({
+                harness: session.harness,
+                argv,
+                hasNativeImport: nativeImport !== null,
+                launchCorrelationId,
+                start: protocolStart,
+                author: protocolAuthor,
+                resumeId: protocolResumeId,
+              });
+              if (plan.kind === "launch") correlationId = plan.launchCorrelationId;
+              yield* sessions.planRelaunch(sessionId, encodeRelaunchPlan(plan), new Date());
               relaunching.add(sessionId);
             }
             const outcome = yield* stopWorkspaceQuietly(sessionId, {
@@ -5632,7 +5804,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               sessionId,
               argv,
               null,
-              launchCorrelationId,
+              correlationId,
               manifest !== null && manifest.harness === session.harness
                 ? manifest.providerSessionId
                 : protocolResumeId,
@@ -6038,7 +6210,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           sealantWorkspaceId: SealantWorkspaceId.make(workspace.id),
           sealantSessionId: pty.id,
           sealantRunId,
-          launchCorrelationId,
+          launchCorrelationId: correlationId,
           kind: protocolStart === null ? "agent-pty" : "agent-protocol",
           harness: interactiveShell ? "shell" : session.harness,
           // Known up front only for a native resume of the same harness; the
@@ -6103,17 +6275,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (protocolStart !== null) {
           const openingInput = protocolStart.prompt?.trim() ?? "";
           if (openingInput !== "") {
-            yield* protocolHost.submitTurn(sessionId, openingInput, protocolAuthor).pipe(
-              Effect.mapError(
-                (error) =>
-                  new SealantPlatformError({
-                    code: "agent_protocol_not_live",
-                    status: null,
-                    message: `Protocol process did not accept its opening turn: ${error.processId}`,
-                    cause: error,
-                  }),
-              ),
-            );
+            yield* protocolHost
+              .submitTurn(sessionId, openingInput, protocolAuthor, correlationId)
+              .pipe(
+                Effect.mapError(
+                  (error) =>
+                    new SealantPlatformError({
+                      code: "agent_protocol_not_live",
+                      status: null,
+                      message: `Protocol process did not accept its opening turn: ${error.processId}`,
+                      cause: error,
+                    }),
+                ),
+              );
           }
         }
         return yield* sessions.byId(sessionId);
@@ -6126,9 +6300,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const launchInternal: typeof launchInternalBody = (sessionId, ...rest) =>
         launchInternalBody(sessionId, ...rest).pipe(
-          Effect.ensuring(
+          Effect.onExit((exit) =>
             Effect.suspend(() =>
-              relaunching.delete(sessionId) ? sessions.clearRelaunch(sessionId) : Effect.void,
+              // Interrupted (a shutdown, a scope closing): the plan stays for the next start.
+              relaunching.delete(sessionId) && !interruptedOnly(exit)
+                ? sessions.clearRelaunch(sessionId)
+                : Effect.void,
             ),
           ),
         );
@@ -6937,9 +7114,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // session reads `saving` from this answer on. The intent is durable: if this process
         // dies before the tail below reaches it, the reaper takes it up after the restart.
         const current = yield* sessions.byId(sessionId);
-        // The owner's stop wins over a relaunch still saving the old executor: nothing
-        // relaunches after it, here or after a restart.
-        if (capture !== null) yield* sessions.clearRelaunch(sessionId);
+        // The owner's stop wins over a relaunch or a replacement still saving the old executor:
+        // the drain goes on, and nothing launches after it, here or after a restart.
+        if (capture !== null) {
+          yield* sessions.clearRelaunch(sessionId);
+          yield* sessions.stopCaptureDrain(sessionId);
+          if (replacing.has(sessionId)) stoppedDuringReplacement.add(sessionId);
+        }
         if (capture !== null && current.sealantWorkspaceId !== null) {
           const workspaceId = current.sealantWorkspaceId;
           const held =

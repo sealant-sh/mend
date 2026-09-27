@@ -235,6 +235,12 @@ export class SessionsRepo extends Context.Service<
     readonly planRelaunch: (id: SessionId, resume: string, at: Date) => Effect.Effect<void>;
     /** The relaunch ran its course, or the user's stop cancelled it. */
     readonly clearRelaunch: (id: SessionId) => Effect.Effect<void>;
+    /**
+     * The user's stop wins over a drain under way for another reason (a replacement, a
+     * relaunch): the drain goes on, and what follows it is a stop — here and after a restart.
+     * History (request and progress times, `not saved`) stands.
+     */
+    readonly stopCaptureDrain: (id: SessionId) => Effect.Effect<void>;
     /** The harness a planned relaunch resumes with, or null. */
     readonly relaunchOf: (id: SessionId) => Effect.Effect<string | null>;
     /**
@@ -941,6 +947,18 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
+      const stopCaptureDrain = Effect.fn("SessionsRepo.stopCaptureDrain")(function* (
+        id: SessionId,
+      ) {
+        const rows = yield* db
+          .update(agentSessions)
+          .set({ captureDrain: "stop", captureDrainResume: null, updatedAt: new Date() })
+          .where(and(eq(agentSessions.id, id), isNotNull(agentSessions.captureDrain)))
+          .returning({ id: agentSessions.id })
+          .pipe(Effect.orDie);
+        if (rows.length > 0) yield* notify(id);
+      });
+
       const relaunchOf = Effect.fn("SessionsRepo.relaunchOf")(function* (id: SessionId) {
         const [row] = yield* db
           .select({ resume: agentSessions.captureDrainResume })
@@ -1112,6 +1130,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         beginCaptureDrain,
         planRelaunch,
         clearRelaunch,
+        stopCaptureDrain,
         relaunchOf,
         markFinalFlush,
         finalFlushedWorkspace,

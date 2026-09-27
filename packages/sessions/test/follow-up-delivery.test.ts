@@ -487,6 +487,7 @@ const testLayer = (world: TestWorld) => {
     beginCaptureDrain: () => Effect.die("not in test"),
     planRelaunch: () => Effect.die("not in test"),
     clearRelaunch: () => Effect.void,
+    stopCaptureDrain: () => Effect.void,
     relaunchOf: () => Effect.succeed(null),
     markFinalFlush: () => Effect.void,
     finalFlushedWorkspace: () => Effect.succeed(null),

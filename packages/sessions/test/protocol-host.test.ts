@@ -207,6 +207,7 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
   beginCaptureDrain: () => Effect.void,
   planRelaunch: () => Effect.void,
   clearRelaunch: () => Effect.void,
+  stopCaptureDrain: () => Effect.void,
   relaunchOf: () => Effect.succeed(null),
   markFinalFlush: () => Effect.void,
   finalFlushedWorkspace: () => Effect.succeed(null),

@@ -1646,6 +1646,11 @@ const sessionsLayer = (world: World) => {
         });
       }),
     clearRelaunch: (id) => Effect.sync(() => void world.relaunches.delete(id)),
+    stopCaptureDrain: (id) =>
+      Effect.sync(() => {
+        world.relaunches.delete(id);
+        if (world.sessions.get(id)?.captureDrain != null) update(id, { captureDrain: "stop" });
+      }),
     relaunchOf: (id) => Effect.sync(() => world.relaunches.get(id) ?? null),
     markFinalFlush: (id, workspaceId) =>
       Effect.sync(() => void world.finalFlushed.set(id, workspaceId)),
@@ -9916,6 +9921,158 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
             captureOps: { flushed: events },
           }),
         },
+      );
+    },
+  );
+
+  it(
+    "the owner's stop wins over a replacement under way: the drain finishes, the executor ends, and no new one starts",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      let saveNow = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            // A resumable session: without the owner's stop, the replacement relaunches it.
+            yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+            );
+            // Due at once: 1000 s cap, 600 s estimate + 400 s margin.
+            yield* engine.reapCaptureLeases();
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === "replacement",
+              "the replacement's drain",
+            );
+            yield* engine.stop(session.id);
+            // Durable: after a restart the drain ends in a stop, not a relaunch.
+            expect(world.sessions.get(session.id)?.captureDrain).toBe("stop");
+            saveNow = true;
+            yield* until(() => events.includes("workspace-1"), "the terminate");
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === null,
+              "the drain's end",
+            );
+            yield* Effect.sleep(Duration.millis(500));
+            yield* engine.reapCaptureLeases();
+            yield* Effect.sleep(Duration.millis(300));
+            expect(created).toHaveLength(1);
+            expect(world.sessions.get(session.id)?.status).toBe("stopped");
+            expect(world.relaunches.has(session.id)).toBe(false);
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            executorMaxSeconds: 1000,
+            drainEstimateSeconds: 600,
+            deadlineMarginSeconds: 400,
+            terminationWait: Duration.seconds(5),
+          },
+          sealantLayer: lifecycleLayer(created, {
+            events,
+            captureOps: {
+              flushed: events,
+              flush: () => Effect.succeed(saveNow ? flushReport(0, 2) : flushReport(1, 1)),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "a follow-up whose relaunch a restart interrupted is delivered once, with its prompt, after the old executor saved and ended",
+    { timeout: 30_000 },
+    async () => {
+      const fixture = {
+        world: makeWorld(),
+        tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-relaunch-restart-test-")),
+      };
+      const memory = makeMemoryCaptureStore();
+      const created: Array<CreateOptions> = [];
+      const spawned: ReadonlyArray<string>[] = [];
+      const events: string[] = [];
+      const PROMPT = "fix the flaky retry test";
+      const CORRELATION = "follow-up:f-1";
+      let saveNow = false;
+      let sessionId: SessionId | null = null;
+      const layerFor = () =>
+        lifecycleLayer(created, {
+          events,
+          spawned,
+          captureOps: {
+            flushed: events,
+            flush: () => Effect.succeed(saveNow ? flushReport(0, 2) : flushReport(1, 1)),
+          },
+        });
+      // Before the restart: the session is stopped while its executor still saves, and a
+      // follow-up relaunches it — the relaunch waits on that drain when Mend goes down.
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            sessionId = session.id;
+            yield* engine.launch(session.id, ["codex"]);
+            yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+            );
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === "stop",
+              "the stop's drain",
+            );
+            yield* Effect.forkChild(
+              engine.launchFollowUp(session.id, PROMPT, CORRELATION, "user-fixture"),
+            );
+            yield* until(() => world.relaunches.has(session.id), "the planned relaunch");
+            expect(created).toHaveLength(1);
+          }),
+        { fixture, captured: memory, sealantLayer: layerFor() },
+      );
+      // After it: the plan is still there, the old executor saves and ends, and the follow-up
+      // launches with its prompt, once.
+      const planned = sessionId === null ? undefined : fixture.world.relaunches.get(sessionId);
+      expect(planned).toContain(CORRELATION);
+      saveNow = true;
+      await withEngine(
+        (world) =>
+          Effect.gen(function* () {
+            const engine = yield* SessionEngine;
+            if (sessionId === null) throw new Error("no session");
+            const id = sessionId;
+            yield* engine.reapCaptureLeases();
+            yield* until(() => created.length === 2, "the relaunch");
+            const stopAt = events.lastIndexOf("workspace-1");
+            expect(stopAt).toBeGreaterThan(0);
+            expect(events[stopAt - 1]).toBe("flush:workspace-1");
+            // The prompt rides base64-encoded to the harness (`promptArgv`).
+            expect(spawned.at(-1)).toContain(Buffer.from(PROMPT).toString("base64"));
+            yield* until(() => !world.relaunches.has(id), "the plan's end");
+            // A restart after the launch but before the plan was cleared: the process already
+            // carries the correlation id, so nothing launches a second time.
+            if (planned !== undefined) world.relaunches.set(id, planned);
+            yield* engine.reapCaptureLeases();
+            yield* until(() => !world.relaunches.has(id), "the replayed plan's end");
+            yield* Effect.sleep(Duration.millis(300));
+            expect(created).toHaveLength(2);
+            const correlated = [...world.processes.values()].filter(
+              (process) => process.launchCorrelationId === CORRELATION,
+            );
+            expect(correlated).toHaveLength(1);
+          }),
+        { fixture, captured: memory, sealantLayer: layerFor() },
       );
     },
   );

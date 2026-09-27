@@ -318,8 +318,12 @@ cadence window.
   first final flush, never after. While it drains the session reads `saving · N left` (bytes once
   sealantd reports `pending_bytes`) on the web, in the CLI, on the phone and in Slack, and the
   workspace is kept. The intent is a row on the session, so a restart takes the drain up again; a
-  relaunch records the harness it resumes with beside it, so a restart between the terminate and the
-  launch finishes the relaunch (0077).
+  relaunch records the launch it was asked for beside it — the harness, or the exact argv, protocol
+  start and opening prompt with a correlation id — so a restart between the terminate and the launch
+  finishes it, launching and asking the opening turn exactly once (0077). A shutdown interrupts a
+  drain's waiters rather than reading as `kept`. The owner's stop wins over a relaunch or a
+  replacement under way: the drain finishes and the executor ends, and nothing launches after it,
+  here or after a restart.
 - **Ending means ending.** An executor Mend sent a final flush to admits nothing after it: no join,
   no shell, no resume and no retained-workspace launch goes into it again. The next run is a fresh
   executor.

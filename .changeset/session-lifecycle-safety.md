@@ -16,4 +16,6 @@ Capture mode: nothing an executor holds is let go on an empty queue alone.
 - Every landing (Land panel, Slack, `mend land`, a completed turn) checkpoints only once the
   captures caught up; unknown is not caught up, and the landing reads exactly that capture.
 - A turn asked after the idle stop's claim is refused instead of queued against a stopped agent.
-- A relaunch interrupted by a restart finishes: drain, terminate, then launch (migration 0077).
+- A relaunch interrupted by a restart finishes: drain, terminate, then the launch it was asked for,
+  opening prompt included, exactly once (migration 0077).
+- The owner's stop during a replacement wins: the executor saves and ends, and no new one starts.
