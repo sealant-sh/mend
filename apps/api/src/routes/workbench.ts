@@ -125,6 +125,7 @@ import {
   canManageProject,
   canSteerSession,
   canToggleSharedControl,
+  captureDiscardAuditData,
   captureStatusLine,
   type SessionControlKind,
   canRemoveProject,
@@ -2718,7 +2719,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const before = yield* steering.owned(params.id);
         const engine = yield* SessionEngine;
         const caller = yield* CurrentUser;
-        const session = yield* engine
+        const discarded = yield* engine
           .discardUnsavedAndStop(
             params.id,
             caller.user.name.trim() === "" ? caller.user.email : caller.user.name,
@@ -2750,14 +2751,11 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             action: "session.unsaved_discarded",
             subjectType: "session",
             subjectId: params.id,
-            data: {
-              pending: before.capturePending,
-              pendingBytes: before.capturePendingBytes,
-              workspaceId: before.sealantWorkspaceId,
-            },
+            // What Mend knew when it was asked, both times, and no count it did not observe.
+            data: captureDiscardAuditData(discarded.facts, discarded.discardedAt),
           });
         }
-        return session;
+        return discarded.session;
       }),
     )
     .handle("label", ({ params, payload }) =>

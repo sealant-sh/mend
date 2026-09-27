@@ -298,4 +298,25 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
     expect(result.reopened.captureDiscardedAt).toBeNull();
     expect(result.reopened.captureDiscardedBy).toBeNull();
   });
+  it("keeps the executor's own word that its final flush completed (0079)", async () => {
+    const t0 = new Date("2026-09-27T19:48:49.000Z");
+    const t1 = new Date("2026-09-27T19:49:26.000Z");
+    const result = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const before = yield* sessions.captureSavedOf(STOPPING);
+        yield* sessions.recordCaptureSaved(STOPPING, { workspaceId: "ws-1", at: t0, n: 21 });
+        const first = yield* sessions.captureSavedOf(STOPPING);
+        yield* sessions.recordCaptureSaved(STOPPING, { workspaceId: "ws-1", at: t1, n: null });
+        const latest = yield* sessions.captureSavedOf(STOPPING);
+        // Bookkeeping: the session row reads as it did.
+        const row = yield* sessions.byId(STOPPING);
+        return { before, first, latest, keys: Object.keys(row) };
+      }),
+    );
+    expect(result.before).toBeNull();
+    expect(result.first).toEqual({ workspaceId: "ws-1", at: t0, n: 21 });
+    expect(result.latest).toEqual({ workspaceId: "ws-1", at: t1, n: null });
+    expect(result.keys).not.toContain("captureSavedAt");
+  });
 });

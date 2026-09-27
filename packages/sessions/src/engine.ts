@@ -97,6 +97,7 @@ import {
   SessionExtraMount,
   SessionReferenceMount,
   canUseLink,
+  type CaptureDiscardFacts,
   type CaptureDrainReason,
   type CaptureReading,
   captureDrainStep,
@@ -438,6 +439,11 @@ const EXECUTOR_LOST_SUMMARY = "executor lost · lease expired";
 const EXECUTOR_LOST_PREFIX = "executor lost";
 /** How many looks an agent's end gets at an executor that stops answering before it is judged. */
 const EXECUTOR_END_LOOKS = 6;
+/**
+ * How old a FINAL answer may be and still stand for a new one (`recentFinals`): an executor sent a
+ * final flush admits nothing, so nothing on its disk moves in between.
+ */
+const FINAL_ANSWER_REUSE_MS = 5_000;
 
 /** What a round of a kept drain read: the reason, what was pending, what was refused. */
 const keptDrainReading = (session: Session) =>
@@ -549,6 +555,16 @@ export class SessionNotLiveError extends Schema.TaggedErrorClass<SessionNotLiveE
  * "Discard unsaved and stop" asked of a session with no drain under way: there is nothing
  * unsaved Mend is holding a workspace for. A plain stop is the verb.
  */
+/**
+ * A discard, as it went: the session after it, what Mend knew when it was asked
+ * (`CaptureDiscardFacts`, the audit's substance), and when the workspace's end was observed.
+ */
+export interface CaptureDiscardResult {
+  readonly session: Session;
+  readonly facts: CaptureDiscardFacts;
+  readonly discardedAt: Date;
+}
+
 export class NothingUnsavedError extends Schema.TaggedErrorClass<NothingUnsavedError>()(
   "NothingUnsavedError",
   { sessionId: Schema.String },
@@ -1117,7 +1133,10 @@ export class SessionEngine extends Context.Service<
       sessionId: SessionId,
       /** Who discarded it (the owner's display name), kept on the session's line. */
       discardedBy?: string | null,
-    ) => Effect.Effect<Session, SessionNotFoundError | NothingUnsavedError | SealantPlatformError>;
+    ) => Effect.Effect<
+      CaptureDiscardResult,
+      SessionNotFoundError | NothingUnsavedError | SealantPlatformError
+    >;
     /**
      * Capture mode: read the session's running executor's capture status (nothing flushed) and
      * record it — a snap that is failing reads `capture failing since … · <error>` on every
@@ -1555,6 +1574,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const throughputs = new Map<string, CaptureThroughput>();
 
       /**
+       * The last FINAL flush answer per workspace, and when. An executor sent a final flush admits
+       * nothing new, so an answer a moment old is as good as a new one: a drain that starts right
+       * after a harvest's FINAL (a kept round: `settle harvest`, then `drain · stop`) reads it
+       * instead of asking again (`FINAL_ANSWER_REUSE`).
+       */
+      const recentFinals = new Map<
+        string,
+        { readonly reading: CaptureReading; readonly atMs: number }
+      >();
+
+      /**
        * `workspace.capture.flush()` (SDK 0.31.0, sealantd ADR-0015) on one executor. `suspend`: a
        * small-class capture, then everything staged is shipped and registered; processes keep
        * running (checkpoints, handoffs, readings). `final`: the executor is ending — it stops
@@ -1634,6 +1664,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }),
         );
         yield* recordReading(session, workspace.id, reading, kind);
+        if (kind === "final") recentFinals.set(workspace.id, { reading, atMs: Date.now() });
         return reading;
       });
 
@@ -1676,6 +1707,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 incompleteDetail: incompleteReason === null ? null : captureSnapDetailOf(reading),
               }),
         });
+        // The executor's own word that its final flush completed: it stopped every writer,
+        // snapshotted both classes and registered them, and admits nothing after that. How its
+        // end reads from here on (`executorEndOf`), whatever registers on top of it.
+        if (captureSaved(reading)) {
+          yield* sessions.recordCaptureSaved(session.id, {
+            workspaceId,
+            at: observedAt,
+            n: reading.headN,
+          });
+        }
         if (failing !== null && before !== null && before.captureFailingSince === null) {
           yield* Effect.logWarning("session engine: capture failing · observed").pipe(
             Effect.annotateLogs({
@@ -2026,7 +2067,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         const activeRun = yield* sessionRuns.activeForSession(session.id);
         // Its own final flush registered last (a `docker stop` while Mend was away): saved.
-        const end = yield* executorEndOfSession(session);
+        const end = yield* executorEndOfSession(session, session.sealantWorkspaceId);
         yield* stopWorkspaceQuietly(session.id, { force: true, reason: "relaunch" });
         if (activeRun !== null) {
           yield* sessionRuns.settle(
@@ -2340,16 +2381,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // Recorded before it is sent: from here on this executor is ending, whatever the
           // answer, and nothing is started in it again.
           if (lookup.kind === "found") yield* sessions.markFinalFlush(sessionId, workspaceId);
-          const reading =
-            lookup.kind === "found"
-              ? yield* observeCaptureFlush(
-                  session,
-                  lookup.workspace,
-                  `drain · ${reason}`,
-                  drainPolicy.flushTimeout,
-                  "final",
-                )
+          // A FINAL answered a moment ago (the harvest right before this drain) stands for this
+          // round's: one FINAL per round, not two.
+          const recent: { readonly reading: CaptureReading; readonly atMs: number } | undefined =
+            previous === null ? recentFinals.get(workspaceId) : undefined;
+          const reused: CaptureReading | null =
+            recent !== undefined && Date.now() - recent.atMs <= FINAL_ANSWER_REUSE_MS
+              ? recent.reading
               : null;
+          if (reused !== null) recentFinals.delete(workspaceId);
+          const reading: CaptureReading | null =
+            lookup.kind !== "found"
+              ? null
+              : reused !== null
+                ? reused
+                : yield* observeCaptureFlush(
+                    session,
+                    lookup.workspace,
+                    `drain · ${reason}`,
+                    drainPolicy.flushTimeout,
+                    "final",
+                  );
           const nowMs = Date.now();
           const step = captureDrainStep({
             previous,
@@ -2455,11 +2507,38 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
         discardedBy?: string | null,
       ) {
+        const requestedAt = new Date();
         const session = yield* sessions.byId(sessionId);
         const workspaceId = session.sealantWorkspaceId;
         if (session.captureDrain === null || workspaceId === null) {
           return yield* new NothingUnsavedError({ sessionId });
         }
+        // What Mend knows now, before anything ends: the audit's substance.
+        const head =
+          capture === null
+            ? null
+            : ((yield* capture.repo.headOf(session.worktreeId))?.head ?? null);
+        const saved = yield* sessions.captureSavedOf(sessionId);
+        const facts: CaptureDiscardFacts = {
+          requestedAt,
+          workspaceId,
+          lastSaved: head === null ? null : { n: head.n, at: head.createdAt },
+          finalCompleted:
+            saved === null || saved.workspaceId !== workspaceId
+              ? null
+              : { n: saved.n, at: saved.at },
+          failingSince: session.captureFailingSince,
+          failingError: session.captureFailingError ?? session.captureIncompleteDetail,
+          queue:
+            session.capturePending === null || session.captureObservedAt === null
+              ? null
+              : {
+                  pending: session.capturePending,
+                  pendingBytes: session.capturePendingBytes,
+                  observedAt: session.captureObservedAt,
+                },
+        };
+        let discardedAt = requestedAt;
         discards.add(workspaceId);
         yield* Effect.gen(function* () {
           yield* stop(sessionId, null);
@@ -2503,8 +2582,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               cause: null,
             });
           }
+          discardedAt = new Date();
+          // The line says when the owner asked; the audit keeps both times.
           yield* endDrain(sessionId, {
-            at: new Date(),
+            at: requestedAt,
             by:
               discardedBy === undefined || discardedBy === null || discardedBy.trim() === ""
                 ? "the owner"
@@ -2512,9 +2593,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
           yield* removeIfRequested(sessionId);
         }).pipe(Effect.ensuring(Effect.sync(() => discards.delete(workspaceId))));
-        return yield* sessions
+        const after = yield* sessions
           .byId(sessionId)
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(session)));
+        return { session: after, facts, discardedAt } satisfies CaptureDiscardResult;
       });
 
       /**
@@ -2864,7 +2946,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // platform reports the workspace gone, and settled then.
         for (const session of unsettled) {
           if (session.status !== "stopping" || session.captureDrain !== null) continue;
-          if (stopTails.has(session.id)) continue;
+          if (stopTails.has(session.id) || investigatingEnds.has(session.id)) continue;
           const workspaceId = session.sealantWorkspaceId;
           if (workspaceId !== null && drains.has(workspaceId)) continue;
           const gone =
@@ -4534,7 +4616,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const executorEndOfSession = Effect.fn("SessionEngine.executorEndOfSession")(function* (
         session: Session,
+        workspaceId: SealantWorkspaceId | null,
       ) {
+        const saved = yield* sessions.captureSavedOf(session.id);
         const chain = capture === null ? null : yield* capture.repo.headOf(session.worktreeId);
         const head = chain?.head ?? null;
         const sections = head?.sections;
@@ -4557,34 +4641,52 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             pendingBytes: session.capturePendingBytes,
             observedAt: session.captureObservedAt,
           },
+          finalSaved:
+            saved === null || workspaceId === null || saved.workspaceId !== workspaceId
+              ? null
+              : { at: saved.at, n: saved.n },
         });
         const outcome: SessionOutcome = end.kind === "saved" ? "stopped" : "failed";
         return { outcome, summary: executorEndWords(end) };
       });
 
       /**
-       * Capture mode: whether an agent's observed end is its executor going away without Mend
-       * asking. Not when Mend is ending it (a drain, a final flush sent). The platform's word
-       * decides: gone (a terminal status or no such workspace) is lost; an executor that answers
-       * is not; one that stops answering is looked at again a few times, bounded, and read as
-       * lost only once the platform says it ended. Null when not lost; the summary otherwise.
+       * Capture mode: how an agent's observed end reads when its executor may be ending too. Every
+       * look reads the session again, so a stop that starts its drain while Mend is still looking
+       * wins:
+       * - `ending`: Mend is ending that executor itself (a drain under way, a final flush it
+       *   sent): the harness ended because Mend asked, and nothing is lost by it;
+       * - `ended`: the executor ended without Mend asking, as observed (`executorEndOfSession`):
+       *   it answered `complete: true` for a final flush of its own (it closed admission, so an
+       *   exec there is refused while it waits for its stop), or the platform says it is gone;
+       * - null: not lost — the executor answers (the harness ended on its own), or nothing says
+       *   it ended after a few looks, bounded.
+       * `onUnanswered` runs once, the first time the executor does not answer: the harness is
+       * gone, whatever the executor's end turns out to be.
        */
       const executorLostOnEnd = Effect.fn("SessionEngine.executorLostOnEnd")(function* (
         agentProcess: SessionProcess,
+        onUnanswered: Effect.Effect<void, SessionNotFoundError>,
       ) {
         if (capture === null) return null;
-        const session = yield* sessions.byId(agentProcess.sessionId);
         const workspaceId = agentProcess.sealantWorkspaceId;
-        if (session.captureDrain !== null) return null;
-        if (yield* workspaceFinalFlushed(session.worktreeId, workspaceId)) return null;
-        let gone = false;
+        let unanswered = false;
         for (let look = 1; look <= EXECUTOR_END_LOOKS; look += 1) {
+          const session = yield* sessions.byId(agentProcess.sessionId);
+          if (
+            session.captureDrain !== null ||
+            (yield* workspaceFinalFlushed(session.worktreeId, workspaceId))
+          ) {
+            return { kind: "ending" as const };
+          }
           const lookup = yield* lookupWorkspace(workspaceId).pipe(
             asSealantUser(session.ownerUserId),
           );
           if (lookup.kind === "gone") {
-            gone = true;
-            break;
+            return {
+              kind: "ended" as const,
+              ...(yield* executorEndOfSession(session, workspaceId)),
+            };
           }
           if (lookup.kind === "found") {
             const answers = yield* sealant.exec(lookup.workspace, ["true"]).pipe(
@@ -4597,11 +4699,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
             if (answers) return null;
           }
+          if (!unanswered) {
+            unanswered = true;
+            yield* onUnanswered;
+          }
+          if (lookup.kind === "found") {
+            // An executor that refuses an exec may have closed admission for a final flush of
+            // its own: its status says whether that completed.
+            const reading = yield* observeCaptureStatus(session, lookup.workspace);
+            if (reading !== null && captureSaved(reading)) {
+              const current = yield* sessions.byId(agentProcess.sessionId);
+              return {
+                kind: "ended" as const,
+                ...(yield* executorEndOfSession(current, workspaceId)),
+              };
+            }
+          }
           if (look < EXECUTOR_END_LOOKS) yield* Effect.sleep(drainPolicy.pollInterval);
         }
-        if (!gone) return null;
-        return yield* executorEndOfSession(session);
+        return null;
       });
+
+      /** Sessions whose agent's end is being looked into (`executorLostOnEnd`). */
+      const investigatingEnds = new Set<SessionId>();
 
       /** Ids whose end this process is recording — the run-wait and PTY watchers race. */
       const endingAgentProcesses = new Set<string>();
@@ -4624,18 +4744,49 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const current = yield* processes.byId(agentProcess.id);
         if (current === null || current.exitedAt !== null) return false;
         endingAgentProcesses.add(agentProcess.id);
+        const sessionId = agentProcess.sessionId;
+        // The harness is gone and its executor does not answer: the row says so at once, and a
+        // session with nothing else live reads `stopping` while Mend finds out how the executor
+        // ended — never `running` for a harness that is not there.
+        let exitedEarly = false;
+        const harnessGone = Effect.gen(function* () {
+          yield* processes.markExited(agentProcess.id, end.how, end.exitCode);
+          exitedEarly = true;
+          const session = yield* sessions.byId(sessionId);
+          const rows = yield* processes.listForSession(sessionId);
+          if (
+            session.settledAt === null &&
+            (session.status === "running" || session.status === "waiting") &&
+            foldSessionLiveness(rows) === "settled"
+          ) {
+            yield* sessions.setStatus(sessionId, "stopping");
+          }
+        });
         // Capture mode: an agent that "exited" because its executor went away did not complete
         // anything — it lost whatever the executor had not shipped, unless the executor's own
-        // final flush saved it. Say which.
-        const lost = end.how === "exited" ? yield* executorLostOnEnd(agentProcess) : null;
-        const outcome: SessionOutcome = lost === null ? end.outcome : lost.outcome;
-        const summary = lost === null ? end.summary : lost.summary;
-        yield* processes.markExited(agentProcess.id, end.how, end.exitCode);
+        // final flush saved it. Say which. One that exited because Mend is ending its executor
+        // was stopped.
+        const verdict =
+          end.how === "exited"
+            ? yield* Effect.suspend(() => {
+                investigatingEnds.add(sessionId);
+                return executorLostOnEnd(agentProcess, harnessGone);
+              }).pipe(Effect.ensuring(Effect.sync(() => investigatingEnds.delete(sessionId))))
+            : null;
+        const lost = verdict?.kind === "ended" ? verdict : null;
+        const outcome: SessionOutcome =
+          verdict === null ? end.outcome : verdict.kind === "ending" ? "stopped" : verdict.outcome;
+        const summary =
+          verdict === null ? end.summary : verdict.kind === "ending" ? null : verdict.summary;
+        if (!exitedEarly) yield* processes.markExited(agentProcess.id, end.how, end.exitCode);
         if (agentProcess.sealantRunId !== null) {
           yield* sessionRuns.settle(agentProcess.sealantRunId, outcome, summary);
         }
         yield* reconcileSession(agentProcess.sessionId, { sweep: false });
         if (lost !== null) {
+          // The observed end is the session's: `stopped outside Mend · saved at …` when the
+          // executor said its final flush completed, `failed · executor lost …` only when it went
+          // without that word and without Mend ending it — the looks above yield to any drain.
           const settled = yield* sessions.byId(agentProcess.sessionId);
           if (settled.settledAt !== null && settled.status !== lost.outcome) {
             yield* sessions.setStatus(settled.id, lost.outcome);

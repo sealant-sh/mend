@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import {
   captureBytesWords,
+  captureDiscardAuditData,
+  captureDiscardWords,
   captureDrainStep,
   captureIncompleteWords,
   captureHarvestReady,
@@ -561,5 +563,124 @@ describe("executorEndOf / executorEndWords (an executor that ended without Mend 
         }),
       ),
     ).toBe("executor lost · nothing saved");
+  });
+});
+
+describe("executorEndOf after a completed final flush (e2e run 4, 2026-09-27)", () => {
+  const started = new Date("2026-09-27T19:47:45.000Z");
+  const at = endAt;
+
+  it("the executor's own `complete: true` is the save, whatever suspend captures registered after it", () => {
+    // A final flush ran inside the executor (capture 21, complete), then Mend's stop flushes
+    // staged two suspend captures on top: the head is `suspend`, and nothing was lost.
+    const end = executorEndOf({
+      head: { kind: "suspend", registeredAt: at("19:49:26"), bulkPending: false },
+      executorStartedAt: started,
+      reading: { pending: 1, pendingBytes: 4136, observedAt: at("19:49:25") },
+      finalSaved: { at: at("19:48:49"), n: 21 },
+    });
+    expect(end.kind).toBe("saved");
+    expect(executorEndWords(end)).toBe("stopped outside Mend · saved at 19:48:49 UTC · capture 21");
+  });
+
+  it("without that word, a suspend head is still `executor lost`", () => {
+    expect(
+      endWords({
+        head: { kind: "suspend", registeredAt: at("19:49:26"), bulkPending: false },
+        executorStartedAt: started,
+        reading: { pending: 0, pendingBytes: 0, observedAt: at("19:49:25") },
+        finalSaved: null,
+      }),
+    ).toBe("executor lost · last saved 19:49:26 UTC · changes after that were not saved");
+  });
+
+  it("a save observed from a previous executor says nothing of this one", () => {
+    expect(
+      executorEndOf({
+        head: { kind: "suspend", registeredAt: at("19:49:26"), bulkPending: false },
+        executorStartedAt: started,
+        reading: { pending: null, pendingBytes: null, observedAt: null },
+        finalSaved: { at: at("19:40:00"), n: 12 },
+      }).kind,
+    ).toBe("lost");
+  });
+});
+
+describe("what a discard records (e2e run 4, 2026-09-27)", () => {
+  const at = endAt;
+  const failing = {
+    requestedAt: at("19:57:10"),
+    workspaceId: "ws-1",
+    lastSaved: { n: 37, at: at("19:54:41") },
+    finalCompleted: null,
+    failingSince: at("19:55:02"),
+    failingError: "EACCES: tree/secrets.pem",
+    // sealantd's queue read empty: a failing snap stages nothing, so it counts nothing.
+    queue: { pending: 0, pendingBytes: 0, observedAt: at("19:57:08") },
+  } as const;
+
+  it("edits made while snaps failed are unsaved since the failure, never `0 pending`", () => {
+    expect(captureDiscardWords(failing)).toBe(
+      "asked at 19:57:10 UTC · last saved capture 37 at 19:54:41 UTC · unsaved since 19:55:02 UTC (snaps failing · EACCES: tree/secrets.pem) · no final flush completed",
+    );
+    const data = captureDiscardAuditData(failing, at("19:57:14"));
+    expect(data).toEqual({
+      requestedAt: "2026-09-27T19:57:10.000Z",
+      discardedAt: "2026-09-27T19:57:14.000Z",
+      workspaceId: "ws-1",
+      lastSavedN: 37,
+      lastSavedAt: "2026-09-27T19:54:41.000Z",
+      finalCompleted: false,
+      finalCompletedN: null,
+      finalCompletedAt: null,
+      snapsFailingSince: "2026-09-27T19:55:02.000Z",
+      lastError: "EACCES: tree/secrets.pem",
+      pending: null,
+      pendingBytes: null,
+      queuePending: 0,
+      queuePendingBytes: 0,
+      queueObservedAt: "2026-09-27T19:57:08.000Z",
+      words: captureDiscardWords(failing),
+    });
+  });
+
+  it("a queue read after the last save, with snaps succeeding, is what was pending", () => {
+    const discard = {
+      ...failing,
+      failingSince: null,
+      failingError: null,
+      queue: { pending: 3, pendingBytes: 12_400_000, observedAt: at("19:57:08") },
+    };
+    expect(captureDiscardWords(discard)).toBe(
+      "asked at 19:57:10 UTC · last saved capture 37 at 19:54:41 UTC · 12 MB pending at 19:57:08 UTC · no final flush completed",
+    );
+    const data = captureDiscardAuditData(discard, at("19:57:14"));
+    expect(data["pending"]).toBe(3);
+    expect(data["pendingBytes"]).toBe(12_400_000);
+  });
+
+  it("a queue read before the last save, or never, says nothing pending; a completed final is named", () => {
+    const discard = {
+      ...failing,
+      failingSince: null,
+      failingError: null,
+      lastSaved: null,
+      finalCompleted: { n: 40, at: at("19:56:00") },
+      queue: null,
+    };
+    expect(captureDiscardWords(discard)).toBe(
+      "asked at 19:57:10 UTC · nothing saved · final flush completed at 19:56:00 UTC · capture 40",
+    );
+    expect(captureDiscardAuditData(discard, at("19:57:14"))["finalCompleted"]).toBe(true);
+    expect(
+      captureDiscardWords({
+        ...failing,
+        failingSince: null,
+        failingError: null,
+        queue: { pending: 3, pendingBytes: null, observedAt: at("19:50:00") },
+      }),
+    ).toBe(
+      "asked at 19:57:10 UTC · last saved capture 37 at 19:54:41 UTC · no final flush completed",
+    );
   });
 });

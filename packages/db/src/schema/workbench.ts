@@ -1200,6 +1200,11 @@ export const agentSessions = pgTable(
     captureDrainResume: text(),
     // The executor a final flush was sent to: it admits nothing more (0077).
     captureFinalWorkspaceId: text(),
+    // The executor that said its final flush completed, when Mend observed it, and at which
+    // chain position (0079).
+    captureSavedWorkspaceId: text(),
+    captureSavedAt: timestamp({ mode: "date", withTimezone: true }),
+    captureSavedN: integer(),
     // When the current executor started: what the platform's cap counts from (0075).
     executorStartedAt: timestamp({ mode: "date", withTimezone: true }),
     // Removal asked while the workspace was up; the row goes once it has (0075).

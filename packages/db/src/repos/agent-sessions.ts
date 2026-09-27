@@ -88,6 +88,16 @@ export interface CaptureObservation {
   readonly failing?: { readonly since: Date; readonly error: string | null } | null;
 }
 
+/**
+ * The executor's own word that its final flush completed (`captureSaved`): which executor, when
+ * Mend observed it, and the chain position it named.
+ */
+export interface CaptureSavedObservation {
+  readonly workspaceId: string;
+  readonly at: Date;
+  readonly n: number | null;
+}
+
 /** The owner's "discard unsaved and stop", as the session keeps it: when, and who. */
 export interface CaptureDiscard {
   readonly at: Date;
@@ -274,6 +284,17 @@ export class SessionsRepo extends Context.Service<
     readonly markFinalFlush: (id: SessionId, workspaceId: string) => Effect.Effect<void>;
     /** The executor this session sent a final flush to, or null. */
     readonly finalFlushedWorkspace: (id: SessionId) => Effect.Effect<string | null>;
+    /**
+     * An executor answered `complete: true` with nothing pending: it stopped every writer,
+     * snapshotted both classes and registered them. The latest such answer stands; nothing that
+     * executor says later takes it back (it admits nothing after its final flush).
+     */
+    readonly recordCaptureSaved: (
+      id: SessionId,
+      saved: CaptureSavedObservation,
+    ) => Effect.Effect<void>;
+    /** The last completed final flush Mend observed for this session's executors, or null. */
+    readonly captureSavedOf: (id: SessionId) => Effect.Effect<CaptureSavedObservation | null>;
     /** Something moved: the stall window starts again and `not saved` clears. */
     readonly recordCaptureDrainProgress: (id: SessionId, at: Date) => Effect.Effect<void>;
     /** Nothing moved for the stall window: true only for the write that set it (one alert). */
@@ -326,7 +347,10 @@ type ExactKeys<A, B> = [Exclude<keyof A, keyof B> | Exclude<keyof B, keyof A>] e
 type SessionBookkeepingColumns =
   | "nativeIngestCursor"
   | "captureDrainResume"
-  | "captureFinalWorkspaceId";
+  | "captureFinalWorkspaceId"
+  | "captureSavedWorkspaceId"
+  | "captureSavedAt"
+  | "captureSavedN";
 const sessionSeamIntact: ExactKeys<Omit<SessionRow, SessionBookkeepingColumns>, Session> = true;
 void sessionSeamIntact;
 
@@ -1065,6 +1089,36 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return row?.workspaceId ?? null;
       });
 
+      const recordCaptureSaved = Effect.fn("SessionsRepo.recordCaptureSaved")(function* (
+        id: SessionId,
+        saved: CaptureSavedObservation,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({
+            captureSavedWorkspaceId: saved.workspaceId,
+            captureSavedAt: saved.at,
+            captureSavedN: saved.n,
+          })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+      });
+
+      const captureSavedOf = Effect.fn("SessionsRepo.captureSavedOf")(function* (id: SessionId) {
+        const [row] = yield* db
+          .select({
+            workspaceId: agentSessions.captureSavedWorkspaceId,
+            at: agentSessions.captureSavedAt,
+            n: agentSessions.captureSavedN,
+          })
+          .from(agentSessions)
+          .where(eq(agentSessions.id, id))
+          .limit(1)
+          .pipe(Effect.orDie);
+        if (row === undefined || row.workspaceId === null || row.at === null) return null;
+        return { workspaceId: row.workspaceId, at: row.at, n: row.n };
+      });
+
       const recordCaptureDrainProgress = Effect.fn("SessionsRepo.recordCaptureDrainProgress")(
         function* (id: SessionId, at: Date) {
           yield* db
@@ -1217,6 +1271,8 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         relaunchOf,
         markFinalFlush,
         finalFlushedWorkspace,
+        recordCaptureSaved,
+        captureSavedOf,
         recordCaptureDrainProgress,
         markCaptureNotSaved,
         endCaptureDrain,

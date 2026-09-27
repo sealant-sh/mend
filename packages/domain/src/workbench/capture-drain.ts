@@ -401,19 +401,29 @@ export interface ExecutorEndFacts {
     readonly pendingBytes: number | null;
     readonly observedAt: Date | null;
   };
+  /**
+   * This executor's own word that its final flush completed (`captureSaved`: `complete: true`,
+   * nothing pending), when Mend observed it, and the chain position it named. Null or absent:
+   * Mend never observed one.
+   */
+  readonly finalSaved?: { readonly at: Date; readonly n: number | null } | null;
 }
 
 /**
  * How such an end reads:
- * - `saved`: the executor's own final flush registered last — sealantd takes a final capture only
- *   after it has stopped admitting processes and ended the running ones — this executor took it,
- *   its bulk section is not pending, and nothing Mend read after it was pending;
+ * - `saved`: Mend observed this executor answer `complete: true` with nothing pending — it had
+ *   stopped every writer, snapshotted both classes and registered them, and it admits nothing
+ *   after that, so captures registered on top of it (a later suspend flush) change nothing; or,
+ *   with no such answer observed, the executor's own final flush registered last — sealantd
+ *   takes a final capture only after it has stopped admitting processes and ended the running
+ *   ones — this executor took it, its bulk section is not pending, and nothing Mend read after it
+ *   was pending;
  * - `lost`: anything else. `lastSavedAt` is the head's registration; `pending` is Mend's last
  *   reading of the queue, only when it was taken by this executor after that registration and
  *   saw something pending. Mend never counts what it did not observe.
  */
 export type ExecutorEnd =
-  | { readonly kind: "saved"; readonly savedAt: Date }
+  | { readonly kind: "saved"; readonly savedAt: Date; readonly n?: number | null }
   | {
       readonly kind: "lost";
       readonly lastSavedAt: Date | null;
@@ -430,6 +440,10 @@ export const executorEndOf = (facts: ExecutorEndFacts): ExecutorEnd => {
     reading.pending > 0 &&
     byThisExecutor(reading.observedAt) &&
     (at === null || reading.observedAt.getTime() > at.getTime());
+  const finalSaved = facts.finalSaved ?? null;
+  if (finalSaved !== null && byThisExecutor(finalSaved.at)) {
+    return { kind: "saved", savedAt: finalSaved.at, n: finalSaved.n };
+  }
   if (
     head !== null &&
     head.kind === "final" &&
@@ -454,12 +468,16 @@ export const executorEndOf = (facts: ExecutorEndFacts): ExecutorEnd => {
 };
 
 /**
- * `stopped outside Mend · saved at 16:29:51 UTC`, or `executor lost · last saved 16:32:06 UTC ·
+ * `stopped outside Mend · saved at 16:29:51 UTC` (`· capture 21` when the executor named its
+ * chain position), or `executor lost · last saved 16:32:06 UTC ·
  * changes after that were not saved · 3 pending at 16:32:00 UTC` (the last part only when Mend
  * read the queue after that save). Every "executor lost" line starts with `executor lost`.
  */
 export const executorEndWords = (end: ExecutorEnd): string => {
-  if (end.kind === "saved") return `stopped outside Mend · saved at ${utcTime(end.savedAt)}`;
+  if (end.kind === "saved") {
+    const n = end.n ?? null;
+    return `stopped outside Mend · saved at ${utcTime(end.savedAt)}${n === null ? "" : ` · capture ${n}`}`;
+  }
   const saved =
     end.lastSavedAt === null
       ? ["nothing saved"]
@@ -609,3 +627,106 @@ export const planExecutorCap = (input: {
 /** Whether the planned drain is due at `nowMs`. */
 export const executorCapDue = (plan: ExecutorCapPlan, nowMs: number): boolean =>
   plan.kind === "planned" && nowMs >= plan.drainAt.getTime();
+
+/**
+ * What Mend knew when the owner asked to discard what an executor had not saved, taken at the
+ * moment of asking: the last registered capture, this executor's completed final flush if Mend
+ * observed one, snaps failing (since when, sealantd's error), and the executor's queue as Mend
+ * last read it. Never a count Mend did not observe.
+ */
+export interface CaptureDiscardFacts {
+  readonly requestedAt: Date;
+  readonly workspaceId: string | null;
+  /** The chain head when the discard was asked: its position and registration. */
+  readonly lastSaved: { readonly n: number; readonly at: Date } | null;
+  /** This executor answered `complete: true` (`captureSaved`), when observed. */
+  readonly finalCompleted: { readonly n: number | null; readonly at: Date } | null;
+  /** Snaps failing on the executor: since when, and sealantd's last error. */
+  readonly failingSince: Date | null;
+  readonly failingError: string | null;
+  /** The executor's queue as last read, and when; null when never read. */
+  readonly queue: {
+    readonly pending: number;
+    readonly pendingBytes: number | null;
+    readonly observedAt: Date;
+  } | null;
+}
+
+/**
+ * The queue reading that says what was pending: taken after the last save, and while snaps were
+ * not failing — a failing snap stages nothing, so an empty queue then counts nothing.
+ */
+const discardPendingOf = (facts: CaptureDiscardFacts) => {
+  const { queue } = facts;
+  if (queue === null || facts.failingSince !== null) return null;
+  if (facts.lastSaved !== null && queue.observedAt.getTime() <= facts.lastSaved.at.getTime()) {
+    return null;
+  }
+  return queue;
+};
+
+/**
+ * One line of what was discarded: `asked at 19:57:10 UTC · last saved capture 37 at 19:54:41 UTC
+ * · unsaved since 19:55:02 UTC (snaps failing · EACCES: …) · no final flush completed`.
+ */
+export const captureDiscardWords = (facts: CaptureDiscardFacts): string => {
+  const pending = discardPendingOf(facts);
+  const parts = [
+    `asked at ${utcTime(facts.requestedAt)}`,
+    facts.lastSaved === null
+      ? "nothing saved"
+      : `last saved capture ${facts.lastSaved.n} at ${utcTime(facts.lastSaved.at)}`,
+  ];
+  if (facts.failingSince !== null) {
+    const error = facts.failingError === null ? "" : ` · ${clipped(facts.failingError)}`;
+    parts.push(`unsaved since ${utcTime(facts.failingSince)} (snaps failing${error})`);
+  } else if (pending !== null && pending.pending > 0) {
+    const left =
+      pending.pendingBytes === null
+        ? `${pending.pending}`
+        : captureBytesWords(pending.pendingBytes);
+    parts.push(`${left} pending at ${utcTime(pending.observedAt)}`);
+  }
+  parts.push(
+    facts.finalCompleted === null
+      ? "no final flush completed"
+      : `final flush completed at ${utcTime(facts.finalCompleted.at)}${
+          facts.finalCompleted.n === null ? "" : ` · capture ${facts.finalCompleted.n}`
+        }`,
+  );
+  return parts.join(" · ");
+};
+
+const isoOrNull = (at: Date | null | undefined): string | null =>
+  at === null || at === undefined ? null : at.toISOString();
+
+/**
+ * The audit record of a discard (`session.unsaved_discarded`): when it was asked and when the
+ * workspace's end was observed, the last save, whether a final flush ever completed, snaps
+ * failing, and what was pending only when Mend read it after the last save with snaps working
+ * (`pending` null otherwise); the queue as last read stays beside it as `queue*`.
+ */
+export const captureDiscardAuditData = (
+  facts: CaptureDiscardFacts,
+  discardedAt: Date,
+): Record<string, string | number | boolean | null> => {
+  const pending = discardPendingOf(facts);
+  return {
+    requestedAt: facts.requestedAt.toISOString(),
+    discardedAt: discardedAt.toISOString(),
+    workspaceId: facts.workspaceId,
+    lastSavedN: facts.lastSaved?.n ?? null,
+    lastSavedAt: isoOrNull(facts.lastSaved?.at),
+    finalCompleted: facts.finalCompleted !== null,
+    finalCompletedN: facts.finalCompleted?.n ?? null,
+    finalCompletedAt: isoOrNull(facts.finalCompleted?.at),
+    snapsFailingSince: isoOrNull(facts.failingSince),
+    lastError: facts.failingError,
+    pending: pending?.pending ?? null,
+    pendingBytes: pending?.pendingBytes ?? null,
+    queuePending: facts.queue?.pending ?? null,
+    queuePendingBytes: facts.queue?.pendingBytes ?? null,
+    queueObservedAt: isoOrNull(facts.queue?.observedAt),
+    words: captureDiscardWords(facts),
+  };
+};

@@ -2317,6 +2317,22 @@ const captureFailingMigration = Effect.gen(function* () {
       ADD COLUMN capture_discarded_by text`;
 });
 
+/**
+ * 0079: the executor's own word that its final flush completed (docs/adr/0002, "Stop drains, then
+ * terminates"). `capture_saved_workspace_id` / `capture_saved_at` / `capture_saved_n`: the
+ * executor that answered `complete: true` with nothing pending, when Mend observed it, and the
+ * chain position it named. Its writers are stopped and it admits nothing after that, so this is
+ * how its end reads, whatever suspend captures register on top.
+ */
+const captureSavedMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE agent_sessions
+      ADD COLUMN capture_saved_workspace_id text,
+      ADD COLUMN capture_saved_at timestamptz,
+      ADD COLUMN capture_saved_n integer`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2396,4 +2412,5 @@ export const migrations = {
   "0076_capture_guards": captureGuardsMigration,
   "0077_capture_drain_resume": captureDrainResumeMigration,
   "0078_capture_failing": captureFailingMigration,
+  "0079_capture_saved": captureSavedMigration,
 };
