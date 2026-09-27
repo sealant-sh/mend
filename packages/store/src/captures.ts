@@ -216,6 +216,12 @@ export type DirEntryKind = typeof DirEntryKind.Type;
  * an RFC 3339 string is accepted too — ADR-0015 fixes the field, not its unit, and both are
  * unambiguous to read. `chunks` for files, `target` for symlinks and hardlink groups (the
  * group's canonical path, relative to the class root), `child` for directories.
+ *
+ * `name` and `target` are keys (sealantd `tree.rs`, "Names that are not UTF-8"): a name that is
+ * not UTF-8, or holds a character of `U+10FF80..=U+10FFFF`, is escaped byte by byte into that
+ * range, and the entry carries the bytes themselves, hex, in `raw_name` (`raw_target` for a
+ * symlink's text). A reader lays down the bytes (`nameBytesOf`, `symlinkTargetBytesOf`), never
+ * the escaped key.
  */
 export const DirEntry = Schema.Struct({
   name: Schema.String,
@@ -227,6 +233,8 @@ export const DirEntry = Schema.Struct({
   target: Schema.optionalKey(Schema.String),
   child: Schema.optionalKey(Schema.String),
   group: Schema.optionalKey(Schema.String),
+  raw_name: Schema.optionalKey(Schema.String),
+  raw_target: Schema.optionalKey(Schema.String),
 });
 export type DirEntry = typeof DirEntry.Type;
 
@@ -252,6 +260,136 @@ const DirObjectWire = Schema.Union([
 /** The bytes of a dir object as the daemon writes and reads them. */
 export const encodeDirObject = (entries: DirObject): Uint8Array =>
   new Uint8Array(Buffer.from(JSON.stringify({ entries }), "utf8"));
+
+// ─── Names that are not UTF-8 ───────────────────────────────────────────────
+
+/**
+ * sealantd's key encoding (`tree.rs` `key_of` / `bytes_of`): a file name, a path or a symlink's
+ * text is bytes; JSON strings are Unicode. The bytes read as UTF-8 when they are UTF-8 and hold no
+ * character of the escape range `U+10FF80..=U+10FFFF`; otherwise every byte of an invalid
+ * sequence, and every byte of an escape-range character, becomes the character `U+10FF00 + byte`.
+ * The mapping is a bijection, `/` is never escaped, so a path keys component by component.
+ */
+const ESCAPE_BASE = 0x10_ff00;
+const ESCAPE_FIRST = 0x10_ff80;
+
+/** Length of the well-formed UTF-8 sequence starting at `at`, or 0 (Rust's `from_utf8` rules). */
+const utf8SequenceAt = (bytes: Uint8Array, at: number): number => {
+  const b0 = bytes[at] ?? -1;
+  const inRange = (offset: number, low: number, high: number) => {
+    const b = bytes[at + offset] ?? -1;
+    return b >= low && b <= high;
+  };
+  const tail = (from: number, to: number) => {
+    for (let offset = from; offset <= to; offset += 1) {
+      if (!inRange(offset, 0x80, 0xbf)) return false;
+    }
+    return true;
+  };
+  if (b0 >= 0 && b0 < 0x80) return 1;
+  if (b0 >= 0xc2 && b0 <= 0xdf) return tail(1, 1) ? 2 : 0;
+  if (b0 === 0xe0) return inRange(1, 0xa0, 0xbf) && tail(2, 2) ? 3 : 0;
+  if ((b0 >= 0xe1 && b0 <= 0xec) || b0 === 0xee || b0 === 0xef) return tail(1, 2) ? 3 : 0;
+  if (b0 === 0xed) return inRange(1, 0x80, 0x9f) && tail(2, 2) ? 3 : 0;
+  if (b0 === 0xf0) return inRange(1, 0x90, 0xbf) && tail(2, 3) ? 4 : 0;
+  if (b0 >= 0xf1 && b0 <= 0xf3) return tail(1, 3) ? 4 : 0;
+  if (b0 === 0xf4) return inRange(1, 0x80, 0x8f) && tail(2, 3) ? 4 : 0;
+  return 0;
+};
+
+/** The key of a byte string: sealantd `key_of`. */
+export const keyOfBytes = (bytes: Uint8Array): string => {
+  let out = "";
+  let at = 0;
+  while (at < bytes.length) {
+    const length = utf8SequenceAt(bytes, at);
+    if (length === 0) {
+      out += String.fromCodePoint(ESCAPE_BASE + (bytes[at] ?? 0));
+      at += 1;
+      continue;
+    }
+    const sequence = bytes.subarray(at, at + length);
+    const char = Buffer.from(sequence).toString("utf8");
+    if ((char.codePointAt(0) ?? 0) >= ESCAPE_FIRST) {
+      for (const byte of sequence) out += String.fromCodePoint(ESCAPE_BASE + byte);
+    } else {
+      out += char;
+    }
+    at += length;
+  }
+  return out;
+};
+
+/** The bytes a key stands for: sealantd `bytes_of`, the inverse of `keyOfBytes`. */
+export const bytesOfKey = (key: string): Buffer => {
+  const out: Array<number> = [];
+  for (const char of key) {
+    const point = char.codePointAt(0) ?? 0;
+    if (point >= ESCAPE_FIRST) out.push(point - ESCAPE_BASE);
+    else out.push(...Buffer.from(char, "utf8"));
+  }
+  return Buffer.from(out);
+};
+
+/** `raw_name` / `raw_target` for a key: the hex of its bytes when the key was escaped. */
+export const rawOfKey = (key: string): string | undefined => {
+  for (const char of key) {
+    if ((char.codePointAt(0) ?? 0) >= ESCAPE_FIRST) return bytesOfKey(key).toString("hex");
+  }
+  return undefined;
+};
+
+const HEX_BYTES = /^(?:[0-9a-fA-F]{2})*$/;
+
+/**
+ * The bytes a key and its raw field stand for: `raw` when present (hex, and it must be the bytes
+ * the key encodes — sealantd's metadata reader refuses a disagreeing pair the same way); the
+ * decoded key otherwise. Null when the raw field is not hex, the two disagree, or the key is not
+ * one sealantd writes (a key that does not round-trip, such as one holding a lone surrogate).
+ */
+export const bytesOfPair = (key: string, raw: string | undefined): Buffer | null => {
+  const bytes =
+    raw === undefined ? bytesOfKey(key) : HEX_BYTES.test(raw) ? Buffer.from(raw, "hex") : null;
+  if (bytes === null) return null;
+  return keyOfBytes(bytes) === key ? bytes : null;
+};
+
+const SLASH = 0x2f;
+const isSafeNameBytes = (name: Uint8Array) =>
+  name.length > 0 &&
+  !name.includes(SLASH) &&
+  !name.includes(0) &&
+  !(name.length === 1 && name[0] === 0x2e) &&
+  !(name.length === 2 && name[0] === 0x2e && name[1] === 0x2e);
+
+/** A dir entry's name as it is on disk; null when it is not one safe name. */
+export const nameBytesOf = (entry: DirEntry): Buffer | null => {
+  const bytes = bytesOfPair(entry.name, entry.raw_name);
+  return bytes !== null && isSafeNameBytes(bytes) ? bytes : null;
+};
+
+/** A symlink's text as it is on disk; null without a target, or when it is malformed. */
+export const symlinkTargetBytesOf = (entry: DirEntry): Buffer | null => {
+  if (entry.target === undefined) return null;
+  const bytes = bytesOfPair(entry.target, entry.raw_target);
+  return bytes !== null && bytes.length > 0 && !bytes.includes(0) ? bytes : null;
+};
+
+/**
+ * A class-root-relative path (a hardlink group's `target`, a key) as the bytes of each segment;
+ * null when it could leave the root or names nothing: absolute, empty, an empty, `.` or `..`
+ * segment, or a segment that is not a key sealantd writes.
+ */
+const pathSegmentBytes = (relPath: string): ReadonlyArray<Buffer> | null => {
+  if (relPath === "" || relPath.startsWith("/")) return null;
+  const out: Array<Buffer> = [];
+  for (const segment of relPath.split("/")) {
+    const bytes = bytesOfPair(segment, undefined);
+    if (bytes === null || !isSafeNameBytes(bytes)) return null;
+    out.push(bytes);
+  }
+  return out;
+};
 
 // ─── Errors ─────────────────────────────────────────────────────────────────
 
@@ -743,17 +881,17 @@ const mtimeSeconds = (value: number | string): number =>
 const isSafeName = (name: string) =>
   name !== "" && name !== "." && name !== ".." && !name.includes("/") && !name.includes("\0");
 
-/** Never leave the root: resolve the relative path and check it stays inside. */
-const insideRoot = (root: string, relative: string): string | null => {
-  const resolved = path.resolve(root, relative);
-  return resolved === root || resolved.startsWith(`${root}${path.sep}`) ? resolved : null;
-};
+/** `dir` + `/` + `name`, as bytes: names that are not UTF-8 reach the filesystem unchanged. */
+const joinBytes = (dir: Buffer, name: Uint8Array): Buffer =>
+  Buffer.concat([dir, Buffer.from([SLASH]), name]);
 
 /**
  * Write one class of a capture into `targetDir` (created; expected empty or absent): files
  * chunk by chunk with every chunk sha256-verified, symlinks by target (never followed),
  * hardlink groups as links to the canonical member, modes and mtimes as recorded. Directory
- * mtimes are applied last so the writes beneath do not disturb them.
+ * mtimes are applied last so the writes beneath do not disturb them. Every path is bytes: a name
+ * or a symlink's text that is not UTF-8 is written as the bytes `raw_name` / `raw_target` carry,
+ * never as its escaped key.
  */
 export const materialize = (
   manifest: CaptureManifest,
@@ -770,20 +908,23 @@ export const materialize = (
     const source = yield* makeChunkSource(section.packs);
     // Dir packs are fetched before anything is written, as the content packs are.
     const dirs = yield* makeDirReader(section);
-    const root = path.resolve(targetDir);
-    const io = <A>(at: string, thunk: () => A) =>
-      Effect.try({ try: thunk, catch: (cause) => new MaterializeError({ at, cause }) });
+    const root = Buffer.from(path.resolve(targetDir));
+    const io = <A>(at: Buffer, thunk: () => A) =>
+      Effect.try({
+        try: thunk,
+        catch: (cause) => new MaterializeError({ at: at.toString("utf8"), cause }),
+      });
     yield* io(root, () => fs.mkdirSync(root, { recursive: true }));
 
     const stats = { dirs: 0, files: 0, symlinks: 0, hardlinks: 0, bytes: 0 };
-    const dirTimes: Array<{ readonly at: string; readonly mtime: number }> = [];
+    const dirTimes: Array<{ readonly at: Buffer; readonly mtime: number }> = [];
     const deferredLinks: Array<{
-      readonly at: string;
+      readonly at: Buffer;
       readonly target: string;
       readonly key: string;
     }> = [];
 
-    const writeFile = (at: string, entry: DirEntry, key: string) =>
+    const writeFile = (at: Buffer, entry: DirEntry, key: string) =>
       Effect.gen(function* () {
         const fd = yield* io(at, () => fs.openSync(at, "w"));
         let written = 0;
@@ -808,9 +949,15 @@ export const materialize = (
         stats.bytes += written;
       });
 
-    const link = (at: string, target: string, key: string) =>
+    /** A hardlink group's canonical member below the root, as bytes; null when it would escape. */
+    const canonicalOf = (target: string): Buffer | null => {
+      const segments = pathSegmentBytes(target);
+      return segments === null ? null : segments.reduce(joinBytes, root);
+    };
+
+    const link = (at: Buffer, target: string, key: string) =>
       Effect.gen(function* () {
-        const canonical = insideRoot(root, target);
+        const canonical = canonicalOf(target);
         if (canonical === null) {
           return yield* new CaptureFormatError({
             key,
@@ -825,15 +972,19 @@ export const materialize = (
 
     const walk = (
       key: string,
-      dir: string,
+      dir: Buffer,
     ): Effect.Effect<void, CaptureReadError | MaterializeError, never> =>
       Effect.gen(function* () {
         const entries = yield* dirs.read(key);
         for (const entry of entries) {
-          if (!isSafeName(entry.name)) {
-            return yield* new CaptureFormatError({ key, reason: `unsafe name "${entry.name}"` });
+          const name = nameBytesOf(entry);
+          if (name === null) {
+            return yield* new CaptureFormatError({
+              key,
+              reason: `unsafe or malformed name "${entry.name}"`,
+            });
           }
-          const at = path.join(dir, entry.name);
+          const at = joinBytes(dir, name);
           const mode = entry.mode & 0o7777;
           switch (entry.kind) {
             case "dir": {
@@ -856,11 +1007,11 @@ export const materialize = (
               break;
             }
             case "symlink": {
-              const target = entry.target;
-              if (target === undefined) {
+              const target = symlinkTargetBytesOf(entry);
+              if (target === null) {
                 return yield* new CaptureFormatError({
                   key,
-                  reason: `${entry.name}: symlink without target`,
+                  reason: `${entry.name}: symlink without a well-formed target`,
                 });
               }
               const mtime = mtimeSeconds(entry.mtime);
@@ -879,7 +1030,7 @@ export const materialize = (
                   reason: `${entry.name}: hardlink without target`,
                 });
               }
-              if (path.relative(root, at) === target) {
+              if (canonicalOf(target)?.equals(at) === true) {
                 // A writer that lists the canonical member as part of the group too.
                 yield* writeFile(at, entry, key);
                 break;
@@ -1443,7 +1594,13 @@ export const verifySectionRestorable = (
       const names = new Set<string>();
       for (const entry of entries) {
         const at = next.at === "" ? entry.name : `${next.at}/${entry.name}`;
-        if (!isSafeName(entry.name)) return yield* fail(next.at, `unsafe name "${entry.name}"`);
+        // The bytes laid down: `raw_name` when present, agreeing with the key; never the key.
+        if (nameBytesOf(entry) === null) {
+          return yield* fail(
+            next.at,
+            `unsafe or malformed name "${entry.name}"${entry.raw_name === undefined ? "" : ` (raw_name ${entry.raw_name})`}`,
+          );
+        }
         if (names.has(entry.name)) return yield* fail(at, "listed twice");
         names.add(entry.name);
         switch (entry.kind) {
@@ -1454,10 +1611,19 @@ export const verifySectionRestorable = (
           }
           case "symlink": {
             if (entry.target === undefined) return yield* fail(at, "symlink without target");
+            if (symlinkTargetBytesOf(entry) === null) {
+              return yield* fail(
+                at,
+                `malformed symlink target${entry.raw_target === undefined ? "" : ` (raw_target ${entry.raw_target})`}`,
+              );
+            }
             break;
           }
           case "hardlink-group": {
-            const target = entry.target === undefined ? null : captureSegments(entry.target);
+            const target =
+              entry.target === undefined || pathSegmentBytes(entry.target) === null
+                ? null
+                : captureSegments(entry.target);
             if (target === null) {
               return yield* fail(at, `hardlink target escapes or is missing: ${entry.target}`);
             }

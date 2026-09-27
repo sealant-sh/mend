@@ -1,0 +1,19 @@
+# Regenerates ../store and ../head.json from sealant-capture itself (sealantd `tree.rs` "Names
+# that are not UTF-8", and the worktree metadata overlay), against the sealantd checkout at
+# d874c4d (fix/capture-e2e-round4) beside this Mend checkout:
+#   nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#gcc -c cargo run -- ../
+# Not part of the Mend build; capture-raw-names.test.ts reads what it wrote.
+[package]
+name = "fixture-gen-raw-names"
+version = "0.0.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[dependencies]
+sealant-capture = { path = "../../../../../../../Sealantd-e2e-round4/crates/sealant-capture" }
+serde_json = "1"
+sha2 = "0.10"
+hex = "0.4"
+walkdir = "2"
