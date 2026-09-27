@@ -3,6 +3,7 @@ import { describe, expect, it } from "vitest";
 import {
   captureBytesWords,
   captureDrainStep,
+  captureIncompleteWords,
   captureHarvestReady,
   captureProgressed,
   captureSaved,
@@ -158,6 +159,20 @@ describe("captureDrainStep", () => {
   });
 });
 
+describe("captureDrainStep while a final flush runs", () => {
+  it("reads a final flush still running (`in-progress`) as saving, not kept", () => {
+    const step = captureDrainStep({
+      previous: null,
+      reading: reading({ complete: false, incompleteReason: "in-progress" }),
+      progressAtMs: 0,
+      nowMs: 1,
+      stallSeconds: 600,
+    });
+    expect(step.kind).not.toBe("not-saved");
+    expect(captureIncompleteWords("in-progress")).toBeNull();
+  });
+});
+
 describe("captureDrainStep without a completed final flush", () => {
   it("keeps the workspace at once when the executor cannot report `complete`", () => {
     expect(
@@ -177,6 +192,8 @@ describe("captureDrainStep without a completed final flush", () => {
       reading({ complete: false }),
       reading({ complete: false, incompleteReason: "not-final" }),
       reading({ complete: false, incompleteReason: "conflict" }),
+      // A daemon that cannot vouch that every writer stopped (no subreaper).
+      reading({ complete: false, incompleteReason: "sweep-unavailable" }),
     ]) {
       expect(
         captureDrainStep({

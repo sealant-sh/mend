@@ -80,8 +80,11 @@ export interface CaptureReading {
  */
 export const CAPTURE_INCOMPLETE_REASONS = [
   "not-final",
+  "in-progress",
   "processes-remain",
+  "sweep-unavailable",
   "snapshot-failed",
+  "unreadable",
   "fenced",
   "conflict",
   "deadline",
@@ -126,8 +129,9 @@ export const captureSnapFailing = (reading: CaptureReading): boolean =>
 /**
  * An answer that can never become `complete`, however long the drain waits: the executor did not
  * run a final flush (`complete` absent, `not-final`, or incomplete with no reason — an older
- * daemon), it was fenced or conflicted, or its final snapshot failed (`snapshot-failed`,
- * `unreadable`, or any answer that reports a failing snap). A drain reads `not saved` at once and
+ * daemon), it was fenced or conflicted, it cannot vouch that every writer stopped
+ * (`sweep-unavailable`), or its final snapshot failed (`snapshot-failed`, `unreadable`, or any
+ * answer that reports a failing snap). A drain reads `not saved` at once and
  * keeps the workspace; the kept backoff (10 s doubling to 5 min) asks again.
  */
 const finalFlushCannotComplete = (reading: CaptureReading): boolean => {
@@ -137,6 +141,7 @@ const finalFlushCannotComplete = (reading: CaptureReading): boolean => {
     reason === "not-final" ||
     reason === "fenced" ||
     reason === "conflict" ||
+    reason === "sweep-unavailable" ||
     reason === "snapshot-failed" ||
     reason === "unreadable" ||
     (reading.complete !== true && captureSnapFailing(reading))
@@ -270,6 +275,7 @@ export const captureIncompleteWords = (reason: string | null | undefined): strin
     case undefined:
     case null:
     case "pending":
+    case "in-progress":
       return null;
     case CAPTURE_COMPLETION_UNREPORTED:
       return "final flush not reported";
@@ -277,6 +283,8 @@ export const captureIncompleteWords = (reason: string | null | undefined): strin
       return "final flush not supported";
     case "processes-remain":
       return "processes remain";
+    case "sweep-unavailable":
+      return "process sweep unavailable";
     case "snapshot-failed":
       return "snapshot failed";
     case "unreadable":
