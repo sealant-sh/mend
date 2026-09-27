@@ -53,20 +53,27 @@ share a server. See
 
 ## Store and capture
 
-| Variable                                     | Default                      | What it does                                                                                                                                             |
-| -------------------------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `MEND_STORE_ROOT`                            | `~/.config/mend/store`       | The store directory: bare repositories, the runner cache, references. Follows `XDG_CONFIG_HOME`.                                                         |
-| `MEND_KEYS_ROOT`                             | `~/.config/mend/keys`        | Where Mend keys (`mend keys init`) are kept.                                                                                                             |
-| `MEND_SESSION_STORE`                         | `captured`                   | `captured` ships each session's work to the bucket. `colocated` is deprecated and logs a warning at start.                                               |
-| `MEND_BLOB_STORE`                            | `<store root>/_blobs`        | The capture store's bucket: `dir:///absolute/path`, or `s3://<bucket>?endpoint=<url>&region=<name>&forcePathStyle=<bool>`.                               |
-| `MEND_BLOB_STORE_PUBLIC_URL`                 | unset                        | The bucket endpoint presigned URLs name, when workspaces reach it at another address than Mend does. Unset, they name the endpoint in `MEND_BLOB_STORE`. |
-| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | unset                        | Credentials for an `s3://` bucket, read through the AWS SDK's default credential chain.                                                                  |
-| `MEND_CAPTURE_MULTIPART_THRESHOLD`           | `16777216` (16 MiB)          | Captures at or above this size upload in parts.                                                                                                          |
-| `MEND_CAPTURE_MULTIPART_PART_SIZE`           | `16777216` (16 MiB)          | The size of one part. At least 5 MiB, S3's minimum.                                                                                                      |
-| `MEND_CAPTURE_BYTE_QUOTA_FLOOR`              | `8589934592` (8 GiB)         | The smallest byte quota a session gets for its captures.                                                                                                 |
-| `MEND_CAPTURE_REQUIRE_SIZES`                 | `false`                      | `true` refuses a capture upload that does not declare its size. Part of the multi mode gate.                                                             |
-| `MEND_CAPTURE_MANIFEST_FORMAT`               | `2`                          | `2` lets executors ship a capture's directories in a few packs; `1` makes them write one object per directory again. Captures in either format restore.  |
-| `MEND_RUN_DIR`                               | `<store root>/_run/sessions` | Where per-session run directories live.                                                                                                                  |
+| Variable                                     | Default                      | What it does                                                                                                                                                         |
+| -------------------------------------------- | ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `MEND_STORE_ROOT`                            | `~/.config/mend/store`       | The store directory: bare repositories, the runner cache, references. Follows `XDG_CONFIG_HOME`.                                                                     |
+| `MEND_KEYS_ROOT`                             | `~/.config/mend/keys`        | Where Mend keys (`mend keys init`) are kept.                                                                                                                         |
+| `MEND_SESSION_STORE`                         | `captured`                   | `captured` ships each session's work to the bucket. `colocated` is deprecated and logs a warning at start.                                                           |
+| `MEND_BLOB_STORE`                            | `<store root>/_blobs`        | The capture store's bucket: `dir:///absolute/path`, or `s3://<bucket>?endpoint=<url>&region=<name>&forcePathStyle=<bool>`.                                           |
+| `MEND_BLOB_STORE_PUBLIC_URL`                 | unset                        | The bucket endpoint presigned URLs name, when workspaces reach it at another address than Mend does. Unset, they name the endpoint in `MEND_BLOB_STORE`.             |
+| `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY` | unset                        | Credentials for an `s3://` bucket, read through the AWS SDK's default credential chain.                                                                              |
+| `MEND_CAPTURE_MULTIPART_THRESHOLD`           | `16777216` (16 MiB)          | Captures at or above this size upload in parts.                                                                                                                      |
+| `MEND_CAPTURE_MULTIPART_PART_SIZE`           | `16777216` (16 MiB)          | The size of one part. At least 5 MiB, S3's minimum.                                                                                                                  |
+| `MEND_CAPTURE_BYTE_QUOTA_FLOOR`              | `8589934592` (8 GiB)         | The smallest byte quota a session gets for its captures.                                                                                                             |
+| `MEND_CAPTURE_REQUIRE_SIZES`                 | `false`                      | `true` refuses a capture upload that does not declare its size. Part of the multi mode gate.                                                                         |
+| `MEND_CAPTURE_MANIFEST_FORMAT`               | `2`                          | `2` lets executors that read it ship a capture's directories in a few packs; `1` makes them write one object per directory again. Captures in either format restore. |
+| `MEND_RUN_DIR`                               | `<store root>/_run/sessions` | Where per-session run directories live.                                                                                                                              |
+
+To roll executors back to a sealantd that predates dir packs, set `MEND_CAPTURE_MANIFEST_FORMAT=1`
+and restart Mend first, then keep the newer sealantd running until every session you mean to keep
+has written a capture since (a stop writes one). `1` changes what executors write next; it does not
+rewrite captures already written. An older executor asked to resume a session whose latest capture
+still holds dir packs is refused before it touches the worktree (`manifest-format`), and the session
+resumes on a sealantd that reads them.
 
 ## Session channel
 

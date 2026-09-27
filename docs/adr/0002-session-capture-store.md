@@ -355,8 +355,10 @@ credentials (the Mend key or the bridge), never from an executor.
   `parent`, plus project base captures — never from objects found in the bucket. A manifest whose
   CAS never ran is off-chain and is swept with its epoch prefix.
 - Packs retire through the `packs` table after a **30 min** grace (15 min URL TTL + 5 min
-  materialise budget = 20 min, rounded up). CDC packs are rewritten when live bytes fall below a
-  threshold; the known-object and known-chunk indexes are regenerated per project.
+  materialise budget = 20 min, rounded up). The grace protects uploads in flight, not new
+  references: a register and a retention pass meet on the chain's guard (decision 30). CDC packs are
+  rewritten when live bytes fall below a threshold; the known-object and known-chunk indexes are
+  regenerated per project.
 - Promotion into `projects/<project>/packs/` is a server-side copy of git-class and Mend-made bulk
   packs only; harness-home and `.git`-internals classes never promote.
 - Amended 2026-09-13 (decisions 2 and 9): dependency trees are **work product** — the bulk class is
@@ -581,3 +583,53 @@ Mend-side details the decision record left open, decided in this ADR:
     install decision reads the head's tree for the executor's platform the same way, and the
     dependency cache serves a record only for the platform it names and promotes only a head's own
     `bulk`.
+30. (2026-09-27) A register acknowledges only a capture Mend can restore, and retention never
+    deletes what a register it did not see has named (review 2026-09-27, findings 4, 16, 19).
+    - **Register and retention meet on the chain's guard** (migration 0076). Before, retention
+      computed its live set, a final capture then registered naming packs only a thinned capture had
+      named, and retention deleted them: the new head read `BlobNotFoundError`. Now every register
+      reads `worktree_chain.guard` for each chain whose objects it names (its own, and the owner of
+      any `captures/<other>/` key) together with `capture_tombstones`, checks the bucket, and lands
+      its CAS only while each guard still reads so, bumping each. Retention reads a chain's guard
+      before its rows, and tombstones what it would delete in one statement that lands only while
+      that guard still reads what it read, bumping it; then it retires the pack rows and deletes the
+      bytes, then marks the tombstones deleted. Each statement re-reads the chain row after a
+      concurrent writer's lock, so of a register and a condemnation that raced, exactly one lands: a
+      register that read before the condemnation misses (`guard_moved`) and reads again; a
+      condemnation that read before a register misses and keeps everything until the next pass. A
+      register naming a tombstoned key is refused (422 `missing-objects`) while the bytes may still
+      be going; once they are gone, a register that sees them uploaded again (a HEAD after the
+      tombstone read) lifts the tombstone with its CAS and walks the tree it revives. A format-1
+      `trees/` prefix is tombstoned as a key, since a register names the root and not the dir
+      objects below it. No advisory lock and no multi-statement transaction: every write is still
+      one statement.
+    - **Register checks restorability before it acknowledges.** Every chunked section the capture
+      brings — one its parent did not hold, or one naming a key it revives — is walked: the root and
+      every dir object where the section says (by key in format 1, in the listed dir packs in format
+      2), every entry well formed and uniquely named, every chunk in a listed pack (read from the
+      packs' trailing indexes by ranged GET, cached by key), chunk sizes adding up to each file's
+      size, every hardlink member's canonical path a file of its size inside the class. A failure is
+      422 `unrestorable` (or `missing-objects` naming the key); nothing is registered. A section
+      carried unchanged from the parent is not walked again: the parent was checked when it
+      registered, and as the head it keeps its objects alive. Measured on a synthetic pnpm-sized
+      tree (21,211 dir objects, 126,000 files, 32 packs, 3 dir packs, local disk): 0.87 s cold, 0.61
+      s warm (`packages/store/test/capture-verify-measure.test.ts`, `MEND_MEASURE_VERIFY=1`).
+    - **A hardlink member reads as its canonical member** (`readCaptureFile`): the member carries no
+      chunks, and the reader used to stream zero bytes successfully. It now resolves the target from
+      the class root (no absolute path, no `..`, no loop), streams the canonical member's chunks,
+      and fails the stream when the bytes read differ from the entry's size.
+    - **`plan.get` hands a head only to an executor that reads it.** The request carries
+      `manifest_format`, the highest section format the executor reads (absent = 1). A plan whose
+      workspace or answered bulk section is format 2 is refused to an executor below it — 409
+      `manifest-format`, before the claim, so the lease, the epoch and the head are untouched —
+      because an older reader takes the digest for a key and can rewrite git state before it fails.
+      The answer's `manifest_format` is the configured one capped at what the executor reads, so
+      nothing writes format 2 until sealantd says it reads it.
+    - **Rolling executors back below format 2.** `MEND_CAPTURE_MANIFEST_FORMAT=1` stops new format-2
+      sections; it does not rewrite the heads that hold one, and a bulk section rides unchanged
+      until the next bulk snap (`other_bulk` for good). So: (1) set `MEND_CAPTURE_MANIFEST_FORMAT=1`
+      and restart Mend; (2) keep a sealantd that reads format 2 running until every session you mean
+      to keep has written a capture whose workspace and bulk sections are format 1 (a stop's final
+      capture snaps both); (3) only then roll sealantd back. A session whose head still holds a
+      format-2 section is not lost: its plan is refused with `manifest-format` before the older
+      executor touches anything, and it resumes on a sealantd that reads format 2.

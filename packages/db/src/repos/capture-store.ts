@@ -26,6 +26,12 @@ import {
  * statement — no advisory locks, no session settings, no multi-statement transactions — so it
  * behaves identically through transaction-mode pooling and Hyperdrive. The row lock a concurrent
  * writer waits on re-evaluates the WHERE, which is the whole serialiser.
+ *
+ * Register and retention meet on `worktree_chain.guard` (migration 0076): a register bumps the
+ * guard of every chain whose objects it names, retention bumps a chain's guard when it condemns
+ * that chain's objects (`capture_tombstones`), and each writes only while the guard still reads
+ * what it read before it looked — so a register never lands on bytes retention is deleting, and
+ * retention never deletes bytes a register it did not see has named.
  */
 
 /** 409 `worktree_leased`: someone holds the worktree and the lease has not expired. */
@@ -34,7 +40,16 @@ export class WorktreeLeasedError extends Schema.TaggedErrorClass<WorktreeLeasedE
   { worktreeId: Schema.String },
 ) {}
 
-export const CaptureConflictReason = Schema.Literals(["stale_epoch", "wrong_parent", "head_moved"]);
+/**
+ * `guard_moved`: retention condemned objects of a chain the capture names, or another register
+ * named them, after this register read the guards — read them again and retry.
+ */
+export const CaptureConflictReason = Schema.Literals([
+  "stale_epoch",
+  "wrong_parent",
+  "head_moved",
+  "guard_moved",
+]);
 export type CaptureConflictReason = typeof CaptureConflictReason.Type;
 
 /** 409 on register: the CAS did not match; `reason` is the diagnosis after the fact. */
@@ -61,6 +76,31 @@ export interface RegisterCapture {
   readonly manifestKey: string;
   readonly sections: unknown;
   readonly gitFsck: CaptureGitFsck;
+  /**
+   * The guard of every chain whose objects the capture names, its own included, as
+   * `referenceState` read them before the register checked those objects in the bucket. The
+   * CAS lands only while every one still reads so, and bumps each. Absent: the register names
+   * only objects written for it (Mend's own capture 0), which no retention pass can have seen.
+   */
+  readonly guards?: ReadonlyArray<ChainGuard>;
+  /**
+   * Tombstoned keys whose bytes retention removed, which the register has since seen in the
+   * bucket again (uploaded anew): the CAS lifts their tombstones.
+   */
+  readonly revive?: ReadonlyArray<string>;
+}
+
+export interface ChainGuard {
+  readonly worktreeId: WorktreeId;
+  readonly guard: number;
+}
+
+/** What `referenceState` read, in one snapshot. */
+export interface ReferenceState {
+  /** The guard of every chain asked about that exists. */
+  readonly guards: ReadonlyMap<WorktreeId, number>;
+  /** The keys asked about that retention condemned; `deleted` once their bytes are gone. */
+  readonly tombstones: ReadonlyArray<{ readonly key: string; readonly deleted: boolean }>;
 }
 
 export interface WorktreeLease {
@@ -143,7 +183,7 @@ export class CaptureStoreRepo extends Context.Service<
     /** Every registered capture of the worktree, oldest first. */
     readonly listChain: (worktreeId: WorktreeId) => Effect.Effect<ReadonlyArray<CaptureRow>>;
     readonly captureById: (captureId: string) => Effect.Effect<CaptureRow | null>;
-    /** Upsert pack rows (state `uploaded` unless already further along). */
+    /** Upsert pack rows (state `uploaded` unless already further along; a `retired` one is revived). */
     readonly recordPacks: (records: ReadonlyArray<PackRecord>) => Effect.Effect<void>;
     /** The posted summary row for a capture, if one was accepted. */
     readonly summaryOf: (captureId: string) => Effect.Effect<CaptureSummaryRow | null>;
@@ -153,8 +193,30 @@ export class CaptureStoreRepo extends Context.Service<
         readonly worktreeId: WorktreeId;
         readonly headCapture: string | null;
         readonly headN: number;
+        /** Read before any row the caller computes liveness from; `condemn` takes it back. */
+        readonly guard: number;
       }>
     >;
+    /**
+     * A register's first read, before it checks the bucket: the guards of the chains owning the
+     * objects it names, and which of those objects retention condemned — one snapshot.
+     */
+    readonly referenceState: (
+      worktreeIds: ReadonlyArray<WorktreeId>,
+      keys: ReadonlyArray<string>,
+    ) => Effect.Effect<ReferenceState>;
+    /**
+     * Retention: tombstone `keys` (objects of `worktreeId`'s chain no row names) while the
+     * chain's guard still reads `guard` — no register has named anything of the chain since
+     * retention read it — and bump the guard. False: something moved; delete nothing.
+     */
+    readonly condemn: (
+      worktreeId: WorktreeId,
+      guard: number,
+      keys: ReadonlyArray<string>,
+    ) => Effect.Effect<boolean>;
+    /** Retention: these tombstoned objects' bytes are gone. */
+    readonly markDeleted: (keys: ReadonlyArray<string>) => Effect.Effect<void>;
     /** Drop thinned capture rows; `checkpoints.capture_id` nulls and summaries cascade. */
     readonly deleteCaptures: (
       worktreeId: WorktreeId,
@@ -167,6 +229,11 @@ export class CaptureStoreRepo extends Context.Service<
     ) => Effect.Effect<void>;
   }
 >()("@mend/db/CaptureStoreRepo") {}
+
+const ReferenceStateRow = Schema.Struct({
+  guards: Schema.Record(Schema.String, Schema.Union([Schema.Number, Schema.String])),
+  tombstones: Schema.Array(Schema.Struct({ key: Schema.String, deleted: Schema.Boolean })),
+});
 
 const digestOf = (key: string) => key.slice(key.lastIndexOf("/") + 1).replace(/\.idx$/, "");
 
@@ -233,17 +300,47 @@ export const CaptureStoreRepoLive: Layer.Layer<
     const register = Effect.fn("CaptureStoreRepo.register")(function* (capture: RegisterCapture) {
       // The CAS joins the live lease row; the captures row exists only if the CAS matched.
       // `head_capture IS NOT DISTINCT FROM $parent` is the wrong-parent check (NULL for n = 0).
+      // Every chain whose objects the capture names must still hold the guard the register read
+      // before it looked in the bucket (each UPDATE re-reads its row after a concurrent writer's
+      // lock, so a retention pass that condemned anything in between makes this one miss), and
+      // each is bumped, so a retention pass that read before this lands misses instead.
+      const guards = capture.guards ?? [];
+      const ownGuard = guards.find((entry) => entry.worktreeId === capture.worktreeId);
+      const foreign = guards.filter((entry) => entry.worktreeId !== capture.worktreeId);
       const rows = yield* sql<{ readonly id: string }>`
-        WITH ch AS (
+        WITH expected AS (
+          SELECT e.worktree_id, e.guard
+            FROM jsonb_to_recordset(${JSON.stringify(
+              foreign.map((entry) => ({ worktree_id: entry.worktreeId, guard: entry.guard })),
+            )}::jsonb) AS e(worktree_id text, guard bigint)
+        ),
+        foreign_guards AS (
+          UPDATE worktree_chain c
+             SET guard = c.guard + 1
+            FROM expected e
+           WHERE c.worktree_id = e.worktree_id AND c.guard = e.guard
+           RETURNING c.worktree_id
+        ),
+        ch AS (
           UPDATE worktree_chain
-             SET head_n = ${capture.n}, head_capture = ${capture.id}, head_epoch = ${capture.epoch}
+             SET head_n = ${capture.n}, head_capture = ${capture.id}, head_epoch = ${capture.epoch},
+                 guard = guard + 1
            WHERE worktree_id = ${capture.worktreeId}
              AND head_n = ${capture.n} - 1
              AND head_capture IS NOT DISTINCT FROM ${capture.parent}
+             AND (${ownGuard === undefined}::boolean OR guard = ${ownGuard?.guard ?? 0})
+             AND (SELECT count(*) FROM foreign_guards) = ${foreign.length}
              AND ${capture.epoch} = (
                SELECT epoch FROM worktree_leases
                 WHERE worktree_id = ${capture.worktreeId} AND expires_at > now())
            RETURNING worktree_id
+        ),
+        revived AS (
+          DELETE FROM capture_tombstones t
+           WHERE t.key IN (SELECT jsonb_array_elements_text(${JSON.stringify(capture.revive ?? [])}::jsonb))
+             AND t.deleted_at IS NOT NULL
+             AND EXISTS (SELECT 1 FROM ch)
+           RETURNING t.key
         )
         INSERT INTO captures (id, worktree_id, n, parent, epoch, seq, kind, manifest_key,
                               sections, git_fsck)
@@ -278,7 +375,9 @@ export const CaptureStoreRepoLive: Layer.Layer<
             ? "stale_epoch"
             : Number(existing.headN) !== capture.n - 1
               ? "head_moved"
-              : "wrong_parent";
+              : existing.headCapture !== capture.parent
+                ? "wrong_parent"
+                : "guard_moved";
       return yield* new CaptureConflictError({
         worktreeId: capture.worktreeId,
         n: capture.n,
@@ -402,11 +501,17 @@ export const CaptureStoreRepoLive: Layer.Layer<
     const recordPacks = Effect.fn("CaptureStoreRepo.recordPacks")(function* (
       records: ReadonlyArray<PackRecord>,
     ) {
-      if (records.length === 0) return;
+      // One row per digest: an upsert may not touch the same row twice in one statement.
+      const byDigest = new Map<string, PackRecord>();
+      for (const record of records) {
+        if (!byDigest.has(digestOf(record.key))) byDigest.set(digestOf(record.key), record);
+      }
+      const unique = [...byDigest.values()];
+      if (unique.length === 0) return;
       yield* db
         .insert(packs)
         .values(
-          records.map((record) => ({
+          unique.map((record) => ({
             id: digestOf(record.key),
             key: record.key,
             class: record.class,
@@ -416,7 +521,13 @@ export const CaptureStoreRepoLive: Layer.Layer<
             platform: record.platform,
           })),
         )
-        .onConflictDoNothing({ target: packs.id })
+        // A pack retention retired whose bytes a register saw uploaded again (and revived) is
+        // live again, so a later pass can retire it again.
+        .onConflictDoUpdate({
+          target: packs.id,
+          set: { state: "uploaded", updatedAt: new Date() },
+          setWhere: eq(packs.state, "retired"),
+        })
         .pipe(Effect.orDie);
     });
 
@@ -436,6 +547,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
           worktreeId: worktreeChain.worktreeId,
           headCapture: worktreeChain.headCapture,
           headN: worktreeChain.headN,
+          guard: worktreeChain.guard,
         })
         .from(worktreeChain)
         .pipe(Effect.orDie);
@@ -443,7 +555,69 @@ export const CaptureStoreRepoLive: Layer.Layer<
         worktreeId: row.worktreeId,
         headCapture: row.headCapture,
         headN: Number(row.headN),
+        guard: Number(row.guard),
       }));
+    });
+
+    const referenceState = Effect.fn("CaptureStoreRepo.referenceState")(function* (
+      worktreeIds: ReadonlyArray<WorktreeId>,
+      keys: ReadonlyArray<string>,
+    ) {
+      // One statement, so the guards and the tombstones come from one snapshot: a tombstone
+      // written after it was taken bumped a guard this read returns stale.
+      const [row] = yield* sql<{ readonly guards: unknown; readonly tombstones: unknown }>`
+        SELECT
+          (SELECT coalesce(jsonb_object_agg(worktree_id, guard), '{}'::jsonb)
+             FROM worktree_chain
+            WHERE worktree_id IN (SELECT jsonb_array_elements_text(${JSON.stringify(worktreeIds)}::jsonb)))
+            AS guards,
+          (SELECT coalesce(jsonb_agg(jsonb_build_object('key', key, 'deleted', deleted_at IS NOT NULL)),
+                           '[]'::jsonb)
+             FROM capture_tombstones
+            WHERE key IN (SELECT jsonb_array_elements_text(${JSON.stringify(keys)}::jsonb)))
+            AS tombstones`.pipe(Effect.orDie);
+      const decoded = Schema.decodeUnknownSync(ReferenceStateRow)(row ?? {});
+      const guards = new Map<WorktreeId, number>();
+      for (const worktreeId of worktreeIds) {
+        const guard = decoded.guards[worktreeId];
+        if (guard !== undefined) guards.set(worktreeId, Number(guard));
+      }
+      return { guards, tombstones: decoded.tombstones };
+    });
+
+    const condemn = Effect.fn("CaptureStoreRepo.condemn")(function* (
+      worktreeId: WorktreeId,
+      guard: number,
+      keys: ReadonlyArray<string>,
+    ) {
+      if (keys.length === 0) return true;
+      // A tombstone already there (a pass that condemned it and failed to delete, or one whose
+      // bytes came back) is condemned again: its bytes may be going now.
+      const rows = yield* sql<{ readonly worktreeId: string }>`
+        WITH ch AS (
+          UPDATE worktree_chain SET guard = guard + 1
+           WHERE worktree_id = ${worktreeId} AND guard = ${guard}
+           RETURNING worktree_id
+        ),
+        t AS (
+          INSERT INTO capture_tombstones (key, worktree_id)
+          SELECT k.key, ch.worktree_id
+            FROM ch, jsonb_array_elements_text(${JSON.stringify(keys)}::jsonb) AS k(key)
+          ON CONFLICT (key) DO UPDATE SET deleted_at = NULL, created_at = now()
+          RETURNING key
+        )
+        SELECT worktree_id FROM ch`.pipe(Effect.orDie);
+      return rows.length > 0;
+    });
+
+    const markDeleted = Effect.fn("CaptureStoreRepo.markDeleted")(function* (
+      keys: ReadonlyArray<string>,
+    ) {
+      if (keys.length === 0) return;
+      yield* sql`
+        UPDATE capture_tombstones SET deleted_at = now()
+         WHERE key IN (SELECT jsonb_array_elements_text(${JSON.stringify(keys)}::jsonb))
+           AND deleted_at IS NULL`.pipe(Effect.orDie);
     });
 
     const deleteCaptures = Effect.fn("CaptureStoreRepo.deleteCaptures")(function* (
@@ -499,6 +673,9 @@ export const CaptureStoreRepoLive: Layer.Layer<
       recordPacks,
       summaryOf,
       listChains,
+      referenceState,
+      condemn,
+      markDeleted,
       deleteCaptures,
       listPacks,
       setPackState,

@@ -1065,7 +1065,7 @@ describe("capture channel routes", () => {
         );
       });
     await run(Effect.flatMap(CaptureStoreRepo, (repo) => repo.init(wt)));
-    const claimed = await call("/plan.get", { worktree_id: null, epoch: 0 });
+    const claimed = await call("/plan.get", { manifest_format: 2, worktree_id: null, epoch: 0 });
     expect(claimed.status).toBe(200);
     expect(claimed.json["manifest_format"]).toBe(2);
     expect(claimed.json["head"]).toBeNull();
@@ -1178,7 +1178,7 @@ describe("capture channel routes", () => {
 
     // The plan: the head as registered (format and dir packs kept through the codec), the dir
     // packs and the format-1 bulk tree presigned, and no dir object named by digest.
-    const plan = await call("/plan.get", { epoch });
+    const plan = await call("/plan.get", { manifest_format: 2, epoch });
     expect(plan.status).toBe(200);
     expect(plan.json["manifest_format"]).toBe(2);
     const head = plan.json["head"] as { readonly manifest: CaptureManifest };
@@ -1229,7 +1229,7 @@ describe("capture channel routes", () => {
 
     // An arm64 executor builds the tree first (format 1: dir objects by key).
     const onArm = apiOf("exec-arm");
-    const armClaim = await onArm("/plan.get", { epoch: 0, platform: ARM });
+    const armClaim = await onArm("/plan.get", { manifest_format: 2, epoch: 0, platform: ARM });
     expect(armClaim.status).toBe(200);
     const armEpoch = Number(armClaim.json["epoch"]);
     const armTree = snapshotDirectory(tree("arm"), captureKeys(wt, armEpoch), { chunkSize: 64 });
@@ -1260,7 +1260,7 @@ describe("capture channel routes", () => {
 
     // The session moves to an amd64 executor: the arm tree is not its to restore.
     const onX86 = apiOf("exec-x86");
-    const x86Claim = await onX86("/plan.get", { epoch: 0, platform: X86 });
+    const x86Claim = await onX86("/plan.get", { manifest_format: 2, epoch: 0, platform: X86 });
     expect(x86Claim.status).toBe(200);
     const x86Epoch = Number(x86Claim.json["epoch"]);
     expect(x86Epoch).toBeGreaterThan(armEpoch);
@@ -1305,7 +1305,7 @@ describe("capture channel routes", () => {
     });
 
     // Each platform is answered its own tree, with its keys presigned and the other's not.
-    const forArm = await onX86("/plan.get", { epoch: x86Epoch, platform: ARM });
+    const forArm = await onX86("/plan.get", { manifest_format: 2, epoch: x86Epoch, platform: ARM });
     expect(forArm.status).toBe(200);
     expect(bulkOf(forArm)).toEqual(armSection);
     expect(urlsOf(forArm)).toEqual(
@@ -1314,7 +1314,7 @@ describe("capture channel routes", () => {
     for (const key of [...x86Tree.packs, ...x86Tree.dirPacks]) {
       expect(urlsOf(forArm)).not.toContain(key);
     }
-    const forX86 = await onX86("/plan.get", { epoch: x86Epoch, platform: X86 });
+    const forX86 = await onX86("/plan.get", { manifest_format: 2, epoch: x86Epoch, platform: X86 });
     expect(bulkOf(forX86)).toEqual(x86Section);
     expect(urlsOf(forX86)).toEqual(expect.arrayContaining([...x86Tree.packs, ...x86Tree.dirPacks]));
     for (const key of armTree.packs) expect(urlsOf(forX86)).not.toContain(key);
@@ -1323,13 +1323,19 @@ describe("capture channel routes", () => {
       (forX86.json["head"] as { readonly manifest: CaptureManifest }).manifest.sections.other_bulk,
     ).toEqual({ [ARM]: armSection });
     // A third platform has neither: pending, never another platform's tree.
-    const forRiscv = await onX86("/plan.get", { epoch: x86Epoch, platform: "linux-riscv64-gnu" });
+    const forRiscv = await onX86("/plan.get", {
+      manifest_format: 2,
+      epoch: x86Epoch,
+      platform: "linux-riscv64-gnu",
+    });
     expect(bulkOf(forRiscv)).toBe("pending");
     for (const key of [...armTree.packs, ...x86Tree.packs, ...x86Tree.dirPacks]) {
       expect(urlsOf(forRiscv)).not.toContain(key);
     }
     // An executor that names no platform gets the head as it is.
-    expect(bulkOf(await onX86("/plan.get", { epoch: x86Epoch }))).toEqual(x86Section);
+    expect(bulkOf(await onX86("/plan.get", { manifest_format: 2, epoch: x86Epoch }))).toEqual(
+      x86Section,
+    );
 
     // An other_bulk entry the parent does not hold is checked like a bulk section: a malformed
     // key is refused before any HEAD, and missing objects are named.
@@ -1496,7 +1502,7 @@ describe("manifest_format on both plan.gets", () => {
           const channel = yield* CaptureChannel;
           const session = yield* channel
             .apiFor({ worktreeId: wt, projectId: PROJECT, executorId: "exec", footprintBytes: 0 })
-            .planGet({ epoch: 0 });
+            .planGet({ epoch: 0, manifest_format: 2 });
           const standby = yield* channel
             .standbyApiFor({
               alias: "standby",
@@ -1510,7 +1516,7 @@ describe("manifest_format on both plan.gets", () => {
                   manifest: base.manifest,
                 }),
             })
-            .planGet({});
+            .planGet({ manifest_format: 2 });
           return [session.manifest_format, standby.manifest_format];
         }).pipe(Effect.provide(Layer.merge(layer, memory.layer))),
       );

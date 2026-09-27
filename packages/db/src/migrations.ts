@@ -2252,6 +2252,29 @@ const captureDrainMigration = Effect.gen(function* () {
       ))`;
 });
 
+/**
+ * Retention and register agree on what may be deleted (review 2026-09-27 #4). Retention computed
+ * its live set, a register then named an object only a thinned capture had named, and retention
+ * deleted it: the new head could not be read. `worktree_chain.guard` is bumped by every register
+ * for each chain whose objects it names, and by retention when it condemns objects of that chain;
+ * each writes only while the guard still reads what it read, so exactly one of the two wins.
+ * `capture_tombstones` is what retention condemned: `deleted_at` NULL while the bytes may still be
+ * going (a register naming one is refused), set once they are gone (a register may bring the key
+ * back only after it has seen the bytes again).
+ */
+const captureGuardsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE worktree_chain ADD COLUMN guard bigint NOT NULL DEFAULT 0`;
+  yield* sql`
+    CREATE TABLE capture_tombstones (
+      key text PRIMARY KEY,
+      worktree_id text NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
+      created_at timestamptz NOT NULL DEFAULT now(),
+      deleted_at timestamptz
+    )`;
+  yield* sql`CREATE INDEX capture_tombstones_worktree_idx ON capture_tombstones (worktree_id)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2328,4 +2351,5 @@ export const migrations = {
   "0072_protocol_idle_stop": protocolIdleStopMigration,
   "0073_landing_reasons": landingReasonsMigration,
   "0075_capture_drain": captureDrainMigration,
+  "0076_capture_guards": captureGuardsMigration,
 };
