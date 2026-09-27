@@ -21,8 +21,22 @@ import { git, type GitError } from "./git.ts";
  *
  * Mend reads these manifest fields and no others (ADR-0002): `worktree_id`, `n`, `parent`,
  * `epoch`, `seq`, `kind`, `created_at`, `sections.git.{packs, refs, head, fsck}`,
- * `sections.workspace.{root, packs}`, `sections.bulk.{root, packs, platform} | "pending"`,
+ * `sections.workspace.{root, packs, format?, dir_packs?}`,
+ * `sections.bulk.{root, packs, platform, format?, dir_packs?} | "pending"`,
  * `checkpoint?.{ordinal, sha, ref}`. Unknown fields pass through undecoded.
+ *
+ * The chunked sections are versioned one by one (sealantd `manifest.rs`, PR #99 "Dir packs"),
+ * because one manifest can hold both: a capture staged over a head an older executor wrote
+ * carries that head's bulk section as it is.
+ *
+ * - Format 1 (`format` absent): every dir object is its own object at `…/trees/<sha256>`, and
+ *   `root` and every `child` are those keys. Every capture before dir packs.
+ * - Format 2: dir objects travel in dir packs — the CDC pack container, one zstd entry per dir
+ *   object, the entry hash being the dir object's sha256 — keyed `…/packs/<sha256>` and listed
+ *   in `dir_packs`; `root` and every `child` are dir object digests, not keys.
+ *
+ * A section in a format above `MAX_SECTION_FORMAT` does not decode: nothing is read from, or
+ * registered with, a capture Mend could not restore.
  */
 
 // ─── Manifest ───────────────────────────────────────────────────────────────
@@ -41,19 +55,47 @@ export const GitSection = Schema.Struct({
 });
 export type GitSection = typeof GitSection.Type;
 
-export const WorkspaceSection = Schema.Struct({
+/** Section format 1: one object per directory at `…/trees/<sha256>`, named by key. */
+export const FORMAT_DIR_OBJECTS = 1;
+/** Section format 2: dir objects in the dir packs a section lists, named by digest. */
+export const FORMAT_DIR_PACKS = 2;
+/** The highest section format Mend reads — and so the highest `plan.get` may announce. */
+export const MAX_SECTION_FORMAT = FORMAT_DIR_PACKS;
+
+/** A section's `format`: absent reads 1; anything but 1 or 2 does not decode. */
+export const SectionFormat = Schema.Literals([FORMAT_DIR_OBJECTS, FORMAT_DIR_PACKS]);
+export type SectionFormat = typeof SectionFormat.Type;
+
+const chunkedSectionFields = {
+  /** Format 1: the root dir object's key. Format 2: its digest. */
   root: Schema.String,
   packs: Schema.Array(Schema.String),
-});
+  format: Schema.optionalKey(SectionFormat),
+  /** Format 2: every dir pack the tree needs, across epochs. Absent in format 1. */
+  dir_packs: Schema.optionalKey(Schema.Array(Schema.String)),
+};
+
+export const WorkspaceSection = Schema.Struct(chunkedSectionFields);
 export type WorkspaceSection = typeof WorkspaceSection.Type;
 
 export const BulkSectionReady = Schema.Struct({
-  root: Schema.String,
-  packs: Schema.Array(Schema.String),
+  ...chunkedSectionFields,
   platform: Schema.String,
 });
+export type BulkSectionReady = typeof BulkSectionReady.Type;
 export const BulkSection = Schema.Union([BulkSectionReady, Schema.Literal("pending")]);
 export type BulkSection = typeof BulkSection.Type;
+
+/** A section whose files are CDC-chunked: the workspace section or a ready bulk section. */
+export type ChunkedSection = WorkspaceSection | BulkSectionReady;
+
+/** The section's format; absent is format 1, as every capture before dir packs. */
+export const sectionFormatOf = (section: ChunkedSection): SectionFormat =>
+  section.format ?? FORMAT_DIR_OBJECTS;
+
+/** The dir packs a section lists — none in format 1. */
+export const dirPacksOf = (section: ChunkedSection): ReadonlyArray<string> =>
+  sectionFormatOf(section) === FORMAT_DIR_PACKS ? (section.dir_packs ?? []) : [];
 
 export const CaptureCheckpoint = Schema.Struct({
   ordinal: Schema.Int,
@@ -448,6 +490,126 @@ export const makeChunkSource = (
     return { chunk, locate };
   });
 
+// ─── Dir objects across a section's formats ─────────────────────────────────
+
+/** Reads the dir objects of one chunked section, whatever its format. */
+export interface DirReader {
+  /**
+   * The dir object a section names: by key in format 1 (`root`, `child` are keys), by digest in
+   * format 2 (`root`, `child` are digests into the section's dir packs). Verified against its
+   * digest either way.
+   */
+  readonly read: (ref: string) => Effect.Effect<DirObject, CaptureReadError>;
+}
+
+interface OpenedPack {
+  readonly bytes: Uint8Array;
+  readonly entries: ReadonlyArray<PackIndexEntry>;
+}
+
+/**
+ * Dir packs already fetched, by key. A pack key is the sha256 of its bytes and every pack is
+ * verified against it on fetch, so an entry can never go stale; the cache is bounded by bytes
+ * and drops the least recently used pack first. A restore, a harvest listing and the file reads
+ * after it share one fetch of each dir pack instead of one per call.
+ */
+const DIR_PACK_CACHE_BYTES = 64 * 1024 * 1024;
+const dirPackCache = new Map<string, OpenedPack>();
+let dirPackCacheBytes = 0;
+
+const rememberDirPack = (key: string, pack: OpenedPack) => {
+  if (pack.bytes.byteLength > DIR_PACK_CACHE_BYTES) return;
+  const previous = dirPackCache.get(key);
+  if (previous !== undefined) {
+    dirPackCache.delete(key);
+    dirPackCacheBytes -= previous.bytes.byteLength;
+  }
+  dirPackCache.set(key, pack);
+  dirPackCacheBytes += pack.bytes.byteLength;
+  for (const [oldest, held] of dirPackCache) {
+    if (dirPackCacheBytes <= DIR_PACK_CACHE_BYTES) break;
+    dirPackCache.delete(oldest);
+    dirPackCacheBytes -= held.bytes.byteLength;
+  }
+};
+
+/** Fetch (or reuse) one dir pack: verified against its key, its trailing index read. */
+const openDirPack = (key: string): Effect.Effect<OpenedPack, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    const cached = dirPackCache.get(key);
+    if (cached !== undefined) {
+      // Touch: most recently used goes to the back of the map.
+      dirPackCache.delete(key);
+      dirPackCache.set(key, cached);
+      return cached;
+    }
+    const store = yield* BlobStore;
+    const bytes = yield* store.get(key);
+    yield* verifyDigest(key, bytes);
+    const entries = yield* readPackIndex(key, bytes);
+    const opened = { bytes, entries };
+    rememberDirPack(key, opened);
+    return opened;
+  });
+
+/** How many dir packs are fetched at once (sealantd's materializer fetches eight at a time). */
+const DIR_PACK_GETS_IN_FLIGHT = 8;
+
+/**
+ * A reader for one section's dir objects. Format 1 GETs each dir object by its key as the walk
+ * reaches it. Format 2 fetches every dir pack the section lists up front (in parallel, each at
+ * most once, cached across readers) and resolves digests through their trailing indexes; a
+ * digest no listed pack holds is a malformed capture, never a guess.
+ */
+export const makeDirReader = (
+  section: ChunkedSection,
+): Effect.Effect<DirReader, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    const store = yield* BlobStore;
+    if (sectionFormatOf(section) === FORMAT_DIR_OBJECTS) {
+      const read = (key: string) =>
+        Effect.gen(function* () {
+          const bytes = yield* store.get(key);
+          yield* verifyDigest(key, bytes);
+          return yield* decodeDirObject(key, bytes);
+        });
+      return { read };
+    }
+    const packKeys = [...new Set(dirPacksOf(section))];
+    const opened = yield* Effect.forEach(packKeys, openDirPack, {
+      concurrency: DIR_PACK_GETS_IN_FLIGHT,
+    });
+    const where = new Map<string, { readonly key: string; readonly entry: PackIndexEntry }>();
+    packKeys.forEach((key, at) => {
+      for (const entry of opened[at]?.entries ?? []) {
+        // First listing wins; a dir object in two packs carries the same bytes by definition.
+        if (!where.has(entry.hash)) where.set(entry.hash, { key, entry });
+      }
+    });
+    const bytesOf = new Map(packKeys.map((key, at) => [key, opened[at]?.bytes] as const));
+    const read = (digest: string) =>
+      Effect.gen(function* () {
+        if (!HEX64.test(digest)) {
+          return yield* new CaptureFormatError({
+            key: digest,
+            reason: "a format-2 section names dir objects by sha256 digest, not by key",
+          });
+        }
+        const location = where.get(digest);
+        const pack = location === undefined ? undefined : bytesOf.get(location.key);
+        if (location === undefined || pack === undefined) {
+          return yield* new CaptureFormatError({
+            key: digest,
+            reason: `dir object ${digest} is in no dir pack the section lists`,
+          });
+        }
+        // `readChunk` verifies the bytes against the entry's hash, which is the digest asked.
+        const bytes = yield* readChunk(location.key, pack, location.entry);
+        return yield* decodeDirObject(digest, bytes);
+      });
+    return { read };
+  });
+
 // ─── Materialize ────────────────────────────────────────────────────────────
 
 export interface MaterializeStats {
@@ -488,8 +650,9 @@ export const materialize = (
   Effect.gen(function* () {
     const section = manifest.sections[cls];
     if (section === "pending") return yield* new CaptureSectionPendingError({ section: cls });
-    const store = yield* BlobStore;
     const source = yield* makeChunkSource(section.packs);
+    // Dir packs are fetched before anything is written, as the content packs are.
+    const dirs = yield* makeDirReader(section);
     const root = path.resolve(targetDir);
     const io = <A>(at: string, thunk: () => A) =>
       Effect.try({ try: thunk, catch: (cause) => new MaterializeError({ at, cause }) });
@@ -502,13 +665,6 @@ export const materialize = (
       readonly target: string;
       readonly key: string;
     }> = [];
-
-    const readTree = (key: string) =>
-      Effect.gen(function* () {
-        const bytes = yield* store.get(key);
-        yield* verifyDigest(key, bytes);
-        return yield* decodeDirObject(key, bytes);
-      });
 
     const writeFile = (at: string, entry: DirEntry, key: string) =>
       Effect.gen(function* () {
@@ -555,7 +711,7 @@ export const materialize = (
       dir: string,
     ): Effect.Effect<void, CaptureReadError | MaterializeError, never> =>
       Effect.gen(function* () {
-        const entries = yield* readTree(key);
+        const entries = yield* dirs.read(key);
         for (const entry of entries) {
           if (!isSafeName(entry.name)) {
             return yield* new CaptureFormatError({ key, reason: `unsafe name "${entry.name}"` });
@@ -637,15 +793,11 @@ export const materialize = (
 
 // ─── Reading a class without materializing it ───────────────────────────────
 
-const readTree = (key: string) =>
-  Effect.gen(function* () {
-    const store = yield* BlobStore;
-    const bytes = yield* store.get(key);
-    yield* verifyDigest(key, bytes);
-    return yield* decodeDirObject(key, bytes);
-  });
-
-/** Every object key a class's dir objects name, root first — what a plan must presign. */
+/**
+ * Every object key a class's dir objects live in — what a plan must presign. Format 1: every
+ * dir object's key, root first, found by walking the tree. Format 2: the section's dir packs,
+ * with no walk (a digest is not a key; the packs are what the executor fetches).
+ */
 export const collectTreeKeys = (
   manifest: CaptureManifest,
   cls: CaptureClass,
@@ -653,7 +805,10 @@ export const collectTreeKeys = (
 ): Effect.Effect<ReadonlyArray<string>, CaptureReadError, BlobStore> =>
   Effect.gen(function* () {
     const section = manifest.sections[cls];
-    if (section === "pending" || section.root === "") return [];
+    if (section === "pending") return [];
+    if (sectionFormatOf(section) === FORMAT_DIR_PACKS) return dirPacksOf(section);
+    if (section.root === "") return [];
+    const dirs = yield* makeDirReader(section);
     const limit = options?.limit ?? 50_000;
     const out: Array<string> = [];
     const queue = [section.root];
@@ -661,7 +816,7 @@ export const collectTreeKeys = (
       const key = queue.shift();
       if (key === undefined) break;
       out.push(key);
-      const entries = yield* readTree(key);
+      const entries = yield* dirs.read(key);
       for (const entry of entries) {
         if (entry.kind === "dir" && entry.child !== undefined) queue.push(entry.child);
       }
@@ -670,7 +825,8 @@ export const collectTreeKeys = (
   });
 
 /**
- * Every blob key a manifest needs across its three sections: packs, indexes, dir objects. Only
+ * Every blob key a manifest needs across its three sections: packs, indexes, dir objects (by
+ * key in format 1, the dir packs holding them in format 2). Only
  * capture object keys (`isCaptureObjectKey`) are answered — a pending bulk section, an empty
  * root and a malformed entry contribute nothing, so nothing downstream presigns or HEADs a key
  * that names no object.
@@ -704,14 +860,25 @@ export const listCaptureDir = (
   Effect.gen(function* () {
     const section = manifest.sections[cls];
     if (section === "pending" || section.root === "") return null;
-    let key = section.root;
+    const dirs = yield* makeDirReader(section);
+    return yield* walkToDir(dirs, section.root, relPath);
+  });
+
+/** Follow `relPath` from the dir object `root` names; null when it names no directory. */
+const walkToDir = (
+  dirs: DirReader,
+  root: string,
+  relPath: string,
+): Effect.Effect<DirObject | null, CaptureReadError> =>
+  Effect.gen(function* () {
+    let ref = root;
     for (const segment of relPath.split("/").filter((part) => part !== "")) {
-      const entries = yield* readTree(key);
+      const entries = yield* dirs.read(ref);
       const next = entries.find((entry) => entry.name === segment);
       if (next === undefined || next.kind !== "dir" || next.child === undefined) return null;
-      key = next.child;
+      ref = next.child;
     }
-    return yield* readTree(key);
+    return yield* dirs.read(ref);
   });
 
 /** The entry at `relPath` inside a class, or null. */
@@ -814,7 +981,11 @@ export const listCaptureFiles = (
   Effect.gen(function* () {
     const limit = options?.limit ?? 20_000;
     const out: Array<{ readonly path: string; readonly entry: DirEntry }> = [];
-    const root = yield* listCaptureDir(manifest, cls, under);
+    const section = manifest.sections[cls];
+    if (section === "pending" || section.root === "") return [];
+    // One reader for the whole walk: in format 2 its dir packs are opened once.
+    const dirs = yield* makeDirReader(section);
+    const root = yield* walkToDir(dirs, section.root, under);
     if (root === null) return [];
     const prefix = under
       .split("/")
@@ -829,7 +1000,7 @@ export const listCaptureFiles = (
       for (const entry of next.entries) {
         const at = next.at === "" ? entry.name : `${next.at}/${entry.name}`;
         if (entry.kind === "dir" && entry.child !== undefined) {
-          queue.push({ at, entries: yield* readTree(entry.child) });
+          queue.push({ at, entries: yield* dirs.read(entry.child) });
         } else if (entry.kind === "file" || entry.kind === "hardlink-group") {
           out.push({ path: at, entry });
         }

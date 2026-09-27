@@ -65,6 +65,7 @@ share a server. See
 | `MEND_CAPTURE_MULTIPART_PART_SIZE`           | `16777216` (16 MiB)          | The size of one part. At least 5 MiB, S3's minimum.                                                                                                      |
 | `MEND_CAPTURE_BYTE_QUOTA_FLOOR`              | `8589934592` (8 GiB)         | The smallest byte quota a session gets for its captures.                                                                                                 |
 | `MEND_CAPTURE_REQUIRE_SIZES`                 | `false`                      | `true` refuses a capture upload that does not declare its size. Part of the multi mode gate.                                                             |
+| `MEND_CAPTURE_MANIFEST_FORMAT`               | `2`                          | `2` lets executors ship a capture's directories in a few packs; `1` makes them write one object per directory again. Captures in either format restore.  |
 | `MEND_RUN_DIR`                               | `<store root>/_run/sessions` | Where per-session run directories live.                                                                                                                  |
 
 ## Session channel

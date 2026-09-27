@@ -12,7 +12,10 @@ import {
   CDC_PACK_MAGIC,
   captureIdOf,
   captureKeys,
+  encodeDirObject,
+  FORMAT_DIR_PACKS,
   sha256Hex,
+  type WorkspaceSection,
 } from "../src/captures.ts";
 
 /**
@@ -61,13 +64,28 @@ export const writeCdcPack = (
 // ─── Directory snapshots ────────────────────────────────────────────────────
 
 export interface Snapshot {
-  /** The root dir object's key. */
+  /** The root dir object: its key in format 1, its digest in format 2. */
   readonly root: string;
   /** Pack keys, in the order the manifest should list them. */
   readonly packs: ReadonlyArray<string>;
+  /** The section format the snapshot was written in. */
+  readonly format: 1 | 2;
+  /** Format 2: the dir packs holding every dir object. Empty in format 1. */
+  readonly dirPacks: ReadonlyArray<string>;
   /** Every object to upload: key → bytes. */
   readonly objects: ReadonlyMap<string, Uint8Array>;
 }
+
+/** The chunked section a snapshot stands for, in its format (format 1 omits `format`). */
+export const sectionOf = (snapshot: Snapshot): WorkspaceSection =>
+  snapshot.format === FORMAT_DIR_PACKS
+    ? {
+        root: snapshot.root,
+        packs: snapshot.packs,
+        format: FORMAT_DIR_PACKS,
+        dir_packs: snapshot.dirPacks,
+      }
+    : { root: snapshot.root, packs: snapshot.packs };
 
 interface PackBuilder {
   readonly chunks: Array<Uint8Array>;
@@ -78,12 +96,25 @@ interface PackBuilder {
  * Snapshot `dir` into dir objects and CDC packs under `keys`' prefix. Hardlink groups are
  * detected by inode: the first member in path order is a plain `file`, later members are
  * `hardlink-group` entries pointing at it.
+ *
+ * `format: 1` (the default) writes one object per directory at `…/trees/<sha256>` as a bare
+ * array, named by key. `format: 2` writes sealantd's dir packs: every dir object (in the
+ * daemon's `{"entries": […]}` form) is one entry of a CDC pack container keyed by the dir
+ * object's sha256, the packs split at `dirPackBudget` entries, and `root` and every `child` are
+ * digests.
  */
 export const snapshotDirectory = (
   dir: string,
   keys: ReturnType<typeof captureKeys>,
-  options?: { readonly chunkSize?: number; readonly packBudget?: number },
+  options?: {
+    readonly chunkSize?: number;
+    readonly packBudget?: number;
+    readonly format?: 1 | 2;
+    readonly dirPackBudget?: number;
+  },
 ): Snapshot => {
+  const format = options?.format ?? 1;
+  const dirObjects = new Map<string, Uint8Array>();
   const chunkSize = options?.chunkSize ?? 256 * 1024;
   const packBudget = options?.packBudget ?? 8 * 1024 * 1024;
   const objects = new Map<string, Uint8Array>();
@@ -170,6 +201,12 @@ export const snapshotDirectory = (
         entries.push({ name, kind: "file", mode: stat.mode, size: stat.size, mtime, chunks });
       }
     }
+    if (format === FORMAT_DIR_PACKS) {
+      const bytes = encodeDirObject(entries);
+      const digest = sha256Hex(bytes);
+      dirObjects.set(digest, bytes);
+      return digest;
+    }
     const json = new Uint8Array(Buffer.from(JSON.stringify(entries), "utf8"));
     const key = keys.tree(sha256Hex(json));
     objects.set(key, json);
@@ -178,7 +215,21 @@ export const snapshotDirectory = (
 
   const root = snapshotTree(dir, "");
   flush();
-  return { root, packs, objects };
+  const dirPacks: Array<string> = [];
+  if (format === FORMAT_DIR_PACKS) {
+    // Digest order, as sealantd packs them, so the same tree packs to the same bytes.
+    const digests = [...dirObjects.keys()].toSorted();
+    const budget = Math.max(1, options?.dirPackBudget ?? digests.length);
+    for (let at = 0; at < digests.length; at += budget) {
+      const pack = writeCdcPack(
+        digests.slice(at, at + budget).map((digest) => dirObjects.get(digest) ?? new Uint8Array()),
+      );
+      const key = keys.pack(sha256Hex(pack.bytes));
+      objects.set(key, pack.bytes);
+      dirPacks.push(key);
+    }
+  }
+  return { root, packs, format, dirPacks, objects };
 };
 
 // ─── Manifests ──────────────────────────────────────────────────────────────
