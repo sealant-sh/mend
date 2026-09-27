@@ -72,6 +72,26 @@ export interface CaptureReading {
   /** Paths the last snap could not read (`unreadable`), and the first of them sealantd names. */
   readonly unreadable: number | null;
   readonly unreadablePaths: ReadonlyArray<string>;
+  /** The lease epoch the answering executor ships under; absent or null when not read. */
+  readonly epoch?: number | null;
+  /**
+   * Each class's snaps as sealantd reports them (`snaps`): whether its last snap failed. Absent
+   * or null from a daemon that reports only the summed fields above.
+   */
+  readonly snaps?: ReadonlyArray<CaptureClassSnaps> | null;
+  /** The classes the byte quota refused, when the answer names them; null otherwise. */
+  readonly refusedClasses?: ReadonlyArray<CaptureClass> | null;
+  /** A refused register is being rebuilt from disk: nothing behind it registers first. */
+  readonly repairing?: boolean | null;
+}
+
+/** sealantd's capture classes: `small` (the worktree, `.git`, the harness home) and `bulk`. */
+export type CaptureClass = "small" | "bulk";
+
+/** One class's snaps: whether its last snap failed (an error or a failing-since time). */
+export interface CaptureClassSnaps {
+  readonly class: CaptureClass;
+  readonly failing: boolean;
 }
 
 /**
@@ -96,6 +116,12 @@ export const CAPTURE_INCOMPLETE_REASONS = [
   "sealing",
   "internal",
 ] as const;
+
+/**
+ * What Mend records when the platform keeps an executor for recovery (Core's `drain.retained`):
+ * its disk holds work the platform cannot confirm saved.
+ */
+export const CAPTURE_EXECUTOR_RETAINED = "retained";
 
 /** What Mend records when a final flush's answer carries no `complete` at all. */
 export const CAPTURE_COMPLETION_UNREPORTED = "unreported";
@@ -191,6 +217,41 @@ export const captureHarvestReady = (reading: CaptureReading): boolean => {
   const small =
     reading.pendingBulk === null ? reading.pending : reading.pending - reading.pendingBulk;
   return small <= 0;
+};
+
+/**
+ * The small class's last snap failed. From the per-class `snaps` when sealantd reports them, so a
+ * failing bulk snap does not hold up what only needs the small class; from the summed fields
+ * (`captureSnapFailing`) otherwise.
+ */
+const smallSnapFailing = (reading: CaptureReading): boolean => {
+  const snaps = reading.snaps ?? null;
+  if (snaps === null || snaps.length === 0) return captureSnapFailing(reading);
+  return snaps.some((snap) => snap.class === "small" && snap.failing);
+};
+
+/** The byte quota refused the small class: by name when the answer names classes, else any. */
+const smallRefused = (reading: CaptureReading): boolean => {
+  const classes = reading.refusedClasses ?? null;
+  return classes === null ? (reading.refused ?? 0) > 0 : classes.includes("small");
+};
+
+/**
+ * Whether the registered head has caught up with the executor's small class as of this answer —
+ * the barrier a landing takes before it publishes (`SessionEngine.landingCheckpoint`), and what
+ * lets any checkpoint say `flushed`. Harvest-ready (`captureHarvestReady`), and the small snapshot
+ * the answer followed succeeded and holds everything: no small snap failing, no path it could not
+ * read (sealantd sums `unreadable` over both classes and names no class, so any unreadable path
+ * holds it — a carried path would publish its last captured content, not the disk's), no small
+ * refusal, no register being repaired and no paused shipping. An empty queue alone is not that:
+ * a snap that fails or carries a path forward stages nothing new.
+ */
+export const captureCaughtUp = (reading: CaptureReading): boolean => {
+  if (!captureHarvestReady(reading)) return false;
+  if (reading.paused || reading.repairing === true) return false;
+  if (smallRefused(reading)) return false;
+  if (Math.max(reading.unreadable ?? 0, reading.unreadablePaths.length) > 0) return false;
+  return !smallSnapFailing(reading);
 };
 
 /** Whether `next` is closer to saved than `previous`: fewer pending, fewer bytes, more shipped. */
@@ -305,6 +366,8 @@ export const captureIncompleteWords = (reason: string | null | undefined): strin
       return "final seal not registered";
     case "internal":
       return "executor error";
+    case CAPTURE_EXECUTOR_RETAINED:
+      return "executor kept for recovery";
     default:
       return reason;
   }
@@ -363,7 +426,7 @@ export const captureStatusLine = (facts: SessionCaptureFacts): string | null => 
         ...(why === null ? [] : [why]),
         ...(detail === null || detail === "" ? [] : [detail]),
         ...(left === null ? [] : [`${left} pending`]),
-        "workspace kept",
+        ...(facts.captureIncompleteReason === CAPTURE_EXECUTOR_RETAINED ? [] : ["workspace kept"]),
       ].join(" · ");
     }
     return left === null ? "saving" : `saving · ${left} left`;
@@ -391,11 +454,13 @@ export const captureStatusLine = (facts: SessionCaptureFacts): string | null => 
  */
 export interface ExecutorEndFacts {
   /**
-   * The chain head as registered when the end was observed: its capture kind, its registration
-   * time, and whether its bulk section was still `pending`. Null when nothing ever registered.
+   * The chain head as registered when the end was observed: its capture kind, its chain position
+   * when known, its registration time, and whether its bulk section was still `pending`. Null
+   * when nothing ever registered.
    */
   readonly head: {
     readonly kind: string;
+    readonly n?: number | null;
     readonly registeredAt: Date;
     readonly bulkPending: boolean;
   } | null;
@@ -409,27 +474,41 @@ export interface ExecutorEndFacts {
   };
   /**
    * This executor's own word that its final flush completed (`captureSaved`: `complete: true`,
-   * nothing pending), when Mend observed it, and the chain position it named. Null or absent:
-   * Mend never observed one.
+   * nothing pending), as Mend observed it from this executor under its epoch, and the chain
+   * position it named. Null or absent: Mend never observed one.
    */
   readonly finalSaved?: { readonly at: Date; readonly n: number | null } | null;
+  /**
+   * The store's sealed record for this executor and epoch: sealantd registered its sealing
+   * capture with `final_seal: { complete: true }` after a completed final flush. Null or absent:
+   * none recorded, or none Mend can bind to this executor and epoch.
+   */
+  readonly sealed?: { readonly at: Date; readonly n: number | null } | null;
 }
 
 /**
- * How such an end reads:
- * - `saved`: Mend observed this executor answer `complete: true` with nothing pending — it had
- *   stopped every writer, snapshotted both classes and registered them, and it admits nothing
- *   after that, so captures registered on top of it (a later suspend flush) change nothing; or,
- *   with no such answer observed, the executor's own final flush registered last — sealantd
- *   takes a final capture only after it has stopped admitting processes and ended the running
- *   ones — this executor took it, its bulk section is not pending, and nothing Mend read after it
- *   was pending;
- * - `lost`: anything else. `lastSavedAt` is the head's registration; `pending` is Mend's last
- *   reading of the queue, only when it was taken by this executor after that registration and
- *   saw something pending. Mend never counts what it did not observe.
+ * How such an end reads. Saved is never inferred from a capture's kind: a final-kind head can
+ * carry an older bulk section after its final flush failed (review 2026-09-28 #13).
+ * - `saved`: Mend observed this executor answer `complete: true` with nothing pending under its
+ *   epoch, or the store holds the sealed record of its completed final flush — it had stopped
+ *   every writer, snapshotted both classes and registered them, and admits nothing after that,
+ *   so captures registered on top of it change nothing;
+ * - `unconfirmed`: this executor took a final capture of its own (sealantd ran its final flush,
+ *   so something outside Mend stopped it), and neither word says that flush completed. The last
+ *   registered capture is named; its completion is unknown;
+ * - `lost`: anything else. `lastSavedAt` is the head's registration.
+ * In both of the last two, `pending` is Mend's last reading of the queue, only when it was taken
+ * by this executor after that registration and saw something pending. Mend never counts what it
+ * did not observe.
  */
 export type ExecutorEnd =
   | { readonly kind: "saved"; readonly savedAt: Date; readonly n?: number | null }
+  | {
+      readonly kind: "unconfirmed";
+      readonly lastSavedAt: Date;
+      readonly lastSavedN: number | null;
+      readonly pending: { readonly words: string; readonly observedAt: Date } | null;
+    }
   | {
       readonly kind: "lost";
       readonly lastSavedAt: Date | null;
@@ -450,15 +529,8 @@ export const executorEndOf = (facts: ExecutorEndFacts): ExecutorEnd => {
   if (finalSaved !== null && byThisExecutor(finalSaved.at)) {
     return { kind: "saved", savedAt: finalSaved.at, n: finalSaved.n };
   }
-  if (
-    head !== null &&
-    head.kind === "final" &&
-    !head.bulkPending &&
-    byThisExecutor(head.registeredAt) &&
-    !pendingAfter(head.registeredAt)
-  ) {
-    return { kind: "saved", savedAt: head.registeredAt };
-  }
+  const sealed = facts.sealed ?? null;
+  if (sealed !== null) return { kind: "saved", savedAt: sealed.at, n: sealed.n };
   const lastSavedAt = head?.registeredAt ?? null;
   const pending =
     reading.observedAt !== null && reading.pending !== null && pendingAfter(lastSavedAt)
@@ -470,30 +542,65 @@ export const executorEndOf = (facts: ExecutorEndFacts): ExecutorEnd => {
           observedAt: reading.observedAt,
         }
       : null;
+  if (head !== null && head.kind === "final" && byThisExecutor(head.registeredAt)) {
+    return {
+      kind: "unconfirmed",
+      lastSavedAt: head.registeredAt,
+      lastSavedN: head.n ?? null,
+      pending,
+    };
+  }
   return { kind: "lost", lastSavedAt, pending };
 };
 
 /**
- * `stopped outside Mend · saved at 16:29:51 UTC` (`· capture 21` when the executor named its
- * chain position), or `executor lost · last saved 16:32:06 UTC ·
- * changes after that were not saved · 3 pending at 16:32:00 UTC` (the last part only when Mend
- * read the queue after that save). Every "executor lost" line starts with `executor lost`.
+ * `stopped outside Mend · saved at 16:29:51 UTC` (`· capture 21` when the chain position is
+ * known); `stopped outside Mend · last saved capture 21 at 16:29:51 UTC · completion unknown`
+ * when its own final capture registered without a completed word; or `executor lost · last saved
+ * 16:32:06 UTC · changes after that were not saved · 3 pending at 16:32:00 UTC` (the last part
+ * only when Mend read the queue after that save). Every "executor lost" line starts with
+ * `executor lost`.
  */
 export const executorEndWords = (end: ExecutorEnd): string => {
   if (end.kind === "saved") {
     const n = end.n ?? null;
     return `stopped outside Mend · saved at ${utcTime(end.savedAt)}${n === null ? "" : ` · capture ${n}`}`;
   }
-  const saved =
-    end.lastSavedAt === null
-      ? ["nothing saved"]
-      : [`last saved ${utcTime(end.lastSavedAt)}`, "changes after that were not saved"];
   const pending =
     end.pending === null
       ? []
       : [`${end.pending.words} pending at ${utcTime(end.pending.observedAt)}`];
+  if (end.kind === "unconfirmed") {
+    const capture = end.lastSavedN === null ? "" : `capture ${end.lastSavedN} at `;
+    return [
+      "stopped outside Mend",
+      `last saved ${capture}${utcTime(end.lastSavedAt)}`,
+      "completion unknown",
+      ...pending,
+    ].join(" · ");
+  }
+  const saved =
+    end.lastSavedAt === null
+      ? ["nothing saved"]
+      : [`last saved ${utcTime(end.lastSavedAt)}`, "changes after that were not saved"];
   return ["executor lost", ...saved, ...pending].join(" · ");
 };
+
+/**
+ * A harness that ended while its executor never answered Mend's looks: the executor's fate is
+ * unknown, so the harness's own outcome is not what the session reports. `executor not answering
+ * · last saved capture 21 at 16:29:51 UTC · completion unknown`, or `· nothing saved`.
+ */
+export const executorUnansweredWords = (
+  lastSaved: { readonly n: number | null; readonly at: Date } | null,
+): string =>
+  [
+    "executor not answering",
+    lastSaved === null
+      ? "nothing saved"
+      : `last saved ${lastSaved.n === null ? "" : `capture ${lastSaved.n} at `}${utcTime(lastSaved.at)}`,
+    "completion unknown",
+  ].join(" · ");
 
 /**
  * What one executor was observed to ship, as rates (`observeCaptureThroughput`): bytes uploaded

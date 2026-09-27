@@ -1,5 +1,7 @@
 import { CaptureStoreRepo } from "@mend/db";
 import {
+  type CaptureClass,
+  type CaptureClassSnaps,
   type CaptureReading,
   DEFAULT_CAPTURE_DRAIN_ESTIMATE_SECONDS,
   DEFAULT_CAPTURE_DRAIN_STALL_SECONDS,
@@ -182,6 +184,39 @@ const reportedText = (report: object, key: string): string | null => {
   return typeof value === "string" && value.trim() !== "" ? value : null;
 };
 
+const captureClassOf = (value: unknown): CaptureClass | null =>
+  value === "small" || value === "bulk" ? value : null;
+
+/** The classes a `refused` answer names (`["bulk"]`, or one class); null when it names none. */
+const refusedClassesOf = (value: unknown): ReadonlyArray<CaptureClass> | null => {
+  if (Array.isArray(value)) {
+    return value.flatMap((entry) => {
+      const known = captureClassOf(entry);
+      return known === null ? [] : [known];
+    });
+  }
+  const one = captureClassOf(value);
+  return one === null ? null : [one];
+};
+
+/**
+ * Each class's snaps (`snaps`, sealantd's per-class health): failing while its last snap has an
+ * error or a failing-since time. Null when the answer carries none.
+ */
+const classSnapsOf = (value: unknown): ReadonlyArray<CaptureClassSnaps> | null => {
+  if (!Array.isArray(value)) return null;
+  return value.flatMap((entry: unknown) => {
+    if (typeof entry !== "object" || entry === null) return [];
+    const known = captureClassOf(Reflect.get(entry, "class"));
+    if (known === null) return [];
+    const error = Reflect.get(entry, "lastSnapError");
+    const failing =
+      (typeof error === "string" && error.trim() !== "") ||
+      reportedTime(Reflect.get(entry, "snapFailingSinceUnixMs")) !== null;
+    return [{ class: known, failing }];
+  });
+};
+
 /**
  * A flush or status answer as Mend reads it (`CaptureReading`). The SDK types what sealantd
  * reported when it was cut; `pendingBytes`, `pendingBulk`, `bulkDirty`, `refused`, `complete`,
@@ -216,4 +251,11 @@ export const readCaptureReport = (report: WorkspaceCaptureStatus): CaptureReadin
   snapsFailed: reportedCount(Reflect.get(report, "snapsFailed")),
   unreadable: reportedCount(Reflect.get(report, "unreadable")),
   unreadablePaths: unreadablePathsOf(Reflect.get(report, "unreadablePaths")),
+  epoch: report.epoch,
+  snaps: classSnapsOf(Reflect.get(report, "snaps")),
+  refusedClasses: "refused" in report ? refusedClassesOf(report.refused) : null,
+  repairing:
+    typeof Reflect.get(report, "repairing") === "boolean"
+      ? Reflect.get(report, "repairing") === true
+      : null,
 });

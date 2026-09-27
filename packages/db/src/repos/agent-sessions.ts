@@ -96,6 +96,8 @@ export interface CaptureSavedObservation {
   readonly workspaceId: string;
   readonly at: Date;
   readonly n: number | null;
+  /** The lease epoch the answering executor shipped under; null when the answer did not say. */
+  readonly epoch: number | null;
 }
 
 /** The owner's "discard unsaved and stop", as the session keeps it: when, and who. */
@@ -312,6 +314,31 @@ export class SessionsRepo extends Context.Service<
     readonly listCaptureDrains: () => Effect.Effect<ReadonlyArray<Session>>;
     /** Stamp the current executor's start — what the platform's cap counts from. */
     readonly setExecutorStartedAt: (id: SessionId, at: Date) => Effect.Effect<void>;
+    /**
+     * The platform accepted this session's executor (capture mode): its workspace is the
+     * session's from now on, before anything runs in it — a setup command, the harness — so a
+     * launch that fails or is cut short after this still names the executor that may hold its
+     * work. The run and the PTY follow once the harness starts (`setSealantIds`).
+     */
+    readonly recordAcceptedWorkspace: (
+      id: SessionId,
+      workspaceId: SealantWorkspaceId,
+      executorStartedAt: Date,
+    ) => Effect.Effect<void>;
+    /**
+     * The runtime identity of the executor in `workspaceId` (`details().runtime.resourceId`),
+     * recorded only while that is still the session's workspace.
+     */
+    readonly recordExecutorResource: (
+      id: SessionId,
+      workspaceId: SealantWorkspaceId,
+      resourceId: string,
+    ) => Effect.Effect<void>;
+    /** The session's current executor's runtime identity, with the workspace it belongs to. */
+    readonly executorResourceOf: (id: SessionId) => Effect.Effect<{
+      readonly workspaceId: SealantWorkspaceId;
+      readonly resourceId: string;
+    } | null>;
     /** Removal asked while the workspace was up; the sweep removes the row once it has gone. */
     readonly requestRemoval: (id: SessionId, at: Date) => Effect.Effect<void>;
     /** Sessions whose removal waits on their workspace. */
@@ -350,7 +377,9 @@ type SessionBookkeepingColumns =
   | "captureFinalWorkspaceId"
   | "captureSavedWorkspaceId"
   | "captureSavedAt"
-  | "captureSavedN";
+  | "captureSavedN"
+  | "captureSavedEpoch"
+  | "executorResourceId";
 const sessionSeamIntact: ExactKeys<Omit<SessionRow, SessionBookkeepingColumns>, Session> = true;
 void sessionSeamIntact;
 
@@ -1099,6 +1128,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             captureSavedWorkspaceId: saved.workspaceId,
             captureSavedAt: saved.at,
             captureSavedN: saved.n,
+            captureSavedEpoch: saved.epoch,
           })
           .where(eq(agentSessions.id, id))
           .pipe(Effect.orDie);
@@ -1110,13 +1140,14 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             workspaceId: agentSessions.captureSavedWorkspaceId,
             at: agentSessions.captureSavedAt,
             n: agentSessions.captureSavedN,
+            epoch: agentSessions.captureSavedEpoch,
           })
           .from(agentSessions)
           .where(eq(agentSessions.id, id))
           .limit(1)
           .pipe(Effect.orDie);
         if (row === undefined || row.workspaceId === null || row.at === null) return null;
-        return { workspaceId: row.workspaceId, at: row.at, n: row.n };
+        return { workspaceId: row.workspaceId, at: row.at, n: row.n, epoch: row.epoch };
       });
 
       const recordCaptureDrainProgress = Effect.fn("SessionsRepo.recordCaptureDrainProgress")(
@@ -1200,6 +1231,56 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
+      const recordAcceptedWorkspace = Effect.fn("SessionsRepo.recordAcceptedWorkspace")(function* (
+        id: SessionId,
+        workspaceId: SealantWorkspaceId,
+        executorStartedAt: Date,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({
+            sealantWorkspaceId: workspaceId,
+            executorStartedAt,
+            executorResourceId: null,
+            workspaceExpiresAt: null,
+            workspaceTtlRenewedAt: null,
+            workspaceTtlRenewalFailedAt: null,
+            workspaceTtlRenewalError: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+        yield* notify(id);
+      });
+
+      const recordExecutorResource = Effect.fn("SessionsRepo.recordExecutorResource")(function* (
+        id: SessionId,
+        workspaceId: SealantWorkspaceId,
+        resourceId: string,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({ executorResourceId: resourceId })
+          .where(and(eq(agentSessions.id, id), eq(agentSessions.sealantWorkspaceId, workspaceId)))
+          .pipe(Effect.orDie);
+      });
+
+      const executorResourceOf = Effect.fn("SessionsRepo.executorResourceOf")(function* (
+        id: SessionId,
+      ) {
+        const [row] = yield* db
+          .select({
+            workspaceId: agentSessions.sealantWorkspaceId,
+            resourceId: agentSessions.executorResourceId,
+          })
+          .from(agentSessions)
+          .where(eq(agentSessions.id, id))
+          .limit(1)
+          .pipe(Effect.orDie);
+        if (row === undefined || row.workspaceId === null || row.resourceId === null) return null;
+        return { workspaceId: row.workspaceId, resourceId: row.resourceId };
+      });
+
       const requestRemoval = Effect.fn("SessionsRepo.requestRemoval")(function* (
         id: SessionId,
         at: Date,
@@ -1278,6 +1359,9 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         endCaptureDrain,
         listCaptureDrains,
         setExecutorStartedAt,
+        recordAcceptedWorkspace,
+        recordExecutorResource,
+        executorResourceOf,
         requestRemoval,
         listRemovalRequested,
       };

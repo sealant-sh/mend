@@ -218,6 +218,9 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
   endCaptureDrain: () => Effect.void,
   listCaptureDrains: () => Effect.succeed([]),
   setExecutorStartedAt: () => Effect.void,
+  recordAcceptedWorkspace: () => Effect.void,
+  recordExecutorResource: () => Effect.void,
+  executorResourceOf: () => Effect.succeed(null),
   requestRemoval: () => Effect.void,
   listRemovalRequested: () => Effect.succeed([]),
 });

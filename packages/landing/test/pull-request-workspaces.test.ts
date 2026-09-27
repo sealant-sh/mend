@@ -146,7 +146,7 @@ const fakePlatform = (options: {
           stopWorkspace: (workspace) =>
             Effect.sync(() => {
               stopped.push(workspace.id);
-              return "stopped" as const;
+              return { state: "stopped" as const, retained: null, completion: null };
             }),
           exec: (workspace, argv) =>
             Effect.sync(() => {

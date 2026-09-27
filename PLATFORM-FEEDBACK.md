@@ -44,6 +44,53 @@ Two wire points on the session channel (sealantd `crates/sealant-capture/src/reg
     sections unchanged, `kind: "final"`, `n` = head + 1) carrying `final_seal`, and report
     `complete: true` only once that register is acknowledged.
 
+## 2026-09-28 · 0.37.2 · The runtime deadline, wired; a stop that carries the completion; an executor whose create answer was lost
+
+- **The runtime deadline, wired.**
+  - **Needed:** the planned drain ahead of a MicroVM's cap counts back from the platform's own
+    deadline (2026-09-27, "The runtime deadline").
+  - **Today:** `SealantClient.runtimeDeadline` calls `workspace.runtimeDeadline()` when the SDK has
+    it (Core's next SDK) and answers null otherwise; the capture reaper reads it once per executor
+    (again on the status cadence while it answers null) and passes it to `planExecutorCap`, where it
+    wins over `MEND_EXECUTOR_MAX_SECONDS` and the fallback age. On 0.37.2 nothing changes: the
+    configuration or the 7 h 30 fallback still plans the drain.
+  - **Suggested:** ship `runtimeDeadline()` in the SDK Mend pins; nothing else changes here.
+- **A stop that carries the completion.**
+  - **Needed:** Core keeps a capture-sourced executor's disk unless it observed `complete: true`
+    itself; when the final flush's answer was lost on the way (a relay that closed), the store's
+    sealed record of it (`final_seal`, registered by sealantd with the sealing capture) is the same
+    fact, durable.
+  - **Today:** every stop Mend sends through a drain carries
+    `completion: { captureN, epoch, executorId }` when the store holds that seal for the executor
+    and its epoch (`WorkspaceStopOptions.completion`). Core names an executor by its runtime
+    identity (`details().runtime.resourceId`: the container, the Pod, the MicroVM), so Mend records
+    it on the session at launch (migration 0081, `executor_resource_id`) and maps the seal (which
+    names the session the lease names) to it. No SDK exposes `details()` yet — neither 0.37.2 nor
+    Core's `fix/capture-retention-policy` facade, whose docs refer to it — so Mend reads it
+    structurally when it appears and, until then, sends no completion at all (Core keeps what it
+    cannot confirm). SDK 0.37.2's `stop()` takes no options either. A seal alone still ends a drain
+    whose answer was lost. A stop whose answer says `drain.retained` reads
+    `not saved · executor kept for recovery · <reason>` and stays a kept drain.
+  - **Suggested:** `workspace.details()` on the facade with `runtime.resourceId`, and
+    `workspace.stop({ completion })` answering `completion.outcome`.
+- **An executor whose create answer was lost.**
+  - **Needed:** Mend now writes an executor's workspace id on the session the moment
+    `workspaces.create` answers, before anything runs in it. If Mend restarts inside that window, or
+    the create's answer never arrives, an executor may exist that Mend cannot name; the lease that
+    names the session then holds the worktree and its removal (unresolved, never ended).
+  - **Today:** the SDK has no way to find a workspace by what Mend asked for (no listing, no
+    idempotency key on create), so that ownership stays unresolved until the lease is released by
+    hand.
+  - **Suggested:** an idempotency key on `workspaces.create` (Mend passes the session id and the
+    launch's correlation id), answered with the existing workspace on a retry, or a lookup by it.
+- **Unreadable paths by class (sealantd).**
+  - **Needed:** a landing publishes only the small class; a carried unreadable bulk path should not
+    hold it up.
+  - **Today:** `unreadable` / `unreadable_paths` sum both classes, so Mend holds a landing on any
+    unreadable path (`captureCaughtUp`); per-class `snaps` already decide failing snaps by class.
+  - **Suggested:** the class beside each unreadable path, or an unreadable count per class in
+    `snaps`.
+
 ## 2026-09-27 · 0.37.2 · A capture status read, and a snap that fails says so
 
 - **A capture status read.**

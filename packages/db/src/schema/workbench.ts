@@ -1205,6 +1205,9 @@ export const agentSessions = pgTable(
     captureSavedWorkspaceId: text(),
     captureSavedAt: timestamp({ mode: "date", withTimezone: true }),
     captureSavedN: integer(),
+    captureSavedEpoch: integer(),
+    // The current executor's runtime identity (`details().runtime.resourceId`, 0081).
+    executorResourceId: text(),
     // When the current executor started: what the platform's cap counts from (0075).
     executorStartedAt: timestamp({ mode: "date", withTimezone: true }),
     // Removal asked while the workspace was up; the row goes once it has (0075).
