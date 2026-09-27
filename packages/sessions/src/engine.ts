@@ -102,6 +102,7 @@ import {
   type CaptureDrainStep,
   type CaptureReading,
   captureDrainStep,
+  captureBehindReason,
   captureCaughtUp,
   captureHarvestReady,
   captureIncompleteReasonOf,
@@ -1661,6 +1662,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             registered: reading.registered,
           }),
         );
+        // A suspend flush reads completed only when the head caught up with it — the same
+        // predicate a landing takes (`captureCaughtUp`), never the queue alone.
+        const behind = captureBehindReason(reading);
         const words =
           kind === "final"
             ? captureSaved(reading)
@@ -1668,15 +1672,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               : reading.complete === null
                 ? "final · completion not reported"
                 : "final · incomplete"
-            : reading.pending === 0 && !reading.fenced
+            : behind === null
               ? "completed"
-              : "partial";
+              : `partial · ${behind}`;
         yield* Effect.logInfo(`session engine: capture flush · ${words} · observed`).pipe(
           Effect.annotateLogs({
             ...annotations,
             kind,
             complete: reading.complete,
             incompleteReason: reading.incompleteReason,
+            behind,
             epoch: report.epoch,
             headN: report.headN ?? null,
             pending: report.pending,

@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  CAPTURE_HEALTH_UNREPORTED,
+  captureBehindReason,
   captureBytesWords,
   captureCaughtUp,
   captureDiscardAuditData,
@@ -75,15 +77,26 @@ describe("captureHarvestReady", () => {
 });
 
 describe("captureCaughtUp (the landing barrier, review 2026-09-28 #14)", () => {
+  /** An answer from a daemon that reports snapshot health (`unreadable`, 0 when every path read). */
+  const healthy = (patch: Partial<CaptureReading> = {}) => reading({ unreadable: 0, ...patch });
+
+  it("is not caught up when the answer does not report snapshot health at all (review 3 #16, decision 9)", () => {
+    // What `@sealant/sdk` 0.37.2's facade hands back: the queue, and nothing of the snapshots.
+    expect(captureCaughtUp(reading({ complete: null }))).toBe(false);
+    expect(captureBehindReason(reading({ complete: null }))).toBe(CAPTURE_HEALTH_UNREPORTED);
+    expect(captureCaughtUp(healthy({ complete: null }))).toBe(true);
+    expect(captureBehindReason(healthy({ complete: null }))).toBeNull();
+  });
+
   it("is not caught up while the small class's last snap failed, a path could not be read, or the small class was refused, however empty the queue", () => {
-    expect(captureCaughtUp(reading({ complete: null }))).toBe(true);
+    expect(captureCaughtUp(healthy({ complete: null }))).toBe(true);
     // A suspend snap that carried an unreadable file forward: empty queue, stale content.
     expect(
-      captureCaughtUp(reading({ complete: null, unreadable: 1, unreadablePaths: ["tree/app.ts"] })),
+      captureCaughtUp(healthy({ complete: null, unreadable: 1, unreadablePaths: ["tree/app.ts"] })),
     ).toBe(false);
     expect(
       captureCaughtUp(
-        reading({
+        healthy({
           complete: false,
           incompleteReason: "unreadable",
           snapError: "unreadable current source file",
@@ -91,14 +104,14 @@ describe("captureCaughtUp (the landing barrier, review 2026-09-28 #14)", () => {
         }),
       ),
     ).toBe(false);
-    expect(captureCaughtUp(reading({ refused: 1, refusedClasses: ["small"] }))).toBe(false);
-    expect(captureCaughtUp(reading({ repairing: true }))).toBe(false);
-    expect(captureCaughtUp(reading({ paused: true }))).toBe(false);
-    expect(captureCaughtUp(reading({ pending: 1 }))).toBe(false);
+    expect(captureCaughtUp(healthy({ refused: 1, refusedClasses: ["small"] }))).toBe(false);
+    expect(captureCaughtUp(healthy({ repairing: true }))).toBe(false);
+    expect(captureCaughtUp(healthy({ paused: true }))).toBe(false);
+    expect(captureCaughtUp(healthy({ pending: 1 }))).toBe(false);
   });
 
   it("a failing bulk snap or a bulk refusal does not hold up what needs only the small class", () => {
-    const bulkFailing = reading({
+    const bulkFailing = healthy({
       complete: false,
       incompleteReason: "snapshot-failed",
       snapError: "EACCES: node_modules/.cache",
@@ -109,7 +122,7 @@ describe("captureCaughtUp (the landing barrier, review 2026-09-28 #14)", () => {
       ],
     });
     expect(captureCaughtUp(bulkFailing)).toBe(true);
-    expect(captureCaughtUp(reading({ refused: 1, refusedClasses: ["bulk"] }))).toBe(true);
+    expect(captureCaughtUp(healthy({ refused: 1, refusedClasses: ["bulk"] }))).toBe(true);
     // Without per-class snaps, any failing snap holds it.
     expect(captureCaughtUp({ ...bulkFailing, snaps: null })).toBe(false);
   });

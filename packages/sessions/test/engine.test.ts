@@ -184,6 +184,7 @@ import {
   Exit,
   Fiber,
   Layer,
+  Logger,
   Schedule,
   Stream,
   type Scope,
@@ -193,6 +194,9 @@ import { makeMemoryCaptureStore, type MemoryCaptureStore } from "./capture-store
 import { memoryStoreRefs } from "./capture-world.ts";
 
 /** Every platform method dies — these tests exercise the platform-free paths. */
+/** What a daemon that reports snapshot health says when every path read (sealantd `Some(0)`). */
+const readEverything: object = { unreadable: 0, carried: 0 };
+
 const sealantDeadLayer = Layer.succeed(SealantClient, {
   createWorkspace: () => Effect.die("not in test"),
   getWorkspace: () => Effect.die("not in test"),
@@ -560,6 +564,7 @@ const sealantLaunchLayer = (
                 registered: 0,
                 fenced: false,
                 paused: false,
+                ...readEverything,
               };
         if (kind !== "final" || captureOps?.finalCompletion === "unreported") return answer;
         return { ...answer, ...finalCompletionOf(answer) };
@@ -2265,6 +2270,8 @@ const withEngine = <A, E>(
     readonly drainPolicy?: Partial<CaptureDrainPolicyShape>;
     /** The store's sealed records of completed final flushes; none unless a test says. */
     readonly seals?: Layer.Layer<CaptureSeals>;
+    /** Every log line the engine writes, in order, when a test reads them. */
+    readonly logs?: Array<string>;
   } = {},
 ): Promise<A> => {
   const tmp = options.fixture?.tmp ?? fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
@@ -2378,9 +2385,19 @@ const withEngine = <A, E>(
       ),
     ),
   );
+  const logs = options.logs;
+  const loggerLayer =
+    logs === undefined
+      ? Layer.empty
+      : Logger.layer([
+          Logger.make(({ message }) => {
+            logs.push(Array.isArray(message) ? message.map(String).join(" ") : String(message));
+          }),
+        ]);
   return Effect.runPromise(
     work(world, tmp).pipe(
       Effect.provide(Layer.mergeAll(engineLayer, storeLayer, worktreesLayer(world))),
+      Effect.provide(loggerLayer),
       Effect.scoped,
       Effect.ensuring(
         options.fixture === undefined
@@ -6302,6 +6319,7 @@ const verifyDeferredFinalHarvest = async (pathKind: "stop" | "handoff" | "sweep"
                 registered: shipped ? 1 : 0,
                 fenced: false,
                 paused: false,
+                ...readEverything,
               } satisfies WorkspaceCaptureStatus;
             });
           },
@@ -7213,6 +7231,7 @@ describe("SessionEngine capture mode", () => {
                         registered: 1,
                         fenced: false,
                         paused: false,
+                        ...readEverything,
                       }),
                     );
                   }
@@ -8338,6 +8357,7 @@ describe("SessionEngine capture mode", () => {
         registered: 0,
         fenced: false,
         paused: false,
+        ...readEverything,
       } satisfies WorkspaceCaptureStatus);
     const answered: Array<{
       readonly worktreeId: string;
@@ -8684,6 +8704,7 @@ describe("SessionEngine capture mode", () => {
                     registered: 1,
                     fenced: false,
                     paused: false,
+                    ...readEverything,
                   })),
                 ),
             },
@@ -8786,6 +8807,7 @@ const flushReport = (
   registered: shipped,
   fenced: false,
   paused: false,
+  ...readEverything,
   ...extra,
 });
 
@@ -11572,6 +11594,95 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
                         unreadablePaths: ["tree/app.ts"],
                       },
                 ),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "review 3 #17 a suspend flush whose small snapshot carried an unreadable path logs partial · unreadable, never completed",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const logs: Array<string> = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            logs.length = 0;
+            expect(yield* engine.flushCaptures(session.id, "landing")).toBe("incomplete");
+            const flushed = logs.filter((line) => line.includes("capture flush ·"));
+            expect(flushed).toEqual([
+              "session engine: capture flush · partial · unreadable · observed",
+            ]);
+          }),
+        {
+          captured: memory,
+          logs,
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              finalCompletion: "unreported",
+              flush: () =>
+                Effect.succeed({
+                  ...flushReport(0, 1),
+                  lastSnapError: "unreadable current source file",
+                  snapFailingSinceUnixMs: Date.now(),
+                  unreadable: 1,
+                  carried: 1,
+                  unreadablePaths: ["tree/app.ts"],
+                }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "review 3 #16 a flush answer that does not report snapshot health (SDK 0.37.2's facade) holds a landing: partial · snapshot health not reported",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const logs: Array<string> = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            logs.length = 0;
+            expect(yield* engine.flushCaptures(session.id, "landing")).toBe("incomplete");
+            expect(logs.filter((line) => line.includes("capture flush ·"))).toEqual([
+              "session engine: capture flush · partial · snapshot health not reported · observed",
+            ]);
+            const refused = yield* engine
+              .landingCheckpoint(session.id, "user-mark")
+              .pipe(Effect.flip);
+            expect(refused._tag).toBe("CapturesBehindError");
+          }),
+        {
+          captured: memory,
+          logs,
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              finalCompletion: "unreported",
+              // Exactly the fields `@sealant/sdk` 0.37.2's `capture.flush()` rebuilds.
+              flush: () =>
+                Effect.succeed({
+                  epoch: 2,
+                  worktreeId: "",
+                  pending: 0,
+                  stagedBytes: 0,
+                  uploadedObjects: 1,
+                  uploadedBytes: 1000,
+                  registered: 1,
+                  fenced: false,
+                  paused: false,
+                }),
             },
           }),
         },
