@@ -5,6 +5,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import {
+  type DockerDaemonFacts,
+  dockerShutdownSetupLine,
+  hostDockerDaemonFacts,
+  readShutdownTimeout,
+} from "./docker-shutdown.ts";
+import {
   claimServerDockerVolumes,
   MEND_DOCKER_NAMESPACE,
   MEND_DOCKER_NAMESPACE_WITH_GARAGE,
@@ -79,6 +85,11 @@ export interface ServerSetupRuntime {
   sleep(milliseconds: number): Promise<void>;
   /** Print one progress or result line. */
   writeLine(line: string): void;
+  /**
+   * This host's Docker daemon facts beside `docker info`'s JSON (null when it did not answer):
+   * its dockerd argv and daemon.json (`docker-shutdown.ts`). Absent: setup does not read them.
+   */
+  readonly dockerDaemonFacts?: (infoStdout: string | null) => DockerDaemonFacts;
 }
 
 /** Observable result of a server command. Expected lifecycle failures do not reject. */
@@ -1298,6 +1309,21 @@ const setupServer = async (
   };
   const assets = await resolveAssets(runtime, serverVersion, existing, store, options);
   const bucket = composeBucket(assets.compose);
+  // Capture workspaces save on a stop within their long stop grace; a daemon shutdown gives them
+  // only the daemon's own timeout. Said once here, where the operator can still raise it.
+  if (bucket !== undefined && runtime.dockerDaemonFacts !== undefined) {
+    const info = await runtime.run("docker", [
+      "--context",
+      selectedContext.name,
+      "info",
+      "--format",
+      "{{json .}}",
+    ]);
+    const line = dockerShutdownSetupLine(
+      readShutdownTimeout(runtime.dockerDaemonFacts(info.status === 0 ? info.stdout : null)),
+    );
+    if (line !== null) runtime.writeLine(line);
+  }
   const config: ServerConfig = {
     ...configWithoutBucket,
     ...(bucket === undefined ? {} : { bucket }),
@@ -1714,6 +1740,7 @@ export const nodeServerRuntime = (): ServerSetupRuntime => {
     randomBytes,
     sleep: (milliseconds) => new Promise<void>((resolve) => setTimeout(resolve, milliseconds)),
     writeLine: (line) => process.stdout.write(`${line}\n`),
+    dockerDaemonFacts: hostDockerDaemonFacts,
   };
 };
 

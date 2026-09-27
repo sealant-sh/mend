@@ -6,6 +6,7 @@ import * as path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { DockerProtocol } from "../test-fixtures/docker-protocol.ts";
+import { type HostFile, parseDockerInfo } from "./docker-shutdown.ts";
 import { SERVER_VOLUME_OWNER_LABEL } from "./server-docker-volumes.ts";
 import { serverCommand, type ServerSetupRuntime } from "./server-setup.ts";
 
@@ -229,6 +230,18 @@ const activeDirectory = (configDir: string): string =>
   path.join(configDir, fs.readlinkSync(path.join(configDir, "active")));
 const activeFile = (configDir: string, name: string): string =>
   path.join(activeDirectory(configDir), name);
+
+/** This host's daemon facts with a daemon.json that sets `shutdown-timeout` (null: unset). */
+const daemonFacts = (shutdownTimeout: number | null) => (infoStdout: string | null) => ({
+  info: infoStdout === null ? null : parseDockerInfo(infoStdout),
+  dockerdArgv: ["/usr/bin/dockerd", "-H", "fd://"],
+  readFile: (): HostFile =>
+    shutdownTimeout === null
+      ? { kind: "absent" }
+      : { kind: "read", text: JSON.stringify({ "shutdown-timeout": shutdownTimeout }) },
+  home: "/home/op",
+  xdgConfigHome: null,
+});
 
 describe("mend server setup", () => {
   it("persists the complete generation before claiming daemon data; retries retain identity and use fresh probes", async () => {
@@ -572,6 +585,27 @@ describe("mend server setup", () => {
     }
     // Offline never pulls anything.
     expect(control.commands.filter(([, args]) => args.includes("pull"))).toHaveLength(0);
+  });
+
+  it("warns, before starting, when the daemon's shutdown timeout is below the capture grace, and says nothing once it covers it", async () => {
+    const info = JSON.stringify({ OperatingSystem: "Ubuntu 24.04.1 LTS", SecurityOptions: [] });
+    const below = makeRuntime({ operatingSystem: info });
+    expect(
+      await serverCommand(["setup"], { ...below.runtime, dockerDaemonFacts: daemonFacts(null) }),
+    ).toEqual({ _tag: "ok" });
+    const warning = below.lines.findIndex((line) => line.startsWith("Docker shutdown-timeout"));
+    expect(below.lines[warning]).toBe(
+      'Docker shutdown-timeout is 15 s (dockerd default · not set in /etc/docker/daemon.json), below the 3600 s capture grace: a host restart or daemon stop kills capture workspaces after 15 s, before they save. To raise it: set "shutdown-timeout": 3600 in /etc/docker/daemon.json, then restart dockerd.',
+    );
+    expect(warning).toBeLessThan(below.lines.findIndex((line) => line.startsWith("Starting")));
+    const covered = makeRuntime({ operatingSystem: info });
+    expect(
+      await serverCommand(["setup"], {
+        ...covered.runtime,
+        dockerDaemonFacts: daemonFacts(3600),
+      }),
+    ).toEqual({ _tag: "ok" });
+    expect(covered.lines.some((line) => line.startsWith("Docker shutdown-timeout"))).toBe(false);
   });
 
   it.each([

@@ -202,7 +202,7 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "check this machine's setup, or bundle it for a bug report",
     synopsis: ["", "--bundle [--out <path>] [--tail <n>]"],
     description: [
-      "Read-only. One line per fact: the server, the sign-in, the platform connection, the provider accounts, the git key. Each unfinished line ends with the command that fixes it.",
+      "Read-only. One line per fact: the server, the sign-in, the platform connection, the provider accounts, the git key, and where docker is on PATH its daemon's shutdown-timeout against the capture grace. Each unfinished line ends with the command that fixes it.",
       "--bundle collects what a maintainer asks for one output at a time into one tar.gz: this CLI and its environment, the doctor lines, the server's health, the local server's configuration (its compose file and the names of its .env keys, never their values), docker version, info, contexts, the Mend and workspace containers with their inspect facts, the local server's container logs, the running workspace containers' logs, every session with its processes, exit codes and argv, the recorded terminal output of each, the connected accounts, and the versions and paths of claude, codex, gh, git and docker on this machine.",
       "Each part is collected on its own: one that fails leaves a <name>.error.txt in the bundle instead of stopping it. One redactor runs over every file before it is written: bearer and header values, Slack, OpenAI, GitHub and AWS token shapes, JWTs, passwords in URLs, and any password, secret or token value. The archive is written with mode 0600. It still contains logs and configuration; read it before you share it.",
     ],
