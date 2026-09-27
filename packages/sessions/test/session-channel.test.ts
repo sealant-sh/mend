@@ -22,6 +22,7 @@ import {
   SessionSocketHostLive,
   type SessionSocketApi,
 } from "../src/session-socket.ts";
+import type { WorkspaceLandOutcome } from "../src/workspace-git-hooks.ts";
 
 /**
  * The NETWORK session channel (docs/KUBERNETES.md): the same routes and the same git tunnel as
@@ -99,6 +100,7 @@ const api = (seen: unknown[]): SessionSocketApi => ({
       seen.push({ stopSession: true });
       return {};
     }),
+  land: () => Effect.succeed({ landed: false, lines: ["not landed · not in this test"] }),
   gitTransport: (request) =>
     Effect.sync(() => {
       seen.push({ git: request });
@@ -461,6 +463,77 @@ describe("SessionChannelNetworkHost", () => {
       ),
     );
   });
+  it("mend land asks the session's own channel to land, and prints how it ended", async () => {
+    await Effect.runPromise(
+      Effect.scoped(
+        Effect.gen(function* () {
+          const network = yield* SessionChannelNetworkHost;
+          const sockets = yield* SessionSocketHost;
+          const tokens = yield* SessionChannelTokensRepo;
+          const address = network.address ?? "";
+          const seen: unknown[] = [];
+          let outcome: WorkspaceLandOutcome = {
+            landed: true,
+            lines: [
+              "pushed · mend/fix-login · 3f2a1c0 · pull request #412 · open · observed",
+              "https://github.com/acme/api/pull/412",
+            ],
+          };
+          const dir = yield* sockets.start(SESSION, {
+            ...api(seen),
+            land: () =>
+              Effect.sync(() => {
+                seen.push({ land: SESSION });
+                return outcome;
+              }),
+          });
+          const token = yield* tokens.issue(SESSION);
+          const env = {
+            MEND_SESSION_ENDPOINT: `http://${address}`,
+            MEND_SESSION_ID: SESSION,
+            MEND_SESSION_TOKEN: token,
+          };
+          const helper = (args: string[], over: Record<string, string> = {}) =>
+            Effect.promise(() =>
+              runScript(path.join(dir, "bin", "mend"), args, { ...env, ...over }),
+            );
+
+          const landed = yield* helper(["land"]);
+          expect(landed).toEqual({
+            code: 0,
+            stdout:
+              "pushed · mend/fix-login · 3f2a1c0 · pull request #412 · open · observed\n" +
+              "https://github.com/acme/api/pull/412\n",
+            stderr: "",
+          });
+          expect(seen).toEqual([{ land: SESSION }]);
+
+          // A refusal is the reason, on stderr, and a failing exit the agent can read.
+          outcome = { landed: false, lines: ["not landed · only the change's owner lands it"] };
+          const refused = yield* helper(["land"]);
+          expect(refused).toEqual({
+            code: 1,
+            stdout: "",
+            stderr: "mend: not landed · only the change's owner lands it\n",
+          });
+
+          // Another session's id with this token reaches nothing: the channel is the session's.
+          const other = yield* helper(["land"], { MEND_SESSION_ID: OTHER });
+          expect(other.code).toBe(1);
+          expect(seen).toHaveLength(2);
+
+          // The usage names the verb.
+          const usage = yield* helper(["publish"]);
+          expect(usage.stderr).toContain("mend land");
+        }).pipe(
+          Effect.provide(
+            layers({ listen: "127.0.0.1:0", url: "http://127.0.0.1:0" }, "kubernetes"),
+          ),
+        ),
+      ),
+    );
+  });
+
   it("carries a browser scheme from the helper's --http/--https to run and add, and refuses it on UDP", async () => {
     await Effect.runPromise(
       Effect.scoped(

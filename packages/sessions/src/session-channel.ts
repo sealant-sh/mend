@@ -188,6 +188,10 @@ export const handleSessionRequest = async (
         action[2] === "stop" ? api.stopService(action[1]) : api.restartService(action[1]);
       return respond(200, await Effect.runPromise(effect));
     }
+    if (route === "POST /session/land") {
+      // The landing answers when it has pushed and its pull request step is done, or refused.
+      return respond(200, await Effect.runPromise(api.land()));
+    }
     if (route === "POST /session/stop") {
       // Answer before acting: the stop closes this workspace's PTYs, so
       // awaiting completion races the response against the caller's teardown.

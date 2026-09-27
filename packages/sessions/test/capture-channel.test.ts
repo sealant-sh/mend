@@ -70,6 +70,7 @@ const inertApi: Omit<SessionSocketApi, "capture"> = {
   stopService: () => Effect.succeed({}),
   restartService: () => Effect.succeed({}),
   stopSession: () => Effect.succeed({}),
+  land: () => Effect.succeed({ landed: false, lines: ["not landed · not in this test"] }),
   gitTransport: () => Effect.die("not in test"),
   gitTransportDone: () => Effect.void,
 };

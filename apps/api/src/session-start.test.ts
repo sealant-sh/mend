@@ -320,7 +320,8 @@ describe("the prompt guard (docs/adr/0007, Questions do not open pull requests)"
     expect(result._tag).toBe("Success");
     expect(launched(world)).toEqual([guarded]);
     expect(LANDING_GUARD).toContain("If the request is a question, answer it and change no files.");
-    expect(LANDING_GUARD).toContain("Never push and never open a pull request.");
+    expect(LANDING_GUARD).toContain("Never push and never open a pull request yourself.");
+    expect(LANDING_GUARD).toContain("run `mend land`");
     expect(LANDING_GUARD).toContain("Committing is fine.");
   });
 

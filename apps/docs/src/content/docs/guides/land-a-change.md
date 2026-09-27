@@ -158,6 +158,23 @@ The command prints the landing, what it wrote, and every fact Mend observed:
 
 It exits 1 when the push was refused or a step failed.
 
+## Ask the agent to land
+
+Inside a session's workspace, the agent has its own `mend land`. When you ask it to land, push, or
+open a pull request, it runs `mend land`, and Mend lands the change exactly as the Land panel does:
+as the change's owner, fast-forward only, without moving the session's branch. The agent never
+pushes itself. It reports what Mend printed:
+
+```text
+pushed · mend/fix-login · 3f2a1c0 · pull request #412 · open · observed
+https://github.com/acme/web/pull/412
+```
+
+or why nothing landed, for example
+`not landed · only the change's owner lands it · someone else sent this turn`. The helper speaks
+only for its own session, and it lands only when the session is the change owner's and the turn
+under way is one they sent. In a terminal session it lands only while shared control is off.
+
 ## What Mend reports
 
 Landing facts are observations, with where Mend saw them. The web, the CLI, the desktop app, and
@@ -174,6 +191,9 @@ landing failed · <what stopped it>
 pull request step failed · <gh's words>
 pushed by the agent · refs/heads/wip · 91bd2e4
 changes not landed · the request read as a question
+not landed · the change was not captured
+not landed · the change is empty
+not landed · nothing new since the last landing
 intent not read
 ```
 
@@ -219,8 +239,16 @@ Mend checks these in order, and all must hold:
 3. The change's owner sent the turn, in a session they own. A follow-up someone else sent under
    shared control does not land, and neither does a turn in a session a teammate started in the
    owner's worktree. Review comments sent back to a session count as sent by whoever sent them.
-4. The change is not empty, and it is not what the last landing already pushed.
-5. The request asked for a change.
+4. The request asked for a change, or asked to land the change as it stands.
+5. The change is captured, not empty, and not what the last landing already pushed.
+
+Every turn that does not land records why, and the Land panel and the Slack thread say it. A
+question that left nothing to land says nothing.
+
+Before it reads the change, Mend asks the session's executor to register what its disk holds, up to
+three times 15 seconds apart. If the executor's captures never catch up, Mend neither lands nor
+calls the change empty. It says `not landed · the change was not captured`, and Slack offers the
+button.
 
 ### Questions do not open pull requests
 
@@ -229,17 +257,23 @@ with automatic landing on carries these instructions after the request:
 
 ```text
 --- How this work is published ---
-Mend publishes the changes this session makes: it pushes the branch and opens or updates the pull request.
+Mend publishes this session's change, not you: after a turn that asked for a change, Mend pushes the branch and opens or updates the pull request.
 - If the request is a question, answer it and change no files.
 - Change code only when the request asks for a change.
-- Never push and never open a pull request. Committing is fine.
+- If the user asks you to land, push, publish or open a pull request, run `mend land` and report the lines it prints as they are. It lands as the change's owner, or says why it did not.
+- Never push and never open a pull request yourself. Committing is fine.
 --- End of how this work is published ---
 ```
 
-Second, Mend uses inference to read each request as a change or a question. For Slack this is the
-same call that picks the thread's project. Web and CLI sessions with automatic landing on make one
-small call per turn. `autopr=true` reads as a change and `autopr=false` as a question, without a
-call. A later request that asks for a change lands, even if the first one was a question.
+Second, Mend uses inference to read each request as a change, a question, or a request to land. For
+a Slack request this is the same call that picks the thread's project. Follow-ups, and web and CLI
+sessions with automatic landing on, make one small call per turn. `autopr=true` reads as a change
+and `autopr=false` as a question, without a call. A later request that asks for a change lands, even
+if the first one was a question.
+
+A request to land (`land it`, `open a PR`, `push it`) lands the change for its owner even when that
+turn changed nothing, and in a Slack thread even with automatic landing off. Asking whether it was
+landed (`did you open a PR?`) is a question.
 
 When a question still left files changed, Mend does not land it and says
 `changes not landed · the request read as a question`. The Land panel then notes that a completed

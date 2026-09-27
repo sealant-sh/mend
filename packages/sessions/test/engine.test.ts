@@ -4429,6 +4429,8 @@ describe("SessionEngine", () => {
 
         const checkpoint = yield* engine.checkpointNow(session.id, "user-mark");
         expect(checkpoint.trigger).toBe("user-mark");
+        // Beside Mend there is nothing to flush: the worktree is the head.
+        expect(yield* engine.flushCaptures(session.id, "automatic landing")).toBe("none");
         expect(checkpoint.ref).toContain(`refs/mend/checkpoints/${session.worktreeId}/2`);
         // The change stamps this session as its last contributor on refresh.
         const change = world.changes.get(session.worktreeId);
@@ -4892,6 +4894,8 @@ describe("SessionEngine workspace git hooks", () => {
           () => void heard.push({ sessionId: event.sessionId, stoppedYet: stopped.length }),
         ),
       register: () => Effect.void,
+      landRequested: () => Effect.succeed({ landed: false, lines: [] }),
+      registerLanding: () => Effect.void,
     });
     await withEngine(
       (world, tmp) =>
@@ -4927,6 +4931,8 @@ describe("SessionEngine workspace git hooks: pushes", () => {
       branchesPushed: (event) => Effect.sync(() => void pushed.push(event.worktreeId)),
       agentEnded: () => Effect.void,
       register: () => Effect.void,
+      landRequested: () => Effect.succeed({ landed: false, lines: [] }),
+      registerLanding: () => Effect.void,
     });
     const zero = "0".repeat(40);
     const next = "a".repeat(40);
@@ -7967,6 +7973,20 @@ describe("SessionEngine capture mode", () => {
     const pool = memoryHotPool();
     /** What sealantd's `capture.replan` does: `plan.get` with no worktree named, as the executor. */
     const replans: Array<{ readonly workspaceId: string; readonly executorId: SessionId }> = [];
+    /** The executor's flush leaves captures pending (a stalled daemon). */
+    let partialFlush = false;
+    const flush = () =>
+      Effect.succeed({
+        epoch: 2,
+        worktreeId: "",
+        pending: partialFlush ? 3 : 0,
+        stagedBytes: 0,
+        uploadedObjects: 0,
+        uploadedBytes: 0,
+        registered: 0,
+        fenced: false,
+        paused: false,
+      } satisfies WorkspaceCaptureStatus);
     const answered: Array<{
       readonly worktreeId: string;
       readonly epoch: number;
@@ -8068,6 +8088,14 @@ describe("SessionEngine capture mode", () => {
           // A checkpoint asks the lease holder to flush before it observes the head.
           yield* engine.checkpointNow(session.id, "user-mark");
           expect(flushed).toEqual(["flush:workspace-1"]);
+          // Automatic landing asks the same holder before it reads a turn's change, and hears
+          // what the flush came to; nothing is checkpointed for it.
+          expect(yield* engine.flushCaptures(session.id, "automatic landing")).toBe("flushed");
+          expect(flushed).toEqual(["flush:workspace-1", "flush:workspace-1"]);
+          // A flush that leaves captures pending is not a caught-up head.
+          partialFlush = true;
+          expect(yield* engine.flushCaptures(session.id, "automatic landing")).toBe("incomplete");
+          partialFlush = false;
 
           // …and its first register parents on capture 0 — the head the replan handed it.
           const tree = path.join(tmp, "standby-ship");
@@ -8154,7 +8182,7 @@ describe("SessionEngine capture mode", () => {
           undefined,
           execCalls,
           undefined,
-          { flushed, replan },
+          { flushed, replan, flush },
         ),
         hotWorkspacesLayer: pool.layer,
       },

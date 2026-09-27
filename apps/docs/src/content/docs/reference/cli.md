@@ -139,7 +139,8 @@ interactive CLI launches (`mend codex|claude|opencode`); `mend run` tails the re
 attaching, and browser or phone clients never stop a session by disconnecting.
 
 Inside a session workspace, the staged helper accepts `mend stop` too, so a workspace shell (or the
-agent itself) can end its own session.
+agent itself) can end its own session, and `mend land`, which lands the session's change as its
+owner (see [Ask the agent to land](/guides/land-a-change/#ask-the-agent-to-land)).
 
 `--land` and `--no-land` override the project's "Land when a turn completes" setting for one session
 (see [Landing commands](#landing-commands)); a project set to off wins over `--land`. Mend lands

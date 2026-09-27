@@ -2,12 +2,14 @@
 
 Status: proposed 2026-09-23, amended 2026-09-24 with automatic landing, and again the same day: Mend
 never moves the session's branch, the change's owner lands it, and pulling a change has no side
-effects. Commits Mend to one landing action. Mend commits what the worktree holds, pushes it to a
-branch on the project's origin, and opens or updates a GitHub pull request whose description is
-Mend's review tour. Like Cursor, it can do this automatically when the agent finishes a turn, and it
-does not do it for a request that asked a question rather than for a change. Merging stays on
-GitHub, and landing again after more work updates the same branch and pull request. The ADR also
-makes landing observable: what was pushed, by whom, and whether origin still has it.
+effects. Amended 2026-09-27 after a Slack session on alpha asked three times and landed nothing
+("Why a turn did not land", below). Commits Mend to one landing action. Mend commits what the
+worktree holds, pushes it to a branch on the project's origin, and opens or updates a GitHub pull
+request whose description is Mend's review tour. Like Cursor, it can do this automatically when the
+agent finishes a turn, and it does not do it for a request that asked a question rather than for a
+change. Merging stays on GitHub, and landing again after more work updates the same branch and pull
+request. The ADR also makes landing observable: what was pushed, by whom, and whether origin still
+has it.
 
 **What this ADR does not claim.** It does not make Mend decide whether a change should merge. There
 is no approve control, no merge button and no "ready" state. Landing is publication (plan §5.9): it
@@ -176,6 +178,41 @@ the same pull request step. Each tour updates a pull request once.
 no write access) or the pull request step fails (no GitHub account connected, `gh` refused), the
 landing records the outcome, the status line says it in the remote's own words, and nothing retries
 until the next completed turn or a manual landing.
+
+### Why a turn did not land
+
+Amended 2026-09-27. On alpha, a Slack request read as a change, the agent edited and committed, and
+nothing landed: the executor's captures had stalled, the change read `0 files · +0 −0`, and the
+empty-change check skipped the turn without a word. The follow-ups "did you open a pr ?" and "ok
+land it" were never read at all, because the empty-change check ran before the intent reading, and
+the agent could only answer "landing is a click on your side". So:
+
+- **Every turn records why it did not land, and says it.** Beside `question`, `option`, `off` and
+  `not-owner`, a turn records `no-change` (`not landed · the change is empty`), `nothing-new`
+  (`not landed · nothing new since the last landing`) or `not-captured`
+  (`not landed · the change was not captured`), and the worker logs each decision with its reason. A
+  question that left nothing to land still says nothing. The Slack status line and the Land panel
+  state the reason; the "Push and open pull request" offer rides every reason except an empty change
+  or one with nothing new.
+- **The intent is read first**, before the change, for every turn the owner sent while automatic
+  landing is on, and for the owner's turns in a Slack thread even when it is off. Check 4 above
+  becomes the intent, check 5 the change.
+- **A request can ask to land.** The reading has a third answer, `land`: the request asks only to
+  publish what is there ("land it", "open a PR", "push it", "ship it"); asking whether it was
+  published is a question. A `land` request from the change's owner lands (as `manual`, the owner's
+  own landing) even when the turn changed nothing, and in a Slack thread even with automatic landing
+  off, since the thread has no Land panel. Only the owner's request counts.
+- **A stale capture is neither landed nor called empty.** Before it reads the change for a landing,
+  Mend asks the executor to flush (`capture.flush`), after the turn's own boundary checkpoint, up to
+  three times 15 seconds apart. If the captures never catch up, the turn reads `not-captured`: not
+  landed, not empty, and the owner is offered the button.
+- **The agent can ask Mend to land.** The workspace helper gains `mend land`. It speaks only for its
+  own session (the socket, or the session's channel token), lands only for the change's owner (the
+  session is theirs, and the running turn is one they sent; a terminal session only while shared
+  control is off), through the same landing as the Land panel, and prints what it observed
+  (`pushed · mend/fix-login · 3f2a1c0 · pull request #412 · open · observed`) or why not. The guard
+  tells the agent that Mend lands after a turn that asked for a change, to run `mend land` when the
+  person asks it to land, push or open a pull request, and never to push itself.
 
 ### Where each step runs
 
@@ -353,6 +390,8 @@ into anyone's checkout.
 - **CLI:** `mend land <session> [--branch <name>] [--no-pr] [--title …]`,
   `mend land <session> --check` (look for a pull request opened outside Mend), and
   `mend pull <session>`.
+- **Workspace helper:** `mend land`, which the agent runs when the person asks it to publish
+  (amended 2026-09-27, above).
 - **Slack (ADR 0006):** lands automatically as above, and the status line carries the branch and the
   pull request. When a request did not land (a question, automatic landing off, a follow-up from
   someone other than the owner), the end-of-session reply has a "Push and open pull request" button,

@@ -5,15 +5,17 @@ import * as Context from "effect/Context";
 import { InferenceError, InferenceProvider } from "./provider.ts";
 
 /**
- * Whether a request asked for a change or a question (docs/adr/0007-landing.md, "Questions do not
- * open pull requests"). Automatic landing publishes a completed turn only when its request read
- * as a `change`: an answer is not a pull request.
+ * What a request asked for (docs/adr/0007-landing.md, "Questions do not open pull requests"): a
+ * change, a question, or to land the change as it stands. Automatic landing publishes a completed
+ * turn only when its request read as a `change`, since an answer is not a pull request, and a
+ * request that read as `land` ("land it", "open a PR") lands the change for its owner even when
+ * the turn itself changed nothing.
  *
  * The reading is one small call on the cheap model, per turn, for sessions that land by
- * themselves. Slack reads the intent in the call that reads its thread for a project, and hands
- * the reading to automatic landing precomputed, so it never calls this. When this call fails,
- * the caller records the intent as not read and treats the request as a change: a spurious pull
- * request is easy to close, and a missing one is the failure people notice.
+ * themselves. Slack reads the opening request's intent in the call that reads its thread for a
+ * project, and hands the reading to automatic landing precomputed; follow-ups are read here. When
+ * this call fails, the caller records the intent as not read and treats the request as a change:
+ * a spurious pull request is easy to close, and a missing one is the failure people notice.
  */
 
 export interface RequestIntentInput {
@@ -34,12 +36,13 @@ const REQUEST_CHARACTER_LIMIT = 6_000;
 /** The context's text, keeping the newest. */
 const CONTEXT_CHARACTER_LIMIT = 6_000;
 
-const SYSTEM = `You read a request sent to a coding agent working in a software repository, and say what it asks for: "change" or "question".
+const SYSTEM = `You read a request sent to a coding agent working in a software repository, and say what it asks for: "change", "question" or "land".
 
-- "change": the request asks the agent to change the repository: fix, add, remove, rename, refactor, update, write tests or docs, bump a dependency, apply a suggestion. A request that asks for a change and also asks something is a change.
-- "question": the request asks for an answer and asks for no change: why something happens, how something works, where something is, what a change would involve, a review or an opinion. "Could you look into why X fails?" is a question unless it also asks for a fix.
-- The context shows what came before the request. Use it to understand the request ("do it", "yes, go ahead" after a proposed fix is a change), never as a request of its own.
-- Answer with JSON: {"intent": "change" | "question"}.`;
+- "change": the request asks the agent to change the repository: fix, add, remove, rename, refactor, update, write tests or docs, bump a dependency, apply a suggestion. A request that asks for a change and also asks something is a change. A request that asks for a change and to open a pull request is a change.
+- "question": the request asks for an answer and asks for no change: why something happens, how something works, where something is, what a change would involve, a review or an opinion, or whether something was done ("did you open a PR?", "is it pushed?"). "Could you look into why X fails?" is a question unless it also asks for a fix.
+- "land": the request asks only to publish the work already done, and asks for no new change: "land it", "open a PR", "create the pull request", "push it", "ship it", "publish the branch". Asking whether it was published is a question, not "land".
+- The context shows what came before the request. Use it to understand the request ("do it", "yes, go ahead" after a proposed fix is a change; "yes, go ahead" after an offer to open a pull request is "land"), never as a request of its own.
+- Answer with JSON: {"intent": "change" | "question" | "land"}.`;
 
 const Answer = Schema.Struct({ intent: RequestIntent });
 

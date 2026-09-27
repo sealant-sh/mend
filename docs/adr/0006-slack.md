@@ -193,7 +193,9 @@ project that is not a candidate, and the result is checked against the list. The
 session starts, never on every message in a channel. The same call reads the request as a `change`
 or a `question` (ADR 0007, "Questions do not open pull requests"), and Mend records that reading on
 the opening turn, so automatic landing asks for no reading of its own. When the project was chosen
-without inference, and for follow-ups, automatic landing reads the turn's intent itself.
+without inference, and for follow-ups, automatic landing reads the turn's intent itself, before it
+reads the change, and even when automatic landing is off (amended 2026-09-27). A follow-up can read
+as `land` ("land it", "open a PR"), which lands the owner's change though the turn changed nothing.
 `autopr=true` and `autopr=false` are recorded as the turn's intent and win over any reading.
 
 When the answer comes from inference or from a default, Mend says which project and why in the
@@ -278,7 +280,10 @@ Mend posts only into the thread the request came from.
   line (`… · updated`) instead of adding a message. A refused push or a failed pull request step
   reads in the remote's own words (`push refused · mend/flaky-login-test · …`), and nothing retries.
   A completed turn whose change did not land says why
-  (`changes not landed · the request read as a question`).
+  (`changes not landed · the request read as a question`), and so does a request for a change or a
+  landing that landed nothing (`not landed · the change was not captured`,
+  `not landed · the change is empty`, `not landed · nothing new since the last landing`; ADR 0007,
+  "Why a turn did not land").
 - **The agent's plan and closing message** for each turn, as replies, each cut at 3,000 characters
   with a link to the rest. Cursor posts a plan before it changes code. Mend posts the agent's first
   message when it is one, and does not write a plan of its own. A plan with no text of its own, such
@@ -292,14 +297,14 @@ Mend posts only into the thread the request came from.
   session record, and the reply says so. It describes what changed and how the session went about
   it, and gives no verdict. Mend has no proposed-check entity yet, so the count names none.
 - **"Push and open pull request"**, when a completed turn left a change that did not land: the
-  request read as a question, it said `autopr=false`, automatic landing is off, or someone other
-  than the owner sent the follow-up (ADR 0007). The button rides the end-of-session reply when that
-  reply goes out in the same look; otherwise it is a reply of its own, posted when the turn is
-  decided, since the review tour can come much later or not at all. Everyone in the thread sees it.
-  It lands only for the change's owner, as them and through the same landing as the web app's Land
-  panel, and tells anyone else so in an ephemeral reply. It reads "Push and update pull request"
-  once an open pull request is recorded. The thread is offered each turn once, and a landing since
-  the turn ended answers it.
+  request read as a question, it said `autopr=false`, automatic landing is off, someone other than
+  the owner sent the follow-up, or the executor's captures never caught up (ADR 0007). The button
+  rides the end-of-session reply when that reply goes out in the same look; otherwise it is a reply
+  of its own, posted when the turn is decided, since the review tour can come much later or not at
+  all. Everyone in the thread sees it. It lands only for the change's owner, as them and through the
+  same landing as the web app's Land panel, and tells anyone else so in an ephemeral reply. It reads
+  "Push and update pull request" once an open pull request is recorded. The thread is offered each
+  turn once, and a landing since the turn ended answers it.
 
 A session started from Slack always gets a review tour when it settles with a change, even where the
 project's automatic tour is off, since the summary comes from it. The tour is the same

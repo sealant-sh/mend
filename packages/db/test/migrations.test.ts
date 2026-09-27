@@ -1624,3 +1624,106 @@ describe.skipIf(!reachable)("0071 project default shell profile", () => {
     ]);
   });
 });
+
+describe.skipIf(!reachable)("0073 landing reasons", () => {
+  const REASONS_DB = `${SCRATCH_DB}_landing_reasons`;
+  const reasonsLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${REASONS_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withReasonsDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(reasonsLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${REASONS_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${REASONS_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("lets a turn read as a landing request and record why it did not land", async () => {
+    const result = await withReasonsDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0072_protocol_idle_stop");
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-1', 'api', '/store/p-1/repo.git', 'main', ${organization?.id ?? ""})`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc')`;
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, status)
+          VALUES ('s-1', 'p-1', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running')`;
+        yield* sql`
+          INSERT INTO session_processes
+            (id, session_id, sealant_workspace_id, sealant_session_id, kind, status)
+          VALUES ('proc-1', 's-1', 'ws-1', 'pty-1', 'agent-protocol', 'running')`;
+        yield* sql`
+          INSERT INTO agent_turns (id, session_id, process_id, ordinal, input, status, ended_at)
+          VALUES ('t-1', 's-1', 'proc-1', 0, 'ok land it', 'completed', now())`;
+        const landBefore = yield* attempt(
+          sql`UPDATE agent_turns SET intent = 'land', intent_source = 'read'`,
+        );
+        const capturedBefore = yield* attempt(
+          sql`UPDATE agent_turns SET landing_claimed_at = now(), landing = 'not-captured'`,
+        );
+        yield* migrations["0073_landing_reasons"];
+        const intent = (value: string | null, source: string | null) =>
+          attempt(sql`UPDATE agent_turns SET intent = ${value}, intent_source = ${source}`);
+        const decide = (landing: string) =>
+          attempt(sql`
+            UPDATE agent_turns SET landing_claimed_at = now(), landing = ${landing}, landing_id = NULL`);
+        return {
+          before: { land: landBefore, notCaptured: capturedBefore },
+          intents: {
+            land: yield* intent("land", "read"),
+            change: yield* intent("change", "option"),
+            unread: yield* intent(null, "unread"),
+            unreadLand: yield* intent("land", "unread"),
+            unknown: yield* intent("publish", "read"),
+          },
+          decisions: {
+            noChange: yield* decide("no-change"),
+            nothingNew: yield* decide("nothing-new"),
+            notCaptured: yield* decide("not-captured"),
+            question: yield* decide("question"),
+            skipped: yield* decide("skipped"),
+            unknown: yield* decide("stale"),
+          },
+        };
+      }),
+    );
+    expect(result).toEqual({
+      before: { land: "refused", notCaptured: "refused" },
+      intents: {
+        land: "inserted",
+        change: "inserted",
+        unread: "inserted",
+        unreadLand: "refused",
+        unknown: "refused",
+      },
+      decisions: {
+        noChange: "inserted",
+        nothingNew: "inserted",
+        notCaptured: "inserted",
+        question: "inserted",
+        skipped: "inserted",
+        unknown: "refused",
+      },
+    });
+  });
+});

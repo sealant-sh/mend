@@ -16,6 +16,8 @@ import { type ChangeLandingId, SessionId } from "@mend/domain";
 import {
   type AgentTurn,
   changeOwnerOf,
+  type NotLandedReason,
+  notLandedLine,
   type Project,
   type RequestIntentReading,
   requestOfTurn,
@@ -24,28 +26,44 @@ import {
   type TurnLanding,
 } from "@mend/domain/workbench";
 import { RequestIntentReader } from "@mend/inference";
-import { afterTheIntent, beforeTheChange, recordedIntent } from "@mend/landing";
+import {
+  afterTheIntent,
+  type ChangeFacts,
+  heldBack,
+  planTurn,
+  recordedIntent,
+  type HeldBack,
+  type SkippedWhy,
+  withTheChange,
+} from "@mend/landing";
 import { NetworkConfig } from "@mend/network";
 import { asSealantUser } from "@mend/sealant";
-import { WorktreeReads } from "@mend/sessions";
-import { Cause, Effect, Layer, Queue, Schema, Stream } from "effect";
+import { SessionEngine, WorktreeReads } from "@mend/sessions";
+import { Cause, Duration, Effect, Layer, Result, Schema, Stream } from "effect";
 
 import { OwnerLanding } from "./owner-landing.ts";
 
 /**
  * Automatic landing (docs/adr/0007-landing.md, "Automatic landing"): after each turn that
  * completes, Mend lands the change when automatic landing is on for the session and the turn
- * passes the ADR's five checks, in order (`beforeTheChange`, then the change, then
- * `afterTheIntent`). The first landing opens the pull request; later ones update it.
+ * passes the ADR's checks, in order (`planTurn`, the request's intent with `afterTheIntent`, then
+ * the change with `withTheChange`). The first landing opens the pull request; later ones update
+ * it. A request that asks to land the change as it stands ("land it", "open a PR") lands it for
+ * the change's owner even when the turn changed nothing, and, in a Slack thread, even when
+ * automatic landing is off: the thread has no Land panel.
  *
  * It listens on `mend_events` beside the notifier and the Slack reporter, and looks again at a
  * session whenever its conversation moves. Each ended turn is decided once: a worker claims the
  * turn in Postgres (`claimTurnLanding`) before it reads anything, so a second worker, or a second
- * look, never lands it twice. The decision is recorded on the turn: `attempted` with the landing
- * it started, a reason it did not land, or `skipped`.
+ * look, never lands it twice. The decision is recorded on the turn and logged: `attempted` with
+ * the landing it started, the reason it did not land, or `skipped`.
  *
- * Nothing retries. A landing that is refused or fails is recorded as such, and the next
- * completed turn, or the owner's button, is the next attempt.
+ * Before it reads the change for a landing, Mend asks the executor to flush its captures
+ * (`SessionEngine.flushCaptures`), a bounded number of times: a stale head is neither landed nor
+ * called empty, and a turn whose captures never caught up reads
+ * `not landed · the change was not captured`. Nothing else retries. A landing that is refused or
+ * fails is recorded as such, and the next completed turn, the owner's button, or `mend land` is
+ * the next attempt.
  */
 
 /** A turn that ended longer ago than this is history: decided `skipped`, never landed. */
@@ -55,22 +73,51 @@ const CONTEXT_TURNS = 5;
 
 const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(MendEvent));
 
+/** How often Mend asks the executor to flush before it calls a turn's change not captured. */
+const FLUSH_ATTEMPTS = 3;
+/** The pause between those asks; each ask is itself bounded by the engine's flush timeout. */
+const FLUSH_PAUSE = Duration.seconds(15);
+
 interface Decided {
   readonly landing: TurnLanding;
   readonly landingId: ChangeLandingId | null;
+  /** Why, in the words the log carries. */
+  readonly why: string;
 }
 
-const decided = (landing: TurnLanding, landingId: ChangeLandingId | null = null): Decided => ({
-  landing,
+const attempted = (landingId: ChangeLandingId): Decided => ({
+  landing: "attempted",
   landingId,
+  why: "landed",
 });
 
-const SKIPPED = decided("skipped");
+const skippedFor = (why: SkippedWhy | string): Decided => ({
+  landing: "skipped",
+  landingId: null,
+  why,
+});
+
+const notLanded = (reason: NotLandedReason): Decided => ({
+  landing: reason,
+  landingId: null,
+  why: notLandedLine(reason),
+});
+
+/** A decision short of landing, as the turn records it. */
+const decidedAs = (decision: HeldBack): Decided =>
+  decision._tag === "skipped" ? skippedFor(decision.why) : notLanded(decision.reason);
+
+/** A change Mend could not bring up to the turn: neither landed nor called empty. */
+const NOT_CAPTURED: ChangeFacts = { captured: false, empty: false, newSinceLanding: false };
 
 const ended = (turn: AgentTurn): boolean => turn.status !== "queued" && turn.status !== "running";
 
 export interface AutomaticLandingOptions {
   readonly now?: () => number;
+  /** How often to ask for a flush before a change reads as not captured; 3 by default. */
+  readonly flushAttempts?: number;
+  /** The pause between those asks; 15 s by default. */
+  readonly flushPause?: Duration.Duration;
 }
 
 export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
@@ -88,7 +135,10 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
     const reader = yield* RequestIntentReader;
     const lander = yield* OwnerLanding;
     const network = yield* NetworkConfig;
+    const engine = yield* SessionEngine;
     const now = options.now ?? Date.now;
+    const flushAttempts = options.flushAttempts ?? FLUSH_ATTEMPTS;
+    const flushPause = options.flushPause ?? FLUSH_PAUSE;
 
     /** The Slack install a Slack session's thread belongs to, when it still has one. */
     const installOf = (session: Session) =>
@@ -151,39 +201,120 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
         return reading;
       });
 
-    /** Whether the worktree holds work that is not on origin yet: not empty, not already landed. */
-    const holdsNewWork = (session: Session) =>
+    /** What the worktree holds against its base and against the change's last landing. */
+    const changeOf = (session: Session) =>
       Effect.gen(function* () {
         const worktree = yield* worktrees.byId(session.worktreeId);
         const change = yield* changes.byWorktree(worktree.id);
-        if (change === null) return false;
+        const empty: ChangeFacts = { captured: true, empty: true, newSinceLanding: false };
+        if (change === null) return empty;
         const sinceBase = yield* reads.changedFiles(
           session.projectId,
           worktree.id,
           worktree.baseSha,
         );
-        if (sinceBase.value.length === 0) return false;
+        if (sinceBase.value.length === 0) return empty;
         const lastPush = (yield* landings.listForChange(change.id)).find(
           (landed) => landed.pushedSha !== null,
         );
         const landedAt = lastPush?.checkpointSha ?? lastPush?.pushedSha ?? null;
-        if (landedAt === null) return true;
+        if (landedAt === null) {
+          return { captured: true, empty: false, newSinceLanding: true } satisfies ChangeFacts;
+        }
         const sinceLanding = yield* reads.changedFiles(session.projectId, worktree.id, landedAt);
-        return sinceLanding.value.length > 0;
+        return {
+          captured: true,
+          empty: false,
+          newSinceLanding: sinceLanding.value.length > 0,
+        } satisfies ChangeFacts;
       });
 
-    /** Land the change as its owner, with the owner's credentials, and audit it. */
-    const land = (session: Session, project: Project, owner: string) =>
+    /**
+     * Bring the registered captures up to the turn before the change is read for a landing: ask
+     * the executor to flush, and again after a pause while it answers incomplete. False when it
+     * never caught up.
+     */
+    const caughtUp = (session: Session, turn: AgentTurn) =>
+      Effect.gen(function* () {
+        for (let attempt = 1; attempt <= flushAttempts; attempt += 1) {
+          const observed = yield* engine
+            .flushCaptures(session.id, `automatic landing · turn ${turn.ordinal}`)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed("none" as const)));
+          if (observed !== "incomplete") return true;
+          yield* Effect.logInfo("automatic landing: the captures have not caught up").pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              turnId: turn.id,
+              attempt,
+              attempts: flushAttempts,
+            }),
+          );
+          if (attempt < flushAttempts) yield* Effect.sleep(flushPause);
+        }
+        return false;
+      });
+
+    /** The change for a landing: read only once the captures caught up with the turn. */
+    const capturedChangeOf = (session: Session, turn: AgentTurn) =>
+      Effect.gen(function* () {
+        if (!(yield* caughtUp(session, turn))) return NOT_CAPTURED;
+        return yield* changeOf(session).pipe(
+          // The chain has no head at all: nothing Mend can read is the change yet.
+          Effect.catchTag("WorktreeNotCapturedError", () => Effect.succeed(NOT_CAPTURED)),
+        );
+      });
+
+    /**
+     * Nothing new since the last landing: said, unless that landing was made during the turn
+     * (`mend land`, the button), which already answered it.
+     */
+    const nothingNew = (session: Session, turn: AgentTurn) =>
+      Effect.gen(function* () {
+        const change = yield* changes.byWorktree(session.worktreeId);
+        const since = turn.startedAt ?? turn.createdAt;
+        const landedDuringTurn =
+          change !== null &&
+          (yield* landings.listForChange(change.id)).some((landed) => landed.createdAt >= since);
+        return landedDuringTurn ? skippedFor("landed during the turn") : notLanded("nothing-new");
+      });
+
+    /**
+     * Land the change as its owner, with the owner's credentials, and audit it. A request to land
+     * is the owner's own landing (`manual`); otherwise it is `automatic`. A landing that did not
+     * start says why, unless a landing made during the turn (`mend land`) already answered it.
+     */
+    const land = (
+      session: Session,
+      project: Project,
+      owner: string,
+      turn: AgentTurn,
+      requested: boolean,
+    ) =>
       Effect.gen(function* () {
         const install = yield* installOf(session);
-        const report = yield* lander.land({
-          session,
-          project,
-          ownerUserId: owner,
-          trigger: "automatic",
-          webOrigin: install?.webOrigin ?? network.appUrl,
-        });
-        return decided("attempted", report.landing.id);
+        const started = yield* lander
+          .land({
+            session,
+            project,
+            ownerUserId: owner,
+            trigger: requested ? "manual" : "automatic",
+            webOrigin: install?.webOrigin ?? network.appUrl,
+          })
+          .pipe(Effect.result);
+        if (Result.isSuccess(started)) return attempted(started.success.landing.id);
+        const refusal = started.failure;
+        switch (refusal.reason) {
+          case "nothing-new":
+            return yield* nothingNew(session, turn);
+          case "no-change":
+            return notLanded("no-change");
+          case "no-owner":
+          case "not-owner":
+            return notLanded("not-owner");
+          case "not-found":
+          case "branch":
+            return skippedFor(refusal.message);
+        }
       });
 
     /** The checks, in the ADR's order, for one ended turn this worker claimed. */
@@ -192,11 +323,13 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
       turn: AgentTurn,
       turns: ReadonlyArray<AgentTurn>,
     ) {
-      if (now() - (turn.endedAt ?? turn.createdAt).getTime() > TURN_FRESHNESS_MS) return SKIPPED;
+      if (now() - (turn.endedAt ?? turn.createdAt).getTime() > TURN_FRESHNESS_MS) {
+        return skippedFor("ended long ago");
+      }
       const project = yield* projects.byId(session.projectId);
       // The change's owner, who lands it: never a teammate who joined the worktree.
       const owner = changeOwnerOf(yield* sessions.listForWorktree(session.worktreeId));
-      const step = beforeTheChange({
+      const plan = planTurn({
         turn,
         changeOwnerUserId: owner,
         sessionOwnerUserId: session.ownerUserId,
@@ -205,22 +338,34 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
         pending: yield* conversations.hasPendingRequests(session.id),
         later: turns.some((other) => other.ordinal > turn.ordinal),
       });
-      if (step._tag === "skipped") return SKIPPED;
-      // A turn that touched nothing, or left what already landed, says nothing about landing.
-      if (!(yield* holdsNewWork(session))) return SKIPPED;
-      if (step.next !== "read-intent") return decided(step.next);
-      if (owner === null) return SKIPPED;
-      const reading = yield* intentOf(session, turn, turns);
-      const next = afterTheIntent(reading);
-      if (next._tag === "not-landed") return decided(next.reason);
-      return yield* land(session, project, owner);
+      if (plan._tag === "skipped") return skippedFor(plan.why);
+      // A reason that holds the change back is stated only when there is something to land.
+      if (plan._tag === "not-landed")
+        return decidedAs(heldBack(plan.reason, yield* changeOf(session)));
+      if (owner === null) return skippedFor("no owner");
+      const step = afterTheIntent(yield* intentOf(session, turn, turns), plan.on);
+      if (step._tag === "not-landed") {
+        return decidedAs(heldBack(step.reason, yield* changeOf(session)));
+      }
+      const change = yield* capturedChangeOf(session, turn);
+      // The wait for the captures can outlast the next request: its end decides instead.
+      const since = yield* conversations.listTurns(session.id);
+      if (since.some((other) => other.ordinal > turn.ordinal)) {
+        return skippedFor("a later turn decides");
+      }
+      const decision = withTheChange(step, change);
+      if (decision._tag === "not-landed" && decision.reason === "nothing-new") {
+        return yield* nothingNew(session, turn);
+      }
+      if (decision._tag !== "land") return decidedAs(decision);
+      return yield* land(session, project, owner, turn, decision.requested);
     });
 
     /** A change that could not be read is not landed, and says nothing. */
     const unreadable = (sessionId: SessionId, turn: AgentTurn, cause: string) =>
       Effect.logWarning("automatic landing: the change could not be read").pipe(
         Effect.annotateLogs({ sessionId, turnId: turn.id, cause }),
-        Effect.as(SKIPPED),
+        Effect.as(skippedFor(`the change could not be read · ${cause}`)),
       );
 
     /** Decide every ended turn of the session nobody has decided yet. */
@@ -239,15 +384,21 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
         if (turn === null) continue; // another worker has it, or it moved
         const decision = yield* decide(session, turn, turns).pipe(
           Effect.catchTags({
-            ProjectNotFoundError: () => Effect.succeed(SKIPPED),
-            WorktreeNotFoundError: () => Effect.succeed(SKIPPED),
+            ProjectNotFoundError: () => Effect.succeed(skippedFor("the project is gone")),
+            WorktreeNotFoundError: () => Effect.succeed(skippedFor("the worktree is gone")),
             GitError: (error) => unreadable(sessionId, turn, error._tag),
             WorktreeNotCapturedError: (error) => unreadable(sessionId, turn, error._tag),
-            LandingNotStartedError: (error) =>
-              Effect.logInfo("automatic landing: not started").pipe(
-                Effect.annotateLogs({ sessionId, turnId: turn.id, reason: error.reason }),
-                Effect.as(SKIPPED),
-              ),
+          }),
+        );
+        // Every decision is on the record and in the log, landed or not, with its reason.
+        yield* Effect.logInfo(`automatic landing: ${decision.landing} · ${decision.why}`).pipe(
+          Effect.annotateLogs({
+            sessionId,
+            turnId: turn.id,
+            ordinal: turn.ordinal,
+            landing: decision.landing,
+            landingId: decision.landingId,
+            why: decision.why,
           }),
         );
         yield* conversations
@@ -282,6 +433,7 @@ export const AutomaticLandingLive: Layer.Layer<
   | OwnerLanding
   | ProjectsRepo
   | RequestIntentReader
+  | SessionEngine
   | SessionsRepo
   | SettingsRepo
   | SlackInstallsRepo
@@ -294,37 +446,43 @@ export const AutomaticLandingLive: Layer.Layer<
     const sql = yield* PgClient.PgClient;
     const lander = yield* makeAutomaticLanding();
 
-    // A burst of events for one session (every streamed item notifies) is one look, as in the
-    // Slack reporter: queued once until the look starts, and again by events during it.
-    const queued = new Set<string>();
-    const work = yield* Queue.unbounded<string>();
-    yield* Effect.gen(function* () {
-      yield* lander.sweep();
-      while (true) {
-        const sessionId = yield* Queue.take(work);
-        queued.delete(sessionId);
-        yield* lander
-          .consider(SessionId.make(sessionId))
-          .pipe(
-            Effect.catchCause((cause) =>
-              Effect.logWarning("automatic landing: session look failed").pipe(
-                Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
-              ),
+    const scope = yield* Effect.scope;
+    // Each session is looked at on its own fiber, so one waiting on its executor's captures holds
+    // up no other session. A burst of events for one session (every streamed item notifies) is
+    // one look: an event during a look asks for one more once it ends.
+    const looking = new Set<string>();
+    const again = new Set<string>();
+    const look = (sessionId: string): Effect.Effect<void> =>
+      Effect.suspend(() => {
+        if (looking.has(sessionId)) {
+          again.add(sessionId);
+          return Effect.void;
+        }
+        looking.add(sessionId);
+        return lander.consider(SessionId.make(sessionId)).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("automatic landing: session look failed").pipe(
+              Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
             ),
-          );
-      }
-    }).pipe(Effect.forkScoped);
+          ),
+          Effect.ensuring(
+            Effect.suspend(() => {
+              looking.delete(sessionId);
+              return again.delete(sessionId) ? look(sessionId) : Effect.void;
+            }),
+          ),
+          Effect.forkIn(scope),
+          Effect.asVoid,
+        );
+      });
+    yield* Effect.forkScoped(lander.sweep());
 
     yield* sql.listen(MEND_EVENTS_CHANNEL).pipe(
       Stream.runForEach((payload) =>
         decodeEvent(payload).pipe(
-          Effect.flatMap((event) => {
-            if (event.type !== "agent-conversation" || queued.has(event.sessionId)) {
-              return Effect.void;
-            }
-            queued.add(event.sessionId);
-            return Queue.offer(work, event.sessionId);
-          }),
+          Effect.flatMap((event) =>
+            event.type === "agent-conversation" ? look(event.sessionId) : Effect.void,
+          ),
           Effect.catchCause((cause) =>
             Effect.logWarning("automatic landing: event handling failed").pipe(
               Effect.annotateLogs({ cause: Cause.pretty(cause) }),
