@@ -5,11 +5,12 @@
 import { LegendList } from "@legendapp/list/react-native";
 import { Stack, useLocalSearchParams, useRouter } from "expo-router";
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { Pressable, StyleSheet, TextInput, View } from "react-native";
+import { Pressable, StyleSheet, View } from "react-native";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EvButton } from "@/components/button";
+import { ComposerField, ComposerTextInput } from "@/components/composer";
 import { MendMarkdown } from "@/components/markdown";
 import { ProtocolConversation } from "@/components/protocol-conversation";
 import { StatusWord } from "@/components/status";
@@ -326,30 +327,17 @@ function PtyConversation({
               borderTopColor: colors.softRule,
             }}
           >
-            <TextInput
-              value={draft}
-              onChangeText={setDraft}
-              placeholder={
-                pickUp === undefined
-                  ? "Message the session…"
-                  : "Message the session — continues here in structured mode"
-              }
-              placeholderTextColor={colors.faint}
-              multiline
-              style={{
-                flex: 1,
-                minHeight: 40,
-                maxHeight: 120,
-                backgroundColor: colors.bg,
-                borderWidth: StyleSheet.hairlineWidth,
-                borderColor: colors.rule,
-                borderRadius: radius.lg,
-                paddingHorizontal: 13,
-                paddingVertical: 9,
-                color: colors.ink,
-                fontSize: 15,
-              }}
-            />
+            <ComposerField>
+              <ComposerTextInput
+                value={draft}
+                onChangeText={setDraft}
+                placeholder={
+                  pickUp === undefined
+                    ? "Message the session…"
+                    : "Message the session — continues here in structured mode"
+                }
+              />
+            </ComposerField>
             <EvButton
               label="Send"
               onPress={send}

@@ -57,9 +57,17 @@
       [
         "expo-camera",
         {
-          "cameraPermission": "Mend reads the pairing code your machine shows, so this phone can talk to it.",
+          "cameraPermission": "Mend uses the camera to read the pairing code your machine shows, and to take a photo when you attach one to a message.",
           "microphonePermission": false,
           "recordAudioAndroid": false
+        }
+      ],
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Mend attaches the photos you choose to a message you send to a session.",
+          "cameraPermission": "Mend uses the camera to read the pairing code your machine shows, and to take a photo when you attach one to a message.",
+          "microphonePermission": false
         }
       ]
     ],
