@@ -127,6 +127,8 @@ describe("SessionRepositoryCapturedLive", () => {
     expect(captureIdOf(fs.readFileSync(path.join(world.blobRoot, manifestKey)))).toBe(
       seen.chain?.head?.id,
     );
+    // A SHA-1 project names no object format (sealantd reads absent as `sha1`).
+    expect("object_format" in manifest.sections.git).toBe(false);
     // A second worktree on the same branch name is refused like the co-located adapter does.
     const clash = await run(
       Effect.gen(function* () {
@@ -471,5 +473,65 @@ describe("SessionRepositoryCapturedLive", () => {
     );
     // The base pack's closure reaches the backfill commit, so an executor can materialise it.
     expect(fs.existsSync(path.join(world.blobRoot, manifest.sections.git.packs[0]))).toBe(true);
+  });
+});
+
+// e2e8 F4: a session on a SHA-256 project could not start. Capture 0 named 64-digit ids under no
+// `object_format`, and sealantd restored them into a SHA-1 repository (`git read-tree <id>: Not a
+// valid object name`); every recovery boot after was refused.
+describe("SessionRepositoryCapturedLive over a SHA-256 project", () => {
+  const world = makeCaptureWorld({ objectFormat: "sha256" });
+  const layer = Layer.mergeAll(
+    SessionRepositoryCapturedLive.pipe(Layer.provide(world.layer)),
+    world.layer,
+  );
+  type Services = SessionRepository | CaptureStoreRepo;
+  const scope = Scope.makeUnsafe();
+  let context: Context.Context<Services>;
+  const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(context)));
+  beforeAll(async () => {
+    context = await Effect.runPromise(
+      Layer.build(layer).pipe(Effect.provideService(Scope.Scope, scope)),
+    );
+  });
+  afterAll(async () => {
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    fs.rmSync(world.scratch, { recursive: true, force: true });
+  });
+
+  it("capture 0 names the project's object format, and every id in it is of that format", async () => {
+    expect(world.baseSha).toMatch(/^[0-9a-f]{64}$/);
+    const worktreeId = newWorktreeId();
+    const branch = `mend/wt/${worktreeId}`;
+    world.worktrees.set(worktreeId, worktreeRowFor(world, worktreeId, branch));
+    const head = await run(
+      Effect.gen(function* () {
+        const repo = yield* SessionRepository;
+        yield* repo.createWorktree(world.project.id, { directory: worktreeId, branch }, null, null);
+        yield* repo.attachWorktree!(world.project.id, worktreeId);
+        return (yield* (yield* CaptureStoreRepo).headOf(worktreeId))?.head ?? null;
+      }),
+    );
+    const manifestKey = head?.manifestKey ?? "";
+    const manifest = await Effect.runPromise(
+      decodeManifest(
+        manifestKey,
+        new Uint8Array(fs.readFileSync(path.join(world.blobRoot, manifestKey))),
+      ),
+    );
+    expect(manifest.sections.git.object_format).toBe("sha256");
+    for (const id of Object.values(manifest.sections.git.refs)) {
+      expect(id).toMatch(/^[0-9a-f]{64}$/);
+    }
+    expect(head?.gitFsck).toBe("verified");
+    // A standby's base plan names it too.
+    const standby = await run(
+      Effect.gen(function* () {
+        const repo = yield* SessionRepository;
+        return yield* repo.prepareStandby!(world.project.id, "standby-sha256", 7, null, undefined);
+      }),
+    );
+    expect(standby.manifest.sections.git.object_format).toBe("sha256");
   });
 });
