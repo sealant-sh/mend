@@ -11246,7 +11246,9 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
             );
             const settled = world.sessions.get(session.id);
             expect(settled?.status).toBe("failed");
-            expect(settled?.summary).toMatch(/^executor lost · last saved \d\d:\d\d:\d\d UTC/);
+            expect(settled?.summary).toMatch(
+              /^executor lost · last capture (\d+ )?at \d\d:\d\d:\d\d UTC/,
+            );
           }),
         {
           captured: memory,
@@ -11265,7 +11267,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
   );
 
   it(
-    "a `docker stop` whose final capture registered last, with no completed word from it and no seal, names that capture and says completion unknown — never saved (review 2026-09-28 #13)",
+    "a `docker stop` whose final capture registered last, with no completed word from it and no seal, names that capture as not confirmed — never saved (review 2026-09-28 #13)",
     { timeout: 20_000 },
     async () => {
       const created: Array<CreateOptions> = [];
@@ -11305,7 +11307,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
             const settled = world.sessions.get(session.id);
             expect(settled?.status).toBe("failed");
             expect(settled?.summary).toMatch(
-              /^stopped outside Mend · last saved capture \d+ at \d\d:\d\d:\d\d UTC · completion unknown$/,
+              /^stopped outside Mend · last capture \d+ at \d\d:\d\d:\d\d UTC · not confirmed$/,
             );
           }),
         {
@@ -11368,7 +11370,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
             const settled = world.sessions.get(session.id);
             expect(settled?.status).toBe("failed");
             expect(settled?.summary).toMatch(
-              /^executor lost · last saved \d\d:\d\d:\d\d UTC · changes after that were not saved · 3 pending at \d\d:\d\d:\d\d UTC$/,
+              /^executor lost · last capture (\d+ )?at \d\d:\d\d:\d\d UTC · changes after it were not saved · 3 pending at \d\d:\d\d:\d\d UTC$/,
             );
           }),
         {
@@ -12979,7 +12981,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
             const settled = world.sessions.get(session.id);
             expect(settled?.status).toBe("failed");
             expect(settled?.summary).toMatch(
-              /^executor not answering · (nothing saved|last saved capture \d+ at \d\d:\d\d:\d\d UTC) · completion unknown$/,
+              /^executor not answering · (nothing saved · completion unknown|last capture \d+ at \d\d:\d\d:\d\d UTC · not confirmed)$/,
             );
           }),
         {
@@ -14355,7 +14357,7 @@ describe("SessionEngine a failed launch's words follow its executor (e2e run 6 #
 
 describe("SessionEngine a recovered executor's accepted seal is the session's word (e2e run 6 #7)", () => {
   it(
-    "`executor not answering · … · completion unknown`, then Core ends the kept executor on the seal Mend attested and it accepted: `stopped · saved at … · capture N`",
+    "`executor not answering · … · not confirmed`, then Core ends the kept executor on the seal Mend attested and it accepted: `stopped · saved at … · capture N`",
     { timeout: 30_000 },
     async () => {
       const created: Array<CreateOptions> = [];
@@ -14384,7 +14386,7 @@ describe("SessionEngine a recovered executor's accepted seal is the session's wo
               () => world.sessions.get(session.id)?.settledAt != null,
               "the session's settle",
             );
-            expect(world.sessions.get(session.id)?.summary).toMatch(/completion unknown$/);
+            expect(world.sessions.get(session.id)?.summary).toMatch(/not confirmed$/);
             // Core recovered it: it drained, sealed, and ended on its runtime (kept by Core).
             const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
             const built = yield* shipHarnessCapture(
@@ -16154,5 +16156,86 @@ it("refuses to start a session on a SHA-256 project with the reason", async () =
       }
       expect(world.sessions.size).toBe(0);
     }),
+  );
+});
+
+/**
+ * e2e8 (i), HSB: an executor stopped outside Mend that Core keeps for recovery (exit 75) read
+ * `running` beside `retained`. The first word follows the executor: a session whose current
+ * executor the platform keeps for recovery reads `stopping · retained`, never `running`.
+ */
+it(
+  "a session whose executor the platform keeps for recovery reads stopping, not running",
+  { timeout: 20_000 },
+  async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const stops: Array<"drain" | "discard"> = [];
+    let killed = false;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          expect(world.sessions.get(session.id)?.status).toBe("running");
+          killed = true;
+          const afterExpiry = Date.now() + 1_000_000;
+          memory.clock.now = () => afterExpiry;
+          yield* engine.reapCaptureLeases();
+          yield* until(
+            () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+            "the kept executor",
+          );
+          const kept = world.sessions.get(session.id);
+          expect(kept?.captureIncompleteReason).toBe("retained");
+          expect(kept?.status).toBe("stopping");
+        }),
+      {
+        captured: memory,
+        drainPolicy: { terminationWait: Duration.millis(200) },
+        sealantLayer: lifecycleLayer(created, {
+          captureOps: {
+            stops,
+            status: () => (killed ? "failed" : "ready"),
+            stopAnswer: () => "kept",
+            retained: () => ({
+              reason: "exited before its final flush completed",
+              recoverable: true,
+            }),
+          },
+        }),
+      },
+    );
+  },
+);
+
+/**
+ * e2e8 (i), B and WU: a session resumed after its executor was stopped outside Mend and saved read
+ * `running · stopped outside Mend · saved at 07:34:21 UTC · capture 13`, the words of the executor
+ * before. A launch that starts clears Mend's verdict on an earlier executor's end.
+ */
+it.each([
+  "stopped outside Mend · saved at 07:34:21 UTC · capture 13",
+  "saved at 07:42:59 UTC · capture 5",
+  "executor not answering · last capture 10 at 07:33:53 UTC · not confirmed",
+  "launch failed: Budget reached: 120 launches per minute",
+])("a launch that starts clears the earlier executor's summary %s", async (summary) => {
+  const created: Array<CreateOptions> = [];
+  await withEngine(
+    (world, tmp) =>
+      Effect.gen(function* () {
+        const { engine, session } = yield* launchOnce(world, tmp);
+        const current = world.sessions.get(session.id);
+        if (current === undefined) throw new Error("no session");
+        world.sessions.set(
+          session.id,
+          new Session({ ...current, status: "stopped", settledAt: new Date(), summary }),
+        );
+        yield* engine.launch(session.id, ["codex"]);
+        const after = world.sessions.get(session.id);
+        expect(after?.status).toBe("running");
+        expect(after?.summary).toBeNull();
+      }),
+    { sealantLayer: sealantLaunchLayer(created) },
   );
 });

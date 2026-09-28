@@ -496,6 +496,19 @@ const PLANNED_LAUNCH_ATTEMPTS = 3;
 const LAUNCH_NEVER_RAN_SUMMARY = "launch failed · the harness never started";
 /** Every summary a launch that did not start leaves begins with this. */
 const LAUNCH_SUMMARY_PREFIX = "launch ";
+/**
+ * Summaries about an earlier executor that a launch which starts clears (e2e8 (i): B, U, WU, G,
+ * G34 read `running` beside them after a resume): what an earlier launch that never started left,
+ * and Mend's verdict on how an earlier executor ended (`stopped outside Mend · saved at …`,
+ * `saved at …`, `executor not answering · …`). `executor lost · …` stays: a replacement's first
+ * register turns it into `picked up · executor replaced` (`observeReplacement`).
+ */
+const STALE_ON_START_PREFIXES = [
+  LAUNCH_SUMMARY_PREFIX,
+  "stopped outside Mend",
+  "saved at ",
+  "executor not answering",
+] as const;
 
 /** A create Core fenced before it made anything, found with no launch asking again. */
 const LAUNCH_CANCELLED_SUMMARY = "launch cancelled · nothing was created";
@@ -3115,10 +3128,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        */
       const recordKept = Effect.fn("SessionEngine.recordKept")(function* (
         sessionId: SessionId,
+        workspaceId: SealantWorkspaceId,
         detail: string | null,
         retained = true,
       ) {
         const current = yield* sessions.byId(sessionId);
+        // The first word follows the executor (e2e8 (i), HSB): one the platform keeps for recovery
+        // runs nothing of the session's, so a session whose current executor it is reads
+        // `stopping · retained`, never `running` beside it.
+        if (
+          retained &&
+          current.settledAt === null &&
+          current.sealantWorkspaceId === workspaceId &&
+          (current.status === "running" ||
+            current.status === "waiting" ||
+            current.status === "idle" ||
+            current.status === "starting")
+        ) {
+          yield* sessions.setStatus(sessionId, "stopping");
+        }
         yield* sessions.recordCaptureObservation(sessionId, {
           pending: current.capturePending ?? 0,
           pendingBytes: current.capturePendingBytes,
@@ -3217,6 +3245,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
             yield* recordKept(
               sessionId,
+              workspaceId,
               terminated.retained?.reason ?? `the platform reports it ${lookup.status}`,
             );
             return "kept" as const;
@@ -3226,7 +3255,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // daemon to flush: kept for now, looked at again on the kept drain's backoff, never
           // asked every poll.
           if (capture !== null && lookup.kind === "found" && lookup.status !== "ready") {
-            yield* recordKept(sessionId, `executor not ready · ${lookup.status}`, false);
+            yield* recordKept(
+              sessionId,
+              workspaceId,
+              `executor not ready · ${lookup.status}`,
+              false,
+            );
             return "kept" as const;
           }
           // Recorded before it is sent: from here on this executor is ending, whatever the
@@ -3332,7 +3366,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             if (terminated.retained !== null) {
               // Mend read it saved; the platform does not confirm it and keeps the executor for
               // recovery. That is its word to keep: the drain stays, kept, and asks again.
-              yield* recordKept(sessionId, terminated.retained.reason);
+              yield* recordKept(sessionId, workspaceId, terminated.retained.reason);
               return "kept" as const;
             }
             const ended = terminated.ended;
@@ -8531,10 +8565,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // and the row reads "running" forever — unstoppable and undeletable.
         yield* sessions.reopen(sessionId, "running");
         // What an earlier launch that never started left (`launch failed · …`, `launch cancelled ·
-        // …`, `launch interrupted · …`) says nothing of this one, which started: a session read
-        // `running · launch failed · the harness never started` after a resume (e2e8 F7).
+        // …`, `launch interrupted · …`), and Mend's verdict on how an earlier executor ended
+        // (`stopped outside Mend · saved at …`), say nothing of this one, which started: a session
+        // read `running · launch failed · the harness never started` or `running · stopped outside
+        // Mend · saved at … · capture 13` after a resume (e2e8 F7, (i)).
         const reopened = yield* sessions.byId(sessionId);
-        if (reopened.summary !== null && reopened.summary.startsWith(LAUNCH_SUMMARY_PREFIX)) {
+        const priorSummary = reopened.summary;
+        if (
+          priorSummary !== null &&
+          STALE_ON_START_PREFIXES.some((prefix) => priorSummary.startsWith(prefix))
+        ) {
           yield* sessions.setSummary(sessionId, null);
         }
         yield* forkSupervision(sessionId, sealantRunId);
