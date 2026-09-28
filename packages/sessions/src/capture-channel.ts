@@ -39,6 +39,8 @@ import {
   verifySectionRestorable,
   verifyWorktreeMeta,
   sectionHoldsRawNames,
+  sectionHoldsWideTimes,
+  worktreeMetaHoldsWideTimes,
   gitSectionHoldsRawNames,
   restoreNamespaceProblem,
   inodeMetadataProblem,
@@ -167,6 +169,12 @@ const refuseOtherLaunch = (input: PlanGetRequest, tokenLaunch: string) =>
  * - `ref_format`: `sections.git.ref_format` (sealantd review 9 #1, cross-repo decision 24), the
  *   repository's ref backend when it is not `files` (`reftable`). An executor that does not read
  *   it would restore a files repository under a reftable one's tables.
+ * - `wide_times` (sealantd review 10, 4c94bd4): a dir entry of the answered workspace or bulk
+ *   section, or an entry of its worktree metadata document, has an `mtime` outside signed 64-bit
+ *   nanoseconds — a time before 1677 or after 2262, a JSON integer outside i64. Mend keeps every
+ *   integer mtime as the exact `bigint` its source text says (never a double, never clamped) and
+ *   compares it exactly; an executor that does not read them would refuse the number or write a
+ *   false time.
  */
 export const MANIFEST_FEATURES = [
   "worktree_meta",
@@ -177,13 +185,15 @@ export const MANIFEST_FEATURES = [
   "git_trees",
   "object_format",
   "ref_format",
+  "wide_times",
 ] as const;
 export type ManifestFeature = (typeof MANIFEST_FEATURES)[number];
 
 /**
  * The features a plan's head holds that the executor did not say it reads. `stored` is the head
  * as registered, `planned` as this executor would restore it; the dir objects are walked for raw
- * names only when the executor does not read them.
+ * names, and they and the worktree metadata document for wide times, only when the executor does
+ * not read them.
  */
 export const missingManifestFeatures = (
   stored: CaptureManifest,
@@ -217,6 +227,14 @@ export const missingManifestFeatures = (
         (yield* sectionHoldsRawNames(planned.sections.workspace)) ||
         (bulk !== "pending" && (yield* sectionHoldsRawNames(bulk)));
       holds("raw_names", raw);
+    }
+    if (!reads.has("wide_times")) {
+      const bulk = planned.sections.bulk;
+      const wide =
+        (yield* sectionHoldsWideTimes(planned.sections.workspace)) ||
+        (bulk !== "pending" && (yield* sectionHoldsWideTimes(bulk))) ||
+        worktreeMetaHoldsWideTimes(yield* verifyWorktreeMeta(planned.sections.workspace));
+      holds("wide_times", wide);
     }
     return held;
   });
@@ -509,8 +527,9 @@ export const PUT_URL_CLOCK_MARGIN_SECONDS = 5 * 60;
 export const UPLOAD_CALLS_PER_HOUR = 600;
 export const UPLOAD_KEYS_PER_CALL = 1_000;
 /**
- * Byte quota: `max(floor, 4× the project's compressed footprint)` per session, priced once per
- * object key. `upload.urls` is the enforcement point — a batch whose declared sizes would take
+ * Byte quota: `max(floor, 4× the project's compressed footprint)` per executor launch, priced
+ * once per object key. It bounds new work only: nothing a draining, kept or recovering executor
+ * ships, and no `final` capture's register, is refused for it (cross-repo decision 30). `upload.urls` is the enforcement point — a batch whose declared sizes would take
  * the session over is refused with 413 `byte-quota` before any URL is minted, so refused bytes
  * never land; `capture.register` is the backstop for what did land (keys the daemon sends no
  * size for), refusing with 409 `byte-quota`. A key is priced when first reserved or first
@@ -522,6 +541,8 @@ export const UPLOAD_KEYS_PER_CALL = 1_000;
  */
 export const BYTE_QUOTA_MULTIPLIER = 4;
 export const BYTE_QUOTA_FLOOR = 8 * 1024 * 1024 * 1024;
+/** Byte ledgers kept in memory, one per launch, the least recently asked about dropped first. */
+export const LEDGERS_KEPT = 512;
 /** Heartbeat expiry the executor is told (ADR-0002: heartbeat every 10 s against 30 s). */
 export const LEASE_EXPIRES_IN_SECS = 30;
 /**
@@ -669,7 +690,9 @@ export interface CaptureScope {
   readonly projectId: ProjectId;
   /**
    * The executor is being drained, kept or recovered (the session has a drain under way): its
-   * `upload.urls` calls are not metered — it is saving what only it holds.
+   * `upload.urls` calls are not metered, and neither `upload.urls` nor `capture.register`
+   * refuses its bytes for the byte quota — it is saving what only it holds (cross-repo decision
+   * 30).
    */
   readonly unmetered?: boolean;
   /** Who a claim is recorded for — the session whose executor this is. */
@@ -903,17 +926,29 @@ export const CaptureChannelLive: Layer.Layer<
       readsPresent.set(launch, (input.upload_answers ?? []).includes(UPLOAD_ANSWER_PRESENT));
     };
     /**
-     * The byte ledger, per session: object key → bytes priced for it, once. `upload.urls`
+     * The byte ledger, per physical launch: object key → bytes priced for it, once. `upload.urls`
      * reserves a sized key at its declared size; `capture.register` prices every pack under the
      * caller's epoch at the size the bucket reports, replacing a reservation. A key never
-     * counts twice, whatever the manifests that list it.
+     * counts twice, whatever the manifests that list it. A new launch — a new executor, under a
+     * fresh epoch — starts a ledger of its own (review 2026-09-28 (10) #6): the budget bounds
+     * the new work one executor admits, never what a session wrote across every executor it ever
+     * had. Reservations that mint nothing are refunded. The ledgers of the launches least
+     * recently asked about are dropped past `LEDGERS_KEPT`.
      */
     const ledgers = new Map<string, Map<string, number>>();
-    const ledgerOf = (executorId: string): Map<string, number> => {
-      const found = ledgers.get(executorId);
-      if (found !== undefined) return found;
+    const ledgerOf = (launch: string): Map<string, number> => {
+      const found = ledgers.get(launch);
+      if (found !== undefined) {
+        ledgers.delete(launch);
+        ledgers.set(launch, found);
+        return found;
+      }
       const fresh = new Map<string, number>();
-      ledgers.set(executorId, fresh);
+      ledgers.set(launch, fresh);
+      for (const oldest of ledgers.keys()) {
+        if (ledgers.size <= LEDGERS_KEPT) break;
+        ledgers.delete(oldest);
+      }
       return fresh;
     };
 
@@ -999,12 +1034,20 @@ export const CaptureChannelLive: Layer.Layer<
         policy.byteQuotaFloorBytes,
         BYTE_QUOTA_MULTIPLIER * Math.max(0, scope.footprintBytes),
       );
-      const ledger = ledgerOf(scope.executorId);
+      const ledger = ledgerOf(launchId);
+      /**
+       * Preserving what an executor already holds is never refused for budget (cross-repo
+       * decision 30, review 2026-09-28 (10) #6): while its session drains, keeps or recovers it
+       * (`CaptureScope.unmetered`) — the FINAL, and a recovery boot's shipping — the byte quota
+       * prices what it saves and refuses none of it. So does the register of a `final` capture:
+       * the bytes are in the bucket, and the capture is what saves them.
+       */
+      const preserving = scope.unmetered === true;
       const overByteQuota = (status: 409 | 413, used: number, requested: number) =>
         new CaptureRouteError({
           status,
           reason: "byte-quota",
-          message: `byte quota: ${byteBudget} bytes per session (${used} priced, ${requested} more asked)`,
+          message: `byte quota: ${byteBudget} bytes per executor launch (${used} priced, ${requested} more asked)`,
           limit: byteBudget,
           used,
           requested,
@@ -1460,30 +1503,56 @@ export const CaptureChannelLive: Layer.Layer<
         const requested = sumOf(unpriced);
         const used = sumOf(ledger);
         if (requested > 0 && used + requested > byteBudget) {
-          return yield* overByteQuota(413, used, requested);
+          if (!preserving) return yield* overByteQuota(413, used, requested);
+          yield* Effect.logInfo(
+            "capture channel: over the byte quota while preserving what the executor holds · not refused",
+          ).pipe(
+            Effect.annotateLogs({
+              worktreeId,
+              epoch: input.epoch,
+              launchId,
+              limit: byteBudget,
+              used,
+              requested,
+            }),
+          );
         }
         for (const [key, size] of unpriced) ledger.set(key, size);
         // Write authority is recorded before it leaves Mend (review 2026-09-28 (7) #8): on a
         // bucket that ignores `If-None-Match` a URL handed out now could replace an object of
-        // this epoch until it expires, and no seal of the epoch stands before then
-        // (`CaptureSealsStoreLive`). The bucket judges expiry by its own clock: allowed a margin.
-        // Recording it is serialized with a seal's acceptance on the epoch's authority row
-        // (cross-repo decision 26, review 2026-09-28 (9) #6): once a seal of the epoch is
-        // recorded, no URL that could replace an object it names is ever handed out. Every
-        // object a seal names was stored when it registered, so each key about to get a URL is
-        // asked of the bucket again after the seal was seen: a stored one is answered `present`
-        // (a launch that reads it) or refused (any other), never handed a URL. Authority is then
-        // recorded only against the seal that check was made for — a newer seal is checked anew.
-        let checkedSeal: string | null = null;
+        // this epoch until it expires, and no seal whose objects live under the epoch stands
+        // before then (`CaptureSealsStoreLive`). The bucket judges expiry by its own clock:
+        // allowed a margin. Recording it is serialized with a seal's acceptance on the epoch's
+        // authority row (cross-repo decision 26, review 2026-09-28 (9) #6), and made only while
+        // the lease is still this launch's, under this epoch (cross-repo decision 31, review
+        // 2026-09-28 (10) #5): the lease was read before the bucket reads above, and a request
+        // that waited through them past its epoch's end records nothing and mints nothing.
+        // Once a seal is recorded whose objects live under this epoch — its own or a later
+        // epoch's that carries this one's packs — no URL that could replace an object it names
+        // is ever handed out. Every object a seal names was stored when it registered, so each
+        // key about to get a URL is asked of the bucket again after the seal was seen: a stored
+        // one is answered `present` (a launch that reads it) or refused (any other), never
+        // handed a URL. Authority is then recorded only against the seals that check was made
+        // for — a newer one is checked anew.
+        let checkedSeals: ReadonlyArray<string> = [];
         let sealChecked = false;
+        let recordedAt = Date.now();
         while (plans.length > 0) {
+          recordedAt = Date.now();
           const record: PutAuthorityRecord = yield* repo.recordPutAuthority(
             worktreeId,
             input.epoch,
-            new Date(Date.now() + (PRESIGN_TTL_SECONDS + PUT_URL_CLOCK_MARGIN_SECONDS) * 1000),
-            checkedSeal,
+            new Date(recordedAt + (PRESIGN_TTL_SECONDS + PUT_URL_CLOCK_MARGIN_SECONDS) * 1000),
+            checkedSeals,
+            holder,
           );
           if (record.recorded) break;
+          if (record.reason === "lease") {
+            // Priced for nothing: no URL leaves.
+            for (const key of unpriced.keys()) ledger.delete(key);
+            yield* requireLease(input.epoch);
+            return yield* leaseLost();
+          }
           sealChecked = true;
           const again = yield* Effect.forEach(
             plans,
@@ -1501,7 +1570,7 @@ export const CaptureChannelLive: Layer.Layer<
               return yield* new CaptureRouteError({
                 status: 409,
                 reason: "exists",
-                message: `${plan.key} is stored and a final seal of epoch ${input.epoch} is recorded: no upload URL can be handed out for it`,
+                message: `${plan.key} is stored and a final seal over epoch ${input.epoch}'s objects is recorded: no upload URL can be handed out for it`,
                 key: plan.key,
               });
             }
@@ -1511,7 +1580,7 @@ export const CaptureChannelLive: Layer.Layer<
           }
           const answered = new Set(storedNow.map((plan) => plan.key));
           plans = plans.filter((plan) => !answered.has(plan.key));
-          checkedSeal = record.sealedCapture;
+          checkedSeals = record.sealedCaptures;
         }
         const urls: Record<string, string> = {};
         const multipart: Record<string, MultipartPlan> = {};
@@ -1529,12 +1598,12 @@ export const CaptureChannelLive: Layer.Layer<
               present.push(plan.key);
               continue;
             }
-            // A seal of the epoch was seen: no URL that could replace a stored object.
+            // A seal over the epoch's objects was seen: no URL that could replace a stored one.
             if (sealChecked) {
               return yield* new CaptureRouteError({
                 status: 409,
                 reason: "exists",
-                message: `${plan.key} is stored and a final seal of epoch ${input.epoch} is recorded: no upload URL can be handed out for it`,
+                message: `${plan.key} is stored and a final seal over epoch ${input.epoch}'s objects is recorded: no upload URL can be handed out for it`,
                 key: plan.key,
               });
             }
@@ -1571,6 +1640,18 @@ export const CaptureChannelLive: Layer.Layer<
             part_size: policy.partSizeBytes,
             part_urls: partUrls,
           };
+        }
+        // The authority recorded above covers a URL for its lifetime plus the margin, counted
+        // from when it was recorded: URLs minted later than the margin allows could outlive it,
+        // so none of them leaves Mend — the executor asks again (review 2026-09-28 (10) #5).
+        if (
+          plans.length > 0 &&
+          Date.now() - recordedAt > (PUT_URL_CLOCK_MARGIN_SECONDS * 1000) / 2
+        ) {
+          for (const key of unpriced.keys()) ledger.delete(key);
+          return yield* Effect.die(
+            "capture channel: upload URLs were signed too long after their write authority was recorded · none handed out",
+          );
         }
         const answeredPresent = new Set(present);
         noteMinted(plans.map((plan) => plan.key).filter((key) => !answeredPresent.has(key)));
@@ -2050,7 +2131,23 @@ export const CaptureChannelLive: Layer.Layer<
           // pass. What landed is off-chain and retires with its epoch prefix.
           const used = sumOf(ledger);
           if (already === null && sumOf(priced) > byteBudget) {
-            return yield* overByteQuota(409, used, newBytes);
+            if (!preserving && manifest.kind !== "final") {
+              return yield* overByteQuota(409, used, newBytes);
+            }
+            yield* Effect.logInfo(
+              "capture channel: register over the byte quota while preserving what the executor holds · not refused",
+            ).pipe(
+              Effect.annotateLogs({
+                worktreeId,
+                n: input.n,
+                epoch: input.epoch,
+                kind: manifest.kind,
+                launchId,
+                limit: byteBudget,
+                used,
+                requested: newBytes,
+              }),
+            );
           }
           // `git_fsck` records Mend's observation, never the executor's claim: the kinds a
           // pickup or a review would restore are verified before the CAS (index-pack --verify

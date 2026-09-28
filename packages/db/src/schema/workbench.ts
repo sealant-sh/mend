@@ -1996,10 +1996,16 @@ export const captureSeals = pgTable(
     reverifiedAt: timestamp({ mode: "date", withTimezone: true }),
     /** Why the seal never stands again: a named object read back as other bytes (0089). */
     voidReason: text(),
+    /**
+     * Every `captures/<worktree>/<epoch>/` prefix holding an object the sealed capture names, its
+     * own epoch among them (0092, cross-repo decision 31): the write authority it stands over.
+     */
+    scopes: jsonb().$type<ReadonlyArray<{ readonly worktreeId: string; readonly epoch: number }>>(),
   },
   (table) => [
     primaryKey({ columns: [table.worktreeId, table.epoch] }),
     index("capture_seals_executor_idx").on(table.worktreeId, table.executorId),
+    index("capture_seals_scopes_idx").using("gin", table.scopes.op("jsonb_path_ops")),
   ],
 );
 

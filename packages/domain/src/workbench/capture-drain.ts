@@ -460,7 +460,8 @@ export const captureProgressed = (
 
 /**
  * One step of a drain, from the latest reading:
- * - `saved`: the final flush completed and nothing is pending (`captureSaved`); terminate.
+ * - `saved`: the final flush completed and nothing is pending (`captureSaved`), and the
+ *   executor's kept evidence reads saved (`evidenceSaved`); terminate.
  * - `saving`: something moved within the stall window, or the window has not run out.
  * - `not-saved`: no movement for the whole window, or nothing can move (fenced, refused, or an
  *   executor that cannot complete a final flush: `finalFlushCannotComplete`). The workspace is
@@ -478,9 +479,19 @@ export const captureDrainStep = (input: {
   readonly progressAtMs: number;
   readonly nowMs: number;
   readonly stallSeconds: number;
+  /**
+   * Whether the executor's kept evidence reads saved — the one decision a seal and an end are
+   * read by too (`executorEndOf`; cross-repo decision 31, review 2026-09-28 (10) #7): a completed
+   * answer of the executor being drained, under its epoch, made after every unsaved answer it
+   * keeps, with every answer asked of it published. A completed reading alone is what the
+   * executor said, not that decision: while the evidence does not read saved, the drain goes on
+   * as if the reading had not completed — saving while anything moves, kept once nothing did for
+   * the window.
+   */
+  readonly evidenceSaved: boolean;
 }): CaptureDrainStep => {
   const { reading } = input;
-  if (reading !== null && captureSaved(reading)) return { kind: "saved" };
+  if (reading !== null && captureSaved(reading) && input.evidenceSaved) return { kind: "saved" };
   const moved = reading !== null && captureProgressed(input.previous, reading);
   const progressAtMs = moved ? input.nowMs : input.progressAtMs;
   // A fenced executor's captures are never accepted, and a refusal does not lift on its own:

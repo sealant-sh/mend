@@ -10,6 +10,7 @@ import {
   type CaptureSummaryRow,
   type PackState,
   type SealedCompletion,
+  captureScopesOf,
 } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
 import { Effect, Layer } from "effect";
@@ -193,6 +194,13 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
               bootId: capture.seal.bootId ?? null,
               bootGeneration: capture.seal.bootGeneration ?? null,
               observation: capture.seal.observation ?? null,
+              scopes: captureScopesOf({ worktreeId: capture.worktreeId, epoch: capture.epoch }, [
+                capture.manifestKey,
+                ...(capture.names ?? []),
+                ...(capture.seal.scopes ?? []).map(
+                  (scope) => `captures/${scope.worktreeId}/${scope.epoch}/`,
+                ),
+              ]),
             });
           }
           captures.set(capture.id, {
@@ -291,18 +299,39 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
             )
             .toSorted((a, b) => b.epoch - a.epoch)[0] ?? null,
       ),
-    recordPutAuthority: (worktreeId, epoch, expiresAt, checkedSeal) =>
+    recordPutAuthority: (worktreeId, epoch, expiresAt, checkedSeals, holder) =>
       Effect.sync(() => {
+        // The lease as it is now (cross-repo decision 31): live, under `epoch`, the holder's.
+        if (holder !== undefined) {
+          const lease = leases.get(worktreeId);
+          if (
+            lease === undefined ||
+            lease.epoch !== epoch ||
+            !live(lease) ||
+            lease.executorId === null ||
+            !holdsAs(lease, holder)
+          ) {
+            return { recorded: false, reason: "lease" } as const;
+          }
+        }
         const key = `${worktreeId}:${epoch}`;
-        // A recorded seal the caller did not check its keys against: nothing recorded (0091,
-        // cross-repo decision 26).
-        const seal = seals.get(key);
-        if (
-          seal !== undefined &&
-          (seal.voidReason ?? null) === null &&
-          seal.captureId !== (checkedSeal ?? null)
-        ) {
-          return { recorded: false, sealedCapture: seal.captureId } as const;
+        // A recorded seal whose objects live under this prefix, any epoch's, that the caller did
+        // not check its keys against: nothing recorded (0091, 0092, cross-repo decisions 26, 31).
+        const covering = [...seals.values()].filter(
+          (seal) =>
+            (seal.voidReason ?? null) === null &&
+            ((seal.worktreeId === worktreeId && seal.epoch === epoch) ||
+              (seal.scopes ?? []).some(
+                (scope) => scope.worktreeId === worktreeId && scope.epoch === epoch,
+              )),
+        );
+        const checked = new Set(checkedSeals ?? []);
+        if (covering.some((seal) => !checked.has(seal.captureId))) {
+          return {
+            recorded: false,
+            reason: "sealed",
+            sealedCaptures: covering.map((seal) => seal.captureId).toSorted(),
+          } as const;
         }
         const kept = putAuthority.get(key);
         if (kept === undefined || kept.getTime() < expiresAt.getTime()) {
@@ -312,6 +341,14 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
       }),
     putAuthorityUntil: (worktreeId, epoch) =>
       Effect.sync(() => putAuthority.get(`${worktreeId}:${epoch}`) ?? null),
+    putAuthorityUntilOver: (scopes) =>
+      Effect.sync(() => {
+        const times = scopes.flatMap((scope) => {
+          const until = putAuthority.get(`${scope.worktreeId}:${scope.epoch}`);
+          return until === undefined ? [] : [until.getTime()];
+        });
+        return times.length === 0 ? null : new Date(Math.max(...times));
+      }),
     markSealReverified: (worktreeId, epoch, captureId, at) =>
       Effect.sync(() => {
         const key = `${worktreeId}:${epoch}`;
@@ -323,8 +360,18 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
         ) {
           return false;
         }
-        // A URL of the epoch handed out since `at`: the read-back is void (review 2026-09-28 (8) #5).
-        if ((putAuthority.get(key)?.getTime() ?? 0) > at.getTime()) return false;
+        // A URL of any epoch its objects live under handed out since `at`: the read-back is
+        // void (review 2026-09-28 (8) #5, (10) #5).
+        const scopes = seal.scopes ?? [{ worktreeId, epoch }];
+        if (
+          scopes.some(
+            (scope) =>
+              (putAuthority.get(`${scope.worktreeId}:${scope.epoch}`)?.getTime() ?? 0) >
+              at.getTime(),
+          )
+        ) {
+          return false;
+        }
         const kept = seal.reverifiedAt ?? null;
         seals.set(key, {
           ...seal,

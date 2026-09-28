@@ -1177,6 +1177,16 @@ export const makeDirReader = (
 export const sectionHoldsRawNames = (
   section: ChunkedSection,
 ): Effect.Effect<boolean, CaptureReadError, BlobStore> =>
+  sectionHoldsEntry(
+    section,
+    (entry) => entry.raw_name !== undefined || entry.raw_target !== undefined,
+  );
+
+/** Whether any dir entry of `section`, walked from its root, is one `holds` says. */
+const sectionHoldsEntry = (
+  section: ChunkedSection,
+  holds: (entry: DirEntry) => boolean,
+): Effect.Effect<boolean, CaptureReadError, BlobStore> =>
   Effect.gen(function* () {
     if (section.root === "") return false;
     const dirs = yield* makeDirReader(section);
@@ -1188,12 +1198,41 @@ export const sectionHoldsRawNames = (
       if (visited.has(ref)) continue;
       visited.add(ref);
       for (const entry of yield* dirs.read(ref)) {
-        if (entry.raw_name !== undefined || entry.raw_target !== undefined) return true;
+        if (holds(entry)) return true;
         if (entry.kind === "dir" && entry.child !== undefined) queue.push(entry.child);
       }
     }
     return false;
   });
+
+/** The signed 64-bit range of nanoseconds since the epoch: 1677-09-21 to 2262-04-11. */
+const I64_MIN = -(2n ** 63n);
+const I64_MAX = 2n ** 63n - 1n;
+
+/**
+ * Whether an mtime lies outside signed 64-bit nanoseconds — a wide time (sealantd review 10,
+ * manifest feature `wide_times`): a modification time before 1677 or after 2262, recorded
+ * exactly as a JSON integer outside i64. Mend reads every integer mtime from its source text as a
+ * `bigint`, whatever its size (`parseDirObjectJson`, `parseMetaDocumentJson`), so it holds one
+ * exactly; an executor that does not say it reads them is not handed one.
+ */
+export const isWideTime = (mtime: bigint | number | string): boolean => {
+  const ns = mtimeNanos(mtime);
+  return ns < I64_MIN || ns > I64_MAX;
+};
+
+/**
+ * Whether any dir entry of `section` has a wide time (`isWideTime`, manifest feature
+ * `wide_times`), walked from its root; the worktree metadata document is `worktreeMetaHoldsWideTimes`.
+ */
+export const sectionHoldsWideTimes = (
+  section: ChunkedSection,
+): Effect.Effect<boolean, CaptureReadError, BlobStore> =>
+  sectionHoldsEntry(section, (entry) => isWideTime(entry.mtime));
+
+/** Whether any entry of a worktree metadata document has a wide time (`isWideTime`). */
+export const worktreeMetaHoldsWideTimes = (document: WorktreeMetaDocument | null): boolean =>
+  document !== null && document.entries.some((entry) => isWideTime(entry.mtime));
 
 // ─── Materialize ────────────────────────────────────────────────────────────
 

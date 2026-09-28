@@ -1,6 +1,6 @@
-import { CaptureStoreRepo, type SealedCompletion } from "@mend/db";
+import { type CaptureScopeRef, CaptureStoreRepo, type SealedCompletion } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
-import { BlobStore, storedCaptureProblem } from "@mend/store";
+import { BlobStore, keysOfSections, storedCaptureProblem } from "@mend/store";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
@@ -78,19 +78,29 @@ export type SealStanding =
     }
   | { readonly state: "void"; readonly code: "void"; readonly reason: string };
 
+/** `epoch 3`, or `epochs 2, 3` — the epochs a seal's objects live under, in its own worktree. */
+const epochsWords = (seal: SealedCompletion, scopes: ReadonlyArray<CaptureScopeRef>): string => {
+  const words = scopes.map((scope) =>
+    scope.worktreeId === seal.worktreeId ? `${scope.epoch}` : `${scope.worktreeId}:${scope.epoch}`,
+  );
+  return words.length === 1 ? `epoch ${words[0]}` : `epochs ${words.join(", ")}`;
+};
+
 /**
  * Whether `seal` stands. On a bucket that refuses to replace an object (`BlobStore.replaceableUntil`
  * answers 0: S3, R2, MinIO, the directory store) its bytes stay those bytes, and the seal stands as
  * recorded. On one that does not (Garage ignores `If-None-Match`), an upload URL handed out under
- * the seal's epoch could replace an object until it expires — the latest such expiry is recorded
- * before any URL is handed out (`CaptureStoreRepo.recordPutAuthority`), and the store adds what
- * this process minted and a URL minted before it started could still do. So:
+ * any epoch its objects live under could replace an object until it expires — the seal's own and
+ * every earlier one whose packs it carries (`scopes`, cross-repo decision 31) — the latest such
+ * expiry is recorded before any URL is handed out (`CaptureStoreRepo.recordPutAuthority`), and the
+ * store adds what this process minted and a URL minted before it started could still do. So:
  * - while any such URL could still be used: withheld;
  * - once none can, every object the sealed capture names is read back (`storedCaptureProblem`):
  *   all what their names say → it is marked re-verified from the moment the read began, and
- *   stands until another URL is handed out under its epoch. The mark is a compare-and-set against
- *   that authority (`markSealReverified`): a URL handed out while the objects were being read back
- *   voids the read, and the seal stays withheld. Any other bytes → void, for good;
+ *   stands until another URL is handed out under one of those epochs. The mark is a
+ *   compare-and-set against all of that authority (`markSealReverified`): a URL handed out while
+ *   the objects were being read back voids the read, and the seal stays withheld. Any other
+ *   bytes → void, for good;
  * - a store that could not be read concludes nothing: withheld, asked again on the next read.
  */
 export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function* (
@@ -116,13 +126,20 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
       reason: "the sealed capture is not registered",
     } satisfies SealStanding;
   }
-  const storeUntil = yield* blobs.replaceableUntil(row.manifestKey);
+  // Every object the capture lists, not only its manifest: the store remembers URLs by key.
+  const listed = [row.manifestKey, ...keysOfSections(row.sections)];
+  let storeUntil = 0;
+  for (const key of listed) storeUntil = Math.max(storeUntil, yield* blobs.replaceableUntil(key));
   if (storeUntil === 0) return { state: "standing" } satisfies SealStanding;
-  const recorded = yield* repo.putAuthorityUntil(seal.worktreeId, seal.epoch);
+  // Every epoch its objects live under — an inherited pack's included (cross-repo decision 31,
+  // review 2026-09-28 (10) #5): a URL of an earlier epoch could replace that pack as surely as
+  // one of the seal's own.
+  const scopes = seal.scopes ?? [{ worktreeId: seal.worktreeId, epoch: seal.epoch }];
+  const recorded = yield* repo.putAuthorityUntilOver(scopes);
   const until = Math.max(storeUntil, recorded?.getTime() ?? 0);
   const at = now();
   if (at < until) {
-    const words = `an upload URL of epoch ${seal.epoch} could replace what it names until ${new Date(until).toISOString()}`;
+    const words = `an upload URL of ${epochsWords(seal, scopes)} could replace what it names until ${new Date(until).toISOString()}`;
     yield* Effect.logInfo(
       "capture seals: sealed, but an upload URL of its epoch could still replace what it names · withheld until it expires",
     ).pipe(
@@ -168,7 +185,7 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
     return {
       state: "withheld",
       code: "write-authority",
-      reason: `an upload URL of epoch ${seal.epoch} was handed out while its objects were read back`,
+      reason: `an upload URL of ${epochsWords(seal, scopes)} was handed out while its objects were read back`,
     } satisfies SealStanding;
   }
   return { state: "standing" } satisfies SealStanding;
