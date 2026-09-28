@@ -107,6 +107,14 @@ const post = (
     request.end(JSON.stringify(body));
   });
 
+/** The keys a `plan.get` answer presigned. */
+const urlsOf = (plan: { readonly json: Record<string, unknown> }) =>
+  Object.keys(plan.json["get_urls"] as Record<string, string>);
+
+/** The bulk section a `plan.get` answer gives the executor to restore. */
+const bulkOf = (plan: { readonly json: Record<string, unknown> }) =>
+  (plan.json["head"] as { readonly manifest: CaptureManifest }).manifest.sections.bulk;
+
 /** What a URL may be minted for: a capture object, or a source archive Mend published. */
 const isReadableKey = (key: string): boolean => isCaptureObjectKey(key) || isCaptureSourceKey(key);
 
@@ -1191,6 +1199,175 @@ describe("capture channel routes", () => {
       [...bulk.objects.keys()].filter((key) => key.includes("/trees/")).toSorted(),
     );
     expect(urls.every(isReadableKey)).toBe(true);
+  });
+
+  it("other_bulk (sealantd #101): a move between platforms keeps both trees; plan.get answers each executor its own platform's, else pending; register checks a carried section but asks the bucket only about new ones", async () => {
+    const wt = WorktreeId.make("wt-cap-other-bulk");
+    const X86 = "linux-x86_64-gnu";
+    const ARM = "linux-aarch64-gnu";
+    const apiOf = (executorId: string) => {
+      const api = channel.apiFor({
+        worktreeId: wt,
+        projectId: PROJECT,
+        executorId,
+        footprintBytes: 1_000_000,
+      });
+      return (route: string, body: unknown) =>
+        new Promise<{ status: number; json: Record<string, unknown> }>((resolve) => {
+          void dispatchCaptureRoute(api, route, body, (status, payload) =>
+            resolve({ status, json: payload as Record<string, unknown> }),
+          );
+        });
+    };
+    const tree = (name: string) => {
+      const dir = path.join(scratch, `other-bulk-${name}`);
+      fs.mkdirSync(path.join(dir, "node_modules", name), { recursive: true });
+      fs.writeFileSync(path.join(dir, "node_modules", name, "index.node"), `${name} binary\n`);
+      return dir;
+    };
+    await run(Effect.flatMap(CaptureStoreRepo, (repo) => repo.init(wt)));
+
+    // An arm64 executor builds the tree first (format 1: dir objects by key).
+    const onArm = apiOf("exec-arm");
+    const armClaim = await onArm("/plan.get", { epoch: 0, platform: ARM });
+    expect(armClaim.status).toBe(200);
+    const armEpoch = Number(armClaim.json["epoch"]);
+    const armTree = snapshotDirectory(tree("arm"), captureKeys(wt, armEpoch), { chunkSize: 64 });
+    const armSection = { ...sectionOf(armTree), platform: ARM };
+    const armCapture = buildManifest({
+      worktreeId: wt,
+      n: 0,
+      parent: null,
+      epoch: armEpoch,
+      kind: "turn",
+      bulk: armSection,
+    });
+    await run(uploadObjects(new Map([...armTree.objects, [armCapture.key, armCapture.bytes]])));
+    const registerOn =
+      (call: ReturnType<typeof apiOf>, epoch: number) =>
+      (built: ReturnType<typeof buildManifest>, n: number, parent: string | null) =>
+        call("/capture.register", {
+          worktree_id: wt,
+          epoch,
+          n,
+          parent,
+          capture_id: built.id,
+          manifest_key: built.key,
+          manifest: built.manifest,
+        });
+    expect((await registerOn(onArm, armEpoch)(armCapture, 0, null)).status).toBe(200);
+    await run(Effect.flatMap(CaptureStoreRepo, (repo) => repo.release(wt, armEpoch)));
+
+    // The session moves to an amd64 executor: the arm tree is not its to restore.
+    const onX86 = apiOf("exec-x86");
+    const x86Claim = await onX86("/plan.get", { epoch: 0, platform: X86 });
+    expect(x86Claim.status).toBe(200);
+    const x86Epoch = Number(x86Claim.json["epoch"]);
+    expect(x86Epoch).toBeGreaterThan(armEpoch);
+    expect(bulkOf(x86Claim)).toBe("pending");
+    for (const key of [...armTree.packs, armTree.root]) expect(urlsOf(x86Claim)).not.toContain(key);
+
+    // Its own bulk snap (format 2) fills `bulk`; the arm section rides in `other_bulk`.
+    const x86Tree = snapshotDirectory(tree("x86"), captureKeys(wt, x86Epoch), {
+      chunkSize: 64,
+      format: 2,
+    });
+    const x86Section = { ...sectionOf(x86Tree), platform: X86 };
+    const x86Capture = buildManifest({
+      worktreeId: wt,
+      n: 1,
+      parent: armCapture.id,
+      epoch: x86Epoch,
+      kind: "turn",
+      bulk: x86Section,
+      otherBulk: { [ARM]: armSection },
+    });
+    await run(uploadObjects(new Map([...x86Tree.objects, [x86Capture.key, x86Capture.bytes]])));
+    headed.length = 0;
+    const registerX86 = registerOn(onX86, x86Epoch);
+    expect((await registerX86(x86Capture, 1, armCapture.id)).status).toBe(200);
+    // The carried arm section was registered with capture 0: nothing about it is asked again.
+    expect(headed).toEqual(expect.arrayContaining([...x86Tree.packs, ...x86Tree.dirPacks]));
+    for (const key of armTree.packs) expect(headed).not.toContain(key);
+    for (const key of [...x86Tree.packs, ...x86Tree.dirPacks]) {
+      const row = [...memory.packs.values()].find((pack) => pack.key === key);
+      expect(row?.platform).toBe(X86);
+    }
+    for (const key of armTree.packs) {
+      const row = [...memory.packs.values()].find((pack) => pack.key === key);
+      expect(row?.platform).toBe(ARM);
+      expect(row?.epoch).toBe(armEpoch);
+    }
+    // The chain row keeps the arm section, so retention keeps its objects.
+    expect(memory.captures.get(x86Capture.id)?.sections).toMatchObject({
+      bulk: x86Section,
+      other_bulk: { [ARM]: armSection },
+    });
+
+    // Each platform is answered its own tree, with its keys presigned and the other's not.
+    const forArm = await onX86("/plan.get", { epoch: x86Epoch, platform: ARM });
+    expect(forArm.status).toBe(200);
+    expect(bulkOf(forArm)).toEqual(armSection);
+    expect(urlsOf(forArm)).toEqual(
+      expect.arrayContaining([...armTree.packs, ...armTree.objects.keys()]),
+    );
+    for (const key of [...x86Tree.packs, ...x86Tree.dirPacks]) {
+      expect(urlsOf(forArm)).not.toContain(key);
+    }
+    const forX86 = await onX86("/plan.get", { epoch: x86Epoch, platform: X86 });
+    expect(bulkOf(forX86)).toEqual(x86Section);
+    expect(urlsOf(forX86)).toEqual(expect.arrayContaining([...x86Tree.packs, ...x86Tree.dirPacks]));
+    for (const key of armTree.packs) expect(urlsOf(forX86)).not.toContain(key);
+    // What the stored head carries on is answered as stored.
+    expect(
+      (forX86.json["head"] as { readonly manifest: CaptureManifest }).manifest.sections.other_bulk,
+    ).toEqual({ [ARM]: armSection });
+    // A third platform has neither: pending, never another platform's tree.
+    const forRiscv = await onX86("/plan.get", { epoch: x86Epoch, platform: "linux-riscv64-gnu" });
+    expect(bulkOf(forRiscv)).toBe("pending");
+    for (const key of [...armTree.packs, ...x86Tree.packs, ...x86Tree.dirPacks]) {
+      expect(urlsOf(forRiscv)).not.toContain(key);
+    }
+    // An executor that names no platform gets the head as it is.
+    expect(bulkOf(await onX86("/plan.get", { epoch: x86Epoch }))).toEqual(x86Section);
+
+    // An other_bulk entry the parent does not hold is checked like a bulk section: a malformed
+    // key is refused before any HEAD, and missing objects are named.
+    const strangerKeys = captureKeys(wt, armEpoch);
+    const stranger = {
+      root: strangerKeys.tree("9".repeat(64)),
+      packs: [strangerKeys.pack("8".repeat(64))],
+      platform: "linux-riscv64-gnu",
+    };
+    const withStranger = (seq: number, entry: typeof stranger) =>
+      buildManifest({
+        worktreeId: wt,
+        n: 2,
+        parent: x86Capture.id,
+        epoch: x86Epoch,
+        seq,
+        kind: "turn",
+        bulk: x86Section,
+        otherBulk: { [ARM]: armSection, "linux-riscv64-gnu": entry },
+      });
+    const malformed = withStranger(1, { ...stranger, packs: [`captures/${wt}`] });
+    const missing = withStranger(2, stranger);
+    await run(
+      uploadObjects(
+        new Map([
+          [malformed.key, malformed.bytes],
+          [missing.key, missing.bytes],
+        ]),
+      ),
+    );
+    headed.length = 0;
+    const refused = await registerX86(malformed, 2, x86Capture.id);
+    expect(refused.status).toBe(400);
+    expect(headed).toEqual([]);
+    const absent = await registerX86(missing, 2, x86Capture.id);
+    expect(absent.status).toBe(422);
+    expect(absent.json["missing"]).toEqual(stranger.packs);
+    for (const key of armTree.packs) expect(headed).not.toContain(key);
   });
 
   it("prices a dir pack against the byte quota like any pack", async () => {

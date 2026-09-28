@@ -23,6 +23,7 @@ import { git, type GitError } from "./git.ts";
  * `epoch`, `seq`, `kind`, `created_at`, `sections.git.{packs, refs, head, fsck}`,
  * `sections.workspace.{root, packs, format?, dir_packs?}`,
  * `sections.bulk.{root, packs, platform, format?, dir_packs?} | "pending"`,
+ * `sections.other_bulk?.<platform>` (each a ready bulk section),
  * `checkpoint?.{ordinal, sha, ref}`. Unknown fields pass through undecoded.
  *
  * The chunked sections are versioned one by one (sealantd `manifest.rs`, PR #99 "Dir packs"),
@@ -86,6 +87,21 @@ export type BulkSectionReady = typeof BulkSectionReady.Type;
 export const BulkSection = Schema.Union([BulkSectionReady, Schema.Literal("pending")]);
 export type BulkSection = typeof BulkSection.Type;
 
+/**
+ * `sections.other_bulk` (sealantd PR #101, "`other_bulk` in a manifest"): the bulk sections
+ * captured on OTHER platforms, keyed by `<os>-<arch>-<libc>`, each a bulk section as `bulk` is.
+ * An executor that continues a head whose bulk section was built elsewhere carries that section
+ * here, capture after capture, so moving a session between an arm64 and an amd64 executor never
+ * drops the other platform's dependency tree. Absent when empty, so a manifest without one
+ * decodes and encodes exactly as before.
+ *
+ * Readers ignore it — a capture's files are its `bulk` section's — except `plan.get`
+ * (`bulkSectionFor`), register (it validates every entry like a bulk section), retention (it
+ * keeps every object an entry names) and the engine's install decision.
+ */
+export const OtherBulkSections = Schema.Record(Schema.String, BulkSectionReady);
+export type OtherBulkSections = typeof OtherBulkSections.Type;
+
 /** A section whose files are CDC-chunked: the workspace section or a ready bulk section. */
 export type ChunkedSection = WorkspaceSection | BulkSectionReady;
 
@@ -103,6 +119,14 @@ export const CaptureCheckpoint = Schema.Struct({
   ref: Schema.String,
 });
 
+export const CaptureSections = Schema.Struct({
+  git: GitSection,
+  workspace: WorkspaceSection,
+  bulk: BulkSection,
+  other_bulk: Schema.optionalKey(OtherBulkSections),
+});
+export type CaptureSections = typeof CaptureSections.Type;
+
 export const CaptureManifest = Schema.Struct({
   worktree_id: Schema.String,
   n: Schema.Int,
@@ -111,14 +135,46 @@ export const CaptureManifest = Schema.Struct({
   seq: Schema.Int,
   kind: CaptureKind,
   created_at: Schema.String,
-  sections: Schema.Struct({
-    git: GitSection,
-    workspace: WorkspaceSection,
-    bulk: BulkSection,
-  }),
+  sections: CaptureSections,
   checkpoint: Schema.optionalKey(CaptureCheckpoint),
 });
 export type CaptureManifest = typeof CaptureManifest.Type;
+
+/**
+ * Every bulk section a manifest holds, by platform: each `other_bulk` entry stamped for the
+ * platform it is keyed by, then `bulk` when captured, which wins over an entry of its own
+ * platform (sealantd `Sections::bulk_by_platform`). An entry whose key and stamp disagree is no
+ * platform's to restore and is left out.
+ */
+export const bulkSectionsByPlatform = (
+  sections: CaptureSections,
+): ReadonlyMap<string, BulkSectionReady> => {
+  const all = new Map<string, BulkSectionReady>();
+  for (const [platform, section] of Object.entries(sections.other_bulk ?? {})) {
+    if (section.platform === platform) all.set(platform, section);
+  }
+  if (sections.bulk !== "pending") all.set(sections.bulk.platform, sections.bulk);
+  return all;
+};
+
+/**
+ * The bulk section an executor of `platform` may restore (sealantd PR #101, `registrar.rs`
+ * "`platform` on `plan.get`"): `bulk` when it was captured on that platform, else the section
+ * `other_bulk` carries for it, else `"pending"` — never a tree built for another platform.
+ */
+export const bulkSectionFor = (sections: CaptureSections, platform: string): BulkSection =>
+  bulkSectionsByPlatform(sections).get(platform) ?? "pending";
+
+const sameKeys = (x: ReadonlyArray<string>, y: ReadonlyArray<string>): boolean =>
+  x.length === y.length && x.every((key, at) => key === y[at]);
+
+/** Whether two bulk sections name the same tree: same platform, root, format, packs and dir packs. */
+export const sameBulkSection = (a: BulkSectionReady, b: BulkSectionReady): boolean =>
+  a.platform === b.platform &&
+  a.root === b.root &&
+  sectionFormatOf(a) === sectionFormatOf(b) &&
+  sameKeys(a.packs, b.packs) &&
+  sameKeys(dirPacksOf(a), dirPacksOf(b));
 
 /** The two CDC-packed classes a manifest can materialize; git is served by the runner. */
 export type CaptureClass = "workspace" | "bulk";
@@ -829,7 +885,8 @@ export const collectTreeKeys = (
  * key in format 1, the dir packs holding them in format 2). Only
  * capture object keys (`isCaptureObjectKey`) are answered — a pending bulk section, an empty
  * root and a malformed entry contribute nothing, so nothing downstream presigns or HEADs a key
- * that names no object.
+ * that names no object. `other_bulk` contributes nothing either: a plan presigns the one bulk
+ * section it answers (`bulkSectionFor` puts it in `bulk` first).
  */
 export const keysNeededBy = (
   manifest: CaptureManifest,

@@ -244,6 +244,8 @@ export interface ManifestInput {
   readonly git?: CaptureManifest["sections"]["git"];
   readonly workspace?: CaptureManifest["sections"]["workspace"];
   readonly bulk?: CaptureManifest["sections"]["bulk"];
+  /** Other platforms' bulk sections; left out of the manifest when absent, as sealantd does. */
+  readonly otherBulk?: CaptureManifest["sections"]["other_bulk"];
   readonly checkpoint?: { readonly ordinal: number; readonly sha: string; readonly ref: string };
 }
 
@@ -275,6 +277,7 @@ export const buildManifest = (
       git: input.git ?? emptyGitSection,
       workspace: input.workspace ?? { root: "", packs: [] },
       bulk: input.bulk ?? "pending",
+      ...(input.otherBulk === undefined ? {} : { other_bulk: input.otherBulk }),
     },
     ...(input.checkpoint === undefined ? {} : { checkpoint: input.checkpoint }),
   };

@@ -31,8 +31,9 @@ import { Effect, Schema } from "effect";
  * this prefix — so one agent's `node_modules` can never become another session's supply chain.
  *
  * Readers: a standby executor's plan (`hot-pool.ts` "Capture-mode standby") and a cold launch
- * whose head carries no bulk for the executor's platform; both fall back to running the install
- * command in the workspace when the cache has nothing for that platform.
+ * whose head carries no bulk for the executor's platform — neither as `bulk` nor in `other_bulk`
+ * (`bulkSectionFor`); both fall back to running the install command in the workspace when the
+ * cache has nothing for that platform. A record is served only for the platform it names.
  *
  * A bulk section in either section format promotes (sealantd PR #99): format 1 names its dir
  * objects by key, so they are re-keyed under the cache prefix; format 2 names them by digest
@@ -81,7 +82,11 @@ export const bulkSectionOfCache = (record: DependencyCacheRecord): BulkSectionRe
       }
     : { root: record.root, packs: record.packs, platform: record.platform };
 
-/** The cache for a platform, or null when no install job has filled it. */
+/**
+ * The cache for a platform, or null when no install job has filled it — or when the record
+ * under that platform's prefix names another platform's tree, which is never served: a tree
+ * built for one platform does not run on another, and a standby would restore it as its own.
+ */
 export const readDependencyCache = (
   projectId: ProjectId,
   platform: string,
@@ -92,15 +97,25 @@ export const readDependencyCache = (
       .get(recordKey(dependencyCachePrefix(projectId, platform)))
       .pipe(Effect.catchTag("BlobNotFoundError", () => Effect.succeed(null)));
     if (bytes === null) return null;
-    return yield* decodeRecord(JSON.parse(Buffer.from(bytes).toString("utf8"))).pipe(
+    const record = yield* Effect.try(() => JSON.parse(Buffer.from(bytes).toString("utf8"))).pipe(
+      Effect.flatMap(decodeRecord),
       Effect.catch(() => Effect.succeed(null)),
     );
+    if (record === null || record.platform === platform) return record;
+    yield* Effect.logWarning(
+      "dependency cache: the record under this platform names another platform's tree · not served",
+    ).pipe(Effect.annotateLogs({ projectId, platform, recorded: record.platform }));
+    return null;
   });
 
 export type PromoteError = BlobNotFoundError | BlobStoreError | CaptureFormatError;
 
 /**
- * Promote a capture's bulk section into the project's cache for its platform. Packs are copied
+ * Promote a capture's bulk section into the project's cache for its platform — `bulk` only,
+ * the tree this capture's own executor built, into the prefix of the platform it is stamped
+ * with. A section `other_bulk` carries (sealantd PR #101) was built by another executor on
+ * another platform and never promotes: each platform's cache is filled by an install job that
+ * ran on it. Packs are copied
  * server-side under the cache prefix by their digest. In format 1 dir objects name their
  * children by full key, so every tree is re-encoded bottom-up with the moved child keys and
  * lands under its new digest; in format 2 they name them by digest, so the dir packs are copied

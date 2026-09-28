@@ -79,6 +79,46 @@ describe("planForPlatform", () => {
     expect(planForPlatform(manifest, "linux-x86_64-gnu")).toBe(manifest);
     expect(planForPlatform(manifest, "linux-aarch64-musl").sections.bulk).toBe("pending");
   });
+
+  it("answers another platform its own tree from other_bulk, as stored, and pending when it has none", () => {
+    const x86 = {
+      root: "captures/wt-x/2/trees/aa",
+      packs: ["captures/wt-x/2/packs/bb"],
+      platform: "linux-x86_64-gnu",
+    };
+    const arm = {
+      root: "c".repeat(64),
+      packs: ["captures/wt-x/1/packs/dd"],
+      platform: "linux-aarch64-gnu",
+      format: 2 as const,
+      dir_packs: ["captures/wt-x/1/packs/ee"],
+    };
+    const manifest = buildManifest({
+      worktreeId: "wt-x",
+      n: 2,
+      parent: null,
+      epoch: 2,
+      kind: "turn",
+      bulk: x86,
+      otherBulk: { "linux-aarch64-gnu": arm },
+    }).manifest;
+    const forArm = planForPlatform(manifest, "linux-aarch64-gnu");
+    expect(forArm.sections.bulk).toEqual(arm);
+    // What the head carries is left as stored; only the answered section moves into `bulk`.
+    expect(forArm.sections.other_bulk).toEqual({ "linux-aarch64-gnu": arm });
+    expect(planForPlatform(manifest, "linux-x86_64-gnu")).toBe(manifest);
+    expect(planForPlatform(manifest, "linux-aarch64-musl").sections.bulk).toBe("pending");
+    // A head still pending on its own platform answers the platform other_bulk carries.
+    const pendingHere = buildManifest({
+      worktreeId: "wt-x",
+      n: 3,
+      parent: null,
+      epoch: 3,
+      otherBulk: { "linux-x86_64-gnu": x86 },
+    }).manifest;
+    expect(planForPlatform(pendingHere, "linux-x86_64-gnu").sections.bulk).toEqual(x86);
+    expect(planForPlatform(pendingHere, "linux-aarch64-gnu")).toBe(pendingHere);
+  });
 });
 
 describe("the shared dependency cache", () => {
@@ -216,6 +256,81 @@ describe("the shared dependency cache", () => {
       packs: promoted.record.packs,
       platform: PLATFORM,
     });
+  });
+
+  it("serves a platform only a record of its own platform, and promotes a head's own bulk section, never one other_bulk carries", async () => {
+    const x86 = "linux-x86_64-gnu";
+    const arm = "linux-aarch64-gnu";
+    const project = ProjectId.make("proj-cache-platforms");
+    // A record naming x86's tree, found under the arm prefix, is not arm's cache.
+    const misplaced = {
+      root: "captures/w/1/trees/aa",
+      packs: [],
+      platform: x86,
+      capture_id: "c".repeat(64),
+      promoted_at: new Date(0).toISOString(),
+    };
+    const read = await run(
+      Effect.gen(function* () {
+        const store = yield* BlobStore;
+        yield* store.put(
+          `${dependencyCachePrefix(project, arm)}root.json`,
+          new Uint8Array(Buffer.from(JSON.stringify(misplaced), "utf8")),
+        );
+        yield* store.put(
+          `${dependencyCachePrefix(project, x86)}root.json`,
+          new Uint8Array(Buffer.from("{not json", "utf8")),
+        );
+        return {
+          arm: yield* readDependencyCache(project, arm),
+          x86: yield* readDependencyCache(project, x86),
+        };
+      }),
+    );
+    expect(read).toEqual({ arm: null, x86: null });
+
+    // An install session's head built x86 and carries an arm tree from elsewhere: only x86 is
+    // promoted, into x86's prefix; the arm prefix keeps what it had.
+    const worktreeId = WorktreeId.make("wt-install-platforms");
+    const { snapshot, built } = bulkCapture(worktreeId, 5, 0, null);
+    const carrying = buildManifest({
+      worktreeId,
+      n: 0,
+      parent: null,
+      epoch: 5,
+      kind: "final",
+      bulk: { ...sectionOf(snapshot), platform: x86 },
+      otherBulk: {
+        [arm]: { root: "captures/w/1/trees/bb", packs: ["captures/w/1/packs/cc"], platform: arm },
+      },
+    });
+    const promoted = await run(
+      Effect.gen(function* () {
+        yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]]));
+        const record = yield* promoteBulkToCache(project, carrying.id, carrying.manifest);
+        const store = yield* BlobStore;
+        return {
+          record,
+          x86: yield* readDependencyCache(project, x86),
+          armKeys: (yield* store.list(dependencyCachePrefix(project, arm))).map(
+            (entry) => entry.key,
+          ),
+        };
+      }),
+    );
+    expect(promoted.record?.platform).toBe(x86);
+    expect(promoted.x86).toEqual(promoted.record);
+    expect(promoted.armKeys).toEqual([`${dependencyCachePrefix(project, arm)}root.json`]);
+
+    // A head with no tree of its own promotes nothing, whatever other_bulk carries.
+    const onlyCarried = buildManifest({
+      worktreeId,
+      n: 1,
+      parent: carrying.id,
+      epoch: 5,
+      otherBulk: { [x86]: { ...sectionOf(snapshot), platform: x86 } },
+    });
+    expect(await run(promoteBulkToCache(project, onlyCarried.id, onlyCarried.manifest))).toBeNull();
   });
 
   it("a format-2 bulk section promotes by copying its dir packs, keeps its root digest, and restores from the cache alone", async () => {

@@ -111,6 +111,8 @@ import {
   MendKeys,
   NO_SIGNER_MESSAGE,
   SecretCipher,
+  bulkSectionFor,
+  bulkSectionsByPlatform,
   decodeManifest,
   git,
   harnessHomePathOf,
@@ -1209,15 +1211,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             return;
           }
           const head = (yield* capture.repo.headOf(session.worktreeId))?.head ?? null;
-          const bulk =
+          const sections =
             head === null
-              ? "pending"
+              ? null
               : yield* capture.blobs.get(head.manifestKey).pipe(
                   Effect.flatMap((bytes) => decodeManifest(head.manifestKey, bytes)),
-                  Effect.map((manifest) => manifest.sections.bulk),
-                  Effect.catch(() => Effect.succeed("pending" as const)),
+                  Effect.map((manifest) => manifest.sections),
+                  Effect.catch(() => Effect.succeed(null)),
                 );
-          if (bulk !== "pending" && bulk.platform === platform) {
+          // What `plan.get` answered this executor: the head's tree for its platform, the head's
+          // `bulk` or one its `other_bulk` carries (sealantd PR #101), else nothing to restore.
+          const bulk = sections === null ? "pending" : bulkSectionFor(sections, platform);
+          if (bulk !== "pending") {
             yield* Effect.logInfo(
               "session engine: dependency tree observed for this platform",
             ).pipe(
@@ -1242,7 +1247,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             Effect.annotateLogs({
               sessionId: session.id,
               platform,
-              capturedFor: bulk === "pending" ? null : bulk.platform,
+              capturedFor: sections === null ? [] : [...bulkSectionsByPlatform(sections).keys()],
               command,
             }),
           );
