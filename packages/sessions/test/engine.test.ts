@@ -14204,6 +14204,38 @@ describe("SessionEngine status words from the latest observation (e2e run 6 #7)"
     },
   );
 
+  // e2e8 F7: after a failed standby claim, discard and resume, the session read `running · launch
+  // failed · the harness never started` — the words of the launch before, not of this one.
+  it(
+    "a launch that starts clears what an earlier launch that never started left in the summary",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            const current = world.sessions.get(session.id);
+            if (current === undefined) throw new Error("no session");
+            world.sessions.set(
+              session.id,
+              new Session({
+                ...current,
+                status: "failed",
+                settledAt: new Date(),
+                summary: "launch failed · the harness never started",
+              }),
+            );
+            yield* engine.launch(session.id, ["codex"]);
+            const after = world.sessions.get(session.id);
+            expect(after?.status).toBe("running");
+            expect(after?.summary).toBeNull();
+          }),
+        { sealantLayer: sealantLaunchLayer(created) },
+      );
+    },
+  );
+
   // e2e8 (i), L: Mend SIGKILLed 0.12 s after asking the create. Its executor started, exited, and
   // Core's recovery destroyed it; Mend came back, found it by the key, drained it and released the
   // worktree — and the session read `starting`, summary null, with nothing running, until a resume.

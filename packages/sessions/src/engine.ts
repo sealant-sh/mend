@@ -470,6 +470,8 @@ const OPENING_PROMPT_NOT_DELIVERED = "opening prompt not delivered";
 const PLANNED_LAUNCH_ATTEMPTS = 3;
 /** A launch whose executor was created but never reached its harness, with no words of its own. */
 const LAUNCH_NEVER_RAN_SUMMARY = "launch failed · the harness never started";
+/** Every summary a launch that did not start leaves begins with this. */
+const LAUNCH_SUMMARY_PREFIX = "launch ";
 
 /** A create Core fenced before it made anything, found with no launch asking again. */
 const LAUNCH_CANCELLED_SUMMARY = "launch cancelled · nothing was created";
@@ -8503,6 +8505,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // settled_at, or the first-settle-wins guard ignores this run's exit
         // and the row reads "running" forever — unstoppable and undeletable.
         yield* sessions.reopen(sessionId, "running");
+        // What an earlier launch that never started left (`launch failed · …`, `launch cancelled ·
+        // …`, `launch interrupted · …`) says nothing of this one, which started: a session read
+        // `running · launch failed · the harness never started` after a resume (e2e8 F7).
+        const reopened = yield* sessions.byId(sessionId);
+        if (reopened.summary !== null && reopened.summary.startsWith(LAUNCH_SUMMARY_PREFIX)) {
+          yield* sessions.setSummary(sessionId, null);
+        }
         yield* forkSupervision(sessionId, sealantRunId);
 
         // The agent process ends on its own; the fold over every process decides the session.
