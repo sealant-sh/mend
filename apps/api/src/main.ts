@@ -7,7 +7,7 @@ import {
   AgentConversationRepoLive,
   BriefCommentsRepoLive,
   BriefsRepoLive,
-  type CaptureStoreRepo,
+  CaptureStoreRepo,
   CaptureStoreRepoLive,
   type StoreRefsRepo,
   StoreRefsRepoLive,
@@ -141,6 +141,8 @@ import {
   CaptureRuntimeLive,
   CaptureUploadPolicyLive,
   CaptureRuntimeOff,
+  CaptureSeals,
+  CaptureSealsNone,
   DotfilesClonerLive,
   FollowUpDeliveryLive,
   FollowUpLauncherLive,
@@ -732,6 +734,14 @@ const MainLive = Layer.unwrap(
     const captureRuntime = captured
       ? CaptureRuntimeLive.pipe(Layer.provide(captureChannel), Layer.provide(captureStore))
       : CaptureRuntimeOff;
+    // The store's sealed record of a completed final flush (cross-repo decision 1): with a
+    // `complete: true` Mend observed itself, the only evidence the engine reads as saved.
+    const captureSeals: Layer.Layer<CaptureSeals, Layer.Error<typeof captureStore>> = captured
+      ? Layer.effect(
+          CaptureSeals,
+          Effect.map(CaptureStoreRepo, (repo) => ({ sealedCompletion: repo.sealedCompletion })),
+        ).pipe(Layer.provide(captureStore))
+      : CaptureSealsNone;
     // The authority and the reads, by store kind: a directory beside Mend, or the chain head.
     const sessionRepository = captured
       ? SessionRepositoryCapturedLive.pipe(
@@ -792,7 +802,13 @@ const MainLive = Layer.unwrap(
       // workspace git hooks ride here, below the engine that reports into them and the worker
       // that registers what runs, so both hold the same one.
       Layer.provide(
-        Layer.mergeAll(sessionRepository, worktreeReads, captureRuntime, WorkspaceGitHooksLive),
+        Layer.mergeAll(
+          sessionRepository,
+          worktreeReads,
+          captureRuntime,
+          captureSeals,
+          WorkspaceGitHooksLive,
+        ),
       ),
       Layer.provide(StoreLive),
       Layer.provide(StoreConfig.layer),

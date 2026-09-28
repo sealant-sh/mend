@@ -105,6 +105,43 @@ export type WorkspaceStopState = "stopped" | "draining" | "kept" | "requested";
  */
 export interface WorkspaceStopOptions {
   readonly discardUnsaved?: boolean;
+  /**
+   * The control plane's attestation that this executor's final flush completed: the store's
+   * sealed record of it (`final_seal`), by chain position, lease epoch and the executor the seal
+   * names. Core keeps a capture-sourced executor's disk unless it observed `complete: true`
+   * itself, this attestation says so, or the owner discarded. SDK 0.37.2 takes no stop options:
+   * it is sent and ignored there, and Core keeps what it cannot confirm (PLATFORM-FEEDBACK.md
+   * 2026-09-28, "A stop that carries the completion").
+   */
+  readonly completion?: CaptureCompletionAttestation;
+}
+
+/**
+ * A completed final flush as the store sealed it: what a stop carries to Core. `executorId` is
+ * the executor's runtime identity as the platform reports it (`workspace.details().runtime
+ * .resourceId`: the Docker container, the Pod, the MicroVM) — never the Sealant workspace id.
+ */
+export interface CaptureCompletionAttestation {
+  readonly captureN: number;
+  readonly epoch: number;
+  readonly executorId: string;
+}
+
+/**
+ * What a stop came to, with what else Core said of it: `retained` when it keeps the executor for
+ * recovery (its disk holds work not confirmed saved), and what became of a `completion`
+ * attestation (`accepted` · `ignored`). Both null when the answer does not say (SDK 0.37.2).
+ */
+export interface WorkspaceStopAnswer {
+  readonly state: WorkspaceStopState;
+  readonly retained: {
+    readonly reason: string | null;
+    readonly recoverable: boolean | null;
+  } | null;
+  readonly completion: {
+    readonly outcome: "accepted" | "ignored";
+    readonly detail: string | null;
+  } | null;
 }
 
 /** A workspace whose `stop` may take options: every SDK's, the older ones ignoring them. */
@@ -165,6 +202,33 @@ export const captureStatusOf = (workspace: {
   );
 };
 
+/** A workspace that can say when its runtime ends it (Core's next SDK). */
+interface RuntimeDeadlineReadable {
+  readonly runtimeDeadline: () => Promise<unknown>;
+}
+
+const readsRuntimeDeadline = (workspace: object): workspace is RuntimeDeadlineReadable =>
+  "runtimeDeadline" in workspace && typeof workspace.runtimeDeadline === "function";
+
+/**
+ * `workspace.runtimeDeadline()` when the SDK has it: the instant the runtime itself ends the
+ * executor (a MicroVM's maximum duration), null where the runtime imposes none or none is
+ * launched yet. Null on an SDK without it (0.37.2), where nothing is asked, and for an answer
+ * that is not a readable time.
+ */
+export const runtimeDeadlineOf = (
+  workspace: object,
+): Effect.Effect<Date | null, SealantPlatformError> => {
+  if (!readsRuntimeDeadline(workspace)) return Effect.succeed(null);
+  return wrap(() => workspace.runtimeDeadline()).pipe(
+    Effect.map((answer) => {
+      if (typeof answer !== "string" || answer === "") return null;
+      const at = new Date(answer);
+      return Number.isNaN(at.getTime()) ? null : at;
+    }),
+  );
+};
+
 const STOP_STATES: ReadonlyArray<WorkspaceStopState> = ["stopped", "draining", "kept", "requested"];
 
 /** The state a stop's answer carries, when it carries one Mend knows; `requested` otherwise. */
@@ -173,10 +237,124 @@ export const workspaceStopStateOf = (answer: unknown): WorkspaceStopState => {
   return STOP_STATES.find((state) => state === answer.state) ?? "requested";
 };
 
+const textIn = (value: object, key: string): string | null => {
+  const found: unknown = Reflect.get(value, key);
+  return typeof found === "string" && found !== "" ? found : null;
+};
+
+/** A stop's answer as Mend reads it (`WorkspaceStopAnswer`); anything unknown reads null. */
+export const workspaceStopAnswerOf = (answer: unknown): WorkspaceStopAnswer => {
+  const state = workspaceStopStateOf(answer);
+  if (typeof answer !== "object" || answer === null) {
+    return { state, retained: null, completion: null };
+  }
+  const drain: unknown = Reflect.get(answer, "drain");
+  const retainedRaw: unknown =
+    typeof drain === "object" && drain !== null ? Reflect.get(drain, "retained") : undefined;
+  const retained =
+    typeof retainedRaw === "object" && retainedRaw !== null
+      ? {
+          reason: textIn(retainedRaw, "reason"),
+          recoverable:
+            typeof Reflect.get(retainedRaw, "recoverable") === "boolean"
+              ? Reflect.get(retainedRaw, "recoverable") === true
+              : null,
+        }
+      : null;
+  const completionRaw: unknown = Reflect.get(answer, "completion");
+  const outcome =
+    typeof completionRaw === "object" && completionRaw !== null
+      ? Reflect.get(completionRaw, "outcome")
+      : undefined;
+  const completion =
+    typeof completionRaw === "object" &&
+    completionRaw !== null &&
+    (outcome === "accepted" || outcome === "ignored")
+      ? { outcome, detail: textIn(completionRaw, "detail") }
+      : null;
+  return { state, retained, completion };
+};
+
+/** A workspace that reads its executor now (Core's next SDK: `workspace.runtime()`). */
+interface RuntimeReadable {
+  readonly runtime: () => Promise<unknown>;
+}
+
+const readsRuntime = (workspace: object): workspace is RuntimeReadable =>
+  "runtime" in workspace && typeof workspace.runtime === "function";
+
+/** `resourceId` of a runtime record (`WorkspaceRuntimeInfo`), when it carries one. */
+const resourceIdIn = (runtime: unknown): string | null =>
+  typeof runtime === "object" && runtime !== null ? textIn(runtime, "resourceId") : null;
+
+/**
+ * The executor's runtime identity (`resourceId`: the Docker container, the Pod, the MicroVM) on
+ * Core's next SDK: from the handle's `launch.runtime` (what `create()` saw become ready, or a
+ * replayed create's executor), else `workspace.runtime()` read now. Null on SDK 0.37.2, which has
+ * neither, and while no runtime is launched.
+ */
+export const runtimeResourceIdOf = (
+  workspace: object,
+): Effect.Effect<string | null, SealantPlatformError> => {
+  const launch: unknown = Reflect.get(workspace, "launch");
+  const launched =
+    typeof launch === "object" && launch !== null
+      ? resourceIdIn(Reflect.get(launch, "runtime"))
+      : null;
+  if (launched !== null) return Effect.succeed(launched);
+  if (!readsRuntime(workspace)) return Effect.succeed(null);
+  return wrap(() => workspace.runtime()).pipe(Effect.map(resourceIdIn));
+};
+
+/** Core's next SDK: `workspaces.findByIdempotencyKey(key)`. */
+interface IdempotentLookup {
+  readonly findByIdempotencyKey: (key: string) => Promise<unknown>;
+}
+
+const looksUpByKey = (workspaces: object): workspaces is IdempotentLookup =>
+  "findByIdempotencyKey" in workspaces && typeof workspaces.findByIdempotencyKey === "function";
+
+/**
+ * What an idempotent create's key finds: the workspace it made (`found`), that none was made
+ * (`none`), or that the SDK cannot say (`unsupported`: 0.37.2, which neither sends the key nor
+ * looks it up).
+ */
+export type WorkspaceByKey =
+  | { readonly kind: "found"; readonly workspaceId: string }
+  | { readonly kind: "none" }
+  | { readonly kind: "unsupported" };
+
+/** `findByIdempotencyKey` on any SDK's `workspaces`, read as `WorkspaceByKey`. */
+export const workspaceByKeyOf = (
+  workspaces: object,
+  key: string,
+): Effect.Effect<WorkspaceByKey, SealantPlatformError> => {
+  if (!looksUpByKey(workspaces)) return Effect.succeed({ kind: "unsupported" });
+  return wrap(() => workspaces.findByIdempotencyKey(key)).pipe(
+    Effect.map((found): WorkspaceByKey => {
+      const id = typeof found === "object" && found !== null ? textIn(found, "id") : null;
+      return id === null ? { kind: "none" } : { kind: "found", workspaceId: id };
+    }),
+  );
+};
+
+/** What makes a create idempotent: the key Mend persisted before it asked (`idempotencyKey`). */
+export interface WorkspaceCreateLaunch {
+  readonly idempotencyKey: string;
+}
+
 export interface SealantClientShape {
+  /**
+   * `launch.idempotencyKey` makes the create idempotent for the owner on Core's next SDK: a
+   * repeated create returns the workspace the first one made, and `findWorkspaceByKey` finds it
+   * when the answer was lost. SDK 0.37.2 ignores it (PLATFORM-FEEDBACK.md 2026-09-28).
+   */
   readonly createWorkspace: (
     options: CreateOptions,
+    launch?: WorkspaceCreateLaunch,
   ) => Effect.Effect<Workspace, SealantPlatformError>;
+  /** The workspace a keyed create made (`workspaceByKeyOf`); `unsupported` on SDK 0.37.2. */
+  readonly findWorkspaceByKey: (key: string) => Effect.Effect<WorkspaceByKey, SealantPlatformError>;
   readonly getWorkspace: (id: string) => Effect.Effect<Workspace, SealantPlatformError>;
   /** Runs outlive workspaces — records are replayable long after close-out. */
   readonly getRun: (runId: string) => Effect.Effect<Run, SealantPlatformError>;
@@ -231,7 +409,14 @@ export interface SealantClientShape {
   readonly stopWorkspace: (
     workspace: Workspace,
     options?: WorkspaceStopOptions,
-  ) => Effect.Effect<WorkspaceStopState, SealantPlatformError>;
+  ) => Effect.Effect<WorkspaceStopAnswer, SealantPlatformError>;
+  /**
+   * The executor's runtime identity (`runtimeResourceIdOf`: `launch.runtime`, else `runtime()`):
+   * what a completion attestation names. Null where the SDK cannot say (0.37.2).
+   */
+  readonly runtimeResourceId: (
+    workspace: Workspace,
+  ) => Effect.Effect<string | null, SealantPlatformError>;
   /**
    * Capture-sourced workspaces (0.31.0, sealantd ADR-0015): ship and register what the executor
    * holds. `suspend` (a checkpoint, a handoff) forces a small-class capture and ships the queue;
@@ -271,6 +456,16 @@ export interface SealantClientShape {
   readonly captureReplan: (
     workspace: Workspace,
   ) => Effect.Effect<WorkspaceCaptureReplanned, SealantPlatformError>;
+  /**
+   * When the runtime itself ends this workspace's executor, whatever anyone asks
+   * (`workspace.runtimeDeadline()`, Core's next SDK): what a planned drain ahead of the platform's
+   * cap counts back from. Null where the runtime imposes no lifetime (Docker, Kubernetes), no
+   * runtime is launched yet, or the SDK cannot say (0.37.2 — PLATFORM-FEEDBACK.md 2026-09-27,
+   * "The runtime deadline").
+   */
+  readonly runtimeDeadline: (
+    workspace: Workspace,
+  ) => Effect.Effect<Date | null, SealantPlatformError>;
   /** Re-arm the workspace TTL and return the platform's exact resulting expiry. */
   readonly expireWorkspace: (
     workspaceId: string,
@@ -407,8 +602,18 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
     const apiContext = yield* Layer.build(sealantApiClientLayer(internalConfig));
     const ownerUserId = internalConfig.hostLocal.ownerUserId;
 
-    const createWorkspace = Effect.fn("SealantClient.createWorkspace")((options: CreateOptions) =>
-      wrap(() => sealant.workspaces.create(options)),
+    const createWorkspace = Effect.fn("SealantClient.createWorkspace")((
+      options: CreateOptions,
+      launch?: WorkspaceCreateLaunch,
+    ) => {
+      // SDK 0.37.2 builds its request field by field and drops the key; Core's next SDK sends it.
+      const keyed: CreateOptions & { readonly idempotencyKey?: string } =
+        launch === undefined ? options : { ...options, idempotencyKey: launch.idempotencyKey };
+      return wrap(() => sealant.workspaces.create(keyed));
+    });
+
+    const findWorkspaceByKey = Effect.fn("SealantClient.findWorkspaceByKey")((key: string) =>
+      workspaceByKeyOf(sealant.workspaces, key),
     );
 
     const getWorkspace = Effect.fn("SealantClient.getWorkspace")((id: string) =>
@@ -455,7 +660,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
     // are read through `workspaceStopStateOf`, so the newer answer needs no change here.
     const stopWorkspace = Effect.fn("SealantClient.stopWorkspace")(
       (workspace: Workspace, options?: WorkspaceStopOptions) =>
-        wrap(() => stopWith(workspace, options)).pipe(Effect.map(workspaceStopStateOf)),
+        wrap(() => stopWith(workspace, options)).pipe(Effect.map(workspaceStopAnswerOf)),
     );
 
     // The kind has nowhere to go on this SDK (see `captureFlush` above): both kinds call the
@@ -466,6 +671,14 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
 
     const captureStatus = Effect.fn("SealantClient.captureStatus")((workspace: Workspace) =>
       captureStatusOf(workspace),
+    );
+
+    const runtimeDeadline = Effect.fn("SealantClient.runtimeDeadline")((workspace: Workspace) =>
+      runtimeDeadlineOf(workspace),
+    );
+
+    const runtimeResourceId = Effect.fn("SealantClient.runtimeResourceId")((workspace: Workspace) =>
+      runtimeResourceIdOf(workspace),
     );
 
     const captureReplan = Effect.fn("SealantClient.captureReplan")((workspace: Workspace) =>
@@ -692,6 +905,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
 
     return {
       createWorkspace,
+      findWorkspaceByKey,
       getWorkspace,
       getRun,
       runHarness,
@@ -703,6 +917,8 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       stopWorkspace,
       captureFlush,
       captureStatus,
+      runtimeDeadline,
+      runtimeResourceId,
       captureReplan,
       expireWorkspace,
       getSession,
@@ -996,7 +1212,8 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
     ): Stream.Stream<A, SealantPlatformError> => Stream.unwrap(Effect.map(current, call));
 
     return {
-      createWorkspace: (options) => via((c) => c.createWorkspace(options)),
+      createWorkspace: (options, launch) => via((c) => c.createWorkspace(options, launch)),
+      findWorkspaceByKey: (key) => via((c) => c.findWorkspaceByKey(key)),
       getWorkspace: (id) => via((c) => c.getWorkspace(id)),
       getRun: (runId) => via((c) => c.getRun(runId)),
       runHarness: (workspace, prompt, options) =>
@@ -1013,6 +1230,8 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
       stopWorkspace: (workspace, options) => via((c) => c.stopWorkspace(workspace, options)),
       captureFlush: (workspace, kind) => via((c) => c.captureFlush(workspace, kind)),
       captureStatus: (workspace) => via((c) => c.captureStatus(workspace)),
+      runtimeDeadline: (workspace) => via((c) => c.runtimeDeadline(workspace)),
+      runtimeResourceId: (workspace) => via((c) => c.runtimeResourceId(workspace)),
       captureReplan: (workspace) => via((c) => c.captureReplan(workspace)),
       expireWorkspace: (workspaceId, ttlSeconds) =>
         via((c) => c.expireWorkspace(workspaceId, ttlSeconds)),

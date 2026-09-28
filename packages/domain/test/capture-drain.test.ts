@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   captureBytesWords,
+  captureCaughtUp,
   captureDiscardAuditData,
   captureDiscardWords,
   captureDrainStep,
@@ -70,6 +71,47 @@ describe("captureHarvestReady", () => {
     expect(captureHarvestReady(reading({ pending: 2, pendingBulk: 2 }))).toBe(true);
     expect(captureHarvestReady(reading({ pending: 3, pendingBulk: 2 }))).toBe(false);
     expect(captureHarvestReady(reading({ fenced: true }))).toBe(false);
+  });
+});
+
+describe("captureCaughtUp (the landing barrier, review 2026-09-28 #14)", () => {
+  it("is not caught up while the small class's last snap failed, a path could not be read, or the small class was refused, however empty the queue", () => {
+    expect(captureCaughtUp(reading({ complete: null }))).toBe(true);
+    // A suspend snap that carried an unreadable file forward: empty queue, stale content.
+    expect(
+      captureCaughtUp(reading({ complete: null, unreadable: 1, unreadablePaths: ["tree/app.ts"] })),
+    ).toBe(false);
+    expect(
+      captureCaughtUp(
+        reading({
+          complete: false,
+          incompleteReason: "unreadable",
+          snapError: "unreadable current source file",
+          snapFailingSince: new Date(),
+        }),
+      ),
+    ).toBe(false);
+    expect(captureCaughtUp(reading({ refused: 1, refusedClasses: ["small"] }))).toBe(false);
+    expect(captureCaughtUp(reading({ repairing: true }))).toBe(false);
+    expect(captureCaughtUp(reading({ paused: true }))).toBe(false);
+    expect(captureCaughtUp(reading({ pending: 1 }))).toBe(false);
+  });
+
+  it("a failing bulk snap or a bulk refusal does not hold up what needs only the small class", () => {
+    const bulkFailing = reading({
+      complete: false,
+      incompleteReason: "snapshot-failed",
+      snapError: "EACCES: node_modules/.cache",
+      snapFailingSince: new Date(),
+      snaps: [
+        { class: "small", failing: false },
+        { class: "bulk", failing: true },
+      ],
+    });
+    expect(captureCaughtUp(bulkFailing)).toBe(true);
+    expect(captureCaughtUp(reading({ refused: 1, refusedClasses: ["bulk"] }))).toBe(true);
+    // Without per-class snaps, any failing snap holds it.
+    expect(captureCaughtUp({ ...bulkFailing, snaps: null })).toBe(false);
   });
 });
 
@@ -356,6 +398,21 @@ describe("captureStatusLine", () => {
     ).toBe("not saved · 3 pending · workspace kept");
   });
 
+  it("says when the platform keeps the executor for recovery, without claiming the workspace is Mend's to keep", () => {
+    expect(
+      captureStatusLine({
+        ...facts,
+        captureDrain: "stop",
+        capturePending: 0,
+        captureNotSavedAt: new Date("2026-09-28T10:00:00.000Z"),
+        captureIncompleteReason: "retained",
+        captureIncompleteDetail: "exited before its final flush completed",
+      }),
+    ).toBe(
+      "not saved · executor kept for recovery · exited before its final flush completed · 0 pending",
+    );
+  });
+
   it("says why a final flush did not complete, in plain words", () => {
     const kept = {
       ...facts,
@@ -507,16 +564,35 @@ describe("executorEndOf / executorEndWords (an executor that ended without Mend 
   const at = endAt;
   const never = { pending: null, pendingBytes: null, observedAt: null };
 
-  it("a final capture that registered last, taken by this executor, reads saved — never lost", () => {
+  it("a final capture that registered last, taken by this executor, is not a save on its own: the last capture, completion unknown (review 2026-09-28 #13)", () => {
+    // sealantd staged its small Final, its bulk snapshot failed, and the small capture still
+    // shipped carrying the older bulk section: the head is final-kind, its bulk is not
+    // `pending`, nothing read pending after it — and the new bulk bytes were never saved.
     const end = executorEndOf({
-      head: { kind: "final", registeredAt: at("16:29:51"), bulkPending: false },
+      head: { kind: "final", n: 21, registeredAt: at("16:29:51"), bulkPending: false },
       executorStartedAt: started,
-      reading: { pending: 1, pendingBytes: 743_474_373, observedAt: at("16:29:20") },
+      reading: { pending: 0, pendingBytes: 0, observedAt: at("16:29:52") },
+      finalSaved: null,
     });
-    expect(executorEndWords(end)).toBe("stopped outside Mend · saved at 16:29:51 UTC");
+    expect(end.kind).toBe("unconfirmed");
+    expect(executorEndWords(end)).toBe(
+      "stopped outside Mend · last saved capture 21 at 16:29:51 UTC · completion unknown",
+    );
   });
 
-  it("a final head is not a save when its bulk is pending, a previous executor took it, or Mend saw work pending after it", () => {
+  it("the store's sealed record of this executor's completed final flush is the save", () => {
+    const end = executorEndOf({
+      head: { kind: "final", n: 21, registeredAt: at("16:29:51"), bulkPending: false },
+      executorStartedAt: started,
+      reading: never,
+      finalSaved: null,
+      sealed: { at: at("16:29:51"), n: 21 },
+    });
+    expect(end.kind).toBe("saved");
+    expect(executorEndWords(end)).toBe("stopped outside Mend · saved at 16:29:51 UTC · capture 21");
+  });
+
+  it("a final head never reads saved: bulk pending, a previous executor's, or work Mend saw pending after it", () => {
     const words = endWords;
     expect(
       words({
@@ -524,7 +600,7 @@ describe("executorEndOf / executorEndWords (an executor that ended without Mend 
         executorStartedAt: started,
         reading: never,
       }),
-    ).toBe("executor lost · last saved 16:29:51 UTC · changes after that were not saved");
+    ).toBe("stopped outside Mend · last saved 16:29:51 UTC · completion unknown");
     expect(
       words({
         head: { kind: "final", registeredAt: at("16:10:00"), bulkPending: false },
@@ -539,7 +615,7 @@ describe("executorEndOf / executorEndWords (an executor that ended without Mend 
         reading: { pending: 2, pendingBytes: null, observedAt: at("16:30:05") },
       }),
     ).toBe(
-      "executor lost · last saved 16:29:51 UTC · changes after that were not saved · 2 pending at 16:30:05 UTC",
+      "stopped outside Mend · last saved 16:29:51 UTC · completion unknown · 2 pending at 16:30:05 UTC",
     );
   });
 

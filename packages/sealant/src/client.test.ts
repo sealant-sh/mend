@@ -2,7 +2,15 @@ import { SealantApiError } from "@sealant/sdk";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
-import { captureStatusOf, platformErrorCode, workspaceStopStateOf } from "./client.ts";
+import {
+  captureStatusOf,
+  platformErrorCode,
+  runtimeDeadlineOf,
+  runtimeResourceIdOf,
+  workspaceByKeyOf,
+  workspaceStopAnswerOf,
+  workspaceStopStateOf,
+} from "./client.ts";
 
 /**
  * The engine branches on the platform's STABLE codes (`workspace-docker-unsupported`,
@@ -90,5 +98,98 @@ describe("captureStatusOf", () => {
       Effect.flip(captureStatusOf({ capture: { status: async () => ({ pending: 1 }) } })),
     );
     expect(error.code).toBe("capture_status_unreadable");
+  });
+});
+
+describe("runtimeDeadlineOf", () => {
+  it("asks nothing of an SDK without `runtimeDeadline()` (0.37.2)", async () => {
+    await expect(
+      Effect.runPromise(runtimeDeadlineOf({ status: async () => "ready" })),
+    ).resolves.toBeNull();
+  });
+
+  it("reads the platform's deadline, and null where the runtime has none", async () => {
+    const at = "2026-09-28T08:00:00.000Z";
+    await expect(
+      Effect.runPromise(runtimeDeadlineOf({ runtimeDeadline: async () => at })),
+    ).resolves.toEqual(new Date(at));
+    await expect(
+      Effect.runPromise(runtimeDeadlineOf({ runtimeDeadline: async () => null })),
+    ).resolves.toBeNull();
+    await expect(
+      Effect.runPromise(runtimeDeadlineOf({ runtimeDeadline: async () => "not a time" })),
+    ).resolves.toBeNull();
+  });
+});
+
+describe("workspaceStopAnswerOf", () => {
+  it("reads a kept executor retained for recovery, and what became of a completion", () => {
+    expect(
+      workspaceStopAnswerOf({
+        state: "kept",
+        drain: {
+          state: "kept",
+          retained: {
+            since: "x",
+            reason: "ended without a complete final flush",
+            recoverable: true,
+          },
+        },
+        completion: { outcome: "ignored", detail: "not the current executor" },
+      }),
+    ).toEqual({
+      state: "kept",
+      retained: { reason: "ended without a complete final flush", recoverable: true },
+      completion: { outcome: "ignored", detail: "not the current executor" },
+    });
+  });
+
+  it("reads SDK 0.37.2's empty answer as requested and nothing more", () => {
+    expect(workspaceStopAnswerOf(undefined)).toEqual({
+      state: "requested",
+      retained: null,
+      completion: null,
+    });
+  });
+});
+
+describe("runtimeResourceIdOf", () => {
+  it("names the executor from the handle's launch, else from `runtime()`, and nothing on 0.37.2", async () => {
+    await expect(
+      Effect.runPromise(
+        runtimeResourceIdOf({
+          launch: { replayed: false, runtime: { kind: "docker", resourceId: "c0ffee" } },
+          runtime: async () => ({ kind: "docker", resourceId: "other" }),
+        }),
+      ),
+    ).resolves.toBe("c0ffee");
+    await expect(
+      Effect.runPromise(
+        runtimeResourceIdOf({
+          launch: undefined,
+          runtime: async () => ({ kind: "microvm", resourceId: "vm-1" }),
+        }),
+      ),
+    ).resolves.toBe("vm-1");
+    await expect(
+      Effect.runPromise(runtimeResourceIdOf({ runtime: async () => null })),
+    ).resolves.toBeNull();
+    await expect(Effect.runPromise(runtimeResourceIdOf({}))).resolves.toBeNull();
+  });
+});
+
+describe("workspaceByKeyOf", () => {
+  it("finds what a keyed create made, says when it made none, and says 0.37.2 cannot look", async () => {
+    await expect(
+      Effect.runPromise(
+        workspaceByKeyOf({ findByIdempotencyKey: async () => ({ id: "ws-9" }) }, "k"),
+      ),
+    ).resolves.toEqual({ kind: "found", workspaceId: "ws-9" });
+    await expect(
+      Effect.runPromise(workspaceByKeyOf({ findByIdempotencyKey: async () => null }, "k")),
+    ).resolves.toEqual({ kind: "none" });
+    await expect(
+      Effect.runPromise(workspaceByKeyOf({ create: async () => ({}) }, "k")),
+    ).resolves.toEqual({ kind: "unsupported" });
   });
 });

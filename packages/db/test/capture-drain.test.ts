@@ -1,5 +1,5 @@
 import { PgClient } from "@effect/sql-pg";
-import { ProjectId, SessionId, Sha, WorktreeId } from "@mend/domain";
+import { ProjectId, SealantWorkspaceId, SessionId, Sha, WorktreeId } from "@mend/domain";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -298,16 +298,54 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
     expect(result.reopened.captureDiscardedAt).toBeNull();
     expect(result.reopened.captureDiscardedBy).toBeNull();
   });
-  it("keeps the executor's own word that its final flush completed (0079)", async () => {
+  it("keeps an executor create's key until its answer is on the row, and the runtime identity beside it (0081, 0082)", async () => {
+    const t0 = new Date("2026-09-28T10:00:00.000Z");
+    const result = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        yield* sessions.recordExecutorCreate(STOPPING, "launch:k1");
+        const pending = yield* sessions.executorCreateOf(STOPPING);
+        const listed = yield* sessions.listExecutorCreates();
+        // Another key does not clear it; its own does.
+        yield* sessions.clearExecutorCreate(STOPPING, "launch:other");
+        const kept = yield* sessions.executorCreateOf(STOPPING);
+        yield* sessions.recordExecutorCreate(STOPPING, "launch:k2");
+        yield* sessions.recordAcceptedWorkspace(STOPPING, SealantWorkspaceId.make("ws-9"), t0);
+        const answered = yield* sessions.executorCreateOf(STOPPING);
+        yield* sessions.recordExecutorResource(STOPPING, SealantWorkspaceId.make("ws-other"), "no");
+        const notOther = yield* sessions.executorResourceOf(STOPPING);
+        yield* sessions.recordExecutorResource(STOPPING, SealantWorkspaceId.make("ws-9"), "c0ffee");
+        const resource = yield* sessions.executorResourceOf(STOPPING);
+        return { pending, listed, kept, answered, notOther, resource };
+      }),
+    );
+    expect(result.pending).toBe("launch:k1");
+    expect(result.listed).toEqual([{ sessionId: STOPPING, key: "launch:k1" }]);
+    expect(result.kept).toBe("launch:k1");
+    expect(result.answered).toBeNull();
+    expect(result.notOther).toBeNull();
+    expect(result.resource).toEqual({ workspaceId: "ws-9", resourceId: "c0ffee" });
+  });
+  it("keeps the executor's own word that its final flush completed, with its epoch (0079, 0081)", async () => {
     const t0 = new Date("2026-09-27T19:48:49.000Z");
     const t1 = new Date("2026-09-27T19:49:26.000Z");
     const result = await run(
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;
         const before = yield* sessions.captureSavedOf(STOPPING);
-        yield* sessions.recordCaptureSaved(STOPPING, { workspaceId: "ws-1", at: t0, n: 21 });
+        yield* sessions.recordCaptureSaved(STOPPING, {
+          workspaceId: "ws-1",
+          at: t0,
+          n: 21,
+          epoch: 3,
+        });
         const first = yield* sessions.captureSavedOf(STOPPING);
-        yield* sessions.recordCaptureSaved(STOPPING, { workspaceId: "ws-1", at: t1, n: null });
+        yield* sessions.recordCaptureSaved(STOPPING, {
+          workspaceId: "ws-1",
+          at: t1,
+          n: null,
+          epoch: null,
+        });
         const latest = yield* sessions.captureSavedOf(STOPPING);
         // Bookkeeping: the session row reads as it did.
         const row = yield* sessions.byId(STOPPING);
@@ -315,8 +353,9 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
       }),
     );
     expect(result.before).toBeNull();
-    expect(result.first).toEqual({ workspaceId: "ws-1", at: t0, n: 21 });
-    expect(result.latest).toEqual({ workspaceId: "ws-1", at: t1, n: null });
+    expect(result.first).toEqual({ workspaceId: "ws-1", at: t0, n: 21, epoch: 3 });
+    expect(result.latest).toEqual({ workspaceId: "ws-1", at: t1, n: null, epoch: null });
     expect(result.keys).not.toContain("captureSavedAt");
+    expect(result.keys).not.toContain("captureSavedEpoch");
   });
 });

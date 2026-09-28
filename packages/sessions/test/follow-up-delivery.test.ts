@@ -498,6 +498,13 @@ const testLayer = (world: TestWorld) => {
     endCaptureDrain: () => Effect.die("not in test"),
     listCaptureDrains: () => Effect.die("not in test"),
     setExecutorStartedAt: () => Effect.die("not in test"),
+    recordAcceptedWorkspace: () => Effect.die("not in test"),
+    recordExecutorResource: () => Effect.die("not in test"),
+    recordExecutorCreate: () => Effect.die("not in test"),
+    clearExecutorCreate: () => Effect.die("not in test"),
+    executorCreateOf: () => Effect.succeed(null),
+    listExecutorCreates: () => Effect.succeed([]),
+    executorResourceOf: () => Effect.succeed(null),
     requestRemoval: () => Effect.die("not in test"),
     listRemovalRequested: () => Effect.die("not in test"),
   });

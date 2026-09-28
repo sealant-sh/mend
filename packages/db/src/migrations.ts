@@ -2374,6 +2374,38 @@ const captureClaimsAndSealsMigration = Effect.gen(function* () {
   yield* sql`CREATE INDEX capture_seals_executor_idx ON capture_seals (worktree_id, executor_id)`;
 });
 
+/**
+ * 0081: which executor a save and a stop's attestation name (review 2026-09-28 #13).
+ * - `capture_saved_epoch`: the lease epoch beside a completed final flush Mend observed, so the
+ *   save binds to that executor AND epoch — never to a later claim of the same worktree.
+ * - `executor_resource_id`: the current executor's runtime identity as the platform reports it
+ *   (`details().runtime.resourceId`), recorded at launch; what a stop's completion attestation
+ *   names. Cleared whenever the session takes a new executor.
+ */
+const captureExecutorIdentityMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE agent_sessions
+      ADD COLUMN capture_saved_epoch integer,
+      ADD COLUMN executor_resource_id text`;
+});
+
+/**
+ * 0082: a create Mend asked for and has not seen answered (review 2026-09-28 #7, Core's
+ * idempotent create). `executor_create_key`: the idempotency key of the session's executor
+ * create, written before the create is asked and cleared once the platform's answer is on the row
+ * (or it refused). While it stands, the lease that names the session belongs to an executor Mend
+ * may not have seen: nothing reads it as ended, and the key finds it
+ * (`workspaces.findByIdempotencyKey`).
+ */
+const executorCreateKeyMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE agent_sessions ADD COLUMN executor_create_key text`;
+  yield* sql`
+    CREATE INDEX agent_sessions_executor_create_key_idx ON agent_sessions (id)
+      WHERE executor_create_key IS NOT NULL`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2455,4 +2487,6 @@ export const migrations = {
   "0078_capture_failing": captureFailingMigration,
   "0079_capture_saved": captureSavedMigration,
   "0080_capture_claims_and_seals": captureClaimsAndSealsMigration,
+  "0081_capture_executor_identity": captureExecutorIdentityMigration,
+  "0082_executor_create_key": executorCreateKeyMigration,
 };

@@ -44,6 +44,56 @@ Two wire points on the session channel (sealantd `crates/sealant-capture/src/reg
     sections unchanged, `kind: "final"`, `n` = head + 1) carrying `final_seal`, and report
     `complete: true` only once that register is acknowledged.
 
+## 2026-09-28 · 0.37.2 · The runtime deadline, wired; a stop that carries the completion; an executor whose create answer was lost
+
+- **The runtime deadline, wired.**
+  - **Needed:** the planned drain ahead of a MicroVM's cap counts back from the platform's own
+    deadline (2026-09-27, "The runtime deadline").
+  - **Today:** `SealantClient.runtimeDeadline` calls `workspace.runtimeDeadline()` when the SDK has
+    it (Core's next SDK) and answers null otherwise; the capture reaper reads it once per executor
+    (again on the status cadence while it answers null) and passes it to `planExecutorCap`, where it
+    wins over `MEND_EXECUTOR_MAX_SECONDS` and the fallback age. On 0.37.2 nothing changes: the
+    configuration or the 7 h 30 fallback still plans the drain.
+  - **Suggested:** ship `runtimeDeadline()` in the SDK Mend pins; nothing else changes here.
+- **A stop that carries the completion.**
+  - **Needed:** Core keeps a capture-sourced executor's disk unless it observed `complete: true`
+    itself; when the final flush's answer was lost on the way (a relay that closed), the store's
+    sealed record of it (`final_seal`, registered by sealantd with the sealing capture) is the same
+    fact, durable.
+  - **Today:** every stop Mend sends through a drain carries
+    `completion: { captureN, epoch, executorId }` when the store holds that seal for the executor
+    and its epoch (`WorkspaceStopOptions.completion`). Core names an executor by its runtime
+    identity (`resourceId`: the container, the Pod, the MicroVM), so Mend records it on the session
+    at launch (migration 0081, `executor_resource_id`) from the create's `workspace.launch.runtime`,
+    else `workspace.runtime()`, and maps the seal (which names the session the lease names) to it.
+    Core's `fix/capture-retention-policy` (fe06102, unreleased) has both; SDK 0.37.2 has neither, so
+    there Mend sends no completion at all and Core keeps what it cannot confirm. A seal alone still
+    ends a drain whose answer was lost. A stop whose answer says `drain.retained` reads
+    `not saved · executor kept for recovery · <reason>` and stays a kept drain.
+  - **Suggested:** release the SDK with `runtime()`, `launch` and `stop({ completion })`; nothing
+    else changes here.
+- **An executor whose create answer was lost.**
+  - **Needed:** Mend writes an executor's workspace id on the session the moment `workspaces.create`
+    answers, before anything runs in it. If Mend restarts inside that window, or the create's answer
+    never arrives, an executor may exist that Mend cannot name; the lease that names the session
+    then holds the worktree and its removal (unresolved, never ended).
+  - **Today:** every capture-mode create carries an idempotency key
+    (`launch:<session>:<asked at ms>:<nonce>`), written on the session (migration 0082,
+    `executor_create_key`) before the create is asked and cleared by its answer. A refusal (4xx)
+    clears it and frees the worktree; a lost answer, in the launch or after a restart (the reaper),
+    asks `workspaces.findByIdempotencyKey(key)`: an executor found goes on the row and drains, none
+    found clears the key and releases the launch's claim. Core's `fix/capture-retention-policy`
+    (fe06102) has the key and the lookup; SDK 0.37.2 drops the key and cannot look, so there the
+    ownership stays unresolved until the lease is released by hand.
+  - **Suggested:** release the SDK with `create({ idempotencyKey })` and `findByIdempotencyKey`.
+- **Unreadable paths by class (sealantd).**
+  - **Needed:** a landing publishes only the small class; a carried unreadable bulk path should not
+    hold it up.
+  - **Today:** `unreadable` / `unreadable_paths` sum both classes, so Mend holds a landing on any
+    unreadable path (`captureCaughtUp`); per-class `snaps` already decide failing snaps by class.
+  - **Suggested:** the class beside each unreadable path, or an unreadable count per class in
+    `snaps`.
+
 ## 2026-09-27 · 0.37.2 · A capture status read, and a snap that fails says so
 
 - **A capture status read.**
