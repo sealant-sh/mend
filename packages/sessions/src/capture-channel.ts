@@ -160,6 +160,9 @@ const refuseOtherLaunch = (input: PlanGetRequest, tokenLaunch: string) =>
  *   the trees in their own fields, `refs` the repository's refs whatever their names, and a raw
  *   tree a restore writes back without conversion. An executor that reads the trees from the
  *   pseudo-refs would restore neither the raw bytes nor a user ref under `refs/sealant/capture/`.
+ * - `object_format`: `sections.git.object_format` (sealantd review 8 #10), the repository's object
+ *   format when it is not `sha1`. An executor that does not read it would install a SHA-256 pack
+ *   into a SHA-1 repository and fail its restore.
  */
 export const MANIFEST_FEATURES = [
   "worktree_meta",
@@ -168,6 +171,7 @@ export const MANIFEST_FEATURES = [
   "raw_names",
   "final_seal",
   "git_trees",
+  "object_format",
 ] as const;
 export type ManifestFeature = (typeof MANIFEST_FEATURES)[number];
 
@@ -199,6 +203,7 @@ export const missingManifestFeatures = (
     );
     holds("final_seal", planned.final_seal !== undefined);
     holds("git_trees", gitSectionHoldsTrees(planned.sections.git));
+    holds("object_format", planned.sections.git.object_format !== undefined);
     if (!reads.has("raw_names")) {
       const bulk = planned.sections.bulk;
       const raw =

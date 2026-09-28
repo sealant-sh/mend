@@ -326,6 +326,60 @@ const registerOn =
       manifest: JSON.parse(JSON.stringify(built.manifest)),
     });
 
+/** A user file at the root of an edited tree (review 8 #8). */
+const userFile = (work: string) => fs.writeFileSync(path.join(work, "a.txt"), "user file\n");
+
+/**
+ * A `git init --object-format=sha256` repository holding one commit of user work (review 8 #10):
+ * its commit and tree, a pack of its whole closure, and a pack of the commit alone.
+ */
+const sha256Repo = (at: { readonly worktreeId: WorktreeId; readonly epoch: number }) => {
+  const work = fs.mkdtempSync(path.join(os.tmpdir(), "mend-review8-sha256-"));
+  sh(work, ["init", "-q", "--object-format=sha256", "-b", "main"]);
+  fs.writeFileSync(path.join(work, "work.txt"), "user work in a sha256 repository\n");
+  sh(work, ["add", "."]);
+  sh(work, ["commit", "-q", "-m", "sha256 work"]);
+  const commit = sh(work, ["rev-parse", "HEAD"]);
+  const tree = sh(work, ["rev-parse", "HEAD^{tree}"]);
+  const pack = (objects: ReadonlyArray<string>) => {
+    const out = fs.mkdtempSync(path.join(os.tmpdir(), "mend-review8-sha256-pack-"));
+    const name = sh(work, ["pack-objects", "-q", path.join(out, "p")], `${objects.join("\n")}\n`);
+    const bytes = new Uint8Array(fs.readFileSync(path.join(out, `p-${name}.pack`)));
+    const idx = new Uint8Array(fs.readFileSync(path.join(out, `p-${name}.idx`)));
+    fs.rmSync(out, { recursive: true, force: true });
+    const key = captureKeys(at.worktreeId, at.epoch).pack(sha256Hex(bytes));
+    return {
+      key,
+      objects: new Map<string, Uint8Array>([
+        [key, bytes],
+        [packIdxKeyOf(key), idx],
+      ]),
+    };
+  };
+  const every = sh(work, ["rev-list", "--objects", "--all"])
+    .split("\n")
+    .map((line) => line.split(" ")[0] ?? "");
+  const whole = pack(every);
+  // The commit alone: its tree and the blob are not in the pack.
+  const commitOnly = pack([commit]);
+  fs.rmSync(work, { recursive: true, force: true });
+  return { commit, tree, whole, commitOnly };
+};
+const section = (
+  packs: ReadonlyArray<string>,
+  tips: { readonly commit: string; readonly tree: string },
+  objectFormat?: string,
+) => ({
+  packs,
+  refs: { "refs/heads/main": tips.commit },
+  head: "refs/heads/main",
+  fsck: "verified" as const,
+  worktree_tree: tips.tree,
+  index_tree: tips.tree,
+  raw_tree: tips.tree,
+  ...(objectFormat === undefined ? {} : { object_format: objectFormat }),
+});
+
 /**
  * What a seal may rest on (review 2026-09-28 (3) #18 and #20): register records `final_seal` only
  * once Mend observed every section restore — the git section verified, the worktree metadata
@@ -947,7 +1001,6 @@ describe("a seal rests only on sections Mend observed restore", () => {
       );
       return { answer, seal: await sealOf(at.worktreeId, at.epoch), cap };
     };
-    const userFile = (work: string) => fs.writeFileSync(path.join(work, "a.txt"), "user file\n");
 
     it("a raw file the workspace class replaces with a symlink is a symlink: a document saying file is refused", async () => {
       const { answer, seal } = await attempt({
@@ -1049,6 +1102,108 @@ describe("a seal rests only on sections Mend observed restore", () => {
     expect(await attempt({ mode: 0o644, mtime: 1790544318484764716n })).toBe(false);
     // One inode, one promise: sealed.
     expect(await attempt({ mode: 0o644, mtime: 100 })).toBe(true);
+  });
+
+  // Review 2026-09-28 (8) #10 (the reviewer's characterization): a healthy `git init
+  // --object-format=sha256` repository's final capture registered `gitFsck: "verified"` — the
+  // verifier kept only 40-digit tips, and with none left it walked nothing and said verified. The
+  // section names its object format (`object_format`, sealantd's manifest feature); Mend walks a
+  // SHA-256 section's 64-digit tips in a SHA-256 repository, and a tip of another width than the
+  // section's format is never verified.
+  describe("review 8 #10 a SHA-256 git section is walked, never verified unwalked", () => {
+    const registerFinal = async (
+      at: Awaited<ReturnType<typeof claimedWorktree>>,
+      n: number,
+      parent: string,
+      git: ReturnType<typeof section>,
+      objects: ReadonlyMap<string, Uint8Array>,
+    ) => {
+      const cap = sealing(
+        at.worktreeId,
+        at.epoch,
+        buildManifest({
+          worktreeId: at.worktreeId,
+          epoch: at.epoch,
+          n,
+          parent,
+          seq: 200 + n,
+          kind: "final",
+          git,
+          bulk: READY_EMPTY_BULK,
+        }),
+      );
+      await run(uploadObjects(new Map([...objects, [cap.key, cap.bytes]])));
+      await run(registerOn(at.worktreeId, at.epoch, at.api)(cap));
+      const row = await run(Effect.flatMap(CaptureStoreRepo, (repo) => repo.captureById(cap.id)));
+      return { cap, gitFsck: row?.gitFsck, seal: await sealOf(at.worktreeId, at.epoch) };
+    };
+
+    it(
+      "a SHA-256 section whose pack lacks the tree it names fails; the whole closure verifies and seals",
+      { timeout: 60_000 },
+      async () => {
+        const at = await claimedWorktree();
+        const repo = sha256Repo(at);
+        expect(repo.commit).toMatch(/^[0-9a-f]{64}$/);
+        const partial = await registerFinal(
+          at,
+          1,
+          at.cap0Id,
+          section([repo.commitOnly.key], repo, "sha256"),
+          repo.commitOnly.objects,
+        );
+        expect(partial.gitFsck).toBe("failed");
+        expect(partial.seal).toBeNull();
+        const whole = await registerFinal(
+          at,
+          2,
+          partial.cap.id,
+          section([repo.whole.key], repo, "sha256"),
+          repo.whole.objects,
+        );
+        expect(whole.gitFsck).toBe("verified");
+        expect(whole.seal?.captureId).toBe(whole.cap.id);
+        // The plan hands the format on, and only to an executor that reads it.
+        const plan = await run(
+          at.api.planGet({
+            worktree_id: at.worktreeId,
+            epoch: at.epoch,
+            manifest_format: 2,
+            manifest_features: MANIFEST_FEATURES,
+          }),
+        );
+        expect(plan.head?.manifest.sections.git.object_format).toBe("sha256");
+        const unread = await run(
+          at.api
+            .planGet({
+              worktree_id: at.worktreeId,
+              epoch: at.epoch,
+              manifest_format: 2,
+              manifest_features: MANIFEST_FEATURES.filter((feature) => feature !== "object_format"),
+            })
+            .pipe(Effect.flip),
+        );
+        expect(unread.missing).toEqual(["object_format"]);
+      },
+    );
+
+    it(
+      "64-digit tips in a section that names no object format are never verified",
+      { timeout: 60_000 },
+      async () => {
+        const at = await claimedWorktree();
+        const repo = sha256Repo(at);
+        const unnamed = await registerFinal(
+          at,
+          1,
+          at.cap0Id,
+          section([repo.whole.key], repo),
+          repo.whole.objects,
+        );
+        expect(unnamed.gitFsck).not.toBe("verified");
+        expect(unnamed.seal).toBeNull();
+      },
+    );
   });
 
   // Review 2026-09-28 (8) #9 (the reviewer's reproduction): a cross-class group joining a

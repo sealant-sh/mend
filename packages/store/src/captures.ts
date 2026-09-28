@@ -70,8 +70,31 @@ export const GitSection = Schema.Struct({
    * writes back unsmudged.
    */
   raw_tree: Schema.optionalKey(Schema.String),
+  /**
+   * The `object_format` manifest feature (sealantd review 8 #10): the repository's object format
+   * (`extensions.objectFormat`) when it is not `sha1` — `sha256`. Every object id the section
+   * names is of that format (64 hex digits for `sha256`), and every repository that reads its
+   * packs — the restore's, the verifier's — is made in it. Absent: `sha1`.
+   */
+  object_format: Schema.optionalKey(Schema.String),
 });
 export type GitSection = typeof GitSection.Type;
+
+/** The object formats Mend verifies and plans: a section's `object_format`, `sha1` when absent. */
+export type GitObjectFormat = "sha1" | "sha256";
+
+/** The section's object format; null when it names one Mend does not read. */
+export const gitObjectFormatOf = (section: GitSection): GitObjectFormat | null => {
+  const format = section.object_format ?? "sha1";
+  return format === "sha1" || format === "sha256" ? format : null;
+};
+
+/** An object id of `format`: 40 hex digits for `sha1`, 64 for `sha256`. */
+export const gitObjectIdPattern = (format: GitObjectFormat): RegExp =>
+  format === "sha256" ? /^[0-9a-f]{64}$/ : /^[0-9a-f]{40}$/;
+
+/** An object id of either format. */
+export const GIT_OBJECT_ID = /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/;
 
 /** The section names its trees in their own fields (`git_trees`) rather than as pseudo-refs. */
 export const gitSectionHoldsTrees = (section: GitSection): boolean =>
@@ -2863,8 +2886,14 @@ export const captureKeyOwner = (key: string): string | null => {
  * `git index-pack --verify` over a pack whose `.idx` sits beside it (`<base>.pack` +
  * `<base>.idx`): the index must match the pack and every object must be intact.
  */
-export const verifyGitPack = (packPath: string): Effect.Effect<void, GitError> =>
-  git(["index-pack", "--verify", packPath], path.dirname(packPath)).pipe(Effect.asVoid);
+export const verifyGitPack = (
+  packPath: string,
+  format: GitObjectFormat = "sha1",
+): Effect.Effect<void, GitError> =>
+  git(
+    ["index-pack", `--object-format=${format}`, "--verify", packPath],
+    path.dirname(packPath),
+  ).pipe(Effect.asVoid);
 
 // ─── A sealed capture's bytes, read back ────────────────────────────────────
 
@@ -2876,6 +2905,7 @@ export const verifyGitPack = (packPath: string): Effect.Effect<void, GitError> =
  */
 const storedGitPackProblem = (
   key: string,
+  format: GitObjectFormat,
 ): Effect.Effect<string | null, BlobNotFoundError | BlobStoreError, BlobStore> =>
   Effect.gen(function* () {
     const own = yield* storedObjectProblem(key);
@@ -2896,7 +2926,7 @@ const storedGitPackProblem = (
             },
             catch: (cause) => cause,
           }).pipe(Effect.orDie);
-          return yield* verifyGitPack(packPath).pipe(
+          return yield* verifyGitPack(packPath, format).pipe(
             Effect.as(null),
             Effect.catchTag("GitError", (error) =>
               Effect.succeed(`${idxKey} does not index ${key}: ${error.stderr.trim()}`),
@@ -2949,10 +2979,14 @@ export const storedCaptureProblem = (
       for (const key of trees.success) keys.add(key);
     }
     const gitPacks = new Set(sections.git.packs);
+    const format = gitObjectFormatOf(sections.git);
+    if (format === null && gitPacks.size > 0) {
+      return `the git section's object format ${JSON.stringify(sections.git.object_format)} is not one Mend reads`;
+    }
     for (const key of keys) {
       if (key.endsWith(".idx") && gitPacks.has(key.slice(0, -".idx".length))) continue;
       const problem = yield* (
-        gitPacks.has(key) ? storedGitPackProblem(key) : storedObjectProblem(key)
+        gitPacks.has(key) ? storedGitPackProblem(key, format ?? "sha1") : storedObjectProblem(key)
       ).pipe(Effect.catchTag("BlobNotFoundError", () => Effect.succeed(`${key} is not stored`)));
       if (problem !== null) return problem;
     }
