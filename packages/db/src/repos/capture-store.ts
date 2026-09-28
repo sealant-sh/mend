@@ -112,6 +112,14 @@ export interface RegisterCapture {
     readonly bootId?: string | null;
     readonly bootGeneration?: number | null;
     readonly observation?: number | null;
+    /**
+     * Every worktree epoch whose prefix holds an object the sealed capture names — its manifest,
+     * packs, trees, dir packs, carried and inherited ones included (0092, cross-repo decision
+     * 31). The seal stands only while no upload URL of any of them could replace one, and no
+     * URL that could is handed out under any of them once it is recorded. The capture's own
+     * epoch is always among them.
+     */
+    readonly scopes?: ReadonlyArray<CaptureScopeRef>;
   };
   /**
    * Who registers: the lease holder and the physical launch its token names (cross-repo
@@ -132,6 +140,69 @@ export interface LeaseHolder {
   readonly executorId: string;
   readonly launchId: string;
 }
+
+/**
+ * One worktree epoch's object prefix, `captures/<worktreeId>/<epoch>/`: what an upload URL's
+ * write authority is recorded against (`capture_put_authority`), and what a seal's objects live
+ * under (`capture_seals.scopes`, 0092).
+ */
+export interface CaptureScopeRef {
+  readonly worktreeId: string;
+  readonly epoch: number;
+}
+
+/** The scope a capture object key lives under (`captures/<worktree>/<epoch>/…`), or null. */
+export const captureScopeOfKey = (key: string): CaptureScopeRef | null => {
+  const match = /^captures\/([^/]+)\/(\d+)\//.exec(key);
+  if (match === null) return null;
+  const epoch = Number(match[2]);
+  return Number.isSafeInteger(epoch) ? { worktreeId: match[1] ?? "", epoch } : null;
+};
+
+/**
+ * The distinct scopes `keys` (object keys or tree prefixes) live under, `own` always among them,
+ * in one order (worktree, then epoch): the order `markSealReverified` locks their rows in.
+ */
+export const captureScopesOf = (
+  own: CaptureScopeRef,
+  keys: Iterable<string>,
+): ReadonlyArray<CaptureScopeRef> => {
+  const found = new Map<string, CaptureScopeRef>([[`${own.worktreeId}\u0000${own.epoch}`, own]]);
+  for (const key of keys) {
+    const scope = captureScopeOfKey(key);
+    if (scope !== null) found.set(`${scope.worktreeId}\u0000${scope.epoch}`, scope);
+  }
+  return [...found.values()].toSorted((a, b) =>
+    a.worktreeId === b.worktreeId ? a.epoch - b.epoch : a.worktreeId < b.worktreeId ? -1 : 1,
+  );
+};
+
+/**
+ * `capture_seals.scopes` as stored (`[{worktreeId, epoch}]`, 0092), `own` always among them: a
+ * seal recorded before 0092 names only its own epoch unless the migration found more.
+ */
+const scopesOfRow = (own: CaptureScopeRef, stored: unknown): ReadonlyArray<CaptureScopeRef> => {
+  const listed: Array<CaptureScopeRef> = [];
+  if (Array.isArray(stored)) {
+    for (const entry of stored) {
+      if (typeof entry !== "object" || entry === null) continue;
+      const worktreeId: unknown = Reflect.get(entry, "worktreeId");
+      const epoch: unknown = Reflect.get(entry, "epoch");
+      const number = typeof epoch === "string" ? Number(epoch) : epoch;
+      if (
+        typeof worktreeId === "string" &&
+        typeof number === "number" &&
+        Number.isSafeInteger(number)
+      ) {
+        listed.push({ worktreeId, epoch: number });
+      }
+    }
+  }
+  return captureScopesOf(
+    own,
+    listed.map((scope) => `captures/${scope.worktreeId}/${scope.epoch}/`),
+  );
+};
 
 /**
  * A completed final flush, as the store holds it (migration 0080): the executor, the epoch it
@@ -155,6 +226,11 @@ export interface SealedCompletion {
   readonly reverifiedAt?: Date | null;
   /** Why the seal never stands again (0089); null or absent: it may stand. */
   readonly voidReason?: string | null;
+  /**
+   * Every worktree epoch whose prefix holds an object the sealed capture names (0092): the
+   * write authority the seal stands over. Absent: its own epoch only.
+   */
+  readonly scopes?: ReadonlyArray<CaptureScopeRef>;
 }
 
 export interface ChainGuard {
@@ -197,12 +273,19 @@ export interface WorktreeLease {
 }
 
 /**
- * What `recordPutAuthority` did: recorded the authority, or recorded nothing because a seal of the
- * epoch is recorded that the caller did not check (`sealedCapture`, the capture it seals).
+ * What `recordPutAuthority` did: recorded the authority; or recorded nothing because a seal whose
+ * objects live under the epoch's prefix is recorded that the caller did not check its keys
+ * against (`sealed`: every such seal's capture); or recorded nothing because the lease is no
+ * longer that epoch's, live and held by the caller (`lease`).
  */
 export type PutAuthorityRecord =
   | { readonly recorded: true }
-  | { readonly recorded: false; readonly sealedCapture: string };
+  | {
+      readonly recorded: false;
+      readonly reason: "sealed";
+      readonly sealedCaptures: ReadonlyArray<string>;
+    }
+  | { readonly recorded: false; readonly reason: "lease" };
 
 export interface ChainHead {
   readonly worktreeId: WorktreeId;
@@ -303,17 +386,25 @@ export class CaptureStoreRepo extends Context.Service<
      * Upload URLs under `worktreeId`'s `epoch` prefix can write until `expiresAt` (0089, review
      * 2026-09-28 (7) #8): kept as the latest such time. Recorded before the URL is handed out.
      * Serialized with `markSealReverified` on the epoch's authority row (0091, cross-repo decision
-     * 26, review 2026-09-28 (9) #6): the row is locked first, and what is recorded in the epoch
-     * is read after the lock. A seal of the epoch that is recorded (and not void) names objects no
-     * overwrite-capable URL may reach: authority is recorded only when `checkedSeal` is that
-     * seal's capture — the caller found none of its keys among the objects it is handing URLs
-     * out for — else nothing is recorded and the seal is named, for the caller to check.
+     * 26, review 2026-09-28 (9) #6): the row is locked first, and what is recorded is read after
+     * the lock.
+     * - With `holder` (cross-repo decision 31, review 2026-09-28 (10) #5), the lease is read
+     *   under the same transaction, its row held `FOR SHARE` (the order a register takes, so a
+     *   claim or a release waits for this): nothing is recorded unless it is still live, under
+     *   `epoch`, held by that holder and launch. A request admitted before its bucket reads never
+     *   records authority for an epoch that ended while it waited.
+     * - A recorded (not void) seal whose objects live under this prefix — of any epoch, any
+     *   worktree (`capture_seals.scopes`, 0092) — names objects no overwrite-capable URL may
+     *   reach: authority is recorded only when every such seal is among `checkedSeals` — the
+     *   caller found none of their keys among the objects it is handing URLs out for — else
+     *   nothing is recorded and those seals are named, for the caller to check.
      */
     readonly recordPutAuthority: (
       worktreeId: WorktreeId,
       epoch: number,
       expiresAt: Date,
-      checkedSeal?: string | null,
+      checkedSeals?: ReadonlyArray<string>,
+      holder?: LeaseHolder,
     ) => Effect.Effect<PutAuthorityRecord>;
     /** The latest expiry of an upload URL handed out under that epoch's prefix, or null. */
     readonly putAuthorityUntil: (
@@ -321,13 +412,21 @@ export class CaptureStoreRepo extends Context.Service<
       epoch: number,
     ) => Effect.Effect<Date | null>;
     /**
+     * The latest expiry of an upload URL handed out under any of `scopes` (0092): what a seal
+     * whose objects live under them stands over. Null when none was.
+     */
+    readonly putAuthorityUntilOver: (
+      scopes: ReadonlyArray<CaptureScopeRef>,
+    ) => Effect.Effect<Date | null>;
+    /**
      * Every object the seal's capture names read back as what its name says, starting at `at`:
-     * recorded on the seal while it still names that capture — and only if no upload URL of its
-     * epoch was handed out since `at` (review 2026-09-28 (8) #5): a compare-and-set against the
-     * epoch's recorded write authority, under the lock of the epoch's authority row taken before
-     * that authority is read (0091, cross-repo decision 26, review 2026-09-28 (9) #6), so a URL
-     * handed out while the objects were being read back — or while this waited — voids that read.
-     * True when it was recorded.
+     * recorded on the seal while it still names that capture — and only if no upload URL of any
+     * epoch its objects live under (`scopes`, 0092, cross-repo decision 31) was handed out since
+     * `at` (review 2026-09-28 (8) #5, (10) #5): a compare-and-set against every one of those
+     * epochs' recorded write authority, under the locks of their authority rows, taken in one
+     * order before that authority is read (0091, cross-repo decision 26), so a URL handed out
+     * while the objects were being read back — or while this waited — voids that read. True
+     * when it was recorded.
      */
     readonly markSealReverified: (
       worktreeId: WorktreeId,
@@ -505,6 +604,17 @@ export const CaptureStoreRepoLive: Layer.Layer<
       const sealBoot = capture.seal?.bootId ?? null;
       const sealGeneration = capture.seal?.bootGeneration ?? null;
       const sealObservation = capture.seal?.observation ?? null;
+      // Every epoch prefix the sealed capture's objects live under (0092), its own always among
+      // them: the write authority the seal stands over.
+      const sealScopes = JSON.stringify(
+        captureScopesOf({ worktreeId: capture.worktreeId, epoch: capture.epoch }, [
+          capture.manifestKey,
+          ...(capture.names ?? []),
+          ...(capture.seal?.scopes ?? []).map(
+            (scope) => `captures/${scope.worktreeId}/${scope.epoch}/`,
+          ),
+        ]),
+      );
       // The launch registering (cross-repo decision 11): an older launch of the holder never
       // lands under a newer launch's epoch, whatever it learnt of it.
       const holderGiven = capture.holder !== undefined;
@@ -558,9 +668,10 @@ export const CaptureStoreRepoLive: Layer.Layer<
         ),
         sealed AS (
           INSERT INTO capture_seals (worktree_id, epoch, executor_id, capture_id, n, boot_id,
-                                     boot_generation, observation)
+                                     boot_generation, observation, scopes)
           SELECT ${capture.worktreeId}, ${capture.epoch}, ${sealExecutor}, ${capture.id}, ${capture.n},
-                 ${sealBoot}::text, ${sealGeneration}::bigint, ${sealObservation}::bigint
+                 ${sealBoot}::text, ${sealGeneration}::bigint, ${sealObservation}::bigint,
+                 ${sealScopes}::jsonb
             FROM ch
            WHERE ${capture.seal !== undefined}::boolean
              AND EXISTS (
@@ -572,7 +683,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
              SET executor_id = EXCLUDED.executor_id, capture_id = EXCLUDED.capture_id,
                  n = EXCLUDED.n, sealed_at = now(), boot_id = EXCLUDED.boot_id,
                  boot_generation = EXCLUDED.boot_generation, observation = EXCLUDED.observation,
-                 reverified_at = NULL, void_reason = NULL
+                 scopes = EXCLUDED.scopes, reverified_at = NULL, void_reason = NULL
            WHERE capture_seals.n < EXCLUDED.n
           RETURNING worktree_id
         )
@@ -738,9 +849,10 @@ export const CaptureStoreRepoLive: Layer.Layer<
         readonly observation: string | number | null;
         readonly reverifiedAt: Date | null;
         readonly voidReason: string | null;
+        readonly scopes: unknown;
       }>`
         SELECT worktree_id, epoch::int AS epoch, executor_id, capture_id, n, sealed_at, boot_id,
-               boot_generation, observation, reverified_at, void_reason
+               boot_generation, observation, reverified_at, void_reason, scopes
           FROM capture_seals
          WHERE worktree_id = ${worktreeId}
            AND executor_id = ${executorId}
@@ -761,6 +873,10 @@ export const CaptureStoreRepoLive: Layer.Layer<
             observation: row.observation === null ? null : Number(row.observation),
             reverifiedAt: row.reverifiedAt,
             voidReason: row.voidReason,
+            scopes: scopesOfRow(
+              { worktreeId: row.worktreeId, epoch: Number(row.epoch) },
+              row.scopes,
+            ),
           };
     });
 
@@ -783,22 +899,62 @@ export const CaptureStoreRepoLive: Layer.Layer<
         return row?.expiresAt ?? null;
       });
 
+    /**
+     * `lockPutAuthority` for any scope a seal's objects live under — another worktree's too. A
+     * worktree that is gone has no row made for it: nothing can be handed out under its prefix.
+     */
+    const lockScopeAuthority = (scope: CaptureScopeRef) =>
+      Effect.gen(function* () {
+        yield* sql`
+          INSERT INTO capture_put_authority (worktree_id, epoch, expires_at)
+          SELECT id, ${scope.epoch}, NULL FROM worktrees WHERE id = ${scope.worktreeId}
+          ON CONFLICT (worktree_id, epoch) DO NOTHING`;
+        const [row] = yield* sql<{ readonly expiresAt: Date | null }>`
+          SELECT expires_at FROM capture_put_authority
+           WHERE worktree_id = ${scope.worktreeId} AND epoch = ${scope.epoch}
+           FOR UPDATE`;
+        return row?.expiresAt ?? null;
+      });
+
     const recordPutAuthority = Effect.fn("CaptureStoreRepo.recordPutAuthority")(function* (
       worktreeId: WorktreeId,
       epoch: number,
       expiresAt: Date,
-      checkedSeal?: string | null,
+      checkedSeals?: ReadonlyArray<string>,
+      holder?: LeaseHolder,
     ) {
       return yield* sql
         .withTransaction(
           Effect.gen(function* () {
+            // The lease first, held `FOR SHARE` (the order a register takes: lease, then the
+            // rest), and read as it is now: a claim or a release waits for this transaction, and
+            // one that committed while the request did its bucket reads is seen here.
+            if (holder !== undefined) {
+              const [lease] = yield* sql<{ readonly held: boolean }>`
+                SELECT (epoch = ${epoch} AND expires_at > now()
+                        AND executor_id = ${holder.executorId}
+                        AND (launch_id IS NULL OR launch_id = ${holder.launchId})) AS held
+                  FROM worktree_leases WHERE worktree_id = ${worktreeId}
+                   FOR SHARE`;
+              if (lease?.held !== true) return { recorded: false, reason: "lease" } as const;
+            }
             yield* lockPutAuthority(worktreeId, epoch);
-            // Read after the lock: a seal marked while this waited is seen.
-            const [seal] = yield* sql<{ readonly captureId: string }>`
+            // Read after the lock: a seal marked while this waited is seen. Every seal whose
+            // objects live under this prefix, whatever epoch or worktree it seals (0092).
+            const seals = yield* sql<{ readonly captureId: string }>`
               SELECT capture_id FROM capture_seals
-               WHERE worktree_id = ${worktreeId} AND epoch = ${epoch} AND void_reason IS NULL`;
-            if (seal !== undefined && seal.captureId !== (checkedSeal ?? null)) {
-              return { recorded: false, sealedCapture: seal.captureId } as const;
+               WHERE void_reason IS NULL
+                 AND ((worktree_id = ${worktreeId} AND epoch = ${epoch})
+                      OR scopes @> jsonb_build_array(jsonb_build_object(
+                           'worktreeId', ${worktreeId}::text, 'epoch', ${epoch}::bigint)))`;
+            const checked = new Set(checkedSeals ?? []);
+            const unchecked = seals.filter((seal) => !checked.has(seal.captureId));
+            if (unchecked.length > 0) {
+              return {
+                recorded: false,
+                reason: "sealed",
+                sealedCaptures: seals.map((seal) => seal.captureId).toSorted(),
+              } as const;
             }
             yield* sql`
               UPDATE capture_put_authority
@@ -820,21 +976,43 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return row?.expiresAt ?? null;
     });
 
+    const putAuthorityUntilOver = Effect.fn("CaptureStoreRepo.putAuthorityUntilOver")(function* (
+      scopes: ReadonlyArray<CaptureScopeRef>,
+    ) {
+      if (scopes.length === 0) return null;
+      const [row] = yield* sql<{ readonly expiresAt: Date | null }>`
+        SELECT max(a.expires_at) AS expires_at
+          FROM capture_put_authority a
+          JOIN jsonb_to_recordset(${JSON.stringify(scopes)}::jsonb)
+               AS s("worktreeId" text, epoch bigint)
+            ON a.worktree_id = s."worktreeId" AND a.epoch = s.epoch`.pipe(Effect.orDie);
+      return row?.expiresAt ?? null;
+    });
+
     const markSealReverified = Effect.fn("CaptureStoreRepo.markSealReverified")(function* (
       worktreeId: WorktreeId,
       epoch: number,
       captureId: string,
       at: Date,
     ) {
-      // The epoch's authority row first, then the authority as it is now: `recordPutAuthority`
-      // takes the same lock before it records, so authority is either committed before this
-      // reads it (and refuses the mark when it outlives `at`) or recorded after this commits —
-      // when it sees the seal and hands out no URL that could replace what the seal names.
+      // Every authority row the seal's objects live under first (0092), in one order, then the
+      // authority as it is now: `recordPutAuthority` takes the same lock on its epoch's row
+      // before it records, so authority is either committed before this reads it (and refuses
+      // the mark when it outlives `at`) or recorded after this commits — when it sees the seal
+      // and hands out no URL that could replace what the seal names.
       const marked = yield* sql
         .withTransaction(
           Effect.gen(function* () {
-            const authority = yield* lockPutAuthority(worktreeId, epoch);
-            if (authority !== null && authority.getTime() > at.getTime()) return false;
+            const [seal] = yield* sql<{ readonly scopes: unknown }>`
+              SELECT scopes FROM capture_seals
+               WHERE worktree_id = ${worktreeId} AND epoch = ${epoch}
+                 AND capture_id = ${captureId} AND void_reason IS NULL`;
+            if (seal === undefined) return false;
+            const scopes = scopesOfRow({ worktreeId, epoch }, seal.scopes);
+            for (const scope of scopes) {
+              const authority = yield* lockScopeAuthority(scope);
+              if (authority !== null && authority.getTime() > at.getTime()) return false;
+            }
             const rows = yield* sql<{ readonly captureId: string }>`
               UPDATE capture_seals
                  SET reverified_at = GREATEST(COALESCE(reverified_at, ${at}), ${at})
@@ -1085,6 +1263,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       sealedCompletion,
       recordPutAuthority,
       putAuthorityUntil,
+      putAuthorityUntilOver,
       markSealReverified,
       voidSeal,
       listChain,

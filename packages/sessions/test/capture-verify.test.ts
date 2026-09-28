@@ -2580,3 +2580,235 @@ describeSeals(
     });
   },
 );
+
+// Review 2026-09-28 (10) #5, cross-repo decision 31: a seal stands over the write authority of
+// every epoch its objects live under, not only its own; and a request for upload URLs admitted
+// under an epoch that ended while it read the bucket records nothing and mints nothing. The
+// bucket here ignores conditional PUTs (Garage) and has forgotten which keys it minted URLs for
+// (a restarted process): only the recorded authority (`capture_put_authority`) says a URL lives.
+const review10StartupHorizon = Date.now() - 60_000;
+let review10BlockedKey: string | undefined;
+let review10HeadEntered: (() => void) | undefined;
+let review10HeadResume: Promise<void> | undefined;
+describeSeals(
+  "review 10 #5 authority over a seal's inherited objects",
+  {
+    blobs: (root) =>
+      Layer.effect(
+        BlobStore,
+        Effect.map(BlobStore, (store) => ({
+          ...store,
+          replaceableUntil: () => Effect.succeed(review10StartupHorizon),
+          head: (key: string) =>
+            Effect.gen(function* () {
+              const found = yield* store.head(key);
+              if (key === review10BlockedKey && found === null) {
+                review10BlockedKey = undefined;
+                review10HeadEntered?.();
+                yield* Effect.promise(() => review10HeadResume ?? Promise.resolve());
+              }
+              return found;
+            }),
+        })),
+      ).pipe(Layer.provide(BlobStoreFsLive(root))),
+  },
+  ({ world, run, claimed }) => {
+    /** Release `at`'s epoch and claim the next one for another launch, with its routes. */
+    const nextLaunch = (at: { readonly worktreeId: WorktreeId; readonly epoch: number }) =>
+      run(
+        Effect.gen(function* () {
+          const repo = yield* CaptureStoreRepo;
+          yield* repo.release(at.worktreeId, at.epoch);
+          const lease = yield* repo.claim(at.worktreeId, "executor-next", 3600, "launch-next");
+          const api = (yield* CaptureChannel).apiFor({
+            worktreeId: at.worktreeId,
+            projectId: world.project.id,
+            executorId: "executor-next",
+            launchId: "launch-next",
+            footprintBytes: 0,
+          });
+          return { epoch: lease.epoch, api };
+        }),
+      );
+    /** A final capture of the next launch carrying `file`'s pack from the earlier epoch. */
+    const inheritingFinal = (
+      at: { readonly worktreeId: WorktreeId; readonly git: object },
+      epoch: number,
+      parent: string,
+      file: ReturnType<typeof sealedFile>,
+    ) => {
+      const built = buildManifest({
+        worktreeId: at.worktreeId,
+        epoch,
+        n: 2,
+        parent,
+        kind: "final",
+        git: JSON.parse(JSON.stringify(at.git)),
+        workspace: sectionOf(file.snapshot),
+        bulk: READY_EMPTY_BULK,
+      });
+      const manifest = {
+        ...built.manifest,
+        final_seal: { complete: true, epoch, executor: "launch-next" },
+      };
+      const bytes = new Uint8Array(Buffer.from(JSON.stringify(manifest)));
+      const id = sha256Hex(bytes);
+      return { manifest, bytes, id, key: captureKeys(at.worktreeId, epoch).manifest(id) };
+    };
+    const standing = (worktreeId: WorktreeId, epoch: number) =>
+      run(
+        Effect.flatMap(CaptureSeals, (service) =>
+          service.sealedCompletion(worktreeId, "launch-next", epoch),
+        ).pipe(Effect.provide(CaptureSealsStoreLive)),
+      );
+
+    it("a new epoch's seal is withheld while an upload URL of the epoch whose pack it carries lives, and void once that pack reads back changed", async () => {
+      const realNow = Date.now;
+      let clock = realNow();
+      Date.now = () => clock;
+      try {
+        const at = await claimed();
+        const file = sealedFile(at, "unique inherited work\n");
+        const cap1 = buildManifest({
+          worktreeId: at.worktreeId,
+          epoch: at.epoch,
+          n: 1,
+          parent: at.cap0Id,
+          kind: "turn",
+          git: JSON.parse(JSON.stringify(at.git)),
+          workspace: sectionOf(file.snapshot),
+          bulk: READY_EMPTY_BULK,
+        });
+        // The old epoch is handed a URL for the pack, uploads it and registers.
+        const urls = await run(
+          at.api.uploadUrls({
+            worktree_id: at.worktreeId,
+            epoch: at.epoch,
+            keys: [file.key],
+            sizes: { [file.key]: file.bytes.length },
+          }),
+        );
+        expect(typeof urls.urls[file.key]).toBe("string");
+        await run(uploadObjects(new Map([...file.snapshot.objects, [cap1.key, cap1.bytes]])));
+        await run(registerOn(at.worktreeId, at.epoch, at.api)(cap1));
+        const inheritedUntil =
+          world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`)?.getTime() ?? 0;
+        expect(inheritedUntil).toBeGreaterThan(clock);
+        // The next launch seals a final capture that carries that pack.
+        const next = await nextLaunch(at);
+        const cap = inheritingFinal(at, next.epoch, cap1.id, file);
+        await run(uploadObjects(new Map([[cap.key, cap.bytes]])));
+        const answer = await run(registerOn(at.worktreeId, next.epoch, next.api)(cap));
+        // The old epoch's URL could still replace the pack: the seal does not stand.
+        expect(answer.seal).toEqual({ state: "withheld", reason: "write-authority" });
+        expect(await standing(at.worktreeId, next.epoch)).toBeNull();
+        expect(world.memory.seals.get(`${at.worktreeId}:${next.epoch}`)?.scopes).toEqual(
+          [
+            { worktreeId: at.worktreeId, epoch: at.epoch },
+            { worktreeId: at.worktreeId, epoch: next.epoch },
+          ].toSorted((a, b) => a.epoch - b.epoch),
+        );
+        // Which it does, before it expires …
+        const stored = path.join(world.blobRoot, file.key);
+        const changed = Buffer.from(file.bytes);
+        changed[0] = (changed[0] ?? 0) ^ 0xff;
+        fs.chmodSync(stored, 0o644);
+        fs.writeFileSync(stored, changed);
+        // … so once it has, the read-back finds other bytes: void, for good.
+        clock = inheritedUntil + 1;
+        expect(await standing(at.worktreeId, next.epoch)).toBeNull();
+        expect(world.memory.seals.get(`${at.worktreeId}:${next.epoch}`)?.voidReason).toEqual(
+          expect.any(String),
+        );
+      } finally {
+        Date.now = realNow;
+      }
+    });
+
+    it("a request admitted under an old epoch that resumes after a newer epoch's seal stands records no authority and mints no URL", async () => {
+      const realNow = Date.now;
+      let clock = realNow();
+      Date.now = () => clock;
+      let resume: (() => void) | undefined;
+      try {
+        const at = await claimed();
+        const file = sealedFile(at, "late inherited unique work\n");
+        await run(
+          at.api.planGet({
+            worktree_id: at.worktreeId,
+            epoch: at.epoch,
+            manifest_format: 2,
+            manifest_features: MANIFEST_FEATURES,
+            upload_answers: [UPLOAD_ANSWER_PRESENT],
+          }),
+        );
+        const cap1 = buildManifest({
+          worktreeId: at.worktreeId,
+          epoch: at.epoch,
+          n: 1,
+          parent: at.cap0Id,
+          kind: "turn",
+          git: JSON.parse(JSON.stringify(at.git)),
+          workspace: sectionOf(file.snapshot),
+          bulk: READY_EMPTY_BULK,
+        });
+        const entered = new Promise<void>((resolve) => {
+          review10HeadEntered = resolve;
+        });
+        review10HeadResume = new Promise<void>((resolve) => {
+          resume = resolve;
+        });
+        review10BlockedKey = file.key;
+        const ask = () =>
+          at.api.uploadUrls({
+            worktree_id: at.worktreeId,
+            epoch: at.epoch,
+            keys: [file.key],
+            sizes: { [file.key]: file.bytes.length },
+          });
+        // The old request reads the pack absent, and waits there.
+        const oldRequest = run(ask().pipe(Effect.flip));
+        await entered;
+        // A retry is handed the URL, uploads and registers; the epoch ends.
+        expect(typeof (await run(ask())).urls[file.key]).toBe("string");
+        await run(uploadObjects(new Map([...file.snapshot.objects, [cap1.key, cap1.bytes]])));
+        await run(registerOn(at.worktreeId, at.epoch, at.api)(cap1));
+        const next = await nextLaunch(at);
+        const cap = inheritingFinal(at, next.epoch, cap1.id, file);
+        const minted = await run(
+          next.api.uploadUrls({
+            worktree_id: at.worktreeId,
+            epoch: next.epoch,
+            keys: [cap.key],
+            sizes: { [cap.key]: cap.bytes.length },
+          }),
+        );
+        expect(typeof minted.urls[cap.key]).toBe("string");
+        await run(uploadObjects(new Map([[cap.key, cap.bytes]])));
+        expect((await run(registerOn(at.worktreeId, next.epoch, next.api)(cap))).seal?.state).toBe(
+          "withheld",
+        );
+        // Every URL of both epochs expires; the seal is read back and stands.
+        clock =
+          Math.max(
+            world.memory.putAuthority.get(`${at.worktreeId}:${next.epoch}`)?.getTime() ?? 0,
+            world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`)?.getTime() ?? 0,
+          ) + 1;
+        const accepted = await run(registerOn(at.worktreeId, next.epoch, next.api)(cap));
+        expect(accepted.seal).toEqual({ state: "recorded" });
+        const oldAuthority = world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`);
+        // The old request resumes: its epoch is over, so it records nothing and mints nothing.
+        resume?.();
+        const late = await oldRequest;
+        expect(late.reason).toBe("lease-lost");
+        expect(world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`)).toEqual(oldAuthority);
+        expect((await standing(at.worktreeId, next.epoch))?.captureId).toBe(cap.id);
+      } finally {
+        resume?.();
+        Date.now = realNow;
+        review10BlockedKey = undefined;
+        review10HeadEntered = undefined;
+      }
+    });
+  },
+);

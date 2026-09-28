@@ -2621,6 +2621,38 @@ const capturePutAuthorityLockMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE capture_put_authority ALTER COLUMN expires_at DROP NOT NULL`;
 });
 
+/**
+ * 0092: a seal stands over the write authority of every epoch its objects live under (cross-repo
+ * decision 31, review 2026-09-28 (10) #5). `capture_seals.scopes`: `[{worktreeId, epoch}]`, every
+ * `captures/<worktree>/<epoch>/` prefix holding an object the sealed capture names — its manifest,
+ * packs, trees and dir packs, the ones it carries from an earlier epoch or another worktree
+ * included, its own epoch always among them. A seal stands only while no upload URL handed out
+ * under any of them could still replace an object; its re-verification mark is a compare-and-set
+ * against all of them; and once it is recorded, no URL that could replace one of its objects is
+ * handed out under any of them. Existing seals get every prefix their capture's sections and
+ * manifest key name, and are read back again before they stand: the mark they carry was made
+ * against their own epoch alone.
+ */
+const captureSealScopesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE capture_seals ADD COLUMN scopes jsonb`;
+  yield* sql`
+    UPDATE capture_seals s
+       SET scopes = (
+             SELECT jsonb_agg(DISTINCT jsonb_build_object('worktreeId', m.wt, 'epoch', m.ep))
+               FROM (
+                 SELECT s.worktree_id AS wt, s.epoch AS ep
+                 UNION
+                 SELECT r[1], r[2]::bigint
+                   FROM captures c,
+                        regexp_matches(c.sections::text || ' ' || c.manifest_key,
+                                       'captures/([^/"]+)/([0-9]{1,18})/', 'g') AS r
+                  WHERE c.id = s.capture_id
+               ) m),
+           reverified_at = NULL`;
+  yield* sql`CREATE INDEX capture_seals_scopes_idx ON capture_seals USING gin (scopes jsonb_path_ops)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2713,4 +2745,5 @@ export const migrations = {
   "0089_capture_put_authority": capturePutAuthorityMigration,
   "0090_executor_unsaved_answers": executorUnsavedAnswersMigration,
   "0091_capture_put_authority_lock": capturePutAuthorityLockMigration,
+  "0092_capture_seal_scopes": captureSealScopesMigration,
 };

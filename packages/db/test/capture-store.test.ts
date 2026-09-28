@@ -671,30 +671,28 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
           new Date("2026-09-28T01:00:00.000Z"),
         );
         const uncheckedAuthority = yield* repo.putAuthorityUntil(worktreeId, epoch);
-        yield* repo.recordPutAuthority(
-          worktreeId,
-          epoch,
-          new Date("2026-09-28T01:00:00.000Z"),
+        yield* repo.recordPutAuthority(worktreeId, epoch, new Date("2026-09-28T01:00:00.000Z"), [
           zero.id,
-        );
+        ]);
         // Every URL expired before the read began: the mark is recorded.
         const readBegan = new Date("2026-09-28T01:10:00.000Z");
         const first = yield* repo.markSealReverified(worktreeId, epoch, zero.id, readBegan);
         const reverified = yield* repo.sealedCompletion(worktreeId, "launch-1", epoch);
         // A URL handed out while the next read-back ran: its authority outlives the read's start.
         const nextRead = new Date("2026-09-28T01:30:00.000Z");
-        yield* repo.recordPutAuthority(
-          worktreeId,
-          epoch,
-          new Date("2026-09-28T01:50:00.000Z"),
+        yield* repo.recordPutAuthority(worktreeId, epoch, new Date("2026-09-28T01:50:00.000Z"), [
           zero.id,
-        );
+        ]);
         const raced = yield* repo.markSealReverified(worktreeId, epoch, zero.id, nextRead);
         const after = yield* repo.sealedCompletion(worktreeId, "launch-1", epoch);
         return { unchecked, uncheckedAuthority, first, reverified, raced, after };
       }),
     );
-    expect(result.unchecked).toEqual({ recorded: false, sealedCapture: expect.any(String) });
+    expect(result.unchecked).toEqual({
+      recorded: false,
+      reason: "sealed",
+      sealedCaptures: [expect.any(String)],
+    });
     expect(result.uncheckedAuthority).toBeNull();
     expect(result.first).toBe(true);
     expect(result.reverified?.reverifiedAt?.toISOString()).toBe("2026-09-28T01:10:00.000Z");
@@ -778,8 +776,116 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     // Here the mark went first: the issuer found the seal it had not checked, and recorded
     // nothing — overwrite-capable authority is never issued for a sealed epoch unchecked.
     expect(result.marked).toBe(true);
-    expect(result.issued).toEqual({ recorded: false, sealedCapture: result.sealed });
+    expect(result.issued).toEqual({
+      recorded: false,
+      reason: "sealed",
+      sealedCaptures: [result.sealed],
+    });
     expect(result.authority).toBeNull();
+  });
+
+  // Review 2026-09-28 (10) #5, cross-repo decision 31: a seal carrying a pack of an earlier
+  // epoch stands over that epoch's write authority too; no epoch is handed authority under a
+  // prefix a recorded seal's objects live under unless the caller checked that seal; and a
+  // holder's request records nothing once its epoch has ended.
+  it("review 10 #5 a seal stands over the authority of every epoch its objects live under, and an ended epoch records none", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const worktreeId = yield* freshWorktree;
+        const old = { executorId: "session-1", launchId: "launch-1" };
+        const { epoch: first } = yield* repo.claim(worktreeId, old.executorId, 3600, old.launchId);
+        const pack = `captures/${worktreeId}/${first}/packs/${"b".repeat(64)}`;
+        yield* repo.register({ ...captureInput(worktreeId, 0, null, first), holder: old });
+        const oldUntil = new Date(Date.now() + 20 * 60_000);
+        const live = yield* repo.recordPutAuthority(worktreeId, first, oldUntil, [], old);
+        yield* repo.release(worktreeId, first);
+        const now = { executorId: "session-2", launchId: "launch-2" };
+        const { epoch: second } = yield* repo.claim(worktreeId, now.executorId, 3600, now.launchId);
+        // The old holder's request resumes after its epoch ended: nothing recorded.
+        const ended = yield* repo.recordPutAuthority(
+          worktreeId,
+          first,
+          new Date(Date.now() + 40 * 60_000),
+          [],
+          old,
+        );
+        const oldAuthority = yield* repo.putAuthorityUntil(worktreeId, first);
+        // The next epoch seals a capture carrying the old epoch's pack.
+        const one = {
+          ...captureInput(worktreeId, 1, `cap-${worktreeId}-0-${first}`, second),
+          holder: now,
+          names: [pack],
+          seal: { executorId: now.launchId, holder: now.executorId },
+        };
+        yield* repo.register(one);
+        const seal = yield* repo.sealedCompletion(worktreeId, now.launchId, second);
+        const over = yield* repo.putAuthorityUntilOver(seal?.scopes ?? []);
+        // A read-back that began while the old epoch's URL lives marks nothing …
+        const early = yield* repo.markSealReverified(worktreeId, second, one.id, new Date());
+        // … one that began after it expired does.
+        const late = yield* repo.markSealReverified(
+          worktreeId,
+          second,
+          one.id,
+          new Date(oldUntil.getTime() + 1000),
+        );
+        // Once it is recorded, no epoch is handed authority under its prefixes unchecked.
+        const oldPrefix = yield* repo.recordPutAuthority(
+          worktreeId,
+          first,
+          new Date(Date.now() + 60 * 60_000),
+        );
+        const ownPrefix = yield* repo.recordPutAuthority(
+          worktreeId,
+          second,
+          new Date(Date.now() + 60 * 60_000),
+          [],
+          now,
+        );
+        const checked = yield* repo.recordPutAuthority(
+          worktreeId,
+          second,
+          new Date(Date.now() + 60 * 60_000),
+          [one.id],
+          now,
+        );
+        return {
+          first,
+          second,
+          live,
+          ended,
+          oldAuthority,
+          oldUntil,
+          seal,
+          over,
+          early,
+          late,
+          oldPrefix,
+          ownPrefix,
+          checked,
+          sealed: one.id,
+        };
+      }),
+    );
+    expect(result.live).toEqual({ recorded: true });
+    expect(result.ended).toEqual({ recorded: false, reason: "lease" });
+    expect(result.oldAuthority?.getTime()).toBe(result.oldUntil.getTime());
+    expect(result.seal?.scopes?.map((scope) => scope.epoch)).toEqual([result.first, result.second]);
+    expect(result.over?.getTime()).toBe(result.oldUntil.getTime());
+    expect(result.early).toBe(false);
+    expect(result.late).toBe(true);
+    expect(result.oldPrefix).toEqual({
+      recorded: false,
+      reason: "sealed",
+      sealedCaptures: [result.sealed],
+    });
+    expect(result.ownPrefix).toEqual({
+      recorded: false,
+      reason: "sealed",
+      sealedCaptures: [result.sealed],
+    });
+    expect(result.checked).toEqual({ recorded: true });
   });
 
   it("launch-bound leases (0085): another launch of the holder never retakes, renews, registers under or seals a lease its launch does not hold (review 2026-09-28 (4) #11)", async () => {
@@ -1233,4 +1339,98 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
       }),
     );
   }, 120_000);
+});
+
+// Review 2026-09-28 (10) #5, seals recorded before 0092: each gets every epoch prefix its
+// capture's sections and manifest name, and its mark — made against its own epoch — is dropped.
+describe.skipIf(!reachable)("migration 0092 over seals recorded before it", () => {
+  const LEGACY_DB = `mend_capture_seal_scopes_${process.pid}_${Date.now()}`;
+  const legacyUrl = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${LEGACY_DB}`;
+    return url.toString();
+  })();
+  const legacyLayer = CaptureStoreRepoLive.pipe(
+    Layer.provideMerge(
+      MendDBLive.pipe(
+        Layer.provideMerge(
+          PgClient.layer({
+            url: Redacted.make(legacyUrl),
+            transformResultNames: Str.snakeToCamel,
+            transformQueryNames: Str.camelToSnake,
+          }),
+        ),
+      ),
+    ),
+  );
+  const legacy = <A, E>(effect: Effect.Effect<A, E, CaptureStoreRepo | SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(legacyLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${LEGACY_DB}`);
+      }),
+    );
+  });
+
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${LEGACY_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("names every epoch a legacy seal's capture carries objects of, and reads it back again", async () => {
+    const result = await legacy(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const repo = yield* CaptureStoreRepo;
+        const ordered = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
+        for (const [name, migration] of ordered) {
+          if (name.localeCompare("0092") >= 0) continue;
+          yield* migration;
+        }
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-legacy', 'web', '/store/p/repo.git', 'main',
+                  (SELECT id FROM organizations LIMIT 1))`;
+        for (const id of ["wt-legacy", "wt-source"]) {
+          yield* sql`
+            INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+            VALUES (${id}, 'p-legacy', ${id}, ${id}, ${`mend/wt/${id}`}, 'abc')`;
+        }
+        const sections = {
+          git: { packs: [`captures/wt-legacy/3/packs/${"c".repeat(64)}.pack`] },
+          workspace: {
+            root: `captures/wt-legacy/2/trees/${"d".repeat(64)}`,
+            packs: [`captures/wt-source/7/packs/${"e".repeat(64)}`],
+          },
+        };
+        yield* sql`
+          INSERT INTO captures (id, worktree_id, n, parent, epoch, seq, kind, manifest_key,
+                                sections, git_fsck)
+          VALUES ('cap-legacy', 'wt-legacy', 4, NULL, 4, 40, 'final',
+                  ${`captures/wt-legacy/4/manifests/${"f".repeat(64)}`},
+                  ${JSON.stringify(sections)}::jsonb, 'verified')`;
+        yield* sql`
+          INSERT INTO capture_seals (worktree_id, epoch, executor_id, capture_id, n, reverified_at)
+          VALUES ('wt-legacy', 4, 'launch-legacy', 'cap-legacy', 4, now())`;
+        const [, migration] = ordered.find(([name]) => name.startsWith("0092")) ?? [];
+        if (migration === undefined) return yield* Effect.die("no 0092");
+        yield* migration;
+        return yield* repo.sealedCompletion(WorktreeId.make("wt-legacy"), "launch-legacy", 4);
+      }),
+    );
+    expect(result?.scopes).toEqual([
+      { worktreeId: "wt-legacy", epoch: 2 },
+      { worktreeId: "wt-legacy", epoch: 3 },
+      { worktreeId: "wt-legacy", epoch: 4 },
+      { worktreeId: "wt-source", epoch: 7 },
+    ]);
+    expect(result?.reverifiedAt).toBeNull();
+  });
 });

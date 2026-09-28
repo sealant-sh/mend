@@ -1465,25 +1465,39 @@ export const CaptureChannelLive: Layer.Layer<
         for (const [key, size] of unpriced) ledger.set(key, size);
         // Write authority is recorded before it leaves Mend (review 2026-09-28 (7) #8): on a
         // bucket that ignores `If-None-Match` a URL handed out now could replace an object of
-        // this epoch until it expires, and no seal of the epoch stands before then
-        // (`CaptureSealsStoreLive`). The bucket judges expiry by its own clock: allowed a margin.
-        // Recording it is serialized with a seal's acceptance on the epoch's authority row
-        // (cross-repo decision 26, review 2026-09-28 (9) #6): once a seal of the epoch is
-        // recorded, no URL that could replace an object it names is ever handed out. Every
-        // object a seal names was stored when it registered, so each key about to get a URL is
-        // asked of the bucket again after the seal was seen: a stored one is answered `present`
-        // (a launch that reads it) or refused (any other), never handed a URL. Authority is then
-        // recorded only against the seal that check was made for — a newer seal is checked anew.
-        let checkedSeal: string | null = null;
+        // this epoch until it expires, and no seal whose objects live under the epoch stands
+        // before then (`CaptureSealsStoreLive`). The bucket judges expiry by its own clock:
+        // allowed a margin. Recording it is serialized with a seal's acceptance on the epoch's
+        // authority row (cross-repo decision 26, review 2026-09-28 (9) #6), and made only while
+        // the lease is still this launch's, under this epoch (cross-repo decision 31, review
+        // 2026-09-28 (10) #5): the lease was read before the bucket reads above, and a request
+        // that waited through them past its epoch's end records nothing and mints nothing.
+        // Once a seal is recorded whose objects live under this epoch — its own or a later
+        // epoch's that carries this one's packs — no URL that could replace an object it names
+        // is ever handed out. Every object a seal names was stored when it registered, so each
+        // key about to get a URL is asked of the bucket again after the seal was seen: a stored
+        // one is answered `present` (a launch that reads it) or refused (any other), never
+        // handed a URL. Authority is then recorded only against the seals that check was made
+        // for — a newer one is checked anew.
+        let checkedSeals: ReadonlyArray<string> = [];
         let sealChecked = false;
+        let recordedAt = Date.now();
         while (plans.length > 0) {
+          recordedAt = Date.now();
           const record: PutAuthorityRecord = yield* repo.recordPutAuthority(
             worktreeId,
             input.epoch,
-            new Date(Date.now() + (PRESIGN_TTL_SECONDS + PUT_URL_CLOCK_MARGIN_SECONDS) * 1000),
-            checkedSeal,
+            new Date(recordedAt + (PRESIGN_TTL_SECONDS + PUT_URL_CLOCK_MARGIN_SECONDS) * 1000),
+            checkedSeals,
+            holder,
           );
           if (record.recorded) break;
+          if (record.reason === "lease") {
+            // Priced for nothing: no URL leaves.
+            for (const key of unpriced.keys()) ledger.delete(key);
+            yield* requireLease(input.epoch);
+            return yield* leaseLost();
+          }
           sealChecked = true;
           const again = yield* Effect.forEach(
             plans,
@@ -1501,7 +1515,7 @@ export const CaptureChannelLive: Layer.Layer<
               return yield* new CaptureRouteError({
                 status: 409,
                 reason: "exists",
-                message: `${plan.key} is stored and a final seal of epoch ${input.epoch} is recorded: no upload URL can be handed out for it`,
+                message: `${plan.key} is stored and a final seal over epoch ${input.epoch}'s objects is recorded: no upload URL can be handed out for it`,
                 key: plan.key,
               });
             }
@@ -1511,7 +1525,7 @@ export const CaptureChannelLive: Layer.Layer<
           }
           const answered = new Set(storedNow.map((plan) => plan.key));
           plans = plans.filter((plan) => !answered.has(plan.key));
-          checkedSeal = record.sealedCapture;
+          checkedSeals = record.sealedCaptures;
         }
         const urls: Record<string, string> = {};
         const multipart: Record<string, MultipartPlan> = {};
@@ -1529,12 +1543,12 @@ export const CaptureChannelLive: Layer.Layer<
               present.push(plan.key);
               continue;
             }
-            // A seal of the epoch was seen: no URL that could replace a stored object.
+            // A seal over the epoch's objects was seen: no URL that could replace a stored one.
             if (sealChecked) {
               return yield* new CaptureRouteError({
                 status: 409,
                 reason: "exists",
-                message: `${plan.key} is stored and a final seal of epoch ${input.epoch} is recorded: no upload URL can be handed out for it`,
+                message: `${plan.key} is stored and a final seal over epoch ${input.epoch}'s objects is recorded: no upload URL can be handed out for it`,
                 key: plan.key,
               });
             }
@@ -1571,6 +1585,18 @@ export const CaptureChannelLive: Layer.Layer<
             part_size: policy.partSizeBytes,
             part_urls: partUrls,
           };
+        }
+        // The authority recorded above covers a URL for its lifetime plus the margin, counted
+        // from when it was recorded: URLs minted later than the margin allows could outlive it,
+        // so none of them leaves Mend — the executor asks again (review 2026-09-28 (10) #5).
+        if (
+          plans.length > 0 &&
+          Date.now() - recordedAt > (PUT_URL_CLOCK_MARGIN_SECONDS * 1000) / 2
+        ) {
+          for (const key of unpriced.keys()) ledger.delete(key);
+          return yield* Effect.die(
+            "capture channel: upload URLs were signed too long after their write authority was recorded · none handed out",
+          );
         }
         const answeredPresent = new Set(present);
         noteMinted(plans.map((plan) => plan.key).filter((key) => !answeredPresent.has(key)));
