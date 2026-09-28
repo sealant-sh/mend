@@ -6,6 +6,9 @@ import { CaptureStoreRepo } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
 import {
   BlobStore,
+  BlobStoreFsLive,
+  BlobStoreS3Live,
+  resolveBlobStoreConfig,
   INDEX_TREE_REF,
   WORKTREE_TREE_REF,
   captureKeys,
@@ -29,9 +32,15 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   CaptureChannel,
   MANIFEST_FEATURES,
+  PRESIGN_TTL_SECONDS,
   type SessionCaptureApi,
   UPLOAD_ANSWER_PRESENT,
 } from "../src/capture-channel.ts";
+import {
+  CaptureSeals,
+  CaptureSealsStoreLive,
+  makeCaptureSealsStore,
+} from "../src/capture-seals.ts";
 import { SessionRepositoryCapturedLive } from "../src/session-repository-captured.ts";
 import { SessionRepository } from "../src/session-repository.ts";
 import { WorktreeReads, WorktreeReadsCapturedLive } from "../src/worktree-reads.ts";
@@ -1255,3 +1264,315 @@ describe("git sections that name their trees (git_trees)", () => {
     expect(world.memory.captures.get(cap1.id)?.gitFsck).toBe("failed");
   });
 });
+
+/**
+ * Review 2026-09-28 (7) #8: on a bucket that ignores `If-None-Match` (Garage), a PUT URL handed
+ * out before an object's upload can replace its bytes after the seal. A seal stands only once no
+ * URL of its epoch can still be used, and only over objects read back as what their names say.
+ */
+interface SealHarness {
+  readonly world: ReturnType<typeof makeCaptureWorld>;
+  readonly run: <A, E>(
+    effect: Effect.Effect<A, E, SessionRepository | CaptureStoreRepo | CaptureChannel | BlobStore>,
+  ) => Promise<A>;
+  readonly claimed: () => Promise<{
+    readonly worktreeId: WorktreeId;
+    readonly epoch: number;
+    readonly api: SessionCaptureApi;
+    readonly cap0Id: string;
+    readonly git: object;
+  }>;
+}
+
+const describeSeals = (
+  title: string,
+  options: { readonly blobs?: (root: string) => Layer.Layer<BlobStore>; readonly skip?: boolean },
+  body: (harness: SealHarness) => void,
+) =>
+  describe.skipIf(options.skip === true)(title, () => {
+    const world = makeCaptureWorld(options.blobs === undefined ? {} : { blobs: options.blobs });
+    const layer = Layer.mergeAll(
+      SessionRepositoryCapturedLive.pipe(Layer.provide(world.layer)),
+      world.layer,
+    );
+    type Services = SessionRepository | CaptureStoreRepo | CaptureChannel | BlobStore;
+    const scope = Scope.makeUnsafe();
+    let context: Context.Context<Services>;
+    const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
+      Effect.runPromise(effect.pipe(Effect.provide(context)));
+    beforeAll(async () => {
+      context = await Effect.runPromise(
+        Layer.build(layer).pipe(Effect.provideService(Scope.Scope, scope)),
+      );
+    });
+    afterAll(async () => {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+      fs.rmSync(world.scratch, { recursive: true, force: true });
+    });
+    const claimed = async () => {
+      const worktreeId = newWorktreeId();
+      const branch = `mend/wt/${worktreeId}`;
+      world.worktrees.set(worktreeId, worktreeRowFor(world, worktreeId, branch));
+      await run(
+        Effect.gen(function* () {
+          const repo = yield* SessionRepository;
+          yield* repo.createWorktree(
+            world.project.id,
+            { directory: worktreeId, branch },
+            null,
+            null,
+          );
+          yield* repo.attachWorktree!(world.project.id, worktreeId);
+        }),
+      );
+      const cap0Id = world.memory.chains.get(worktreeId)?.headCapture ?? "";
+      const cap0 = world.memory.captures.get(cap0Id);
+      if (cap0 === undefined) throw new Error("capture 0 did not register");
+      const { epoch, api } = await run(
+        Effect.gen(function* () {
+          const captures = yield* CaptureStoreRepo;
+          const lease = yield* captures.claim(worktreeId, "executor-1", 300);
+          const routes: SessionCaptureApi = (yield* CaptureChannel).apiFor({
+            worktreeId,
+            projectId: world.project.id,
+            executorId: "executor-1",
+            footprintBytes: 0,
+          });
+          return { epoch: lease.epoch, api: routes };
+        }),
+      );
+      const tree = refsOf(cap0.sections)[WORKTREE_TREE_REF] ?? "";
+      return {
+        worktreeId,
+        epoch,
+        api,
+        cap0Id,
+        git: {
+          packs: [packsOf(cap0.sections)[0] ?? ""],
+          refs: {
+            [`refs/heads/${branch}`]: world.baseSha,
+            [WORKTREE_TREE_REF]: tree,
+            [INDEX_TREE_REF]: tree,
+          },
+          head: `refs/heads/${branch}`,
+          fsck: "verified" as const,
+        },
+      };
+    };
+    body({ world, run, claimed });
+  });
+
+/** A final capture sealing one workspace file: its snapshot, its pack's key and bytes. */
+const sealedFile = (
+  at: {
+    readonly worktreeId: WorktreeId;
+    readonly epoch: number;
+    readonly cap0Id: string;
+    readonly git: object;
+  },
+  content: string,
+) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-replaceable-"));
+  fs.mkdirSync(path.join(dir, "tree"));
+  fs.writeFileSync(path.join(dir, "tree", "unique.txt"), content);
+  const snapshot = snapshotDirectory(dir, captureKeys(at.worktreeId, at.epoch), { format: 2 });
+  fs.rmSync(dir, { recursive: true, force: true });
+  const key = snapshot.packs[0] ?? "";
+  const cap = sealing(
+    at.worktreeId,
+    at.epoch,
+    buildManifest({
+      worktreeId: at.worktreeId,
+      epoch: at.epoch,
+      n: 1,
+      parent: at.cap0Id,
+      kind: "final",
+      git: JSON.parse(JSON.stringify(at.git)),
+      workspace: sectionOf(snapshot),
+      bulk: READY_EMPTY_BULK,
+    }),
+  );
+  return { snapshot, key, bytes: snapshot.objects.get(key) ?? new Uint8Array(), cap };
+};
+
+/** The bucket's answer to `replaceableUntil`: 0 refuses overwrites (S3, MinIO); else Garage's. */
+let bucketReplaceableUntil = 0;
+describeSeals(
+  "review 7 #8 a seal over objects an upload URL could still replace",
+  {
+    blobs: (root) =>
+      Layer.effect(
+        BlobStore,
+        Effect.map(BlobStore, (store) => ({
+          ...store,
+          replaceableUntil: () => Effect.sync(() => bucketReplaceableUntil),
+        })),
+      ).pipe(Layer.provide(BlobStoreFsLive(root))),
+  },
+  ({ world, run, claimed }) => {
+    it("is withheld while a URL of its epoch lives, stands once its objects read back, and is void for good once one reads back as other bytes", async () => {
+      let clock = Date.now();
+      const seals = (at: { readonly worktreeId: WorktreeId; readonly epoch: number }) =>
+        run(
+          Effect.flatMap(CaptureSeals, (service) =>
+            service.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
+          ).pipe(Effect.provide(makeCaptureSealsStore({ now: () => clock }))),
+        );
+      const recorded = (at: { readonly worktreeId: WorktreeId; readonly epoch: number }) =>
+        run(
+          Effect.flatMap(CaptureStoreRepo, (repo) =>
+            repo.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
+          ),
+        );
+
+      // A bucket that refuses overwrites: the seal stands as recorded, URL or not.
+      bucketReplaceableUntil = 0;
+      const strict = await claimed();
+      const onStrict = sealedFile(strict, "unique saved bytes\n");
+      await run(
+        strict.api.uploadUrls({
+          worktree_id: strict.worktreeId,
+          epoch: strict.epoch,
+          keys: [onStrict.key],
+          sizes: { [onStrict.key]: onStrict.bytes.length },
+        }),
+      );
+      await run(
+        uploadObjects(
+          new Map([...onStrict.snapshot.objects, [onStrict.cap.key, onStrict.cap.bytes]]),
+        ),
+      );
+      await run(registerOn(strict.worktreeId, strict.epoch, strict.api)(onStrict.cap));
+      expect((await seals(strict))?.captureId).toBe(onStrict.cap.id);
+
+      // Garage: the reviewer's order. A PUT URL is handed out while the pack is absent — its
+      // expiry recorded before it leaves Mend — the bytes land, the seal registers.
+      bucketReplaceableUntil = clock - 60_000;
+      const at = await claimed();
+      const file = sealedFile(at, "unique saved bytes\n");
+      const minted = await run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [file.key],
+          sizes: { [file.key]: file.bytes.length },
+        }),
+      );
+      expect(typeof minted.urls[file.key]).toBe("string");
+      const authority = world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`);
+      expect(authority?.getTime() ?? 0).toBeGreaterThan(clock + PRESIGN_TTL_SECONDS * 1000 - 5_000);
+      await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
+      await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
+      // Recorded, but not standing: the URL could still replace the pack.
+      expect((await recorded(at))?.captureId).toBe(file.cap.id);
+      expect(await seals(at)).toBeNull();
+      // Past the URL's expiry: every object reads back as its name says — it stands, re-verified.
+      clock = (authority?.getTime() ?? 0) + 1;
+      expect((await seals(at))?.captureId).toBe(file.cap.id);
+      expect((await recorded(at))?.reverifiedAt?.getTime()).toBe(clock);
+      expect((await seals(at))?.captureId).toBe(file.cap.id);
+
+      // Another URL handed out under the epoch (an older daemon re-asking for the stored pack is
+      // answered one, review 2026-09-28 (7) #7): withheld again until it expires. Through it the
+      // pack is replaced with bytes of the same length.
+      const legacy = await run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [file.key],
+          sizes: { [file.key]: file.bytes.length },
+        }),
+      );
+      expect(typeof legacy.urls[file.key]).toBe("string");
+      expect(await seals(at)).toBeNull();
+      const stored = path.join(world.blobRoot, file.key);
+      const corrupted = Buffer.from(file.bytes);
+      corrupted[0] = (corrupted[0] ?? 0) ^ 0xff;
+      fs.chmodSync(stored, 0o644);
+      fs.writeFileSync(stored, corrupted);
+      clock = (world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`)?.getTime() ?? 0) + 1;
+      // Read back as other bytes: void, and it never stands again — not even over the bytes
+      // put back.
+      expect(await seals(at)).toBeNull();
+      expect((await recorded(at))?.voidReason).toContain(file.key);
+      fs.writeFileSync(stored, file.bytes);
+      expect(await seals(at)).toBeNull();
+    });
+  },
+);
+
+// The reviewer's reproduction on a real bucket that ignores `If-None-Match` (Garage 2.4.1):
+// opt in with MEND_TEST_S3_URL (s3://bucket?endpoint=…&region=…) + AWS_ACCESS_KEY_ID /
+// AWS_SECRET_ACCESS_KEY, as the store's S3 contract does.
+const garageConfig = (() => {
+  const url = process.env["MEND_TEST_S3_URL"];
+  if (url === undefined || url === "") return null;
+  const resolved = resolveBlobStoreConfig({ MEND_BLOB_STORE: url });
+  if (resolved.target.kind !== "s3") return null;
+  const accessKeyId = process.env["AWS_ACCESS_KEY_ID"];
+  const secretAccessKey = process.env["AWS_SECRET_ACCESS_KEY"];
+  if (accessKeyId === undefined || secretAccessKey === undefined) return null;
+  return { ...resolved.target, credentials: { accessKeyId, secretAccessKey } };
+})();
+describeSeals(
+  "review 7 #8 on a real bucket (MEND_TEST_S3_URL)",
+  {
+    skip: garageConfig === null,
+    blobs: (root) =>
+      garageConfig === null ? BlobStoreFsLive(root) : BlobStoreS3Live(garageConfig),
+  },
+  ({ run, claimed }) => {
+    it("the URL minted before the pack's upload replaces it after the register: no seal stands on it", async () => {
+      const at = await claimed();
+      const file = sealedFile(at, "unique saved bytes\n");
+      const minted = await run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [file.key],
+          sizes: { [file.key]: file.bytes.length },
+        }),
+      );
+      const url = minted.urls[file.key] ?? "";
+      const headers = { "if-none-match": "*", "content-length": String(file.bytes.length) };
+      expect(
+        (await fetch(url, { method: "PUT", headers, body: Buffer.from(file.bytes) })).status,
+      ).toBe(200);
+      await run(
+        uploadObjects(
+          new Map(
+            [...file.snapshot.objects]
+              .filter(([key]) => key !== file.key)
+              .concat([[file.cap.key, file.cap.bytes]]),
+          ),
+        ),
+      );
+      await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
+      const seals = () =>
+        run(
+          Effect.flatMap(CaptureSeals, (service) =>
+            service.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
+          ).pipe(Effect.provide(CaptureSealsStoreLive)),
+        );
+      const refuses =
+        (await run(Effect.flatMap(BlobStore, (store) => store.replaceableUntil(file.key)))) === 0;
+      if (refuses) {
+        // A bucket that honours the precondition: the seal stands, and the URL cannot replace.
+        expect((await seals())?.captureId).toBe(file.cap.id);
+        return;
+      }
+      // Garage: withheld while the URL lives …
+      expect(await seals()).toBeNull();
+      // … which it does: the same URL replaces the pack's first byte, and the seal still does
+      // not stand on it.
+      const bad = Buffer.from(file.bytes);
+      bad[0] = (bad[0] ?? 0) ^ 0xff;
+      expect((await fetch(url, { method: "PUT", headers, body: bad })).status).toBe(200);
+      const read = await run(
+        readCaptureFileBytes(file.cap.manifest, "workspace", "tree/unique.txt").pipe(Effect.result),
+      );
+      expect(read._tag).toBe("Failure");
+      expect(await seals()).toBeNull();
+    });
+  },
+);

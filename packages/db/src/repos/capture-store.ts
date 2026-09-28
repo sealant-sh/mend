@@ -148,6 +148,13 @@ export interface SealedCompletion {
   readonly bootId: string | null;
   readonly bootGeneration: number | null;
   readonly observation: number | null;
+  /**
+   * When every object the sealed capture names was last read back as what its name says, at a
+   * moment no upload URL of its epoch could replace one (0089); null or absent: never.
+   */
+  readonly reverifiedAt?: Date | null;
+  /** Why the seal never stands again (0089); null or absent: it may stand. */
+  readonly voidReason?: string | null;
 }
 
 export interface ChainGuard {
@@ -284,6 +291,37 @@ export class CaptureStoreRepo extends Context.Service<
       executorId: string,
       epoch?: number,
     ) => Effect.Effect<SealedCompletion | null>;
+    /**
+     * Upload URLs under `worktreeId`'s `epoch` prefix can write until `expiresAt` (0089, review
+     * 2026-09-28 (7) #8): kept as the latest such time. Recorded before the URL is handed out.
+     */
+    readonly recordPutAuthority: (
+      worktreeId: WorktreeId,
+      epoch: number,
+      expiresAt: Date,
+    ) => Effect.Effect<void>;
+    /** The latest expiry of an upload URL handed out under that epoch's prefix, or null. */
+    readonly putAuthorityUntil: (
+      worktreeId: WorktreeId,
+      epoch: number,
+    ) => Effect.Effect<Date | null>;
+    /**
+     * Every object the seal's capture names read back as what its name says, starting at `at`:
+     * recorded on the seal while it still names that capture.
+     */
+    readonly markSealReverified: (
+      worktreeId: WorktreeId,
+      epoch: number,
+      captureId: string,
+      at: Date,
+    ) => Effect.Effect<void>;
+    /** An object the seal's capture names read back as other bytes: it never stands again. */
+    readonly voidSeal: (
+      worktreeId: WorktreeId,
+      epoch: number,
+      captureId: string,
+      reason: string,
+    ) => Effect.Effect<void>;
     /** Every registered capture of the worktree, oldest first. */
     readonly listChain: (worktreeId: WorktreeId) => Effect.Effect<ReadonlyArray<CaptureRow>>;
     readonly captureById: (captureId: string) => Effect.Effect<CaptureRow | null>;
@@ -513,7 +551,8 @@ export const CaptureStoreRepoLive: Layer.Layer<
           ON CONFLICT (worktree_id, epoch) DO UPDATE
              SET executor_id = EXCLUDED.executor_id, capture_id = EXCLUDED.capture_id,
                  n = EXCLUDED.n, sealed_at = now(), boot_id = EXCLUDED.boot_id,
-                 boot_generation = EXCLUDED.boot_generation, observation = EXCLUDED.observation
+                 boot_generation = EXCLUDED.boot_generation, observation = EXCLUDED.observation,
+                 reverified_at = NULL, void_reason = NULL
            WHERE capture_seals.n < EXCLUDED.n
           RETURNING worktree_id
         )
@@ -677,9 +716,11 @@ export const CaptureStoreRepoLive: Layer.Layer<
         readonly bootId: string | null;
         readonly bootGeneration: string | number | null;
         readonly observation: string | number | null;
+        readonly reverifiedAt: Date | null;
+        readonly voidReason: string | null;
       }>`
         SELECT worktree_id, epoch::int AS epoch, executor_id, capture_id, n, sealed_at, boot_id,
-               boot_generation, observation
+               boot_generation, observation, reverified_at, void_reason
           FROM capture_seals
          WHERE worktree_id = ${worktreeId}
            AND executor_id = ${executorId}
@@ -698,7 +739,58 @@ export const CaptureStoreRepoLive: Layer.Layer<
             bootId: row.bootId,
             bootGeneration: row.bootGeneration === null ? null : Number(row.bootGeneration),
             observation: row.observation === null ? null : Number(row.observation),
+            reverifiedAt: row.reverifiedAt,
+            voidReason: row.voidReason,
           };
+    });
+
+    const recordPutAuthority = Effect.fn("CaptureStoreRepo.recordPutAuthority")(function* (
+      worktreeId: WorktreeId,
+      epoch: number,
+      expiresAt: Date,
+    ) {
+      yield* sql`
+        INSERT INTO capture_put_authority (worktree_id, epoch, expires_at)
+        VALUES (${worktreeId}, ${epoch}, ${expiresAt})
+        ON CONFLICT (worktree_id, epoch) DO UPDATE
+           SET expires_at = GREATEST(capture_put_authority.expires_at, EXCLUDED.expires_at)`.pipe(
+        Effect.orDie,
+      );
+    });
+
+    const putAuthorityUntil = Effect.fn("CaptureStoreRepo.putAuthorityUntil")(function* (
+      worktreeId: WorktreeId,
+      epoch: number,
+    ) {
+      const [row] = yield* sql<{ readonly expiresAt: Date }>`
+        SELECT expires_at FROM capture_put_authority
+         WHERE worktree_id = ${worktreeId} AND epoch = ${epoch}`.pipe(Effect.orDie);
+      return row?.expiresAt ?? null;
+    });
+
+    const markSealReverified = Effect.fn("CaptureStoreRepo.markSealReverified")(function* (
+      worktreeId: WorktreeId,
+      epoch: number,
+      captureId: string,
+      at: Date,
+    ) {
+      yield* sql`
+        UPDATE capture_seals
+           SET reverified_at = GREATEST(COALESCE(reverified_at, ${at}), ${at})
+         WHERE worktree_id = ${worktreeId} AND epoch = ${epoch} AND capture_id = ${captureId}
+           AND void_reason IS NULL`.pipe(Effect.orDie);
+    });
+
+    const voidSeal = Effect.fn("CaptureStoreRepo.voidSeal")(function* (
+      worktreeId: WorktreeId,
+      epoch: number,
+      captureId: string,
+      reason: string,
+    ) {
+      yield* sql`
+        UPDATE capture_seals SET void_reason = COALESCE(void_reason, ${reason})
+         WHERE worktree_id = ${worktreeId} AND epoch = ${epoch}
+           AND capture_id = ${captureId}`.pipe(Effect.orDie);
     });
 
     const listChain = Effect.fn("CaptureStoreRepo.listChain")(function* (worktreeId: WorktreeId) {
@@ -924,6 +1016,10 @@ export const CaptureStoreRepoLive: Layer.Layer<
       leaseOf,
       headOf,
       sealedCompletion,
+      recordPutAuthority,
+      putAuthorityUntil,
+      markSealReverified,
+      voidSeal,
       listChain,
       captureById,
       recordPacks,

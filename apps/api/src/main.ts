@@ -143,6 +143,7 @@ import {
   CaptureRuntimeOff,
   CaptureSeals,
   CaptureSealsNone,
+  CaptureSealsStoreLive,
   DotfilesClonerLive,
   FollowUpDeliveryLive,
   FollowUpLauncherLive,
@@ -735,12 +736,10 @@ const MainLive = Layer.unwrap(
       ? CaptureRuntimeLive.pipe(Layer.provide(captureChannel), Layer.provide(captureStore))
       : CaptureRuntimeOff;
     // The store's sealed record of a completed final flush (cross-repo decision 1): with a
-    // `complete: true` Mend observed itself, the only evidence the engine reads as saved.
+    // `complete: true` Mend observed itself, the only evidence the engine reads as saved — and
+    // only while nothing the bucket could still replace underlies it (review 2026-09-28 (7) #8).
     const captureSeals: Layer.Layer<CaptureSeals, Layer.Error<typeof captureStore>> = captured
-      ? Layer.effect(
-          CaptureSeals,
-          Effect.map(CaptureStoreRepo, (repo) => ({ sealedCompletion: repo.sealedCompletion })),
-        ).pipe(Layer.provide(captureStore))
+      ? CaptureSealsStoreLive.pipe(Layer.provide(captureStore))
       : CaptureSealsNone;
     // The authority and the reads, by store kind: a directory beside Mend, or the chain head.
     const sessionRepository = captured

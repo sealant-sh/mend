@@ -614,6 +614,47 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     });
   });
 
+  it("put authority and re-verified seals (0089): the latest URL expiry per epoch; a seal's re-verification and void, reset by a newer seal (review 2026-09-28 (7) #8)", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const worktreeId = yield* freshWorktree;
+        const { epoch } = yield* repo.claim(worktreeId, "session-1", 3600);
+        const none = yield* repo.putAuthorityUntil(worktreeId, epoch);
+        const later = new Date("2026-09-28T01:20:00.000Z");
+        const earlier = new Date("2026-09-28T01:05:00.000Z");
+        yield* repo.recordPutAuthority(worktreeId, epoch, later);
+        yield* repo.recordPutAuthority(worktreeId, epoch, earlier);
+        const kept = yield* repo.putAuthorityUntil(worktreeId, epoch);
+        const otherEpoch = yield* repo.putAuthorityUntil(worktreeId, epoch + 1);
+        const zero = captureInput(worktreeId, 0, null, epoch);
+        yield* repo.register({ ...zero, seal: { executorId: "launch-1", holder: "session-1" } });
+        const at = new Date("2026-09-28T01:21:00.000Z");
+        // Another capture's id names nothing: the seal stays as it was.
+        yield* repo.markSealReverified(worktreeId, epoch, "not-the-sealed-capture", at);
+        const untouched = yield* repo.sealedCompletion(worktreeId, "launch-1", epoch);
+        yield* repo.markSealReverified(worktreeId, epoch, zero.id, at);
+        const reverified = yield* repo.sealedCompletion(worktreeId, "launch-1", epoch);
+        yield* repo.voidSeal(worktreeId, epoch, zero.id, "captures/x/packs/y holds other bytes");
+        yield* repo.markSealReverified(worktreeId, epoch, zero.id, new Date(at.getTime() + 1000));
+        const voided = yield* repo.sealedCompletion(worktreeId, "launch-1", epoch);
+        // A newer seal of the epoch is another capture: nothing of the old one's verdict carries.
+        const one = captureInput(worktreeId, 1, zero.id, epoch);
+        yield* repo.register({ ...one, seal: { executorId: "launch-1", holder: "session-1" } });
+        const newer = yield* repo.sealedCompletion(worktreeId, "launch-1", epoch);
+        return { none, kept, otherEpoch, untouched, reverified, voided, newer };
+      }),
+    );
+    expect(result.none).toBeNull();
+    expect(result.kept?.toISOString()).toBe("2026-09-28T01:20:00.000Z");
+    expect(result.otherEpoch).toBeNull();
+    expect(result.untouched).toMatchObject({ reverifiedAt: null, voidReason: null });
+    expect(result.reverified?.reverifiedAt?.toISOString()).toBe("2026-09-28T01:21:00.000Z");
+    expect(result.voided).toMatchObject({ voidReason: "captures/x/packs/y holds other bytes" });
+    expect(result.voided?.reverifiedAt?.toISOString()).toBe("2026-09-28T01:21:00.000Z");
+    expect(result.newer).toMatchObject({ n: 1, reverifiedAt: null, voidReason: null });
+  });
+
   it("launch-bound leases (0085): another launch of the holder never retakes, renews, registers under or seals a lease its launch does not hold (review 2026-09-28 (4) #11)", async () => {
     const result = await run(
       Effect.gen(function* () {

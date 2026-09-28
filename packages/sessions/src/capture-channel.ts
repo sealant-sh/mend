@@ -448,6 +448,12 @@ export interface SessionCaptureApi {
 
 /** Presigned URL lifetime; compaction's 30 min grace derives from it (ADR-0015). */
 export const PRESIGN_TTL_SECONDS = 15 * 60;
+
+/**
+ * How far behind Mend's the bucket's clock may run, for how long a PUT URL it handed out stays
+ * usable there: an S3 URL expires at its signing time plus its TTL by the bucket's clock.
+ */
+export const PUT_URL_CLOCK_MARGIN_SECONDS = 5 * 60;
 /**
  * Request quota: `upload.urls` CALLS per session per rolling hour, and keys per call. Calls are
  * what cost the registrar (a presign is a local signature; the bucket is never asked); keys are
@@ -1375,6 +1381,17 @@ export const CaptureChannelLive: Layer.Layer<
           return yield* overByteQuota(413, used, requested);
         }
         for (const [key, size] of unpriced) ledger.set(key, size);
+        // Write authority is recorded before it leaves Mend (review 2026-09-28 (7) #8): on a
+        // bucket that ignores `If-None-Match` a URL handed out now could replace an object of
+        // this epoch until it expires, and no seal of the epoch stands before then
+        // (`CaptureSealsStoreLive`). The bucket judges expiry by its own clock: allowed a margin.
+        if (plans.length > 0) {
+          yield* repo.recordPutAuthority(
+            worktreeId,
+            input.epoch,
+            new Date(Date.now() + (PRESIGN_TTL_SECONDS + PUT_URL_CLOCK_MARGIN_SECONDS) * 1000),
+          );
+        }
         const urls: Record<string, string> = {};
         const multipart: Record<string, MultipartPlan> = {};
         for (const plan of plans) {

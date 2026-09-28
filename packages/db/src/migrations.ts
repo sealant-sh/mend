@@ -2558,6 +2558,32 @@ const executorEvidenceFencesMigration = Effect.gen(function* () {
        AND (e.unsaved_at IS NULL OR e.unsaved_at < s.capture_unsaved_at)`;
 });
 
+/**
+ * 0089: a seal stands only over bytes nothing can still replace (review 2026-09-28 (7) #8).
+ * - `capture_put_authority`: per worktree epoch, the latest expiry of every upload URL Mend handed
+ *   out under its prefix — recorded before the URL leaves Mend. On a bucket that ignores
+ *   `If-None-Match` (Garage) such a URL could replace an object until then, so no seal of the
+ *   epoch stands before it.
+ * - `capture_seals.reverified_at`: when every object the sealed capture names was read back after
+ *   that and found to be what its name says; the seal stands from then until another URL is handed
+ *   out under its epoch. `capture_seals.void_reason`: an object read back as other bytes — the seal
+ *   never stands again.
+ */
+const capturePutAuthorityMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE capture_put_authority (
+      worktree_id text NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
+      epoch bigint NOT NULL,
+      expires_at timestamptz NOT NULL,
+      PRIMARY KEY (worktree_id, epoch)
+    )`;
+  yield* sql`
+    ALTER TABLE capture_seals
+      ADD COLUMN reverified_at timestamptz,
+      ADD COLUMN void_reason text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2647,4 +2673,5 @@ export const migrations = {
   "0086_executor_capture_evidence": executorCaptureEvidenceMigration,
   "0087_executor_evidence_order": executorEvidenceOrderMigration,
   "0088_executor_evidence_fences": executorEvidenceFencesMigration,
+  "0089_capture_put_authority": capturePutAuthorityMigration,
 };

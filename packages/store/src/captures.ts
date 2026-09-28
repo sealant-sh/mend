@@ -1,7 +1,9 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { Readable } from "node:stream";
+import { pipeline as pipelinePromise } from "node:stream/promises";
 import * as zlib from "node:zlib";
 
 import { Effect, Schema } from "effect";
@@ -2166,6 +2168,12 @@ const exactMtime = (mtime: bigint | number): string =>
       ? BigInt(mtime).toString()
       : String(mtime);
 
+/** A tracked name of the document, as a node of `metaInodeProblem`'s inode groups. */
+const trackedNode = (key: string) => `tracked:${key}`;
+/** A class's name, as a node of `metaInodeProblem`'s inode groups. */
+const memberNode = (cls: string, key: string, raw?: string) =>
+  `${cls}:${bytesOfPair(key, raw)?.toString("hex") ?? key}`;
+
 /**
  * Whether every inode the document declares shared is promised one mode and one mtime (review
  * 2026-09-28 (7) #10). A tracked `hardlinks` group, a `shared` link from a tracked file to
@@ -2192,24 +2200,21 @@ export const metaInodeProblem = (document: WorktreeMetaDocument): string | null 
     const rb = find(b);
     if (ra !== rb) parent.set(ra, rb);
   };
-  const tracked = (key: string) => `tracked:${key}`;
-  const member = (cls: string, key: string, raw?: string) =>
-    `${cls}:${bytesOfPair(key, raw)?.toString("hex") ?? key}`;
   for (const group of document.hardlinks ?? []) {
     const [first, ...rest] = group;
     if (first === undefined) continue;
-    for (const other of rest) union(tracked(first), tracked(other));
+    for (const other of rest) union(trackedNode(first), trackedNode(other));
   }
   for (const link of document.shared ?? []) {
-    union(tracked(link.path), member(link.class, link.member, link.raw_member));
+    union(trackedNode(link.path), memberNode(link.class, link.member, link.raw_member));
   }
   for (const group of document.cross_links ?? []) {
     const [first, ...rest] = group;
     if (first === undefined) continue;
     for (const other of rest) {
       union(
-        member(first.class, first.member, first.raw_member),
-        member(other.class, other.member, other.raw_member),
+        memberNode(first.class, first.member, first.raw_member),
+        memberNode(other.class, other.member, other.raw_member),
       );
     }
   }
@@ -2217,7 +2222,7 @@ export const metaInodeProblem = (document: WorktreeMetaDocument): string | null 
   const promised = new Map<string, { readonly path: string; readonly promise: string }>();
   for (const entry of document.entries) {
     if (entry.kind !== "file") continue;
-    const node = tracked(entry.path);
+    const node = trackedNode(entry.path);
     if (!parent.has(node)) continue;
     const group = find(node);
     const promise = `mode ${(entry.mode ?? -1).toString(8)} mtime ${exactMtime(entry.mtime)}`;
@@ -2708,3 +2713,98 @@ export const captureKeyOwner = (key: string): string | null => {
  */
 export const verifyGitPack = (packPath: string): Effect.Effect<void, GitError> =>
   git(["index-pack", "--verify", packPath], path.dirname(packPath)).pipe(Effect.asVoid);
+
+// ─── A sealed capture's bytes, read back ────────────────────────────────────
+
+/**
+ * Whether the git pack stored at `key` is still what register verified: it hashes to its name,
+ * and `git index-pack --verify` over it and the index stored beside it passes — the index a
+ * restore installs as it is (sealantd `install_pack`) must describe that very pack. The reason it
+ * is not, or null.
+ */
+const storedGitPackProblem = (
+  key: string,
+): Effect.Effect<string | null, BlobNotFoundError | BlobStoreError, BlobStore> =>
+  Effect.gen(function* () {
+    const own = yield* storedObjectProblem(key);
+    if (own !== null) return own;
+    const store = yield* BlobStore;
+    const idxKey = packIdxKeyOf(key);
+    const idx = yield* store.get(idxKey);
+    const stream = yield* store.getStream(key);
+    return yield* Effect.acquireUseRelease(
+      Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "mend-seal-pack-"))),
+      (dir) =>
+        Effect.gen(function* () {
+          const packPath = path.join(dir, "pack.pack");
+          yield* Effect.tryPromise({
+            try: async () => {
+              await pipelinePromise(stream, fs.createWriteStream(packPath));
+              await fs.promises.writeFile(path.join(dir, "pack.idx"), idx);
+            },
+            catch: (cause) => cause,
+          }).pipe(Effect.orDie);
+          return yield* verifyGitPack(packPath).pipe(
+            Effect.as(null),
+            Effect.catchTag("GitError", (error) =>
+              Effect.succeed(`${idxKey} does not index ${key}: ${error.stderr.trim()}`),
+            ),
+          );
+        }),
+      (dir) => Effect.sync(() => fs.rmSync(dir, { recursive: true, force: true })),
+    );
+  });
+
+/**
+ * Whether every object the capture at `manifestKey` names is still what its name says, read back
+ * from the store now (review 2026-09-28 (7) #8): the manifest, every pack, dir pack and format-1
+ * dir object of its chunked classes (the worktree metadata document's packs are the workspace
+ * class's own), and every git pack with the index a restore installs beside it. Every capture key
+ * is content-addressed, so objects that read back as their names are the bytes register verified,
+ * and what the seal said of them still holds. The reason one is not (missing, other bytes, an
+ * index of another pack), or null. Fails only when the store could not be read (`BlobStoreError`):
+ * nothing is concluded then.
+ */
+export const storedCaptureProblem = (
+  manifestKey: string,
+): Effect.Effect<string | null, BlobStoreError, BlobStore> =>
+  Effect.gen(function* () {
+    const store = yield* BlobStore;
+    const own = yield* storedObjectProblem(manifestKey);
+    if (own !== null) return own;
+    const manifest = yield* store.get(manifestKey).pipe(
+      Effect.flatMap((bytes) => decodeManifest(manifestKey, bytes)),
+      Effect.result,
+    );
+    if (manifest._tag === "Failure") {
+      const error = manifest.failure;
+      if (error._tag === "BlobStoreError") return yield* Effect.fail(error);
+      return error._tag === "BlobNotFoundError"
+        ? `${manifestKey} is not stored`
+        : `${manifestKey} does not decode`;
+    }
+    const sections = manifest.success.sections;
+    const keys = new Set(keysOfSections(sections));
+    for (const cls of ["workspace", "bulk"] as const) {
+      const trees = yield* collectTreeKeys(manifest.success, cls, {
+        limit: Number.POSITIVE_INFINITY,
+      }).pipe(Effect.result);
+      if (trees._tag === "Failure") {
+        const error = trees.failure;
+        if (error._tag === "BlobStoreError") return yield* Effect.fail(error);
+        return `the ${cls} class's dir objects do not read back: ${error._tag}`;
+      }
+      for (const key of trees.success) keys.add(key);
+    }
+    const gitPacks = new Set(sections.git.packs);
+    for (const key of keys) {
+      if (key.endsWith(".idx") && gitPacks.has(key.slice(0, -".idx".length))) continue;
+      const problem = yield* (
+        gitPacks.has(key) ? storedGitPackProblem(key) : storedObjectProblem(key)
+      ).pipe(Effect.catchTag("BlobNotFoundError", () => Effect.succeed(`${key} is not stored`)));
+      if (problem !== null) return problem;
+    }
+    return null;
+  }).pipe(
+    Effect.catchTag("BlobNotFoundError", (error) => Effect.succeed(`${error.key} is not stored`)),
+  );

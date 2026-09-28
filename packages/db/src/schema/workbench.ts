@@ -1988,11 +1988,39 @@ export const captureSeals = pgTable(
     bootId: text(),
     bootGeneration: bigint({ mode: "number" }),
     observation: bigint({ mode: "number" }),
+    /**
+     * When every object the sealed capture names was last read back and found to be what its
+     * name says, at a moment no upload URL for its epoch could still replace one (0089, review
+     * 2026-09-28 (7) #8). Null: never, since the seal was recorded.
+     */
+    reverifiedAt: timestamp({ mode: "date", withTimezone: true }),
+    /** Why the seal never stands again: a named object read back as other bytes (0089). */
+    voidReason: text(),
   },
   (table) => [
     primaryKey({ columns: [table.worktreeId, table.epoch] }),
     index("capture_seals_executor_idx").on(table.worktreeId, table.executorId),
   ],
+);
+
+/**
+ * Until when an upload URL Mend handed out under one worktree epoch's prefix could still write
+ * to the bucket (migration 0089, review 2026-09-28 (7) #8): the latest expiry of every PUT and
+ * part URL minted for `captures/<worktree>/<epoch>/…`, recorded before the URL is handed out. On
+ * a bucket that ignores `If-None-Match` (Garage) no seal of that epoch stands before it, and one
+ * stands after it only once its objects are read back as what their names say.
+ */
+export const capturePutAuthority = pgTable(
+  "capture_put_authority",
+  {
+    worktreeId: text()
+      .$type<WorktreeId>()
+      .notNull()
+      .references(() => worktrees.id, { onDelete: "cascade" }),
+    epoch: bigint({ mode: "number" }).notNull(),
+    expiresAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.worktreeId, table.epoch] })],
 );
 
 /**
