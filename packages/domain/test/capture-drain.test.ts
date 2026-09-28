@@ -263,6 +263,25 @@ describe("captureDrainStep when the disk changed after the final flush (decision
   });
 });
 
+describe("captureDrainStep when a capture class is polled (sealantd `unwatched`)", () => {
+  it("reads `unwatched` as not saved yet, a reason the drain keeps asking about", () => {
+    expect(CAPTURE_INCOMPLETE_REASONS).toContain("unwatched");
+    const unwatched = reading({ complete: false, incompleteReason: "unwatched" });
+    expect(captureSaved(unwatched)).toBe(false);
+    const step = captureDrainStep({
+      previous: null,
+      reading: unwatched,
+      progressAtMs: 0,
+      nowMs: 1,
+      stallSeconds: 600,
+    });
+    expect(step.kind).toBe("saving");
+    expect(captureIncompleteWords("unwatched")).toBe(
+      "a capture class is polled, currency not observed",
+    );
+  });
+});
+
 describe("captureDrainStep without a completed final flush", () => {
   it("keeps the workspace at once when the executor cannot report `complete`", () => {
     expect(

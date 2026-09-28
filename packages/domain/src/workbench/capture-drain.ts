@@ -117,6 +117,7 @@ export const CAPTURE_INCOMPLETE_REASONS = [
   "pending",
   "sealing",
   "changed",
+  "unwatched",
   "internal",
 ] as const;
 
@@ -390,6 +391,8 @@ export const captureIncompleteWords = (reason: string | null | undefined): strin
       return "final seal not registered";
     case "changed":
       return "changed after the final flush";
+    case "unwatched":
+      return "a capture class is polled, currency not observed";
     case "internal":
       return "executor error";
     case CAPTURE_EXECUTOR_RETAINED:
