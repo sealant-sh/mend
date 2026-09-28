@@ -254,29 +254,64 @@ export const HARNESS_HOME_MOUNT_PATH = "/workspace/harness-home";
  * The boot step that makes harness state durable: for every supported harness (a workspace
  * carries them all, and a session can switch mid-life), move whatever `$HOME` already holds —
  * image-baked defaults, injected credentials, a restored capture — into the harness root, then
- * symlink the `$HOME` directory to that root. `cp -an` keeps root-side files on collision: when
- * both a restore and live state exist, the live state is newer by construction. Idempotent; a
- * rerun over existing symlinks does nothing.
+ * symlink the `$HOME` directory to that root. Root-side entries win on collision: when both a
+ * restore and live state exist, the live state is newer by construction. Idempotent; a rerun over
+ * existing symlinks does nothing.
+ *
+ * The merge copies only what the root is missing (`cp -a` of each missing entry, which keeps that
+ * entry's own modes), and never writes over an existing root-side directory or file: a restored
+ * directory keeps its saved mode and exact time, descendants and the root itself included. A new
+ * entry changes its parent's time, so the parent's time is taken before and put back after
+ * (review 2026-09-28 (19) #1: `cp -an source/. root/` copied the fresh directory's 0700 and time
+ * over a restored `.claude` saved at 0750).
  *
  * Co-located workspaces need the permission keeper because a different host uid reads the mounted
  * directory. Capture workspaces pass `keepStoreReadable: false`: sealantd reads its own local root,
  * and the detached keeper must not become part of captured state.
  */
-const checkedDirectoryScript = (target: string) =>
+const checkedDirectoryScript = (target: string, create: boolean) =>
   `[ ! -L "${target}" ] || fail "symlinked directory: ${target}"; ` +
-  `if [ ! -e "${target}" ]; then mkdir "${target}" || fail "mkdir: ${target}"; fi; ` +
-  `[ -d "${target}" ] || fail "not a directory: ${target}"; ` +
-  `[ "$(cd "${target}" && pwd -P)" = "${target}" ] || fail "indirect directory: ${target}"`;
+  (create
+    ? `if [ ! -e "${target}" ]; then kept_time "${target}" mkdir "${target}" || fail "mkdir: ${target}"; fi; ` +
+      `[ -d "${target}" ] || fail "not a directory: ${target}"; ` +
+      `[ "$(cd "${target}" && pwd -P)" = "${target}" ] || fail "indirect directory: ${target}"`
+    : `if [ -e "${target}" ]; then ` +
+      `[ -d "${target}" ] || fail "not a directory: ${target}"; ` +
+      `[ "$(cd "${target}" && pwd -P)" = "${target}" ] || fail "indirect directory: ${target}"; fi`);
+
+/**
+ * Shell functions for the merge. `kept_time <path> <command…>` runs the command, which creates
+ * `<path>`, and puts the time of `<path>`'s parent back as it was. `merge_missing <from> <to>` copies
+ * every entry of `<from>` that `<to>` lacks, whole, and descends where both hold a real directory
+ * of that name; anything else present on the `<to>` side is left exactly as it is.
+ */
+const MERGE_FUNCTIONS = [
+  `kept_time() { kt_parent="\${1%/*}"; kt_ref="$(mktemp)" || fail "no temporary file for: $kt_parent"; ` +
+    `touch -r "$kt_parent" "$kt_ref" || { rm -f "$kt_ref"; fail "time unreadable: $kt_parent"; }; ` +
+    `shift; "$@"; kt_status=$?; ` +
+    `touch -r "$kt_ref" "$kt_parent" || { rm -f "$kt_ref"; fail "time not restored: $kt_parent"; }; ` +
+    `rm -f "$kt_ref"; return $kt_status; }`,
+  `merge_missing() ( for mm_from in "$1"/* "$1"/.[!.]* "$1"/..?*; do ` +
+    `[ -e "$mm_from" ] || [ -L "$mm_from" ] || continue; ` +
+    `mm_to="$2/\${mm_from##*/}"; ` +
+    `if [ -e "$mm_to" ] || [ -L "$mm_to" ]; then ` +
+    `if [ -d "$mm_from" ] && [ ! -L "$mm_from" ] && [ -d "$mm_to" ] && [ ! -L "$mm_to" ]; then ` +
+    `merge_missing "$mm_from" "$mm_to" || exit 1; fi; ` +
+    `else kept_time "$mm_to" cp -a "$mm_from" "$mm_to" || exit 1; fi; done )`,
+];
 
 export const relocateHarnessHomeScript = (
   mountPath: string = HARNESS_HOME_MOUNT_PATH,
   options: { readonly keepStoreReadable?: boolean } = {},
 ): string => {
   const dirs = [...new Set(Object.values(HARNESS_STATE).flatMap((shape) => shape.homeDirs))];
-  const destinationDirectories = [
+  // The parents of each harness directory are created when missing; the harness directory itself
+  // is created by the merge (a copy of the `$HOME` one, with its modes) or, with nothing to copy,
+  // as an empty directory.
+  const destinationParents = [
     ...new Set(
       dirs.flatMap((dir) => {
-        const parts = dir.split("/");
+        const parts = dir.split("/").slice(0, -1);
         return parts.map((_, index) => `${mountPath}/${parts.slice(0, index + 1).join("/")}`);
       }),
     ),
@@ -301,8 +336,10 @@ export const relocateHarnessHomeScript = (
     `[ "$(cd "$HOME" && pwd -P)" = "$HOME" ] || fail "HOME has a linked parent"`,
     `case "$HOME/" in "${mountPath}/"*) fail "root contains HOME" ;; esac`,
     `case "${mountPath}/" in "$HOME/"*) fail "HOME contains root" ;; esac`,
-    ...destinationDirectories.map(checkedDirectoryScript),
-    ...sourceParents.map(checkedDirectoryScript),
+    ...MERGE_FUNCTIONS,
+    ...destinationParents.map((target) => checkedDirectoryScript(target, true)),
+    ...dirs.map((dir) => checkedDirectoryScript(`${mountPath}/${dir}`, false)),
+    ...sourceParents.map((target) => checkedDirectoryScript(target, true)),
   ];
   const perDir = dirs.map((dir) => {
     const source = `$HOME/${dir}`;
@@ -313,11 +350,13 @@ export const relocateHarnessHomeScript = (
       `[ "$(cd "${source}" && pwd -P)" = "${destination}" ] || fail "unexpected source link: ${source}"; ` +
       `elif [ -e "${source}" ]; then ` +
       `[ -d "${source}" ] || fail "source is not a directory: ${source}"; ` +
-      `cp -an "${source}/." "${destination}/" || fail "copy: ${source}"; ` +
+      `if [ -e "${destination}" ]; then merge_missing "${source}" "${destination}" || fail "copy: ${source}"; ` +
+      `else kept_time "${destination}" cp -a "${source}" "${destination}" || fail "copy: ${source}"; fi; ` +
       `rm -rf "${source}" || fail "remove: ${source}"; ` +
       `fi; ` +
       `if [ ! -L "${source}" ]; then ` +
       `[ ! -e "${source}" ] || fail "source still exists: ${source}"; ` +
+      `if [ ! -e "${destination}" ]; then kept_time "${destination}" mkdir "${destination}" || fail "mkdir: ${destination}"; fi; ` +
       `ln -s "${destination}" "${source}" || fail "link: ${source}"; ` +
       `fi; ` +
       `[ -L "${source}" ] && [ -d "${source}" ] || fail "source link is invalid: ${source}"; ` +

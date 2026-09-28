@@ -433,19 +433,15 @@ const withHarnessBootstrap = (
   argv: ReadonlyArray<string>,
 ): ReadonlyArray<string> => withHarnessSetup(harness, withPermissionDefaults(harness, argv));
 
-/** A skill directory removed, kept aside, or one that could not be cleared, is said once. */
+/** A skill directory kept aside, or one that could not be cleared, is said once. */
 const logSkillsVacated = (sessionId: SessionId, outcomes: ReadonlyArray<SkillsVacateOutcome>) =>
   Effect.forEach(
     outcomes,
     (outcome) => {
       switch (outcome.outcome) {
-        case "removed":
-          return Effect.logInfo(
-            "session engine: skills · a directory exactly as Mend delivered it was removed",
-          ).pipe(Effect.annotateLogs({ sessionId, dir: outcome.dir }));
         case "kept":
-          return Effect.logWarning(
-            "session engine: skills · a directory that was not Mend's delivery was kept aside",
+          return Effect.logInfo(
+            "session engine: skills · a replaced or retired skill directory was kept aside",
           ).pipe(Effect.annotateLogs({ sessionId, dir: outcome.dir, keptAt: outcome.detail }));
         case "error":
           return Effect.logWarning(
@@ -586,6 +582,14 @@ const LAUNCH_CANCELLED_SUMMARY = "launch cancelled · nothing was created";
  */
 const LAUNCH_INTERRUPTED_SUMMARY =
   "launch interrupted · the create's answer was lost · its executor ended";
+/**
+ * The same launch while its executor's end is not observed: the platform took the stop and still
+ * reports the executor (review 2026-09-28 (19) #2). The session reads `stopping` with these words
+ * and keeps its row and lease; the reaper settles it `LAUNCH_INTERRUPTED_SUMMARY` once the platform
+ * reports the executor gone.
+ */
+const LAUNCH_STOP_UNOBSERVED_SUMMARY =
+  "launch interrupted · the create's answer was lost · stop requested · end not observed yet";
 /**
  * A summary without the plan notice appended to it (`noteCapturePlan`): what it said before a plan
  * waited or was refused; null when the notice was all it said.
@@ -2891,13 +2895,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       // ── Drain, then terminate (ADR-0002, "Stop drains, then terminates") ─────────
       /**
-       * What a drain came to: `terminated` (saved, stopped, termination observed or asked);
-       * `gone` (the platform had already ended it — nothing left to save or stop); `kept`
+       * What a drain came to: `terminated` (saved, stopped, termination observed); `stop-requested`
+       * (saved and the stop taken, its end not observed yet: the lease stays until it lapses or the
+       * end is seen); `gone` (the platform had already ended it — nothing left to save or stop); `kept`
        * (not saved: the workspace stays up and the intent stays for the next sweep); `in-use`
        * (something reopened the workspace while it drained: nothing stopped); `discarded` (the
        * owner's "discard unsaved and stop" took over).
        */
-      type DrainOutcome = "terminated" | "gone" | "kept" | "in-use" | "discarded";
+      type DrainOutcome =
+        | "terminated"
+        | "stop-requested"
+        | "gone"
+        | "kept"
+        | "in-use"
+        | "discarded";
       /** One drain per workspace in this process; a second ask waits on the first. */
       const drains = new Map<SealantWorkspaceId, Deferred.Deferred<DrainOutcome>>();
       /** Workspaces whose owner asked to discard what is unsaved: a running drain yields. */
@@ -3645,7 +3656,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             } else {
               yield* sessions.endCaptureDrain(sessionId);
             }
-            return "terminated" as const;
+            // Only an observed end is `terminated`; a stop the platform took and has not been seen
+            // to finish is said as such (review 2026-09-28 (19) #2).
+            return ended ? ("terminated" as const) : ("stop-requested" as const);
           }
           if (step.kind !== "saved" && step.progressAtMs !== progressAtMs) {
             progressAtMs = step.progressAtMs;
@@ -4112,8 +4125,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * Found by the reaper, with no launch asking again: a session left `starting` whose lost
        * create's executor was drained and then ended has nothing running and nothing launching —
        * it reads `stopped · launch interrupted · …`, never `starting` with no executor (e2e8 (i),
-       * the case e2e run 6 fixed for a create that made nothing). Only once the drain ended the
-       * executor (`terminated`, `gone`); one it kept reads its drain's own words.
+       * the case e2e run 6 fixed for a create that made nothing). Only once the executor's end was
+       * observed (`terminated`, `gone`); one it kept reads its drain's own words. A stop the
+       * platform took whose end was not observed (`stop-requested`) reads `stopping · … · stop
+       * requested · end not observed yet`, and the reaper settles it once the executor is gone
+       * (review 2026-09-28 (19) #2).
        */
       const settleInterruptedLaunch = (
         sessionId: SessionId,
@@ -4121,15 +4137,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         outcome: DrainOutcome | "none",
       ) =>
         Effect.gen(function* () {
-          if (outcome !== "terminated" && outcome !== "gone") return;
+          if (outcome !== "terminated" && outcome !== "gone" && outcome !== "stop-requested") {
+            return;
+          }
           const session = yield* sessions.byId(sessionId);
+          const awaitingEnd =
+            session.status === "stopping" && session.summary === LAUNCH_STOP_UNOBSERVED_SUMMARY;
           if (
             session.settledAt !== null ||
-            session.status !== "starting" ||
+            (session.status !== "starting" && !awaitingEnd) ||
             session.sealantWorkspaceId !== workspaceId ||
             creatingExecutors.has(sessionId) ||
             (yield* processes.listForSession(sessionId)).some(isLiveProcess)
           ) {
+            return;
+          }
+          if (outcome === "stop-requested") {
+            if (awaitingEnd) return;
+            // The words first: a restart between the two writes leaves `starting` saying what was
+            // observed, never `stopping` with an older run's words.
+            yield* sessions.setSummary(sessionId, LAUNCH_STOP_UNOBSERVED_SUMMARY);
+            yield* sessions.setStatus(sessionId, "stopping");
+            yield* Effect.logWarning(
+              "session engine: capture mode · executor create · its answer was lost · stop requested · end not observed yet · stopping",
+            ).pipe(Effect.annotateLogs({ sessionId, workspaceId, outcome }));
             return;
           }
           yield* sessions.settle(sessionId, "stopped", LAUNCH_INTERRUPTED_SUMMARY);
@@ -4180,7 +4211,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               "replacement",
               true,
             );
-            if (outcome !== "terminated" && outcome !== "gone") {
+            // A stop taken whose end is not observed yet goes on too: the wait below is for the
+            // lease, released on an observed end or lapsing with the executor's heartbeats.
+            if (outcome !== "terminated" && outcome !== "stop-requested" && outcome !== "gone") {
               yield* Effect.logWarning(
                 `session engine: capture mode · replacement postponed · ${outcome}`,
               ).pipe(Effect.annotateLogs({ sessionId: session.id }));
@@ -4391,7 +4424,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             (yield* sessions.relaunchOf(session.id)) !== null
           ) {
             const outcome = yield* drainThenTerminate(session.id, workspaceId, "relaunch", true);
-            if (outcome === "terminated" || outcome === "gone") yield* finishRelaunch;
+            if (outcome === "terminated" || outcome === "stop-requested" || outcome === "gone") {
+              yield* finishRelaunch;
+            }
             return;
           }
           yield* sweepWorkspace(session.id);
@@ -4451,7 +4486,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             workspaceId === null ||
             (yield* lookupWorkspace(workspaceId).pipe(asSealantUser(session.ownerUserId))).kind ===
               "gone";
-          if (gone) yield* settleIfStopping(session.id);
+          if (!gone) continue;
+          // A lost create's executor whose stop was taken and not seen to end: ended now.
+          if (workspaceId !== null && session.summary === LAUNCH_STOP_UNOBSERVED_SUMMARY) {
+            yield* settleInterruptedLaunch(session.id, workspaceId, "gone");
+          } else {
+            yield* settleIfStopping(session.id);
+          }
         }
         const active = unsettled.filter((session) => ACTIVE_STATUSES.has(session.status));
         for (const session of active) {
@@ -6073,9 +6114,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const orphanRunLive =
             activeRun !== null &&
             !rows.some((process) => process.sealantRunId === activeRun.sealantRunId);
-          // A session that never reached a process is a launch in flight, not settled work.
+          // A session that never reached a process is a launch in flight, not settled work; so is
+          // a lost create's launch whose executor's end is not observed yet (the reaper settles
+          // it once the executor is gone).
           const launchInFlight =
-            session.status === "starting" &&
+            (session.status === "starting" ||
+              (session.status === "stopping" &&
+                session.summary === LAUNCH_STOP_UNOBSERVED_SUMMARY)) &&
             !rows.some((process) => isAgentProcessKind(process.kind));
           if (orphanRunLive || launchInFlight) return liveness;
           const { outcome, summary } = (yield* launchNeverRan(session, rows))

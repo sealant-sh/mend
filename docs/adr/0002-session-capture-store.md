@@ -1236,14 +1236,14 @@ Mend-side details the decision record left open, decided in this ADR:
       is written; a file with several hard links is written in place. A separate Mend-owned file
       referenced from the user's was not simpler: Claude Code has `@` imports, but Mend could not
       rely on an include for Codex's `AGENTS.md`.
-    - **Every other write a launch makes, checked (sweep).** Harness-home relocation (`cp -an` keeps
-      the restored side and drops only what the image, the injection, dotfiles or a native import
-      put in `$HOME` this boot, all of which that boot regenerates); the helper, the git transport
-      and the git author (Mend-owned paths under `/run/mend` and `/usr/local/bin`, and Mend's keys
-      in system git config, below the user's and the repository's own); the default shell profile
-      (written only where nothing exists, `set -C`); pasted images (fresh names); native imports
-      (fresh session ids); the co-located archive restore (only when no live state); setup commands
-      and the dependency install (decisions 42 and 43); plan remotes (sealantd adds them only to a
+    - **Every other write a launch makes, checked (sweep).** Harness-home relocation (keeps the
+      restored side and drops only what the image, the injection, dotfiles or a native import put in
+      `$HOME` this boot, all of which that boot regenerates); the helper, the git transport and the
+      git author (Mend-owned paths under `/run/mend` and `/usr/local/bin`, and Mend's keys in system
+      git config, below the user's and the repository's own); the default shell profile (written
+      only where nothing exists, `set -C`); pasted images (fresh names); native imports (fresh
+      session ids); the co-located archive restore (only when no live state); setup commands and the
+      dependency install (decisions 42 and 43); plan remotes (sealantd adds them only to a
       repository with no saved `.git/config`). None rewrites user content. Three did, and are fixed:
       - **The claude onboarding seed** read `~/.claude.json` and `~/.claude/settings.json` and
         treated a file it could not parse as empty, so a hand-edited `settings.json` with a trailing
@@ -1292,3 +1292,42 @@ Mend-side details the decision record left open, decided in this ADR:
       the cleanup then unlinked that file, which was not theirs. Both now unlink only a temporary
       whose exclusive create succeeded. On `EEXIST` they try another name with a random suffix (up
       to 16 more), and the file that holds the name is left alone.
+
+46. (2026-09-28) The nineteenth review's Mend items, and the rest of its recheck of decision 45.
+    - **Relocation merges only what is missing (#1).** The relocation merged each fresh `$HOME`
+      harness directory into the restored root with `cp -an source/. root/`. No-clobber kept the
+      files, but archive mode copied the source directory's mode and time over the destination. Core
+      writes the connected-account credential under `umask 077`, so a restored `.claude` saved at
+      0750 read 0700 with the new executor's time after every cold resume. The merge
+      (`merge_missing` in `relocateHarnessHomeScript`) now walks the source and copies only the
+      entries the root lacks, each with `cp -a`, so a new entry such as the injected credential
+      keeps its own modes. It descends where both sides hold a real directory and never writes over
+      anything that exists on the root side. A new entry changes its parent's time, so `kept_time`
+      records the parent's time with `touch -r` before the entry is created and puts it back after.
+      That covers existing descendant directories, the harness directories and the root itself. A
+      harness directory the root lacks is copied whole, as before. The program runs under dash, bash
+      and busybox `sh`. If a time cannot be read or put back, the relocation fails, and in capture
+      mode the launch fails with it.
+    - **A lost create's executor reads ended only once its end is observed (#2).** After a saved
+      final flush, `terminateWorkspace` can answer `ended: false`: Core took the stop and still
+      reports the executor after Mend's wait. `runDrain` returned `terminated` for that as well, and
+      the lost-create reaper settled the session
+      `launch interrupted · the create's answer was lost · its executor ended`. `runDrain` now
+      returns `stop-requested` when the end was not observed. The replacement and the relaunch paths
+      treat it as they treated `terminated` before, so neither changes. The reaper leaves the
+      session `stopping` with
+      `launch interrupted · the create's answer was lost · stop requested · end not observed yet`.
+      The row and the lease stay, and the status fold does not settle it. The reaper's pass over
+      `stopping` sessions settles it `stopped · … · its executor ended` once Core reports the
+      executor gone. The words are written before the status, so a restart between the two writes
+      leaves `starting` saying what was observed.
+    - **A replaced or retired skill is never deleted (decision 45, recheck).** Decision 45's
+      ownership check read contents, modes, link counts and extra entries, but not times. A skill
+      whose only change was a file's mtime still counted as Mend's delivery and was deleted on
+      retirement. Mend has no record of the times it wrote, so `SKILLS_VACATE_PROGRAM` no longer
+      deletes anything. A directory that holds exactly the bundle about to be delivered stays
+      `unchanged` and untouched, as before. Every other replaced or retired directory is renamed
+      whole into `.mend/skills-kept/<stamp>/`, including one exactly as Mend wrote it. The `removed`
+      outcome is gone. `.mend/skills-kept` grows by one directory for each skill a library replaces
+      or drops. Nothing prunes it, because pruning would delete what Mend cannot prove is its own.
+      The skills guide says to clear it by hand.

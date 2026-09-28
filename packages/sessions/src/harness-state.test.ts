@@ -136,6 +136,23 @@ describe("transcript adapters", () => {
   });
 });
 
+/** Mode, exact time and (for a file) bytes of each path under `root`. */
+const factsOf = (root: string, paths: ReadonlyArray<string>) =>
+  Object.fromEntries(
+    paths.map((rel) => {
+      const target = path.join(root, rel);
+      const stat = fs.lstatSync(target, { bigint: true });
+      return [
+        rel,
+        {
+          mode: Number(stat.mode & 0o7777n),
+          mtime: stat.mtimeNs.toString(),
+          bytes: stat.isFile() ? fs.readFileSync(target, "utf8") : null,
+        },
+      ];
+    }),
+  );
+
 describe("harness home", () => {
   it("relocation script covers every harness's state dirs and keeps mount-side files", () => {
     const script = relocateHarnessHomeScript();
@@ -145,8 +162,10 @@ describe("harness home", () => {
         expect(script).toContain(`ln -s "${HARNESS_HOME_MOUNT_PATH}/${dir}" "$HOME/${dir}"`);
       }
     }
-    // -n: on a collision the mounted (live, newer) copy wins over a restored one.
-    expect(script).toContain("cp -an");
+    // Only missing entries are copied: on a collision the mounted (live, newer) copy wins over a
+    // restored one, and no existing directory takes the copied one's mode or time.
+    expect(script).not.toContain("cp -an");
+    expect(script).toContain("merge_missing");
     // The mode keeper: harnesses that tighten their state to 0700 (codex) would blind the
     // store-side observer; a detached root loop re-opens read bits.
     expect(script).toContain("chmod -R go+rX");
@@ -273,6 +292,120 @@ describe("harness home", () => {
     expect(result.status).not.toBe(0);
     expect(fs.realpathSync(path.join(home, ".codex"))).toBe(elsewhere);
     expect(fs.readdirSync(elsewhere)).toEqual([]);
+  });
+
+  /**
+   * Review 2026-09-28 (19) #1: the relocation merged each fresh `$HOME` harness directory into the
+   * restored root with `cp -an source/. destination/`. No-clobber kept the files, but archive mode
+   * copied the source directory's mode and mtime over the destination: a restored `.claude` saved
+   * at 0750 read 0700 (Core writes the injected credential's parent under `umask 077`) with the
+   * executor's own time. Now only missing entries are copied, and every existing destination
+   * directory keeps its mode and exact time, descendants and the root included.
+   */
+  describe("relocation over a restored root keeps what was saved", () => {
+    it("AUDIT R19 relocation keeps saved directory metadata on cold resume", () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-r19-relocation-"));
+      const home = path.join(root, "home");
+      const captured = path.join(root, "harness");
+      fs.mkdirSync(path.join(home, ".claude"), { recursive: true });
+      fs.mkdirSync(path.join(captured, ".claude/projects"), { recursive: true });
+      fs.writeFileSync(path.join(home, ".claude", ".credentials.json"), "injected credential\n");
+      fs.writeFileSync(path.join(captured, ".claude", ".credentials.json"), "saved credential\n");
+      fs.writeFileSync(path.join(captured, ".claude/projects", "session.jsonl"), "own work\n");
+      const dir = path.join(captured, ".claude");
+      fs.chmodSync(dir, 0o700);
+      fs.utimesSync(dir, 1700000000.125, 1700000000.125);
+      const tracked = [".claude", ".claude/projects/session.jsonl", ".claude/.credentials.json"];
+      const before = factsOf(captured, tracked);
+      const run = spawnSync(
+        "sh",
+        ["-c", relocateHarnessHomeScript(captured, { keepStoreReadable: false })],
+        { env: { ...process.env, HOME: home }, encoding: "utf8" },
+      );
+      expect(run.stderr).toBe("");
+      expect(run.status).toBe(0);
+      expect(factsOf(captured, tracked)).toEqual(before);
+      fs.rmSync(root, { recursive: true, force: true });
+    });
+
+    it("merges only what is missing: existing directories and files keep mode and time, new entries keep theirs", () => {
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-r19-merge-"));
+      const home = path.join(root, "home");
+      const captured = path.join(root, "harness");
+      fs.mkdirSync(home);
+      // The executor's fresh home: Core's credential write (`umask 077`, file 0600), what the
+      // image baked, and a file that collides with a restored one.
+      const injected = spawnSync(
+        "sh",
+        [
+          "-c",
+          'umask 077 && mkdir -p "$(dirname "$HOME/.claude/.credentials.json")" && ' +
+            'printf "fresh\\n" > "$HOME/.claude/.credentials.json" && ' +
+            'chmod 600 "$HOME/.claude/.credentials.json"',
+        ],
+        { env: { ...process.env, HOME: home } },
+      );
+      expect(injected.status).toBe(0);
+      fs.mkdirSync(path.join(home, ".claude/projects/existing"), { recursive: true });
+      fs.mkdirSync(path.join(home, ".claude/projects/new/deeper"), { recursive: true });
+      fs.writeFileSync(path.join(home, ".claude/projects/existing/extra.txt"), "baked\n");
+      fs.writeFileSync(path.join(home, ".claude/projects/new/deeper/x.jsonl"), "new\n");
+      fs.writeFileSync(path.join(home, ".claude/settings.json"), "image default\n");
+      fs.mkdirSync(path.join(home, ".codex"), { mode: 0o700 });
+      fs.writeFileSync(path.join(home, ".codex/auth.json"), "codex\n", { mode: 0o600 });
+      // The restored root: modes and times as the capture saved them.
+      fs.mkdirSync(path.join(captured, ".claude/projects/existing"), { recursive: true });
+      fs.writeFileSync(path.join(captured, ".claude/settings.json"), "saved\n");
+      fs.writeFileSync(path.join(captured, ".claude/projects/existing/session.jsonl"), "work\n");
+      fs.chmodSync(path.join(captured, ".claude/settings.json"), 0o640);
+      fs.chmodSync(path.join(captured, ".claude/projects/existing"), 0o711);
+      fs.chmodSync(path.join(captured, ".claude/projects"), 0o755);
+      fs.chmodSync(path.join(captured, ".claude"), 0o750);
+      const times: ReadonlyArray<readonly [string, number]> = [
+        [".claude/settings.json", 1700000000.5],
+        [".claude/projects/existing/session.jsonl", 1700000001.25],
+        [".claude/projects/existing", 1700000002.125],
+        [".claude/projects", 1700000003.375],
+        [".claude", 1700000004.625],
+        ["", 1700000005.75],
+      ];
+      for (const [rel, at] of times) fs.utimesSync(path.join(captured, rel), at, at);
+      const tracked = times.map(([rel]) => rel);
+      const before = factsOf(captured, tracked);
+
+      const run = spawnSync(
+        "sh",
+        ["-c", relocateHarnessHomeScript(captured, { keepStoreReadable: false })],
+        { env: { ...process.env, HOME: home }, encoding: "utf8" },
+      );
+      expect(run.stderr).toBe("");
+      expect(run.status).toBe(0);
+      expect(factsOf(captured, tracked)).toEqual(before);
+      // What was missing arrived, with its own modes; a collision kept the restored file.
+      const credential = path.join(captured, ".claude/.credentials.json");
+      expect(fs.readFileSync(credential, "utf8")).toBe("fresh\n");
+      expect(fs.statSync(credential).mode & 0o777).toBe(0o600);
+      expect(
+        fs.readFileSync(path.join(captured, ".claude/projects/existing/extra.txt"), "utf8"),
+      ).toBe("baked\n");
+      expect(
+        fs.readFileSync(path.join(captured, ".claude/projects/new/deeper/x.jsonl"), "utf8"),
+      ).toBe("new\n");
+      expect(fs.statSync(path.join(captured, ".codex")).mode & 0o777).toBe(0o700);
+      expect(fs.readFileSync(path.join(captured, ".codex/auth.json"), "utf8")).toBe("codex\n");
+      for (const dir of [".claude", ".codex", ".local/share/opencode"]) {
+        expect(fs.realpathSync(path.join(home, dir))).toBe(path.join(captured, dir));
+      }
+      // A rerun over the links changes nothing.
+      const again = spawnSync(
+        "sh",
+        ["-c", relocateHarnessHomeScript(captured, { keepStoreReadable: false })],
+        { env: { ...process.env, HOME: home }, encoding: "utf8" },
+      );
+      expect(again.status).toBe(0);
+      expect(factsOf(captured, tracked)).toEqual(before);
+      fs.rmSync(root, { recursive: true, force: true });
+    });
   });
 
   it("reads live state presence from the harness home, absence as false", async () => {
