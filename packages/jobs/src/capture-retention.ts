@@ -78,29 +78,60 @@ export const thinningPlan = (
   return drop;
 };
 
-const packsOf = (section: unknown): ReadonlyArray<string> => {
+const stringsOf = (section: unknown, field: string): ReadonlyArray<string> => {
   if (typeof section !== "object" || section === null) return [];
-  const packs = (section as Record<string, unknown>)["packs"];
-  return Array.isArray(packs) ? packs.filter((key): key is string => typeof key === "string") : [];
+  const value: unknown = Reflect.get(section, field);
+  return Array.isArray(value) ? value.filter((key): key is string => typeof key === "string") : [];
 };
 
+const packsOf = (section: unknown): ReadonlyArray<string> => stringsOf(section, "packs");
+
+/**
+ * A chunked section's dir packs (format 2, sealantd PR #99). Read whatever the section lists,
+ * whatever its `format` says: keeping a listed object alive is never the loss.
+ */
+const dirPacksOf = (section: unknown): ReadonlyArray<string> => stringsOf(section, "dir_packs");
+
+/** A format-1 root is a key (`…/trees/<sha256>`); a format-2 root is a digest and names no object. */
 const treeOf = (section: unknown): ReadonlyArray<string> => {
   if (typeof section !== "object" || section === null) return [];
-  const root = (section as Record<string, unknown>)["root"];
-  return typeof root === "string" && root !== "" ? [root] : [];
+  const root: unknown = Reflect.get(section, "root");
+  return typeof root === "string" && root.includes("/trees/") ? [root] : [];
 };
 
 /** Every object key a capture row's sections name. */
 export const keysOfSections = (sections: unknown): ReadonlyArray<string> => {
   if (typeof sections !== "object" || sections === null) return [];
-  const record = sections as Record<string, unknown>;
+  const workspace: unknown = Reflect.get(sections, "workspace");
+  const bulk: unknown = Reflect.get(sections, "bulk");
   return [
-    ...packsOf(record["git"]).flatMap((key) => [key, packIdxKeyOf(key)]),
-    ...packsOf(record["workspace"]),
-    ...treeOf(record["workspace"]),
-    ...packsOf(record["bulk"]),
-    ...treeOf(record["bulk"]),
+    ...packsOf(Reflect.get(sections, "git")).flatMap((key) => [key, packIdxKeyOf(key)]),
+    ...packsOf(workspace),
+    ...treeOf(workspace),
+    ...dirPacksOf(workspace),
+    ...packsOf(bulk),
+    ...treeOf(bulk),
+    ...dirPacksOf(bulk),
   ];
+};
+
+/**
+ * The `…/trees/` prefixes a row's format-1 roots live under. A format-1 root names its children
+ * by key, and sealantd writes every dir object of one tree under the prefix its root has (the
+ * epoch that built it), so a root that lives keeps every `trees/` object under its prefix alive
+ * — without reading one dir object. A section carried from an older epoch (a bulk section that
+ * rides along until the next bulk snap) keeps its whole tree that way.
+ */
+export const treePrefixesOfSections = (sections: unknown): ReadonlyArray<string> => {
+  if (typeof sections !== "object" || sections === null) return [];
+  return [Reflect.get(sections, "workspace"), Reflect.get(sections, "bulk")]
+    .flatMap(treeOf)
+    .map((root) => root.slice(0, root.lastIndexOf("/trees/") + "/trees/".length));
+};
+
+const treePrefixOf = (key: string): string | null => {
+  const at = key.lastIndexOf("/trees/");
+  return at < 0 ? null : key.slice(0, at + "/trees/".length);
 };
 
 const epochOfKey = (worktreeId: string, key: string): number | null => {
@@ -137,6 +168,7 @@ export const CaptureRetentionLive: Layer.Layer<CaptureRetention, never, CaptureR
         // 1. Thin every chain; the head and the kept kinds stay by rule, and the SQL refuses
         //    the head regardless of what this pass computed.
         const live = new Set<string>();
+        const liveTreePrefixes = new Set<string>();
         const chains = yield* repo.listChains();
         const headsByWorktree = new Map<WorktreeId, CaptureRow | null>();
         for (const chain of chains) {
@@ -156,6 +188,7 @@ export const CaptureRetentionLive: Layer.Layer<CaptureRetention, never, CaptureR
             if (dropped.has(row.id)) continue;
             live.add(row.manifestKey);
             for (const key of keysOfSections(row.sections)) live.add(key);
+            for (const prefix of treePrefixesOfSections(row.sections)) liveTreePrefixes.add(prefix);
           }
           headsByWorktree.set(
             chain.worktreeId,
@@ -205,6 +238,9 @@ export const CaptureRetentionLive: Layer.Layer<CaptureRetention, never, CaptureR
             const epoch = epochOfKey(worktreeId, entry.key);
             if (epoch === null || epoch >= head.epoch) continue;
             if (live.has(entry.key) || tracked.has(entry.key)) continue;
+            // A format-1 dir object below a live root: only the root is named by the row.
+            const treePrefix = treePrefixOf(entry.key);
+            if (treePrefix !== null && liveTreePrefixes.has(treePrefix)) continue;
             yield* remove(entry.key);
           }
         }

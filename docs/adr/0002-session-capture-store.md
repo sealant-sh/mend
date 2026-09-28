@@ -150,11 +150,13 @@ statement and no URL that can move them.
 - `captures.ts`: the manifest and directory-object codec, the CDC pack reader, `plan(head)`,
   `materialize(capture, class, dir)`, `verify(pack)`. The manifest is ADR-0015's ("Capture format");
   Mend reads these fields and no others: `worktree_id`, `n`, `parent`, `epoch`, `seq`, `kind`,
-  `created_at`, `sections.git.{packs, refs, head, fsck}`, `sections.workspace.{root, packs}`,
-  `sections.bulk.{root, packs, platform} | "pending"`, and `checkpoint?.{ordinal, sha, ref}`. The
-  capture id is the sha256 of the manifest bytes; the manifest does not carry it. Key layout, fixed
-  with ADR-0015: `captures/<worktree>/<epoch>/packs/<sha256>` (a git pack's index at
-  `packs/<sha256>.idx`), `captures/<worktree>/<epoch>/trees/<sha256>` (dir objects),
+  `created_at`, `sections.git.{packs, refs, head, fsck}`,
+  `sections.workspace.{root, packs, format?, dir_packs?}`,
+  `sections.bulk.{root, packs, platform, format?, dir_packs?} | "pending"`, and
+  `checkpoint?.{ordinal, sha, ref}` (section formats: decision 28). The capture id is the sha256 of
+  the manifest bytes; the manifest does not carry it. Key layout, fixed with ADR-0015:
+  `captures/<worktree>/<epoch>/packs/<sha256>` (a git pack's index at `packs/<sha256>.idx`),
+  `captures/<worktree>/<epoch>/trees/<sha256>` (dir objects),
   `captures/<worktree>/<epoch>/manifests/<capture-id>`; summaries at `changes/<worktree>/<n>/…`;
   promoted content at `projects/<project>/...`, written only by Mend. A manifest lists every pack a
   section needs across epochs, so a new epoch reads prior-epoch packs (sha256-verified) but never
@@ -545,3 +547,19 @@ Mend-side details the decision record left open, decided in this ADR:
     worker re-attempts it on every tick (`PLATFORM-FEEDBACK.md` 2026-09-14). Bytes that landed
     before a register refusal are off-chain under a live epoch; the retention pass sweeps them once
     that epoch is fenced by a later claim, not before.
+28. (2026-09-27) Chunked sections carry a `format` (sealantd PR #99, "Dir packs"). Format 1, the
+    field absent, is one object per directory at `…/trees/<sha256>`, `root` and `child` being keys:
+    every capture before this. Format 2 packs a section's dir objects into dir packs — the CDC pack
+    container, one entry per dir object, keyed `…/packs/<sha256>` and listed in `dir_packs` — and
+    names `root` and `child` by digest; one manifest can hold one section of each, since a capture
+    carries the bulk section below it until the next bulk snap. Measured on alpha, a pnpm
+    `node_modules` was ≈ 20,860 dir objects, one PUT each (24 minutes); dir packs make it a few.
+    Every reader in `captures.ts` reads both; a format above 2 does not decode, so register refuses
+    it. Register HEADs, prices and records dir packs like any pack, and checks a format-2 root is a
+    digest. Both `plan.get`s answer `manifest_format: 2` (`MEND_CAPTURE_MANIFEST_FORMAT=1` rolls
+    executors back to format 1; reading both never switches off), and sealantd writes format 2 only
+    for that answer. Retention keeps `dir_packs` through `keysOfSections` and the `packs` rows, and
+    keeps every `trees/` object under the prefix of a live format-1 root: a root names its children
+    by key under its own epoch prefix, and only the root is on the row, so a carried format-1
+    section under a fenced epoch lost its subtree to the sweep before this. The dependency cache
+    copies a format-2 section's dir packs as it copies packs and keeps its root.

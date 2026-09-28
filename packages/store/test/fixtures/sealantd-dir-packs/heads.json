@@ -1,0 +1,635 @@
+{
+  "mixed": {
+    "bulk": {
+      "node_modules/.bin": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.bin/tool": {
+        "kind": "file",
+        "mode": 493,
+        "nlink": 1,
+        "sha256": "bf664cf84f00f6ed76164c8457fdeaf8e4dee547226e9ffcf8274e2d2246fed9",
+        "size": 20
+      },
+      "node_modules/.modules.yaml": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      "node_modules/.pnpm": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/lock-copy.json": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 2,
+        "sha256": "570a3ff7409e077839a5e7fd72b24f9ce1c9dacc38571fb9141dc241cb40fd67",
+        "size": 16
+      },
+      "node_modules/.pnpm/pkg0@1.0.0": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/dist": {
+        "kind": "dir",
+        "mode": 488
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/dist/d.cjs": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "cf2cbb3a7f32bd8e88f901a3a210eee1697482fd56204a8aef8b8b8d24ca7baf",
+        "size": 45
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/lib": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/lib/index.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "676119a07b35f416479d4b6bd3ad06fcd3fdee86778e7f3082ec2e141589de4c",
+        "size": 20
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/lib/util": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/lib/util/u.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "7d62933a59aafe165719a2f732967a13da59939d0e5f4199cee28eef44eb31ce",
+        "size": 15
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/package.json": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 2,
+        "sha256": "570a3ff7409e077839a5e7fd72b24f9ce1c9dacc38571fb9141dc241cb40fd67",
+        "size": 16
+      },
+      "node_modules/.pnpm/pkg1@1.0.0": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/dist": {
+        "kind": "dir",
+        "mode": 488
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/dist/blob.bin": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "cc6f079109148be2288463958d5ad926ce1a7d0e85f32902f63b5cd3778774cb",
+        "size": 4501543
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/dist/d.cjs": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "eb5cc6fe4c2b18be6d55c19fd44ea928978ba7504c87f7c79a508cba70203f55",
+        "size": 45
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/lib": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/lib/index.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "6e66e366f0aefb84ad8110afcd9b2245702c643c831edf8316ff048fec739d2e",
+        "size": 20
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/lib/util": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/lib/util/u.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "df9c0e93b5c89ba7b7c475313b219ed60f25a7aa6ad14b1f0bc75a9550a85789",
+        "size": 15
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/package.json": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "ea9f9cbe690fcd6a9365e519e99fcba40979723a4b22d448934450ec4b8bd0bd",
+        "size": 16
+      },
+      "node_modules/.pnpm/pkg2@1.0.0": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/dist": {
+        "kind": "dir",
+        "mode": 488
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/dist/d.cjs": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "cbe08cb355014f79be1f10a1197dfb3835b51ef789f6118d16493bd0282f4f80",
+        "size": 45
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/lib": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/lib/index.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "0178ebe33198629bc345d7410d644ab4991518d537db5fd04912d281df792928",
+        "size": 20
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/lib/util": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/lib/util/u.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "1a7a563fe946be65808212f41844718a7e27157ad724a1cfba38ba8d424f12a3",
+        "size": 15
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/package.json": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "190caaa0dc3481141fa39e30d5c2d3cc88ab1ab89516121c24ec9bb31ad4a22e",
+        "size": 16
+      },
+      "node_modules/pkg0": {
+        "kind": "symlink",
+        "target": ".pnpm/pkg0@1.0.0/node_modules/pkg0"
+      },
+      "node_modules/pkg1": {
+        "kind": "symlink",
+        "target": ".pnpm/pkg1@1.0.0/node_modules/pkg1"
+      },
+      "node_modules/pkg2": {
+        "kind": "symlink",
+        "target": ".pnpm/pkg2@1.0.0/node_modules/pkg2"
+      }
+    },
+    "capture_id": "f414e04f9777f40ba9cc0015bfc3b7aa545d3187a68a14c78f59f2a4ccddd009",
+    "env_sha256": "1fa65cce5bf83e2b0056aa837487b8409fc89a7640a05b60f532de83d45c0b80",
+    "manifest_key": "captures/wt-fixture/1/manifests/f414e04f9777f40ba9cc0015bfc3b7aa545d3187a68a14c78f59f2a4ccddd009"
+  },
+  "v1": {
+    "bulk": {
+      "node_modules/.bin": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.bin/tool": {
+        "kind": "file",
+        "mode": 493,
+        "nlink": 1,
+        "sha256": "bf664cf84f00f6ed76164c8457fdeaf8e4dee547226e9ffcf8274e2d2246fed9",
+        "size": 20
+      },
+      "node_modules/.modules.yaml": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      "node_modules/.pnpm": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/lock-copy.json": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 2,
+        "sha256": "570a3ff7409e077839a5e7fd72b24f9ce1c9dacc38571fb9141dc241cb40fd67",
+        "size": 16
+      },
+      "node_modules/.pnpm/pkg0@1.0.0": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/dist": {
+        "kind": "dir",
+        "mode": 488
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/dist/d.cjs": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "cf2cbb3a7f32bd8e88f901a3a210eee1697482fd56204a8aef8b8b8d24ca7baf",
+        "size": 45
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/lib": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/lib/index.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "676119a07b35f416479d4b6bd3ad06fcd3fdee86778e7f3082ec2e141589de4c",
+        "size": 20
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/lib/util": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/lib/util/u.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "7d62933a59aafe165719a2f732967a13da59939d0e5f4199cee28eef44eb31ce",
+        "size": 15
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/package.json": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 2,
+        "sha256": "570a3ff7409e077839a5e7fd72b24f9ce1c9dacc38571fb9141dc241cb40fd67",
+        "size": 16
+      },
+      "node_modules/.pnpm/pkg1@1.0.0": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/dist": {
+        "kind": "dir",
+        "mode": 488
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/dist/blob.bin": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "cc6f079109148be2288463958d5ad926ce1a7d0e85f32902f63b5cd3778774cb",
+        "size": 4501543
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/dist/d.cjs": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "eb5cc6fe4c2b18be6d55c19fd44ea928978ba7504c87f7c79a508cba70203f55",
+        "size": 45
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/lib": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/lib/index.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "6e66e366f0aefb84ad8110afcd9b2245702c643c831edf8316ff048fec739d2e",
+        "size": 20
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/lib/util": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/lib/util/u.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "df9c0e93b5c89ba7b7c475313b219ed60f25a7aa6ad14b1f0bc75a9550a85789",
+        "size": 15
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/package.json": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "ea9f9cbe690fcd6a9365e519e99fcba40979723a4b22d448934450ec4b8bd0bd",
+        "size": 16
+      },
+      "node_modules/.pnpm/pkg2@1.0.0": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/dist": {
+        "kind": "dir",
+        "mode": 488
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/dist/d.cjs": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "cbe08cb355014f79be1f10a1197dfb3835b51ef789f6118d16493bd0282f4f80",
+        "size": 45
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/lib": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/lib/index.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "0178ebe33198629bc345d7410d644ab4991518d537db5fd04912d281df792928",
+        "size": 20
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/lib/util": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/lib/util/u.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "1a7a563fe946be65808212f41844718a7e27157ad724a1cfba38ba8d424f12a3",
+        "size": 15
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/package.json": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "190caaa0dc3481141fa39e30d5c2d3cc88ab1ab89516121c24ec9bb31ad4a22e",
+        "size": 16
+      },
+      "node_modules/pkg0": {
+        "kind": "symlink",
+        "target": ".pnpm/pkg0@1.0.0/node_modules/pkg0"
+      },
+      "node_modules/pkg1": {
+        "kind": "symlink",
+        "target": ".pnpm/pkg1@1.0.0/node_modules/pkg1"
+      },
+      "node_modules/pkg2": {
+        "kind": "symlink",
+        "target": ".pnpm/pkg2@1.0.0/node_modules/pkg2"
+      }
+    },
+    "capture_id": "a62e53c4015137964a9a3f586d846c67325bb4f9b3c1cac73189606b6c86070c",
+    "env_sha256": "664049a85e2251d253ff78a9a7808b41ef4a9f14c8a1b998b6bffd40b2494808",
+    "manifest_key": "captures/wt-fixture/1/manifests/a62e53c4015137964a9a3f586d846c67325bb4f9b3c1cac73189606b6c86070c"
+  },
+  "v2": {
+    "bulk": {
+      "node_modules/.bin": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.bin/tool": {
+        "kind": "file",
+        "mode": 493,
+        "nlink": 1,
+        "sha256": "bf664cf84f00f6ed76164c8457fdeaf8e4dee547226e9ffcf8274e2d2246fed9",
+        "size": 20
+      },
+      "node_modules/.modules.yaml": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        "size": 0
+      },
+      "node_modules/.pnpm": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/lock-copy.json": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 2,
+        "sha256": "570a3ff7409e077839a5e7fd72b24f9ce1c9dacc38571fb9141dc241cb40fd67",
+        "size": 16
+      },
+      "node_modules/.pnpm/pkg0@1.0.0": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/dist": {
+        "kind": "dir",
+        "mode": 488
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/dist/d.cjs": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "cf2cbb3a7f32bd8e88f901a3a210eee1697482fd56204a8aef8b8b8d24ca7baf",
+        "size": 45
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/lib": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/lib/index.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "676119a07b35f416479d4b6bd3ad06fcd3fdee86778e7f3082ec2e141589de4c",
+        "size": 20
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/lib/util": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/lib/util/u.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "b809968e963f3fe69f96f0a1d463881f7924d72ed73b7f22c0aa85bb3a4e2e53",
+        "size": 13
+      },
+      "node_modules/.pnpm/pkg0@1.0.0/node_modules/pkg0/package.json": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 2,
+        "sha256": "570a3ff7409e077839a5e7fd72b24f9ce1c9dacc38571fb9141dc241cb40fd67",
+        "size": 16
+      },
+      "node_modules/.pnpm/pkg1@1.0.0": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/dist": {
+        "kind": "dir",
+        "mode": 488
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/dist/blob.bin": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "cc6f079109148be2288463958d5ad926ce1a7d0e85f32902f63b5cd3778774cb",
+        "size": 4501543
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/dist/d.cjs": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "eb5cc6fe4c2b18be6d55c19fd44ea928978ba7504c87f7c79a508cba70203f55",
+        "size": 45
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/lib": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/lib/index.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "6e66e366f0aefb84ad8110afcd9b2245702c643c831edf8316ff048fec739d2e",
+        "size": 20
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/lib/util": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/lib/util/u.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "df9c0e93b5c89ba7b7c475313b219ed60f25a7aa6ad14b1f0bc75a9550a85789",
+        "size": 15
+      },
+      "node_modules/.pnpm/pkg1@1.0.0/node_modules/pkg1/package.json": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "ea9f9cbe690fcd6a9365e519e99fcba40979723a4b22d448934450ec4b8bd0bd",
+        "size": 16
+      },
+      "node_modules/.pnpm/pkg2@1.0.0": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/dist": {
+        "kind": "dir",
+        "mode": 488
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/dist/d.cjs": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "cbe08cb355014f79be1f10a1197dfb3835b51ef789f6118d16493bd0282f4f80",
+        "size": 45
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/lib": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/lib/index.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "095edfcce53adacfd4fbd3c2682224786ca37c9854b9c73a02b522e168392ccf",
+        "size": 12
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/lib/util": {
+        "kind": "dir",
+        "mode": 493
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/lib/util/u.js": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "1a7a563fe946be65808212f41844718a7e27157ad724a1cfba38ba8d424f12a3",
+        "size": 15
+      },
+      "node_modules/.pnpm/pkg2@1.0.0/node_modules/pkg2/package.json": {
+        "kind": "file",
+        "mode": 420,
+        "nlink": 1,
+        "sha256": "190caaa0dc3481141fa39e30d5c2d3cc88ab1ab89516121c24ec9bb31ad4a22e",
+        "size": 16
+      },
+      "node_modules/pkg0": {
+        "kind": "symlink",
+        "target": ".pnpm/pkg0@1.0.0/node_modules/pkg0"
+      },
+      "node_modules/pkg1": {
+        "kind": "symlink",
+        "target": ".pnpm/pkg1@1.0.0/node_modules/pkg1"
+      },
+      "node_modules/pkg2": {
+        "kind": "symlink",
+        "target": ".pnpm/pkg2@1.0.0/node_modules/pkg2"
+      }
+    },
+    "capture_id": "7cc1f1024d74543a94eb8e6bfd14684c4ea42274593e6cdc9e3f632ba5060e8f",
+    "env_sha256": "1fa65cce5bf83e2b0056aa837487b8409fc89a7640a05b60f532de83d45c0b80",
+    "manifest_key": "captures/wt-fixture/1/manifests/7cc1f1024d74543a94eb8e6bfd14684c4ea42274593e6cdc9e3f632ba5060e8f"
+  }
+}

@@ -23,7 +23,7 @@ import {
   isCaptureSourceKey,
   type CaptureManifest,
 } from "@mend/store";
-import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
+import { buildManifest, sectionOf, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import { Duration, Effect, Exit, Layer, Scope } from "effect";
 import type * as Context from "effect/Context";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -38,8 +38,8 @@ import {
   PRESIGN_TTL_SECONDS,
   resolveCaptureUploadPolicy,
 } from "../src/capture-channel.ts";
-import { CaptureRemotes } from "../src/capture-remotes.ts";
-import { CaptureSourcesLive } from "../src/capture-sources.ts";
+import { CaptureRemotes, CaptureRemotesOff } from "../src/capture-remotes.ts";
+import { CaptureSourcesLive, CaptureSourcesOff } from "../src/capture-sources.ts";
 import { CaptureGitVerifierOff } from "../src/capture-verify.ts";
 import {
   SessionChannelNetworkHost,
@@ -196,6 +196,7 @@ describe("capture channel routes", () => {
           // names a footprint that puts its budget well above every byte this file ships.
           byteQuotaFloorBytes: 4_096,
           requireSizes: false,
+          manifestFormat: 2,
         }),
       ),
     ),
@@ -1041,6 +1042,212 @@ describe("capture channel routes", () => {
     expect(memory.packs.size).toBe(packRows);
   });
 
+  it("dir packs (format 2): plan.get announces manifest_format 2; register refuses a key where a digest belongs, then HEADs, prices and records the dir packs; the plan presigns dir packs, not dir objects", async () => {
+    const wt = WorktreeId.make("wt-cap-v2");
+    const api = channel.apiFor({
+      worktreeId: wt,
+      projectId: PROJECT,
+      executorId: "sess-v2",
+      footprintBytes: 1_000_000,
+    });
+    const call = (route: string, body: unknown) =>
+      new Promise<{ status: number; json: Record<string, unknown> }>((resolve) => {
+        void dispatchCaptureRoute(api, route, body, (status, payload) =>
+          resolve({ status, json: payload as Record<string, unknown> }),
+        );
+      });
+    await run(Effect.flatMap(CaptureStoreRepo, (repo) => repo.init(wt)));
+    const claimed = await call("/plan.get", { worktree_id: null, epoch: 0 });
+    expect(claimed.status).toBe(200);
+    expect(claimed.json["manifest_format"]).toBe(2);
+    expect(claimed.json["head"]).toBeNull();
+    const epoch = Number(claimed.json["epoch"]);
+    const keys = captureKeys(wt, epoch);
+    // One manifest, two formats: a format-2 workspace section over the format-1 bulk section an
+    // older executor wrote and this capture carries as it is.
+    const workspaceTree = path.join(scratch, "v2-workspace");
+    fs.mkdirSync(path.join(workspaceTree, "tree", "src"), { recursive: true });
+    fs.writeFileSync(path.join(workspaceTree, "tree", "src", "a.ts"), "export {};\n");
+    const bulkTree = path.join(scratch, "v2-bulk");
+    fs.mkdirSync(path.join(bulkTree, "node_modules", "pkg"), { recursive: true });
+    fs.writeFileSync(path.join(bulkTree, "node_modules", "pkg", "index.js"), "1;\n");
+    const workspace = snapshotDirectory(workspaceTree, keys, { chunkSize: 64, format: 2 });
+    const bulk = snapshotDirectory(bulkTree, keys, { chunkSize: 64, format: 1 });
+    const manifestWith = (sections: {
+      readonly workspace: CaptureManifest["sections"]["workspace"];
+      readonly seq: number;
+    }) =>
+      buildManifest({
+        worktreeId: wt,
+        n: 0,
+        parent: null,
+        epoch,
+        seq: sections.seq,
+        kind: "turn",
+        workspace: sections.workspace,
+        bulk: { ...sectionOf(bulk), platform: "linux-x86_64-gnu" },
+      });
+    const register = (built: ReturnType<typeof buildManifest>) =>
+      call("/capture.register", {
+        worktree_id: wt,
+        epoch,
+        n: 0,
+        parent: null,
+        capture_id: built.id,
+        manifest_key: built.key,
+        manifest: built.manifest,
+      });
+    const section = sectionOf(workspace);
+    // Refused before any HEAD: a key where a format-2 root's digest belongs, a dir pack entry
+    // that is no capture object, a digest root with no dir pack to hold it, and a format this
+    // registrar does not read.
+    const refusals = [
+      manifestWith({ seq: 1, workspace: { ...section, root: keys.tree(workspace.root) } }),
+      manifestWith({ seq: 2, workspace: { ...section, dir_packs: [`captures/${wt}`] } }),
+      manifestWith({ seq: 3, workspace: { ...section, dir_packs: [] } }),
+      manifestWith({ seq: 4, workspace: { root: workspace.root, packs: workspace.packs } }),
+    ];
+    await run(uploadObjects(new Map(refusals.map((built) => [built.key, built.bytes]))));
+    headed.length = 0;
+    for (const built of refusals) {
+      const refused = await register(built);
+      expect(refused.status).toBe(400);
+      expect(refused.json["reason"]).toBe("bad-request");
+    }
+    const first = refusals[0];
+    if (first === undefined) throw new Error("no refusal built");
+    const unreadable = await call("/capture.register", {
+      worktree_id: wt,
+      epoch,
+      n: 0,
+      parent: null,
+      capture_id: first.id,
+      manifest_key: first.key,
+      manifest: {
+        ...first.manifest,
+        sections: { ...first.manifest.sections, workspace: { ...section, format: 3 } },
+      },
+    });
+    expect(unreadable.status).toBe(400);
+    expect(unreadable.json["message"]).toContain("manifest");
+    expect(headed).toEqual([]);
+
+    const good = manifestWith({ seq: 5, workspace: section });
+    // The content packs are there, the dir pack is not: 422 names it.
+    await run(
+      uploadObjects(
+        new Map(
+          [...workspace.objects, ...bulk.objects, [good.key, good.bytes] as const].filter(
+            ([key]) => !workspace.dirPacks.includes(key),
+          ),
+        ),
+      ),
+    );
+    const early = await register(good);
+    expect(early.status).toBe(422);
+    expect(early.json["reason"]).toBe("missing-objects");
+    expect(early.json["missing"]).toEqual(workspace.dirPacks);
+    await run(uploadObjects(workspace.objects));
+    headed.length = 0;
+    const landed = await register(good);
+    expect(landed.status).toBe(200);
+    expect(headed).toEqual(
+      expect.arrayContaining([...workspace.packs, ...workspace.dirPacks, ...bulk.packs]),
+    );
+    // Recorded like any pack, under its class and epoch, so retention keeps it through its row.
+    for (const key of workspace.dirPacks) {
+      const row = [...memory.packs.values()].find((pack) => pack.key === key);
+      expect(row?.class).toBe("workspace");
+      expect(row?.epoch).toBe(epoch);
+      expect(row?.bytes).toBe(workspace.objects.get(key)?.byteLength);
+    }
+    // The chain row keeps both formats as registered.
+    const stored = memory.captures.get(good.id);
+    expect(stored?.sections).toMatchObject({
+      workspace: { root: workspace.root, format: 2, dir_packs: workspace.dirPacks },
+      bulk: { root: bulk.root },
+    });
+
+    // The plan: the head as registered (format and dir packs kept through the codec), the dir
+    // packs and the format-1 bulk tree presigned, and no dir object named by digest.
+    const plan = await call("/plan.get", { epoch });
+    expect(plan.status).toBe(200);
+    expect(plan.json["manifest_format"]).toBe(2);
+    const head = plan.json["head"] as { readonly manifest: CaptureManifest };
+    expect(head.manifest.sections.workspace).toEqual(section);
+    const urls = Object.keys(plan.json["get_urls"] as Record<string, string>);
+    expect(urls).toEqual(
+      expect.arrayContaining([
+        ...workspace.packs,
+        ...workspace.dirPacks,
+        ...bulk.packs,
+        bulk.root,
+        good.key,
+      ]),
+    );
+    expect(urls).not.toContain(workspace.root);
+    // Every dir object key presigned is the format-1 bulk section's; the workspace has none.
+    expect(urls.filter((key) => key.includes("/trees/")).toSorted()).toEqual(
+      [...bulk.objects.keys()].filter((key) => key.includes("/trees/")).toSorted(),
+    );
+    expect(urls.every(isReadableKey)).toBe(true);
+  });
+
+  it("prices a dir pack against the byte quota like any pack", async () => {
+    const wt = WorktreeId.make("wt-cap-v2-quota");
+    // No footprint: the budget is the test floor, 4,096 bytes.
+    const api = channel.apiFor({
+      worktreeId: wt,
+      projectId: PROJECT,
+      executorId: "sess-v2-quota",
+      footprintBytes: 0,
+    });
+    const call = (route: string, body: unknown) =>
+      new Promise<{ status: number; json: Record<string, unknown> }>((resolve) => {
+        void dispatchCaptureRoute(api, route, body, (status, payload) =>
+          resolve({ status, json: payload as Record<string, unknown> }),
+        );
+      });
+    await run(Effect.flatMap(CaptureStoreRepo, (repo) => repo.init(wt)));
+    const claimed = await call("/plan.get", { epoch: 0 });
+    const epoch = Number(claimed.json["epoch"]);
+    // Directories only, with names that do not compress: the dir pack is the whole cost.
+    const tree = path.join(scratch, "v2-quota");
+    for (let at = 0; at < 120; at += 1) {
+      fs.mkdirSync(path.join(tree, crypto.randomBytes(24).toString("hex"), "d"), {
+        recursive: true,
+      });
+    }
+    const snapshot = snapshotDirectory(tree, captureKeys(wt, epoch), { format: 2 });
+    expect(snapshot.packs).toEqual([]);
+    const dirPackBytes = snapshot.dirPacks.reduce(
+      (total, key) => total + (snapshot.objects.get(key)?.byteLength ?? 0),
+      0,
+    );
+    expect(dirPackBytes).toBeGreaterThan(4_096);
+    const built = buildManifest({
+      worktreeId: wt,
+      n: 0,
+      parent: null,
+      epoch,
+      kind: "turn",
+      workspace: sectionOf(snapshot),
+    });
+    await run(uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]])));
+    const refused = await call("/capture.register", {
+      worktree_id: wt,
+      epoch,
+      n: 0,
+      parent: null,
+      capture_id: built.id,
+      manifest_key: built.key,
+      manifest: built.manifest,
+    });
+    expect(refused.status).toBe(409);
+    expect(refused.json["reason"]).toBe("byte-quota");
+    expect(refused.json["requested"]).toBe(dirPackBytes);
+  });
+
   it("sizes are required only when MEND_CAPTURE_REQUIRE_SIZES says so", () => {
     expect(resolveCaptureUploadPolicy({}).requireSizes).toBe(false);
     expect(resolveCaptureUploadPolicy({ MEND_CAPTURE_REQUIRE_SIZES: "true" }).requireSizes).toBe(
@@ -1062,4 +1269,75 @@ describe("capture channel routes", () => {
       CaptureUploadPolicyError,
     );
   });
+
+  it("plan.get announces manifest_format 2 unless MEND_CAPTURE_MANIFEST_FORMAT rolls it back to 1", () => {
+    expect(resolveCaptureUploadPolicy({}).manifestFormat).toBe(2);
+    expect(resolveCaptureUploadPolicy({ MEND_CAPTURE_MANIFEST_FORMAT: "2" }).manifestFormat).toBe(
+      2,
+    );
+    expect(resolveCaptureUploadPolicy({ MEND_CAPTURE_MANIFEST_FORMAT: " 1 " }).manifestFormat).toBe(
+      1,
+    );
+    for (const raw of ["3", "0", "two"]) {
+      expect(() => resolveCaptureUploadPolicy({ MEND_CAPTURE_MANIFEST_FORMAT: raw })).toThrow(
+        CaptureUploadPolicyError,
+      );
+    }
+  });
+});
+
+describe("manifest_format on both plan.gets", () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-capture-format-"));
+  afterAll(() => {
+    fs.rmSync(scratch, { recursive: true, force: true });
+  });
+
+  it.each([1, 2] as const)(
+    "a session's plan and a standby's plan both answer %i as configured",
+    async (manifestFormat) => {
+      const memory = makeMemoryCaptureStore();
+      const blobs = BlobStoreFsLive(path.join(scratch, `blobs-${manifestFormat}`));
+      const layer = CaptureChannelLive.pipe(
+        Layer.provide(CaptureGitVerifierOff),
+        Layer.provide(CaptureSourcesOff),
+        Layer.provide(CaptureRemotesOff),
+        Layer.provide(memory.layer),
+        Layer.provide(blobs),
+        Layer.provide(
+          Layer.succeed(CaptureUploadPolicy, {
+            ...resolveCaptureUploadPolicy({}),
+            manifestFormat,
+          }),
+        ),
+      );
+      const wt = WorktreeId.make(`wt-format-${manifestFormat}`);
+      const base = buildManifest({ worktreeId: "standby", n: 0, parent: null, epoch: 7 });
+      const answers = await Effect.runPromise(
+        Effect.gen(function* () {
+          const repo = yield* CaptureStoreRepo;
+          yield* repo.init(wt);
+          const channel = yield* CaptureChannel;
+          const session = yield* channel
+            .apiFor({ worktreeId: wt, projectId: PROJECT, executorId: "exec", footprintBytes: 0 })
+            .planGet({ epoch: 0 });
+          const standby = yield* channel
+            .standbyApiFor({
+              alias: "standby",
+              projectId: PROJECT,
+              executorId: "standby-exec",
+              epoch: 7,
+              plan: () =>
+                Effect.succeed({
+                  captureId: base.id,
+                  manifestKey: base.key,
+                  manifest: base.manifest,
+                }),
+            })
+            .planGet({});
+          return [session.manifest_format, standby.manifest_format];
+        }).pipe(Effect.provide(Layer.merge(layer, memory.layer))),
+      );
+      expect(answers).toEqual([manifestFormat, manifestFormat]);
+    },
+  );
 });

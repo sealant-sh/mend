@@ -30,7 +30,7 @@ import {
 import { Duration, Effect, Layer } from "effect";
 
 import { CaptureChannel } from "./capture-channel.ts";
-import { readDependencyCache } from "./dependency-cache.ts";
+import { bulkSectionOfCache, readDependencyCache } from "./dependency-cache.ts";
 import { SessionRepository } from "./session-repository.ts";
 import { derivedPackPrefix, ensureCaptureCache } from "./worktree-reads.ts";
 
@@ -568,10 +568,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
               fsck: "verified",
             },
             workspace: { root: workspace.root, packs: [] },
-            bulk:
-              cache === null
-                ? "pending"
-                : { root: cache.root, packs: cache.packs, platform: cache.platform },
+            bulk: cache === null ? "pending" : bulkSectionOfCache(cache),
           },
         };
         const bytes = new Uint8Array(Buffer.from(JSON.stringify(manifest), "utf8"));

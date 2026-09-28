@@ -26,6 +26,7 @@ import {
   RETENTION_GRACE_MS,
   keysOfSections,
   thinningPlan,
+  treePrefixesOfSections,
 } from "../src/capture-retention.ts";
 
 /**
@@ -99,6 +100,34 @@ describe("thinningPlan", () => {
     expect(
       keysOfSections({ git: { packs: [] }, workspace: { root: "", packs: [] }, bulk: "pending" }),
     ).toEqual([]);
+  });
+
+  it("names a format-2 section's dir packs, and never its root digest, which is no object", () => {
+    const digest = "d".repeat(64);
+    expect(
+      keysOfSections({
+        git: { packs: [] },
+        workspace: {
+          root: digest,
+          packs: ["captures/w/2/packs/b"],
+          format: 2,
+          dir_packs: ["captures/w/2/packs/dw"],
+        },
+        // A mixed manifest: the format-1 bulk section carried from epoch 1.
+        bulk: { root: "captures/w/1/trees/s", packs: ["captures/w/1/packs/c"], platform: "p" },
+      }),
+    ).toEqual([
+      "captures/w/2/packs/b",
+      "captures/w/2/packs/dw",
+      "captures/w/1/packs/c",
+      "captures/w/1/trees/s",
+    ]);
+    expect(
+      treePrefixesOfSections({
+        workspace: { root: digest, packs: [], format: 2, dir_packs: [] },
+        bulk: { root: "captures/w/1/trees/s", packs: [], platform: "p" },
+      }),
+    ).toEqual(["captures/w/1/trees/"]);
   });
 });
 
@@ -229,6 +258,98 @@ describe("CaptureRetention over dir://", () => {
       objectsRemoved: 0,
       multipartAborted: 0,
     });
+  });
+
+  it("keeps what a live capture needs under a fenced epoch: its dir packs and every dir object below a format-1 root it carries", async () => {
+    // A second worktree: the head stands at epoch 3 in format 2 for the workspace and carries
+    // the format-1 bulk section an older executor wrote under epoch 2 (a mixed manifest). The
+    // bulk tree's child dir object is named by no row — only by the root above it.
+    const wt = WorktreeId.make("wt-ret-v2");
+    const now = 40 * 24 * HOUR;
+    memory.clock.now = () => now;
+    const keys2 = captureKeys(wt, 2);
+    const keys3 = captureKeys(wt, 3);
+    const bulkRoot = keys2.tree(sha("bulkroot"));
+    const bulkChild = keys2.tree(sha("bulkchild"));
+    const bulkPack = keys2.pack(sha("bulkpack"));
+    const strayTree = captureKeys(wt, 1).tree(sha("stray"));
+    const dirPackOld = keys2.pack(sha("dirpack2"));
+    const dirPackNew = keys3.pack(sha("dirpack3"));
+    const contentPack = keys3.pack(sha("content3"));
+    const olderCheckpoint: CaptureRow = {
+      ...row(0, "checkpoint", now - 5 * HOUR, 2, {
+        git: { packs: [] },
+        // An epoch-2 capture of this build: format 2, its dir pack under epoch 2.
+        workspace: { root: sha("root2"), packs: [], format: 2, dir_packs: [dirPackOld] },
+        bulk: { root: bulkRoot, packs: [bulkPack], platform: "linux-x86_64-gnu" },
+      }),
+      worktreeId: wt,
+      manifestKey: keys2.manifest(sha("m0")),
+      id: sha("v2cap0"),
+    };
+    const head: CaptureRow = {
+      ...row(1, "turn", now - 2 * HOUR, 3, {
+        git: { packs: [] },
+        workspace: {
+          root: sha("root3"),
+          packs: [contentPack],
+          format: 2,
+          dir_packs: [dirPackOld, dirPackNew],
+        },
+        bulk: { root: bulkRoot, packs: [bulkPack], platform: "linux-x86_64-gnu" },
+      }),
+      worktreeId: wt,
+      manifestKey: keys3.manifest(sha("m1")),
+      id: sha("v2cap1"),
+      parent: sha("v2cap0"),
+    };
+    memory.leases.set(wt, { executorId: "executor", epoch: 3, expiresAt: now + 10_000 });
+    memory.chains.set(wt, { headCapture: head.id, headN: 1, headEpoch: 3 });
+    for (const capture of [olderCheckpoint, head]) memory.captures.set(capture.id, capture);
+    const objects = [
+      bulkRoot,
+      bulkChild,
+      bulkPack,
+      strayTree,
+      dirPackOld,
+      dirPackNew,
+      contentPack,
+      olderCheckpoint.manifestKey,
+      head.manifestKey,
+    ];
+    await run(
+      Effect.gen(function* () {
+        const store = yield* BlobStore;
+        for (const key of objects) yield* store.put(key, new Uint8Array([1, 2, 3]));
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.recordPacks(
+          [
+            { key: bulkPack, epoch: 2, cls: "bulk" as const },
+            { key: dirPackOld, epoch: 2, cls: "workspace" as const },
+            { key: dirPackNew, epoch: 3, cls: "workspace" as const },
+            { key: contentPack, epoch: 3, cls: "workspace" as const },
+          ].map(({ key, epoch, cls }) => ({
+            key,
+            class: cls,
+            bytes: 3,
+            worktreeId: wt,
+            epoch,
+            platform: cls === "bulk" ? "linux-x86_64-gnu" : null,
+          })),
+        );
+      }),
+    );
+    // Well past the grace: packs recorded "now" would retire if no row named them, and the
+    // fenced epochs 1 and 2 are swept of what no live capture needs.
+    const later = now + RETENTION_GRACE_MS + 1;
+    await run(Effect.flatMap(CaptureRetention, (retention) => retention.run(later)));
+    for (const key of [dirPackOld, dirPackNew, contentPack, bulkPack, bulkRoot, bulkChild]) {
+      expect(exists(key)).toBe(true);
+    }
+    expect(memory.packs.get(sha("dirpack2"))?.state).toBe("uploaded");
+    expect(memory.packs.get(sha("dirpack3"))?.state).toBe("uploaded");
+    // A dir object under a fenced prefix no live root lives under still goes.
+    expect(exists(strayTree)).toBe(false);
   });
 
   it("aborts orphaned multipart uploads: under a fenced epoch at once, under the live epoch once the part URLs have lapsed", async () => {

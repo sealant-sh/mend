@@ -12,9 +12,15 @@ import {
   decodeChangeSummary,
   decodeManifest,
   captureIdOf,
+  dirPacksOf,
+  FORMAT_DIR_OBJECTS,
+  FORMAT_DIR_PACKS,
   isCaptureObjectKey,
   keysNeededBy,
+  MAX_SECTION_FORMAT,
   packIdxKeyOf,
+  sectionFormatOf,
+  type SectionFormat,
 } from "@mend/store";
 import { Duration, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -66,6 +72,14 @@ export interface PlanGetResponse {
     readonly manifest: CaptureManifest;
   } | null;
   readonly get_urls: Readonly<Record<string, string>>;
+  /**
+   * The highest section format this registrar reads (sealantd PR #99, `registrar.rs`
+   * "`manifest_format` on `plan.get`"): at 2 the executor packs a section's dir objects into dir
+   * packs and names them by digest; at 1 it writes one object per directory, as before. A
+   * sealantd that predates dir packs ignores it. Either way Mend reads both formats: the answer
+   * only decides what the executor writes next.
+   */
+  readonly manifest_format: SectionFormat;
   /**
    * Content to lay down beside the worktree — the project's folders and references, which a
    * captured workspace cannot bind-mount (`capture-sources.ts`). Absent when the project selected
@@ -282,6 +296,12 @@ export class CaptureUploadPolicy extends Context.Service<
      * upload URL is signed for exactly the declared bytes and the stored size is verified.
      */
     readonly requireSizes: boolean;
+    /**
+     * The `manifest_format` both `plan.get`s answer (`MEND_CAPTURE_MANIFEST_FORMAT`): 2 lets
+     * executors write dir packs, 1 rolls them back to one object per directory. Reading is
+     * never switched off — captures already written in either format keep restoring.
+     */
+    readonly manifestFormat: SectionFormat;
   }
 >()("@mend/sessions/CaptureUploadPolicy") {}
 
@@ -294,6 +314,7 @@ export const CaptureUploadPolicyDefault: Layer.Layer<CaptureUploadPolicy> = Laye
     keysPerCall: UPLOAD_KEYS_PER_CALL,
     byteQuotaFloorBytes: BYTE_QUOTA_FLOOR,
     requireSizes: false,
+    manifestFormat: MAX_SECTION_FORMAT,
   },
 );
 
@@ -306,7 +327,19 @@ export interface CaptureUploadPolicyEnvLike {
   readonly MEND_CAPTURE_MULTIPART_PART_SIZE?: string | undefined;
   readonly MEND_CAPTURE_BYTE_QUOTA_FLOOR?: string | undefined;
   readonly MEND_CAPTURE_REQUIRE_SIZES?: string | undefined;
+  readonly MEND_CAPTURE_MANIFEST_FORMAT?: string | undefined;
 }
+
+/** `MEND_CAPTURE_MANIFEST_FORMAT`: `2` (the default) or `1`; anything else refuses to start. */
+const manifestFormatOf = (raw: string | undefined): SectionFormat => {
+  const trimmed = raw?.trim() ?? "";
+  if (trimmed === "") return MAX_SECTION_FORMAT;
+  if (trimmed === String(FORMAT_DIR_OBJECTS)) return FORMAT_DIR_OBJECTS;
+  if (trimmed === String(FORMAT_DIR_PACKS)) return FORMAT_DIR_PACKS;
+  throw new CaptureUploadPolicyError(
+    `MEND_CAPTURE_MANIFEST_FORMAT must be ${FORMAT_DIR_OBJECTS} or ${FORMAT_DIR_PACKS}, got "${raw}".`,
+  );
+};
 
 const positiveBytes = (name: string, raw: string | undefined, fallback: number): number => {
   const trimmed = raw?.trim();
@@ -323,8 +356,9 @@ const positiveBytes = (name: string, raw: string | undefined, fallback: number):
 /**
  * `MEND_CAPTURE_MULTIPART_THRESHOLD` (bytes, default 16 MiB),
  * `MEND_CAPTURE_MULTIPART_PART_SIZE` (bytes, default 16 MiB, at least 5 MiB for S3 and R2),
- * `MEND_CAPTURE_BYTE_QUOTA_FLOOR` (bytes, default 8 GiB) and `MEND_CAPTURE_REQUIRE_SIZES`
- * (`true` refuses unsized upload keys).
+ * `MEND_CAPTURE_BYTE_QUOTA_FLOOR` (bytes, default 8 GiB), `MEND_CAPTURE_REQUIRE_SIZES`
+ * (`true` refuses unsized upload keys) and `MEND_CAPTURE_MANIFEST_FORMAT` (`2` default, `1` to
+ * stop executors writing dir packs).
  */
 export const resolveCaptureUploadPolicy = (
   env: CaptureUploadPolicyEnvLike,
@@ -356,6 +390,7 @@ export const resolveCaptureUploadPolicy = (
     requireSizes: ["1", "true", "yes"].includes(
       (env.MEND_CAPTURE_REQUIRE_SIZES ?? "").trim().toLowerCase(),
     ),
+    manifestFormat: manifestFormatOf(env.MEND_CAPTURE_MANIFEST_FORMAT),
   };
 };
 
@@ -423,6 +458,8 @@ export class CaptureChannel extends Context.Service<
 
 const bad = (message: string) =>
   new CaptureRouteError({ status: 400, reason: "bad-request", message });
+
+const SHA256_HEX = /^[0-9a-f]{64}$/;
 
 /** Bytes priced in a ledger (key → bytes). */
 const sumOf = (ledger: ReadonlyMap<string, number>): number => {
@@ -590,6 +627,7 @@ export const CaptureChannelLive: Layer.Layer<
             manifest: plan.manifest,
           },
           get_urls: urls,
+          manifest_format: policy.manifestFormat,
         } satisfies PlanGetResponse;
       });
       return {
@@ -783,6 +821,7 @@ export const CaptureChannelLive: Layer.Layer<
             epoch,
             head: null,
             get_urls: yield* sourceUrls(beside),
+            manifest_format: policy.manifestFormat,
             ...(beside.length === 0 ? {} : { sources: beside }),
             ...(origin.length === 0 ? {} : { remotes: origin }),
           };
@@ -809,6 +848,7 @@ export const CaptureChannelLive: Layer.Layer<
             manifest,
           },
           get_urls: urls,
+          manifest_format: policy.manifestFormat,
           ...(beside.length === 0 ? {} : { sources: beside }),
           ...(origin.length === 0 ? {} : { remotes: origin }),
         } satisfies PlanGetResponse;
@@ -1098,25 +1138,48 @@ export const CaptureChannelLive: Layer.Layer<
           });
         }
         // Every key the manifest names must be one capture object — a pack, its index, a dir
-        // object root — before anything below asks the bucket about it: a prefix, an empty
-        // entry or a stray word in a packs list is refused here, never HEAD-ed. A pending bulk
-        // section names nothing and needs nothing.
-        const bulkPacks = manifest.sections.bulk === "pending" ? [] : manifest.sections.bulk.packs;
-        const roots = [
-          manifest.sections.workspace.root,
-          ...(manifest.sections.bulk === "pending" ? [] : [manifest.sections.bulk.root]),
-        ].filter((root) => root !== "");
+        // pack, a format-1 dir object root — before anything below asks the bucket about it: a
+        // prefix, an empty entry or a stray word in a packs list is refused here, never HEAD-ed.
+        // A format-2 root is a dir object digest, not a key (its bytes are in the dir packs),
+        // and must be one. A pending bulk section names nothing and needs nothing.
+        const bulk = manifest.sections.bulk === "pending" ? null : manifest.sections.bulk;
+        const chunked = [manifest.sections.workspace, ...(bulk === null ? [] : [bulk])];
+        const bulkPacks = bulk?.packs ?? [];
+        const workspaceDirPacks = dirPacksOf(manifest.sections.workspace);
+        const bulkDirPacks = bulk === null ? [] : dirPacksOf(bulk);
+        const rootKeys = chunked
+          .filter((section) => sectionFormatOf(section) === FORMAT_DIR_OBJECTS)
+          .map((section) => section.root)
+          .filter((root) => root !== "");
         const malformed = [
           ...manifest.sections.git.packs,
           ...manifest.sections.workspace.packs,
           ...bulkPacks,
-          ...roots,
+          ...workspaceDirPacks,
+          ...bulkDirPacks,
+          ...rootKeys,
         ].filter((key) => !isCaptureObjectKey(key));
         if (malformed.length > 0) {
           return yield* bad(
             `the manifest names ${malformed.length} key(s) that are not capture objects (…/packs/<sha256>, …/trees/<sha256>): ${malformed
               .slice(0, 3)
               .map((key) => JSON.stringify(key))
+              .join(", ")}`,
+          );
+        }
+        const badDigests = chunked
+          .filter((section) => sectionFormatOf(section) === FORMAT_DIR_PACKS)
+          .filter(
+            (section) =>
+              section.root !== "" &&
+              (!SHA256_HEX.test(section.root) || dirPacksOf(section).length === 0),
+          )
+          .map((section) => section.root);
+        if (badDigests.length > 0) {
+          return yield* bad(
+            `a format-2 section names its root dir object by sha256 digest and lists the dir packs holding it: ${badDigests
+              .slice(0, 2)
+              .map((root) => JSON.stringify(root))
               .join(", ")}`,
           );
         }
@@ -1131,6 +1194,10 @@ export const CaptureChannelLive: Layer.Layer<
           ]),
           ...manifest.sections.workspace.packs.map((key) => ({ key, cls: "workspace" as const })),
           ...bulkPacks.map((key) => ({ key, cls: "bulk" as const })),
+          // Dir packs are packs like any other: HEAD-ed, priced, recorded (and so kept alive by
+          // retention through their row) under their section's class.
+          ...workspaceDirPacks.map((key) => ({ key, cls: "workspace" as const })),
+          ...bulkDirPacks.map((key) => ({ key, cls: "bulk" as const })),
         ];
         const missing: Array<string> = [];
         const records: Array<PackRecord> = [];

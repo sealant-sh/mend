@@ -4,8 +4,15 @@ import * as path from "node:path";
 
 import { CaptureStoreRepo } from "@mend/db";
 import { ProjectId, WorktreeId } from "@mend/domain";
-import { BlobStore, BlobStoreFsLive, captureKeys, decodeDirObject } from "@mend/store";
-import { buildManifest, snapshotDirectory, uploadObjects } from "@mend/store/testing";
+import {
+  BlobStore,
+  BlobStoreFsLive,
+  captureKeys,
+  decodeDirObject,
+  keysNeededBy,
+  materialize,
+} from "@mend/store";
+import { buildManifest, sectionOf, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import { Effect, Layer } from "effect";
 import { afterAll, describe, expect, it } from "vitest";
 
@@ -19,6 +26,7 @@ import { CaptureRemotesOff } from "../src/capture-remotes.ts";
 import { CaptureSourcesOff } from "../src/capture-sources.ts";
 import { CaptureGitVerifierOff } from "../src/capture-verify.ts";
 import {
+  bulkSectionOfCache,
   dependencyCachePrefix,
   detectInstallCommand,
   platformKeyOf,
@@ -200,5 +208,92 @@ describe("the shared dependency cache", () => {
     expect(rows.every((pack) => !pack.key.startsWith(cachePrefix))).toBe(true);
     // No cache for another platform.
     expect(await run(readDependencyCache(PROJECT, "linux-aarch64-musl"))).toBeNull();
+    // A record written before dir packs reads as format 1, and splices as it always did.
+    expect(promoted.record?.format).toBeUndefined();
+    if (promoted.record === null || promoted.record === undefined) throw new Error("no record");
+    expect(bulkSectionOfCache(promoted.record)).toEqual({
+      root: promoted.record.root,
+      packs: promoted.record.packs,
+      platform: PLATFORM,
+    });
+  });
+
+  it("a format-2 bulk section promotes by copying its dir packs, keeps its root digest, and restores from the cache alone", async () => {
+    const platform = "linux-aarch64-gnu";
+    const worktreeId = WorktreeId.make("wt-install-v2");
+    const tree = path.join(scratch, "bulk-v2");
+    fs.mkdirSync(path.join(tree, "node_modules", "pkg", "lib"), { recursive: true });
+    fs.writeFileSync(path.join(tree, "node_modules", "pkg", "lib", "index.js"), "exports.v = 2;\n");
+    fs.symlinkSync("pkg/lib/index.js", path.join(tree, "node_modules", "entry.js"));
+    const sessionBlobs = path.join(scratch, "session-v2-blobs");
+    const snapshot = snapshotDirectory(tree, captureKeys(worktreeId, 4), {
+      chunkSize: 64,
+      format: 2,
+      dirPackBudget: 2,
+    });
+    expect(snapshot.dirPacks.length).toBeGreaterThan(1);
+    const built = buildManifest({
+      worktreeId,
+      n: 3,
+      parent: null,
+      epoch: 4,
+      kind: "final",
+      bulk: { ...sectionOf(snapshot), platform },
+    });
+    const cachePrefix = dependencyCachePrefix(PROJECT, platform);
+    const promoted = await run(
+      Effect.gen(function* () {
+        yield* uploadObjects(snapshot.objects);
+        const record = yield* promoteBulkToCache(PROJECT, built.id, built.manifest);
+        return { record, cache: yield* readDependencyCache(PROJECT, platform) };
+      }),
+    );
+    const record = promoted.record;
+    if (record === null) throw new Error("nothing promoted");
+    expect(promoted.cache).toEqual(record);
+    expect(record.format).toBe(2);
+    expect(record.root).toBe(snapshot.root);
+    expect(record.dir_packs?.length).toBe(snapshot.dirPacks.length);
+    for (const key of [...record.packs, ...(record.dir_packs ?? [])]) {
+      expect(key.startsWith(`${cachePrefix}packs/`)).toBe(true);
+    }
+    // No dir object was re-keyed or written on its own: the cache holds packs and its record.
+    const cacheKeys = await run(
+      Effect.flatMap(BlobStore, (store) => store.list(cachePrefix)).pipe(
+        Effect.map((entries) => entries.map((entry) => entry.key)),
+      ),
+    );
+    expect(cacheKeys.some((key) => key.includes("/trees/"))).toBe(false);
+    // The plan splice carries the format and the dir packs; a standby's plan presigns them.
+    const section = bulkSectionOfCache(record);
+    expect(section).toEqual({
+      root: snapshot.root,
+      packs: record.packs,
+      platform,
+      format: 2,
+      dir_packs: record.dir_packs,
+    });
+    const standby = buildManifest({
+      worktreeId: "standby",
+      n: 0,
+      parent: null,
+      epoch: 9,
+      bulk: section,
+    }).manifest;
+    const keys = await run(keysNeededBy(standby));
+    expect(keys.toSorted()).toEqual([...record.packs, ...(record.dir_packs ?? [])].toSorted());
+    // The cache restores without the session's objects: copy only the cache prefix elsewhere.
+    fs.mkdirSync(path.join(sessionBlobs, path.dirname(cachePrefix)), { recursive: true });
+    fs.cpSync(path.join(blobRoot, cachePrefix), path.join(sessionBlobs, cachePrefix), {
+      recursive: true,
+    });
+    const target = path.join(scratch, "restored-v2");
+    await Effect.runPromise(
+      materialize(standby, "bulk", target).pipe(Effect.provide(BlobStoreFsLive(sessionBlobs))),
+    );
+    expect(
+      fs.readFileSync(path.join(target, "node_modules", "pkg", "lib", "index.js"), "utf8"),
+    ).toBe("exports.v = 2;\n");
+    expect(fs.readlinkSync(path.join(target, "node_modules", "entry.js"))).toBe("pkg/lib/index.js");
   });
 });

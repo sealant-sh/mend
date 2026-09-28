@@ -3,11 +3,16 @@ import {
   BlobStore,
   type BlobNotFoundError,
   type BlobStoreError,
+  type BulkSectionReady,
   type CaptureFormatError,
   type CaptureManifest,
   type DirObject,
   decodeDirObject,
+  dirPacksOf,
   encodeDirObject,
+  FORMAT_DIR_PACKS,
+  SectionFormat,
+  sectionFormatOf,
   sha256Hex,
 } from "@mend/store";
 import { Effect, Schema } from "effect";
@@ -29,6 +34,10 @@ import { Effect, Schema } from "effect";
  * whose head carries no bulk for the executor's platform; both fall back to running the install
  * command in the workspace when the cache has nothing for that platform.
  *
+ * A bulk section in either section format promotes (sealantd PR #99): format 1 names its dir
+ * objects by key, so they are re-keyed under the cache prefix; format 2 names them by digest
+ * inside its dir packs, so the dir packs are copied like the content packs and the root is kept.
+ *
  * The cache's objects are named by its record (`root.json`), not by `packs` rows: a pack row's
  * id is its digest and the install session's own row already holds that digest under its epoch
  * key. Retention sweeps epoch prefixes by chain reachability and never this prefix; a cache is
@@ -41,9 +50,14 @@ export const dependencyCachePrefix = (projectId: ProjectId, platform: string): s
 
 /** The cache's descriptor: the bulk section a plan can splice in, plus where it came from. */
 export const DependencyCacheRecord = Schema.Struct({
+  /** Format 1: the root dir object's key under the cache prefix. Format 2: its digest. */
   root: Schema.String,
   packs: Schema.Array(Schema.String),
   platform: Schema.String,
+  /** The section format promoted; absent = 1 (every record before dir packs). */
+  format: Schema.optionalKey(SectionFormat),
+  /** Format 2: the dir packs under the cache prefix. */
+  dir_packs: Schema.optionalKey(Schema.Array(Schema.String)),
   /** The capture whose bulk section was promoted — the install session's final capture. */
   capture_id: Schema.String,
   promoted_at: Schema.String,
@@ -54,6 +68,18 @@ const decodeRecord = Schema.decodeUnknownEffect(DependencyCacheRecord);
 
 const recordKey = (prefix: string) => `${prefix}root.json`;
 const digestOf = (key: string) => key.slice(key.lastIndexOf("/") + 1);
+
+/** The bulk section a plan splices in from a cache record, in the record's format. */
+export const bulkSectionOfCache = (record: DependencyCacheRecord): BulkSectionReady =>
+  record.format === FORMAT_DIR_PACKS
+    ? {
+        root: record.root,
+        packs: record.packs,
+        platform: record.platform,
+        format: FORMAT_DIR_PACKS,
+        dir_packs: record.dir_packs ?? [],
+      }
+    : { root: record.root, packs: record.packs, platform: record.platform };
 
 /** The cache for a platform, or null when no install job has filled it. */
 export const readDependencyCache = (
@@ -75,10 +101,11 @@ export type PromoteError = BlobNotFoundError | BlobStoreError | CaptureFormatErr
 
 /**
  * Promote a capture's bulk section into the project's cache for its platform. Packs are copied
- * server-side under the cache prefix by their digest; dir objects name their children by full
- * key, so every tree is re-encoded bottom-up with the moved child keys and lands under its new
- * digest. The record is written last, so a reader never sees a cache whose objects are still
- * arriving.
+ * server-side under the cache prefix by their digest. In format 1 dir objects name their
+ * children by full key, so every tree is re-encoded bottom-up with the moved child keys and
+ * lands under its new digest; in format 2 they name them by digest, so the dir packs are copied
+ * as they are, like the content packs. The record is written last, so a reader never sees a
+ * cache whose objects are still arriving.
  */
 export const promoteBulkToCache = (
   projectId: ProjectId,
@@ -90,12 +117,32 @@ export const promoteBulkToCache = (
     if (bulk === "pending" || bulk.root === "") return null;
     const blobs = yield* BlobStore;
     const prefix = dependencyCachePrefix(projectId, bulk.platform);
-    const packs: Array<string> = [];
-    for (const from of bulk.packs) {
-      const to = `${prefix}packs/${digestOf(from)}`;
-      const present = yield* blobs.head(to);
-      if (present === null) yield* blobs.copy(from, to);
-      packs.push(to);
+    const copyPacks = (keys: ReadonlyArray<string>) =>
+      Effect.forEach(keys, (from) =>
+        Effect.gen(function* () {
+          const to = `${prefix}packs/${digestOf(from)}`;
+          const present = yield* blobs.head(to);
+          if (present === null) yield* blobs.copy(from, to);
+          return to;
+        }),
+      );
+    const packs = yield* copyPacks(bulk.packs);
+    if (sectionFormatOf(bulk) === FORMAT_DIR_PACKS) {
+      const dirPacks = yield* copyPacks(dirPacksOf(bulk));
+      const record: DependencyCacheRecord = {
+        root: bulk.root,
+        packs,
+        platform: bulk.platform,
+        format: FORMAT_DIR_PACKS,
+        dir_packs: dirPacks,
+        capture_id: captureId,
+        promoted_at: new Date().toISOString(),
+      };
+      yield* blobs.put(
+        recordKey(prefix),
+        new Uint8Array(Buffer.from(JSON.stringify(record), "utf8")),
+      );
+      return record;
     }
     const rekey = (key: string): Effect.Effect<string, PromoteError> =>
       Effect.gen(function* () {
