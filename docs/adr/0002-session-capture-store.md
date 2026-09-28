@@ -882,3 +882,36 @@ Mend-side details the decision record left open, decided in this ADR:
     - **A received answer is marked as it arrives.** A flush or status answer marks its evidence
       fence received the moment the SDK returns it, is published before anything is logged, and a
       log that fails changes no evidence.
+34. (2026-09-28) Evidence nothing orders is kept, write authority serializes with a seal, links are
+    checked over the files the restore lays down (review 2026-09-28 (9); cross-repo decisions 24–26
+    and 28).
+    - **Every unsaved answer nothing kept was made after is kept.** An executor's evidence holds the
+      antichain of its unsaved answers in its own order (`withUnsavedAnswer`,
+      `executor_capture_evidence.unsaved_answers`, 0090): an answer made strictly before a kept one
+      adds nothing, a kept one made strictly before a new one gives way, and anything incomparable
+      stays — a later answer never erases an earlier one merely by arriving later. Answers nothing
+      can be ordered against fold into one; past 64 everything folds into one no save covers. A seal
+      or an observed `complete: true` stands only over every kept answer, in the engine's
+      attestation, the executor end and the repository alike.
+    - **Write authority and a seal's acceptance take one lock.** Issuing upload URLs and marking a
+      seal re-verified both lock the epoch's `capture_put_authority` row (created with no authority
+      when absent; `expires_at` may be null, 0091) and read what they decide on in a statement after
+      the lock. Once a seal of the epoch is recorded, `recordPutAuthority` records nothing until the
+      caller checked that seal: `upload.urls` asks the bucket again for every key about to get a
+      URL, answers a stored one `present` (or refuses it `409 exists` to a launch that does not read
+      `present`), and records authority only against the seal it checked. A recorded seal's objects
+      never get an overwrite-capable URL.
+    - **Links are one set of bytes in what the restore lays down.** A tracked `hardlinks` group and
+      a `shared` link's tracked side resolve to the file a complete restore lays down — the
+      workspace overlay over the checkout over the bulk class, every ancestor a directory — and
+      their bytes are compared there (checkout blobs by id, class members by digest in the same
+      format).
+    - **The ref backend is the section's.** `sections.git.ref_format` (feature `ref_format`; absent:
+      `files`; sealantd 26b4a37) is decoded, planned only to an executor that reads it, and a
+      section of a backend Mend does not read is `unverified`. A `reftable` section is walked in a
+      repository git initialized with that backend; a section whose HEAD is `refs/heads/.invalid` (a
+      reftable repository's `.git/HEAD` stub) is never verified. Symlinks at `.git/HEAD` and under
+      `.git/refs/`, with any text, ride the workspace class. Mend's runner cache for reviews stays a
+      `files` repository of its own, where `packed-refs` is read.
+    - **Reports follow events.** A discard logs the request before the stop, and `discarded` only
+      after the platform confirmed the end.
