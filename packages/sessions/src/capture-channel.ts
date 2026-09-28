@@ -50,14 +50,16 @@ import {
   type RestoreTreePath,
   gitSectionHoldsTrees,
   type WorktreeMetaDocument,
+  withCaptureReadPass,
 } from "@mend/store";
-import { Duration, Effect, Layer, Option, Result, Schema } from "effect";
+import { Cause, Deferred, Duration, Effect, Layer, Option, Result, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { CaptureRemotes, type PlanRemote } from "./capture-remotes.ts";
 import { sealStandingOf } from "./capture-seals.ts";
 import { CaptureSources, type PlanSource } from "./capture-sources.ts";
 import { CaptureGitVerifier } from "./capture-verify.ts";
+import { makeSingleFlight } from "./single-flight.ts";
 
 /**
  * The capture half of the session channel (ADR-0002 "Session channel routes"): sealantd's
@@ -477,6 +479,31 @@ export interface RegisterSealOutcome {
     | "void";
 }
 
+/** What `capture.register` answers. */
+interface RegisterAnswer {
+  readonly head_n: number;
+  readonly head_capture_id: string;
+  readonly epoch: number;
+  readonly seal?: RegisterSealOutcome;
+}
+
+/** What a sealing capture's read-back checks found (`sealChecks`): nothing, when the seal may stand. */
+interface SealVerdict {
+  readonly problems: ReadonlyArray<string>;
+}
+
+/**
+ * One sealing capture's seal checks (e2e8 F2): `verdict` once they end; `settled` once nothing
+ * is left to record on their account — the register's CAS carried the seal (or refused it) with
+ * the verdict in hand, or the recorder that took over once the register answered `withheld`
+ * finished (`recording`).
+ */
+interface SealJob {
+  readonly verdict: Deferred.Deferred<SealVerdict>;
+  readonly settled: Deferred.Deferred<SealVerdict>;
+  recording: boolean;
+}
+
 /** What the network host serves for one session once the engine registers it. */
 export interface SessionCaptureApi {
   readonly planGet: (input: PlanGetRequest) => Effect.Effect<PlanGetResponse, CaptureRouteError>;
@@ -550,6 +577,23 @@ export const LEASE_EXPIRES_IN_SECS = 30;
  * ADR-0002 "Consequences"); the first heartbeat brings it back to the 30 s cadence.
  */
 export const LAUNCH_CLAIM_TTL_SECONDS = 5 * 60;
+/**
+ * How long a register may spend before it answers (e2e8 F2). sealantd times a register out after
+ * 60 s and sends it again; a sealing register on the Mend repository over Garage took 4 m 35 s,
+ * so every attempt timed out and ran on beside the next. Within this budget the register answers
+ * whatever its seal checks concluded; past it, the capture registers without the seal, the answer
+ * says `withheld` (`verifying`), the checks go on, and the seal is recorded once they pass — the
+ * executor's re-ask (the same register again) reads how it stands. 40 s leaves 20 s of sealantd's
+ * 60 s for the store's CAS, the answer and the network.
+ */
+export const REGISTER_ANSWER_BUDGET_MS = 40_000;
+/** The register's answer budget in force (`REGISTER_ANSWER_BUDGET_MS`; a test sets its own). */
+export const CaptureRegisterBudget: Context.Reference<number> = Context.Reference<number>(
+  "@mend/sessions/CaptureRegisterBudget",
+  { defaultValue: () => REGISTER_ANSWER_BUDGET_MS },
+);
+/** How many seal verdicts reached after a register answered are remembered for its re-asks. */
+const SEAL_VERDICTS_KEPT = 1_024;
 
 // ─── Upload policy ──────────────────────────────────────────────────────────
 
@@ -951,6 +995,97 @@ export const CaptureChannelLive: Layer.Layer<
       }
       return fresh;
     };
+
+    /**
+     * Registers in flight, by worktree, launch, epoch, n and capture (e2e8 F2): sealantd's retry
+     * of a register it timed out joins the one still running — same request, same answer —
+     * instead of verifying the capture again beside it; a register whose caller gave up runs on
+     * for the retry to join.
+     */
+    const registersInFlight = makeSingleFlight<
+      RegisterAnswer,
+      CaptureRouteError,
+      RegisterRequest
+    >();
+    /**
+     * Seal checks by the same key (`SealJob`): one verification per sealing capture at a time,
+     * run detached from the register that started it, and kept once ended for the executor's
+     * re-asks. The oldest dropped past `SEAL_VERDICTS_KEPT`; a re-ask that finds none checks again.
+     */
+    const sealJobs = new Map<string, SealJob>();
+    /**
+     * The seal checks for `key`: the ones running (or, unless `fresh`, ended) — else `checks`,
+     * started now. A register's own verification is always fresh: a verdict an earlier pass reached
+     * is not a proof about the bytes now (`proofStands`).
+     */
+    const sealJobFor = (key: string, checks: Effect.Effect<SealVerdict>, fresh: boolean) =>
+      Effect.gen(function* () {
+        const known = sealJobs.get(key);
+        if (known !== undefined && (!fresh || !(yield* Deferred.isDone(known.verdict)))) {
+          return known;
+        }
+        const job: SealJob = {
+          verdict: yield* Deferred.make<SealVerdict>(),
+          settled: yield* Deferred.make<SealVerdict>(),
+          recording: false,
+        };
+        sealJobs.delete(key);
+        sealJobs.set(key, job);
+        for (const oldest of sealJobs.keys()) {
+          if (sealJobs.size <= SEAL_VERDICTS_KEPT) break;
+          sealJobs.delete(oldest);
+        }
+        yield* Effect.forkDetach(
+          checks.pipe(
+            Effect.catchCause((cause) =>
+              Effect.succeed({
+                problems: [`the seal checks ended without a verdict: ${Cause.pretty(cause)}`],
+              }),
+            ),
+            Effect.flatMap((verdict) => Deferred.succeed(job.verdict, verdict)),
+          ),
+        );
+        return job;
+      });
+    /**
+     * Once `job`'s checks end, record the seal they allowed (`CaptureStoreRepo.recordSeal`: the
+     * capture still the chain's head, the lease still this launch's) and settle the job. Started
+     * once per job; the register that answered `withheld` (`verifying`) no longer waits.
+     */
+    const recordWhenChecked = (
+      job: SealJob,
+      record: Parameters<typeof repo.recordSeal>[0],
+    ): Effect.Effect<void> =>
+      Effect.suspend(() => {
+        if (job.recording) return Effect.void;
+        job.recording = true;
+        const annotations = {
+          worktreeId: record.worktreeId,
+          epoch: record.epoch,
+          n: record.n,
+          captureId: record.captureId,
+        };
+        return Effect.forkDetach(
+          Effect.gen(function* () {
+            const verdict = yield* Deferred.await(job.verdict);
+            if (verdict.problems.length > 0) {
+              yield* Effect.logWarning(
+                "capture channel: a final seal over sections not verified restorable · not recorded",
+              ).pipe(
+                Effect.annotateLogs({ ...annotations, problems: verdict.problems.join("; ") }),
+              );
+            } else {
+              const recorded = yield* repo.recordSeal(record);
+              yield* Effect.logInfo(
+                recorded
+                  ? "capture channel: final seal · verified after the register answered · recorded"
+                  : "capture channel: final seal · verified after the register answered · not recorded (the chain or the lease moved)",
+              ).pipe(Effect.annotateLogs(annotations));
+            }
+            yield* Deferred.succeed(job.settled, verdict);
+          }),
+        ).pipe(Effect.asVoid);
+      });
 
     const standbyApiFor = (scope: StandbyScope): SessionCaptureApi => {
       const notClaimed = <A>(): Effect.Effect<A, CaptureRouteError> =>
@@ -1822,7 +1957,189 @@ export const CaptureChannelLive: Layer.Layer<
                   }),
                 );
 
-      const register = Effect.fn("SessionCaptureApi.register")(function* (input: RegisterRequest) {
+      /** A sealing register's key: its worktree, launch, epoch, n and capture (e2e8 F2). */
+      const sealKeyOf = (input: RegisterRequest) =>
+        [worktreeId, launchId, input.epoch, input.n, input.capture_id].join("\u0000");
+      const verifyingAnswer = {
+        outcome: { state: "withheld", reason: "verifying" } satisfies RegisterSealOutcome,
+        detail:
+          "its objects are still being read back; registering the same capture again reads how the seal stands",
+      };
+
+      /**
+       * What a seal needs read back from the store, beyond what the register already knows: every
+       * chunk of every pack the chunked sections list decompresses and hashes to what it names
+       * (review 2026-09-28 (4) #13) — a pack that does not is kept and registered, and nothing is
+       * sealed on it; the worktree metadata's cross-class hardlinks restore as declared (review
+       * 2026-09-28 (5) #11) — sealantd's apply leaves a missing or differing member unlinked without
+       * a word; the tracked side's links restore too (review 2026-09-28 (6) #10) — every
+       * `hardlinks` group one blob of the tree the restore checks out, every `shared` link a
+       * tracked file of that tree and a file of its class holding that blob's bytes, and a tree
+       * Mend could not list seals nothing; and every inode those links make is promised one mode
+       * and one mtime (review 2026-09-28 (7) #10, (8) #9). One verification pass: each object
+       * read at most once (`withCaptureReadPass`, e2e8 F2). No problems: the seal may stand.
+       */
+      const sealChecks = (
+        manifest: CaptureManifest,
+        chunked: ReadonlyArray<ChunkedSection>,
+        metaDocument: WorktreeMetaDocument | null,
+        restoreTree: ReadonlyMap<string, RestoreTreePath> | null,
+        annotations: Readonly<Record<string, unknown>>,
+      ): Effect.Effect<SealVerdict> =>
+        withCaptureReadPass(
+          Effect.gen(function* () {
+            const problems: Array<string> = [];
+            const payloads = yield* verifyPackPayloads(
+              chunked.flatMap((section) => section.packs),
+            ).pipe(Effect.result);
+            if (Result.isFailure(payloads)) {
+              const error = payloads.failure;
+              yield* Effect.logWarning(
+                "capture channel: a final seal over a pack whose chunks do not read · registered without it",
+              ).pipe(
+                Effect.annotateLogs({
+                  ...annotations,
+                  error: error._tag,
+                  detail:
+                    error._tag === "CaptureFormatError"
+                      ? `${error.key}: ${error.reason}`
+                      : error._tag === "CaptureIntegrityError"
+                        ? `${error.key} does not hash to ${error.expected}`
+                        : error._tag === "ChunkNotFoundError"
+                          ? error.hash
+                          : error._tag === "BlobNotFoundError"
+                            ? error.key
+                            : error.message,
+                }),
+              );
+              problems.push("chunk payloads not read");
+            }
+            if (metaDocument === null) return { problems };
+            const crossLinks = yield* crossLinksProblem(manifest, metaDocument);
+            if (crossLinks !== null) problems.push(`cross-class links: ${crossLinks}`);
+            if (
+              (metaDocument.hardlinks ?? []).length > 0 ||
+              (metaDocument.shared ?? []).length > 0
+            ) {
+              const trackedLinks =
+                restoreTree === null
+                  ? "the tree a restore checks out was not listed"
+                  : yield* linkTopologyProblem(manifest, metaDocument, restoreTree);
+              if (trackedLinks !== null) problems.push(`tracked links: ${trackedLinks}`);
+            }
+            const inodeMeta = yield* inodeMetadataProblem(manifest, metaDocument);
+            if (inodeMeta !== null) problems.push(`inode metadata: ${inodeMeta}`);
+            return { problems };
+          }),
+        ).pipe(Effect.provideService(BlobStore, blobs));
+
+      /**
+       * `sealChecks` for a capture registered before — by a register whose checks this process no
+       * longer holds (Mend restarted, or the verdict was dropped): what that register knew is read
+       * again first — the git section's recorded verification, the worktree metadata against the
+       * namespace it applies to — then the rest.
+       */
+      const lateSealChecks = (
+        manifest: CaptureManifest,
+        chunked: ReadonlyArray<ChunkedSection>,
+        row: CaptureRow,
+        annotations: Readonly<Record<string, unknown>>,
+      ): Effect.Effect<SealVerdict> =>
+        withCaptureReadPass(
+          Effect.gen(function* () {
+            if (row.gitFsck !== "verified") return { problems: [`git section ${row.gitFsck}`] };
+            if (manifest.sections.bulk === "pending") return { problems: ["bulk class pending"] };
+            const meta = yield* verifyWorktreeMeta(manifest.sections.workspace).pipe(Effect.result);
+            if (Result.isFailure(meta)) {
+              return { problems: [`worktree metadata unrestorable: ${meta.failure._tag}`] };
+            }
+            const metaDocument = meta.success;
+            if (metaDocument === null) {
+              return yield* sealChecks(manifest, chunked, null, null, annotations);
+            }
+            const tree = rawTreeOf(manifest.sections.git);
+            const restoreTree =
+              tree === undefined
+                ? new Map<string, RestoreTreePath>()
+                : yield* verifier.treeObjects(scope.projectId, manifest, tree);
+            if (restoreTree === null) return { problems: ["worktree metadata unverified"] };
+            const namespace = yield* restoreNamespaceProblem(manifest, metaDocument, restoreTree);
+            if (namespace !== null) return { problems: [`worktree metadata: ${namespace}`] };
+            return yield* sealChecks(manifest, chunked, metaDocument, restoreTree, annotations);
+          }),
+        ).pipe(
+          Effect.provideService(BlobStore, blobs),
+          Effect.catchCause((cause) =>
+            Effect.succeed({
+              problems: [`the seal checks ended without a verdict: ${Cause.pretty(cause)}`],
+            }),
+          ),
+        );
+
+      /**
+       * Where the seal of a capture registered before stands, for the executor's re-ask (the same
+       * register again): recorded for it — as `sealStandingOf` says; its checks still running —
+       * `withheld` (`verifying`), waited for within what is left of the budget; its checks found
+       * problems — refused; nothing known here (Mend restarted) — checked again, the seal recorded
+       * if they pass.
+       */
+      const reAsked = Effect.fn("SessionCaptureApi.reAsked")(function* (
+        input: RegisterRequest,
+        manifest: CaptureManifest,
+        chunked: ReadonlyArray<ChunkedSection>,
+        names: ReadonlyArray<string>,
+        waitMs: number,
+      ) {
+        const recorded = yield* repo.sealedCompletion(worktreeId, launchId, input.epoch);
+        if (recorded !== null && recorded.captureId === input.capture_id) {
+          return yield* registeredSealOutcome(input.epoch, input.capture_id, null);
+        }
+        const row = yield* repo.captureById(input.capture_id);
+        if (row === null) return yield* registeredSealOutcome(input.epoch, input.capture_id, null);
+        const key = sealKeyOf(input);
+        const annotations = {
+          worktreeId,
+          n: input.n,
+          captureId: input.capture_id,
+          epoch: input.epoch,
+        };
+        const job = yield* sealJobFor(
+          key,
+          lateSealChecks(manifest, chunked, row, annotations),
+          false,
+        );
+        if (!(yield* Deferred.isDone(job.settled))) {
+          yield* recordWhenChecked(job, {
+            worktreeId,
+            epoch: input.epoch,
+            captureId: input.capture_id,
+            n: input.n,
+            manifestKey: input.manifest_key,
+            names,
+            seal: {
+              executorId: launchId,
+              holder: scope.executorId,
+              bootId: manifest.final_seal?.boot_id ?? null,
+              bootGeneration: manifest.final_seal?.boot_generation ?? null,
+              observation: manifest.final_seal?.observation ?? null,
+            },
+          });
+        }
+        const settled = yield* Deferred.await(job.settled).pipe(Effect.timeoutOption(waitMs));
+        if (Option.isNone(settled)) return verifyingAnswer;
+        return yield* registeredSealOutcome(
+          input.epoch,
+          input.capture_id,
+          settled.value.problems.length === 0 ? null : settled.value.problems.join("; "),
+        );
+      });
+
+      const registerOnce = Effect.fn("SessionCaptureApi.register")(function* (
+        input: RegisterRequest,
+      ) {
+        const startedAt = Date.now();
+        const budget = yield* CaptureRegisterBudget;
+        const remaining = () => Math.max(0, budget - (Date.now() - startedAt));
         yield* requireWorktree(input.worktree_id);
         const lease = yield* requireLease(input.epoch);
         if (
@@ -2025,6 +2342,24 @@ export const CaptureChannelLive: Layer.Layer<
           );
         }
 
+        const sealKey = sealKeyOf(input);
+        const annotations = {
+          worktreeId,
+          n: input.n,
+          captureId: input.capture_id,
+          epoch: input.epoch,
+        };
+        /** This register's seal checks, kept across its guard retries. */
+        let job: SealJob | undefined;
+        /** What the store records of the seal, with the CAS or once its checks pass. */
+        const sealFields = {
+          executorId: launchId,
+          holder: scope.executorId,
+          bootId: seal?.boot_id ?? null,
+          bootGeneration: seal?.boot_generation ?? null,
+          observation: seal?.observation ?? null,
+        };
+
         // One attempt: read the guards and the tombstones, check the bucket and the trees, then
         // the CAS under those guards. A retention pass that condemned anything named here after
         // the read makes the CAS miss (`guard_moved`), and the next attempt sees its tombstones.
@@ -2211,137 +2546,48 @@ export const CaptureChannelLive: Layer.Layer<
             }
             return "verified" as const;
           });
-          // A seal says every section restores (review 2026-09-28 (4) #13): the chunk bytes
-          // themselves, not only the indexes naming them — every chunk of every pack the chunked
-          // sections list decompresses and hashes to what it names. A pack that does not is
-          // kept (its bytes may still be salvaged) and registered; nothing is sealed on it.
-          const payloads = !sealHolds
-            ? null
-            : yield* verifyPackPayloads(chunked.flatMap((section) => section.packs)).pipe(
-                Effect.provideService(BlobStore, blobs),
-                Effect.result,
-              );
-          if (payloads !== null && Result.isFailure(payloads)) {
-            const error = payloads.failure;
-            yield* Effect.logWarning(
-              "capture channel: a final seal over a pack whose chunks do not read · registered without it",
-            ).pipe(
-              Effect.annotateLogs({
-                worktreeId,
-                n: input.n,
-                captureId: input.capture_id,
-                epoch: input.epoch,
-                error: error._tag,
-                detail:
-                  error._tag === "CaptureFormatError"
-                    ? `${error.key}: ${error.reason}`
-                    : error._tag === "CaptureIntegrityError"
-                      ? `${error.key} does not hash to ${error.expected}`
-                      : error._tag === "ChunkNotFoundError"
-                        ? error.hash
-                        : error._tag === "BlobNotFoundError"
-                          ? error.key
-                          : error.message,
-              }),
+          // A seal needs, first, what is already known here: the git section verified, the
+          // worktree metadata verified against the namespace it applies to, and every class
+          // captured — a manifest whose bulk class is still `"pending"` names work it does not
+          // hold (review 2026-09-28 (5) #10); a class captured empty is a ready section naming
+          // nothing, never pending.
+          const bulkCaptured = manifest.sections.bulk !== "pending";
+          const factProblems = [
+            gitFsck === "verified" ? null : `git section ${gitFsck}`,
+            metaNamespace === "verified" ? null : `worktree metadata ${metaNamespace}`,
+            bulkCaptured ? null : "bulk class pending",
+          ].filter((problem) => problem !== null);
+          // Then what reads the objects back (`sealChecks`): the chunk payloads, the cross-class
+          // links, the tracked links, the inode promises. One verification per sealing capture
+          // at a time (`sealJobFor`, e2e8 F2), waited for only within the register's budget: past
+          // it, the capture registers without the seal and the checks go on.
+          if (already === null && sealHolds && factProblems.length === 0) {
+            job ??= yield* sealJobFor(
+              sealKey,
+              sealChecks(manifest, chunked, metaDocument, restoreTree, annotations),
+              true,
             );
           }
-          const payloadsRead = payloads !== null && Result.isSuccess(payloads);
-          // A seal says every class is captured (review 2026-09-28 (5) #10): a manifest whose bulk
-          // class is still `"pending"` names work it does not hold. A class captured empty is a
-          // ready section naming nothing, never pending.
-          const bulkCaptured = manifest.sections.bulk !== "pending";
-          // …and that the worktree metadata's cross-class hardlinks restore as declared (review
-          // 2026-09-28 (5) #11): every member a file of its class, a group's members one set of
-          // bytes. sealantd's apply leaves a missing or differing member unlinked without a word.
-          const crossLinks =
-            !sealHolds || metaDocument === null
+          const verdict =
+            job === undefined
               ? null
-              : yield* crossLinksProblem(manifest, metaDocument).pipe(
-                  Effect.provideService(BlobStore, blobs),
-                );
-          // …and that the tracked side's links restore too (review 2026-09-28 (6) #10): every
-          // `hardlinks` group one blob of the tree the restore checks out, every `shared` link a
-          // tracked file of that tree and a file of its class holding that blob's bytes. A tree
-          // Mend could not list seals nothing.
-          const trackedLinks = yield* Effect.gen(function* () {
-            if (!sealHolds || metaDocument === null) return null;
-            if (
-              (metaDocument.hardlinks ?? []).length === 0 &&
-              (metaDocument.shared ?? []).length === 0
-            ) {
-              return null;
-            }
-            if (restoreTree === null) return "the tree a restore checks out was not listed";
-            return yield* linkTopologyProblem(manifest, metaDocument, restoreTree).pipe(
-              Effect.provideService(BlobStore, blobs),
-            );
-          });
-          // …and that every inode those links make is promised one mode and one mtime (review
-          // 2026-09-28 (7) #10): the restore settles each entry on the shared inode in turn, so
-          // of two differing promises only the last survives — the class entries a link names
-          // promise the inode too (review 2026-09-28 (8) #9). Healthy captures stat one inode
-          // for all its names; one that raced a writer is registered, and seals nothing.
-          const inodeMeta =
-            !sealHolds || metaDocument === null
-              ? null
-              : yield* inodeMetadataProblem(manifest, metaDocument).pipe(
-                  Effect.provideService(BlobStore, blobs),
-                );
-          const sealed =
-            sealHolds &&
-            gitFsck === "verified" &&
-            metaNamespace === "verified" &&
-            payloadsRead &&
-            bulkCaptured &&
-            crossLinks === null &&
-            trackedLinks === null &&
-            inodeMeta === null;
+              : yield* Deferred.await(job.verdict).pipe(Effect.timeoutOption(remaining()));
+          const pendingSeal = verdict !== null && Option.isNone(verdict);
+          const problems = [
+            ...factProblems,
+            ...(verdict !== null && Option.isSome(verdict) ? verdict.value.problems : []),
+          ];
+          const sealed = sealHolds && already === null && !pendingSeal && problems.length === 0;
           const sealProblem =
-            !sealHolds || sealed
-              ? null
-              : [
-                  gitFsck === "verified" ? null : `git section ${gitFsck}`,
-                  metaNamespace === "verified" ? null : `worktree metadata ${metaNamespace}`,
-                  payloadsRead ? null : "chunk payloads not read",
-                  bulkCaptured ? null : "bulk class pending",
-                  crossLinks === null ? null : `cross-class links: ${crossLinks}`,
-                  trackedLinks === null ? null : `tracked links: ${trackedLinks}`,
-                  inodeMeta === null ? null : `inode metadata: ${inodeMeta}`,
-                ]
-                  .filter((problem) => problem !== null)
-                  .join("; ");
-          if (sealHolds && !sealed) {
+            !sealHolds || sealed || pendingSeal || already !== null ? null : problems.join("; ");
+          if (sealProblem !== null) {
             yield* Effect.logWarning(
               "capture channel: a final seal over sections not verified restorable · registered without it",
-            ).pipe(
-              Effect.annotateLogs({
-                worktreeId,
-                n: input.n,
-                captureId: input.capture_id,
-                epoch: input.epoch,
-                gitFsck,
-                worktreeMeta: metaNamespace,
-                chunkPayloads: payloadsRead ? "read" : "not read",
-                bulk: bulkCaptured ? "captured" : "pending",
-                crossLinks: crossLinks ?? "restore",
-                trackedLinks: trackedLinks ?? "restore",
-                inodeMetadata: inodeMeta ?? "one promise per inode",
-              }),
-            );
+            ).pipe(Effect.annotateLogs({ ...annotations, problems: sealProblem }));
           }
           const outcome = yield* repo
             .register({
-              ...(sealed
-                ? {
-                    seal: {
-                      executorId: launchId,
-                      holder: scope.executorId,
-                      bootId: seal?.boot_id ?? null,
-                      bootGeneration: seal?.boot_generation ?? null,
-                      observation: seal?.observation ?? null,
-                    },
-                  }
-                : {}),
+              ...(sealed ? { seal: sealFields } : {}),
               holder,
               worktreeId,
               id: input.capture_id,
@@ -2367,19 +2613,24 @@ export const CaptureChannelLive: Layer.Layer<
                     : conflictToRoute(error).pipe(Effect.flatMap(Effect.fail)),
               ),
             );
-          return { outcome, priced, records, sealProblem };
+          return { outcome, priced, records, sealProblem, pendingSeal, verdict, already };
         });
-        const { outcome, priced, records, sealProblem } = yield* attempt.pipe(
-          Effect.retry({
-            while: (error) => error._tag === "GuardMovedError",
-            times: GUARD_ATTEMPTS - 1,
-          }),
-          Effect.catchTag("GuardMovedError", () =>
-            Effect.die(
-              `capture channel: retention kept moving the chains this capture names (${GUARD_ATTEMPTS} attempts)`,
+        // One verification pass (e2e8 F2): whatever the attempts read — dir packs, pack indexes,
+        // pack payloads, the chunks a member's digest needs — is read once for all of them.
+        const { outcome, priced, records, sealProblem, pendingSeal, verdict, already } =
+          yield* attempt.pipe(
+            Effect.retry({
+              while: (error) => error._tag === "GuardMovedError",
+              times: GUARD_ATTEMPTS - 1,
+            }),
+            Effect.catchTag("GuardMovedError", () =>
+              Effect.die(
+                `capture channel: retention kept moving the chains this capture names (${GUARD_ATTEMPTS} attempts)`,
+              ),
             ),
-          ),
-        );
+            withCaptureReadPass,
+            Effect.provideService(BlobStore, blobs),
+          );
         if (!outcome.lostAck) {
           for (const [key, bytes] of priced) ledger.set(key, bytes);
           yield* repo.recordPacks(records);
@@ -2403,7 +2654,37 @@ export const CaptureChannelLive: Layer.Layer<
                   } satisfies RegisterSealOutcome,
                   detail: `the seal is not this launch's completed final flush under epoch ${input.epoch}`,
                 }
-              : yield* registeredSealOutcome(input.epoch, input.capture_id, sealProblem);
+              : pendingSeal && !outcome.lostAck && job !== undefined
+                ? yield* Effect.gen(function* () {
+                    // Past the budget: registered without the seal, which is recorded once the
+                    // checks pass. The executor's re-ask (this register again) reads it then.
+                    if (job !== undefined) {
+                      yield* recordWhenChecked(job, {
+                        worktreeId,
+                        epoch: input.epoch,
+                        captureId: input.capture_id,
+                        n: input.n,
+                        manifestKey: input.manifest_key,
+                        names: referenced,
+                        seal: sealFields,
+                      });
+                    }
+                    return verifyingAnswer;
+                  })
+                : already !== null || outcome.lostAck
+                  ? yield* reAsked(input, manifest, chunked, referenced, remaining())
+                  : yield* Effect.gen(function* () {
+                      // Answered within the budget: the CAS carried the seal, or its problems
+                      // kept it out. Re-asks read that.
+                      if (job !== undefined && verdict !== null && Option.isSome(verdict)) {
+                        yield* Deferred.succeed(job.settled, verdict.value);
+                      }
+                      return yield* registeredSealOutcome(
+                        input.epoch,
+                        input.capture_id,
+                        sealProblem,
+                      );
+                    });
         if (sealAnswer !== null && sealAnswer.outcome.state !== "recorded") {
           yield* Effect.logInfo(`capture channel: final seal · ${sealAnswer.outcome.state}`).pipe(
             Effect.annotateLogs({
@@ -2423,6 +2704,15 @@ export const CaptureChannelLive: Layer.Layer<
           ...(sealAnswer === null ? {} : { seal: sealAnswer.outcome }),
         };
       });
+
+      /**
+       * `registerOnce`, single-flight (e2e8 F2): a register identical to one still running — the
+       * executor's retry of a register it timed out — joins it and gets its answer.
+       */
+      const register = (input: RegisterRequest) =>
+        registersInFlight.run(sealKeyOf(input), input, registerOnce(input), (running) =>
+          isDeepStrictEqual(running, input),
+        );
 
       /**
        * How the seal of `captureId` under `epoch` stands for this launch now: `recorded` only when

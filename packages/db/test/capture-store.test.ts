@@ -577,6 +577,54 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     expect(result.bySession).toBeNull();
   });
 
+  it("a late seal (e2e8 F2): recorded on the head under its epoch while the lease names its launch; never on a capture the chain moved past, nor for another launch", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const worktreeId = yield* freshWorktree;
+        const { epoch } = yield* repo.claim(worktreeId, "session-1", 3600, "launch-1");
+        const zero = captureInput(worktreeId, 0, null, epoch);
+        yield* repo.register(zero);
+        const one = captureInput(worktreeId, 1, zero.id, epoch);
+        yield* repo.register(one);
+        const lateOf = (capture: RegisterCapture, executorId: string, holder: string) =>
+          repo.recordSeal({
+            worktreeId,
+            epoch,
+            captureId: capture.id,
+            n: capture.n,
+            manifestKey: capture.manifestKey,
+            names: [],
+            seal: { executorId, holder, observation: 7 },
+          });
+        // Not the head: the chain moved past capture 0.
+        const pastHead = yield* lateOf(zero, "launch-1", "session-1");
+        // Another launch of the holder, another holder: the lease names neither.
+        const otherLaunch = yield* lateOf(one, "launch-2", "session-1");
+        const otherHolder = yield* lateOf(one, "launch-1", "session-2");
+        const none = yield* repo.sealedCompletion(worktreeId, "launch-1", epoch);
+        // The head, under the lease's own launch: recorded, stamped as sealantd stamped it.
+        const recorded = yield* lateOf(one, "launch-1", "session-1");
+        const sealed = yield* repo.sealedCompletion(worktreeId, "launch-1", epoch);
+        // Recording it again changes nothing.
+        const again = yield* lateOf(one, "launch-1", "session-1");
+        return { pastHead, otherLaunch, otherHolder, none, recorded, sealed, again, oneId: one.id };
+      }),
+    );
+    expect(result.pastHead).toBe(false);
+    expect(result.otherLaunch).toBe(false);
+    expect(result.otherHolder).toBe(false);
+    expect(result.none).toBeNull();
+    expect(result.recorded).toBe(true);
+    expect(result.sealed).toMatchObject({
+      executorId: "launch-1",
+      captureId: result.oneId,
+      n: 1,
+      observation: 7,
+    });
+    expect(result.again).toBe(false);
+  });
+
   it("seals (0087): a seal keeps where sealantd stamped it in the executor's own order, and none when it did not (review 2026-09-28 (6) #6)", async () => {
     const result = await run(
       Effect.gen(function* () {

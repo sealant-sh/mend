@@ -269,6 +269,8 @@ export interface CaptureWorld {
   readonly worktrees: Map<string, Worktree>;
   readonly memory: ReturnType<typeof makeMemoryCaptureStore>;
   readonly blobRoot: string;
+  /** The capture channel alone, over the world's store and bucket: build it fresh for a restart. */
+  readonly channel: Layer.Layer<CaptureChannel>;
   /** Store, StoreConfig, BlobStore, CaptureStoreRepo, StoreRefsRepo, GitOpsRunner, CaptureChannel, ProjectsRepo, WorktreesRepo. */
   readonly layer: Layer.Layer<
     | Store
@@ -342,6 +344,7 @@ export const makeCaptureWorld = (
     worktrees,
     memory,
     blobRoot,
+    channel,
     layer,
   };
 };
