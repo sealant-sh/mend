@@ -108,6 +108,10 @@ describe("protocolIdleReading", () => {
       "idle",
     );
     expect(protocolIdleReading(idleFacts({ capture: null })).kind).toBe("idle");
+    // A capture step past its bound (e2e8): never idle, whatever the queue says.
+    expect(
+      protocolIdleReading(idleFacts({ capture: { pending: 0, bulkDirty: false, overdue: true } })),
+    ).toEqual({ kind: "held", by: "capture" });
   });
 
   it("stops nothing but a live protocol agent of an unsettled session", () => {

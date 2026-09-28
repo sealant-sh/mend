@@ -3,6 +3,7 @@ import {
   type CaptureClass,
   type CaptureClassSnaps,
   type CapturePosition,
+  type CaptureOverdue,
   type CaptureReading,
   DEFAULT_CAPTURE_DRAIN_ESTIMATE_SECONDS,
   DEFAULT_CAPTURE_DRAIN_STALL_SECONDS,
@@ -185,6 +186,38 @@ const reportedText = (report: object, key: string): string | null => {
   return typeof value === "string" && value.trim() !== "" ? value : null;
 };
 
+/** A duration or time in ms as the wire may carry a 64-bit number: a number, a bigint, digits. */
+const reportedMillis = (value: unknown): number | null => {
+  const ms =
+    typeof value === "bigint"
+      ? Number(value)
+      : typeof value === "string" && /^\d+$/.test(value)
+        ? Number(value)
+        : value;
+  return typeof ms === "number" && Number.isFinite(ms) && ms >= 0 ? ms : null;
+};
+
+/**
+ * A capture step past its bound (`CaptureStatusReport.overdue`, field 31, sealantd e2e8): `{ step,
+ * startedUnixMs, runningMs, boundMs }` as Core's SDK surfaces it in camelCase (the protobuf's
+ * `started_unix_ms`, `running_ms`, `bound_ms` read too). Null when the answer carries none or no
+ * step: absent from an older daemon and from a Core that does not forward it.
+ */
+const overdueOf = (value: unknown): CaptureOverdue | null => {
+  if (typeof value !== "object" || value === null) return null;
+  const step = textOf(fieldOf(value, "step"));
+  if (step === null) return null;
+  const started = reportedMillis(
+    fieldOf(value, "startedUnixMs") ?? fieldOf(value, "started_unix_ms"),
+  );
+  return {
+    step,
+    startedAt: started === null || started === 0 ? null : new Date(started),
+    runningMs: reportedMillis(fieldOf(value, "runningMs") ?? fieldOf(value, "running_ms")) ?? 0,
+    boundMs: reportedMillis(fieldOf(value, "boundMs") ?? fieldOf(value, "bound_ms")),
+  };
+};
+
 const captureClassOf = (value: unknown): CaptureClass | null =>
   value === "small" || value === "bulk" ? value : null;
 
@@ -294,4 +327,5 @@ export const readCaptureReport = (report: WorkspaceCaptureStatus): CaptureReadin
       ? Reflect.get(report, "repairing") === true
       : null,
   position: capturePositionOf(report),
+  overdue: overdueOf(Reflect.get(report, "overdue")),
 });

@@ -313,6 +313,10 @@ export interface SessionCaptureLike {
   readonly captureIncompleteDetail?: string | null;
   readonly captureFailingSince?: string | null;
   readonly captureFailingError?: string | null;
+  readonly captureOverdueStep?: string | null;
+  readonly captureOverdueSince?: string | null;
+  readonly captureOverdueRunningMs?: number | null;
+  readonly captureOverdueBoundMs?: number | null;
   readonly captureDiscardedAt?: string | null;
   readonly captureDiscardedBy?: string | null;
 }
@@ -335,6 +339,10 @@ export const captureLineOf = (session: SessionCaptureLike): string | null => {
     captureIncompleteDetail: session.captureIncompleteDetail ?? null,
     captureFailingSince: session.captureFailingSince ?? null,
     captureFailingError: session.captureFailingError ?? null,
+    captureOverdueStep: session.captureOverdueStep ?? null,
+    captureOverdueSince: session.captureOverdueSince ?? null,
+    captureOverdueRunningMs: session.captureOverdueRunningMs ?? null,
+    captureOverdueBoundMs: session.captureOverdueBoundMs ?? null,
     captureDiscardedAt: session.captureDiscardedAt ?? null,
     captureDiscardedBy: session.captureDiscardedBy ?? null,
   });

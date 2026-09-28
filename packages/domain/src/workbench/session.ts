@@ -242,6 +242,24 @@ export class Session extends Schema.Class<Session>("Session")({
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
   /**
+   * A capture step the executor reported still running past its bound (sealantd `overdue`, e2e8):
+   * what it is, when it started, how long it had run and the bound it passed, as last observed.
+   * All null once a reading reports none, and once the executor is gone. Not a failure, and never
+   * idle or saved while it lasts.
+   */
+  captureOverdueStep: Schema.NullOr(Schema.String).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  captureOverdueSince: Schema.NullOr(Timestamp).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  captureOverdueRunningMs: Schema.NullOr(Schema.Number).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  captureOverdueBoundMs: Schema.NullOr(Schema.Number).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
    * The owner's "discard unsaved and stop" ended this executor with work not saved: when, and
    * who (their display name). Null until then, and again once the session runs again.
    */

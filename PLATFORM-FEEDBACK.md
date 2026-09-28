@@ -7,6 +7,27 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-28 · 0.37.2 · e2e8: a capture step past its bound (`overdue`)
+
+- **Needed:** in e2e8 a capture deadlocked on a `git cat-file --batch-check` pipe for 17 minutes
+  while every status Mend read said `running · 0 pending` (F1). sealantd (e2e8 branch, 2694bb7) now
+  reports the innermost step still running past its bound as `CaptureStatusReport.overdue` (field
+  31): `{ step, started_unix_ms, running_ms, bound_ms }`, e.g.
+  `small snap › git cat-file --batch-check`; absent while nothing is overdue and from older daemons.
+  Not a failure: the step may still end.
+- **Today:** Mend reads `overdue` (camelCase `startedUnixMs`, `runningMs`, `boundMs`; the protobuf
+  names too) wherever a status or flush answer carries it, records it on the session
+  (migration 0093) and says `capture step overdue · <step> · running 17 min · bound 2 min`; such an
+  answer never reads saved, caught up or idle. But nothing forwards it yet: Core's
+  `workspaceCaptureStatusSchema` has no `overdue`, `packages/workspaces/src/sealantd/runtime.ts`
+  projects the report field by field without it, and SDK 0.37.2's `capture.flush()` rebuilds the
+  answer and drops it (checked against the pinned facade in `capture-sdk-facade.test.ts`), and has
+  no `capture.status()`. Until they do, Mend reads none and the session looks as it did in e2e8.
+- **Suggested:** add `overdue: { step, startedUnixMs, runningMs, boundMs }` (optional) to the
+  capture status contract, project it in `runtime.ts` next to `repairing`, and release the SDK with
+  it on `capture.status()` and `capture.flush()`. Core's own drain could name it in its `kept`
+  reason as well.
+
 ## 2026-09-28 · 0.37.2 · Review 6: evidence ordered by the executor; stored objects write-once
 
 What Mend now builds to (cross-repo decisions 17–19). sealantd's `fix/capture-review6` and Core's

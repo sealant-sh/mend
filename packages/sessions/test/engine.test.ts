@@ -1021,6 +1021,17 @@ interface World {
 
 /** The newer of two observations of one kind: `next` when it came after `prior`. */
 /** The repository's rule (0087): kept unless the executor made it before the kept one. */
+/** The overdue step an observation reports, as the session's columns hold it (0093). */
+const overdueFields = (observation: CaptureObservation) =>
+  observation.overdue === undefined
+    ? {}
+    : {
+        captureOverdueStep: observation.overdue?.step ?? null,
+        captureOverdueSince: observation.overdue?.since ?? null,
+        captureOverdueRunningMs: observation.overdue?.runningMs ?? null,
+        captureOverdueBoundMs: observation.overdue?.boundMs ?? null,
+      };
+
 const newerObservation = <T extends { readonly position?: CapturePosition | null }>(
   next: T | undefined,
   prior: T | null,
@@ -1672,6 +1683,7 @@ const sessionsLayer = (world: World) => {
                 world.sessions.get(id)?.captureFailingSince ?? observation.failing.since,
               captureFailingError: observation.failing.error,
             }),
+      ...overdueFields(observation),
     });
   const addEvidence = (workspaceId: string, answer: ExecutorCaptureAnswer) => {
     const kept = world.executorEvidence.get(workspaceId);
@@ -1873,6 +1885,7 @@ const sessionsLayer = (world: World) => {
                     world.sessions.get(id)?.captureFailingSince ?? observation.failing.since,
                   captureFailingError: observation.failing.error,
                 }),
+          ...overdueFields(observation),
         }),
       ),
     beginCaptureDrain: (id, reason, at) =>
@@ -1989,6 +2002,10 @@ const sessionsLayer = (world: World) => {
           captureIncompleteDetail: null,
           captureFailingSince: null,
           captureFailingError: null,
+          captureOverdueStep: null,
+          captureOverdueSince: null,
+          captureOverdueRunningMs: null,
+          captureOverdueBoundMs: null,
           ...(discarded === undefined
             ? {}
             : { captureDiscardedAt: discarded.at, captureDiscardedBy: discarded.by }),
@@ -11546,6 +11563,70 @@ describe("SessionEngine capture failures shown while they happen (e2e run 3, 202
                       }
                     : flushReport(0, 2);
                 }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  // e2e8 F1: a capture deadlocked on a git pipe for 17 minutes while every status read `running ·
+  // 0 pending`. sealantd now reports a step past its bound (`overdue`); Mend says so, and a
+  // reading with one never reads saved.
+  it(
+    "a running session whose capture step is past its bound reads `capture step overdue · <step> · …` from a status read, and not once it ends",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      let overdue = true;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.reapCaptureLeases();
+            yield* until(
+              () => world.sessions.get(session.id)?.captureOverdueStep != null,
+              "the overdue step on the session",
+            );
+            const shown = world.sessions.get(session.id);
+            expect(shown === undefined ? null : captureStatusLine(shown)).toBe(
+              "capture step overdue · small snap › git cat-file --batch-check · running 17 min · bound 2 min",
+            );
+            expect(shown?.captureOverdueSince?.toISOString()).toBe("2026-09-28T06:54:14.000Z");
+            // The step ended: nothing to say.
+            overdue = false;
+            yield* engine.refreshCaptureStatus(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureOverdueStep === null,
+              "the overdue step cleared",
+            );
+            const cleared = world.sessions.get(session.id);
+            expect(cleared === undefined ? "gone" : captureStatusLine(cleared)).toBeNull();
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            statusInterval: Duration.minutes(1),
+            statusMinInterval: Duration.millis(0),
+          },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              captureStatus: () =>
+                Effect.sync(() =>
+                  overdue
+                    ? {
+                        ...flushReport(0, 1),
+                        overdue: {
+                          step: "small snap › git cat-file --batch-check",
+                          startedUnixMs: Date.parse("2026-09-28T06:54:14.000Z"),
+                          runningMs: 17 * 60_000 + 5_000,
+                          boundMs: 120_000,
+                        },
+                      }
+                    : flushReport(0, 2),
+                ),
             },
           }),
         },

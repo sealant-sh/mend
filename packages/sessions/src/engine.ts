@@ -1941,6 +1941,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
           : null;
         const incompleteReason = kind === "final" ? captureIncompleteReasonOf(reading) : undefined;
+        const overdue = reading.overdue ?? null;
         const before = yield* sessions
           .byId(session.id)
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
@@ -1984,6 +1985,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             registeredAt: head?.head?.createdAt ?? null,
             observedAt,
             failing,
+            // A capture step past its bound (e2e8): recorded as observed, cleared once a reading
+            // reports none — never idle, never saved while it lasts (`captureSaved`).
+            overdue:
+              overdue === null
+                ? null
+                : {
+                    step: overdue.step,
+                    since: overdue.startedAt,
+                    runningMs: overdue.runningMs,
+                    boundMs: overdue.boundMs,
+                  },
             ...(incompleteReason === undefined
               ? {}
               : {
@@ -2003,6 +2015,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         });
         // Published with its fence cleared in the same write: nothing after this reopens it.
         fence.published = true;
+        if (overdue !== null && before !== null && before.captureOverdueStep !== overdue.step) {
+          yield* evidenceLog(
+            Effect.logWarning("session engine: capture step overdue · observed").pipe(
+              Effect.annotateLogs({
+                sessionId: session.id,
+                worktreeId: session.worktreeId,
+                workspaceId,
+                step: overdue.step,
+                startedAt: overdue.startedAt?.toISOString() ?? null,
+                runningMs: overdue.runningMs,
+                boundMs: overdue.boundMs,
+                via: kind,
+              }),
+            ),
+          );
+        }
         if (failing !== null && before !== null && before.captureFailingSince === null) {
           yield* evidenceLog(
             Effect.logWarning("session engine: capture failing · observed").pipe(

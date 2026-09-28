@@ -1,6 +1,6 @@
 import * as http from "node:http";
 
-import { captureBehindReason, captureCaughtUp } from "@mend/domain/workbench";
+import { captureBehindReason, captureCaughtUp, captureSaved } from "@mend/domain/workbench";
 import { Sealant } from "@sealant/sdk";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
@@ -92,5 +92,47 @@ describe("the pinned SDK facade and the landing barrier", () => {
     const forwarded = "unreadable" in returned;
     expect(captureCaughtUp(reading)).toBe(forwarded);
     if (!forwarded) expect(captureBehindReason(reading)).toBe("snapshot health not reported");
+  });
+});
+
+// e2e8 F1: a capture deadlocked for 17 minutes while every status read `running · 0 pending`.
+// sealantd reports a step past its bound as `overdue` (status report field 31). Mend reads it
+// wherever it is in the answer; whether it reaches Mend is Core's projection and SDK
+// (PLATFORM-FEEDBACK.md, "A capture step past its bound").
+describe("a capture step past its bound", () => {
+  const OVERDUE = {
+    ...CLEAN_NO_ERROR,
+    overdue: {
+      step: "small snap › git cat-file --batch-check",
+      startedUnixMs: Date.parse("2026-09-28T06:54:14Z"),
+      runningMs: 1_020_000,
+      boundMs: 120_000,
+    },
+  };
+
+  it("is read from the answer, and holds the landing barrier and any save", () => {
+    // A final flush that says complete while a step is still overdue is still not saved.
+    const completed = { ...OVERDUE, complete: true };
+    const reading = readCaptureReport(completed);
+    expect(reading.overdue).toEqual({
+      step: "small snap › git cat-file --batch-check",
+      startedAt: new Date("2026-09-28T06:54:14Z"),
+      runningMs: 1_020_000,
+      boundMs: 120_000,
+    });
+    expect(captureCaughtUp(reading)).toBe(false);
+    expect(captureSaved(reading)).toBe(false);
+    // An answer without one reads none.
+    expect(readCaptureReport({ ...CLEAN_NO_ERROR }).overdue).toBeNull();
+  });
+
+  it("through the pinned SDK facade: forwarded, it is read; dropped, it reads none (a platform gap)", async () => {
+    const returned = await flushThroughSdk(OVERDUE);
+    const reading = readCaptureReport(returned);
+    if ("overdue" in returned) {
+      expect(reading.overdue?.step).toBe("small snap › git cat-file --batch-check");
+    } else {
+      expect(reading.overdue).toBeNull();
+    }
   });
 });

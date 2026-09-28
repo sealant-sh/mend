@@ -192,6 +192,10 @@ export interface SessionDto {
   readonly captureIncompleteDetail?: string | null;
   readonly captureFailingSince?: string | null;
   readonly captureFailingError?: string | null;
+  readonly captureOverdueStep?: string | null;
+  readonly captureOverdueSince?: string | null;
+  readonly captureOverdueRunningMs?: number | null;
+  readonly captureOverdueBoundMs?: number | null;
   readonly captureDiscardedAt?: string | null;
   readonly captureDiscardedBy?: string | null;
 }
@@ -213,6 +217,10 @@ export const statusLineOf = (dto: SessionDto): string => {
     captureIncompleteDetail: dto.captureIncompleteDetail ?? null,
     captureFailingSince: dto.captureFailingSince ?? null,
     captureFailingError: dto.captureFailingError ?? null,
+    captureOverdueStep: dto.captureOverdueStep ?? null,
+    captureOverdueSince: dto.captureOverdueSince ?? null,
+    captureOverdueRunningMs: dto.captureOverdueRunningMs ?? null,
+    captureOverdueBoundMs: dto.captureOverdueBoundMs ?? null,
     captureDiscardedAt: dto.captureDiscardedAt ?? null,
     captureDiscardedBy: dto.captureDiscardedBy ?? null,
   });

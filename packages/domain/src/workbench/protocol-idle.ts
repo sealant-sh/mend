@@ -26,6 +26,8 @@ export interface ProtocolIdleFacts {
   readonly capture?: {
     readonly pending: number;
     readonly bulkDirty: boolean | null;
+    /** A capture step still running past its bound (sealantd `overdue`): never idle. */
+    readonly overdue?: boolean;
   } | null;
 }
 
@@ -75,7 +77,9 @@ export const protocolIdleReading = (facts: ProtocolIdleFacts): ProtocolIdleReadi
   if (
     facts.capture !== undefined &&
     facts.capture !== null &&
-    (facts.capture.pending > 0 || facts.capture.bulkDirty === true)
+    (facts.capture.pending > 0 ||
+      facts.capture.bulkDirty === true ||
+      facts.capture.overdue === true)
   ) {
     return { kind: "held", by: "capture" };
   }

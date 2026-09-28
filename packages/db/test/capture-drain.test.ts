@@ -300,6 +300,43 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
     expect(result.reopened.captureDiscardedAt).toBeNull();
     expect(result.reopened.captureDiscardedBy).toBeNull();
   });
+  it("keeps the capture step past its bound as last observed, and clears it when a reading reports none or the executor is gone (0093, e2e8)", async () => {
+    const t0 = new Date("2026-09-28T06:54:14.000Z");
+    const t1 = new Date("2026-09-28T07:11:02.000Z");
+    const overdue = {
+      step: "small snap › git cat-file --batch-check",
+      since: t0,
+      runningMs: 1_008_000,
+      boundMs: 120_000,
+    };
+    const result = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        yield* sessions.recordCaptureObservation(FAILING, { ...observed(t1), overdue });
+        const shown = yield* sessions.byId(FAILING);
+        yield* sessions.recordCaptureObservation(FAILING, observed(t1));
+        const unsaid = yield* sessions.byId(FAILING);
+        yield* sessions.recordCaptureObservation(FAILING, { ...observed(t1), overdue: null });
+        const ended = yield* sessions.byId(FAILING);
+        yield* sessions.recordCaptureObservation(FAILING, { ...observed(t1), overdue });
+        yield* sessions.beginCaptureDrain(FAILING, "stop", t1);
+        yield* sessions.endCaptureDrain(FAILING);
+        const gone = yield* sessions.byId(FAILING);
+        return { shown, unsaid, ended, gone };
+      }),
+    );
+    expect(result.shown).toMatchObject({
+      captureOverdueStep: "small snap › git cat-file --batch-check",
+      captureOverdueSince: t0,
+      captureOverdueRunningMs: 1_008_000,
+      captureOverdueBoundMs: 120_000,
+    });
+    expect(result.unsaid.captureOverdueStep).toBe("small snap › git cat-file --batch-check");
+    expect(result.ended.captureOverdueStep).toBeNull();
+    expect(result.ended.captureOverdueSince).toBeNull();
+    expect(result.gone.captureOverdueStep).toBeNull();
+  });
+
   it("keeps an executor create's key until its answer is on the row, and the runtime identity beside it (0081, 0082)", async () => {
     const t0 = new Date("2026-09-28T10:00:00.000Z");
     const result = await run(
