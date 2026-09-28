@@ -18008,3 +18008,113 @@ it(
     }
   },
 );
+
+/**
+ * Review 2026-09-28 (19) #2: the reaper that recovers a create whose answer was lost drains the
+ * executor it finds and settles the session `launch interrupted · … · its executor ended`. After a
+ * saved final flush Core can take the stop and still report the executor (`requested`, status
+ * `ready` past Mend's wait): the drain returned the same outcome as an observed end, and the session
+ * read ended while nothing had been seen to end. The reviewer's probe, kept whole: the end never
+ * observed (the session reads `stopping · … · stop requested · end not observed yet`, the row and
+ * lease stay), observed at once (settled as ended), and observed later (the next reaper pass
+ * settles it as ended).
+ */
+describe("review 19 #2: a lost create's executor reads ended only once its end is observed", () => {
+  for (const end of ["never", "at once", "later"] as const) {
+    it(
+      `AUDIT R19 lost-create recovery only reports observed termination: end ${end}`,
+      { timeout: 20_000 },
+      async () => {
+        const memory = makeMemoryCaptureStore();
+        const created: Array<CreateOptions> = [];
+        const stops: Array<"drain" | "discard"> = [];
+        const logs: Array<string> = [];
+        let endSeen = end === "at once";
+        await withEngine(
+          (world, tmp) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* launchOnce(world, tmp);
+              const key = `launch:${session.id}:${Date.now()}:audit`;
+              world.executorCreates.set(session.id, key);
+              yield* Effect.gen(function* () {
+                const repo = yield* CaptureStoreRepo;
+                yield* repo.init(session.worktreeId);
+                yield* repo.claim(session.worktreeId, session.id, 30, key);
+              }).pipe(Effect.provide(memory.layer));
+              yield* engine.reapCaptureLeases();
+              yield* until(() => stops.length > 0, "Core stop requested");
+              if (end === "at once") {
+                yield* until(
+                  () => world.sessions.get(session.id)?.settledAt !== null,
+                  "settled once the end was observed",
+                );
+                const after = world.sessions.get(session.id);
+                expect(after?.status).toBe("stopped");
+                expect(after?.summary).toBe(
+                  "launch interrupted · the create's answer was lost · its executor ended",
+                );
+                return;
+              }
+              yield* until(
+                () => world.sessions.get(session.id)?.status === "stopping",
+                "stopping while the end is not observed",
+              );
+              const pending = world.sessions.get(session.id);
+              expect(pending?.settledAt, "Core still reports ready: no end observed").toBeNull();
+              expect(pending?.summary).toBe(
+                "launch interrupted · the create's answer was lost · stop requested · end not observed yet",
+              );
+              expect(pending?.captureDrain).toBeNull();
+              expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+              expect(logs.some((line) => line.includes("its executor ended"))).toBe(false);
+              if (end === "never") {
+                // Another pass changes nothing while Core still reports the executor.
+                yield* engine.reapCaptureLeases();
+                expect(world.sessions.get(session.id)?.settledAt).toBeNull();
+                expect(world.sessions.get(session.id)?.summary).toBe(pending?.summary);
+                expect(yield* engine.removeWhenStopped(session.id)).toBe("pending");
+                expect(world.sessions.has(session.id)).toBe(true);
+                return;
+              }
+              endSeen = true;
+              yield* engine.reapCaptureLeases();
+              const after = world.sessions.get(session.id);
+              expect(after?.status).toBe("stopped");
+              expect(after?.settledAt).not.toBeNull();
+              expect(after?.summary).toBe(
+                "launch interrupted · the create's answer was lost · its executor ended",
+              );
+            }),
+          {
+            captured: memory,
+            logs,
+            drainPolicy: {
+              terminationWait: Duration.millis(150),
+              pollInterval: Duration.millis(10),
+            },
+            sealantLayer: sealantLaunchLayer(
+              created,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              undefined,
+              {
+                findByKey: () => ({ kind: "found", workspaceId: "workspace-1" }),
+                status: (stopAsked) => (endSeen && stopAsked ? "stopped" : "ready"),
+                stopAnswer: () => "requested",
+                stops,
+                flush: () => Effect.succeed(flushReport(0, 1, { headN: 7 })),
+              },
+            ),
+          },
+        );
+      },
+    );
+  }
+});
