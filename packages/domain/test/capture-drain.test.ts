@@ -760,12 +760,33 @@ describe("executorEndOf after a completed final flush (e2e run 4, 2026-09-27)", 
         bulkPending: false,
       },
       executorStartedAt: new Date("2026-09-28T00:00:00Z"),
-      finalSaved: { at: new Date("2026-09-28T00:00:11Z"), n: 8 },
-      reading: { pending: 1, pendingBytes: 4096, observedAt: new Date("2026-09-28T00:00:20Z") },
+      finalSaved: { at: new Date("2026-09-28T00:00:11Z"), n: 8, position: position(50, 8) },
+      reading: {
+        pending: 1,
+        pendingBytes: 4096,
+        observedAt: new Date("2026-09-28T00:00:20Z"),
+        position: position(60, 8),
+      },
     });
     expect(end.kind).toBe("lost");
     expect(executorEndWords(end)).toBe(
       "executor lost · last saved capture 8 at 00:00:11 UTC · changes after that were not saved · 4.1 KB pending at 00:00:20 UTC",
+    );
+    // Review 2026-09-28 (7) #4: a reading nothing orders against the save cannot say the work
+    // after it was lost — the save is named, its completion unknown.
+    const unordered = executorEndOf({
+      head: {
+        kind: "final",
+        n: 8,
+        registeredAt: new Date("2026-09-28T00:00:10Z"),
+        bulkPending: false,
+      },
+      executorStartedAt: new Date("2026-09-28T00:00:00Z"),
+      finalSaved: { at: new Date("2026-09-28T00:00:11Z"), n: 8 },
+      reading: { pending: 1, pendingBytes: 4096, observedAt: new Date("2026-09-28T00:00:20Z") },
+    });
+    expect(executorEndWords(unordered)).toBe(
+      "stopped outside Mend · last saved capture 8 at 00:00:11 UTC · completion unknown · 4.1 KB pending at 00:00:20 UTC",
     );
   });
 
@@ -777,16 +798,33 @@ describe("executorEndOf after a completed final flush (e2e run 4, 2026-09-27)", 
       reading: { pending: 0, pendingBytes: 0, observedAt: at("19:49:30") },
       unsaved: { at: at("19:49:20"), words: "unreadable tree/after-seal.txt" },
     } as const;
-    expect(endWords({ ...afterSave, finalSaved: { at: at("19:48:49"), n: 8 } })).toBe(
+    const madeAfter = {
+      ...afterSave,
+      unsaved: { ...afterSave.unsaved, position: position(60, 8) },
+    } as const;
+    expect(
+      endWords({ ...madeAfter, finalSaved: { at: at("19:48:49"), n: 8, position: sealAt(8) } }),
+    ).toBe(
       "executor lost · last saved capture 8 at 19:48:49 UTC · changes after that were not saved · unreadable tree/after-seal.txt at 19:49:20 UTC",
     );
-    expect(endWords({ ...afterSave, sealed: { at: at("19:48:49"), n: 8 } })).toBe(
+    expect(
+      endWords({ ...madeAfter, sealed: { at: at("19:48:49"), n: 8, position: sealAt(8) } }),
+    ).toBe(
       "executor lost · last saved capture 8 at 19:48:49 UTC · changes after that were not saved · unreadable tree/after-seal.txt at 19:49:20 UTC",
+    );
+    // Without positions nothing orders the answer against the save (cross-repo decision 17): the
+    // save does not stand, and nothing says the work after it was lost — completion unknown
+    // (review 2026-09-28 (7) #4).
+    expect(endWords({ ...afterSave, finalSaved: { at: at("19:48:49"), n: 8 } })).toBe(
+      "stopped outside Mend · last saved capture 8 at 19:48:49 UTC · completion unknown · unreadable tree/after-seal.txt at 19:49:20 UTC",
+    );
+    expect(endWords({ ...afterSave, sealed: { at: at("19:48:49"), n: 8 } })).toBe(
+      "stopped outside Mend · last saved capture 8 at 19:48:49 UTC · completion unknown · unreadable tree/after-seal.txt at 19:49:20 UTC",
     );
     // A newer completed final flush stands over the older unsaved answer — newer as the
     // executor ordered them (cross-repo decision 17); without positions nothing orders them.
     expect(endWords({ ...afterSave, finalSaved: { at: at("19:49:25"), n: 9 } })).toBe(
-      "executor lost · last saved capture 9 at 19:49:25 UTC · changes after that were not saved · unreadable tree/after-seal.txt at 19:49:20 UTC",
+      "stopped outside Mend · last saved capture 9 at 19:49:25 UTC · completion unknown · unreadable tree/after-seal.txt at 19:49:20 UTC",
     );
     expect(
       endWords({
@@ -821,7 +859,8 @@ describe("executorEndOf after a completed final flush (e2e run 4, 2026-09-27)", 
       ).toBe("lost");
     }
     // Nothing orders it against the seal (no stamp, no epoch, another launch, a boot whose
-    // generation was not persisted): fails closed.
+    // generation was not persisted): fails closed — never saved, and never lost on evidence
+    // that cannot say so: completion unknown (review 2026-09-28 (7) #4).
     for (const unordered of [
       null,
       { ...position(10, 7), observation: null },
@@ -834,8 +873,11 @@ describe("executorEndOf after a completed final flush (e2e run 4, 2026-09-27)", 
           ...sealedEnd,
           unsaved: { at: at("19:49:20"), words: "incomplete · changed", position: unordered },
         }).kind,
-      ).toBe("lost");
+      ).toBe("unconfirmed");
     }
+    // An answer asked and not published may say anything (review 2026-09-28 (7) #3): the seal
+    // is named, completion unknown.
+    expect(executorEndOf({ ...sealedEnd, settled: false }).kind).toBe("unconfirmed");
     // Made before it, earlier in the same boot: the seal stands, whatever the wall clock says.
     for (const before of [position(10, 7), position(49, 8)]) {
       expect(

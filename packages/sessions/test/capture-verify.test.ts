@@ -6,6 +6,9 @@ import { CaptureStoreRepo } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
 import {
   BlobStore,
+  BlobStoreFsLive,
+  BlobStoreS3Live,
+  resolveBlobStoreConfig,
   INDEX_TREE_REF,
   WORKTREE_TREE_REF,
   captureKeys,
@@ -13,6 +16,7 @@ import {
   readCaptureFileBytes,
   packIdxKeyOf,
   sha256Hex,
+  stringifyExact,
 } from "@mend/store";
 import {
   buildManifest,
@@ -25,7 +29,18 @@ import { Effect, Exit, Layer, Scope } from "effect";
 import type * as Context from "effect/Context";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { CaptureChannel, type SessionCaptureApi } from "../src/capture-channel.ts";
+import {
+  CaptureChannel,
+  MANIFEST_FEATURES,
+  PRESIGN_TTL_SECONDS,
+  type SessionCaptureApi,
+  UPLOAD_ANSWER_PRESENT,
+} from "../src/capture-channel.ts";
+import {
+  CaptureSeals,
+  CaptureSealsStoreLive,
+  makeCaptureSealsStore,
+} from "../src/capture-seals.ts";
 import { SessionRepositoryCapturedLive } from "../src/session-repository-captured.ts";
 import { SessionRepository } from "../src/session-repository.ts";
 import { WorktreeReads, WorktreeReadsCapturedLive } from "../src/worktree-reads.ts";
@@ -264,7 +279,7 @@ const READY_EMPTY_BULK = { root: "", packs: [], platform: "linux-x86_64-glibc" }
 
 /** A workspace section holding only a worktree metadata document. */
 const withMeta = (worktreeId: string, epoch: number, document: object) => {
-  const bytes = new Uint8Array(Buffer.from(JSON.stringify(document)));
+  const bytes = new Uint8Array(Buffer.from(stringifyExact(document)));
   const content = writeCdcPack([bytes]);
   const contentKey = captureKeys(worktreeId, epoch).pack(sha256Hex(content.bytes));
   return {
@@ -565,14 +580,16 @@ describe("a seal rests only on sections Mend observed restore", () => {
         at.cap0Id,
       );
       expect(missing.said).toMatch(
-        /^unrestorable: .*missing-work\.txt.*absent from the worktree tree/,
+        /^unrestorable: .*missing-work\.txt.*absent from the tree the restore checks out/,
       );
       const wrongKind = await attempt(
         [root, { path: "kept.txt", kind: "symlink", mtime: ns }],
         1,
         at.cap0Id,
       );
-      expect(wrongKind.said).toMatch(/^unrestorable: .*kept\.txt.*a file in the worktree tree/);
+      expect(wrongKind.said).toMatch(
+        /^unrestorable: .*kept\.txt.*a file in the tree the restore checks out/,
+      );
       const dirOverFile = await attempt(
         [root, { path: "kept.txt", kind: "dir", mode: 0o755, mtime: ns }],
         1,
@@ -704,6 +721,59 @@ describe("a seal rests only on sections Mend observed restore", () => {
     expect((await sealOf(at.worktreeId, at.epoch))?.captureId).toBe(ready.id);
   });
 
+  // Review 2026-09-28 (7) #7 (the reviewer's reproduction): `present` was answered to every
+  // executor, and a daemon from before it (sealantd f0bf279) ignores the field and fails `NoUrl`
+  // on every retry — a retained old disk whose upload landed but whose answer was lost could never
+  // finish. `present` is negotiated: only a launch whose `plan.get` listed it in `upload_answers`
+  // gets it; any other gets a write-once URL for the stored key, once its bytes are verified.
+  it("review 7 #7 a stored key is answered present only to a launch that said it reads it; an older daemon gets a write-once URL", async () => {
+    const at = await claimedWorktree();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-present-negotiated-"));
+    fs.mkdirSync(path.join(dir, "tree"));
+    fs.writeFileSync(path.join(dir, "tree", "landed.txt"), "uploaded, answer lost\n");
+    const snapshot = snapshotDirectory(dir, captureKeys(at.worktreeId, at.epoch), { format: 2 });
+    fs.rmSync(dir, { recursive: true, force: true });
+    await run(uploadObjects(snapshot.objects));
+    const key = snapshot.packs[0] ?? "";
+    const size = snapshot.objects.get(key)?.length ?? 0;
+    const ask = () =>
+      run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [key],
+          sizes: { [key]: size },
+        }),
+      );
+    const plan = (uploadAnswers?: ReadonlyArray<string>) =>
+      run(
+        at.api.planGet({
+          epoch: at.epoch,
+          manifest_format: 2,
+          manifest_features: [...MANIFEST_FEATURES],
+          ...(uploadAnswers === undefined ? {} : { upload_answers: uploadAnswers }),
+        }),
+      );
+    // No plan seen by this process (a restart), then a plan without `upload_answers` (every
+    // daemon before it): a URL, as the older daemon requires — never `present`.
+    for (const before of [async () => undefined, async () => plan()]) {
+      await before();
+      const legacy = await ask();
+      expect(legacy.present ?? []).toEqual([]);
+      expect(typeof legacy.urls[key]).toBe("string");
+    }
+    // A plan that lists it: `present`, no URL.
+    await plan([UPLOAD_ANSWER_PRESENT]);
+    const negotiated = await ask();
+    expect(negotiated.present).toEqual([key]);
+    expect(negotiated.urls[key]).toBeUndefined();
+    expect(negotiated.multipart[key]).toBeUndefined();
+    // The same launch planning again without it (a daemon downgraded in place): the legacy
+    // answer again.
+    await plan([]);
+    expect(typeof (await ask()).urls[key]).toBe("string");
+  });
+
   // Review 2026-09-28 (6) #9, cross-repo decision 19 (the reviewer's reproduction): a sealed
   // pack's key was answered with another PUT URL, the bytes replaced at the same length through
   // it, and a second seal accepted on the warm cache though the saved file no longer read.
@@ -735,6 +805,15 @@ describe("a seal rests only on sections Mend observed restore", () => {
     expect((await sealOf(at.worktreeId, at.epoch))?.captureId).toBe(cap1.id);
     const key = snapshot.packs[0] ?? "";
     const original = snapshot.objects.get(key) ?? new Uint8Array();
+    // An executor that reads `present` (review 2026-09-28 (7) #7: negotiated in `plan.get`).
+    await run(
+      at.api.planGet({
+        epoch: at.epoch,
+        manifest_format: 2,
+        manifest_features: [...MANIFEST_FEATURES],
+        upload_answers: [UPLOAD_ANSWER_PRESENT],
+      }),
+    );
     const answer = await run(
       at.api.uploadUrls({
         worktree_id: at.worktreeId,
@@ -761,6 +840,95 @@ describe("a seal rests only on sections Mend observed restore", () => {
     expect((await sealOf(at.worktreeId, at.epoch))?.captureId).toBe(cap2.id);
     const saved = await run(readCaptureFileBytes(cap2.manifest, "workspace", "tree/unique.txt"));
     expect(Buffer.from(saved).toString("utf8")).toBe("unique saved bytes\n");
+  });
+
+  // Review 2026-09-28 (7) #9 (the reviewer's reproduction): the worktree metadata was checked
+  // against the worktree tree while the restore checks out the raw tree. A document naming a file
+  // the raw tree does not hold cannot be applied, so it is refused like any other namespace miss.
+  it("review 7 #9 a document naming a file the raw tree does not hold is refused, never sealed", async () => {
+    const at = await claimedWorktree();
+    const edited = packEditedTree(world.work, at.worktreeId, at.epoch, world.baseSha, (work) => {
+      fs.unlinkSync(path.join(work, "a.txt"));
+    });
+    const meta = withMeta(at.worktreeId, at.epoch, {
+      format: 1,
+      entries: [{ path: "a.txt", kind: "file", mode: 0o644, mtime: 0 }],
+    });
+    const cap = sealing(
+      at.worktreeId,
+      at.epoch,
+      buildManifest({
+        worktreeId: at.worktreeId,
+        n: 1,
+        parent: at.cap0Id,
+        epoch: at.epoch,
+        seq: 21,
+        kind: "final",
+        git: { ...at.gitSection([at.basePack, edited.key], at.baseTree), raw_tree: edited.tree },
+        workspace: meta.workspace,
+        bulk: READY_EMPTY_BULK,
+      }),
+    );
+    await run(uploadObjects(new Map([...edited.objects, ...meta.objects, [cap.key, cap.bytes]])));
+    expect(sh(world.work, ["ls-tree", "-r", edited.tree])).not.toContain("a.txt");
+    const answer = await run(registerOn(at.worktreeId, at.epoch, at.api)(cap).pipe(Effect.flip));
+    expect(answer.reason).toBe("unrestorable");
+    expect(answer.message).toContain("tree the restore checks out");
+    expect(await sealOf(at.worktreeId, at.epoch)).toBeNull();
+  });
+
+  // Review 2026-09-28 (7) #10 (the reviewer's reproduction): a tracked hardlink group whose
+  // members hold the same bytes but whose entries promise one inode two modes and two mtimes was
+  // sealed; the restore can keep only one. Every connected inode group — tracked hardlinks,
+  // shared links and cross-class links — must promise one mode and one mtime.
+  it("review 7 #10 one inode promised two modes or two mtimes is never sealed", async () => {
+    const at = await claimedWorktree();
+    const edited = packEditedTree(world.work, at.worktreeId, at.epoch, world.baseSha, (work) =>
+      fs.writeFileSync(path.join(work, "copy.txt"), "one\ntwo\n"),
+    );
+    let parent = at.cap0Id;
+    let n = 0;
+    const attempt = async (copy: { readonly mode: number; readonly mtime: number | bigint }) => {
+      n += 1;
+      const meta = withMeta(at.worktreeId, at.epoch, {
+        format: 1,
+        entries: [
+          { path: "a.txt", kind: "file", mode: 0o644, mtime: 100 },
+          { path: "copy.txt", kind: "file", ...copy },
+          { path: "keep.md", kind: "file", mode: 0o644, mtime: 100 },
+        ],
+        hardlinks: [["a.txt", "copy.txt"]],
+      });
+      const built = sealing(
+        at.worktreeId,
+        at.epoch,
+        buildManifest({
+          worktreeId: at.worktreeId,
+          epoch: at.epoch,
+          n,
+          parent,
+          seq: 30 + n,
+          kind: "final",
+          git: at.gitSection([at.basePack, edited.key], edited.tree),
+          workspace: meta.workspace,
+          bulk: READY_EMPTY_BULK,
+        }),
+      );
+      await run(
+        uploadObjects(new Map([...edited.objects, ...meta.objects, [built.key, built.bytes]])),
+      );
+      await run(registerOn(at.worktreeId, at.epoch, at.api)(built));
+      parent = built.id;
+      return (await sealOf(at.worktreeId, at.epoch))?.captureId === built.id;
+    };
+    // The reviewer's case: 0644 at 100 ns beside 0600 at 200 ns.
+    expect(await attempt({ mode: 0o600, mtime: 200 })).toBe(false);
+    // Only the mtime differs.
+    expect(await attempt({ mode: 0o644, mtime: 200 })).toBe(false);
+    // Nanoseconds beyond a double's 53 bits: two mtimes one apart are two promises.
+    expect(await attempt({ mode: 0o644, mtime: 1790544318484764716n })).toBe(false);
+    // One inode, one promise: sealed.
+    expect(await attempt({ mode: 0o644, mtime: 100 })).toBe(true);
   });
 
   // Review 2026-09-28 (6) #10 (the reviewer's reproduction): a `shared` link to a member its class
@@ -1096,3 +1264,315 @@ describe("git sections that name their trees (git_trees)", () => {
     expect(world.memory.captures.get(cap1.id)?.gitFsck).toBe("failed");
   });
 });
+
+/**
+ * Review 2026-09-28 (7) #8: on a bucket that ignores `If-None-Match` (Garage), a PUT URL handed
+ * out before an object's upload can replace its bytes after the seal. A seal stands only once no
+ * URL of its epoch can still be used, and only over objects read back as what their names say.
+ */
+interface SealHarness {
+  readonly world: ReturnType<typeof makeCaptureWorld>;
+  readonly run: <A, E>(
+    effect: Effect.Effect<A, E, SessionRepository | CaptureStoreRepo | CaptureChannel | BlobStore>,
+  ) => Promise<A>;
+  readonly claimed: () => Promise<{
+    readonly worktreeId: WorktreeId;
+    readonly epoch: number;
+    readonly api: SessionCaptureApi;
+    readonly cap0Id: string;
+    readonly git: object;
+  }>;
+}
+
+const describeSeals = (
+  title: string,
+  options: { readonly blobs?: (root: string) => Layer.Layer<BlobStore>; readonly skip?: boolean },
+  body: (harness: SealHarness) => void,
+) =>
+  describe.skipIf(options.skip === true)(title, () => {
+    const world = makeCaptureWorld(options.blobs === undefined ? {} : { blobs: options.blobs });
+    const layer = Layer.mergeAll(
+      SessionRepositoryCapturedLive.pipe(Layer.provide(world.layer)),
+      world.layer,
+    );
+    type Services = SessionRepository | CaptureStoreRepo | CaptureChannel | BlobStore;
+    const scope = Scope.makeUnsafe();
+    let context: Context.Context<Services>;
+    const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
+      Effect.runPromise(effect.pipe(Effect.provide(context)));
+    beforeAll(async () => {
+      context = await Effect.runPromise(
+        Layer.build(layer).pipe(Effect.provideService(Scope.Scope, scope)),
+      );
+    });
+    afterAll(async () => {
+      await Effect.runPromise(Scope.close(scope, Exit.void));
+      fs.rmSync(world.scratch, { recursive: true, force: true });
+    });
+    const claimed = async () => {
+      const worktreeId = newWorktreeId();
+      const branch = `mend/wt/${worktreeId}`;
+      world.worktrees.set(worktreeId, worktreeRowFor(world, worktreeId, branch));
+      await run(
+        Effect.gen(function* () {
+          const repo = yield* SessionRepository;
+          yield* repo.createWorktree(
+            world.project.id,
+            { directory: worktreeId, branch },
+            null,
+            null,
+          );
+          yield* repo.attachWorktree!(world.project.id, worktreeId);
+        }),
+      );
+      const cap0Id = world.memory.chains.get(worktreeId)?.headCapture ?? "";
+      const cap0 = world.memory.captures.get(cap0Id);
+      if (cap0 === undefined) throw new Error("capture 0 did not register");
+      const { epoch, api } = await run(
+        Effect.gen(function* () {
+          const captures = yield* CaptureStoreRepo;
+          const lease = yield* captures.claim(worktreeId, "executor-1", 300);
+          const routes: SessionCaptureApi = (yield* CaptureChannel).apiFor({
+            worktreeId,
+            projectId: world.project.id,
+            executorId: "executor-1",
+            footprintBytes: 0,
+          });
+          return { epoch: lease.epoch, api: routes };
+        }),
+      );
+      const tree = refsOf(cap0.sections)[WORKTREE_TREE_REF] ?? "";
+      return {
+        worktreeId,
+        epoch,
+        api,
+        cap0Id,
+        git: {
+          packs: [packsOf(cap0.sections)[0] ?? ""],
+          refs: {
+            [`refs/heads/${branch}`]: world.baseSha,
+            [WORKTREE_TREE_REF]: tree,
+            [INDEX_TREE_REF]: tree,
+          },
+          head: `refs/heads/${branch}`,
+          fsck: "verified" as const,
+        },
+      };
+    };
+    body({ world, run, claimed });
+  });
+
+/** A final capture sealing one workspace file: its snapshot, its pack's key and bytes. */
+const sealedFile = (
+  at: {
+    readonly worktreeId: WorktreeId;
+    readonly epoch: number;
+    readonly cap0Id: string;
+    readonly git: object;
+  },
+  content: string,
+) => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-replaceable-"));
+  fs.mkdirSync(path.join(dir, "tree"));
+  fs.writeFileSync(path.join(dir, "tree", "unique.txt"), content);
+  const snapshot = snapshotDirectory(dir, captureKeys(at.worktreeId, at.epoch), { format: 2 });
+  fs.rmSync(dir, { recursive: true, force: true });
+  const key = snapshot.packs[0] ?? "";
+  const cap = sealing(
+    at.worktreeId,
+    at.epoch,
+    buildManifest({
+      worktreeId: at.worktreeId,
+      epoch: at.epoch,
+      n: 1,
+      parent: at.cap0Id,
+      kind: "final",
+      git: JSON.parse(JSON.stringify(at.git)),
+      workspace: sectionOf(snapshot),
+      bulk: READY_EMPTY_BULK,
+    }),
+  );
+  return { snapshot, key, bytes: snapshot.objects.get(key) ?? new Uint8Array(), cap };
+};
+
+/** The bucket's answer to `replaceableUntil`: 0 refuses overwrites (S3, MinIO); else Garage's. */
+let bucketReplaceableUntil = 0;
+describeSeals(
+  "review 7 #8 a seal over objects an upload URL could still replace",
+  {
+    blobs: (root) =>
+      Layer.effect(
+        BlobStore,
+        Effect.map(BlobStore, (store) => ({
+          ...store,
+          replaceableUntil: () => Effect.sync(() => bucketReplaceableUntil),
+        })),
+      ).pipe(Layer.provide(BlobStoreFsLive(root))),
+  },
+  ({ world, run, claimed }) => {
+    it("is withheld while a URL of its epoch lives, stands once its objects read back, and is void for good once one reads back as other bytes", async () => {
+      let clock = Date.now();
+      const seals = (at: { readonly worktreeId: WorktreeId; readonly epoch: number }) =>
+        run(
+          Effect.flatMap(CaptureSeals, (service) =>
+            service.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
+          ).pipe(Effect.provide(makeCaptureSealsStore({ now: () => clock }))),
+        );
+      const recorded = (at: { readonly worktreeId: WorktreeId; readonly epoch: number }) =>
+        run(
+          Effect.flatMap(CaptureStoreRepo, (repo) =>
+            repo.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
+          ),
+        );
+
+      // A bucket that refuses overwrites: the seal stands as recorded, URL or not.
+      bucketReplaceableUntil = 0;
+      const strict = await claimed();
+      const onStrict = sealedFile(strict, "unique saved bytes\n");
+      await run(
+        strict.api.uploadUrls({
+          worktree_id: strict.worktreeId,
+          epoch: strict.epoch,
+          keys: [onStrict.key],
+          sizes: { [onStrict.key]: onStrict.bytes.length },
+        }),
+      );
+      await run(
+        uploadObjects(
+          new Map([...onStrict.snapshot.objects, [onStrict.cap.key, onStrict.cap.bytes]]),
+        ),
+      );
+      await run(registerOn(strict.worktreeId, strict.epoch, strict.api)(onStrict.cap));
+      expect((await seals(strict))?.captureId).toBe(onStrict.cap.id);
+
+      // Garage: the reviewer's order. A PUT URL is handed out while the pack is absent — its
+      // expiry recorded before it leaves Mend — the bytes land, the seal registers.
+      bucketReplaceableUntil = clock - 60_000;
+      const at = await claimed();
+      const file = sealedFile(at, "unique saved bytes\n");
+      const minted = await run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [file.key],
+          sizes: { [file.key]: file.bytes.length },
+        }),
+      );
+      expect(typeof minted.urls[file.key]).toBe("string");
+      const authority = world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`);
+      expect(authority?.getTime() ?? 0).toBeGreaterThan(clock + PRESIGN_TTL_SECONDS * 1000 - 5_000);
+      await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
+      await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
+      // Recorded, but not standing: the URL could still replace the pack.
+      expect((await recorded(at))?.captureId).toBe(file.cap.id);
+      expect(await seals(at)).toBeNull();
+      // Past the URL's expiry: every object reads back as its name says — it stands, re-verified.
+      clock = (authority?.getTime() ?? 0) + 1;
+      expect((await seals(at))?.captureId).toBe(file.cap.id);
+      expect((await recorded(at))?.reverifiedAt?.getTime()).toBe(clock);
+      expect((await seals(at))?.captureId).toBe(file.cap.id);
+
+      // Another URL handed out under the epoch (an older daemon re-asking for the stored pack is
+      // answered one, review 2026-09-28 (7) #7): withheld again until it expires. Through it the
+      // pack is replaced with bytes of the same length.
+      const legacy = await run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [file.key],
+          sizes: { [file.key]: file.bytes.length },
+        }),
+      );
+      expect(typeof legacy.urls[file.key]).toBe("string");
+      expect(await seals(at)).toBeNull();
+      const stored = path.join(world.blobRoot, file.key);
+      const corrupted = Buffer.from(file.bytes);
+      corrupted[0] = (corrupted[0] ?? 0) ^ 0xff;
+      fs.chmodSync(stored, 0o644);
+      fs.writeFileSync(stored, corrupted);
+      clock = (world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`)?.getTime() ?? 0) + 1;
+      // Read back as other bytes: void, and it never stands again — not even over the bytes
+      // put back.
+      expect(await seals(at)).toBeNull();
+      expect((await recorded(at))?.voidReason).toContain(file.key);
+      fs.writeFileSync(stored, file.bytes);
+      expect(await seals(at)).toBeNull();
+    });
+  },
+);
+
+// The reviewer's reproduction on a real bucket that ignores `If-None-Match` (Garage 2.4.1):
+// opt in with MEND_TEST_S3_URL (s3://bucket?endpoint=…&region=…) + AWS_ACCESS_KEY_ID /
+// AWS_SECRET_ACCESS_KEY, as the store's S3 contract does.
+const garageConfig = (() => {
+  const url = process.env["MEND_TEST_S3_URL"];
+  if (url === undefined || url === "") return null;
+  const resolved = resolveBlobStoreConfig({ MEND_BLOB_STORE: url });
+  if (resolved.target.kind !== "s3") return null;
+  const accessKeyId = process.env["AWS_ACCESS_KEY_ID"];
+  const secretAccessKey = process.env["AWS_SECRET_ACCESS_KEY"];
+  if (accessKeyId === undefined || secretAccessKey === undefined) return null;
+  return { ...resolved.target, credentials: { accessKeyId, secretAccessKey } };
+})();
+describeSeals(
+  "review 7 #8 on a real bucket (MEND_TEST_S3_URL)",
+  {
+    skip: garageConfig === null,
+    blobs: (root) =>
+      garageConfig === null ? BlobStoreFsLive(root) : BlobStoreS3Live(garageConfig),
+  },
+  ({ run, claimed }) => {
+    it("the URL minted before the pack's upload replaces it after the register: no seal stands on it", async () => {
+      const at = await claimed();
+      const file = sealedFile(at, "unique saved bytes\n");
+      const minted = await run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [file.key],
+          sizes: { [file.key]: file.bytes.length },
+        }),
+      );
+      const url = minted.urls[file.key] ?? "";
+      const headers = { "if-none-match": "*", "content-length": String(file.bytes.length) };
+      expect(
+        (await fetch(url, { method: "PUT", headers, body: Buffer.from(file.bytes) })).status,
+      ).toBe(200);
+      await run(
+        uploadObjects(
+          new Map(
+            [...file.snapshot.objects]
+              .filter(([key]) => key !== file.key)
+              .concat([[file.cap.key, file.cap.bytes]]),
+          ),
+        ),
+      );
+      await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
+      const seals = () =>
+        run(
+          Effect.flatMap(CaptureSeals, (service) =>
+            service.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
+          ).pipe(Effect.provide(CaptureSealsStoreLive)),
+        );
+      const refuses =
+        (await run(Effect.flatMap(BlobStore, (store) => store.replaceableUntil(file.key)))) === 0;
+      if (refuses) {
+        // A bucket that honours the precondition: the seal stands, and the URL cannot replace.
+        expect((await seals())?.captureId).toBe(file.cap.id);
+        return;
+      }
+      // Garage: withheld while the URL lives …
+      expect(await seals()).toBeNull();
+      // … which it does: the same URL replaces the pack's first byte, and the seal still does
+      // not stand on it.
+      const bad = Buffer.from(file.bytes);
+      bad[0] = (bad[0] ?? 0) ^ 0xff;
+      expect((await fetch(url, { method: "PUT", headers, body: bad })).status).toBe(200);
+      const read = await run(
+        readCaptureFileBytes(file.cap.manifest, "workspace", "tree/unique.txt").pipe(Effect.result),
+      );
+      expect(read._tag).toBe("Failure");
+      expect(await seals()).toBeNull();
+    });
+  },
+);

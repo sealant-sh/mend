@@ -1,7 +1,9 @@
 import * as crypto from "node:crypto";
 import * as fs from "node:fs";
+import * as os from "node:os";
 import * as path from "node:path";
 import { Readable } from "node:stream";
+import { pipeline as pipelinePromise } from "node:stream/promises";
 import * as zlib from "node:zlib";
 
 import { Effect, Schema } from "effect";
@@ -2049,7 +2051,12 @@ const MetaDocument = Schema.Struct({
       raw_path: Schema.optionalKey(Schema.String),
       kind: Schema.Literals(["file", "symlink", "dir"]),
       mode: Schema.optionalKey(Schema.Int),
-      mtime: Schema.Number,
+      /**
+       * Nanoseconds since the epoch. Read from the document's text as a `bigint` when it is an
+       * integer (`parseMetaDocumentJson`): a double rounds nanoseconds, and two mtimes one apart
+       * are two promises (review 2026-09-28 (7) #10).
+       */
+      mtime: Schema.Union([Schema.BigInt, Schema.Number]),
     }),
   ),
   hardlinks: Schema.optionalKey(Schema.Array(Schema.Array(Schema.String))),
@@ -2099,6 +2106,7 @@ export type WorktreeTreeKind = "file" | "symlink" | "dir" | "gitlink";
 export const metaNamespaceProblem = (
   document: WorktreeMetaDocument,
   tracked: ReadonlyMap<string, WorktreeTreeKind>,
+  treeName = "the worktree tree",
 ): string | null => {
   for (const entry of document.entries) {
     const bytes = bytesOfPair(entry.path, entry.raw_path);
@@ -2107,14 +2115,124 @@ export const metaNamespaceProblem = (
     const found = tracked.get(bytes.toString("hex"));
     if (entry.kind === "dir") {
       if (found !== undefined && found !== "dir") {
-        return `${JSON.stringify(entry.path)} is a directory in the document, a ${found} in the worktree tree`;
+        return `${JSON.stringify(entry.path)} is a directory in the document, a ${found} in ${treeName}`;
       }
       continue;
     }
     if (found !== entry.kind) {
       return `${JSON.stringify(entry.path)} is a ${entry.kind} in the document, ${
         found === undefined ? "absent from" : `a ${found} in`
-      } the worktree tree`;
+      } ${treeName}`;
+    }
+  }
+  return null;
+};
+
+/**
+ * `metaNamespaceProblem` over the tree the restore actually checks out and the classes restored
+ * over it (review 2026-09-28 (7) #9). sealantd checks out `raw_tree` when the section has one
+ * (`rawTreeOf`), not the worktree tree, and applies the document after every class: a path the
+ * restore tree does not hold is on disk only when the workspace class carries it (`tree/<path>`)
+ * or the bulk class does (`<path>`), as that class holds it. `restoreTree` is every path of the
+ * restore tree, hex of its bytes → its kind and object; the classes are read only for a path it
+ * does not hold. The reason, or null when the document applies.
+ */
+export const restoreNamespaceProblem = (
+  manifest: CaptureManifest,
+  document: WorktreeMetaDocument,
+  restoreTree: ReadonlyMap<string, RestoreTreePath>,
+): Effect.Effect<string | null, never, BlobStore> =>
+  Effect.gen(function* () {
+    const members = makeClassMembers(manifest);
+    const overlays = new Map<string, WorktreeTreeKind>();
+    for (const entry of document.entries) {
+      const bytes = bytesOfPair(entry.path, entry.raw_path);
+      if (bytes === null || bytes.length === 0) continue;
+      const hex = bytes.toString("hex");
+      if (restoreTree.has(hex) || overlays.has(hex)) continue;
+      const key = keyOfBytes(bytes);
+      const overlay =
+        (yield* members.kindOf("workspace", `tree/${key}`)) ?? (yield* members.kindOf("bulk", key));
+      if (overlay !== null) overlays.set(hex, overlay);
+    }
+    const namespace = new Map<string, WorktreeTreeKind>(overlays);
+    for (const [hex, found] of restoreTree) namespace.set(hex, found.kind);
+    return metaNamespaceProblem(document, namespace, "the tree the restore checks out");
+  });
+
+/** An mtime as the exact text of its nanoseconds (a `bigint`, or a double's own digits). */
+const exactMtime = (mtime: bigint | number): string =>
+  typeof mtime === "bigint"
+    ? mtime.toString()
+    : Number.isSafeInteger(mtime)
+      ? BigInt(mtime).toString()
+      : String(mtime);
+
+/** A tracked name of the document, as a node of `metaInodeProblem`'s inode groups. */
+const trackedNode = (key: string) => `tracked:${key}`;
+/** A class's name, as a node of `metaInodeProblem`'s inode groups. */
+const memberNode = (cls: string, key: string, raw?: string) =>
+  `${cls}:${bytesOfPair(key, raw)?.toString("hex") ?? key}`;
+
+/**
+ * Whether every inode the document declares shared is promised one mode and one mtime (review
+ * 2026-09-28 (7) #10). A tracked `hardlinks` group, a `shared` link from a tracked file to
+ * another class's name and a `cross_links` group each say their names are one inode; groups that
+ * share a name are one inode too. sealantd links them, then settles each entry the document
+ * names in turn — every one on the same inode — so of two entries that promise the inode
+ * different modes or mtimes, the later one is what the restore leaves and the earlier promise is
+ * broken. The reason, or null when every connected group is promised one mode and one mtime.
+ */
+export const metaInodeProblem = (document: WorktreeMetaDocument): string | null => {
+  const parent = new Map<string, string>();
+  const find = (node: string): string => {
+    let root = node;
+    while (true) {
+      const up = parent.get(root);
+      if (up === undefined || up === root) break;
+      root = up;
+    }
+    parent.set(node, root);
+    return root;
+  };
+  const union = (a: string, b: string) => {
+    const ra = find(a);
+    const rb = find(b);
+    if (ra !== rb) parent.set(ra, rb);
+  };
+  for (const group of document.hardlinks ?? []) {
+    const [first, ...rest] = group;
+    if (first === undefined) continue;
+    for (const other of rest) union(trackedNode(first), trackedNode(other));
+  }
+  for (const link of document.shared ?? []) {
+    union(trackedNode(link.path), memberNode(link.class, link.member, link.raw_member));
+  }
+  for (const group of document.cross_links ?? []) {
+    const [first, ...rest] = group;
+    if (first === undefined) continue;
+    for (const other of rest) {
+      union(
+        memberNode(first.class, first.member, first.raw_member),
+        memberNode(other.class, other.member, other.raw_member),
+      );
+    }
+  }
+  if (parent.size === 0) return null;
+  const promised = new Map<string, { readonly path: string; readonly promise: string }>();
+  for (const entry of document.entries) {
+    if (entry.kind !== "file") continue;
+    const node = trackedNode(entry.path);
+    if (!parent.has(node)) continue;
+    const group = find(node);
+    const promise = `mode ${(entry.mode ?? -1).toString(8)} mtime ${exactMtime(entry.mtime)}`;
+    const first = promised.get(group);
+    if (first === undefined) {
+      promised.set(group, { path: entry.path, promise });
+      continue;
+    }
+    if (first.promise !== promise) {
+      return `${JSON.stringify(first.path)} and ${JSON.stringify(entry.path)} are one inode, promised ${first.promise} and ${promise}`;
     }
   }
   return null;
@@ -2222,6 +2340,26 @@ const makeClassMembers = (manifest: CaptureManifest) => {
         chunks: (holder.chunks ?? []).join(","),
       };
     });
+  /** What `member` is in its class, as a restore lays it down; null when the class has no such name. */
+  const kindOf = (
+    cls: CaptureClass,
+    member: string,
+  ): Effect.Effect<WorktreeTreeKind | null, never, BlobStore> =>
+    Effect.gen(function* () {
+      const section = manifest.sections[cls];
+      if (section === "pending") return null;
+      const segments = captureSegments(member);
+      if (segments === null || section.root === "") return null;
+      const reader =
+        readers.get(cls) ?? (yield* makeDirReader(section).pipe(Effect.orElseSucceed(() => null)));
+      if (reader === null) return null;
+      readers.set(cls, reader);
+      const entry = yield* entryAt(reader, section.root, segments).pipe(
+        Effect.orElseSucceed(() => null),
+      );
+      if (entry === null) return null;
+      return entry.kind === "hardlink-group" ? "file" : entry.kind;
+    });
   const digestOf = (
     member: ClassMember,
     as: "sha256" | "git-sha1" | "git-sha256",
@@ -2238,7 +2376,7 @@ const makeClassMembers = (manifest: CaptureManifest) => {
       ),
       Effect.orElseSucceed(() => null),
     );
-  return { fileOf, digestOf };
+  return { fileOf, kindOf, digestOf };
 };
 
 /** A path of the tree a restore checks out: what it is, and the object git holds for it. */
@@ -2329,6 +2467,21 @@ const isPlainRelative = (bytes: Buffer): boolean => {
 };
 
 /**
+ * The worktree metadata document's JSON, with every integer `mtime` read from its source text as
+ * a `bigint` (as `parseDirObjectJson` reads a dir object's): nanoseconds since the epoch overflow
+ * a double's 53 bits.
+ */
+const parseMetaDocumentJson = (text: string): unknown =>
+  JSON.parse(text, (key: string, value: unknown, context?: { readonly source?: string }) =>
+    key === "mtime" &&
+    typeof value === "number" &&
+    context?.source !== undefined &&
+    /^-?\d+$/.test(context.source)
+      ? BigInt(context.source)
+      : value,
+  );
+
+/**
  * The document's own rules, as sealantd's `MetaDocument::decode` enforces them before a restore
  * writes anything: a format it reads, every path plain and relative with raw bytes that agree
  * with its key, a mode on everything but a symlink, hardlink groups of two or more files of the
@@ -2341,7 +2494,7 @@ const decodeMetaDocument = (
   let document: WorktreeMetaDocument;
   try {
     document = Schema.decodeUnknownSync(MetaDocument)(
-      JSON.parse(Buffer.from(bytes).toString("utf8")),
+      parseMetaDocumentJson(Buffer.from(bytes).toString("utf8")),
     );
   } catch (cause) {
     return { problem: cause instanceof Error ? cause.message : String(cause) };
@@ -2560,3 +2713,98 @@ export const captureKeyOwner = (key: string): string | null => {
  */
 export const verifyGitPack = (packPath: string): Effect.Effect<void, GitError> =>
   git(["index-pack", "--verify", packPath], path.dirname(packPath)).pipe(Effect.asVoid);
+
+// ─── A sealed capture's bytes, read back ────────────────────────────────────
+
+/**
+ * Whether the git pack stored at `key` is still what register verified: it hashes to its name,
+ * and `git index-pack --verify` over it and the index stored beside it passes — the index a
+ * restore installs as it is (sealantd `install_pack`) must describe that very pack. The reason it
+ * is not, or null.
+ */
+const storedGitPackProblem = (
+  key: string,
+): Effect.Effect<string | null, BlobNotFoundError | BlobStoreError, BlobStore> =>
+  Effect.gen(function* () {
+    const own = yield* storedObjectProblem(key);
+    if (own !== null) return own;
+    const store = yield* BlobStore;
+    const idxKey = packIdxKeyOf(key);
+    const idx = yield* store.get(idxKey);
+    const stream = yield* store.getStream(key);
+    return yield* Effect.acquireUseRelease(
+      Effect.sync(() => fs.mkdtempSync(path.join(os.tmpdir(), "mend-seal-pack-"))),
+      (dir) =>
+        Effect.gen(function* () {
+          const packPath = path.join(dir, "pack.pack");
+          yield* Effect.tryPromise({
+            try: async () => {
+              await pipelinePromise(stream, fs.createWriteStream(packPath));
+              await fs.promises.writeFile(path.join(dir, "pack.idx"), idx);
+            },
+            catch: (cause) => cause,
+          }).pipe(Effect.orDie);
+          return yield* verifyGitPack(packPath).pipe(
+            Effect.as(null),
+            Effect.catchTag("GitError", (error) =>
+              Effect.succeed(`${idxKey} does not index ${key}: ${error.stderr.trim()}`),
+            ),
+          );
+        }),
+      (dir) => Effect.sync(() => fs.rmSync(dir, { recursive: true, force: true })),
+    );
+  });
+
+/**
+ * Whether every object the capture at `manifestKey` names is still what its name says, read back
+ * from the store now (review 2026-09-28 (7) #8): the manifest, every pack, dir pack and format-1
+ * dir object of its chunked classes (the worktree metadata document's packs are the workspace
+ * class's own), and every git pack with the index a restore installs beside it. Every capture key
+ * is content-addressed, so objects that read back as their names are the bytes register verified,
+ * and what the seal said of them still holds. The reason one is not (missing, other bytes, an
+ * index of another pack), or null. Fails only when the store could not be read (`BlobStoreError`):
+ * nothing is concluded then.
+ */
+export const storedCaptureProblem = (
+  manifestKey: string,
+): Effect.Effect<string | null, BlobStoreError, BlobStore> =>
+  Effect.gen(function* () {
+    const store = yield* BlobStore;
+    const own = yield* storedObjectProblem(manifestKey);
+    if (own !== null) return own;
+    const manifest = yield* store.get(manifestKey).pipe(
+      Effect.flatMap((bytes) => decodeManifest(manifestKey, bytes)),
+      Effect.result,
+    );
+    if (manifest._tag === "Failure") {
+      const error = manifest.failure;
+      if (error._tag === "BlobStoreError") return yield* Effect.fail(error);
+      return error._tag === "BlobNotFoundError"
+        ? `${manifestKey} is not stored`
+        : `${manifestKey} does not decode`;
+    }
+    const sections = manifest.success.sections;
+    const keys = new Set(keysOfSections(sections));
+    for (const cls of ["workspace", "bulk"] as const) {
+      const trees = yield* collectTreeKeys(manifest.success, cls, {
+        limit: Number.POSITIVE_INFINITY,
+      }).pipe(Effect.result);
+      if (trees._tag === "Failure") {
+        const error = trees.failure;
+        if (error._tag === "BlobStoreError") return yield* Effect.fail(error);
+        return `the ${cls} class's dir objects do not read back: ${error._tag}`;
+      }
+      for (const key of trees.success) keys.add(key);
+    }
+    const gitPacks = new Set(sections.git.packs);
+    for (const key of keys) {
+      if (key.endsWith(".idx") && gitPacks.has(key.slice(0, -".idx".length))) continue;
+      const problem = yield* (
+        gitPacks.has(key) ? storedGitPackProblem(key) : storedObjectProblem(key)
+      ).pipe(Effect.catchTag("BlobNotFoundError", () => Effect.succeed(`${key} is not stored`)));
+      if (problem !== null) return problem;
+    }
+    return null;
+  }).pipe(
+    Effect.catchTag("BlobNotFoundError", (error) => Effect.succeed(`${error.key} is not stored`)),
+  );

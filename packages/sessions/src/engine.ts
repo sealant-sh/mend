@@ -1682,12 +1682,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       // ── An executor's evidence, one decision at a time (cross-repo decision 18) ──────────
       // Every answer asked of an executor is fenced from the moment it is asked until it is
-      // persisted: while one is in flight, or one arrived and could not be persisted, the
-      // executor's evidence is unknown — no seal stands for it and nothing reads it saved. Its
-      // persistence, and every decision that attests or reads "saved" on it, run under one
-      // permit per executor, and a decision commits only while the evidence version it read is
-      // still the current one. (An answer lost with this process is an answer never received:
-      // Core recorded it on the way, and weighs any attestation against it.)
+      // published: while one is in flight, or one arrived and could not be published, the
+      // executor's evidence is unknown — no seal stands for it and nothing reads it saved. The
+      // fence is durable (0088, review 2026-09-28 (7) #3): written before the ask, and deleted
+      // in the very transaction that publishes the answer — the session's reading, its saved or
+      // unsaved word and the executor's evidence — so neither a restart nor another engine
+      // process nor a failed write reads the executor settled on less than it answered. An ask
+      // that comes back with no answer deletes its fence; one whose answer arrived and was not
+      // published keeps it until an answer asked after it is published. Publication, and every
+      // decision that attests or reads "saved" on the evidence, run under one permit per
+      // executor, and a decision commits only while the evidence version it read is still the
+      // current one.
       const evidenceLocks = new Map<string, Semaphore.Semaphore>();
       const withEvidenceLock = <A, E, R>(
         workspaceId: string,
@@ -1698,32 +1703,57 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (existing === undefined) evidenceLocks.set(workspaceId, lock);
         return lock.withPermit(effect);
       };
-      /** Answers asked of each executor and not yet persisted, or not answered yet. */
-      const observing = new Map<string, number>();
-      /** Each executor's answer that arrived and failed to persist: the tick it was asked at. */
-      const unreconciled = new Map<string, number>();
-      let observationTicks = 0;
-      /** Nothing in flight and nothing unpersisted: the evidence kept is all that was received. */
+      /** This engine process, as the fences it opens name it. */
+      const fenceHolder = `engine:${crypto.randomUUID()}`;
+      /** One ask's fence: its ticket, and how far its answer got. */
+      interface EvidenceFence {
+        readonly ticket: number;
+        readonly holder: string;
+        answered: boolean;
+        published: boolean;
+      }
+      /** Nothing asked and unpublished: the evidence kept is all that was received. */
       const evidenceSettled = (workspaceId: string) =>
-        (observing.get(workspaceId) ?? 0) === 0 && !unreconciled.has(workspaceId);
-      /** Ask `ask` of the executor fenced: counted in flight until it returns. */
+        sessions.evidenceFenced(workspaceId).pipe(Effect.map((fenced) => !fenced));
+      /**
+       * Ask `ask` of the executor fenced: the fence is written before it and closed after it —
+       * deleted when nothing arrived, kept (`unpublished`) when an answer arrived and was not
+       * published. Null when the fence could not be written: nothing is asked unfenced.
+       */
       const fencedObservation = <A, E, R>(
         workspaceId: string,
-        ask: (tick: number) => Effect.Effect<A, E, R>,
-      ): Effect.Effect<A, E, R> =>
+        ask: (fence: EvidenceFence) => Effect.Effect<A | null, E, R>,
+      ): Effect.Effect<A | null, E, R> =>
         Effect.acquireUseRelease(
-          Effect.sync(() => {
-            observationTicks += 1;
-            observing.set(workspaceId, (observing.get(workspaceId) ?? 0) + 1);
-            return observationTicks;
-          }),
-          ask,
-          () =>
-            Effect.sync(() => {
-              const left = (observing.get(workspaceId) ?? 1) - 1;
-              if (left <= 0) observing.delete(workspaceId);
-              else observing.set(workspaceId, left);
-            }),
+          sessions.openEvidenceFence(workspaceId, fenceHolder).pipe(
+            Effect.map((ticket): EvidenceFence | null => ({
+              ticket,
+              holder: fenceHolder,
+              answered: false,
+              published: false,
+            })),
+            Effect.catchCause((cause) =>
+              Effect.logWarning(
+                "session engine: capture evidence · the fence could not be written · not asked",
+              ).pipe(
+                Effect.annotateLogs({ workspaceId, cause: Cause.pretty(cause) }),
+                Effect.as(null),
+              ),
+            ),
+          ),
+          (fence) => (fence === null ? Effect.succeed(null) : ask(fence)),
+          (fence) =>
+            fence === null || fence.published
+              ? Effect.void
+              : sessions
+                  .closeEvidenceFence(fence.ticket, fence.answered ? "unpublished" : "unanswered")
+                  .pipe(
+                    Effect.catchCause((cause) =>
+                      Effect.logWarning(
+                        "session engine: capture evidence · the fence could not be closed · the executor's evidence stays unknown",
+                      ).pipe(Effect.annotateLogs({ workspaceId, cause: Cause.pretty(cause) })),
+                    ),
+                  ),
         );
       /**
        * The executor's evidence as a decision reads it: what is kept, the version it read, and
@@ -1736,7 +1766,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return {
           workspaceId,
           version: evidence?.version ?? 0,
-          settled: evidenceSettled(workspaceId),
+          settled: yield* evidenceSettled(workspaceId),
         };
       });
       /** Whether the evidence a decision read is still the current one, and settled. */
@@ -1746,7 +1776,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly version: number;
           readonly settled: boolean;
         }) {
-          if (!token.settled || !evidenceSettled(token.workspaceId)) return false;
+          if (!token.settled || !(yield* evidenceSettled(token.workspaceId))) return false;
           const now = yield* sessions.executorEvidenceOf(token.workspaceId);
           return (now?.version ?? 0) === token.version;
         },
@@ -1770,8 +1800,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         timeout: Duration.Duration,
         kind: CaptureFlushKind,
       ) =>
-        fencedObservation(workspace.id, (tick) =>
-          observeCaptureFlushFenced(session, workspace, why, timeout, kind, tick),
+        fencedObservation(workspace.id, (fence) =>
+          observeCaptureFlushFenced(session, workspace, why, timeout, kind, fence),
         );
       const observeCaptureFlushFenced = Effect.fn("SessionEngine.observeCaptureFlush")(function* (
         session: Session,
@@ -1779,7 +1809,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         why: string,
         timeout: Duration.Duration,
         kind: CaptureFlushKind,
-        tick: number,
+        fence: EvidenceFence,
       ) {
         const outcome = yield* sealant
           .captureFlush(workspace, kind)
@@ -1846,7 +1876,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             paused: report.paused,
           }),
         );
-        yield* recordReading(session, workspace.id, reading, kind, tick);
+        yield* recordReading(session, workspace.id, reading, kind, fence);
         if (kind === "final") recentFinals.set(workspace.id, { reading, atMs: Date.now() });
         return reading;
       });
@@ -1862,21 +1892,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspaceId: string,
         reading: CaptureReading,
         kind: CaptureFlushKind | "status",
-        tick: number,
+        fence: EvidenceFence,
       ) {
         if (capture === null) return;
-        // Persisted under the executor's permit; an answer that fails to persist leaves the
-        // executor's evidence unknown until an answer asked after it persists.
+        // An answer arrived: from here its fence clears only with its publication (or with a
+        // later answer's), never because the ask returned.
+        fence.answered = true;
         yield* withEvidenceLock(
           workspaceId,
-          persistReading(session, workspaceId, reading, kind).pipe(
-            Effect.onExit((exit) =>
+          persistReading(session, workspaceId, reading, kind, fence).pipe(
+            Effect.tap(() =>
               Effect.sync(() => {
-                if (exit._tag === "Failure") {
-                  unreconciled.set(workspaceId, Math.max(tick, unreconciled.get(workspaceId) ?? 0));
-                } else if ((unreconciled.get(workspaceId) ?? Infinity) < tick) {
-                  unreconciled.delete(workspaceId);
-                }
+                fence.published = true;
               }),
             ),
           ),
@@ -1887,6 +1914,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspaceId: string,
         reading: CaptureReading,
         kind: CaptureFlushKind | "status",
+        fence: EvidenceFence,
       ) {
         if (capture === null) return;
         const head = yield* capture.repo.headOf(session.worktreeId);
@@ -1901,26 +1929,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const before = yield* sessions
           .byId(session.id)
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-        yield* sessions.recordCaptureObservation(session.id, {
-          pending: reading.pending,
-          pendingBytes: reading.pendingBytes,
-          refused: reading.refused,
-          registeredAt: head?.head?.createdAt ?? null,
-          observedAt,
-          failing,
-          ...(incompleteReason === undefined
-            ? {}
-            : {
-                incompleteReason,
-                incompleteDetail: incompleteReason === null ? null : captureSnapDetailOf(reading),
-              }),
-        });
-        // The executor's own word that its final flush completed: it stopped every writer,
-        // snapshotted both classes and registered them, and admits nothing after that. How its
-        // end reads from here on (`executorEndOf`), whatever registers on top of it.
         // Where the executor made this answer (cross-repo decision 17): what orders it against
         // its other answers and its seal. `observedAt` is for display.
         const position = reading.position ?? null;
+        // The executor's own word that its final flush completed: it stopped every writer,
+        // snapshotted both classes and registered them, and admits nothing after that. How its
+        // end reads from here on (`executorEndOf`), whatever registers on top of it.
         const saved = captureSaved(reading)
           ? {
               workspaceId,
@@ -1930,7 +1944,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               position,
             }
           : null;
-        if (saved !== null) yield* sessions.recordCaptureSaved(session.id, saved);
         // The executor's own word that it holds work not saved (cross-repo decision 10): kept, so
         // an older save — a `complete: true` above, or the store's seal — reads revoked from here
         // on (`executorSealOf`, `executorEndOf`), whatever registers later without a new one.
@@ -1939,18 +1952,39 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           unsavedWords === null
             ? null
             : { workspaceId, at: observedAt, words: unsavedWords, position };
-        if (unsaved !== null) yield* sessions.recordCaptureUnsaved(session.id, unsaved);
-        // Both are the executor's, whoever asked (cross-repo decision 14, review 2026-09-28 (5)
-        // #3): a joined session's read of the executor it shares describes the holder's disk
-        // too, so the answer is kept per executor as well, where every seal, attestation and end
-        // of that executor is weighed against it — and where it outlives the session that asked.
-        // Every answer moves the executor's evidence version (cross-repo decision 18), whatever
-        // it said: a decision that read an older version does not commit.
-        yield* sessions.recordExecutorEvidence(workspaceId, {
-          worktreeId: session.worktreeId,
-          launchId: yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspaceId)),
-          ...(saved === null ? {} : { saved }),
-          ...(unsaved === null ? {} : { unsaved }),
+        // One transaction (review 2026-09-28 (7) #3): the session's reading and word, the answer
+        // added to the executor's evidence — the executor's whoever asked (cross-repo decision
+        // 14): a joined session's read describes the holder's disk too, and it outlives the
+        // session that asked — and the fence cleared. Every answer moves the executor's evidence
+        // version (cross-repo decision 18), whatever it said: a decision that read an older
+        // version does not commit.
+        yield* sessions.publishExecutorReading({
+          sessionId: session.id,
+          workspaceId,
+          fence: { ticket: fence.ticket, holder: fence.holder },
+          observation: {
+            pending: reading.pending,
+            pendingBytes: reading.pendingBytes,
+            refused: reading.refused,
+            registeredAt: head?.head?.createdAt ?? null,
+            observedAt,
+            failing,
+            ...(incompleteReason === undefined
+              ? {}
+              : {
+                  incompleteReason,
+                  incompleteDetail: incompleteReason === null ? null : captureSnapDetailOf(reading),
+                }),
+          },
+          position,
+          saved,
+          unsaved,
+          answer: {
+            worktreeId: session.worktreeId,
+            launchId: yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspaceId)),
+            ...(saved === null ? {} : { saved }),
+            ...(unsaved === null ? {} : { unsaved }),
+          },
         });
         if (failing !== null && before !== null && before.captureFailingSince === null) {
           yield* Effect.logWarning("session engine: capture failing · observed").pipe(
@@ -1978,13 +2012,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * daemon refused or did not answer in time.
        */
       const observeCaptureStatus = (session: Session, workspace: Workspace) =>
-        fencedObservation(workspace.id, (tick) =>
-          observeCaptureStatusFenced(session, workspace, tick),
+        fencedObservation(workspace.id, (fence) =>
+          observeCaptureStatusFenced(session, workspace, fence),
         );
       const observeCaptureStatusFenced = Effect.fn("SessionEngine.observeCaptureStatus")(function* (
         session: Session,
         workspace: Workspace,
-        tick: number,
+        fence: EvidenceFence,
       ) {
         const outcome = yield* sealant
           .captureStatus(workspace)
@@ -2005,7 +2039,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         if (Option.isNone(outcome.success) || outcome.success.value === null) return null;
         const reading = readCaptureReport(outcome.success.value);
-        yield* recordReading(session, workspace.id, reading, "status", tick);
+        yield* recordReading(session, workspace.id, reading, "status", fence);
         return reading;
       });
 
@@ -2339,7 +2373,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const { seal } = record;
         // An answer asked and not yet persisted may say anything: nothing stands for it
         // (cross-repo decision 18).
-        if (!evidenceSettled(workspaceId)) {
+        if (!(yield* evidenceSettled(workspaceId))) {
           yield* Effect.logWarning(
             "session engine: capture mode · sealed, but an answer of the executor is not recorded yet · the seal does not stand",
           ).pipe(
@@ -5701,10 +5735,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           workspaceId === null
             ? { saved: null, unsaved: null, version: 0 }
             : yield* executorAnswersOf(session, workspaceId);
-        // An answer asked and not yet recorded may revoke any save: until it is, none stands
-        // (cross-repo decision 18).
-        const settled = workspaceId === null || evidenceSettled(workspaceId);
-        const saved = settled ? answers.saved : null;
+        // An answer asked and not yet published may revoke any save: until it is, none stands
+        // and none is refuted — completion unknown (cross-repo decision 18, review 2026-09-28
+        // (7) #3).
+        const settled = workspaceId === null || (yield* evidenceSettled(workspaceId));
+        const saved = answers.saved;
         const chain = capture === null ? null : yield* capture.repo.headOf(session.worktreeId);
         const head = chain?.head ?? null;
         const sections = head?.sections;
@@ -5715,9 +5750,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The seal as recorded: `executorEndOf` weighs it against the answers after it itself,
         // and names it as the last confirmed save when one revoked it.
         const sealRecord =
-          workspaceId === null || !settled
-            ? null
-            : yield* executorSealRecordOf(session, workspaceId);
+          workspaceId === null ? null : yield* executorSealRecordOf(session, workspaceId);
         const unsaved = answers.unsaved;
         const end = executorEndOf({
           head:
@@ -5734,10 +5767,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     sections.bulk === "pending",
                 },
           executorStartedAt: session.executorStartedAt,
+          // The queue reading with where the executor made it (review 2026-09-28 (7) #4): the
+          // same answer the executor's evidence keeps, ordered against a seal the same way.
           reading: {
             pending: session.capturePending,
             pendingBytes: session.capturePendingBytes,
             observedAt: session.captureObservedAt,
+            position: yield* sessions.captureObservedPositionOf(session.id),
           },
           // This executor's own `complete: true`, under this executor's epoch when both are known.
           finalSaved:
@@ -5761,6 +5797,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             unsaved === null || workspaceId === null || unsaved.workspaceId !== workspaceId
               ? null
               : { at: unsaved.at, words: unsaved.words, position: unsaved.position ?? null },
+          settled,
         });
         const outcome: SessionOutcome = end.kind === "saved" ? "stopped" : "failed";
         return {

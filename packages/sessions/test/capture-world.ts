@@ -284,7 +284,11 @@ export interface CaptureWorld {
 }
 
 export const makeCaptureWorld = (
-  options: { readonly sources?: Layer.Layer<CaptureSources> } = {},
+  options: {
+    readonly sources?: Layer.Layer<CaptureSources>;
+    /** The bucket, given the directory store's root: the directory store when absent. */
+    readonly blobs?: (root: string) => Layer.Layer<BlobStore>;
+  } = {},
 ): CaptureWorld => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-capture-world-"));
   const repo = makeProjectRepo(scratch);
@@ -294,7 +298,7 @@ export const makeCaptureWorld = (
   const blobRoot = path.join(scratch, "blobs");
   const storeConfig = StoreConfig.layerFor(path.join(scratch, "store"));
   const store = Store.layer.pipe(Layer.provide(storeConfig));
-  const blobs = BlobStoreFsLive(blobRoot);
+  const blobs = options.blobs?.(blobRoot) ?? BlobStoreFsLive(blobRoot);
   const refs = memoryStoreRefs();
   const runner = GitOpsRunnerLive.pipe(
     Layer.provide(store),

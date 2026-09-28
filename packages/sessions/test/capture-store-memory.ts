@@ -29,6 +29,8 @@ export interface MemoryCaptureStore {
   readonly tombstones: Map<string, { worktreeId: string; deleted: boolean }>;
   /** `capture_seals`: `<worktree>:<epoch>` → the sealed completion. */
   readonly seals: Map<string, SealedCompletion>;
+  /** `capture_put_authority`: `<worktree>:<epoch>` → the latest upload URL expiry (0089). */
+  readonly putAuthority: Map<string, Date>;
   /** `capture_deletion_claims`: key → token → when the claim lapses (store clock, ms). */
   readonly claims: Map<string, Map<string, number>>;
   readonly packs: Map<string, PackRow>;
@@ -69,6 +71,8 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
   const tombstones = new Map<string, { worktreeId: string; deleted: boolean }>();
   const claims = new Map<string, Map<string, number>>();
   const seals = new Map<string, SealedCompletion>();
+  /** `capture_put_authority`: `<worktree>:<epoch>` → the latest upload URL expiry. */
+  const putAuthority = new Map<string, Date>();
   /** A live deletion claim on `key`: some pass may still delete its bytes. */
   const claimed = (key: string) =>
     [...(claims.get(key)?.values() ?? [])].some((expiresAt) => expiresAt > clock.now());
@@ -287,6 +291,40 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
             )
             .toSorted((a, b) => b.epoch - a.epoch)[0] ?? null,
       ),
+    recordPutAuthority: (worktreeId, epoch, expiresAt) =>
+      Effect.sync(() => {
+        const key = `${worktreeId}:${epoch}`;
+        const kept = putAuthority.get(key);
+        if (kept === undefined || kept.getTime() < expiresAt.getTime()) {
+          putAuthority.set(key, expiresAt);
+        }
+      }),
+    putAuthorityUntil: (worktreeId, epoch) =>
+      Effect.sync(() => putAuthority.get(`${worktreeId}:${epoch}`) ?? null),
+    markSealReverified: (worktreeId, epoch, captureId, at) =>
+      Effect.sync(() => {
+        const key = `${worktreeId}:${epoch}`;
+        const seal = seals.get(key);
+        if (
+          seal === undefined ||
+          seal.captureId !== captureId ||
+          (seal.voidReason ?? null) !== null
+        ) {
+          return;
+        }
+        const kept = seal.reverifiedAt ?? null;
+        seals.set(key, {
+          ...seal,
+          reverifiedAt: kept === null || kept.getTime() < at.getTime() ? at : kept,
+        });
+      }),
+    voidSeal: (worktreeId, epoch, captureId, reason) =>
+      Effect.sync(() => {
+        const key = `${worktreeId}:${epoch}`;
+        const seal = seals.get(key);
+        if (seal === undefined || seal.captureId !== captureId) return;
+        seals.set(key, { ...seal, voidReason: seal.voidReason ?? reason });
+      }),
     listChain: (worktreeId) =>
       Effect.sync(() =>
         [...captures.values()]
@@ -406,5 +444,17 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
       }),
   });
 
-  return { layer, clock, leases, chains, captures, packs, summaries, tombstones, claims, seals };
+  return {
+    layer,
+    clock,
+    leases,
+    chains,
+    captures,
+    packs,
+    summaries,
+    tombstones,
+    claims,
+    seals,
+    putAuthority,
+  };
 };

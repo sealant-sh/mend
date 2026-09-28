@@ -123,6 +123,7 @@ import type {
 import { sql } from "drizzle-orm";
 import {
   bigint,
+  bigserial,
   boolean,
   foreignKey,
   index,
@@ -1222,6 +1223,9 @@ export const agentSessions = pgTable(
     captureUnsavedWorkspaceId: text(),
     captureUnsavedAt: timestamp({ mode: "date", withTimezone: true }),
     captureUnsavedDetail: text(),
+    // Where in its own history the executor made the last answer this session took (its
+    // `origin`, 0088): what orders the queue reading above against the executor's seal.
+    captureObservedPosition: jsonb().$type<CapturePosition>(),
     // The current executor's runtime identity (`details().runtime.resourceId`, 0081).
     executorResourceId: text(),
     // The idempotency key of an executor create not yet answered on the row (0082).
@@ -1984,11 +1988,39 @@ export const captureSeals = pgTable(
     bootId: text(),
     bootGeneration: bigint({ mode: "number" }),
     observation: bigint({ mode: "number" }),
+    /**
+     * When every object the sealed capture names was last read back and found to be what its
+     * name says, at a moment no upload URL for its epoch could still replace one (0089, review
+     * 2026-09-28 (7) #8). Null: never, since the seal was recorded.
+     */
+    reverifiedAt: timestamp({ mode: "date", withTimezone: true }),
+    /** Why the seal never stands again: a named object read back as other bytes (0089). */
+    voidReason: text(),
   },
   (table) => [
     primaryKey({ columns: [table.worktreeId, table.epoch] }),
     index("capture_seals_executor_idx").on(table.worktreeId, table.executorId),
   ],
+);
+
+/**
+ * Until when an upload URL Mend handed out under one worktree epoch's prefix could still write
+ * to the bucket (migration 0089, review 2026-09-28 (7) #8): the latest expiry of every PUT and
+ * part URL minted for `captures/<worktree>/<epoch>/…`, recorded before the URL is handed out. On
+ * a bucket that ignores `If-None-Match` (Garage) no seal of that epoch stands before it, and one
+ * stands after it only once its objects are read back as what their names say.
+ */
+export const capturePutAuthority = pgTable(
+  "capture_put_authority",
+  {
+    worktreeId: text()
+      .$type<WorktreeId>()
+      .notNull()
+      .references(() => worktrees.id, { onDelete: "cascade" }),
+    epoch: bigint({ mode: "number" }).notNull(),
+    expiresAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+  },
+  (table) => [primaryKey({ columns: [table.worktreeId, table.epoch] })],
 );
 
 /**
@@ -2017,6 +2049,28 @@ export const executorCaptureEvidence = pgTable(
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index("executor_capture_evidence_worktree_idx").on(table.worktreeId)],
+);
+
+/**
+ * Answers asked of an executor and not yet published as its evidence (migration 0088, cross-repo
+ * decision 18, review 2026-09-28 (7) #3): a row from the moment Mend asks until the answer is
+ * published in the same transaction that deletes it, or until the ask comes back with no answer.
+ * An answer that arrived and could not be published keeps its row (`unpublished`) until an answer
+ * asked after it is published. While any row names an executor, its evidence is unknown: no seal
+ * stands for it and nothing reads it saved — whichever engine process asks, across restarts.
+ */
+export const executorEvidenceFences = pgTable(
+  "executor_evidence_fences",
+  {
+    ticket: bigserial({ mode: "number" }).primaryKey(),
+    workspaceId: text().notNull(),
+    /** The engine process that asked (one id per engine start). */
+    holder: text().notNull(),
+    /** An answer arrived and was not published: only a later answer's publication clears it. */
+    unpublished: boolean().notNull().default(false),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("executor_evidence_fences_workspace_idx").on(table.workspaceId)],
 );
 
 /** One row per registered capture; `id` is the sha256 of the manifest bytes. */

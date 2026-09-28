@@ -39,6 +39,8 @@ import {
   PRESIGN_TTL_SECONDS,
   resolveCaptureUploadPolicy,
   type SessionCaptureApi,
+  MANIFEST_FEATURES,
+  UPLOAD_ANSWER_PRESENT,
 } from "../src/capture-channel.ts";
 import { CaptureRemotes, CaptureRemotesOff } from "../src/capture-remotes.ts";
 import { CaptureSourcesLive, CaptureSourcesOff } from "../src/capture-sources.ts";
@@ -505,8 +507,27 @@ describe("capture channel routes", () => {
     expect(done.json).toEqual({ size: 70 });
     expect(Buffer.from(fs.readFileSync(path.join(blobRoot, big))).equals(body)).toBe(true);
     // The upload is consumed; a sized key the bucket already holds, with the bytes its name
-    // says, gets no URL and no plan: it is answered `present` (review 2026-09-28 (6) #9).
+    // says, gets no multipart plan. To a launch whose `plan.get` did not list `present` (an older
+    // daemon, review 2026-09-28 (7) #7) it is one write-once PUT URL; to one that did, `present`
+    // with no URL (review 2026-09-28 (6) #9).
     expect(fs.readdirSync(path.join(blobRoot, ".multipart"))).toEqual([]);
+    const legacy = await post(address, "/upload.urls", token, {
+      worktree_id: WORKTREE,
+      epoch: 2,
+      keys: [big],
+      sizes: { [big]: 70 },
+    });
+    expect(legacy.status).toBe(200);
+    expect(legacy.json["multipart"]).toEqual({});
+    expect(Object.keys(legacy.json["urls"] as Record<string, string>)).toEqual([big]);
+    expect(legacy.json["present"]).toBeUndefined();
+    const planned = await post(address, "/plan.get", token, {
+      epoch: 2,
+      manifest_format: 2,
+      manifest_features: [...MANIFEST_FEATURES],
+      upload_answers: [UPLOAD_ANSWER_PRESENT],
+    });
+    expect(planned.status).toBe(200);
     const again = await post(address, "/upload.urls", token, {
       worktree_id: WORKTREE,
       epoch: 2,

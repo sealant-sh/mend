@@ -643,6 +643,13 @@ export interface ExecutorEndFacts {
     readonly words: string;
     readonly position?: CapturePosition | null;
   } | null;
+  /**
+   * Whether every answer asked of this executor was published as its evidence (cross-repo
+   * decision 18, review 2026-09-28 (7) #3). False: an answer is in flight, or arrived and was
+   * not published — it may say anything, so no save reads `saved` and none reads `lost`: the
+   * end is `unconfirmed`. Absent: true.
+   */
+  readonly settled?: boolean;
 }
 
 /**
@@ -654,15 +661,19 @@ export interface ExecutorEndFacts {
  *   so captures registered on top of it change nothing;
  * - `unconfirmed`: this executor took a final capture of its own (sealantd ran its final flush,
  *   so something outside Mend stopped it), and neither word says that flush completed. The last
- *   registered capture is named; its completion is unknown;
+ *   registered capture is named; its completion is unknown. Also a confirmed save that evidence
+ *   nothing orders against it (incomparable, contradictory) or an unpublished answer leaves
+ *   standing undecided (review 2026-09-28 (7) #4): the save is named, its completion unknown;
  * - `lost`: anything else. `lastSavedAt` is the head's registration.
  * In both of the last two, `pending` is what Mend last observed unsaved on this executor after
  * that registration: an answer that saw something pending, or one that said it held work not
  * saved (`ExecutorEndFacts.unsaved`). Mend never counts what it did not observe.
  *
- * A save that a later answer of this executor contradicted (`unsaved` or a pending reading after
- * it) is not `saved`: it is `lost`, naming that save as the last one confirmed and what was
- * observed after it (review 2026-09-28 (4) #9).
+ * A save that a later answer of this executor contradicted (`unsaved` or a pending reading the
+ * executor made strictly after it) is not `saved`: it is `lost`, naming that save as the last one
+ * confirmed and what was observed after it (review 2026-09-28 (4) #9). Only an answer ordered
+ * after every save says the work after it was not saved; one nothing orders against a save
+ * leaves it `unconfirmed` (review 2026-09-28 (7) #4).
  */
 export type ExecutorEnd =
   | { readonly kind: "saved"; readonly savedAt: Date; readonly n?: number | null }
@@ -737,17 +748,43 @@ export const executorEndOf = (facts: ExecutorEndFacts): ExecutorEnd => {
   });
   const latest = saves[0];
   if (latest !== undefined) {
+    // An answer asked and not published may say anything (cross-repo decision 18): no save reads
+    // saved, and none reads lost on it — the latest confirmed one is named, completion unknown.
+    if (facts.settled === false) {
+      return {
+        kind: "unconfirmed",
+        lastSavedAt: latest.at,
+        lastSavedN: latest.n,
+        pending: toPending(uncoveredBy(latest.position)[0]),
+      };
+    }
     // Received evidence beats stored evidence (cross-repo decision 10): a save stands only over
     // unsaved answers the executor made strictly before it — never by whose clock said what.
     const covering = saves.find((save) => uncoveredBy(save.position).length === 0);
     if (covering !== undefined) {
       return { kind: "saved", savedAt: covering.at, n: covering.n };
     }
+    // Lost only when the executor itself said so after every save: an unsaved answer it made
+    // strictly after each one (review 2026-09-28 (7) #4). A save only incomparable or
+    // contradictory evidence stands against is undecided — named, its completion unknown.
+    const refutedBy = (save: (typeof saves)[number]) =>
+      uncoveredBy(save.position).filter(
+        (answer) => captureOrderOf(answer.position, save.position) === "after",
+      );
+    const undecided = saves.find((save) => refutedBy(save).length === 0);
+    if (undecided !== undefined) {
+      return {
+        kind: "unconfirmed",
+        lastSavedAt: undecided.at,
+        lastSavedN: undecided.n,
+        pending: toPending(uncoveredBy(undecided.position)[0]),
+      };
+    }
     return {
       kind: "lost",
       lastSavedAt: latest.at,
       lastSavedN: latest.n,
-      pending: toPending(uncoveredBy(latest.position)[0]),
+      pending: toPending(refutedBy(latest)[0]),
     };
   }
   const lastSavedAt = head?.registeredAt ?? null;

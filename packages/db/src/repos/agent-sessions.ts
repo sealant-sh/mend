@@ -33,6 +33,7 @@ import {
   agentSessions,
   agentTurns,
   executorCaptureEvidence,
+  executorEvidenceFences,
   projects,
 } from "../schema/workbench.ts";
 import { agentConversationLockKey } from "./agent-conversation.ts";
@@ -153,6 +154,52 @@ export interface ExecutorCaptureAnswer {
   readonly saved?: CaptureSavedObservation;
   readonly unsaved?: CaptureUnsavedObservation;
 }
+
+/**
+ * One answer an executor gave, published (migration 0088, review 2026-09-28 (7) #3): the reading on
+ * the session that asked, its saved or unsaved word on that session, the answer added to the
+ * executor's evidence, and the fence its ask opened cleared — in one transaction, so no restart
+ * or failed write leaves one without the others.
+ */
+export interface ExecutorReading {
+  readonly sessionId: SessionId;
+  readonly workspaceId: string;
+  /** The fence the ask opened (`openEvidenceFence`) and the engine process that holds it. */
+  readonly fence: { readonly ticket: number; readonly holder: string };
+  readonly observation: CaptureObservation;
+  /** Where in its own history the executor made the answer; null when it did not say. */
+  readonly position: CapturePosition | null;
+  readonly saved: CaptureSavedObservation | null;
+  readonly unsaved: CaptureUnsavedObservation | null;
+  readonly answer: ExecutorCaptureAnswer;
+}
+
+/**
+ * The executor's evidence once `answer` is weighed against what it keeps: of each kind, the
+ * answer replaces the kept one unless the executor made it before (`captureAnswerReplaces`).
+ */
+const mergedEvidence = (
+  kept: ExecutorCaptureEvidence | null,
+  answer: ExecutorCaptureAnswer,
+): {
+  readonly saved: CaptureSavedObservation | null;
+  readonly unsaved: CaptureUnsavedObservation | null;
+} => ({
+  saved:
+    answer.saved !== undefined &&
+    (kept?.saved === null ||
+      kept === null ||
+      captureAnswerReplaces(answer.saved.position, kept.saved?.position))
+      ? answer.saved
+      : (kept?.saved ?? null),
+  unsaved:
+    answer.unsaved !== undefined &&
+    (kept?.unsaved === null ||
+      kept === null ||
+      captureAnswerReplaces(answer.unsaved.position, kept.unsaved?.position))
+      ? answer.unsaved
+      : (kept?.unsaved ?? null),
+});
 
 /** The owner's "discard unsaved and stop", as the session keeps it: when, and who. */
 export interface CaptureDiscard {
@@ -386,6 +433,30 @@ export class SessionsRepo extends Context.Service<
     readonly executorEvidenceOf: (
       workspaceId: string,
     ) => Effect.Effect<ExecutorCaptureEvidence | null>;
+    /**
+     * An answer is about to be asked of the executor in `workspaceId` (0088, review 2026-09-28
+     * (7) #3): its fence, durable before the ask. Answers the ticket.
+     */
+    readonly openEvidenceFence: (workspaceId: string, holder: string) => Effect.Effect<number>;
+    /**
+     * The ask came back without publishing: `unanswered` (nothing arrived) deletes the fence;
+     * `unpublished` (an answer arrived and its publication failed) keeps it until an answer
+     * asked after it is published.
+     */
+    readonly closeEvidenceFence: (
+      ticket: number,
+      outcome: "unanswered" | "unpublished",
+    ) => Effect.Effect<void>;
+    /** Whether any answer of the executor in `workspaceId` is asked and not yet published. */
+    readonly evidenceFenced: (workspaceId: string) => Effect.Effect<boolean>;
+    /**
+     * Publish one answer (`ExecutorReading`) in one transaction; answers the executor's new
+     * evidence version. Clears its own fence, and every earlier one that is unpublished or held
+     * by another engine process (one that is gone, or whose answer this one supersedes).
+     */
+    readonly publishExecutorReading: (reading: ExecutorReading) => Effect.Effect<number>;
+    /** Where the executor made the answer behind the session's queue reading, or null (0088). */
+    readonly captureObservedPositionOf: (id: SessionId) => Effect.Effect<CapturePosition | null>;
     /** Something moved: the stall window starts again and `not saved` clears. */
     readonly recordCaptureDrainProgress: (id: SessionId, at: Date) => Effect.Effect<void>;
     /** Nothing moved for the stall window: true only for the write that set it (one alert). */
@@ -500,6 +571,7 @@ type SessionBookkeepingColumns =
   | "captureUnsavedWorkspaceId"
   | "captureUnsavedAt"
   | "captureUnsavedDetail"
+  | "captureObservedPosition"
   | "executorResourceId"
   | "executorCreateKey"
   | "executorLaunchId";
@@ -1333,20 +1405,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         // weighs again against what won it.
         while (true) {
           const kept = yield* executorEvidenceOf(workspaceId);
-          const saved =
-            answer.saved !== undefined &&
-            (kept?.saved === null ||
-              kept === null ||
-              captureAnswerReplaces(answer.saved.position, kept.saved?.position))
-              ? answer.saved
-              : (kept?.saved ?? null);
-          const unsaved =
-            answer.unsaved !== undefined &&
-            (kept?.unsaved === null ||
-              kept === null ||
-              captureAnswerReplaces(answer.unsaved.position, kept.unsaved?.position))
-              ? answer.unsaved
-              : (kept?.unsaved ?? null);
+          const { saved, unsaved } = mergedEvidence(kept, answer);
           const columns = {
             launchId: answer.launchId ?? kept?.launchId ?? null,
             savedAt: saved?.at ?? null,
@@ -1387,7 +1446,173 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .where(eq(executorCaptureEvidence.workspaceId, workspaceId))
           .limit(1)
           .pipe(Effect.orDie);
-        if (row === undefined) return null;
+        return row === undefined ? null : evidenceOfRow(workspaceId, row);
+      });
+
+      const openEvidenceFence = Effect.fn("SessionsRepo.openEvidenceFence")(function* (
+        workspaceId: string,
+        holder: string,
+      ) {
+        const [row] = yield* db
+          .insert(executorEvidenceFences)
+          .values({ workspaceId, holder })
+          .returning({ ticket: executorEvidenceFences.ticket })
+          .pipe(Effect.orDie);
+        if (row === undefined) return yield* Effect.die("evidence fence insert returned no row");
+        return Number(row.ticket);
+      });
+
+      const closeEvidenceFence = Effect.fn("SessionsRepo.closeEvidenceFence")(function* (
+        ticket: number,
+        outcome: "unanswered" | "unpublished",
+      ) {
+        if (outcome === "unanswered") {
+          yield* db
+            .delete(executorEvidenceFences)
+            .where(eq(executorEvidenceFences.ticket, ticket))
+            .pipe(Effect.orDie);
+          return;
+        }
+        yield* db
+          .update(executorEvidenceFences)
+          .set({ unpublished: true })
+          .where(eq(executorEvidenceFences.ticket, ticket))
+          .pipe(Effect.orDie);
+      });
+
+      const evidenceFenced = Effect.fn("SessionsRepo.evidenceFenced")(function* (
+        workspaceId: string,
+      ) {
+        const rows = yield* db
+          .select({ ticket: executorEvidenceFences.ticket })
+          .from(executorEvidenceFences)
+          .where(eq(executorEvidenceFences.workspaceId, workspaceId))
+          .limit(1)
+          .pipe(Effect.orDie);
+        return rows.length > 0;
+      });
+
+      const publishExecutorReading = Effect.fn("SessionsRepo.publishExecutorReading")(function* (
+        reading: ExecutorReading,
+      ) {
+        const { observation, answer, workspaceId } = reading;
+        const t = executorCaptureEvidence;
+        const version = yield* db
+          .transaction((tx) =>
+            Effect.gen(function* () {
+              yield* tx
+                .update(agentSessions)
+                .set({
+                  capturePending: observation.pending,
+                  capturePendingBytes: observation.pendingBytes,
+                  captureRefused: observation.refused,
+                  captureRegisteredAt: observation.registeredAt,
+                  captureObservedAt: observation.observedAt,
+                  captureObservedPosition: reading.position,
+                  ...(observation.incompleteReason === undefined
+                    ? {}
+                    : { captureIncompleteReason: observation.incompleteReason }),
+                  ...(observation.incompleteDetail === undefined
+                    ? {}
+                    : { captureIncompleteDetail: observation.incompleteDetail }),
+                  ...(observation.failing === undefined
+                    ? {}
+                    : observation.failing === null
+                      ? { captureFailingSince: null, captureFailingError: null }
+                      : {
+                          captureFailingSince: sql`COALESCE(${agentSessions.captureFailingSince}, ${observation.failing.since})`,
+                          captureFailingError: observation.failing.error,
+                        }),
+                  ...(reading.saved === null
+                    ? {}
+                    : {
+                        captureSavedWorkspaceId: reading.saved.workspaceId,
+                        captureSavedAt: reading.saved.at,
+                        captureSavedN: reading.saved.n,
+                        captureSavedEpoch: reading.saved.epoch,
+                      }),
+                  ...(reading.unsaved === null
+                    ? {}
+                    : {
+                        captureUnsavedWorkspaceId: reading.unsaved.workspaceId,
+                        captureUnsavedAt: reading.unsaved.at,
+                        captureUnsavedDetail: reading.unsaved.words,
+                      }),
+                })
+                .where(eq(agentSessions.id, reading.sessionId));
+              // The executor's row, locked for the rest of the transaction: the answer is
+              // weighed against what it keeps as it is now, and the version moves once.
+              yield* tx
+                .insert(t)
+                .values({ workspaceId, worktreeId: answer.worktreeId, version: 0 })
+                .onConflictDoNothing({ target: t.workspaceId });
+              const [row] = yield* tx
+                .select()
+                .from(t)
+                .where(eq(t.workspaceId, workspaceId))
+                .limit(1)
+                .for("update");
+              const kept = row === undefined ? null : evidenceOfRow(workspaceId, row);
+              const { saved, unsaved } = mergedEvidence(kept, answer);
+              const [updated] = yield* tx
+                .update(t)
+                .set({
+                  launchId: answer.launchId ?? kept?.launchId ?? null,
+                  savedAt: saved?.at ?? null,
+                  savedN: saved?.n ?? null,
+                  savedEpoch: saved?.epoch ?? null,
+                  savedPosition: saved?.position ?? null,
+                  unsavedAt: unsaved?.at ?? null,
+                  unsavedDetail: unsaved?.words ?? null,
+                  unsavedPosition: unsaved?.position ?? null,
+                  updatedAt: new Date(),
+                  version: sql`${t.version} + 1`,
+                })
+                .where(eq(t.workspaceId, workspaceId))
+                .returning({ version: t.version });
+              // Its own fence, and every earlier one of this executor whose answer arrived
+              // unpublished or whose engine process is another (gone, or superseded by this
+              // answer, asked after it): the evidence now holds an answer asked after them.
+              yield* tx
+                .delete(executorEvidenceFences)
+                .where(
+                  or(
+                    eq(executorEvidenceFences.ticket, reading.fence.ticket),
+                    and(
+                      eq(executorEvidenceFences.workspaceId, workspaceId),
+                      lt(executorEvidenceFences.ticket, reading.fence.ticket),
+                      or(
+                        eq(executorEvidenceFences.unpublished, true),
+                        ne(executorEvidenceFences.holder, reading.fence.holder),
+                      ),
+                    ),
+                  ),
+                );
+              return Number(updated?.version ?? 0);
+            }),
+          )
+          .pipe(Effect.orDie);
+        yield* notify(reading.sessionId);
+        return version;
+      });
+
+      const captureObservedPositionOf = Effect.fn("SessionsRepo.captureObservedPositionOf")(
+        function* (id: SessionId) {
+          const [row] = yield* db
+            .select({ position: agentSessions.captureObservedPosition })
+            .from(agentSessions)
+            .where(eq(agentSessions.id, id))
+            .limit(1)
+            .pipe(Effect.orDie);
+          return row?.position ?? null;
+        },
+      );
+
+      /** An `executor_capture_evidence` row as the evidence it holds. */
+      const evidenceOfRow = (
+        workspaceId: string,
+        row: typeof executorCaptureEvidence.$inferSelect,
+      ): ExecutorCaptureEvidence => {
         return {
           workspaceId: row.workspaceId,
           launchId: row.launchId,
@@ -1412,7 +1637,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
                 },
           version: Number(row.version),
         } satisfies ExecutorCaptureEvidence;
-      });
+      };
 
       const recordCaptureDrainProgress = Effect.fn("SessionsRepo.recordCaptureDrainProgress")(
         function* (id: SessionId, at: Date) {
@@ -1688,6 +1913,11 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         captureUnsavedOf,
         recordExecutorEvidence,
         executorEvidenceOf,
+        openEvidenceFence,
+        closeEvidenceFence,
+        evidenceFenced,
+        publishExecutorReading,
+        captureObservedPositionOf,
         recordCaptureDrainProgress,
         markCaptureNotSaved,
         endCaptureDrain,

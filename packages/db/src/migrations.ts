@@ -2518,6 +2518,72 @@ const executorEvidenceOrderMigration = Effect.gen(function* () {
       ADD COLUMN observation bigint`;
 });
 
+/**
+ * 0088: an executor's evidence is fenced durably (cross-repo decision 18, review 2026-09-28 (7)
+ * #3). `executor_evidence_fences`: one row per answer asked of an executor and not yet published
+ * as its evidence — from the moment Mend asks until the answer is published in the transaction
+ * that deletes the row, or the ask comes back unanswered. An answer that arrived and could not be
+ * published keeps its row (`unpublished`) until an answer asked after it is published. While a
+ * row names an executor its evidence is unknown to every engine, across restarts. The answer, the
+ * session's reading of it and the executor's evidence are written in one transaction.
+ * `agent_sessions.capture_observed_position`: where in its own history the executor made the
+ * answer behind the session's queue reading (`origin`, review 2026-09-28 (7) #4), so the reading
+ * is ordered against a seal like the executor's own evidence is.
+ *
+ * Rows written before this could hold an unsaved answer on a session whose executor-wide write
+ * failed: every executor whose sessions hold an unsaved answer later than the one its evidence
+ * keeps is fenced here, unpublished, until an answer asked after this publishes.
+ */
+const executorEvidenceFencesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE executor_evidence_fences (
+      ticket bigserial PRIMARY KEY,
+      workspace_id text NOT NULL,
+      holder text NOT NULL,
+      unpublished boolean NOT NULL DEFAULT false,
+      created_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE INDEX executor_evidence_fences_workspace_idx
+      ON executor_evidence_fences (workspace_id)`;
+  yield* sql`ALTER TABLE agent_sessions ADD COLUMN capture_observed_position jsonb`;
+  yield* sql`
+    INSERT INTO executor_evidence_fences (workspace_id, holder, unpublished)
+    SELECT DISTINCT s.capture_unsaved_workspace_id, 'migration-0088', true
+      FROM agent_sessions s
+      LEFT JOIN executor_capture_evidence e ON e.workspace_id = s.capture_unsaved_workspace_id
+     WHERE s.capture_unsaved_workspace_id IS NOT NULL
+       AND s.capture_unsaved_at IS NOT NULL
+       AND (e.unsaved_at IS NULL OR e.unsaved_at < s.capture_unsaved_at)`;
+});
+
+/**
+ * 0089: a seal stands only over bytes nothing can still replace (review 2026-09-28 (7) #8).
+ * - `capture_put_authority`: per worktree epoch, the latest expiry of every upload URL Mend handed
+ *   out under its prefix — recorded before the URL leaves Mend. On a bucket that ignores
+ *   `If-None-Match` (Garage) such a URL could replace an object until then, so no seal of the
+ *   epoch stands before it.
+ * - `capture_seals.reverified_at`: when every object the sealed capture names was read back after
+ *   that and found to be what its name says; the seal stands from then until another URL is handed
+ *   out under its epoch. `capture_seals.void_reason`: an object read back as other bytes — the seal
+ *   never stands again.
+ */
+const capturePutAuthorityMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE capture_put_authority (
+      worktree_id text NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
+      epoch bigint NOT NULL,
+      expires_at timestamptz NOT NULL,
+      PRIMARY KEY (worktree_id, epoch)
+    )`;
+  yield* sql`
+    ALTER TABLE capture_seals
+      ADD COLUMN reverified_at timestamptz,
+      ADD COLUMN void_reason text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2606,4 +2672,6 @@ export const migrations = {
   "0085_lease_launch": leaseLaunchMigration,
   "0086_executor_capture_evidence": executorCaptureEvidenceMigration,
   "0087_executor_evidence_order": executorEvidenceOrderMigration,
+  "0088_executor_evidence_fences": executorEvidenceFencesMigration,
+  "0089_capture_put_authority": capturePutAuthorityMigration,
 };
