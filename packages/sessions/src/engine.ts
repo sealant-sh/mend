@@ -202,6 +202,7 @@ import { detectInstallCommand, PLATFORM_PROBE_SCRIPT, platformKeyOf } from "./de
 import { DotfilesCloner, DotfilesResolveError, snapshotArchive } from "./dotfiles.ts";
 import { gitAuthorConfigArgv } from "./git-author.ts";
 import { parseGitRemoteCommand } from "./git-transport.ts";
+import { withHarnessSetup } from "./harness-seeds.ts";
 import {
   HARNESS_HOME_MOUNT_PATH,
   HARNESS_STATE,
@@ -265,11 +266,17 @@ import {
 } from "./session-socket.ts";
 import { loadShellProfile, shellProfileApplies } from "./shell-profile.ts";
 import {
+  MANAGED_SKILLS_DIGESTS,
   MANAGED_SKILLS_MANIFEST,
   materializeSkills,
   mergeSkillLibraries,
+  parseManagedSkillDigests,
   parseManagedSkills,
+  parseSkillsVacateOutcomes,
   planSkills,
+  type SkillsVacateOutcome,
+  skillsKeptDir,
+  vacateSkillsExec,
 } from "./skills.ts";
 import {
   parseHomeFileOutcomes,
@@ -415,6 +422,30 @@ const withPermissionDefaults = (
   }
   return argv;
 };
+
+/**
+ * The harness's argv with its permission defaults, behind its first-run seed (`harness-seeds.ts`:
+ * the seeds merge into the harness's own files and leave a file they cannot read as it is).
+ */
+const withHarnessBootstrap = (
+  harness: string,
+  argv: ReadonlyArray<string>,
+): ReadonlyArray<string> => withHarnessSetup(harness, withPermissionDefaults(harness, argv));
+
+/** A skill directory kept aside, or one that could not be cleared, is said once. */
+const logSkillsVacated = (sessionId: SessionId, outcomes: ReadonlyArray<SkillsVacateOutcome>) =>
+  Effect.forEach(
+    outcomes.filter((outcome) => outcome.outcome === "kept" || outcome.outcome === "error"),
+    (outcome) =>
+      outcome.outcome === "kept"
+        ? Effect.logWarning(
+            "session engine: skills · a directory that was not Mend's delivery was kept aside",
+          ).pipe(Effect.annotateLogs({ sessionId, dir: outcome.dir, keptAt: outcome.detail }))
+        : Effect.logWarning("session engine: skills · a directory could not be cleared").pipe(
+            Effect.annotateLogs({ sessionId, dir: outcome.dir, code: outcome.detail }),
+          ),
+    { discard: true },
+  );
 
 /**
  * A project whose repository Mend does not support — SHA-256 objects (`unsupportedRepositoryReason`;
@@ -5138,71 +5169,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* forkSupervision(sessionId, sealantRunId);
       });
 
-      /**
-       * Interactive Claude Code ignores the platform's env-injected credential
-       * during onboarding: `claude -p` honors `CLAUDE_CODE_OAUTH_TOKEN`, but
-       * the TUI's first-run flow still demands a login until `~/.claude.json`
-       * marks onboarding complete and `~/.claude/.credentials.json` exists.
-       * Seed both from the injected env before exec'ing the real argv — only
-       * when the token is present and no state file exists yet, so a real
-       * login is never clobbered. Filed as platform feedback: the claude
-       * injection should be file-kind, like codex's `auth.json`.
-       */
-      // A MERGE, not an exists-guard: a restored session brings back claude's
-      // own rewritten `.claude.json` (which knows nothing of these flags), so
-      // the seed must re-assert them on every launch while preserving whatever
-      // state came back. Pre-answered dialogs: onboarding, bypass acceptance,
-      // and the /workspace/repo trust — the user made the trust decision when
-      // they adopted the repo, and bypass is Mend's stance (the workspace is
-      // the sandbox).
-      const CLAUDE_ONBOARDING_SEED =
-        `node -e '` +
-        `const fs=require("fs"),os=require("os"),h=os.homedir(),t=process.env.CLAUDE_CODE_OAUTH_TOKEN;` +
-        `fs.mkdirSync(h+"/.claude",{recursive:true});` +
-        `if(t&&!fs.existsSync(h+"/.claude/.credentials.json")){` +
-        `fs.writeFileSync(h+"/.claude/.credentials.json",JSON.stringify({claudeAiOauth:{accessToken:t,refreshToken:"",expiresAt:9999999999999,scopes:["user:inference","user:profile"],subscriptionType:"max"}}),{mode:0o600})}` +
-        `let c={};try{c=JSON.parse(fs.readFileSync(h+"/.claude.json","utf8"))}catch{}` +
-        `c.hasCompletedOnboarding=true;c.bypassPermissionsModeAccepted=true;` +
-        `c.projects=c.projects||{};` +
-        `c.projects["/workspace/repo"]=Object.assign({},c.projects["/workspace/repo"],{hasTrustDialogAccepted:true,hasCompletedProjectOnboarding:true});` +
-        `fs.writeFileSync(h+"/.claude.json",JSON.stringify(c));` +
-        // The bypass-acceptance dialog is actually gated on settings.json
-        // (verified: accepting it writes exactly this key), not .claude.json.
-        `let s={};try{s=JSON.parse(fs.readFileSync(h+"/.claude/settings.json","utf8"))}catch{}` +
-        `s.skipDangerousModePermissionPrompt=true;` +
-        // The workspace image never sees the operator's own ~/.claude
-        // settings, so a fresh session silently falls back to the CLI's
-        // default model. Default-if-absent only: a restored session's own
-        // choice (or a mid-session /model) survives the merge.
-        `s.model=s.model||"claude-fable-5";` +
-        `fs.writeFileSync(h+"/.claude/settings.json",JSON.stringify(s))' 2>/dev/null; ` +
-        // The workspace IS the sandbox: Claude Code refuses bypass-permissions
-        // as root unless the environment says so, and it is telling the truth.
-        `export IS_SANDBOX=1; ` +
-        `exec "$@"`;
-
-      const withHarnessSetup = (
-        harness: string,
-        argv: ReadonlyArray<string>,
-      ): ReadonlyArray<string> => {
-        if (harness === "claude") return ["sh", "-c", CLAUDE_ONBOARDING_SEED, "sh", ...argv];
-        if (harness === "codex") return ["sh", "-c", CODEX_TRUST_SEED, "sh", ...argv];
-        return argv;
-      };
-
-      const withHarnessBootstrap = (
-        harness: string,
-        argv: ReadonlyArray<string>,
-      ): ReadonlyArray<string> => withHarnessSetup(harness, withPermissionDefaults(harness, argv));
-
-      // Codex's per-project trust prompt, pre-answered the same way: the user
-      // made the trust decision when they adopted the repo.
-      const CODEX_TRUST_SEED =
-        `mkdir -p "$HOME/.codex"; ` +
-        `grep -q 'workspace/repo' "$HOME/.codex/config.toml" 2>/dev/null || ` +
-        `printf '[projects."/workspace/repo"]\ntrust_level = "trusted"\n' >> "$HOME/.codex/config.toml"; ` +
-        `exec "$@"`;
-
       // ─── the harness session store (automatic; see harness-state.ts) ──────
 
       /**
@@ -7029,6 +6995,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             inheritUserSkills: project.inheritUserSkills,
           });
           yield* materializeSkills(harnessHome, resolvedSkills).pipe(
+            Effect.flatMap((outcomes) => logSkillsVacated(sessionId, outcomes)),
             Effect.catchTag("SkillMaterializeError", (error) =>
               Effect.logWarning("session engine: skills were not materialized").pipe(
                 Effect.annotateLogs({ sessionId, harnessHome, message: error.message }),
@@ -7952,7 +7919,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * Capture mode's skills delivery: the same plan the co-located store writes beside the
        * mounted harness home (`skills.ts`), applied inside the live workspace's own. Best-effort
-       * like the host write: a launch never fails over its skills.
+       * like the host write: a launch never fails over its skills. A directory that is not
+       * exactly what Mend delivered there is moved aside, never deleted, and said so.
        */
       const deliverSkillsToWorkspace = Effect.fn("SessionEngine.deliverSkillsToWorkspace")(
         function* (session: Session, project: Project, workspace: Workspace) {
@@ -7962,21 +7930,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
           const home = HARNESS_HOME_MOUNT_PATH;
           const manifestPath = path.posix.join(home, MANAGED_SKILLS_MANIFEST);
-          const read = yield* sealant.exec(workspace, ["cat", manifestPath]);
+          const digestsPath = path.posix.join(home, MANAGED_SKILLS_DIGESTS);
+          const readText = (file: string) =>
+            sealant
+              .exec(workspace, ["cat", file])
+              .pipe(Effect.map((result) => (result.exitCode === 0 ? result.stdout : null)));
           const plan = planSkills(
-            parseManagedSkills(read.exitCode === 0 ? read.stdout : null),
+            parseManagedSkills(yield* readText(manifestPath)),
             bundles,
+            parseManagedSkillDigests(yield* readText(digestsPath)),
           );
           if (plan === null) return;
           const inHome = (relative: string) => path.posix.join(home, relative);
-          const prepared = yield* sealant.exec(workspace, [
-            "sh",
-            "-c",
-            'set -e; dirs=$1; shift; for d in $dirs; do mkdir -p "$d"; done; rm -rf -- "$@"',
-            "mend-skills",
-            plan.directories.map(inHome).join(" "),
-            ...plan.remove.map(inHome),
-          ]);
+          const prepared = yield* sealant.exec(
+            workspace,
+            vacateSkillsExec(home, skillsKeptDir(), plan),
+          );
+          yield* logSkillsVacated(session.id, parseSkillsVacateOutcomes(prepared.stdout));
           if (prepared.exitCode !== 0) {
             return yield* new WorkspaceFileError({
               path: home,
@@ -7990,6 +7960,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               bytes: encoder.encode(file.contents),
             })),
             { path: manifestPath, bytes: encoder.encode(plan.manifest) },
+            { path: digestsPath, bytes: encoder.encode(plan.digests) },
           ]);
         },
       );

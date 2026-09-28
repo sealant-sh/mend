@@ -1,9 +1,13 @@
+import { spawnSync } from "node:child_process";
+import { createHash, randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 
 import type { SkillWithFiles } from "@mend/domain/workbench";
 import { validateSkillFilePath, validateSkillName } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
+
+import { shellQuote } from "./workspace-files.ts";
 
 /**
  * Launch-side skills materialization. The mounted harness home is the seam
@@ -19,6 +23,14 @@ import { Effect, Schema } from "effect";
  *
  * Capture mode (ADR-0002) mounts nothing, so there the same plan (`planSkills`) is applied inside
  * the live workspace's harness home through exec, after the launch relocates it.
+ *
+ * A delivered skill directory is also where the agent or the user edits a skill, and the harness
+ * home comes back whole from a capture. So a directory Mend is about to replace or retire is
+ * removed only when its files are exactly what Mend delivered there, or exactly what it is about
+ * to deliver (`skillTreeDigest`). Anything else, an edited skill or a directory of the agent's own
+ * that a library skill now shares a name with, is moved aside whole to
+ * `.mend/skills-kept/<stamp>/…` in the harness home, never deleted (review 2026-09-28 (17),
+ * sweep). One program does this in both stores (`SKILLS_VACATE_PROGRAM`).
  */
 
 /** Harness-home-relative skills directories, one per harness that reads skills. */
@@ -33,6 +45,17 @@ export const SKILL_TARGET_DIRS = [".claude/skills", ".codex/skills"] as const;
 const MANAGED_MANIFEST = ".mend-managed-skills.json";
 
 const ManagedManifest = Schema.Record(Schema.String, Schema.Array(Schema.String));
+
+/**
+ * What Mend last delivered, per skills directory and bundle name: the `skillTreeDigest` of the
+ * files it wrote. A separate file, so a Mend that predates it still reads its manifest.
+ */
+const MANAGED_DIGESTS = ".mend-managed-skills-digests.json";
+
+const ManagedDigests = Schema.Record(Schema.String, Schema.Record(Schema.String, Schema.String));
+
+/** Where a directory that is not Mend's to delete goes, relative to the harness home. */
+export const SKILLS_KEPT_DIR = ".mend/skills-kept";
 
 export class SkillMaterializeError extends Schema.TaggedErrorClass<SkillMaterializeError>()(
   "SkillMaterializeError",
@@ -61,6 +84,41 @@ export const mergeSkillLibraries = (
 /** The bookkeeping file's name, relative to the harness home. */
 export const MANAGED_SKILLS_MANIFEST = MANAGED_MANIFEST;
 
+/** The digests file's name, relative to the harness home. */
+export const MANAGED_SKILLS_DIGESTS = MANAGED_DIGESTS;
+
+/** Read the digests; anything unreadable is "no directory is known to be Mend's as it stands". */
+export const parseManagedSkillDigests = (
+  raw: string | null,
+): Record<string, Record<string, string>> => {
+  if (raw === null) return {};
+  try {
+    return Schema.decodeUnknownSync(Schema.fromJsonString(ManagedDigests))(raw);
+  } catch {
+    return {};
+  }
+};
+
+const sha256 = (bytes: string | Uint8Array): string =>
+  createHash("sha256").update(bytes).digest("hex");
+
+/**
+ * One digest for a directory's files: each regular file's path (relative, `/`-separated) and the
+ * SHA-256 of its bytes, sorted by path. Empty directories do not count; anything that is neither a
+ * file nor a directory makes the tree unlike any bundle. `SKILLS_VACATE_PROGRAM` computes the same
+ * digest on disk.
+ */
+export const skillTreeDigest = (
+  files: ReadonlyArray<{ readonly path: string; readonly contents: string }>,
+): string =>
+  sha256(
+    files
+      .map((file) => [file.path, sha256(file.contents)] as const)
+      .toSorted(([left], [right]) => (left < right ? -1 : left > right ? 1 : 0))
+      .map(([file, digest]) => `${file}\u0000${digest}\n`)
+      .join(""),
+  );
+
 /** Read a manifest's contents; anything unreadable is "nothing was managed before". */
 export const parseManagedSkills = (raw: string | null): Record<string, ReadonlyArray<string>> => {
   if (raw === null) return {};
@@ -80,9 +138,21 @@ export const parseManagedSkills = (raw: string | null): Record<string, ReadonlyA
  */
 export interface SkillsPlan {
   readonly directories: ReadonlyArray<string>;
-  readonly remove: ReadonlyArray<string>;
+  /**
+   * Bundle directories to clear before the files are written: stale ones, and the ones about to
+   * be rewritten. Each goes only when its tree digest is one of `accept`; otherwise it is kept.
+   */
+  readonly vacate: ReadonlyArray<SkillsVacate>;
   readonly files: ReadonlyArray<{ readonly path: string; readonly contents: string }>;
   readonly manifest: string;
+  /** The digests file's new contents. */
+  readonly digests: string;
+}
+
+/** One directory to clear, relative to the harness home, and the trees that are Mend's to delete. */
+export interface SkillsVacate {
+  readonly dir: string;
+  readonly accept: ReadonlyArray<string>;
 }
 
 /**
@@ -94,6 +164,7 @@ export interface SkillsPlan {
 export const planSkills = (
   previous: Record<string, ReadonlyArray<string>>,
   bundles: ReadonlyArray<SkillWithFiles>,
+  previousDigests: Record<string, Record<string, string>> = {},
 ): SkillsPlan | null => {
   const deliverable = bundles.filter(
     (bundle) =>
@@ -103,61 +174,169 @@ export const planSkills = (
   const names = deliverable.map((bundle) => bundle.skill.name);
   if (names.length === 0 && Object.keys(previous).length === 0) return null;
   const current = new Set(names);
-  const remove: Array<string> = [];
+  const vacate: Array<SkillsVacate> = [];
   const files: Array<{ readonly path: string; readonly contents: string }> = [];
+  const digests: Record<string, Record<string, string>> = {};
   for (const target of SKILL_TARGET_DIRS) {
+    const delivered = previousDigests[target] ?? {};
+    const lastDelivered = (name: string): ReadonlyArray<string> => {
+      const digest = Object.hasOwn(delivered, name) ? delivered[name] : undefined;
+      return digest === undefined ? [] : [digest];
+    };
     for (const stale of previous[target] ?? []) {
       if (current.has(stale) || validateSkillName(stale) !== null) continue;
-      remove.push(path.posix.join(target, stale));
+      vacate.push({ dir: path.posix.join(target, stale), accept: lastDelivered(stale) });
     }
+    const targetDigests: Record<string, string> = {};
     for (const bundle of deliverable) {
       const bundleRoot = path.posix.join(target, bundle.skill.name);
-      remove.push(bundleRoot);
+      const digest = skillTreeDigest(bundle.files);
+      targetDigests[bundle.skill.name] = digest;
+      vacate.push({
+        dir: bundleRoot,
+        accept: [...new Set([digest, ...lastDelivered(bundle.skill.name)])],
+      });
       for (const file of bundle.files) {
         files.push({ path: path.posix.join(bundleRoot, file.path), contents: file.contents });
       }
     }
+    digests[target] = targetDigests;
   }
   const manifest = Object.fromEntries(SKILL_TARGET_DIRS.map((target) => [target, names]));
   return {
     directories: [...SKILL_TARGET_DIRS],
-    remove,
+    vacate,
     files,
     manifest: JSON.stringify(manifest, null, 2),
+    digests: JSON.stringify(digests, null, 2),
   };
 };
 
-const readManifest = async (
-  harnessHomePath: string,
-): Promise<Record<string, ReadonlyArray<string>>> => {
+/**
+ * Clears the plan's directories under a harness home (`node -e`, argv: home, the kept directory
+ * relative to it, the `vacate` list as JSON). Prints one `skill <outcome> <dir>[ <detail>]` line
+ * per directory: `absent`; `removed` (its tree was one of `accept`); `kept` (moved whole to the
+ * detail path); `error` (the detail is the code). Exits 1 after any `error`, and the caller then
+ * writes nothing: a directory that could not be cleared is never written into.
+ */
+export const SKILLS_VACATE_PROGRAM = [
+  `const fs=require("fs"),path=require("path"),crypto=require("crypto");`,
+  `const [home,kept,list]=process.argv.slice(1);const items=JSON.parse(list);`,
+  `const sha=b=>crypto.createHash("sha256").update(b).digest("hex");`,
+  `function tree(dir){const out=[];const walk=(abs,rel)=>{for(const e of fs.readdirSync(abs,{withFileTypes:true})){`,
+  `const a=path.join(abs,e.name),r=rel===""?e.name:rel+"/"+e.name;`,
+  `if(e.isDirectory())walk(a,r);else if(e.isFile())out.push([r,sha(fs.readFileSync(a))]);else throw new Error("special")}};`,
+  `walk(dir,"");out.sort((x,y)=>x[0]<y[0]?-1:x[0]>y[0]?1:0);return sha(out.map(([r,h])=>r+"\\u0000"+h+"\\n").join(""))}`,
+  `function say(o,d,x){process.stdout.write("skill "+o+" "+d+(x?" "+x:"")+"\\n")}`,
+  `let failed=false;for(const it of items){const abs=path.join(home,it.dir);let st;`,
+  `try{st=fs.lstatSync(abs)}catch(e){if(e.code==="ENOENT"){say("absent",it.dir);continue}say("error",it.dir,e.code);failed=true;continue}`,
+  `let digest=null;if(st.isDirectory()){try{digest=tree(abs)}catch{digest=null}}`,
+  `try{if(digest!==null&&it.accept.includes(digest)){fs.rmSync(abs,{recursive:true,force:true});say("removed",it.dir)}`,
+  `else{const rel=path.join(kept,it.dir),to=path.join(home,rel);fs.mkdirSync(path.dirname(to),{recursive:true});fs.renameSync(abs,to);say("kept",it.dir,rel)}}`,
+  `catch(e){say("error",it.dir,e.code||"error");failed=true}}`,
+  `process.exit(failed?1:0)`,
+].join("");
+
+/** A fresh kept directory for one delivery, relative to the harness home. */
+export const skillsKeptDir = (now: Date = new Date()): string =>
+  path.posix.join(
+    SKILLS_KEPT_DIR,
+    `${now.toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`,
+  );
+
+/**
+ * The exec that prepares a workspace's harness home for `plan`: the skills directories exist, and
+ * every directory in `plan.vacate` is removed or kept aside.
+ */
+export const vacateSkillsExec = (
+  home: string,
+  kept: string,
+  plan: SkillsPlan,
+): ReadonlyArray<string> => [
+  "sh",
+  "-c",
+  `set -e; ${plan.directories.map((dir) => `mkdir -p "$1"/${shellQuote(dir)}`).join("; ")}; ` +
+    `exec node -e ${shellQuote(SKILLS_VACATE_PROGRAM)} "$1" "$2" "$3"`,
+  "mend-skills",
+  home,
+  kept,
+  JSON.stringify(plan.vacate),
+];
+
+/** What the vacate program did with one directory. */
+export interface SkillsVacateOutcome {
+  readonly outcome: "absent" | "removed" | "kept" | "error";
+  readonly dir: string;
+  readonly detail: string | null;
+}
+
+export const parseSkillsVacateOutcomes = (stdout: string): ReadonlyArray<SkillsVacateOutcome> =>
+  stdout.split("\n").flatMap((line): ReadonlyArray<SkillsVacateOutcome> => {
+    const match = /^skill (absent|removed|kept|error) (\S+)(?: (.*))?$/.exec(line);
+    if (match === null) return [];
+    const outcome = match[1];
+    if (
+      outcome !== "absent" &&
+      outcome !== "removed" &&
+      outcome !== "kept" &&
+      outcome !== "error"
+    ) {
+      return [];
+    }
+    return [{ outcome, dir: match[2] ?? "", detail: match[3] ?? null }];
+  });
+
+const readOptional = async (file: string): Promise<string | null> => {
   try {
-    return parseManagedSkills(
-      await fs.readFile(path.join(harnessHomePath, MANAGED_MANIFEST), "utf8"),
-    );
+    return await fs.readFile(file, "utf8");
   } catch {
-    // Absent or unreadable — nothing was managed before.
-    return {};
+    // Absent or unreadable: the parsers read null as "nothing known".
+    return null;
   }
 };
 
 /**
  * Write the merged library into the session's harness home on this machine (`planSkills`): the
  * co-located store, where that directory is mounted into the workspace. Capture mode mounts
- * nothing, and the engine applies the same plan inside the live workspace.
+ * nothing, and the engine applies the same plan inside the live workspace. Answers what happened
+ * to each directory it cleared.
  */
 export const materializeSkills = (
   harnessHomePath: string,
   bundles: ReadonlyArray<SkillWithFiles>,
-): Effect.Effect<void, SkillMaterializeError> =>
+): Effect.Effect<ReadonlyArray<SkillsVacateOutcome>, SkillMaterializeError> =>
   Effect.tryPromise({
     try: async () => {
-      const plan = planSkills(await readManifest(harnessHomePath), bundles);
-      if (plan === null) return;
+      const plan = planSkills(
+        parseManagedSkills(await readOptional(path.join(harnessHomePath, MANAGED_MANIFEST))),
+        bundles,
+        parseManagedSkillDigests(await readOptional(path.join(harnessHomePath, MANAGED_DIGESTS))),
+      );
+      if (plan === null) return [];
       for (const directory of plan.directories) {
         await fs.mkdir(path.join(harnessHomePath, directory), { recursive: true });
       }
-      for (const stale of plan.remove) {
-        await fs.rm(path.join(harnessHomePath, stale), { recursive: true, force: true });
+      const vacated = spawnSync(
+        process.execPath,
+        [
+          "-e",
+          SKILLS_VACATE_PROGRAM,
+          harnessHomePath,
+          skillsKeptDir(),
+          JSON.stringify(plan.vacate),
+        ],
+        { encoding: "utf8" },
+      );
+      const outcomes = parseSkillsVacateOutcomes(vacated.stdout ?? "");
+      if (vacated.status !== 0) {
+        throw new Error(
+          `could not clear ${
+            outcomes
+              .filter((outcome) => outcome.outcome === "error")
+              .map((outcome) => `${outcome.dir} (${outcome.detail ?? "error"})`)
+              .join(", ") || `the skills directories (${vacated.stderr ?? ""})`
+          }`,
+        );
       }
       for (const file of plan.files) {
         const filePath = path.join(harnessHomePath, file.path);
@@ -165,6 +344,8 @@ export const materializeSkills = (
         await fs.writeFile(filePath, file.contents, "utf8");
       }
       await fs.writeFile(path.join(harnessHomePath, MANAGED_MANIFEST), plan.manifest, "utf8");
+      await fs.writeFile(path.join(harnessHomePath, MANAGED_DIGESTS), plan.digests, "utf8");
+      return outcomes;
     },
     catch: (error) =>
       new SkillMaterializeError({

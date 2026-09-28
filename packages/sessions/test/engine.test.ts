@@ -5970,9 +5970,19 @@ describe("SessionEngine files into a captured workspace", () => {
             ".claude/skills": ["global", "local"],
             ".codex/skills": ["global", "local"],
           });
-          // The bundles are rewritten whole: their old directories go first.
+          expect(
+            JSON.parse(text("/workspace/harness-home/.mend-managed-skills-digests.json") ?? "{}"),
+          ).toMatchObject({ ".claude/skills": { global: expect.any(String) } });
+          // The bundles are rewritten whole: their old directories are cleared first, each one
+          // only if it is exactly what Mend delivered, else kept aside.
           const prepared = execCalls.find((argv) => argv[3] === "mend-skills");
-          expect(prepared).toContain("/workspace/harness-home/.claude/skills/global");
+          expect(prepared?.[4]).toBe("/workspace/harness-home");
+          expect(prepared?.[5]).toMatch(/^\.mend\/skills-kept\//);
+          const vacate: ReadonlyArray<{ dir: string; accept: ReadonlyArray<string> }> = JSON.parse(
+            prepared?.[6] ?? "[]",
+          );
+          expect(vacate.map((entry) => entry.dir)).toContain(".claude/skills/global");
+          expect(prepared?.[2]).not.toContain("rm -rf");
         }),
       {
         captured: makeMemoryCaptureStore(),
