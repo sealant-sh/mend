@@ -406,7 +406,9 @@ export async function runPackagedDotfilesAcceptance({
     "-d",
     `refs/heads/${DOTFILES_REF}`,
   ]);
-  const second = await launch("dotfiles-degraded", 600_000);
+  // As long as the first launch: the session reads completed only once its final save is sealed,
+  // which on the bundle's Garage store waits about 10.5 minutes for its upload URLs to expire.
+  const second = await launch("dotfiles-degraded", 1_200_000);
   sessionDotfilesEvidence(second.detail.session, {
     url,
     ref: DOTFILES_REF,
