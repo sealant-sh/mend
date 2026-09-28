@@ -49,19 +49,40 @@ const GIT_CONTENT_REJECTION =
   /pack has bad object|inflate returned|serious inflate inconsistency|pack is corrupted|pack has junk|pack signature mismatch|pack version \d+ unsupported|unresolved delta|early EOF|premature end of pack|file '[^']*' validation error|does not match index|non-monotonic index|index file .* is too small|bad index version|delta base offset|unknown object type|collision found|fsck error|missing (?:blob|tree|commit|tag) object|bad (?:blob |tree |commit |tag )?object|invalid (?:blob|tree|commit|tag) object|expected type|not all child objects/i;
 
 /**
+ * What `git rev-list --objects --missing=error` says of a closure missing a parent commit (git
+ * 2.55: `error: Could not read <id>`, then `fatal: Failed to traverse parents of commit <id>`).
+ * Content only on git's own `fatal` exit, 128 (review 2026-09-28 (14) #4): the same words with
+ * another exit, or with a host word beside them, are not read as the content's.
+ */
+const GIT_MISSING_PARENT = /could not read [0-9a-f]{40,64}\b|failed to traverse parents/i;
+
+/** An exit git chose itself: no signal ended it and Node's run did not fail around it. */
+const gitChoseExit = (error: GitError): boolean =>
+  error.exitCode !== null && error.signal === undefined && error.code === undefined;
+
+/**
  * Whether a failed git run said something about the content it read — a pack's bytes, a
  * closure's objects — rather than that the Mend host could not finish it (review 2026-09-28 (13)
- * #1). Only an exit git chose, with words `GIT_CONTENT_REJECTION` knows and none naming a host
- * resource, is about content. A signal (the OOM killer), Node's own failure (the output buffer,
- * the spawn), a full disk, a descriptor limit — or words not known here — say nothing about the
- * content: a check that ended so concluded nothing.
+ * #1). Only an exit git chose, with words `GIT_CONTENT_REJECTION` knows (or, on exit 128, words
+ * naming a missing parent: `GIT_MISSING_PARENT`) and none naming a host resource, is about
+ * content. A signal (the OOM killer), Node's own failure (the output buffer, the spawn), a full
+ * disk, a descriptor limit — or words not known here — say nothing about the content: a check
+ * that ended so concluded nothing.
  */
 export const gitRejectsContent = (error: GitError): boolean =>
-  error.exitCode !== null &&
-  error.signal === undefined &&
-  error.code === undefined &&
+  gitChoseExit(error) &&
   !HOST_RESOURCE.test(error.stderr) &&
-  GIT_CONTENT_REJECTION.test(error.stderr);
+  (GIT_CONTENT_REJECTION.test(error.stderr) ||
+    (error.exitCode === 128 && GIT_MISSING_PARENT.test(error.stderr)));
+
+/**
+ * A failed git run neither list explains (review 2026-09-28 (14) #4): git chose its exit, and its
+ * words name neither a host resource nor a content rejection known here. Not the content's on one
+ * ask — but the same words from the same check, ask after ask, are git's answer about the content,
+ * and the caller may bound how often it asks (`CaptureChannel`'s plan check).
+ */
+export const gitExitUnexplained = (error: GitError): boolean =>
+  gitChoseExit(error) && !HOST_RESOURCE.test(error.stderr) && !gitRejectsContent(error);
 
 /** The pinned identity every store git call starts from; `env` overrides it (a landing's owner). */
 const gitProcessEnv = (env: Record<string, string> | undefined): NodeJS.ProcessEnv => ({

@@ -3,6 +3,7 @@ import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
+  captureDrainOf,
   captureStatusOf,
   platformErrorCode,
   runtimeDeadlineOf,
@@ -287,5 +288,27 @@ describe("stopWith", () => {
     await stopWith(workspace, options);
     await stopWith(workspace, undefined);
     expect(asked).toEqual([[options], []]);
+  });
+});
+
+const readDrain = (workspace: object) => Effect.runPromise(captureDrainOf(workspace));
+
+describe("captureDrainOf (e2e9 F-A)", () => {
+  it("reads a drain Core ended, one it retains, none, and an SDK without the method", async () => {
+    expect(
+      await readDrain({
+        captureDrain: async () => ({ state: "stopped", detail: "exited on its own" }),
+      }),
+    ).toEqual({ kind: "drain", state: "stopped", retained: false });
+    expect(
+      await readDrain({
+        captureDrain: async () => ({
+          state: "kept",
+          retained: { since: "2026-09-28T00:00:00Z", reason: "x", recoverable: true },
+        }),
+      }),
+    ).toEqual({ kind: "drain", state: "kept", retained: true });
+    expect(await readDrain({ captureDrain: async () => null })).toEqual({ kind: "none" });
+    expect(await readDrain({})).toEqual({ kind: "unsupported" });
   });
 });

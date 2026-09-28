@@ -133,7 +133,7 @@ import {
   CaptureSealsNone,
   captureHoldWords,
   CaptureRuntimeOff,
-  planRestoredOlderWords,
+  planBlockedWords,
   planWaitingWords,
   CaptureUploadPolicyDefault,
   DotfilesCloner,
@@ -405,6 +405,11 @@ const sealantLaunchLayer = (
     /** What the platform reports of the workspace, given whether a stop was asked of it. */
     readonly status?: (stopAsked: boolean) => WorkspaceStatus | undefined;
     /**
+     * `workspace.captureDrain()` (Core's next SDK): what Core last observed of the drain. Absent,
+     * the workspace has no such method, as on SDK 0.37.2.
+     */
+    readonly captureDrain?: () => unknown;
+    /**
      * Stands in for a command inside the executor: an answer here wins over the defaults below
      * (undefined falls through), so a test can put files where only the workspace has them.
      */
@@ -478,6 +483,10 @@ const sealantLaunchLayer = (
     },
     expire: async () => undefined,
   };
+  const readDrain = captureOps?.captureDrain;
+  if (readDrain !== undefined) {
+    Object.assign(workspace, { captureDrain: async () => readDrain() });
+  }
   return Layer.succeed(SealantClient, {
     createWorkspace: (options, launch) =>
       Effect.suspend(() => {
@@ -7937,10 +7946,25 @@ describe("SessionEngine capture mode", () => {
     );
   });
 
-  it("review 13 #1: a plan that must wait for Mend to verify the head says why in the session's summary, and a plan that goes ahead clears it; one that restores an older capture says which", async () => {
+  /**
+   * Review 2026-09-28 (14) #1 and #3, from the reviewer's "r14c: a pickup plan that waits once …":
+   * an executor killed, the reaper's `executor lost · …`, a resume whose boot plan must wait for
+   * Mend to verify the head, then is refused because git rejects it, then goes ahead.
+   */
+  const pickupAfterLoss = async (
+    body: (at: {
+      readonly world: Parameters<Parameters<typeof withEngine>[0]>[0];
+      readonly session: Session;
+      readonly head: { readonly id: string; readonly manifest: { readonly n: number } };
+      readonly lost: string;
+      readonly answers: Map<string, GitVerification>;
+      readonly headKey: string;
+    }) => Effect.Effect<void, unknown, SessionEngine>,
+  ) => {
     const created: Array<CreateOptions> = [];
     const memory = makeMemoryCaptureStore();
-    // What Mend's verification answers, by manifest key: the Mend host out of disk, then back.
+    let executorDead = false;
+    // What Mend's verification answers, by manifest key; verified unless a test says.
     const answers = new Map<string, GitVerification>();
     const verifier = Layer.succeed(CaptureGitVerifier, {
       verify: (_projectId, manifest) =>
@@ -7965,57 +7989,108 @@ describe("SessionEngine capture mode", () => {
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
-          const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
-          const older = yield* shipHarnessCapture(
-            tmp,
-            memory,
-            session.worktreeId,
-            epoch,
-            crypto.randomUUID(),
-          );
           const head = yield* shipHarnessCapture(
             tmp,
             memory,
             session.worktreeId,
-            epoch,
+            memory.leases.get(session.worktreeId)?.epoch ?? 0,
             crypto.randomUUID(),
           );
           const row = memory.captures.get(head.id);
           if (row === undefined) throw new Error("the head did not register");
           memory.captures.set(head.id, { ...row, gitFsck: "unverified" });
-          const api = servedSocketApis.get(session.id)?.capture;
-          if (api === undefined) throw new Error("the session serves no capture api");
-          // The Mend host cannot finish the check: the plan waits, and the session says why.
-          answers.set(keyOf(head.manifest), {
-            outcome: "unverified",
-            detail: "index-pack --verify did not finish: signal SIGKILL",
-            transient: true,
-          });
-          const waiting = yield* Effect.flip(
-            api.planGet({ worktree_id: session.worktreeId, epoch }),
-          );
-          expect(waiting.reason).toBe("worktree-leased");
-          expect(world.sessions.get(session.id)?.summary).toBe(planWaitingWords(head.manifest.n));
-          // Recovered: the plan goes ahead with the head, and the words are gone.
-          answers.delete(keyOf(head.manifest));
-          const plan = yield* api.planGet({ worktree_id: session.worktreeId, epoch });
-          expect(plan.head?.capture_id).toBe(head.id);
-          expect(world.sessions.get(session.id)?.summary).toBeNull();
-          // Git rejects the head's content: the older capture is restored, and the session says so.
-          memory.captures.set(head.id, { ...row, gitFsck: "failed" });
-          answers.set(keyOf(head.manifest), { outcome: "failed", detail: "missing tree" });
-          const routed = yield* api.planGet({ worktree_id: session.worktreeId, epoch });
-          expect(routed.head?.capture_id).toBe(head.id);
-          expect(routed.head?.manifest.sections).toEqual(older.manifest.sections);
-          expect(world.sessions.get(session.id)?.summary).toBe(
-            planRestoredOlderWords(older.manifest.n, head.manifest.n),
-          );
+          const realNow = memory.clock.now;
+          memory.clock.now = () => realNow() + 10 * 60 * 1000;
+          executorDead = true;
+          yield* engine.reapCaptureLeases();
+          const lost = world.sessions.get(session.id)?.summary ?? "";
+          expect(lost).toContain("executor lost · lease expired");
+          yield* body({
+            world,
+            session,
+            head,
+            lost,
+            answers,
+            headKey: keyOf(head.manifest),
+          }).pipe(Effect.ensuring(Effect.sync(() => (memory.clock.now = realNow))));
         }),
       {
         captured: memory,
         verifier,
-        sealantLayer: sealantLaunchLayer(created),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          () => executorDead,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          [],
+        ),
       },
+    );
+  };
+
+  it("review 14 #1, #3: a pickup plan that waits, then is refused, says so beside 'executor lost', never over it; once it goes ahead the words go and the replacement's heartbeat reads 'picked up · executor replaced'", async () => {
+    await pickupAfterLoss(({ world, session, head, lost, answers, headKey }) =>
+      Effect.gen(function* () {
+        const engine = yield* SessionEngine;
+        yield* engine.resumeSession(session.id, null);
+        expect(world.sessions.get(session.id)?.summary).toBe(lost);
+        const epoch = 0;
+        const api = servedSocketApis.get(session.id)?.capture;
+        if (api === undefined) throw new Error("the picked-up session serves no capture api");
+        // The replacement's boot plan: the Mend host cannot finish the check.
+        answers.set(headKey, {
+          outcome: "unverified",
+          detail: "index-pack --verify did not finish: signal SIGKILL",
+          transient: true,
+        });
+        const waiting = yield* Effect.flip(api.planGet({ worktree_id: session.worktreeId, epoch }));
+        expect(waiting.reason).toBe("worktree-leased");
+        // Before: the waiting words alone — `executor lost · …` gone for good.
+        expect(world.sessions.get(session.id)?.summary).toBe(
+          `${lost} · ${planWaitingWords(head.manifest.n)}`,
+        );
+        // Git rejects the head's content: the launch is blocked, and the session says so.
+        answers.set(headKey, { outcome: "failed", detail: "fatal: bad tree object" });
+        const blocked = yield* Effect.flip(api.planGet({ worktree_id: session.worktreeId, epoch }));
+        expect([blocked.status, blocked.reason]).toEqual([422, "unrestorable"]);
+        expect(world.sessions.get(session.id)?.summary).toBe(
+          `${lost} · ${planBlockedWords(head.manifest.n)}`,
+        );
+        // The check passes: the plan goes ahead with the head, and the loss report is back as it was.
+        answers.delete(headKey);
+        const plan = yield* api.planGet({ worktree_id: session.worktreeId, epoch });
+        expect(plan.head?.capture_id).toBe(head.id);
+        expect(world.sessions.get(session.id)?.summary).toBe(lost);
+        // Its first heartbeat is the observation that ends it.
+        yield* api.heartbeat({ worktree_id: session.worktreeId, epoch: plan.epoch });
+        expect(world.sessions.get(session.id)?.summary).toBe("picked up · executor replaced");
+      }),
+    );
+  });
+
+  it("review 14 #1: a plan notice from a launch that is not the session's current one leaves the summary alone", async () => {
+    await pickupAfterLoss(({ world, session, head, lost, answers, headKey }) =>
+      Effect.gen(function* () {
+        const older = servedSocketApis.get(session.id)?.captureAs?.("launch-the-session-left");
+        if (older === undefined) throw new Error("the session serves no per-launch capture api");
+        answers.set(headKey, {
+          outcome: "unverified",
+          detail: "index-pack --verify did not finish: signal SIGKILL",
+          transient: true,
+        });
+        const waiting = yield* Effect.flip(
+          older.planGet({ worktree_id: session.worktreeId, epoch: 0 }),
+        );
+        expect(waiting.reason).toBe("worktree-leased");
+        // Before: `launch waiting · capture n's …` over the loss report.
+        expect(world.sessions.get(session.id)?.summary).toBe(lost);
+        expect(head.manifest.n).toBeGreaterThan(0);
+      }),
     );
   });
 
@@ -8983,6 +9058,108 @@ describe("SessionEngine capture mode", () => {
     );
     await scenario.run();
   }, 30_000);
+
+  it("e2e9 F-B: nothing executes in a capture-mode standby before its claim; the helper, setup and note run after the replan", async () => {
+    const created: Array<CreateOptions> = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const flushed: string[] = [];
+    const execCalls: ReadonlyArray<string>[] = [];
+    const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
+    /** How many execs had reached the standby when its replan was asked. */
+    const execsAtReplan: Array<number> = [];
+    let executor: SessionId | null = null;
+    const flush = () =>
+      Effect.succeed({
+        epoch: 2,
+        worktreeId: "",
+        pending: 0,
+        stagedBytes: 0,
+        uploadedObjects: 0,
+        uploadedBytes: 0,
+        registered: 0,
+        fenced: false,
+        paused: false,
+        ...readEverything,
+      } satisfies WorkspaceCaptureStatus);
+    const replan = (_workspace: Workspace) =>
+      Effect.gen(function* () {
+        execsAtReplan.push(execCalls.length);
+        if (executor === null) throw new Error("no executor to replan");
+        const api = servedSocketApis.get(executor)?.capture;
+        if (api === undefined) throw new Error("the executor serves no capture api");
+        const plan = yield* api.planGet({ worktree_id: null, epoch: 0 }).pipe(
+          Effect.mapError(
+            (error) =>
+              new SealantPlatformError({
+                code: "replan_refused",
+                status: error.status,
+                message: `${error.reason}: ${error.message}`,
+                cause: error,
+              }),
+          ),
+        );
+        return {
+          worktreeId: plan.worktree_id,
+          epoch: plan.epoch,
+          ...(plan.head === null
+            ? {}
+            : { headN: plan.head.n, headCaptureId: plan.head.capture_id }),
+          filesWritten: 0,
+          bytesWritten: 0,
+          filesSkipped: 0,
+          bytesSkipped: 0,
+          removed: 0,
+          unchanged: false,
+        } satisfies WorkspaceCaptureReplanned;
+      });
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(() => pool.entries.some((entry) => entry.status === "ready"), "a standby");
+          // Warmed and ready: not one exec reached it (before: the helper install and the
+          // prewarm note, each clearing sealantd's unclaimed marker).
+          expect(execCalls).toEqual([]);
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          expect(pool.entries.some((entry) => entry.id === session.id)).toBe(true);
+          executor = session.id;
+          yield* engine.launch(session.id, ["codex"]);
+          expect(execsAtReplan).toEqual([0]);
+          // After the replan: the helper and git transport, and the note, as a cold launch has.
+          expect(execCalls.some((argv) => argv.join(" ").includes("core.sshCommand"))).toBe(true);
+          expect(execCalls.length).toBeGreaterThan(1);
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          spawned,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
+          undefined,
+          { flushed, replan, flush },
+        ),
+        hotWorkspacesLayer: pool.layer,
+      },
+    );
+  });
 
   it("a worktree claims the standby: the session adopts its id, the lease is taken at a fresh epoch with the executor as holder, the launch re-plans it onto the worktree, its first register parents on capture 0, a fresh standby warms, a second worktree claims that one, and a join goes cold", async () => {
     const created: Array<CreateOptions> = [];
@@ -12348,6 +12525,124 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
           ),
         },
       );
+    },
+  );
+
+  /**
+   * e2e9 F-A: a `docker stop` outside Mend whose FINAL saved (the seal stood). Core then reports
+   * the workspace `failed` ("exited on its own (exitCode: 0)"), its container removed, its drain
+   * `stopped` — and Mend read every non-live status but `stopped` as kept, so the session read
+   * `stopping` for good. `drain`: what Core's `captureDrain()` answers once the executor ended.
+   */
+  const dockerStopReportedFailed = async (drain: unknown) => {
+    const created: Array<CreateOptions> = [];
+    const ptyStates = new Map<string, InteractiveSessionStatus>();
+    const memory = makeMemoryCaptureStore();
+    const records = new Map<string, CaptureCompletionSeal>();
+    let exited = false;
+    let observed: { readonly status: string | undefined; readonly summary: string | null } = {
+      status: undefined,
+      summary: null,
+    };
+    let expectedSaved = "";
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+          const built = yield* shipHarnessCapture(
+            tmp,
+            memory,
+            session.worktreeId,
+            epoch,
+            crypto.randomUUID(),
+            "final",
+          );
+          const sealedAt = new Date();
+          records.set(`${session.worktreeId}:${epoch}`, {
+            worktreeId: session.worktreeId,
+            epoch,
+            executorId: world.executorLaunches.get(session.id)?.launchId ?? "",
+            captureId: built.id,
+            n: built.manifest.n,
+            sealedAt,
+          });
+          expectedSaved = `stopped outside Mend · saved at ${sealedAt.toISOString().slice(11, 19)} UTC · capture ${built.manifest.n}`;
+          const agent = [...world.processes.values()].find(
+            (process) => process.sessionId === session.id && process.kind === "agent-pty",
+          );
+          if (agent === undefined || agent.sealantSessionId === null) {
+            throw new Error("the launch recorded no agent PTY");
+          }
+          exited = true;
+          ptyStates.set(agent.sealantSessionId, {
+            status: "exited",
+            exitCode: 0,
+            outputHighWater: 0n,
+          });
+          // Long enough for the end to be observed and the termination wait to run out.
+          for (let i = 0; i < 500 && world.sessions.get(session.id)?.settledAt == null; i++) {
+            yield* Effect.sleep(Duration.millis(10));
+          }
+          const read = world.sessions.get(session.id);
+          observed = { status: read?.status, summary: read?.summary ?? null };
+        }),
+      {
+        captured: memory,
+        seals: memorySeals(records),
+        drainPolicy: { terminationWait: Duration.millis(50) },
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          ptyStates,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            status: () => (exited ? "failed" : "ready"),
+            captureDrain: () => (exited ? drain : null),
+          },
+        ),
+      },
+    );
+    return { ...observed, expectedSaved };
+  };
+
+  it(
+    "e2e9 F-A: a `docker stop` that saved, which Core reports `failed` with its drain `stopped` and nothing retained, settles `stopped outside Mend · saved at …` — never `stopping` for good",
+    { timeout: 20_000 },
+    async () => {
+      const read = await dockerStopReportedFailed({
+        state: "stopped",
+        detail: "exited on its own (exitCode: 0)",
+      });
+      // Before: `stopping`, for good.
+      expect(read.status).toBe("stopped");
+      expect(read.summary).toBe(read.expectedSaved);
+    },
+  );
+
+  it(
+    "e2e9 F-A: an executor Core reports `failed` but retains for recovery still reads kept, never stopped",
+    { timeout: 20_000 },
+    async () => {
+      const read = await dockerStopReportedFailed({
+        state: "kept",
+        retained: {
+          since: "2026-09-28T11:18:59Z",
+          reason: "ended",
+          recoverable: true,
+          recoveryAttempts: 0,
+        },
+      });
+      expect(read.status).not.toBe("stopped");
+      expect(read.summary ?? "").not.toContain("saved at");
     },
   );
 

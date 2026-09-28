@@ -19,7 +19,13 @@ import {
   gitObjectIdPattern,
   GIT_OBJECT_ID,
 } from "./captures.ts";
-import { git, type GitError, gitHostFaultWords, gitRejectsContent } from "./git.ts";
+import {
+  git,
+  type GitError,
+  gitExitUnexplained,
+  gitHostFaultWords,
+  gitRejectsContent,
+} from "./git.ts";
 import {
   type BundleEmptyError,
   type BundleInput,
@@ -62,7 +68,15 @@ export class RunnerPackError extends Schema.TaggedErrorClass<RunnerPackError>()(
 
 export class RunnerCacheError extends Schema.TaggedErrorClass<RunnerCacheError>()(
   "RunnerCacheError",
-  { projectId: Schema.String, cause: Schema.Defect() },
+  {
+    projectId: Schema.String,
+    cause: Schema.Defect(),
+    /**
+     * `index-pack --verify` exited on its own with words neither list explains
+     * (`gitExitUnexplained`, review 2026-09-28 (14) #4): the same words again are git's answer.
+     */
+    unexplained: Schema.optionalKey(Schema.Boolean),
+  },
 ) {}
 
 export type RunnerError =
@@ -409,6 +423,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
                       cause: new Error(
                         `index-pack --verify of ${key} did not finish: ${gitHostFaultWords(error)}`,
                       ),
+                      ...(gitExitUnexplained(error) ? { unexplained: true } : {}),
                     }),
               ),
             );
