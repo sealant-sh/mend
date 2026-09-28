@@ -1,11 +1,11 @@
 # Mend bundle: one Mend container plus one official Postgres container at runtime.
-# Sealant stays a published platform dependency. These stages copy the released 0.37.2 artifacts;
-# this build never imports Core source or its database schema. Sealant 0.37.2 runs its job queue
+# Sealant stays a published platform dependency. These stages copy the released 0.38.0 artifacts;
+# this build never imports Core source or its database schema. Sealant 0.38.0 runs its job queue
 # in Postgres and keeps workspace images in the host Docker Engine, so the bundle carries no
 # RabbitMQ and no registry.
-FROM ghcr.io/sealant-sh/sealant-api@sha256:560f081f85a12d45fb045f685c2a75b17169a851c43c818d960523e48e13173d AS sealant-api
-FROM ghcr.io/sealant-sh/sealant-worker@sha256:13f60ad2f5ec0401952c3cb9a05c5734f788c03b8eb103cb97619712d55897c0 AS sealant-worker
-FROM ghcr.io/sealant-sh/sealant-ssh-gateway@sha256:a05d5fd1632c1e65a7867aae0522610948aea36972e7758b5a6dde367ecc51cd AS sealant-ssh-gateway
+FROM ghcr.io/sealant-sh/sealant-api@sha256:d07378ba5c7371f3590fca5a0c81cb407c0b4c12afa582d814c1f9da763389f6 AS sealant-api
+FROM ghcr.io/sealant-sh/sealant-worker@sha256:5ac0c4176aeb5996b35f294aad49b489700d9d6d82d004d71f697ad4bb309ba6 AS sealant-worker
+FROM ghcr.io/sealant-sh/sealant-ssh-gateway@sha256:7967a462f9757593eb6e3ba4167aa551ef6a58b125de2853c61216ea933fc487 AS sealant-ssh-gateway
 
 # Mend's API server and web front are esbuild-bundled here (tooling/scripts/bundle-app.mjs and
 # apps/web/scripts/build-server.mjs), so the runtime ships two self-contained files plus the
@@ -27,7 +27,7 @@ FROM node:26-bookworm-slim AS runtime
 ARG MEND_VERSION=dev
 LABEL org.opencontainers.image.title="Mend bundle" \
   org.opencontainers.image.version="${MEND_VERSION}" \
-  dev.sealant.mend.sealant-version="0.37.2"
+  dev.sealant.mend.sealant-version="0.38.0"
 
 # Required by Sealant's root-owned control sockets and the host Docker socket contract.
 USER root

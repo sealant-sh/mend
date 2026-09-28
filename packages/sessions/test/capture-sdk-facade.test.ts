@@ -36,6 +36,7 @@ const CARRIED = {
   registered: 1,
   fenced: false,
   paused: false,
+  refused: [],
   unreadable: 1,
   carried: 1,
   unreadablePaths: ["tree/app.ts"],
@@ -82,7 +83,7 @@ describe("the pinned SDK facade and the landing barrier", () => {
     const reading = readCaptureReport(returned);
     expect(reading.pending).toBe(0);
     expect(captureCaughtUp(reading)).toBe(false);
-    // SDK 0.37.2 drops the health fields; a facade that forwards them reads the path itself.
+    // SDK 0.37.2 dropped the health fields; a facade that forwards them (0.38.0) reads the path.
     expect(["unreadable", "snapshot health not reported"]).toContain(captureBehindReason(reading));
   });
 

@@ -52,6 +52,11 @@ const fakeWorkspace = (id: string): Workspace => ({
   id,
   name: id,
   status: async () => "ready",
+  runtimeDeadline: async () => null,
+  runtime: async () => null,
+  launch: undefined,
+  recover: async () => new Promise(() => undefined),
+  captureDrain: async () => null,
   ready: async function () {
     return this;
   },
@@ -64,6 +69,7 @@ const fakeWorkspace = (id: string): Workspace => ({
   bind: async () => [],
   capture: {
     flush: async () => new Promise(() => undefined),
+    status: async () => new Promise(() => undefined),
     replan: async () => new Promise(() => undefined),
   },
   sessions: {
@@ -73,7 +79,7 @@ const fakeWorkspace = (id: string): Workspace => ({
   },
   events: async function* () {},
   forward: async () => new Promise(() => undefined),
-  stop: async () => undefined,
+  stop: async () => ({ state: "stopped" }),
   restart: async function () {
     return this;
   },

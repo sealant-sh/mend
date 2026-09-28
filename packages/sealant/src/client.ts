@@ -882,10 +882,9 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
         wrap(() => stopWith(workspace, options)).pipe(Effect.map(workspaceStopAnswerOf)),
     );
 
-    // The kind has nowhere to go on this SDK (see `captureFlush` above): both kinds call the
-    // suspend flush, and a final request's answer carries no `complete`.
     const captureFlush = Effect.fn("SealantClient.captureFlush")(
-      (workspace: Workspace, _kind: CaptureFlushKind) => wrap(() => workspace.capture.flush()),
+      (workspace: Workspace, kind: CaptureFlushKind) =>
+        wrap(() => workspace.capture.flush({ kind })),
     );
 
     const captureStatus = Effect.fn("SealantClient.captureStatus")((workspace: Workspace) =>
