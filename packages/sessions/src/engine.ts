@@ -134,7 +134,7 @@ import {
 import {
   AgentBridge,
   DotfilesStore,
-  type GitError,
+  GitError,
   MendKeys,
   NO_SIGNER_MESSAGE,
   SecretCipher,
@@ -149,6 +149,7 @@ import {
   sessionStatePathOf,
   resolveRemoteEnv,
   sshTransportArgs,
+  unsupportedRepositoryReason,
   worktreePathOf,
   worktreesRootOf,
   BlobStore,
@@ -405,6 +406,29 @@ const withPermissionDefaults = (
   }
   return argv;
 };
+
+/**
+ * A project whose repository Mend does not support — SHA-256 objects (`unsupportedRepositoryReason`;
+ * owner, 2026-09-28) — starts no session: one adopted before adoption refused it is refused here,
+ * as a `GitError` whose `stderr` is the reason. A store git could not read is left to the step that
+ * needs it, which says why.
+ */
+const refuseUnsupportedProject = (project: Project) =>
+  unsupportedRepositoryReason(project.storePath).pipe(
+    Effect.catch(() => Effect.succeed(null)),
+    Effect.flatMap((reason) =>
+      reason === null
+        ? Effect.void
+        : Effect.fail(
+            new GitError({
+              args: ["mend", "repository-format"],
+              cwd: project.storePath,
+              exitCode: null,
+              stderr: reason,
+            }),
+          ),
+    ),
+  );
 
 /**
  * "Could not reach the platform" is not "the run is over". Only a
@@ -856,7 +880,7 @@ export class SessionEngine extends Context.Service<
         readonly origin?: SessionOrigin;
         readonly autoLand?: boolean | null;
       },
-    ) => Effect.Effect<Session, WorktreeNotFoundError | ProjectNotFoundError>;
+    ) => Effect.Effect<Session, WorktreeNotFoundError | ProjectNotFoundError | GitError>;
     readonly attachRun: (
       sessionId: SessionId,
       sealantRunId: SealantRunId,
@@ -4719,6 +4743,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         input: { readonly name: string | null; readonly base: string | null },
         ownerUserId: string | null,
       ) {
+        yield* refuseUnsupportedProject(project);
         if (input.name !== null) {
           const existing = yield* worktreesRepo.byName(project.id, input.name);
           if (existing !== null) {
@@ -11535,6 +11560,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.gen(function* () {
             const worktree = yield* worktreesRepo.byId(worktreeId);
             const project = yield* projects.byId(worktree.projectId);
+            yield* refuseUnsupportedProject(project);
             return yield* provisionInWorktree(project, worktree, input);
           }).pipe(asSealantUser(input.ownerUserId)),
         attachRun: (sessionId, sealantRunId, workspaceId) =>

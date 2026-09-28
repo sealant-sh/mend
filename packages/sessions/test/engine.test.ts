@@ -16114,3 +16114,45 @@ it(
     );
   },
 );
+
+/**
+ * Owner, 2026-09-28 (e2e8 (d)): Mend does not support SHA-256 or reftable repositories yet. A
+ * project adopted before adoption refused them starts no session: the start is refused with the
+ * reason, before any worktree, row or executor is made.
+ */
+it("refuses to start a session on a SHA-256 project with the reason", async () => {
+  await withEngine((world, tmp) =>
+    Effect.gen(function* () {
+      const project = yield* setup(tmp, world);
+      // A SHA-256 repository with a main branch, as an adoption before the refusal stored it.
+      const work = path.join(tmp, "sha256-work");
+      const sha256 = path.join(tmp, "sha256.git");
+      execFileSync("git", ["init", "-q", "-b", "main", "--object-format=sha256", work]);
+      fs.writeFileSync(path.join(work, "app.ts"), "export const answer = 41\n");
+      execFileSync("git", ["add", "-A"], { cwd: work });
+      execFileSync(
+        "git",
+        ["-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "one"],
+        { cwd: work },
+      );
+      execFileSync("git", ["clone", "-q", "--bare", work, sha256]);
+      world.projects.set(project.id, new Project({ ...project, storePath: sha256 }));
+      const engine = yield* SessionEngine;
+      const refused = yield* engine
+        .provision({
+          projectId: project.id,
+          harness: "codex",
+          label: null,
+          name: null,
+          ownerUserId: "user-fixture",
+          base: null,
+        })
+        .pipe(Effect.flip);
+      expect(refused._tag).toBe("GitError");
+      if (refused._tag === "GitError") {
+        expect(refused.stderr).toBe("Mend doesn't support SHA-256 repositories yet.");
+      }
+      expect(world.sessions.size).toBe(0);
+    }),
+  );
+});
