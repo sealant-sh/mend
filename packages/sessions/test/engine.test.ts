@@ -12992,6 +12992,58 @@ describe("SessionEngine idempotent executor creates (Core's next SDK, 2026-09-28
   );
 
   it(
+    "review 4 #14 a reserved create asked again after its claim lapsed keeps the original epoch: the delayed original executor, planned under it, is never fenced",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const createKeys: Array<string | undefined> = [];
+      let lose = true;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+            const original = world.executorCreates.get(session.id);
+            if (original === undefined) throw new Error("no reserved create");
+            const originalEpoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            // The original create commits late, after the lookup found nothing: its executor
+            // boots with its own launch's token and plans under the launch's claim.
+            const executor = servedSocketApis.get(session.id)?.captureAs?.(original);
+            if (executor === undefined) throw new Error("no launch-bound capture routes");
+            const plan = yield* executor.planGet({ worktree_id: null, epoch: 0 });
+            expect(plan.epoch).toBe(originalEpoch);
+            expect(plan.executor).toBe(original);
+            // Its claim lapses before its first heartbeat (a slow boot), and the next launch asks
+            // the very same create again.
+            const later = Date.now() + 1_000_000;
+            memory.clock.now = () => later;
+            lose = false;
+            yield* engine.launch(session.id, ["codex"]);
+            expect(createKeys).toEqual([original, original]);
+            // Ownership was never resolved: the same launch, the same epoch, renewed.
+            expect(memory.leases.get(session.worktreeId)?.epoch).toBe(originalEpoch);
+            expect(memory.leases.get(session.worktreeId)?.launchId).toBe(original);
+            const beat = yield* executor.heartbeat({
+              worktree_id: session.worktreeId,
+              epoch: originalEpoch,
+            });
+            expect(beat.expires_in_secs).toBeGreaterThan(0);
+            expect(world.executorLaunches.get(session.id)?.launchId).toBe(original);
+          }),
+        {
+          captured: memory,
+          sealantLayer: layerWith(created, {
+            createKeys,
+            findByKey: () => ({ kind: "none" }),
+            loseCreateAnswer: () => lose,
+          }),
+        },
+      );
+    },
+  );
+
+  it(
     "review 3 #21 a lookup answer Mend does not read is unknown, never none: the key and the lease stay",
     { timeout: 20_000 },
     async () => {
@@ -13502,9 +13554,8 @@ describe("SessionEngine launch-bound capture routes through the network channel 
             // Before the create answered: its own launch, never the session id.
             expect(answers[0]).toEqual({ phase: "before-create", status: 200, executor: key });
             // Another launch of the same session holding a valid token of its own never reads
-            // as the current launch.
-            expect(answers[1]?.executor).not.toBe(key);
-            expect(answers[1]?.executor).not.toBe(session.id);
+            // as the current launch, and never joins its lease (cross-repo decision 11).
+            expect(answers[1]).toEqual({ phase: "other-launch", status: 409, executor: undefined });
             const source = created[0]?.source;
             const token = source?.kind === "capture" ? source.token : "";
             const after = yield* Effect.promise(() =>

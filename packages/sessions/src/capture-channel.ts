@@ -5,6 +5,7 @@ import {
   CaptureStoreRepo,
   type CaptureRow,
   type PackRecord,
+  type WorktreeLease,
 } from "@mend/db";
 import { type ProjectId, WorktreeId } from "@mend/domain";
 import {
@@ -894,16 +895,41 @@ export const CaptureChannelLive: Layer.Layer<
           used,
           requested,
         });
-      /** The lease predicate: live and under the caller's epoch, else the 409 the caller needs. */
+      /** This executor as the store binds a lease holder: its session and its launch. */
+      const holder = { executorId: scope.executorId, launchId };
+      /**
+       * The lease names another holder, or another launch of this one (cross-repo decision 11,
+       * review 2026-09-28 (4) #11): nothing this executor holds is the lease's, and it is told
+       * nothing of that lease's epoch. A lease bound to no launch (taken before leases were
+       * bound, or by Mend itself) is its holder's, whichever launch asks.
+       */
+      const heldByAnother = (lease: WorktreeLease) =>
+        lease.executorId !== scope.executorId ||
+        ((lease.launchId ?? null) !== null && lease.launchId !== launchId);
+      const leaseLost = () =>
+        new CaptureRouteError({
+          status: 409,
+          reason: "lease-lost",
+          message: "the worktree lease is not this executor's — stop shipping and pause",
+        });
+      /**
+       * The lease predicate: live, held by this executor's own launch and under the caller's
+       * epoch, else the 409 the caller needs.
+       */
       const requireLease = (epoch: number) =>
         Effect.gen(function* () {
           const lease = yield* repo.leaseOf(worktreeId);
+          if (lease !== null && lease.live && heldByAnother(lease)) return yield* leaseLost();
           if (lease === null || !lease.live) {
             return yield* new CaptureRouteError({
               status: 409,
               reason: "lease-lost",
               message: "the worktree lease is not live — stop shipping and pause",
-              ...(lease === null || lease.epoch === epoch ? {} : { live_epoch: lease.epoch }),
+              ...(lease === null ||
+              lease.epoch === epoch ||
+              (lease.executorId !== null && heldByAnother(lease))
+                ? {}
+                : { live_epoch: lease.epoch }),
             });
           }
           if (lease.epoch !== epoch) {
@@ -1014,17 +1040,18 @@ export const CaptureChannelLive: Layer.Layer<
         const reads = readerFormatOf(input);
         const lease = yield* repo.leaseOf(worktreeId);
         let held: number | null = null;
+        if (lease !== null && lease.live && heldByAnother(lease)) {
+          // Another executor holds it: a second executor for a leased worktree is refused
+          // (ADR-0002 "Decisions made here" 9); joins run inside the holder. Another launch of
+          // this very session is another executor (cross-repo decision 11): an older launch's
+          // token never learns or joins a newer launch's epoch, by asking zero or the epoch.
+          return yield* new CaptureRouteError({
+            status: 409,
+            reason: "worktree-leased",
+            message: "another executor holds this worktree's lease",
+          });
+        }
         if (lease !== null && lease.live && (asked === 0 || asked === lease.epoch)) {
-          if (asked === 0 && lease.executorId !== scope.executorId) {
-            // Another executor holds it: a second executor for a leased worktree is refused
-            // (ADR-0002 "Decisions made here" 9); joins run inside the holder.
-            return yield* new CaptureRouteError({
-              status: 409,
-              reason: "worktree-leased",
-              message: "another executor holds this worktree's lease",
-              live_epoch: lease.epoch,
-            });
-          }
           held = lease.epoch;
         } else if (lease !== null && lease.live) {
           return yield* new CaptureRouteError({
@@ -1069,7 +1096,7 @@ export const CaptureChannelLive: Layer.Layer<
           epoch = held;
         } else {
           // Not held: this plan is the claim (start, pickup, replacement — one path).
-          const claimed = yield* repo.claim(worktreeId, scope.executorId).pipe(
+          const claimed = yield* repo.claim(worktreeId, scope.executorId, undefined, launchId).pipe(
             Effect.mapError(
               () =>
                 new CaptureRouteError({
@@ -1817,6 +1844,7 @@ export const CaptureChannelLive: Layer.Layer<
           const outcome = yield* repo
             .register({
               ...(sealed ? { seal: { executorId: launchId, holder: scope.executorId } } : {}),
+              holder,
               worktreeId,
               id: input.capture_id,
               n: input.n,
@@ -1900,9 +1928,17 @@ export const CaptureChannelLive: Layer.Layer<
         input: HeartbeatRequest,
       ) {
         yield* requireWorktree(input.worktree_id);
-        const renewed = yield* repo.heartbeat(worktreeId, input.epoch);
+        const renewed = yield* repo.heartbeat(worktreeId, input.epoch, undefined, holder);
         if (renewed) return { expires_in_secs: LEASE_EXPIRES_IN_SECS };
         const lease = yield* repo.leaseOf(worktreeId);
+        // Another launch's lease: nothing of it is told (cross-repo decision 11).
+        if (lease !== null && lease.executorId !== null && heldByAnother(lease)) {
+          return yield* new CaptureRouteError({
+            status: 404,
+            reason: "lease-lost",
+            message: "the worktree lease is not this executor's — stop shipping and pause",
+          });
+        }
         if (lease !== null && lease.epoch !== input.epoch) {
           return yield* new CaptureRouteError({
             status: 409,

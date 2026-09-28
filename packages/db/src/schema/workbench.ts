@@ -1901,6 +1901,8 @@ export const worktreeLeases = pgTable("worktree_leases", {
     .primaryKey()
     .references(() => worktrees.id, { onDelete: "cascade" }),
   executorId: text(),
+  /** The physical launch the lease is bound to (0085); NULL for `mend:` and older claims. */
+  launchId: text(),
   epoch: bigint({ mode: "number" }).notNull().default(0),
   /** NULL = never claimed; in the past = released or expired. */
   expiresAt: timestamp({ mode: "date", withTimezone: true }),

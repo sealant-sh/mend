@@ -22,10 +22,7 @@ import { Effect, Layer } from "effect";
 export interface MemoryCaptureStore {
   readonly layer: Layer.Layer<CaptureStoreRepo>;
   readonly clock: { now: () => number };
-  readonly leases: Map<
-    string,
-    { executorId: string | null; epoch: number; expiresAt: number | null }
-  >;
+  readonly leases: Map<string, MemoryLease>;
   readonly chains: Map<string, MemoryChain>;
   readonly captures: Map<string, CaptureRow>;
   /** `capture_tombstones`: key → owning worktree and whether the bytes are gone. */
@@ -38,6 +35,14 @@ export interface MemoryCaptureStore {
   readonly summaries: Map<string, CaptureSummaryRow>;
 }
 
+/** A lease row; `launchId` absent reads null (a lease bound to no launch). */
+export interface MemoryLease {
+  executorId: string | null;
+  epoch: number;
+  expiresAt: number | null;
+  launchId?: string | null;
+}
+
 /** A chain row; `guard` absent reads 0 (tests that build chains by hand leave it out). */
 export interface MemoryChain {
   headCapture: string | null;
@@ -48,12 +53,18 @@ export interface MemoryChain {
 
 const digestOf = (key: string) => key.slice(key.lastIndexOf("/") + 1).replace(/\.idx$/, "");
 
+/** The lease names `holder` and its launch (or no launch); anyone, when no holder is given. */
+const holdsAs = (
+  lease: MemoryLease,
+  holder: { readonly executorId: string; readonly launchId: string } | undefined,
+) =>
+  holder === undefined ||
+  (lease.executorId === holder.executorId &&
+    ((lease.launchId ?? null) === null || lease.launchId === holder.launchId));
+
 export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
   const clock = { now: () => Date.now() };
-  const leases = new Map<
-    string,
-    { executorId: string | null; epoch: number; expiresAt: number | null }
-  >();
+  const leases = new Map<string, MemoryLease>();
   const chains = new Map<string, MemoryChain>();
   const tombstones = new Map<string, { worktreeId: string; deleted: boolean }>();
   const claims = new Map<string, Map<string, number>>();
@@ -75,6 +86,7 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
       : {
           worktreeId,
           executorId: lease.executorId,
+          launchId: lease.launchId ?? null,
           epoch: lease.epoch,
           expiresAt: lease.expiresAt === null ? null : new Date(lease.expiresAt),
           live: live(lease),
@@ -90,7 +102,7 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
           chains.set(worktreeId, { headCapture: null, headN: -1, headEpoch: 0, guard: 0 });
         }
       }),
-    claim: (worktreeId, executorId, ttlSeconds = 30) =>
+    claim: (worktreeId, executorId, ttlSeconds = 30, launchId) =>
       Effect.suspend(() => {
         const lease = leases.get(worktreeId);
         const chain = chains.get(worktreeId);
@@ -105,16 +117,28 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
         ) {
           return Effect.fail(new WorktreeLeasedError({ worktreeId }));
         }
+        // The same holder under another launch is another executor (cross-repo decision 11).
+        const bound = lease.launchId ?? null;
+        if (
+          lease.executorId === executorId &&
+          bound !== null &&
+          launchId !== undefined &&
+          bound !== launchId
+        ) {
+          return Effect.fail(new WorktreeLeasedError({ worktreeId }));
+        }
         lease.executorId = executorId;
+        lease.launchId = launchId ?? null;
         lease.epoch += 1;
         lease.expiresAt = clock.now() + ttlSeconds * 1000;
         chain.headEpoch = lease.epoch;
         return Effect.succeed({ epoch: lease.epoch });
       }),
-    heartbeat: (worktreeId, epoch, ttlSeconds = 30) =>
+    heartbeat: (worktreeId, epoch, ttlSeconds = 30, holder) =>
       Effect.sync(() => {
         const lease = leases.get(worktreeId);
         if (lease === undefined || lease.epoch !== epoch || lease.executorId === null) return false;
+        if (!holdsAs(lease, holder)) return false;
         lease.expiresAt = clock.now() + ttlSeconds * 1000;
         return true;
       }),
@@ -122,7 +146,8 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
       Effect.suspend((): Effect.Effect<{ readonly lostAck: boolean }, CaptureConflictError> => {
         const chain = chains.get(capture.worktreeId);
         const lease = leases.get(capture.worktreeId);
-        const leaseEpoch = lease !== undefined && live(lease) ? lease.epoch : null;
+        const leaseEpoch =
+          lease !== undefined && live(lease) && holdsAs(lease, capture.holder) ? lease.epoch : null;
         const guards = capture.guards ?? [];
         const guardsHold = guards.every(
           (entry) => (chains.get(entry.worktreeId)?.guard ?? Number.NaN) === entry.guard,
@@ -151,6 +176,7 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
           if (
             capture.seal !== undefined &&
             lease?.executorId === capture.seal.holder &&
+            ((lease.launchId ?? null) === null || lease.launchId === capture.seal.executorId) &&
             (sealed === undefined || sealed.n < capture.n)
           ) {
             seals.set(sealKey, {
@@ -201,6 +227,7 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
         if (lease === undefined || lease.epoch !== epoch) return false;
         lease.expiresAt = clock.now();
         lease.executorId = null;
+        lease.launchId = null;
         return true;
       }),
     acceptSummary: (worktreeId, captureId, key) =>

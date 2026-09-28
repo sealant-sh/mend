@@ -1169,3 +1169,123 @@ describe("plan.get hands a head only to an executor that reads what it means (ma
     });
   });
 });
+
+describe("a lease is held by a launch (review 2026-09-28 (4) #11, cross-repo decision 11)", () => {
+  const planAsk = { epoch: 0, manifest_format: 2, manifest_features: MANIFEST_FEATURES };
+
+  it("an older launch's token of the same session never learns, renews or registers under the replacement's epoch", async () => {
+    const wt = WorktreeId.make("wt-stale-launch");
+    const world = worldOf(2, verifierObserving({}));
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.init(wt);
+        const oldApi = yield* apiOf(wt, "session-1", "launch-old");
+        const newApi = yield* apiOf(wt, "session-1", "launch-new");
+        const oldPlan = yield* oldApi.planGet(planAsk);
+        // The old executor's end was observed: its lease released, the replacement claims.
+        yield* repo.release(wt, oldPlan.epoch);
+        const newPlan = yield* newApi.planGet(planAsk);
+        // The old launch asks again, by zero and by the replacement's epoch.
+        const staleByZero = yield* outcome(oldApi.planGet(planAsk));
+        const staleByEpoch = yield* outcome(oldApi.planGet({ ...planAsk, epoch: newPlan.epoch }));
+        const staleHeartbeat = yield* outcome(
+          oldApi.heartbeat({ worktree_id: wt, epoch: newPlan.epoch }),
+        );
+        const staleUpload = yield* outcome(
+          oldApi.uploadUrls({
+            worktree_id: wt,
+            epoch: newPlan.epoch,
+            keys: [captureKeys(wt, newPlan.epoch).pack("a".repeat(64))],
+          }),
+        );
+        // Its bytes, sealed as its own, registered under the replacement's epoch.
+        const source = freshDir("stale-launch-content");
+        fs.writeFileSync(path.join(source, "work.txt"), "bytes from the retired executor");
+        const snapshot = snapshotDirectory(source, captureKeys(wt, newPlan.epoch), { format: 2 });
+        const built = buildManifest({
+          worktreeId: wt,
+          epoch: newPlan.epoch,
+          n: 0,
+          parent: null,
+          kind: "final",
+          workspace: sectionOf(snapshot),
+        });
+        const manifest = {
+          ...built.manifest,
+          final_seal: { complete: true, epoch: newPlan.epoch, executor: "launch-old" },
+        };
+        const bytes = utf8(JSON.stringify(manifest));
+        const id = sha256Hex(bytes);
+        const key = captureKeys(wt, newPlan.epoch).manifest(id);
+        yield* uploadObjects(new Map([...snapshot.objects, [key, bytes]]));
+        const registered = yield* outcome(
+          oldApi.register({
+            worktree_id: wt,
+            epoch: newPlan.epoch,
+            n: 0,
+            parent: null,
+            capture_id: id,
+            manifest_key: key,
+            manifest,
+          }),
+        );
+        const seal = yield* repo.sealedCompletion(wt, "launch-old", newPlan.epoch);
+        // The replacement's own lease is untouched and renews.
+        const newHeartbeat = yield* outcome(
+          newApi.heartbeat({ worktree_id: wt, epoch: newPlan.epoch }),
+        );
+        return {
+          oldEpoch: oldPlan.epoch,
+          newEpoch: newPlan.epoch,
+          staleByZero,
+          staleByEpoch,
+          staleHeartbeat,
+          staleUpload,
+          registered,
+          seal,
+          newHeartbeat,
+          head: (yield* repo.headOf(wt))?.head ?? null,
+        };
+      }).pipe(Effect.provide(world.layer)),
+    );
+    expect(result.newEpoch).toBeGreaterThan(result.oldEpoch);
+    expect(result.staleByZero).toBe("CaptureRouteError:worktree-leased");
+    expect(result.staleByEpoch).toBe("CaptureRouteError:worktree-leased");
+    expect(result.staleHeartbeat).toBe("CaptureRouteError:lease-lost");
+    expect(result.staleUpload).toBe("CaptureRouteError:lease-lost");
+    expect(result.registered).toBe("CaptureRouteError:lease-lost");
+    expect(result.seal).toBeNull();
+    expect(result.head).toBeNull();
+    expect(result.newHeartbeat).toBe("ok");
+  });
+
+  it("the store refuses a register and a heartbeat of another launch under a held epoch, whoever calls it", async () => {
+    const wt = WorktreeId.make("wt-store-launch");
+    const world = worldOf(2, verifierObserving({}));
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.init(wt);
+        // A claim that lapsed at once: only its own launch takes it again.
+        yield* repo.claim(wt, "session-1", 0, "launch-new");
+        const retake = yield* outcome(repo.claim(wt, "session-1", 30, "launch-old"));
+        const claimed = yield* repo.claim(wt, "session-1", 30, "launch-new");
+        const beat = yield* repo.heartbeat(wt, claimed.epoch, 30, {
+          executorId: "session-1",
+          launchId: "launch-old",
+        });
+        const own = yield* repo.heartbeat(wt, claimed.epoch, 30, {
+          executorId: "session-1",
+          launchId: "launch-new",
+        });
+        return { retake, claimed, beat, own, lease: yield* repo.leaseOf(wt) };
+      }).pipe(Effect.provide(world.layer)),
+    );
+    expect(result.retake).toBe("WorktreeLeasedError");
+    expect(result.claimed.epoch).toBe(2);
+    expect(result.beat).toBe(false);
+    expect(result.own).toBe(true);
+    expect(result.lease?.launchId).toBe("launch-new");
+  });
+});

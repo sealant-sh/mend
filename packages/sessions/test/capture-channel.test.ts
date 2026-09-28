@@ -126,6 +126,16 @@ describe("capture channel routes", () => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-capture-channel-"));
   const blobRoot = path.join(scratch, "blobs");
   const memory = makeMemoryCaptureStore();
+  /**
+   * Another executor on the worktree takes over its live lease under the same epoch (as a test
+   * shortcut for release + claim): the lease names it, and no launch.
+   */
+  const holdLease = (worktreeId: WorktreeId, executorId: string) => {
+    const lease = memory.leases.get(worktreeId);
+    if (lease === undefined) throw new Error("no lease to hand over");
+    lease.executorId = executorId;
+    lease.launchId = null;
+  };
   // Every key the routes ask the bucket about, in order: what an S3 access log would show.
   const headed: Array<string> = [];
   const presigned: Array<string> = [];
@@ -334,11 +344,16 @@ describe("capture channel routes", () => {
     const first = await post(address, "/plan.get", token, { worktree_id: null, epoch: 0 });
     expect(first.status).toBe(200);
     expect(first.json["epoch"]).toBe(2);
-    // The executor is the launch the token was issued for (cross-repo decision 5): another
-    // launch's token of the same session is answered as that launch.
+    // The executor is the launch the token was issued for (cross-repo decision 5), and the lease
+    // is that launch's (cross-repo decision 11): another launch's token of the same session is
+    // refused, by zero or by the epoch, and told nothing of it.
     expect(first.json["executor"]).toBe(LAUNCH);
-    const other = await post(address, "/plan.get", otherLaunchToken, { epoch: 2 });
-    expect(other.json["executor"]).toBe(OTHER_LAUNCH);
+    for (const epoch of [0, 2]) {
+      const other = await post(address, "/plan.get", otherLaunchToken, { epoch });
+      expect(other.status).toBe(409);
+      expect(other.json["reason"]).toBe("worktree-leased");
+      expect(other.json["live_epoch"]).toBeUndefined();
+    }
     expect(first.json["worktree_id"]).toBe(WORKTREE);
     const head = first.json["head"] as Record<string, unknown>;
     expect(head["n"]).toBe(0);
@@ -770,9 +785,11 @@ describe("capture channel routes", () => {
       worktree_id: WORKTREE,
       epoch: 2,
     });
-    expect(fenced.status).toBe(409);
-    expect(fenced.json["reason"]).toBe("stale-epoch");
-    expect(fenced.json["live_epoch"]).toBe(3);
+    // Another executor holds it now: this one is told the lease is lost, and nothing of the
+    // holder's epoch (review 2026-09-28 (4) #11).
+    expect(fenced.status).toBe(404);
+    expect(fenced.json["reason"]).toBe("lease-lost");
+    expect(fenced.json["live_epoch"]).toBeUndefined();
     // The lease row gone for good (a released worktree whose next claimer never came): 404,
     // which sealantd's registrar reads as "lease lost".
     memory.leases.delete(WORKTREE);
@@ -789,9 +806,10 @@ describe("capture channel routes", () => {
   });
 
   it("asks the bucket only about capture objects: a pending bulk section names nothing, a prefix or an empty entry is refused before any HEAD, and a plan presigns object keys alone", async () => {
-    // The previous test removed the lease row; hand the worktree a live one under epoch 3.
+    // The previous test removed the lease row; hand the worktree a live one under epoch 3, held
+    // by the session the token names, bound to no launch (as a lease taken before 0085 is).
     memory.leases.set(WORKTREE, {
-      executorId: "replacement",
+      executorId: SESSION,
       epoch: 3,
       expiresAt: memory.clock.now() + 60_000,
     });
@@ -987,6 +1005,7 @@ describe("capture channel routes", () => {
       executorId: "sess-quota",
       footprintBytes: 0,
     });
+    holdLease(WORKTREE, "sess-quota");
     const call = (route: string, body: unknown) =>
       new Promise<{ status: number; json: Record<string, unknown> }>((resolve) => {
         void dispatchCaptureRoute(api, route, body, (status, payload) =>
@@ -1065,6 +1084,7 @@ describe("capture channel routes", () => {
       executorId: "sess-quota-register",
       footprintBytes: 0,
     });
+    holdLease(WORKTREE, "sess-quota-register");
     const chain = memory.chains.get(WORKTREE);
     const head = memory.captures.get(chain?.headCapture ?? "");
     if (chain === undefined || head === undefined) throw new Error("the chain has no head");

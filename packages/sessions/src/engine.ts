@@ -7283,26 +7283,48 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         }
         let launchClaim: { readonly epoch: number } | null = null;
+        // The cold executor's launch identity, minted before its lease is claimed: the lease is
+        // bound to it (cross-repo decision 11), and so are its token and its create.
+        const coldLaunchKey = reusedCreateKey ?? executorCreateKeyFor(sessionId, new Date());
         // Capture mode: Mend claims the lease at launch (epoch + 1, the chain fenced in the
-        // same statement) with a boot-sized TTL; the executor learns the epoch from its first
-        // plan and the first heartbeat brings the TTL back to the 30 s cadence. The same create
-        // asked again (`reusedCreateKey`) is the same launch: while its claim still holds, it
-        // keeps that epoch — the executor it makes, whichever request commits, plans under it.
+        // same statement) with a boot-sized TTL, bound to the launch; the executor learns the
+        // epoch from its first plan and the first heartbeat brings the TTL back to the 30 s
+        // cadence. The same create asked again (`reusedCreateKey`) is the same launch and keeps
+        // that epoch — the executor it makes, whichever request commits, plans under it — for as
+        // long as its ownership is unresolved: a claim that lapsed meanwhile is renewed under
+        // its own epoch, never fenced by a new one (review 2026-09-28 (4) #14). Only a confirmed
+        // cancellation or end (which releases the lease) lets a new epoch be taken.
         const reusedClaim =
           capture === null || reusedCreateKey === null
             ? null
             : yield* capture.repo.leaseOf(session.worktreeId);
+        const reusedHeld =
+          reusedClaim !== null &&
+          reusedClaim.executorId === sessionId &&
+          ((reusedClaim.launchId ?? null) === null || reusedClaim.launchId === reusedCreateKey);
+        const renewedReserved =
+          capture !== null &&
+          adopted === null &&
+          reusedClaim !== null &&
+          reusedHeld &&
+          !reusedClaim.live &&
+          (yield* capture.repo.heartbeat(
+            session.worktreeId,
+            reusedClaim.epoch,
+            LAUNCH_CLAIM_TTL_SECONDS,
+            { executorId: sessionId, launchId: coldLaunchKey },
+          ));
         if (
           capture !== null &&
           adopted === null &&
           reusedClaim !== null &&
-          reusedClaim.live &&
-          reusedClaim.executorId === sessionId
+          reusedHeld &&
+          (reusedClaim.live || renewedReserved)
         ) {
           launchClaim = { epoch: reusedClaim.epoch };
         } else if (capture !== null && adopted === null) {
           launchClaim = yield* capture.repo
-            .claim(session.worktreeId, sessionId, LAUNCH_CLAIM_TTL_SECONDS)
+            .claim(session.worktreeId, sessionId, LAUNCH_CLAIM_TTL_SECONDS, coldLaunchKey)
             .pipe(
               Effect.mapError(
                 () =>
@@ -7369,11 +7391,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             "session engine: capture mode · launch failed before any executor · lease released",
           ).pipe(Effect.annotateLogs({ sessionId, epoch: launchClaim.epoch }));
         });
-        const provisionCold = (reuseKey: string | null) => {
+        const provisionCold = (key: string) => {
           // One launch per physical executor: a fresh key, or — for a create whose answer was
           // lost and that nothing is on record for yet — the same key asked again, which can
-          // only ever make that one executor.
-          const key = reuseKey ?? executorCreateKeyFor(sessionId, new Date());
+          // only ever make that one executor. Minted before the lease is claimed for it.
           launchId = key;
           return provisionWorkspace({
             project,
@@ -7421,7 +7442,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // executor's real start.
         let executorStartedAt =
           adopted !== null && claimedEntry !== null ? claimedEntry.createdAt : new Date();
-        let provisioned = adopted ?? (yield* provisionCold(reusedCreateKey));
+        let provisioned = adopted ?? (yield* provisionCold(coldLaunchKey));
         // Capture mode, a claimed standby (`hot-pool.ts` "Capture-mode standby"): its executor
         // booted on the project base under a placeholder; `capture.replan` makes it fetch the
         // plan again — the channel answers this session's worktree, the epoch the claim took
@@ -7473,8 +7494,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               return yield* error;
             }
             executorCreated = false;
+            const fallbackKey = executorCreateKeyFor(sessionId, new Date());
             launchClaim = yield* capture.repo
-              .claim(session.worktreeId, sessionId, LAUNCH_CLAIM_TTL_SECONDS)
+              .claim(session.worktreeId, sessionId, LAUNCH_CLAIM_TTL_SECONDS, fallbackKey)
               .pipe(
                 Effect.mapError(
                   () =>
@@ -7488,7 +7510,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 settleOnFailure,
               );
             executorStartedAt = new Date();
-            provisioned = yield* provisionCold(null);
+            provisioned = yield* provisionCold(fallbackKey);
           }
         }
         const { workspace, workspaceImage, environmentManifest } = provisioned;
@@ -10193,7 +10215,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // lease taken meanwhile, capture 0 not registrable) drains the consumed entry and
           // goes cold.
           const claimed = yield* ensureCaptureZero(project.id, worktree.id).pipe(
-            Effect.andThen(capture.repo.claim(worktree.id, entry.id, LAUNCH_CLAIM_TTL_SECONDS)),
+            Effect.andThen(
+              capture.repo.claim(
+                worktree.id,
+                entry.id,
+                LAUNCH_CLAIM_TTL_SECONDS,
+                standbyLaunchIdOf(entry.id),
+              ),
+            ),
             Effect.result,
           );
           if (Result.isFailure(claimed)) {
