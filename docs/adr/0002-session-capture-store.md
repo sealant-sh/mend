@@ -854,3 +854,31 @@ Mend-side details the decision record left open, decided in this ADR:
     - **mtimes are nanoseconds.** A dir entry's integer `mtime` is decoded exactly (a bigint from
       its source text) and written back digit for digit; Mend's TypeScript materializer is a reader,
       not a restore path, and lands times to the microsecond Node can set.
+33. (2026-09-28) A seal the registrar confirms, checked against the namespace the restore lays down
+    (review 2026-09-28 (8); cross-repo decisions 22 and 23).
+    - **The register says how its seal stands.** `capture.register` answers
+      `seal: {state: "recorded" | "withheld" | "refused", reason?}` whenever the manifest carries
+      `final_seal` (sealantd's `SealAnswer`). `recorded`: stored, and standing now. `withheld`:
+      stored, but not standing (`write-authority`: an upload URL of its epoch could still replace
+      what it names, or one was handed out during its read-back; `verifying`: its objects could not
+      be read back); registering the same capture again answers it anew. `refused`: never stands
+      (`incomplete`, `epoch`, `executor`, `unrestorable`, `not-recorded`, `void`). sealantd answers
+      a FINAL complete only on `recorded`. `plan.get` hands the head's `final_seal` on only while
+      that seal stands.
+    - **Issuing write authority voids a read-back in progress.** A seal's re-verification mark is a
+      compare-and-set against the epoch's recorded write authority in one statement: a URL handed
+      out after the read-back began refuses the mark, and the seal stays withheld.
+    - **The namespace is the restore's.** Worktree metadata is checked against the workspace class
+      written over the raw tree (a name the class holds as anything but a directory removes every
+      checkout path below it), the bulk class only where the checkout has no such path, and every
+      ancestor of a named path must be a directory or absent.
+    - **Every class entry a link names promises its inode.** Its mode and mtime join the tracked
+      entries' in connected-inode validation; one group promised two of either is never sealed.
+    - **SHA-256 repositories.** The git section's `object_format` (feature `object_format`; absent:
+      `sha1`) is decoded and planned. The verifier reads a section's packs in a repository of its
+      format with ids of its width; an id of another width, or a format Mend does not read, is
+      `unverified`, never `verified` having walked nothing. `workspace.root_links` (the link text of
+      a class root that was a symlink; informational) is decoded and planned as written.
+    - **A received answer is marked as it arrives.** A flush or status answer marks its evidence
+      fence received the moment the SDK returns it, is published before anything is logged, and a
+      log that fails changes no evidence.
