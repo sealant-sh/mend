@@ -1078,6 +1078,14 @@ describe("plan.get hands a head only to an executor that reads what it means (ma
           return { refused, lease, epoch, id, plan };
         }).pipe(Effect.provide(world.layer)),
       );
+      if (feature === "final_seal") {
+        // A seal the store does not hold standing is never handed on (review 2026-09-28 (8) #5):
+        // the plan carries the head without it, so it needs no reader. A standing seal is refused
+        // to an executor that does not read it (capture-verify.test.ts, review 8 #5).
+        expect(result.refused, feature).toBeNull();
+        expect(result.plan.head?.manifest.final_seal, feature).toBeUndefined();
+        continue;
+      }
       expect(result.refused?.reason, feature).toBe("manifest-features");
       expect(result.refused?.status, feature).toBe(409);
       expect(result.refused?.missing, feature).toEqual([feature]);

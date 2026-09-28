@@ -1501,6 +1501,180 @@ describeSeals(
   },
 );
 
+// Review 2026-09-28 (8) #5 (the reviewer's reproductions): the seal service read the epoch's
+// write authority once, read every object back and marked the seal re-verified — a URL handed out
+// while it read was never seen, and the seal it returned stood with that URL live. And the register
+// answered success with nothing to say whether the seal it carried stands, while the plan handed
+// on `final_seal` of a seal the store withheld: sealantd answered complete on that.
+/** A write authority handed out when the seal service first reads the sealed manifest back. */
+let authorityDuringReadBack: (() => Promise<void>) | undefined;
+/** The bucket's answer to `replaceableUntil` in the suite below: 0 refuses overwrites. */
+let bucketReplaceable = 0;
+describeSeals(
+  "review 8 #5 write authority is fenced against a seal's read-back, and the register and the plan say how the seal stands",
+  {
+    blobs: (root) =>
+      Layer.effect(
+        BlobStore,
+        Effect.map(BlobStore, (store) => ({
+          ...store,
+          replaceableUntil: () => Effect.sync(() => bucketReplaceable),
+          get: (key: string) =>
+            Effect.gen(function* () {
+              const action = authorityDuringReadBack;
+              if (key.includes("/manifests/") && action !== undefined) {
+                authorityDuringReadBack = undefined;
+                yield* Effect.promise(action);
+              }
+              return yield* store.get(key);
+            }),
+        })),
+      ).pipe(Layer.provide(BlobStoreFsLive(root))),
+  },
+  ({ world, run, claimed }) => {
+    const standing = (at: { readonly worktreeId: WorktreeId; readonly epoch: number }) =>
+      run(
+        Effect.flatMap(CaptureSeals, (service) =>
+          service.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
+        ).pipe(Effect.provide(CaptureSealsStoreLive)),
+      );
+    const planned = (at: {
+      readonly worktreeId: WorktreeId;
+      readonly epoch: number;
+      readonly api: SessionCaptureApi;
+    }) =>
+      run(
+        at.api.planGet({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          manifest_format: 2,
+          manifest_features: MANIFEST_FEATURES,
+          upload_answers: [UPLOAD_ANSWER_PRESENT],
+        }),
+      );
+
+    it("a URL handed out while the seal's objects are read back leaves the seal withheld", async () => {
+      bucketReplaceable = Date.now() - 60_000;
+      const at = await claimed();
+      const file = sealedFile(at, "saved bytes\n");
+      await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
+      // A URL of the epoch lives briefly past the register: the seal registers withheld, and its
+      // first read-back comes once that URL has expired.
+      const expires = Date.now() + 150;
+      await run(
+        Effect.flatMap(CaptureStoreRepo, (repo) =>
+          repo.recordPutAuthority(at.worktreeId, at.epoch, new Date(expires)),
+        ),
+      );
+      await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
+      expect(await standing(at)).toBeNull();
+      await new Promise((resolve) => setTimeout(resolve, Math.max(0, expires - Date.now()) + 20));
+      let minted = false;
+      authorityDuringReadBack = async () => {
+        const answer = await run(
+          at.api.uploadUrls({
+            worktree_id: at.worktreeId,
+            epoch: at.epoch,
+            keys: [file.key],
+            sizes: { [file.key]: file.bytes.length },
+          }),
+        );
+        minted = typeof answer.urls[file.key] === "string";
+      };
+      const accepted = await standing(at);
+      expect(minted).toBe(true);
+      expect(
+        world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`)?.getTime() ?? 0,
+      ).toBeGreaterThan(Date.now());
+      // The URL lives: the seal does not stand, now or on the next read.
+      expect(accepted).toBeNull();
+      expect(await standing(at)).toBeNull();
+      const recorded = await run(
+        Effect.flatMap(CaptureStoreRepo, (repo) =>
+          repo.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
+        ),
+      );
+      expect(recorded?.reverifiedAt ?? null).toBeNull();
+    });
+
+    it("the register answers the seal recorded, withheld or refused, and the plan hands on only a standing seal", async () => {
+      // A bucket that refuses overwrites: recorded, and the plan carries it.
+      bucketReplaceable = 0;
+      const strict = await claimed();
+      const onStrict = sealedFile(strict, "unique saved bytes\n");
+      await run(
+        uploadObjects(
+          new Map([...onStrict.snapshot.objects, [onStrict.cap.key, onStrict.cap.bytes]]),
+        ),
+      );
+      const strictAnswer = await run(
+        registerOn(strict.worktreeId, strict.epoch, strict.api)(onStrict.cap),
+      );
+      expect(strictAnswer.seal).toEqual({ state: "recorded" });
+      expect((await planned(strict)).head?.manifest.final_seal?.complete).toBe(true);
+      // A standing seal is handed on only to an executor that reads it.
+      const unread = await run(
+        strict.api
+          .planGet({
+            worktree_id: strict.worktreeId,
+            epoch: strict.epoch,
+            manifest_format: 2,
+            manifest_features: MANIFEST_FEATURES.filter((feature) => feature !== "final_seal"),
+          })
+          .pipe(Effect.flip),
+      );
+      expect(unread.missing).toEqual(["final_seal"]);
+
+      // Garage: a URL of the epoch lives when the seal registers — withheld, and the plan carries
+      // the head without it; asked again (a lost-answer retry), still withheld.
+      bucketReplaceable = Date.now() - 60_000;
+      const at = await claimed();
+      const file = sealedFile(at, "unique saved bytes\n");
+      await run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [file.key],
+          sizes: { [file.key]: file.bytes.length },
+        }),
+      );
+      await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
+      const answer = await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
+      expect(answer.head_capture_id).toBe(file.cap.id);
+      expect(answer.seal?.state).toBe("withheld");
+      expect(answer.seal?.reason).toBe("write-authority");
+      const plan = await planned(at);
+      expect(plan.head?.capture_id).toBe(file.cap.id);
+      expect(plan.head?.manifest.final_seal).toBeUndefined();
+      const again = await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
+      expect(again.seal?.state).toBe("withheld");
+
+      // A seal that does not name this executor: refused. A manifest with no seal: no answer.
+      bucketReplaceable = 0;
+      const other = await claimed();
+      const foreign = sealedFile(other, "other bytes\n");
+      const foreignManifest = {
+        ...foreign.cap.manifest,
+        final_seal: { complete: true, epoch: other.epoch, executor: "another-launch" },
+      };
+      const foreignBytes = new Uint8Array(Buffer.from(JSON.stringify(foreignManifest)));
+      const foreignId = sha256Hex(foreignBytes);
+      const foreignCap = {
+        manifest: foreignManifest,
+        bytes: foreignBytes,
+        id: foreignId,
+        key: captureKeys(other.worktreeId, other.epoch).manifest(foreignId),
+      };
+      await run(
+        uploadObjects(new Map([...foreign.snapshot.objects, [foreignCap.key, foreignBytes]])),
+      );
+      const refused = await run(registerOn(other.worktreeId, other.epoch, other.api)(foreignCap));
+      expect(refused.seal).toEqual({ state: "refused", reason: "executor" });
+      expect((await planned(other)).head?.manifest.final_seal).toBeUndefined();
+    });
+  },
+);
+
 // The reviewer's reproduction on a real bucket that ignores `If-None-Match` (Garage 2.4.1):
 // opt in with MEND_TEST_S3_URL (s3://bucket?endpoint=…&region=…) + AWS_ACCESS_KEY_ID /
 // AWS_SECRET_ACCESS_KEY, as the store's S3 contract does.
@@ -1547,21 +1721,38 @@ describeSeals(
           ),
         ),
       );
-      await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
+      const registered = await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
       const seals = () =>
         run(
           Effect.flatMap(CaptureSeals, (service) =>
             service.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
           ).pipe(Effect.provide(CaptureSealsStoreLive)),
         );
+      const plannedSeal = async () =>
+        (
+          await run(
+            at.api.planGet({
+              worktree_id: at.worktreeId,
+              epoch: at.epoch,
+              manifest_format: 2,
+              manifest_features: MANIFEST_FEATURES,
+              upload_answers: [UPLOAD_ANSWER_PRESENT],
+            }),
+          )
+        ).head?.manifest.final_seal;
       const refuses =
         (await run(Effect.flatMap(BlobStore, (store) => store.replaceableUntil(file.key)))) === 0;
       if (refuses) {
         // A bucket that honours the precondition: the seal stands, and the URL cannot replace.
+        expect(registered.seal).toEqual({ state: "recorded" });
         expect((await seals())?.captureId).toBe(file.cap.id);
+        expect((await plannedSeal())?.complete).toBe(true);
         return;
       }
-      // Garage: withheld while the URL lives …
+      // Garage: withheld while the URL lives — the register says so (review 2026-09-28 (8) #5),
+      // the plan hands the head on without it …
+      expect(registered.seal?.state).toBe("withheld");
+      expect(await plannedSeal()).toBeUndefined();
       expect(await seals()).toBeNull();
       // … which it does: the same URL replaces the pack's first byte, and the seal still does
       // not stand on it.

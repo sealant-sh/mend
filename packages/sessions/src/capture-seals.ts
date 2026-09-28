@@ -1,4 +1,4 @@
-import { CaptureStoreRepo } from "@mend/db";
+import { CaptureStoreRepo, type SealedCompletion } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
 import { BlobStore, storedCaptureProblem } from "@mend/store";
 import { Effect, Layer } from "effect";
@@ -58,18 +58,125 @@ export const CaptureSealsNone: Layer.Layer<CaptureSeals> = Layer.succeed(Capture
 });
 
 /**
- * The store's seals as they stand (review 2026-09-28 (7) #8): a seal recorded at register rests on
- * bytes Mend read then. On a bucket that refuses to replace an object (`BlobStore.replaceableUntil`
- * answers 0: S3, R2, MinIO, the directory store) they stay those bytes, and the seal stands as
+ * How a recorded seal stands right now (review 2026-09-28 (7) #8, (8) #5): what every reader of
+ * a seal consults — the engine's attestations (`CaptureSeals`), the register's answer to the
+ * executor that sealed (`seal` on `capture.register`), and the plan that would hand the seal on
+ * (`final_seal` on `plan.get`).
+ * - `standing`: the bytes it names are what they were and nothing handed out can replace them;
+ * - `withheld`: recorded, but not standing now — an upload URL of its epoch could still replace
+ *   what it names, or the store could not be read back, or a URL was handed out while it was being
+ *   read back; asked again, it may stand;
+ * - `void`: an object it names read back as other bytes: it never stands again.
+ */
+export type SealStanding =
+  | { readonly state: "standing" }
+  | {
+      readonly state: "withheld";
+      /** `write-authority` (a URL could still replace, or was handed out during the read-back), `verifying`. */
+      readonly code: "write-authority" | "verifying";
+      readonly reason: string;
+    }
+  | { readonly state: "void"; readonly code: "void"; readonly reason: string };
+
+/**
+ * Whether `seal` stands. On a bucket that refuses to replace an object (`BlobStore.replaceableUntil`
+ * answers 0: S3, R2, MinIO, the directory store) its bytes stay those bytes, and the seal stands as
  * recorded. On one that does not (Garage ignores `If-None-Match`), an upload URL handed out under
  * the seal's epoch could replace an object until it expires — the latest such expiry is recorded
- * before any URL is handed out (`CaptureStoreRepo.putAuthorityUntil`), and the store adds what
+ * before any URL is handed out (`CaptureStoreRepo.recordPutAuthority`), and the store adds what
  * this process minted and a URL minted before it started could still do. So:
- * - while any such URL could still be used, the seal does not stand (null): completion withheld;
+ * - while any such URL could still be used: withheld;
  * - once none can, every object the sealed capture names is read back (`storedCaptureProblem`):
- *   all what their names say → the seal stands, and is marked re-verified from that moment until
- *   another URL is handed out under its epoch; any other bytes → the seal is void, for good;
+ *   all what their names say → it is marked re-verified from the moment the read began, and
+ *   stands until another URL is handed out under its epoch. The mark is a compare-and-set against
+ *   that authority (`markSealReverified`): a URL handed out while the objects were being read back
+ *   voids the read, and the seal stays withheld. Any other bytes → void, for good;
  * - a store that could not be read concludes nothing: withheld, asked again on the next read.
+ */
+export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function* (
+  seal: SealedCompletion,
+  now: () => number,
+) {
+  const repo = yield* CaptureStoreRepo;
+  const blobs = yield* BlobStore;
+  const annotations = {
+    worktreeId: seal.worktreeId,
+    epoch: seal.epoch,
+    n: seal.n,
+    captureId: seal.captureId,
+  };
+  const voidReason = seal.voidReason ?? null;
+  if (voidReason !== null)
+    return { state: "void", code: "void", reason: voidReason } satisfies SealStanding;
+  const row = yield* repo.captureById(seal.captureId);
+  if (row === null) {
+    return {
+      state: "withheld",
+      code: "verifying",
+      reason: "the sealed capture is not registered",
+    } satisfies SealStanding;
+  }
+  const storeUntil = yield* blobs.replaceableUntil(row.manifestKey);
+  if (storeUntil === 0) return { state: "standing" } satisfies SealStanding;
+  const recorded = yield* repo.putAuthorityUntil(seal.worktreeId, seal.epoch);
+  const until = Math.max(storeUntil, recorded?.getTime() ?? 0);
+  const at = now();
+  if (at < until) {
+    const words = `an upload URL of epoch ${seal.epoch} could replace what it names until ${new Date(until).toISOString()}`;
+    yield* Effect.logInfo(
+      "capture seals: sealed, but an upload URL of its epoch could still replace what it names · withheld until it expires",
+    ).pipe(
+      Effect.annotateLogs({ ...annotations, replaceableUntil: new Date(until).toISOString() }),
+    );
+    return { state: "withheld", code: "write-authority", reason: words } satisfies SealStanding;
+  }
+  const reverified = seal.reverifiedAt?.getTime() ?? null;
+  if (reverified !== null && reverified >= until)
+    return { state: "standing" } satisfies SealStanding;
+  const problem = yield* storedCaptureProblem(row.manifestKey).pipe(
+    Effect.provideService(BlobStore, blobs),
+    Effect.result,
+  );
+  if (problem._tag === "Failure") {
+    yield* Effect.logWarning(
+      "capture seals: sealed, but its objects could not be read back · withheld",
+    ).pipe(Effect.annotateLogs({ ...annotations, error: problem.failure.message }));
+    return {
+      state: "withheld",
+      code: "verifying",
+      reason: `its objects could not be read back: ${problem.failure.message}`,
+    } satisfies SealStanding;
+  }
+  if (problem.success !== null) {
+    yield* repo.voidSeal(seal.worktreeId, seal.epoch, seal.captureId, problem.success);
+    yield* Effect.logError(
+      "capture seals: an object the seal names read back as other bytes · the seal is void",
+    ).pipe(Effect.annotateLogs({ ...annotations, problem: problem.success }));
+    return { state: "void", code: "void", reason: problem.success } satisfies SealStanding;
+  }
+  // Marked only if no URL of the epoch was handed out since the read began (`at`).
+  const marked = yield* repo.markSealReverified(
+    seal.worktreeId,
+    seal.epoch,
+    seal.captureId,
+    new Date(at),
+  );
+  if (!marked) {
+    yield* Effect.logWarning(
+      "capture seals: an upload URL of its epoch was handed out while its objects were read back · withheld",
+    ).pipe(Effect.annotateLogs(annotations));
+    return {
+      state: "withheld",
+      code: "write-authority",
+      reason: `an upload URL of epoch ${seal.epoch} was handed out while its objects were read back`,
+    } satisfies SealStanding;
+  }
+  return { state: "standing" } satisfies SealStanding;
+});
+
+/**
+ * The store's seals as they stand (`sealStandingOf`): a recorded seal is answered only while it
+ * stands; withheld or void, the answer is null — nothing reads saved on it.
  */
 export const makeCaptureSealsStore = (options?: {
   readonly now?: () => number;
@@ -87,52 +194,11 @@ export const makeCaptureSealsStore = (options?: {
       ) {
         const seal = yield* repo.sealedCompletion(worktreeId, executorId, epoch);
         if (seal === null) return null;
-        const annotations = {
-          worktreeId,
-          epoch: seal.epoch,
-          n: seal.n,
-          captureId: seal.captureId,
-        };
-        if ((seal.voidReason ?? null) !== null) return null;
-        const row = yield* repo.captureById(seal.captureId);
-        if (row === null) return null;
-        const storeUntil = yield* blobs.replaceableUntil(row.manifestKey);
-        if (storeUntil === 0) return seal;
-        const recorded = yield* repo.putAuthorityUntil(worktreeId, seal.epoch);
-        const until = Math.max(storeUntil, recorded?.getTime() ?? 0);
-        const at = now();
-        if (at < until) {
-          yield* Effect.logInfo(
-            "capture seals: sealed, but an upload URL of its epoch could still replace what it names · withheld until it expires",
-          ).pipe(
-            Effect.annotateLogs({
-              ...annotations,
-              replaceableUntil: new Date(until).toISOString(),
-            }),
-          );
-          return null;
-        }
-        const reverified = seal.reverifiedAt?.getTime() ?? null;
-        if (reverified !== null && reverified >= until) return seal;
-        const problem = yield* storedCaptureProblem(row.manifestKey).pipe(
+        const standing = yield* sealStandingOf(seal, now).pipe(
+          Effect.provideService(CaptureStoreRepo, repo),
           Effect.provideService(BlobStore, blobs),
-          Effect.result,
         );
-        if (problem._tag === "Failure") {
-          yield* Effect.logWarning(
-            "capture seals: sealed, but its objects could not be read back · withheld",
-          ).pipe(Effect.annotateLogs({ ...annotations, error: problem.failure.message }));
-          return null;
-        }
-        if (problem.success !== null) {
-          yield* repo.voidSeal(worktreeId, seal.epoch, seal.captureId, problem.success);
-          yield* Effect.logError(
-            "capture seals: an object the seal names read back as other bytes · the seal is void",
-          ).pipe(Effect.annotateLogs({ ...annotations, problem: problem.success }));
-          return null;
-        }
-        yield* repo.markSealReverified(worktreeId, seal.epoch, seal.captureId, new Date(at));
-        return seal;
+        return standing.state === "standing" ? seal : null;
       });
       return { sealedCompletion };
     }),

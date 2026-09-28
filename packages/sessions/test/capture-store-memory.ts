@@ -310,13 +310,16 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
           seal.captureId !== captureId ||
           (seal.voidReason ?? null) !== null
         ) {
-          return;
+          return false;
         }
+        // A URL of the epoch handed out since `at`: the read-back is void (review 2026-09-28 (8) #5).
+        if ((putAuthority.get(key)?.getTime() ?? 0) > at.getTime()) return false;
         const kept = seal.reverifiedAt ?? null;
         seals.set(key, {
           ...seal,
           reverifiedAt: kept === null || kept.getTime() < at.getTime() ? at : kept,
         });
+        return true;
       }),
     voidSeal: (worktreeId, epoch, captureId, reason) =>
       Effect.sync(() => {
