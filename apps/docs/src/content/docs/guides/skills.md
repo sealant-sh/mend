@@ -86,9 +86,16 @@ Mend writes the result into the workspace's harness home, once for each harness 
 
 In the workspace, `~/.claude` and `~/.codex` link into the harness home at
 `/workspace/harness-home`. Mend records which skill directories it wrote in
-`/workspace/harness-home/.mend-managed-skills.json`. On the next delivery it removes the skills it
-wrote before that the libraries no longer have, and leaves any skill directory the agent created
-itself alone.
+`/workspace/harness-home/.mend-managed-skills.json`, and a digest of their files in
+`.mend-managed-skills-digests.json` beside it. On the next delivery it replaces the skills the
+libraries still have and removes the ones they no longer have. It leaves any skill directory the
+agent created itself under another name alone.
+
+Mend deletes a skill directory only when its files are still exactly what Mend wrote there. A
+directory that differs is moved whole to `/workspace/harness-home/.mend/skills-kept/<time>/`, and
+the server logs where it went. That covers a skill you or the agent edited during the session, and a
+directory of the agent's own that a library skill now shares a name with. To keep an edit in the
+library, push it with `mend skills push`.
 
 This works the same in both storage modes. With the captured store, the default, Mend writes the
 skills into the running workspace after its harness home is in place. With a co-located store, it

@@ -50,6 +50,15 @@ For trees in the older one-object-per-directory format (`MEND_CAPTURE_MANIFEST_F
 captured before dir packs), that read covers the top-level directory and the file contents, not
 every nested directory. The default format is read back in full.
 
+## An edited copy of Mend's old workspace note stays in the memory file
+
+Before this release, Mend's note in `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` started at a
+`<!-- mend:mounts -->` line and ran to the end of the file. The first launch after the upgrade turns
+that note into the new bounded block when every line of it is exactly what Mend wrote, and keeps
+whatever follows it. If someone edited inside the old note, Mend removes none of it: the old note
+stays where it is and the new block is added at the end. The agent then reads both. Delete the old
+note by hand.
+
 ## Setup commands run on a worktree's first launch only
 
 A resume does not run a custom image's setup commands again: the saved capture it restores already
