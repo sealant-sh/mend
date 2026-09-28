@@ -35,6 +35,10 @@ import {
   CaptureRegisterBudget,
   MANIFEST_FEATURES,
   PRESIGN_TTL_SECONDS,
+  PUT_URL_ASSUMED_BYTES_PER_SECOND,
+  PUT_URL_CLOCK_MARGIN_SECONDS,
+  PUT_URL_TTL_MIN_SECONDS,
+  putUrlTtlSeconds,
   type SessionCaptureApi,
   UPLOAD_ANSWER_PRESENT,
 } from "../src/capture-channel.ts";
@@ -2050,7 +2054,10 @@ describeSeals(
       );
       expect(typeof minted.urls[file.key]).toBe("string");
       const authority = world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`);
-      expect(authority?.getTime() ?? 0).toBeGreaterThan(clock + PRESIGN_TTL_SECONDS * 1000 - 5_000);
+      // Sized to the call (e2e8): the shortest URL, plus the clock margin.
+      expect(authority?.getTime() ?? 0).toBeGreaterThan(
+        clock + (PUT_URL_TTL_MIN_SECONDS + PUT_URL_CLOCK_MARGIN_SECONDS) * 1000 - 5_000,
+      );
       await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
       await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
       // Recorded, but not standing: the URL could still replace the pack.
@@ -3196,6 +3203,64 @@ describeSeals(
         ),
       );
       expect(restarted.seal).toEqual({ state: "recorded" });
+    });
+  },
+);
+
+/** How long a URL of `ttl` seconds withholds its epoch's seal: its life, plus the clock margin. */
+const withheldFor = (ttl: number) => ttl + PUT_URL_CLOCK_MARGIN_SECONDS;
+
+// e2e8 (the seal window on Garage): every PUT URL lived 15 minutes, and every URL withholds its
+// epoch's seal until it expires plus the clock margin — every Stop waited 20 minutes to seal. A
+// URL now lives as long as its call's bytes need at a conservative rate, never less than
+// sealantd's 5-minute reuse of a URL it holds, never more than 15 minutes.
+describeSeals(
+  "e2e8 a PUT URL lives as long as its call's bytes need",
+  {},
+  ({ world, run, claimed }) => {
+    it("sizes the URL's lifetime, and the write authority recorded for it, to the call's declared bytes", async () => {
+      expect(putUrlTtlSeconds(0)).toBe(PUT_URL_TTL_MIN_SECONDS);
+      expect(PUT_URL_TTL_MIN_SECONDS).toBe(330);
+      expect(putUrlTtlSeconds(100 * PUT_URL_ASSUMED_BYTES_PER_SECOND)).toBe(430);
+      expect(putUrlTtlSeconds(10 * 1024 * 1024 * 1024)).toBe(PRESIGN_TTL_SECONDS);
+      expect(putUrlTtlSeconds(null)).toBe(PRESIGN_TTL_SECONDS);
+      const authorityAfter = async (sizes: Record<string, number | undefined>) => {
+        const at = await claimed();
+        const keys = Object.keys(sizes);
+        const declared = Object.fromEntries(
+          Object.entries(sizes).filter(
+            (entry): entry is [string, number] => entry[1] !== undefined,
+          ),
+        );
+        const before = Date.now();
+        await run(
+          at.api.uploadUrls({
+            worktree_id: at.worktreeId,
+            epoch: at.epoch,
+            keys: keys.map((key) => captureKeys(at.worktreeId, at.epoch).pack(key)),
+            sizes: Object.fromEntries(
+              Object.entries(declared).map(([key, size]) => [
+                captureKeys(at.worktreeId, at.epoch).pack(key),
+                size,
+              ]),
+            ),
+          }),
+        );
+        const recorded = world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`);
+        return Math.round(((recorded?.getTime() ?? 0) - before) / 1000);
+      };
+      // A Stop's final capture: a few small objects. 5.5 min + the 5 min margin, not 20 min.
+      const small = await authorityAfter({ ["1".repeat(64)]: 2_000, ["2".repeat(64)]: 30_000 });
+      expect(Math.abs(small - withheldFor(330))).toBeLessThanOrEqual(2);
+      // A call of 100 MiB, over two keys: 100 s more.
+      const bulk = await authorityAfter({
+        ["3".repeat(64)]: 60 * PUT_URL_ASSUMED_BYTES_PER_SECOND,
+        ["4".repeat(64)]: 40 * PUT_URL_ASSUMED_BYTES_PER_SECOND,
+      });
+      expect(Math.abs(bulk - withheldFor(430))).toBeLessThanOrEqual(2);
+      // A key of unknown size: the cap, as before.
+      const unsized = await authorityAfter({ ["5".repeat(64)]: undefined });
+      expect(Math.abs(unsized - withheldFor(PRESIGN_TTL_SECONDS))).toBeLessThanOrEqual(2);
     });
   },
 );

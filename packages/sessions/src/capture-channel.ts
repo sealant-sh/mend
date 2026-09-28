@@ -540,9 +540,46 @@ export const PRESIGN_TTL_SECONDS = 15 * 60;
 
 /**
  * How far behind Mend's the bucket's clock may run, for how long a PUT URL it handed out stays
- * usable there: an S3 URL expires at its signing time plus its TTL by the bucket's clock.
+ * usable there: an S3 URL expires at its signing time plus its TTL by the bucket's clock. The
+ * signer (Mend, which stamps `X-Amz-Date`) and the verifier (the bucket, which compares it with its
+ * own clock) share no clock source Mend can name — the bucket is S3, R2 or a Garage on another
+ * host — and Mend never observes the bucket's clock, so the margin is not shrunk to what one NTP
+ * host would need (e2e8, kept at 5 min): a bucket whose clock lags by more than it would accept an
+ * expired URL past the window a seal waits out, and the seal would stand over bytes a URL could
+ * still replace.
  */
 export const PUT_URL_CLOCK_MARGIN_SECONDS = 5 * 60;
+/**
+ * The shortest PUT URL Mend hands out (e2e8, the seal window on Garage). Every URL withholds its
+ * epoch's seal until it expires plus `PUT_URL_CLOCK_MARGIN_SECONDS`; at a flat 15 minutes every
+ * Stop on a bucket that ignores `If-None-Match` waited 20 minutes to seal. A URL now lives for
+ * what its call uploads (`putUrlTtlSeconds`), but never less than this: sealantd reuses a PUT URL
+ * it holds for up to 5 minutes after it was answered (`PUT_URL_REUSE`, `registrar.rs`) — a bulk
+ * batch paused for a small capture resumes on it, a PUT the store refused for now retries on it —
+ * and a bucket checks expiry when the PUT arrives, so a URL must still be good 5 minutes after it
+ * left Mend; 30 s more covers the answer's way to the executor.
+ */
+export const PUT_URL_TTL_MIN_SECONDS = 5 * 60 + 30;
+/**
+ * The upload rate a PUT URL's lifetime assumes (`putUrlTtlSeconds`): conservative — e2e8's
+ * executors shipped at 15 MB/s through a throttled link — so a URL outlives its upload on a slow
+ * link. A link slower still only costs a refused PUT that sealantd mints again, never bytes.
+ */
+export const PUT_URL_ASSUMED_BYTES_PER_SECOND = 1024 * 1024;
+
+/**
+ * How long the PUT URLs of one `upload.urls` call live: `PUT_URL_TTL_MIN_SECONDS`, plus the time
+ * the call's declared bytes take at `PUT_URL_ASSUMED_BYTES_PER_SECOND` — sealantd uploads a
+ * call's objects a few at a time in no set order, so any of them may go last — capped at
+ * `PRESIGN_TTL_SECONDS`. A call with a key of unknown size gets the cap.
+ */
+export const putUrlTtlSeconds = (bytes: number | null): number =>
+  bytes === null
+    ? PRESIGN_TTL_SECONDS
+    : Math.min(
+        PRESIGN_TTL_SECONDS,
+        PUT_URL_TTL_MIN_SECONDS + Math.ceil(Math.max(0, bytes) / PUT_URL_ASSUMED_BYTES_PER_SECOND),
+      );
 /**
  * Request quota: `upload.urls` CALLS per session per rolling hour, and keys per call. Calls are
  * what cost the registrar (a presign is a local signature; the bucket is never asked); keys are
@@ -1672,12 +1709,19 @@ export const CaptureChannelLive: Layer.Layer<
         let checkedSeals: ReadonlyArray<string> = [];
         let sealChecked = false;
         let recordedAt = Date.now();
+        // Every URL of this call lives as long as the call's bytes need (e2e8): the authority
+        // recorded below is that long plus the margin, and every URL is signed for it.
+        const ttlSeconds = putUrlTtlSeconds(
+          plans.some((plan) => plan.size === null)
+            ? null
+            : plans.reduce((total, plan) => total + (plan.size ?? 0), 0),
+        );
         while (plans.length > 0) {
           recordedAt = Date.now();
           const record: PutAuthorityRecord = yield* repo.recordPutAuthority(
             worktreeId,
             input.epoch,
-            new Date(recordedAt + (PRESIGN_TTL_SECONDS + PUT_URL_CLOCK_MARGIN_SECONDS) * 1000),
+            new Date(recordedAt + (ttlSeconds + PUT_URL_CLOCK_MARGIN_SECONDS) * 1000),
             checkedSeals,
             holder,
           );
@@ -1744,7 +1788,7 @@ export const CaptureChannelLive: Layer.Layer<
             }
             storedLegacy.add(plan.key);
             urls[plan.key] = yield* blobs
-              .presign(plan.key, "PUT", PRESIGN_TTL_SECONDS, plan.size ?? undefined)
+              .presign(plan.key, "PUT", ttlSeconds, plan.size ?? undefined)
               .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
             continue;
           }
@@ -1752,7 +1796,7 @@ export const CaptureChannelLive: Layer.Layer<
             // Below the threshold: one PUT URL, write-once (`If-None-Match: *` signed in). A
             // declared size is signed into the URL: the bucket takes those bytes or none.
             urls[plan.key] = yield* blobs
-              .presign(plan.key, "PUT", PRESIGN_TTL_SECONDS, plan.size ?? undefined)
+              .presign(plan.key, "PUT", ttlSeconds, plan.size ?? undefined)
               .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
             continue;
           }
@@ -1766,7 +1810,7 @@ export const CaptureChannelLive: Layer.Layer<
                   : plan.size - policy.partSizeBytes * (plan.parts - 1);
             partUrls.push(
               yield* blobs
-                .presignPart(plan.key, created.uploadId, partNumber, PRESIGN_TTL_SECONDS, partBytes)
+                .presignPart(plan.key, created.uploadId, partNumber, ttlSeconds, partBytes)
                 .pipe(Effect.catch(storeError("presigning a part", plan.key))),
             );
           }
