@@ -21,3 +21,9 @@ only over a git section Mend verified and worktree metadata that names only what
 holds; metadata naming a missing file is refused. A flush answer that does not report snapshot
 health holds a landing (`snapshot health not reported`), and a suspend flush logs `completed` only
 when the head caught up. A dir entry's nanosecond mtime is read and written back exactly.
+
+A capture whose git section names its trees (`worktree_tree`, `index_tree`, `raw_tree`: the
+`git_trees` feature) is read from `worktree_tree`, verified over all three trees, and planned only
+for an executor that reads the feature; every ref in it is the user's, `refs/sealant/capture/*`
+included. A final flush that answers `changed` (the disk changed after it) is not saved: the drain
+asks again, and never ends an executor on a completed answer it did not ask for in that round.

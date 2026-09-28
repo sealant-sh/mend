@@ -246,6 +246,23 @@ describe("captureDrainStep while the completed flush is being sealed", () => {
   });
 });
 
+describe("captureDrainStep when the disk changed after the final flush (decision 7)", () => {
+  it("reads sealantd's `changed` as not saved yet, a reason the drain keeps asking about", () => {
+    expect(CAPTURE_INCOMPLETE_REASONS).toContain("changed");
+    const changed = reading({ complete: false, incompleteReason: "changed" });
+    expect(captureSaved(changed)).toBe(false);
+    const step = captureDrainStep({
+      previous: null,
+      reading: changed,
+      progressAtMs: 0,
+      nowMs: 1,
+      stallSeconds: 600,
+    });
+    expect(step.kind).toBe("saving");
+    expect(captureIncompleteWords("changed")).toBe("changed after the final flush");
+  });
+});
+
 describe("captureDrainStep without a completed final flush", () => {
   it("keeps the workspace at once when the executor cannot report `complete`", () => {
     expect(

@@ -2648,11 +2648,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // answer, and nothing is started in it again.
           if (lookup.kind === "found") yield* sessions.markFinalFlush(sessionId, workspaceId);
           // A FINAL answered a moment ago (the harvest right before this drain) stands for this
-          // round's: one FINAL per round, not two.
+          // round's when it did not complete: one FINAL per kept round, not two. A completed one
+          // is asked again — complete means current (cross-repo decision 7): the disk may have
+          // changed since, and sealantd says so (`changed`) only when asked.
           const recent: { readonly reading: CaptureReading; readonly atMs: number } | undefined =
             previous === null ? recentFinals.get(workspaceId) : undefined;
           const reused: CaptureReading | null =
-            recent !== undefined && Date.now() - recent.atMs <= FINAL_ANSWER_REUSE_MS
+            recent !== undefined &&
+            Date.now() - recent.atMs <= FINAL_ANSWER_REUSE_MS &&
+            !captureSaved(recent.reading)
               ? recent.reading
               : null;
           if (reused !== null) recentFinals.delete(workspaceId);

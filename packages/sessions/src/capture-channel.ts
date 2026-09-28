@@ -37,7 +37,8 @@ import {
   sectionHoldsRawNames,
   gitSectionHoldsRawNames,
   metaNamespaceProblem,
-  WORKTREE_TREE_REF,
+  gitSectionHoldsTrees,
+  worktreeTreeOf,
   type WorktreeMetaDocument,
 } from "@mend/store";
 import { Duration, Effect, Layer, Option, Schema } from "effect";
@@ -112,6 +113,10 @@ export type PlanGetRequest = typeof PlanGetRequest.Type;
  *   section's ref names, symbolic refs and targets, or `head`.
  * - `final_seal`: the manifest's `final_seal`, a completed final flush of the executor that wrote
  *   it.
+ * - `git_trees`: `sections.git.worktree_tree` / `index_tree` / `raw_tree` (sealantd review 3):
+ *   the trees in their own fields, `refs` the repository's refs whatever their names, and a raw
+ *   tree a restore writes back without conversion. An executor that reads the trees from the
+ *   pseudo-refs would restore neither the raw bytes nor a user ref under `refs/sealant/capture/`.
  */
 export const MANIFEST_FEATURES = [
   "worktree_meta",
@@ -119,6 +124,7 @@ export const MANIFEST_FEATURES = [
   "other_bulk",
   "raw_names",
   "final_seal",
+  "git_trees",
 ] as const;
 export type ManifestFeature = (typeof MANIFEST_FEATURES)[number];
 
@@ -149,6 +155,7 @@ export const missingManifestFeatures = (
           storedBulk.platform !== input.platform),
     );
     holds("final_seal", planned.final_seal !== undefined);
+    holds("git_trees", gitSectionHoldsTrees(planned.sections.git));
     if (!reads.has("raw_names")) {
       const bulk = planned.sections.bulk;
       const raw =
@@ -1737,7 +1744,7 @@ export const CaptureChannelLive: Layer.Layer<
           // verified, the runner unavailable) registers unchecked and seals nothing.
           const metaNamespace = yield* Effect.gen(function* () {
             if (metaDocument === null) return "verified" as const;
-            const tree = manifest.sections.git.refs[WORKTREE_TREE_REF];
+            const tree = worktreeTreeOf(manifest.sections.git);
             const tracked =
               tree === undefined
                 ? new Map()

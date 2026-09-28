@@ -11396,6 +11396,116 @@ describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", 
   );
 
   it(
+    "decision 7: a final flush that answers `changed` is not saved; the drain asks again and ends the executor only on a completed answer",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const kinds: CaptureFlushKind[] = [];
+      const stops: Array<"drain" | "discard"> = [];
+      const memory = makeMemoryCaptureStore();
+      let answered = 0;
+      let answeredAtStop = -1;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(() => stops.length > 0, "the stop");
+            expect(answeredAtStop).toBeGreaterThanOrEqual(2);
+            expect(world.sessions.get(session.id)?.captureNotSavedAt ?? null).toBeNull();
+          }),
+        {
+          captured: memory,
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              flushKinds: kinds,
+              stops,
+              stopAnswer: () => {
+                answeredAtStop = answered;
+                return "stopped";
+              },
+              finalCompletion: "unreported",
+              flush: () =>
+                Effect.sync(() => {
+                  answered += 1;
+                  return answered === 1
+                    ? { ...flushReport(0, 1), complete: false, incompleteReason: "changed" }
+                    : { ...flushReport(0, 1), complete: true };
+                }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "decision 7: a completed FINAL answered a moment ago is asked again before the executor ends: complete means current",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const kinds: CaptureFlushKind[] = [];
+      const stops: Array<"drain" | "discard"> = [];
+      const memory = makeMemoryCaptureStore();
+      const finals = () => kinds.filter((kind) => kind === "final").length;
+      let round = false;
+      let inRound = 0;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept workspace",
+            );
+            // The kept round: its first FINAL (the settle harvest's) completes, then the disk
+            // changes. The drain does not end the executor on the harvest's answer: it asks again
+            // and hears `changed`.
+            round = true;
+            const before = finals();
+            yield* Effect.sleep(Duration.millis(350));
+            yield* engine.reapCaptureLeases();
+            yield* until(() => finals() - before >= 2, "the kept round's FINALs");
+            yield* Effect.sleep(Duration.millis(200));
+            expect(stops).toEqual([]);
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            keptRetryFirst: Duration.millis(300),
+            keptRetryMax: Duration.seconds(5),
+          },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              flushKinds: kinds,
+              stops,
+              finalCompletion: "unreported",
+              flush: () =>
+                Effect.sync(() => {
+                  if (!round) {
+                    return {
+                      ...flushReport(0, 1),
+                      complete: false,
+                      incompleteReason: "snapshot-failed",
+                      lastSnapError: "EACCES: permission denied",
+                    };
+                  }
+                  inRound += 1;
+                  return inRound === 1
+                    ? { ...flushReport(0, 1), complete: true }
+                    : { ...flushReport(0, 1), complete: false, incompleteReason: "changed" };
+                }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
     "a kept round sends one FINAL: the settle harvest reuses the drain's answer",
     { timeout: 20_000 },
     async () => {

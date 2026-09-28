@@ -54,8 +54,50 @@ export const GitSection = Schema.Struct({
    * too, by the sha it resolved to. Absent when there are none.
    */
   symrefs: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  /**
+   * The `git_trees` manifest feature (sealantd review 3): the working tree as `git add -A`
+   * stages it — what a review diffs. When present, `refs` is the repository's refs whatever
+   * their names (`refs/sealant/capture/*` included) and nothing in it is a tree of Mend's.
+   */
+  worktree_tree: Schema.optionalKey(Schema.String),
+  /** `git_trees`: the index as a tree, when it could be written as one. */
+  index_tree: Schema.optionalKey(Schema.String),
+  /**
+   * `git_trees`: the worktree tree with every regular file's blob holding the bytes on disk,
+   * before any clean filter, end-of-line or encoding conversion — what a restore checks out and
+   * writes back unsmudged.
+   */
+  raw_tree: Schema.optionalKey(Schema.String),
 });
 export type GitSection = typeof GitSection.Type;
+
+/** The section names its trees in their own fields (`git_trees`) rather than as pseudo-refs. */
+export const gitSectionHoldsTrees = (section: GitSection): boolean =>
+  section.worktree_tree !== undefined;
+
+/**
+ * The worktree tree: `worktree_tree`, else the `refs/sealant/capture/worktree` pseudo-ref of a
+ * section written before `git_trees`. Undefined when the section names none.
+ */
+export const worktreeTreeOf = (section: GitSection): string | undefined =>
+  gitSectionHoldsTrees(section) ? section.worktree_tree : section.refs[WORKTREE_TREE_REF];
+
+/** The index tree: `index_tree` in a `git_trees` section, else the index pseudo-ref. */
+export const indexTreeOf = (section: GitSection): string | undefined =>
+  gitSectionHoldsTrees(section) ? section.index_tree : section.refs[INDEX_TREE_REF];
+
+/** The tree a restore checks out: `raw_tree` when the section has one, else the worktree tree. */
+export const rawTreeOf = (section: GitSection): string | undefined =>
+  section.raw_tree ?? worktreeTreeOf(section);
+
+/**
+ * Every tree the section names beside its refs (`worktree_tree`, `index_tree`, `raw_tree`, or
+ * the two pseudo-refs of a section before `git_trees`): each is a pack closure tip.
+ */
+export const gitSectionTrees = (section: GitSection): ReadonlyArray<string> =>
+  [worktreeTreeOf(section), indexTreeOf(section), section.raw_tree].filter(
+    (tree): tree is string => tree !== undefined && tree !== "",
+  );
 
 /** Section format 1: one object per directory at `…/trees/<sha256>`, named by key. */
 export const FORMAT_DIR_OBJECTS = 1;
@@ -226,6 +268,10 @@ export type CaptureClass = "workspace" | "bulk";
  */
 export const WORKTREE_TREE_REF = "refs/sealant/capture/worktree";
 export const INDEX_TREE_REF = "refs/sealant/capture/index";
+/**
+ * Where the two pseudo-refs live in a section written before `git_trees`. Only the two exact
+ * names above were ever trees; in a `git_trees` section every name here is a user ref.
+ */
 export const PSEUDO_REF_PREFIX = "refs/sealant/capture/";
 
 /**

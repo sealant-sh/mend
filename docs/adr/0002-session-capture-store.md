@@ -793,6 +793,17 @@ Mend-side details the decision record left open, decided in this ADR:
     - **Snapshot health is never assumed.** An answer without `unreadable` (an older daemon, or SDK
       0.37.2's facade) reads `snapshot health not reported`: not caught up, so a landing waits. A
       suspend flush logs `completed` only when caught up, else `partial · <reason>`.
+    - **The git section names its trees (`git_trees`).** sealantd writes `worktree_tree`,
+      `index_tree` and `raw_tree` in their own fields for a registrar that lists the feature, and
+      `refs` is then the repository's refs whatever their names (a user ref under
+      `refs/sealant/capture/` was dropped by every restore). Mend reads the worktree tree from
+      `worktree_tree` (else the pseudo-ref of an older capture), verifies every one of the trees as
+      a closure tip, checks worktree metadata against `worktree_tree`, and hands a head holding the
+      fields only to an executor that lists `git_trees`. Retention keeps git objects by pack: every
+      pack the section lists stays while a row names it, so the objects of all three trees do.
+    - **Complete means current (decision 7).** sealantd answers `incomplete_reason: "changed"` once
+      the disk changed after a final flush; it is not saved, and a drain asks the final flush again.
+      A completed answer is never reused for another round: the drain asks again.
     - **mtimes are nanoseconds.** A dir entry's integer `mtime` is decoded exactly (a bigint from
       its source text) and written back digit for digit; Mend's TypeScript materializer is a reader,
       not a restore path, and lands times to the microsecond Node can set.

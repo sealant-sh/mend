@@ -997,6 +997,19 @@ describe("plan.get hands a head only to an executor that reads what it means (ma
               },
             }
           : {}),
+        ...(feature === "git_trees"
+          ? {
+              git: {
+                packs: [],
+                refs: { "refs/sealant/capture/my-work": "c".repeat(40) },
+                head: "refs/heads/main",
+                fsck: "unverified" as const,
+                worktree_tree: "d".repeat(40),
+                index_tree: "d".repeat(40),
+                raw_tree: "e".repeat(40),
+              },
+            }
+          : {}),
       });
       const manifest =
         feature === "final_seal"

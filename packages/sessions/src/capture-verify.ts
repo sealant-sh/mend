@@ -5,6 +5,7 @@ import {
   type GitFsckOutcome,
   git,
   gitBytes,
+  gitSectionTrees,
   GitOpsRunner,
   type WorktreeTreeKind,
 } from "@mend/store";
@@ -107,9 +108,11 @@ export const CaptureGitVerifierLive: Layer.Layer<
       manifest: CaptureManifest,
     ) {
       const section = manifest.sections.git;
-      const tips = [...new Set([...Object.values(section.refs), section.head])].filter((sha) =>
-        HEX40.test(sha),
-      );
+      // Every ref, `head`, and every tree the section names beside its refs (the `git_trees`
+      // fields, or the pseudo-refs before them): a restore checks each out.
+      const tips = [
+        ...new Set([...Object.values(section.refs), section.head, ...gitSectionTrees(section)]),
+      ].filter((sha) => HEX40.test(sha));
       // Nothing named, nothing to walk: a git section without objects restores nothing.
       if (tips.length === 0) return { outcome: "verified", detail: null } satisfies GitVerification;
       const storeRefs = yield* refs.refsMap(projectId);

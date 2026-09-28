@@ -98,8 +98,10 @@ export interface CaptureClassSnaps {
  * sealantd's reasons for an incomplete final flush. `not-final`: the executor did not run a final
  * flush (an older daemon answers every flush this way); `sealing`: everything registered but the
  * capture that seals the completed flush on the chain (`final_seal`; the flush returned at its
- * deadline first) — the final flush asked again stages it, so a drain keeps asking; the rest name
- * the step that failed.
+ * deadline first) — the final flush asked again stages it, so a drain keeps asking; `changed`:
+ * the flush completed but the disk changed after it (a change the watcher saw, or its overflow;
+ * cross-repo decision 7) — nothing is saved until a final flush asked again completes, so a drain
+ * keeps asking; the rest name the step that failed.
  */
 export const CAPTURE_INCOMPLETE_REASONS = [
   "not-final",
@@ -114,6 +116,7 @@ export const CAPTURE_INCOMPLETE_REASONS = [
   "ship-failed",
   "pending",
   "sealing",
+  "changed",
   "internal",
 ] as const;
 
@@ -385,6 +388,8 @@ export const captureIncompleteWords = (reason: string | null | undefined): strin
       return "upload failed";
     case "sealing":
       return "final seal not registered";
+    case "changed":
+      return "changed after the final flush";
     case "internal":
       return "executor error";
     case CAPTURE_EXECUTOR_RETAINED:

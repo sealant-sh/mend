@@ -51,6 +51,10 @@ sealantd's `fix/capture-review3` carry the other halves; nothing here works arou
     refused until the SDK Mend pins forwards those fields.
   - **Suggested:** pin the SDK whose facade forwards every `WorkspaceCaptureStatus` field; the
     facade test (`packages/sessions/test/capture-sdk-facade.test.ts`) then reads the carried path.
+- **sealantd's `git_trees` and `changed` are read.** `plan.get` lists `git_trees`: a head whose git
+  section names `worktree_tree` / `index_tree` / `raw_tree` goes only to an executor that lists it,
+  and every `refs` entry of such a section is a user ref. `incomplete_reason: "changed"` is not
+  saved; a drain asks the final flush again.
 - **A seal rests on sections Mend observed restore.** Register records `final_seal` only when the
   git section verified (`index-pack --verify` and a connectivity walk on the runner) and the
   worktree metadata document names only paths the worktree tree holds as that kind; a plan that

@@ -524,3 +524,143 @@ describe("a seal rests only on sections Mend observed restore", () => {
     },
   );
 });
+
+/**
+ * The `git_trees` manifest feature (sealantd review 3): the trees ride their own fields, `refs` is
+ * the repository's refs whatever their names, and `raw_tree` is what a restore checks out. Reads
+ * take `worktree_tree`, never a user ref that happens to be named like the old pseudo-ref, and
+ * verification walks every tree a restore needs.
+ */
+describe("git sections that name their trees (git_trees)", () => {
+  const world = makeCaptureWorld();
+  const layer = Layer.mergeAll(
+    SessionRepositoryCapturedLive.pipe(Layer.provide(world.layer)),
+    WorktreeReadsCapturedLive.pipe(Layer.provide(world.layer)),
+    world.layer,
+  );
+  type Services = SessionRepository | WorktreeReads | CaptureStoreRepo | CaptureChannel | BlobStore;
+  const scope = Scope.makeUnsafe();
+  let context: Context.Context<Services>;
+  const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(context)));
+  beforeAll(async () => {
+    context = await Effect.runPromise(
+      Layer.build(layer).pipe(Effect.provideService(Scope.Scope, scope)),
+    );
+  });
+  afterAll(async () => {
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    fs.rmSync(world.scratch, { recursive: true, force: true });
+  });
+
+  const claimed = async () => {
+    const worktreeId = newWorktreeId();
+    const branch = `mend/wt/${worktreeId}`;
+    world.worktrees.set(worktreeId, worktreeRowFor(world, worktreeId, branch));
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* SessionRepository;
+        yield* repo.createWorktree(world.project.id, { directory: worktreeId, branch }, null, null);
+        yield* repo.attachWorktree!(world.project.id, worktreeId);
+      }),
+    );
+    const cap0Id = world.memory.chains.get(worktreeId)?.headCapture ?? "";
+    const cap0 = world.memory.captures.get(cap0Id);
+    if (cap0 === undefined) throw new Error("capture 0 did not register");
+    const { epoch, api } = await run(
+      Effect.gen(function* () {
+        const captures = yield* CaptureStoreRepo;
+        const claim = yield* captures.claim(worktreeId, "executor-1", 300);
+        const routes: SessionCaptureApi = (yield* CaptureChannel).apiFor({
+          worktreeId,
+          projectId: world.project.id,
+          executorId: "executor-1",
+          footprintBytes: 0,
+        });
+        return { epoch: claim.epoch, api: routes };
+      }),
+    );
+    return { worktreeId, branch, epoch, api, cap0Id, basePack: packsOf(cap0.sections)[0] ?? "" };
+  };
+
+  it("reads the worktree tree from `worktree_tree`, keeps a user ref named like the old pseudo-ref as a ref, and plans it only for an executor that reads git_trees", async () => {
+    const at = await claimed();
+    const edited = packEditedTree(world.work, at.worktreeId, at.epoch, world.baseSha, (dir) => {
+      fs.writeFileSync(path.join(dir, "a.txt"), "one\ntwo\nthree\n");
+    });
+    const cap1 = buildManifest({
+      worktreeId: at.worktreeId,
+      n: 1,
+      parent: at.cap0Id,
+      epoch: at.epoch,
+      seq: 10,
+      kind: "turn",
+      git: {
+        packs: [at.basePack, edited.key],
+        refs: {
+          [`refs/heads/${at.branch}`]: world.baseSha,
+          // A user's own ref under the old pseudo-ref's name: the base commit, not a tree.
+          [WORKTREE_TREE_REF]: world.baseSha,
+        },
+        head: `refs/heads/${at.branch}`,
+        fsck: "verified",
+        worktree_tree: edited.tree,
+        index_tree: edited.tree,
+        raw_tree: edited.tree,
+      },
+    });
+    await run(uploadObjects(new Map([...edited.objects, [cap1.key, cap1.bytes]])));
+    await run(registerOn(at.worktreeId, at.epoch, at.api)(cap1));
+    expect(world.memory.captures.get(cap1.id)?.gitFsck).toBe("verified");
+    const read = await run(
+      Effect.gen(function* () {
+        const reads = yield* WorktreeReads;
+        return yield* reads.diffWorktree(world.project.id, at.worktreeId, world.baseSha);
+      }),
+    );
+    expect(read.value).toContain("+three");
+    const refused = await run(
+      at.api
+        .planGet({ epoch: at.epoch, manifest_format: 2, manifest_features: ["final_seal"] })
+        .pipe(Effect.flip),
+    );
+    expect(refused.reason).toBe("manifest-features");
+    expect(refused.missing).toEqual(["git_trees"]);
+    const planned = await run(
+      at.api.planGet({ epoch: at.epoch, manifest_format: 2, manifest_features: ["git_trees"] }),
+    );
+    expect(planned.manifest_features).toContain("git_trees");
+    expect(planned.head?.manifest.sections.git.worktree_tree).toBe(edited.tree);
+    expect(planned.head?.manifest.sections.git.refs[WORKTREE_TREE_REF]).toBe(world.baseSha);
+  });
+
+  it("verifies every tree a restore checks out: a raw tree no pack holds fails the git section", async () => {
+    const at = await claimed();
+    const edited = packEditedTree(world.work, at.worktreeId, at.epoch, world.baseSha, (dir) => {
+      fs.writeFileSync(path.join(dir, "a.txt"), "raw\r\nbytes\r\n");
+    });
+    // A tree written in the work repository and never packed.
+    const blob = sh(world.work, ["hash-object", "-w", "--stdin"], "only on the executor\n");
+    const unpacked = sh(world.work, ["mktree"], `100644 blob ${blob}\tunpacked.txt\n`);
+    const cap1 = buildManifest({
+      worktreeId: at.worktreeId,
+      n: 1,
+      parent: at.cap0Id,
+      epoch: at.epoch,
+      seq: 10,
+      kind: "turn",
+      git: {
+        packs: [at.basePack, edited.key],
+        refs: { [`refs/heads/${at.branch}`]: world.baseSha },
+        head: `refs/heads/${at.branch}`,
+        fsck: "verified",
+        worktree_tree: edited.tree,
+        index_tree: edited.tree,
+        raw_tree: unpacked,
+      },
+    });
+    await run(uploadObjects(new Map([...edited.objects, [cap1.key, cap1.bytes]])));
+    await run(registerOn(at.worktreeId, at.epoch, at.api)(cap1));
+    expect(world.memory.captures.get(cap1.id)?.gitFsck).toBe("failed");
+  });
+});
