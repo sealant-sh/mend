@@ -1168,3 +1168,34 @@ Mend-side details the decision record left open, decided in this ADR:
       `retained`, a drain still `draining`, `kept` or `stop-failed`, a `retained` record, or an SDK
       without the method stays kept. For Core: an executor that exits 0 after a complete FINAL is
       recorded `failed`; `stopped` would describe it.
+42. (2026-09-28) The fifteenth review's Mend item (#1) and two status lines from end-to-end run 9.
+    - **Setup commands run only on a worktree laid down fresh (#1).** `prepareExecutor` ran the
+      custom image's `setupCommands` after every create, but sealantd materializes the saved
+      workspace before the create answers: a cold resume ran `npm ci` over a restored `node_modules`
+      and put a patched dependency file back to the published bytes. The owner's decision: setup
+      commands run only when the executor lays the worktree down from capture 0 (a worktree's first
+      launch, or a chain with no capture past 0). An executor that restores a saved capture (a
+      resume, a recovery, a relaunch, a new session in an existing worktree, a standby whose replan
+      planned a saved head) runs none of them; the capture already holds what setup produced. A cold
+      launch reads the head under its own lease claim, before the create, so nothing registers
+      between the read and the executor's plan (`restoredCaptureOf`); a claimed standby uses the
+      head its replan reports (`headN`), else the head read under the claim. The `mend` helper and
+      git transport install still runs: it writes `/usr/local/bin` and the system git config, never
+      the worktree. The session line says `setup skipped · restored from capture <n>` once at start
+      (beside `executor lost · …` when that is there; the next start clears it). Captures hold the
+      worktree only, so anything setup installed elsewhere is not restored; the docs send that to
+      Extra packages or the image. The co-located store is unchanged: setup runs on every launch
+      there. A worktree whose capture 0 was backfilled from an older directory (decision 8's attach)
+      still runs setup over it.
+    - **A seal that lands while Core ends a kept executor is the session's word (run 9 RD).**
+      `terminateWorkspace` reported `saved` only for a seal Mend attested on the stop. An executor
+      whose worker died before `ready` had no seal when Mend's stop went out; Core's recovery boot
+      sealed while it ended it, and the session kept `failed · launch failed: … retained …` alone.
+      Once the end is confirmed and nothing was attested, the executor's own standing seal
+      (`executorSealOf`, read while the lease still names it) counts, and the session reads
+      `failed · launch failed: … · saved at … · capture n`.
+    - **A stop that follows the executor's own FINAL reads as that end (run 9 D9).** When a status
+      read finds a final flush Mend did not ask for, Mend stops the session; a saved end of that
+      stop settled a bare `stopped` (the owner's Stop wording), while sessions whose end Mend
+      observed from outside read `stopped outside Mend · saved at … · capture n`. Such a stop now
+      reads the same once saved. The owner's Stop is unchanged.

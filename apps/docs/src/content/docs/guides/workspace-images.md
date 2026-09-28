@@ -76,9 +76,34 @@ Custom mode has three image inputs:
 1. **Base image reference** such as `node:22-bookworm` or a private registry reference available to
    the platform.
 2. **Extra packages**, one per line, passed to the package manager for that base.
-3. **Setup commands**, one per line, run in the workspace before the harness starts.
+3. **Setup commands**, one per line, run in the workspace before the harness starts, on the
+   worktree's first launch only (see below).
 
 The Docker service remains a separate switch.
+
+### When setup commands run
+
+Setup commands run when a worktree is laid down fresh: its first launch, from capture 0. A launch
+that restores the worktree from a saved capture runs none of them. That covers a resume after a
+Stop, a recovery, a relaunch, a new session in an existing worktree, and a standby claimed onto a
+worktree that has saves. The saved capture already holds what setup produced on the first launch,
+and whatever changed since. Running `npm ci` again would put a patched file in `node_modules` back
+to the published bytes.
+
+Such a session's line says so once, as it starts:
+
+```text
+running · setup skipped · restored from capture 12
+```
+
+The `mend` helper and git's transport still install on every launch. They write `/usr/local/bin` and
+the system git config, never the worktree.
+
+Captures hold the worktree, not the rest of the machine. Anything a setup command installs outside
+the worktree, such as a global npm package or an `apt` package, is gone on a resume. Put those in
+**Extra packages** or in the base image instead. If a lockfile changed since the first launch, run
+the install yourself in the resumed session. With the deprecated co-located store
+(`MEND_SESSION_STORE=colocated`), setup commands still run on every launch.
 
 Custom mode does not expose the managed login-shell selector. It guarantees only the shell supplied
 by the base. Mend also does not apply user dotfiles to custom images. Put required shell setup in

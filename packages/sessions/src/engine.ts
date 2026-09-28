@@ -507,11 +507,19 @@ const LAUNCH_SUMMARY_PREFIX = "launch ";
  * `saved at …`, `executor not answering · …`). `executor lost · …` stays: a replacement's first
  * register turns it into `picked up · executor replaced` (`observeReplacement`).
  */
+/**
+ * The custom image's setup commands were not run: the executor laid the worktree down from saved
+ * capture `n`, which already holds what they produced (review 2026-09-28 (15) #1).
+ */
+const SETUP_SKIPPED_PREFIX = "setup skipped";
+const setupSkippedWords = (n: number) => `${SETUP_SKIPPED_PREFIX} · restored from capture ${n}`;
+
 const STALE_ON_START_PREFIXES = [
   LAUNCH_SUMMARY_PREFIX,
   "stopped outside Mend",
   "saved at ",
   "executor not answering",
+  SETUP_SKIPPED_PREFIX,
 ] as const;
 
 /** A create Core fenced before it made anything, found with no launch asking again. */
@@ -1532,6 +1540,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * The saved capture a new executor lays the worktree down from (review 2026-09-28 (15) #1):
+       * the head once the chain is past capture 0; null when the worktree is laid down fresh
+       * (capture 0, no chain yet) and outside capture mode. Read under the launch's own lease
+       * claim, so nothing registers between this read and the executor's plan.
+       */
+      const restoredCaptureOf = (worktreeId: WorktreeId): Effect.Effect<number | null> =>
+        capture === null
+          ? Effect.succeed(null)
+          : capture.repo
+              .headOf(worktreeId)
+              .pipe(
+                Effect.map((chain) => (chain !== null && chain.headN >= 1 ? chain.headN : null)),
+              );
+
+      /**
        * Dependency trees (ADR-0002 amended 2026-09-13, decisions 2 and 9): the head the executor
        * materialised carries a bulk section only for the platform it was captured on. Observe
        * this executor's platform with one exec; when the head has no tree for it, run the
@@ -2172,6 +2195,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /** When each session's executor was last asked for its capture status (ms). */
       const statusReads = new Map<SessionId, number>();
+      /**
+       * Executors whose own final flush (a `docker stop`, the platform saving ahead of its cap) Mend
+       * followed with a stop: their saved end reads `stopped outside Mend · saved at …`.
+       */
+      const endedOutsideMend = new Set<SealantWorkspaceId>();
 
       /**
        * `workspace.capture.status()` on the session's running executor: nothing flushed, nothing
@@ -2248,6 +2276,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* Effect.logInfo(
             "session engine: capture mode · the executor is running a final flush Mend did not ask for · stopping",
           ).pipe(Effect.annotateLogs({ sessionId, workspaceId: session.sealantWorkspaceId }));
+          // Not the owner's stop: once saved it reads as the executor's own end does
+          // (`stopped outside Mend · saved at …`), never a bare `stopped` (e2e run 9, D9).
+          endedOutsideMend.add(session.sealantWorkspaceId);
           yield* Effect.forkIn(
             stop(sessionId).pipe(
               asSealantUser(session.ownerUserId),
@@ -3108,6 +3139,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const confirmed = stopState === "stopped" || (yield* awaitTerminated(workspaceId));
         yield* processes.reapLiveForWorkspace(workspaceId);
         const session = yield* sessions.byId(sessionId);
+        // Ended with nothing attested on the stop (a launch whose worker died before `ready`:
+        // the stop found no seal, and the platform's recovery boot sealed while it ended the
+        // executor): the executor's own seal, standing, is the same fact. Read while the lease
+        // still names the executor, so a session reads `… · saved at … · capture n` instead of
+        // its launch's words alone (e2e run 9, RD).
+        const sealedMeanwhile =
+          saved === null && confirmed && options?.discardUnsaved !== true
+            ? yield* executorSealOf(session, workspaceId)
+            : null;
         if (confirmed) {
           // Only an end the platform confirmed takes the executor's channel and its token: one
           // it has not observed end may still ship, or be booted again to (e2e run 5).
@@ -3119,7 +3159,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             `session engine: workspace stop asked · ${stopState} · termination not observed yet · the lease lapses on its own`,
           ).pipe(Effect.annotateLogs({ sessionId, workspaceId, stopState }));
         }
-        return { ended: confirmed, retained: null, saved } as const;
+        return {
+          ended: confirmed,
+          retained: null,
+          saved:
+            saved ??
+            (sealedMeanwhile === null
+              ? null
+              : { at: sealedMeanwhile.sealedAt, n: sealedMeanwhile.n }),
+        } as const;
       });
 
       /**
@@ -3174,6 +3222,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* Effect.logInfo("session engine: capture mode · settled session restated").pipe(
           Effect.annotateLogs({ sessionId, before: session.summary, after: summary }),
         );
+      });
+
+      /**
+       * A session Mend stopped only because its executor ran a final flush of its own reads what
+       * that end was once it is saved — `stopped outside Mend · saved at … · capture n`, as a
+       * session whose end Mend observed from outside does — not the bare `stopped` of the owner's
+       * Stop (e2e run 9: one of ten deadline-preserved sessions read `stopped`, summary null).
+       * Only over a settled `stopped` session with nothing else to say.
+       */
+      const sayEndedOutsideMend = Effect.fn("SessionEngine.sayEndedOutsideMend")(function* (
+        sessionId: SessionId,
+        words: string,
+      ) {
+        const session = yield* sessions
+          .byId(sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (
+          session === null ||
+          session.settledAt === null ||
+          session.status !== "stopped" ||
+          session.summary !== null
+        ) {
+          return;
+        }
+        yield* sessions.setSummary(sessionId, words);
       });
 
       /** The platform ended it already: nothing to save or stop; tidy up behind it. */
@@ -3295,6 +3368,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 outcome: confirmed.outcome,
                 words: confirmed.summary,
               });
+              if (endedOutsideMend.delete(workspaceId) && confirmed.outcome === "stopped") {
+                yield* sayEndedOutsideMend(sessionId, confirmed.summary);
+              }
             }
             yield* removeIfRequested(sessionId);
             return "gone" as const;
@@ -3332,6 +3408,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   outcome: "stopped",
                   words: executorSavedWords(terminated.saved),
                 });
+                if (endedOutsideMend.delete(workspaceId)) {
+                  yield* sayEndedOutsideMend(
+                    sessionId,
+                    `stopped outside Mend · ${executorSavedWords(terminated.saved)}`,
+                  );
+                }
               }
               yield* removeIfRequested(sessionId);
               return "gone" as const;
@@ -3473,6 +3555,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   outcome: "stopped",
                   words: executorSavedWords(savedBy),
                 });
+                if (endedOutsideMend.delete(workspaceId)) {
+                  yield* sayEndedOutsideMend(
+                    sessionId,
+                    `stopped outside Mend · ${executorSavedWords(savedBy)}`,
+                  );
+                }
               }
               yield* removeIfRequested(sessionId);
             } else {
@@ -6712,6 +6800,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * ssh transport shim. A cold launch runs it right after the create; a capture-mode standby
        * at claim, after its replan (review 2026-09-28 e2e9 F-B): an exec on an unclaimed standby
        * clears sealantd's unclaimed marker.
+       *
+       * Answers the capture the setup commands were skipped for: an executor that laid the
+       * worktree down from a saved capture (`restoredFrom`) runs none of them (review 2026-09-28
+       * (15) #1). That capture already holds what setup produced on the worktree's first launch,
+       * and whatever was changed since: `npm ci` over a restored `node_modules` put a patched
+       * dependency file back to the published bytes before the shell opened.
        */
       const prepareExecutor = Effect.fn("SessionEngine.prepareExecutor")(function* (input: {
         readonly sessionId: SessionId;
@@ -6719,14 +6813,36 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         readonly workspaceImage: WorkspaceImage;
         /** Capture mode: the socket dir is not mounted, so its scripts are written into it. */
         readonly captured: boolean;
+        /**
+         * The saved capture the executor laid the worktree down from (`restoredCaptureOf`); null
+         * when it was laid down fresh (capture 0, a worktree's first launch) or nothing is
+         * captured (the co-located store).
+         */
+        readonly restoredFrom: number | null;
         readonly onFailure: (message: string) => Effect.Effect<void>;
         readonly abandon?: (workspace: Workspace, message: string) => Effect.Effect<void>;
       }) {
         const { sessionId, workspace, workspaceImage } = input;
-        // Custom-image setup commands run in the fresh workspace BEFORE anything else (state
-        // restore, harness launch). They are part of the image contract, so a failing one fails
-        // the provision loudly instead of handing the agent a half-prepared environment.
-        if (workspaceImage.mode === "custom") {
+        let setupSkippedFrom: number | null = null;
+        if (
+          workspaceImage.mode === "custom" &&
+          workspaceImage.setupCommands.length > 0 &&
+          input.restoredFrom !== null
+        ) {
+          // Only the workspace-mutating setup commands are skipped: the helper and the git
+          // transport below touch /usr/local/bin and system git config, never the worktree.
+          setupSkippedFrom = input.restoredFrom;
+          yield* Effect.logInfo(`session engine: ${setupSkippedWords(input.restoredFrom)}`).pipe(
+            Effect.annotateLogs({
+              sessionId,
+              workspaceId: workspace.id,
+              commands: workspaceImage.setupCommands.length,
+            }),
+          );
+        } else if (workspaceImage.mode === "custom") {
+          // Custom-image setup commands run in the fresh workspace BEFORE anything else (the
+          // harness launch). They are part of the image contract, so a failing one fails the
+          // provision loudly instead of handing the agent a half-prepared environment.
           for (const command of workspaceImage.setupCommands) {
             const result = yield* sealant
               .exec(workspace, ["sh", "-lc", command])
@@ -6774,6 +6890,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
             Effect.catch((error) => notInstalled({ message: error.message })),
           );
+        return setupSkippedFrom;
       });
 
       /**
@@ -6808,6 +6925,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          * runs at claim instead, after the replan).
          */
         readonly deferPreparation?: boolean;
+        /**
+         * The saved capture this executor lays the worktree down from (`restoredCaptureOf`), read
+         * before the create; null or absent when it is laid down fresh.
+         */
+        readonly restoredFrom?: number | null;
         /**
          * Makes the create idempotent on the platform (Core's next SDK): `onAsking` runs once,
          * right before the first create is asked, so the key is on the row before any executor
@@ -7195,19 +7317,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // F-B, sealantd#121): an exec clears sealantd's unclaimed marker, and a standby that ran
         // one reads as holding a session's work — a failed replan wedged its launch and a pool
         // shrink never released it. Its setup commands and tools run at claim, after the replan.
-        if (input.deferPreparation !== true) {
-          yield* prepareExecutor({
-            sessionId,
-            workspace,
-            workspaceImage,
-            captured: captureSource !== null,
-            onFailure: input.onFailure,
-            ...(input.abandon === undefined ? {} : { abandon: input.abandon }),
-          });
-        }
+        const setupSkippedFrom =
+          input.deferPreparation === true
+            ? null
+            : yield* prepareExecutor({
+                sessionId,
+                workspace,
+                workspaceImage,
+                captured: captureSource !== null,
+                restoredFrom: input.restoredFrom ?? null,
+                onFailure: input.onFailure,
+                ...(input.abandon === undefined ? {} : { abandon: input.abandon }),
+              });
         return {
           workspace,
           workspaceImage,
+          /** The capture the setup commands were skipped for (`prepareExecutor`); null when they ran. */
+          setupSkippedFrom,
           environmentManifest,
           dotfiles: {
             repository:
@@ -7529,16 +7655,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
-       * `workspace.capture.replan()` on a claimed standby (SDK 0.31.0, sealantd 0.15): true when
-       * the daemon answered with this session's worktree under the lease epoch the claim took,
-       * the delta report logged as observed. Anything else is false and the caller goes cold.
+       * `workspace.capture.replan()` on a claimed standby (SDK 0.31.0, sealantd 0.15): the saved
+       * capture it laid the worktree down from (`restoredFrom`, null when fresh) when the daemon
+       * answered with this session's worktree under the lease epoch the claim took, the delta
+       * report logged as observed. Anything else is null and the caller goes cold.
        */
       const replanClaimedStandby = Effect.fn("SessionEngine.replanClaimedStandby")(function* (
         session: Session,
         workspace: Workspace,
       ) {
-        if (capture === null) return false;
+        if (capture === null) return null;
         const lease = yield* capture.repo.leaseOf(session.worktreeId);
+        // Read under the claim's lease: the head this replan plans, unless the daemon names it.
+        const headBefore = yield* restoredCaptureOf(session.worktreeId);
         const outcome = yield* sealant
           .captureReplan(workspace)
           .pipe(Effect.timeoutOption(STANDBY_REPLAN_TIMEOUT), Effect.result);
@@ -7551,7 +7680,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* Effect.logWarning("session engine: standby replan · refused · cold launch").pipe(
             Effect.annotateLogs({ ...annotations, error: outcome.failure.message }),
           );
-          return false;
+          return null;
         }
         if (Option.isNone(outcome.success)) {
           yield* Effect.logWarning("session engine: standby replan · timed out · cold launch").pipe(
@@ -7560,7 +7689,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               timeoutMs: Duration.toMillis(STANDBY_REPLAN_TIMEOUT),
             }),
           );
-          return false;
+          return null;
         }
         const report = outcome.success.value;
         if (
@@ -7577,7 +7706,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               leaseEpoch: lease?.epoch ?? null,
             }),
           );
-          return false;
+          return null;
         }
         yield* Effect.logInfo(
           "session engine: capture mode · standby re-planned onto the worktree · observed",
@@ -7595,7 +7724,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             unchanged: report.unchanged,
           }),
         );
-        return true;
+        // The head the plan carried, as the daemon reports it; an SDK that does not say it leaves
+        // the head read under the claim.
+        return {
+          restoredFrom:
+            report.headN === undefined ? headBefore : report.headN >= 1 ? report.headN : null,
+        };
       });
 
       /**
@@ -8188,13 +8322,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             "session engine: capture mode · launch failed before any executor · lease released",
           ).pipe(Effect.annotateLogs({ sessionId, epoch: launchClaim.epoch }));
         });
+        // The capture this launch's setup commands were skipped for (`prepareExecutor`): said on
+        // the session line once the launch starts.
+        let setupSkippedFrom: number | null = null;
         const provisionCold = (key: string) => {
           // One launch per physical executor: a fresh key, or — for a create whose answer was
           // lost and that nothing is on record for yet — the same key asked again, which can
           // only ever make that one executor. Minted before the lease is claimed for it.
           launchId = key;
+          // Read after this launch's lease claim: the head the executor's plan lays down.
+          return restoredCaptureOf(session.worktreeId).pipe(
+            Effect.flatMap((restoredFrom) => provisionColdFrom(key, restoredFrom)),
+            Effect.tap((provisioned) =>
+              Effect.sync(() => {
+                setupSkippedFrom = provisioned.setupSkippedFrom;
+              }),
+            ),
+          );
+        };
+        const provisionColdFrom = (key: string, restoredFrom: number | null) => {
           return provisionWorkspace({
             project,
+            restoredFrom,
             sessionId,
             socketDir,
             shape,
@@ -8274,7 +8423,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* acceptExecutor(provisioned.workspace, standbyLaunch);
           yield* hotWorkspaces.remove(claimedEntry.id);
           const replanned = yield* replanClaimedStandby(session, provisioned.workspace);
-          if (!replanned) {
+          if (replanned === null) {
             const outcome = yield* stopWorkspaceQuietly(sessionId, {
               force: true,
               reason: "relaunch",
@@ -8326,12 +8475,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             provisioned = yield* provisionCold(fallbackKey);
           } else {
             // Claimed: what a cold launch runs right after its create runs now, and not before
-            // (e2e9 F-B: an exec on an unclaimed standby clears sealantd's unclaimed marker).
-            yield* prepareExecutor({
+            // (e2e9 F-B: an exec on an unclaimed standby clears sealantd's unclaimed marker). A
+            // replan onto a saved head runs no setup command (review 2026-09-28 (15) #1).
+            setupSkippedFrom = yield* prepareExecutor({
               sessionId,
               workspace: provisioned.workspace,
               workspaceImage: provisioned.workspaceImage,
               captured: true,
+              restoredFrom: replanned.restoredFrom,
               onFailure: (message) =>
                 sessions
                   .settle(sessionId, "failed", `launch failed: ${message}`)
@@ -8712,6 +8863,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // and the row reads "running" forever — unstoppable and undeletable.
         yield* sessions.reopen(sessionId, "running");
         yield* clearStaleStartSummary(sessionId);
+        if (setupSkippedFrom !== null) yield* noteSetupSkipped(sessionId, setupSkippedFrom);
         yield* forkSupervision(sessionId, sealantRunId);
 
         // The agent process ends on its own; the fold over every process decides the session.
@@ -9018,6 +9170,24 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ) {
           yield* sessions.setSummary(sessionId, null);
         }
+      });
+
+      /**
+       * Said once, as the launch starts (review 2026-09-28 (15) #1): this executor ran none of the
+       * custom image's setup commands because it laid the worktree down from saved capture `n`.
+       * Beside what the summary already says (`executor lost · …` stays); the next start clears
+       * it (`STALE_ON_START_PREFIXES`).
+       */
+      const noteSetupSkipped = Effect.fn("SessionEngine.noteSetupSkipped")(function* (
+        sessionId: SessionId,
+        n: number,
+      ) {
+        const current = yield* sessions.byId(sessionId);
+        const words = setupSkippedWords(n);
+        yield* sessions.setSummary(
+          sessionId,
+          current.summary === null ? words : `${current.summary} · ${words}`,
+        );
       });
 
       /** Start the next coding-agent run without replacing a workspace retained by live leases. */

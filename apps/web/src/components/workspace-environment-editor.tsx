@@ -191,8 +191,9 @@ export function WorkspaceEnvironmentEditor({
                 Setup commands
               </label>
               <p className="mt-1 text-[13px] leading-relaxed text-muted-foreground">
-                One command per line, run in the fresh workspace before the agent starts. A failing
-                command fails the launch.
+                One command per line, run on a worktree&apos;s first launch before the agent starts.
+                A resume restored from a save does not run them again. A failing command fails the
+                launch.
               </p>
               <textarea
                 id="workspace-setup-commands"
