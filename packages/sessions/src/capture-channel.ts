@@ -39,6 +39,8 @@ import {
   verifySectionRestorable,
   verifyWorktreeMeta,
   sectionHoldsRawNames,
+  sectionHoldsWideTimes,
+  worktreeMetaHoldsWideTimes,
   gitSectionHoldsRawNames,
   restoreNamespaceProblem,
   inodeMetadataProblem,
@@ -167,6 +169,12 @@ const refuseOtherLaunch = (input: PlanGetRequest, tokenLaunch: string) =>
  * - `ref_format`: `sections.git.ref_format` (sealantd review 9 #1, cross-repo decision 24), the
  *   repository's ref backend when it is not `files` (`reftable`). An executor that does not read
  *   it would restore a files repository under a reftable one's tables.
+ * - `wide_times` (sealantd review 10, 4c94bd4): a dir entry of the answered workspace or bulk
+ *   section, or an entry of its worktree metadata document, has an `mtime` outside signed 64-bit
+ *   nanoseconds — a time before 1677 or after 2262, a JSON integer outside i64. Mend keeps every
+ *   integer mtime as the exact `bigint` its source text says (never a double, never clamped) and
+ *   compares it exactly; an executor that does not read them would refuse the number or write a
+ *   false time.
  */
 export const MANIFEST_FEATURES = [
   "worktree_meta",
@@ -177,13 +185,15 @@ export const MANIFEST_FEATURES = [
   "git_trees",
   "object_format",
   "ref_format",
+  "wide_times",
 ] as const;
 export type ManifestFeature = (typeof MANIFEST_FEATURES)[number];
 
 /**
  * The features a plan's head holds that the executor did not say it reads. `stored` is the head
  * as registered, `planned` as this executor would restore it; the dir objects are walked for raw
- * names only when the executor does not read them.
+ * names, and they and the worktree metadata document for wide times, only when the executor does
+ * not read them.
  */
 export const missingManifestFeatures = (
   stored: CaptureManifest,
@@ -217,6 +227,14 @@ export const missingManifestFeatures = (
         (yield* sectionHoldsRawNames(planned.sections.workspace)) ||
         (bulk !== "pending" && (yield* sectionHoldsRawNames(bulk)));
       holds("raw_names", raw);
+    }
+    if (!reads.has("wide_times")) {
+      const bulk = planned.sections.bulk;
+      const wide =
+        (yield* sectionHoldsWideTimes(planned.sections.workspace)) ||
+        (bulk !== "pending" && (yield* sectionHoldsWideTimes(bulk))) ||
+        worktreeMetaHoldsWideTimes(yield* verifyWorktreeMeta(planned.sections.workspace));
+      holds("wide_times", wide);
     }
     return held;
   });

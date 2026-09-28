@@ -972,8 +972,13 @@ describe("plan.get hands a head only to an executor that reads what it means (ma
         mtime: 1,
         chunks: [sha256Hex(body)],
       };
+      // A wide time (sealantd review 10): 2286, in nanoseconds, outside signed 64 bits.
       const entries: ReadonlyArray<DirEntry> =
-        feature === "raw_names" ? [{ ...plain, name: escaped, raw_name: "636166e9" }] : [plain];
+        feature === "raw_names"
+          ? [{ ...plain, name: escaped, raw_name: "636166e9" }]
+          : feature === "wide_times"
+            ? [{ ...plain, mtime: 10_000_000_000_123_456_789n }]
+            : [plain];
       const hand = handWorkspace(wt, epoch, entries, [body]);
       const meta =
         feature === "worktree_meta"
@@ -1438,7 +1443,7 @@ const routedPlan = (api: SessionCaptureApi, body: unknown) =>
   );
 
 describe("plan.get, as sealantd round 4 asks it", () => {
-  it("every answer lists all seven manifest features — sealantd answers `store-fidelity` to any FINAL otherwise", async () => {
+  it("every answer lists every manifest feature — sealantd answers `store-fidelity` to any FINAL otherwise", async () => {
     const world = worldOf();
     const wt = WorktreeId.make("wt-plan-features");
     const answers = await Effect.runPromise(
@@ -1474,6 +1479,7 @@ describe("plan.get, as sealantd round 4 asks it", () => {
         "git_trees",
         "object_format",
         "ref_format",
+        "wide_times",
       ]);
     }
   });
