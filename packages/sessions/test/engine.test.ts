@@ -160,6 +160,8 @@ import {
 } from "@mend/sessions";
 import {
   AgentBridge,
+  BlobStore,
+  BlobStoreError,
   BlobStoreFsLive,
   type CaptureKind,
   captureKeys,
@@ -2517,6 +2519,7 @@ const withEngine = <A, E>(
     readonly socketHostLayer?: Layer.Layer<SessionSocketHost>;
     /** Mend's git verification of captures (capture mode); off — every capture unverified — unless a test says. */
     readonly verifier?: Layer.Layer<CaptureGitVerifier>;
+    readonly transformBlobs?: (base: Layer.Layer<BlobStore>) => Layer.Layer<BlobStore>;
   } = {},
 ): Promise<A> => {
   const tmp = options.fixture?.tmp ?? fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
@@ -2524,7 +2527,8 @@ const withEngine = <A, E>(
   options.prepareWorld?.(world, tmp);
   const storeConfigLayer = StoreConfig.layerFor(path.join(tmp, "store"));
   const storeLayer = Store.layer.pipe(Layer.provide(storeConfigLayer));
-  const blobsLayer = BlobStoreFsLive(path.join(tmp, "blobs"));
+  const baseBlobsLayer = BlobStoreFsLive(path.join(tmp, "blobs"));
+  const blobsLayer = options.transformBlobs?.(baseBlobsLayer) ?? baseBlobsLayer;
   const captureLayers =
     options.captured === undefined
       ? null
@@ -17314,3 +17318,178 @@ describe("SessionEngine status words after end-to-end run 9", () => {
     },
   );
 });
+
+// Review 2026-09-28 (16) #1: a resume onto a saved head whose tree is this platform's keeps the
+// user's patch in `node_modules` whether the manifest read at the install decision succeeds or
+// fails once (HTTP 503). A failed read is unavailable, never "no tree here".
+for (const fault of [false, true]) {
+  it(
+    `AUDIT R16 same-platform resume preserves dependency patch with manifest GET fault=${fault}`,
+    { timeout: 60000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const { root, seed } = npmProject();
+      const saved = path.join(root, "saved");
+      let executorRoot = "";
+      let failedReads = 0;
+      let failRead = false;
+      let manifestKey = "";
+      let installs = 0;
+      const restoredReads: string[] = [];
+      const logs: string[] = [];
+      try {
+        await withEngine(
+          (world, tmp) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* launchOnce(world, tmp);
+              const project = world.projects.get(session.projectId);
+              if (project === undefined) throw new Error("project missing");
+              world.projects.set(project.id, new Project({ ...project, installCommand: NPM_CI }));
+              yield* engine.launch(session.id, ["codex"]);
+              expect(installs).toBe(1);
+              fs.writeFileSync(path.join(executorRoot, DEP), PATCH);
+              const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+              const chain = memory.chains.get(session.worktreeId);
+              const n = (chain?.headN ?? 0) + 1;
+              const snapshot = snapshotDirectory(
+                executorRoot,
+                captureKeys(session.worktreeId, epoch),
+                { chunkSize: 64 },
+              );
+              const bulkRoot = path.join(root, "bulk");
+              fs.mkdirSync(path.join(bulkRoot, "tree"), { recursive: true });
+              fs.cpSync(
+                path.join(executorRoot, "node_modules"),
+                path.join(bulkRoot, "tree/node_modules"),
+                { recursive: true },
+              );
+              const bulk = snapshotDirectory(bulkRoot, captureKeys(session.worktreeId, epoch), {
+                chunkSize: 64,
+              });
+              const built = buildManifest({
+                worktreeId: session.worktreeId,
+                n,
+                parent: chain?.headCapture ?? null,
+                epoch,
+                seq: n * 10,
+                kind: "final",
+                git: { packs: [], refs: {}, head: "refs/heads/main", fsck: "verified" },
+                workspace: { root: snapshot.root, packs: snapshot.packs },
+                bulk: { root: bulk.root, packs: bulk.packs, platform: "linux-x86_64-gnu" },
+              });
+              yield* uploadObjects(
+                new Map([...snapshot.objects, ...bulk.objects, [built.key, built.bytes]]),
+              ).pipe(Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))));
+              const api = servedSocketApis.get(session.id)?.capture;
+              if (api === undefined) throw new Error("capture api missing");
+              const registered = yield* api.register({
+                worktree_id: session.worktreeId,
+                epoch,
+                n,
+                parent: chain?.headCapture ?? null,
+                capture_id: built.id,
+                manifest_key: built.key,
+                manifest: built.manifest,
+              });
+              expect(registered.head_n).toBe(n);
+              manifestKey = built.key;
+              fs.cpSync(executorRoot, saved, { recursive: true, preserveTimestamps: true });
+              yield* engine.stop(session.id);
+              yield* until(
+                () =>
+                  world.sessions.get(session.id)?.captureDrain === null &&
+                  world.sessions.get(session.id)?.status === "stopped",
+                "saved stop",
+              );
+              const resumed = yield* engine.resumeSession(session.id, "shell");
+              expect(created).toHaveLength(2);
+              expect(restoredReads.at(-1)).toBe(PATCH);
+              expect(resumed.status).toBe("running");
+              expect(failedReads).toBe(fault ? 1 : 0);
+              expect(fs.readFileSync(path.join(executorRoot, DEP), "utf8")).toBe(PATCH);
+              // The restored tree is observed on a read; an unavailable read runs no installer.
+              expect(installs).toBe(1);
+              const summary = world.sessions.get(session.id)?.summary ?? "";
+              if (fault) {
+                expect(summary).toContain(
+                  `dependency install skipped · capture ${n} manifest unavailable`,
+                );
+                expect(
+                  logs.some((line) =>
+                    line.includes("dependency install skipped · manifest unavailable"),
+                  ),
+                ).toBe(true);
+              } else {
+                expect(summary).not.toMatch(/dependency install skipped/);
+              }
+            }),
+          {
+            captured: memory,
+            logs,
+            transformBlobs: (base) =>
+              Layer.effect(
+                BlobStore,
+                Effect.gen(function* () {
+                  const inner = yield* BlobStore;
+                  return {
+                    ...inner,
+                    get: (key: string) =>
+                      Effect.suspend(() => {
+                        if (failRead && key === manifestKey) {
+                          failRead = false;
+                          failedReads += 1;
+                          return Effect.fail(
+                            new BlobStoreError({
+                              operation: "get",
+                              key,
+                              cause: new Error("503 ServiceUnavailable on one manifest read"),
+                            }),
+                          );
+                        }
+                        return inner.get(key);
+                      }),
+                  };
+                }),
+              ).pipe(Layer.provide(base)),
+            workspaceImage: { ...CUSTOM_BASE, setupCommands: [] },
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                stopAnswer: () => "stopped",
+                beforeCreate: () =>
+                  Effect.sync(() => {
+                    executorRoot = path.join(root, `executor-${created.length}`);
+                    fs.cpSync(
+                      created.length === 1 ? seed : (process.env.REVIEW16_RESTORED_ROOT ?? saved),
+                      executorRoot,
+                      { recursive: true, preserveTimestamps: true },
+                    );
+                    restoredReads.push(fs.readFileSync(path.join(executorRoot, DEP), "utf8"));
+                  }),
+                exec: (argv) => {
+                  if ((argv[2] ?? "").startsWith("uname -s; uname -m;")) {
+                    if (created.length === 2) failRead = fault;
+                    return {
+                      exitCode: 0,
+                      stdout: "Linux\nx86_64\nldd (GNU libc) 2.39\n",
+                      stderr: "",
+                    };
+                  }
+                  if (argv[0] !== "sh" || argv[1] !== "-lc" || argv[2] !== NPM_CI) return undefined;
+                  installs += 1;
+                  const run = spawnSync("sh", ["-lc", NPM_CI], {
+                    cwd: executorRoot,
+                    encoding: "utf8",
+                  });
+                  return { exitCode: run.status ?? 1, stdout: run.stdout, stderr: run.stderr };
+                },
+              },
+            }),
+          },
+        );
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+}
