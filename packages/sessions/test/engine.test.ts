@@ -1021,6 +1021,17 @@ interface World {
 
 /** The newer of two observations of one kind: `next` when it came after `prior`. */
 /** The repository's rule (0087): kept unless the executor made it before the kept one. */
+/** The overdue step an observation reports, as the session's columns hold it (0093). */
+const overdueFields = (observation: CaptureObservation) =>
+  observation.overdue === undefined
+    ? {}
+    : {
+        captureOverdueStep: observation.overdue?.step ?? null,
+        captureOverdueSince: observation.overdue?.since ?? null,
+        captureOverdueRunningMs: observation.overdue?.runningMs ?? null,
+        captureOverdueBoundMs: observation.overdue?.boundMs ?? null,
+      };
+
 const newerObservation = <T extends { readonly position?: CapturePosition | null }>(
   next: T | undefined,
   prior: T | null,
@@ -1672,6 +1683,7 @@ const sessionsLayer = (world: World) => {
                 world.sessions.get(id)?.captureFailingSince ?? observation.failing.since,
               captureFailingError: observation.failing.error,
             }),
+      ...overdueFields(observation),
     });
   const addEvidence = (workspaceId: string, answer: ExecutorCaptureAnswer) => {
     const kept = world.executorEvidence.get(workspaceId);
@@ -1873,6 +1885,7 @@ const sessionsLayer = (world: World) => {
                     world.sessions.get(id)?.captureFailingSince ?? observation.failing.since,
                   captureFailingError: observation.failing.error,
                 }),
+          ...overdueFields(observation),
         }),
       ),
     beginCaptureDrain: (id, reason, at) =>
@@ -1989,6 +2002,10 @@ const sessionsLayer = (world: World) => {
           captureIncompleteDetail: null,
           captureFailingSince: null,
           captureFailingError: null,
+          captureOverdueStep: null,
+          captureOverdueSince: null,
+          captureOverdueRunningMs: null,
+          captureOverdueBoundMs: null,
           ...(discarded === undefined
             ? {}
             : { captureDiscardedAt: discarded.at, captureDiscardedBy: discarded.by }),
@@ -11553,6 +11570,70 @@ describe("SessionEngine capture failures shown while they happen (e2e run 3, 202
     },
   );
 
+  // e2e8 F1: a capture deadlocked on a git pipe for 17 minutes while every status read `running ·
+  // 0 pending`. sealantd now reports a step past its bound (`overdue`); Mend says so, and a
+  // reading with one never reads saved.
+  it(
+    "a running session whose capture step is past its bound reads `capture step overdue · <step> · …` from a status read, and not once it ends",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      let overdue = true;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.reapCaptureLeases();
+            yield* until(
+              () => world.sessions.get(session.id)?.captureOverdueStep != null,
+              "the overdue step on the session",
+            );
+            const shown = world.sessions.get(session.id);
+            expect(shown === undefined ? null : captureStatusLine(shown)).toBe(
+              "capture step overdue · small snap › git cat-file --batch-check · running 17 min · bound 2 min",
+            );
+            expect(shown?.captureOverdueSince?.toISOString()).toBe("2026-09-28T06:54:14.000Z");
+            // The step ended: nothing to say.
+            overdue = false;
+            yield* engine.refreshCaptureStatus(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureOverdueStep === null,
+              "the overdue step cleared",
+            );
+            const cleared = world.sessions.get(session.id);
+            expect(cleared === undefined ? "gone" : captureStatusLine(cleared)).toBeNull();
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            statusInterval: Duration.minutes(1),
+            statusMinInterval: Duration.millis(0),
+          },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              captureStatus: () =>
+                Effect.sync(() =>
+                  overdue
+                    ? {
+                        ...flushReport(0, 1),
+                        overdue: {
+                          step: "small snap › git cat-file --batch-check",
+                          startedUnixMs: Date.parse("2026-09-28T06:54:14.000Z"),
+                          runningMs: 17 * 60_000 + 5_000,
+                          boundMs: 120_000,
+                        },
+                      }
+                    : flushReport(0, 2),
+                ),
+            },
+          }),
+        },
+      );
+    },
+  );
+
   it(
     "after the owner's discard the session reads `stopped · unsaved work discarded by <name> at …`",
     { timeout: 20_000 },
@@ -14116,6 +14197,91 @@ describe("SessionEngine status words from the latest observation (e2e run 6 #7)"
               loseCreateAnswer: () => true,
               findByKey: () => ({ kind: "none" }),
               fenceCreate: () => ({ kind: "cancelled" }),
+            },
+          ),
+        },
+      );
+    },
+  );
+
+  // e2e8 F7: after a failed standby claim, discard and resume, the session read `running · launch
+  // failed · the harness never started` — the words of the launch before, not of this one.
+  it(
+    "a launch that starts clears what an earlier launch that never started left in the summary",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            const current = world.sessions.get(session.id);
+            if (current === undefined) throw new Error("no session");
+            world.sessions.set(
+              session.id,
+              new Session({
+                ...current,
+                status: "failed",
+                settledAt: new Date(),
+                summary: "launch failed · the harness never started",
+              }),
+            );
+            yield* engine.launch(session.id, ["codex"]);
+            const after = world.sessions.get(session.id);
+            expect(after?.status).toBe("running");
+            expect(after?.summary).toBeNull();
+          }),
+        { sealantLayer: sealantLaunchLayer(created) },
+      );
+    },
+  );
+
+  // e2e8 (i), L: Mend SIGKILLed 0.12 s after asking the create. Its executor started, exited, and
+  // Core's recovery destroyed it; Mend came back, found it by the key, drained it and released the
+  // worktree — and the session read `starting`, summary null, with nothing running, until a resume.
+  it(
+    "a lost create whose executor the reaper finds and drains to its end settles `stopped · launch interrupted · …` — never `starting` with no executor",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            world.executorCreates.set(session.id, `launch:${session.id}:${Date.now()}:k`);
+            expect(world.sessions.get(session.id)?.status).toBe("starting");
+            yield* engine.reapCaptureLeases();
+            yield* until(
+              () => world.sessions.get(session.id)?.status === "stopped",
+              "the interrupted launch settled",
+            );
+            const settled = world.sessions.get(session.id);
+            expect(settled?.sealantWorkspaceId).toBe("workspace-lost");
+            expect(settled?.summary).toBe(
+              "launch interrupted · the create's answer was lost · its executor ended",
+            );
+            expect(world.executorCreates.has(session.id)).toBe(false);
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              loseCreateAnswer: () => true,
+              findByKey: () => ({ kind: "found", workspaceId: "workspace-lost" }),
+              // Core's recovery already destroyed it: the platform says it is gone.
+              status: () => "stopped",
             },
           ),
         },

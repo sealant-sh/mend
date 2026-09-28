@@ -245,7 +245,9 @@ function SessionPage() {
             {captureLine !== null && (
               <StatusDot
                 tone={
-                  session.captureNotSavedAt === null && session.captureFailingSince === null
+                  session.captureNotSavedAt === null &&
+                  session.captureFailingSince === null &&
+                  (session.captureOverdueStep ?? null) === null
                     ? "hollow"
                     : "amber"
                 }

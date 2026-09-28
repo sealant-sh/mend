@@ -794,7 +794,8 @@ Mend-side details the decision record left open, decided in this ADR:
       whose raw bytes agree with its key.
     - **`sealing`** is a reason an incomplete final flush can give: everything registered but the
       sealing capture (the flush returned at its deadline first). A drain keeps asking; the status
-      line says `final seal not registered`.
+      line says `final seal not confirmed` (it said `not registered` until e2e8, which saw it on a
+      seal the store had recorded and withheld: see decision 36).
 32. (2026-09-28) One launch per executor, keys never reused, a seal only over what restores (review
     2026-09-28 (3); cross-repo decisions 5, 6 and 9).
     - **The launch is the executor.** The session id and the epoch did not name one executor: a
@@ -953,3 +954,49 @@ Mend-side details the decision record left open, decided in this ADR:
       and writes the same digits; `plan.get` lists the feature and refuses such a head to an
       executor that does not. `.git/worktrees/<name>/…` in the workspace class and the extra git
       pack of nested-repository objects are entries and packs like any other.
+36. (2026-09-28) What the eighth end-to-end run found on Mend's side (e2e8, the Docker no-loss run
+    on the round-8 heads; findings F2, F4, F7, F8, the seal window on Garage and the status lines).
+    - **One read per object per verification pass (F2).** On a bucket that does not refuse
+      overwrites every cached proof is void while an upload URL could replace the bytes, and the
+      seal's link checks read each class member through a chunk source that fetched every pack of
+      its class whole: one sealing register of the Mend repository read ~40 GB for 0.78 GB of packs
+      and took 4 m 35 s. A register (and a seal's read-back) now runs as one pass
+      (`withCaptureReadPass`): a proof the pass took itself stands for the rest of it, so each pack
+      is read whole at most once, dir packs and pack indexes once, and a member's digest reads only
+      its chunks' extents, each once. Across passes the voiding stands as decision 19 set it.
+    - **Registers are single-flight and answer within 40 s (F2).** A register for the same worktree,
+      launch, epoch, n and capture joins the one running, which runs detached from a caller that
+      gave up (sealantd times a register out at 60 s and sends it again); seal read-backs likewise.
+      Past `REGISTER_ANSWER_BUDGET_MS` the capture registers without the seal, the answer is
+      `seal: withheld` (`verifying`), the checks go on, and `recordSeal` records the seal once they
+      pass: on the chain's head under that epoch, while the live lease names the same holder and
+      launch, with the lease and chain rows held as a register holds them. The executor's re-ask
+      reads the outcome; a process that restarted checks again.
+    - **PUT URLs live as long as their call needs (the seal window).** Every URL withholds its
+      epoch's seal until it expires plus the clock margin; at a flat 15 minutes every Stop on Garage
+      waited 20. A call's URLs and the authority recorded for them now live 330 s plus the call's
+      declared bytes at 1 MiB/s, capped at 15 minutes; a key of unknown size gets the cap. 330 s is
+      sealantd's 5-minute reuse of a URL it holds (`PUT_URL_REUSE`) plus 30 s. The clock margin
+      stays 5 minutes: Mend signs, the bucket judges expiry by its own clock, and the two share no
+      clock source Mend can name. A typical Stop (a final capture of a few MB) is withheld for about
+      10.5 minutes; a Stop right after a large batch still waits out that batch's URLs (up to 20
+      minutes), and a restarted Mend still withholds every seal for 15 minutes (a URL the previous
+      process minted may live that long).
+    - **A capture step past its bound (F1, sealantd's `overdue`).** Mend reads
+      `CaptureStatusReport.overdue` from any status or flush answer, records it on the session
+      (migration 0093) and says `capture step overdue · <step> · running 17 min · bound 2 min`; such
+      an answer never reads saved, caught up or idle. Core's contract and SDK 0.37.2 drop the field
+      today (PLATFORM-FEEDBACK.md).
+    - **SHA-256 projects (F4).** Capture 0 and a standby's base plan name the store repository's
+      object format when it is not `sha1`.
+    - **Status lines say what was observed.** `sealing` reads `final seal not confirmed` (it read
+      `not registered` while the store held the seal, withheld); a reaper-found lost create whose
+      executor the drain ended settles `stopped · launch interrupted · …`; a launch that starts
+      clears a `launch …` summary an earlier launch left (F7).
+    - **The session channel never ends Mend (F8).** A request whose token lookup fails, or whose
+      handler throws, is answered 503; before, a statement timeout was an unhandled rejection and
+      Node ended the API.
+    - Open: F7 (a claimed standby whose replan failed keeps its pre-claim staging pending under its
+      placeholder worktree, which never ships, so the drain stalls and the launch fails after ~12
+      minutes until the owner discards) needs sealantd and Core to agree that a placeholder's
+      staging holds nothing of the session.

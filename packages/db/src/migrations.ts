@@ -2653,6 +2653,23 @@ const captureSealScopesMigration = Effect.gen(function* () {
   yield* sql`CREATE INDEX capture_seals_scopes_idx ON capture_seals USING gin (scopes jsonb_path_ops)`;
 });
 
+/**
+ * 0093: a capture step still running past its bound (sealantd `CaptureStatusReport.overdue`,
+ * e2e8): the innermost such step the executor last reported — `capture_overdue_step`, when it
+ * started, how long it had run and the bound it passed. Observed on every status read and flush;
+ * cleared when a reading reports none and when the executor is gone. In e2e8 a capture deadlocked
+ * on a git pipe for 17 minutes while every status read `running · 0 pending`.
+ */
+const captureOverdueMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE agent_sessions
+      ADD COLUMN capture_overdue_step text,
+      ADD COLUMN capture_overdue_since timestamptz,
+      ADD COLUMN capture_overdue_running_ms bigint,
+      ADD COLUMN capture_overdue_bound_ms bigint`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2746,4 +2763,5 @@ export const migrations = {
   "0090_executor_unsaved_answers": executorUnsavedAnswersMigration,
   "0091_capture_put_authority_lock": capturePutAuthorityLockMigration,
   "0092_capture_seal_scopes": captureSealScopesMigration,
+  "0093_capture_overdue": captureOverdueMigration,
 };

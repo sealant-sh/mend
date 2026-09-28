@@ -238,6 +238,13 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
           ["rev-parse", "--verify", `${checkpointSha}^{tree}`],
           project.storePath,
         );
+        // The project's object format (e2e8 F4): capture 0 of a SHA-256 project named 64-digit
+        // ids under no `object_format`, and sealantd restored them into a SHA-1 repository. Named
+        // when it is not `sha1`, as sealantd names it (the `object_format` manifest feature).
+        const objectFormat = (yield* git(
+          ["rev-parse", "--show-object-format"],
+          project.storePath,
+        )).trim();
         if (legacy !== null) {
           yield* Effect.logInfo(
             "capture mode: legacy worktree backfilled · capture 0 is the directory's current files",
@@ -286,6 +293,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
                 },
                 head: `refs/heads/${worktree.branch}`,
                 fsck: "verified",
+                ...(objectFormat === "sha1" ? {} : { object_format: objectFormat }),
               },
               workspace: { root: workspace.root, packs: [] },
               bulk: "pending",
@@ -530,6 +538,11 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
         const base = baseSha ?? (yield* store.resolveBase(project.storePath, null, null)).baseSha;
         const basePack = yield* uploadBasePack(projectId, project.storePath, base);
         const baseTree = yield* git(["rev-parse", "--verify", `${base}^{tree}`], project.storePath);
+        // As capture 0 names it (e2e8 F4).
+        const objectFormat = (yield* git(
+          ["rev-parse", "--show-object-format"],
+          project.storePath,
+        )).trim();
         const keys = captureKeys(alias, epoch);
         const workspace = initialWorkspaceTree(alias, epoch);
         yield* Effect.forEach(
@@ -566,6 +579,7 @@ export const SessionRepositoryCapturedLive: Layer.Layer<
               },
               head: `refs/heads/${project.defaultBranch}`,
               fsck: "verified",
+              ...(objectFormat === "sha1" ? {} : { object_format: objectFormat }),
             },
             workspace: { root: workspace.root, packs: [] },
             bulk: cache === null ? "pending" : bulkSectionOfCache(cache),

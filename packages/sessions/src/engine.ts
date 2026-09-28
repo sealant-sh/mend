@@ -470,9 +470,17 @@ const OPENING_PROMPT_NOT_DELIVERED = "opening prompt not delivered";
 const PLANNED_LAUNCH_ATTEMPTS = 3;
 /** A launch whose executor was created but never reached its harness, with no words of its own. */
 const LAUNCH_NEVER_RAN_SUMMARY = "launch failed · the harness never started";
+/** Every summary a launch that did not start leaves begins with this. */
+const LAUNCH_SUMMARY_PREFIX = "launch ";
 
 /** A create Core fenced before it made anything, found with no launch asking again. */
 const LAUNCH_CANCELLED_SUMMARY = "launch cancelled · nothing was created";
+/**
+ * A launch whose create answer was lost, whose executor Mend found by its key and drained, and
+ * which then ended (terminated, or found gone): nothing runs and nothing launches (e2e8 (i)).
+ */
+const LAUNCH_INTERRUPTED_SUMMARY =
+  "launch interrupted · the create's answer was lost · its executor ended";
 /** Every "executor lost" summary starts with this; a replacement's first word ends it. */
 const EXECUTOR_LOST_PREFIX = "executor lost";
 /** How many looks an agent's end gets at an executor that stops answering before it is judged. */
@@ -1941,6 +1949,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }
           : null;
         const incompleteReason = kind === "final" ? captureIncompleteReasonOf(reading) : undefined;
+        const overdue = reading.overdue ?? null;
         const before = yield* sessions
           .byId(session.id)
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
@@ -1984,6 +1993,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             registeredAt: head?.head?.createdAt ?? null,
             observedAt,
             failing,
+            // A capture step past its bound (e2e8): recorded as observed, cleared once a reading
+            // reports none — never idle, never saved while it lasts (`captureSaved`).
+            overdue:
+              overdue === null
+                ? null
+                : {
+                    step: overdue.step,
+                    since: overdue.startedAt,
+                    runningMs: overdue.runningMs,
+                    boundMs: overdue.boundMs,
+                  },
             ...(incompleteReason === undefined
               ? {}
               : {
@@ -2003,6 +2023,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         });
         // Published with its fence cleared in the same write: nothing after this reopens it.
         fence.published = true;
+        if (overdue !== null && before !== null && before.captureOverdueStep !== overdue.step) {
+          yield* evidenceLog(
+            Effect.logWarning("session engine: capture step overdue · observed").pipe(
+              Effect.annotateLogs({
+                sessionId: session.id,
+                worktreeId: session.worktreeId,
+                workspaceId,
+                step: overdue.step,
+                startedAt: overdue.startedAt?.toISOString() ?? null,
+                runningMs: overdue.runningMs,
+                boundMs: overdue.boundMs,
+                via: kind,
+              }),
+            ),
+          );
+        }
         if (failing !== null && before !== null && before.captureFailingSince === null) {
           yield* evidenceLog(
             Effect.logWarning("session engine: capture failing · observed").pipe(
@@ -3739,6 +3775,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (options?.drain !== false) {
             yield* Effect.forkIn(
               stopWorkspaceIfUnleased(sessionId, { force: true, reason: "stop" }).pipe(
+                Effect.flatMap((outcome) =>
+                  settleInterruptedLaunch(sessionId, workspaceId, outcome),
+                ),
                 asSealantUser(session.ownerUserId),
               ),
               scope,
@@ -3750,6 +3789,36 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // No row: nothing of that session can register any more (its row is its identity).
           Effect.catchTag("SessionNotFoundError", () => Effect.succeed("gone" as const)),
         );
+
+      /**
+       * Found by the reaper, with no launch asking again: a session left `starting` whose lost
+       * create's executor was drained and then ended has nothing running and nothing launching —
+       * it reads `stopped · launch interrupted · …`, never `starting` with no executor (e2e8 (i),
+       * the case e2e run 6 fixed for a create that made nothing). Only once the drain ended the
+       * executor (`terminated`, `gone`); one it kept reads its drain's own words.
+       */
+      const settleInterruptedLaunch = (
+        sessionId: SessionId,
+        workspaceId: SealantWorkspaceId,
+        outcome: DrainOutcome | "none",
+      ) =>
+        Effect.gen(function* () {
+          if (outcome !== "terminated" && outcome !== "gone") return;
+          const session = yield* sessions.byId(sessionId);
+          if (
+            session.settledAt !== null ||
+            session.status !== "starting" ||
+            session.sealantWorkspaceId !== workspaceId ||
+            creatingExecutors.has(sessionId) ||
+            (yield* processes.listForSession(sessionId)).some(isLiveProcess)
+          ) {
+            return;
+          }
+          yield* sessions.settle(sessionId, "stopped", LAUNCH_INTERRUPTED_SUMMARY);
+          yield* Effect.logInfo(
+            "session engine: capture mode · executor create · its answer was lost · its executor ended · stopped",
+          ).pipe(Effect.annotateLogs({ sessionId, workspaceId, outcome }));
+        }).pipe(Effect.catchTag("SessionNotFoundError", () => Effect.void));
 
       /** Every create whose answer is not on its row and that no launch here is asking. */
       const resolveExecutorCreates = Effect.fn("SessionEngine.resolveExecutorCreates")(
@@ -8436,6 +8505,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // settled_at, or the first-settle-wins guard ignores this run's exit
         // and the row reads "running" forever — unstoppable and undeletable.
         yield* sessions.reopen(sessionId, "running");
+        // What an earlier launch that never started left (`launch failed · …`, `launch cancelled ·
+        // …`, `launch interrupted · …`) says nothing of this one, which started: a session read
+        // `running · launch failed · the harness never started` after a resume (e2e8 F7).
+        const reopened = yield* sessions.byId(sessionId);
+        if (reopened.summary !== null && reopened.summary.startsWith(LAUNCH_SUMMARY_PREFIX)) {
+          yield* sessions.setSummary(sessionId, null);
+        }
         yield* forkSupervision(sessionId, sealantRunId);
 
         // The agent process ends on its own; the fold over every process decides the session.

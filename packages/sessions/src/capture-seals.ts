@@ -4,6 +4,8 @@ import { BlobStore, keysOfSections, storedCaptureProblem } from "@mend/store";
 import { Effect, Layer } from "effect";
 import * as Context from "effect/Context";
 
+import { makeSingleFlight } from "./single-flight.ts";
+
 /**
  * The store's sealed record of a completed final flush (cross-repo decision 1, 2026-09-28): when
  * sealantd's final flush completes — every writer stopped, both classes snapshotted and shipped —
@@ -86,6 +88,9 @@ const epochsWords = (seal: SealedCompletion, scopes: ReadonlyArray<CaptureScopeR
   return words.length === 1 ? `epoch ${words[0]}` : `epochs ${words.join(", ")}`;
 };
 
+/** Seal read-backs in flight (`sealStandingOf`), by store, seal and the authority it waited out. */
+const readBacks = makeSingleFlight<SealStanding, never>();
+
 /**
  * Whether `seal` stands. On a bucket that refuses to replace an object (`BlobStore.replaceableUntil`
  * answers 0: S3, R2, MinIO, the directory store) its bytes stay those bytes, and the seal stands as
@@ -150,45 +155,57 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
   const reverified = seal.reverifiedAt?.getTime() ?? null;
   if (reverified !== null && reverified >= until)
     return { state: "standing" } satisfies SealStanding;
-  const problem = yield* storedCaptureProblem(row.manifestKey).pipe(
-    Effect.provideService(BlobStore, blobs),
-    Effect.result,
+  // One read-back per seal and authority at a time (e2e8 F2): the engine's attestations and the
+  // executor's re-asks ask together, and a caller that gives up leaves it running for the next.
+  const readBack = Effect.gen(function* () {
+    const problem = yield* storedCaptureProblem(row.manifestKey).pipe(
+      Effect.provideService(BlobStore, blobs),
+      Effect.result,
+    );
+    if (problem._tag === "Failure") {
+      yield* Effect.logWarning(
+        "capture seals: sealed, but its objects could not be read back · withheld",
+      ).pipe(Effect.annotateLogs({ ...annotations, error: problem.failure.message }));
+      return {
+        state: "withheld",
+        code: "verifying",
+        reason: `its objects could not be read back: ${problem.failure.message}`,
+      } satisfies SealStanding;
+    }
+    if (problem.success !== null) {
+      yield* repo.voidSeal(seal.worktreeId, seal.epoch, seal.captureId, problem.success);
+      yield* Effect.logError(
+        "capture seals: an object the seal names read back as other bytes · the seal is void",
+      ).pipe(Effect.annotateLogs({ ...annotations, problem: problem.success }));
+      return { state: "void", code: "void", reason: problem.success } satisfies SealStanding;
+    }
+    // Marked only if no URL of the epoch was handed out since the read began (`at`).
+    const marked = yield* repo.markSealReverified(
+      seal.worktreeId,
+      seal.epoch,
+      seal.captureId,
+      new Date(at),
+    );
+    if (!marked) {
+      yield* Effect.logWarning(
+        "capture seals: an upload URL of its epoch was handed out while its objects were read back · withheld",
+      ).pipe(Effect.annotateLogs(annotations));
+      return {
+        state: "withheld",
+        code: "write-authority",
+        reason: `an upload URL of ${epochsWords(seal, scopes)} was handed out while its objects were read back`,
+      } satisfies SealStanding;
+    }
+    return { state: "standing" } satisfies SealStanding;
+  });
+  return yield* readBacks.run(
+    [blobs.identity, seal.worktreeId, seal.epoch, seal.captureId, until].join("\u0000"),
+    null,
+    readBack.pipe(
+      Effect.provideService(CaptureStoreRepo, repo),
+      Effect.provideService(BlobStore, blobs),
+    ),
   );
-  if (problem._tag === "Failure") {
-    yield* Effect.logWarning(
-      "capture seals: sealed, but its objects could not be read back · withheld",
-    ).pipe(Effect.annotateLogs({ ...annotations, error: problem.failure.message }));
-    return {
-      state: "withheld",
-      code: "verifying",
-      reason: `its objects could not be read back: ${problem.failure.message}`,
-    } satisfies SealStanding;
-  }
-  if (problem.success !== null) {
-    yield* repo.voidSeal(seal.worktreeId, seal.epoch, seal.captureId, problem.success);
-    yield* Effect.logError(
-      "capture seals: an object the seal names read back as other bytes · the seal is void",
-    ).pipe(Effect.annotateLogs({ ...annotations, problem: problem.success }));
-    return { state: "void", code: "void", reason: problem.success } satisfies SealStanding;
-  }
-  // Marked only if no URL of the epoch was handed out since the read began (`at`).
-  const marked = yield* repo.markSealReverified(
-    seal.worktreeId,
-    seal.epoch,
-    seal.captureId,
-    new Date(at),
-  );
-  if (!marked) {
-    yield* Effect.logWarning(
-      "capture seals: an upload URL of its epoch was handed out while its objects were read back · withheld",
-    ).pipe(Effect.annotateLogs(annotations));
-    return {
-      state: "withheld",
-      code: "write-authority",
-      reason: `an upload URL of ${epochsWords(seal, scopes)} was handed out while its objects were read back`,
-    } satisfies SealStanding;
-  }
-  return { state: "standing" } satisfies SealStanding;
 });
 
 /**

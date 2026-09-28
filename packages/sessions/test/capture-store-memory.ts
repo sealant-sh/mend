@@ -36,6 +36,8 @@ export interface MemoryCaptureStore {
   readonly claims: Map<string, Map<string, number>>;
   readonly packs: Map<string, PackRow>;
   readonly summaries: Map<string, CaptureSummaryRow>;
+  /** `recordSeal` never answers while set: a process that stops before its late seal lands. */
+  readonly holdRecordSeal: { held: boolean };
 }
 
 /** A lease row; `launchId` absent reads null (a lease bound to no launch). */
@@ -74,6 +76,7 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
   const seals = new Map<string, SealedCompletion>();
   /** `capture_put_authority`: `<worktree>:<epoch>` → the latest upload URL expiry. */
   const putAuthority = new Map<string, Date>();
+  const holdRecordSeal = { held: false };
   /** A live deletion claim on `key`: some pass may still delete its bytes. */
   const claimed = (key: string) =>
     [...(claims.get(key)?.values() ?? [])].some((expiresAt) => expiresAt > clock.now());
@@ -299,6 +302,55 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
             )
             .toSorted((a, b) => b.epoch - a.epoch)[0] ?? null,
       ),
+    recordSeal: (input) =>
+      Effect.suspend(() => (holdRecordSeal.held ? Effect.never : Effect.void)).pipe(
+        Effect.andThen(
+          Effect.sync(() => {
+            const chain = chains.get(input.worktreeId);
+            const lease = leases.get(input.worktreeId);
+            const capture = captures.get(input.captureId);
+            if (
+              chain === undefined ||
+              capture === undefined ||
+              capture.worktreeId !== input.worktreeId ||
+              capture.epoch !== input.epoch ||
+              capture.n !== input.n ||
+              chain.headCapture !== input.captureId ||
+              chain.headN !== input.n ||
+              chain.headEpoch !== input.epoch ||
+              lease === undefined ||
+              lease.epoch !== input.epoch ||
+              !live(lease) ||
+              lease.executorId !== input.seal.holder ||
+              ((lease.launchId ?? null) !== null && lease.launchId !== input.seal.executorId)
+            ) {
+              return false;
+            }
+            const sealKey = `${input.worktreeId}:${input.epoch}`;
+            const sealed = seals.get(sealKey);
+            if (sealed !== undefined && sealed.n >= input.n) return false;
+            seals.set(sealKey, {
+              worktreeId: input.worktreeId,
+              epoch: input.epoch,
+              executorId: input.seal.executorId,
+              captureId: input.captureId,
+              n: input.n,
+              sealedAt: new Date(clock.now()),
+              bootId: input.seal.bootId ?? null,
+              bootGeneration: input.seal.bootGeneration ?? null,
+              observation: input.seal.observation ?? null,
+              scopes: captureScopesOf({ worktreeId: input.worktreeId, epoch: input.epoch }, [
+                input.manifestKey,
+                ...input.names,
+                ...(input.seal.scopes ?? []).map(
+                  (scope) => `captures/${scope.worktreeId}/${scope.epoch}/`,
+                ),
+              ]),
+            });
+            return true;
+          }),
+        ),
+      ),
     recordPutAuthority: (worktreeId, epoch, expiresAt, checkedSeals, holder) =>
       Effect.sync(() => {
         // The lease as it is now (cross-repo decision 31): live, under `epoch`, the holder's.
@@ -507,6 +559,7 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
 
   return {
     layer,
+    holdRecordSeal,
     clock,
     leases,
     chains,

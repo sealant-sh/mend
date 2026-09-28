@@ -72,6 +72,23 @@ describe("captureSaved", () => {
     expect(captureSaved(reading({ complete: null }))).toBe(false);
     expect(captureSaved(reading({ complete: false }))).toBe(false);
   });
+
+  it("never reads saved, caught up or clean while a capture step is past its bound (e2e8)", () => {
+    const overdue = {
+      step: "small snap › git cat-file --batch-check",
+      startedAt: new Date("2026-09-28T06:54:14Z"),
+      runningMs: 17 * 60_000,
+      boundMs: 120_000,
+    };
+    expect(captureSaved(reading({ overdue }))).toBe(false);
+    expect(captureCaughtUp(reading({ unreadable: 0, complete: null, overdue }))).toBe(false);
+    expect(captureBehindReason(reading({ unreadable: 0, complete: null, overdue }))).toBe(
+      "capture step overdue",
+    );
+    expect(captureUnsavedWordsOf(reading({ overdue }))).toBe(
+      "capture step overdue · small snap › git cat-file --batch-check · running 17 min · bound 2 min",
+    );
+  });
 });
 
 describe("captureHarvestReady", () => {
@@ -286,7 +303,9 @@ describe("captureDrainStep while the completed flush is being sealed", () => {
       evidenceSaved: true,
     });
     expect(step.kind).not.toBe("not-saved");
-    expect(captureIncompleteWords("sealing")).toBe("final seal not registered");
+    // e2e8: the sealing capture registered and its seal recorded, withheld for 20 minutes on
+    // Garage while the line said `not registered`.
+    expect(captureIncompleteWords("sealing")).toBe("final seal not confirmed");
   });
 });
 
@@ -580,6 +599,33 @@ describe("captureStatusLine", () => {
         captureFailingSince: new Date("2026-09-27T16:29:51Z"),
       }),
     ).toBe("saving");
+  });
+
+  it("says a capture step is past its bound (e2e8), in a drain too", () => {
+    const overdue = {
+      captureOverdueStep: "small snap › git cat-file --batch-check",
+      captureOverdueSince: "2026-09-28T06:54:14.000Z",
+      captureOverdueRunningMs: 17 * 60_000 + 5_000,
+      captureOverdueBoundMs: 120_000,
+    };
+    expect(captureStatusLine({ ...facts, ...overdue })).toBe(
+      "capture step overdue · small snap › git cat-file --batch-check · running 17 min · bound 2 min",
+    );
+    expect(captureStatusLine({ ...facts, ...overdue, captureDrain: "stop" })).toBe(
+      "saving · capture step overdue · small snap › git cat-file --batch-check · running 17 min · bound 2 min",
+    );
+    expect(
+      captureStatusLine({
+        ...facts,
+        ...overdue,
+        capturePending: 0,
+        captureDrain: "stop",
+        captureNotSavedAt: new Date("2026-09-28T07:11:03Z"),
+        captureIncompleteReason: "in-progress",
+      }),
+    ).toBe(
+      "not saved · capture step overdue · small snap › git cat-file --batch-check · running 17 min · bound 2 min · 0 pending · workspace kept",
+    );
   });
 
   it("says who discarded unsaved work, and when", () => {

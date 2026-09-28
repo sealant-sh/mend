@@ -97,6 +97,16 @@ export interface CaptureObservation {
    * when and sealantd's last error; null once they succeed again. Absent leaves it as it was.
    */
   readonly failing?: { readonly since: Date; readonly error: string | null } | null;
+  /**
+   * A capture step the executor reported still running past its bound, from any reading; null
+   * once a reading reports none. Absent leaves it as it was.
+   */
+  readonly overdue?: {
+    readonly step: string;
+    readonly since: Date | null;
+    readonly runningMs: number;
+    readonly boundMs: number | null;
+  } | null;
 }
 
 /**
@@ -566,6 +576,24 @@ export class SessionsRepo extends Context.Service<
 
 const decodeWorkspaceImage = Schema.decodeUnknownSync(WorkspaceImage);
 const decodeSessionDotfiles = Schema.decodeUnknownSync(SessionDotfiles);
+
+/** The overdue step an observation reports, as the session's columns hold it (0093). */
+const overdueColumns = (observation: CaptureObservation) =>
+  observation.overdue === undefined
+    ? {}
+    : observation.overdue === null
+      ? {
+          captureOverdueStep: null,
+          captureOverdueSince: null,
+          captureOverdueRunningMs: null,
+          captureOverdueBoundMs: null,
+        }
+      : {
+          captureOverdueStep: observation.overdue.step,
+          captureOverdueSince: observation.overdue.since,
+          captureOverdueRunningMs: observation.overdue.runningMs,
+          captureOverdueBoundMs: observation.overdue.boundMs,
+        };
 
 const toSession = (row: typeof agentSessions.$inferSelect): Session =>
   new Session({
@@ -1244,6 +1272,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
                       captureFailingSince: sql`COALESCE(${agentSessions.captureFailingSince}, ${observation.failing.since})`,
                       captureFailingError: observation.failing.error,
                     }),
+              ...overdueColumns(observation),
             })
             .where(eq(agentSessions.id, id))
             .pipe(Effect.orDie);
@@ -1549,6 +1578,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
                           captureFailingSince: sql`COALESCE(${agentSessions.captureFailingSince}, ${observation.failing.since})`,
                           captureFailingError: observation.failing.error,
                         }),
+                  ...overdueColumns(observation),
                   ...(reading.saved === null
                     ? {}
                     : {
@@ -1708,6 +1738,10 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             // The executor is gone: whatever it was failing at is over.
             captureFailingSince: null,
             captureFailingError: null,
+            captureOverdueStep: null,
+            captureOverdueSince: null,
+            captureOverdueRunningMs: null,
+            captureOverdueBoundMs: null,
             ...(discarded === undefined
               ? {}
               : { captureDiscardedAt: discarded.at, captureDiscardedBy: discarded.by }),

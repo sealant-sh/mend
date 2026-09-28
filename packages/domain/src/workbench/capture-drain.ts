@@ -84,11 +84,31 @@ export interface CaptureReading {
   /** A refused register is being rebuilt from disk: nothing behind it registers first. */
   readonly repairing?: boolean | null;
   /**
+   * A capture step still running past its bound (`CaptureStatusReport.overdue`, sealantd e2e8):
+   * the innermost such step. Not a failure — the step may still end — but nothing it would have
+   * captured is saved while it runs, however empty the queue reads. Absent or null: none
+   * reported (an older daemon, a Core that does not forward it, or nothing overdue).
+   */
+  readonly overdue?: CaptureOverdue | null;
+  /**
    * Where in its own history the executor made this answer (`CapturePosition`, cross-repo
    * decision 17): what orders it against the executor's other answers and its seal. Absent or
    * null when the answer carried no epoch.
    */
   readonly position?: CapturePosition | null;
+}
+
+/**
+ * A capture step past its bound, as sealantd reports it (`CaptureOverdue`, status report field
+ * 31): what it is (`small snap › git cat-file --batch-check`), when it started, how long it had
+ * run when the answer was made, and the bound it passed (a git is reported at 120 s and killed at
+ * 900 s, a snap reported at 600 s).
+ */
+export interface CaptureOverdue {
+  readonly step: string;
+  readonly startedAt: Date | null;
+  readonly runningMs: number;
+  readonly boundMs: number | null;
 }
 
 /**
@@ -287,7 +307,36 @@ export const captureSaved = (reading: CaptureReading): boolean =>
   reading.complete === true &&
   reading.pending === 0 &&
   !reading.fenced &&
-  (reading.refused ?? 0) === 0;
+  (reading.refused ?? 0) === 0 &&
+  // A capture step still running past its bound (e2e8): whatever the answer says of the queue, a
+  // step that has not ended has not captured what it was reading.
+  (reading.overdue ?? null) === null;
+
+/** `45 s`, `17 min`, `1 h 5 min`: how long a capture step has run, as a status line words it. */
+export const captureDurationWords = (ms: number): string => {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  if (seconds < 60) return `${seconds} s`;
+  const minutes = Math.floor(seconds / 60);
+  if (minutes < 60) return `${minutes} min`;
+  const rest = minutes % 60;
+  return `${Math.floor(minutes / 60)} h${rest === 0 ? "" : ` ${rest} min`}`;
+};
+
+/**
+ * A capture step past its bound, as one clause: `capture step overdue · small snap › git cat-file
+ * --batch-check · running 17 min · bound 2 min`. What was observed when the answer was made.
+ */
+export const captureOverdueWords = (overdue: {
+  readonly step: string;
+  readonly runningMs: number | null;
+  readonly boundMs: number | null;
+}): string =>
+  [
+    "capture step overdue",
+    overdue.step.trim() === "" ? "a capture step" : clipped(overdue.step),
+    ...(overdue.runningMs === null ? [] : [`running ${captureDurationWords(overdue.runningMs)}`]),
+    ...(overdue.boundMs === null ? [] : [`bound ${captureDurationWords(overdue.boundMs)}`]),
+  ].join(" · ");
 
 /**
  * What an answer says the executor holds that its last completed final flush did not save, in
@@ -304,6 +353,8 @@ export const captureUnsavedWordsOf = (reading: CaptureReading): string | null =>
     return `${reading.pendingBytes === null ? `${reading.pending}` : captureBytesWords(reading.pendingBytes)} pending`;
   }
   if ((reading.refused ?? 0) > 0) return "refused";
+  const overdue = reading.overdue ?? null;
+  if (overdue !== null) return captureOverdueWords(overdue);
   const snap = captureSnapDetailOf(reading);
   if (snap !== null) return snap;
   if (reading.complete === false)
@@ -418,6 +469,7 @@ export const captureBehindReason = (reading: CaptureReading): string | null => {
   if (!captureHarvestReady(reading)) return "pending";
   if (reading.paused) return "paused";
   if (reading.repairing === true) return "repairing";
+  if ((reading.overdue ?? null) !== null) return "capture step overdue";
   if (smallRefused(reading)) return "refused";
   if (reading.unreadable === null) return CAPTURE_HEALTH_UNREPORTED;
   if (Math.max(reading.unreadable, reading.unreadablePaths.length) > 0) return "unreadable";
@@ -526,6 +578,15 @@ export interface SessionCaptureFacts {
    */
   readonly captureFailingSince?: Date | string | null;
   readonly captureFailingError?: string | null;
+  /**
+   * A capture step the executor reported still running past its bound (`CaptureReading.overdue`):
+   * what it is, when it started, how long it had run and its bound when last observed. Absent or
+   * null: none reported.
+   */
+  readonly captureOverdueStep?: string | null;
+  readonly captureOverdueSince?: Date | string | null;
+  readonly captureOverdueRunningMs?: number | null;
+  readonly captureOverdueBoundMs?: number | null;
   /** The owner discarded what the executor had not saved: when, and who. */
   readonly captureDiscardedAt?: Date | string | null;
   readonly captureDiscardedBy?: string | null;
@@ -560,7 +621,11 @@ export const captureIncompleteWords = (reason: string | null | undefined): strin
     case "ship-failed":
       return "upload failed";
     case "sealing":
-      return "final seal not registered";
+      // Not "not registered" (e2e8): since cross-repo decision 22 sealantd also answers `sealing`
+      // for a seal the store recorded and withheld — the sealing capture registered, the seal on
+      // record, a URL still able to replace what it names. What every case shares is that the
+      // registrar has not confirmed a standing seal.
+      return "final seal not confirmed";
     case "changed":
       return "changed after the final flush";
     case "unwatched":
@@ -620,6 +685,15 @@ const timeOf = (at: Date | string | null | undefined): Date | null => {
  */
 export const captureStatusLine = (facts: SessionCaptureFacts): string | null => {
   const left = leftWords(facts);
+  const step = facts.captureOverdueStep ?? null;
+  const overdue =
+    step === null
+      ? null
+      : captureOverdueWords({
+          step,
+          runningMs: facts.captureOverdueRunningMs ?? null,
+          boundMs: facts.captureOverdueBoundMs ?? null,
+        });
   if (facts.captureDrain !== null) {
     if (facts.captureNotSavedAt !== null) {
       const why = captureIncompleteWords(facts.captureIncompleteReason);
@@ -628,12 +702,19 @@ export const captureStatusLine = (facts: SessionCaptureFacts): string | null => 
         "not saved",
         ...(why === null ? [] : [why]),
         ...(detail === null || detail === "" ? [] : [detail]),
+        ...(overdue === null ? [] : [overdue]),
         ...(left === null ? [] : [`${left} pending`]),
         ...(facts.captureIncompleteReason === CAPTURE_EXECUTOR_RETAINED ? [] : ["workspace kept"]),
       ].join(" · ");
     }
-    return left === null ? "saving" : `saving · ${left} left`;
+    return [
+      left === null ? "saving" : `saving · ${left} left`,
+      ...(overdue === null ? [] : [overdue]),
+    ].join(" · ");
   }
+  // A step past its bound says more than a failing snap (the snap it is inside has not failed
+  // yet) and than any queue: nothing it reads is saved until it ends.
+  if (overdue !== null) return overdue;
   const failingSince = timeOf(facts.captureFailingSince);
   if (failingSince !== null) {
     const error = facts.captureFailingError ?? null;

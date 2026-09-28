@@ -7,6 +7,7 @@ import { pipeline as pipelinePromise } from "node:stream/promises";
 import * as zlib from "node:zlib";
 
 import { Effect, Schema } from "effect";
+import * as Context from "effect/Context";
 
 import { BlobNotFoundError, BlobStore, type BlobStoreError, isValidBlobKey } from "./blob-store.ts";
 import { git, type GitError } from "./git.ts";
@@ -1062,7 +1063,98 @@ const proofStands = (
   store: typeof BlobStore.Service,
   key: string,
   atMs: number,
-): Effect.Effect<boolean> => store.replaceableUntil(key).pipe(Effect.map((until) => atMs >= until));
+): Effect.Effect<boolean> =>
+  Effect.gen(function* () {
+    // A proof this very pass took stands for the rest of it (e2e8 F2): the pass's own read-back
+    // is the proof it acts on. Across passes, the rule above holds unchanged.
+    const pass = yield* CaptureReadPass;
+    if (pass !== null && pass.store === store.identity && atMs >= pass.startedAtMs) return true;
+    return atMs >= (yield* store.replaceableUntil(key));
+  });
+
+/**
+ * One verification pass over a store's objects — a register's checks, a seal's read-back — and
+ * what it has read so far (e2e8 F2). On a bucket that does not refuse overwrites every cached
+ * proof is void while an upload URL could still replace the bytes (`proofStands`), and the
+ * register's seal checks looked every member up through a fresh read of every pack its class
+ * lists: one sealing register on the Mend repository read ~40 GB of GETs for 0.78 GB of packs
+ * and outran sealantd's 60 s timeout. Inside a pass a proof the pass took itself stands, so each
+ * pack is read whole at most once, each dir pack and each pack index at most once, and each chunk
+ * a member's digest needs is one ranged read at most once. Nothing outlives the pass: the next
+ * pass reads again, as `proofStands` requires.
+ */
+export interface CaptureReadPassState {
+  /** The store the pass reads (`BlobStore.identity`): proofs about another store never count. */
+  readonly store: string;
+  /** When the pass began (ms): a proof taken at or after it is the pass's own. */
+  readonly startedAtMs: number;
+  /** Dir readers by section identity (`sectionIdentity`). */
+  readonly dirReaders: Map<string, DirReader>;
+  /** Pack index entries by pack key, hash → entry. */
+  readonly indexes: Map<string, ReadonlyMap<string, PackIndexEntry>>;
+  /** Where each chunk of a section is (`sectionIdentity`): hash → pack key and entry. */
+  readonly locations: Map<
+    string,
+    ReadonlyMap<string, { readonly pack: string; readonly entry: PackIndexEntry }>
+  >;
+  /** Decompressed, verified chunks by hash, bounded by `PASS_CHUNK_BYTES`. */
+  readonly chunks: Map<string, Uint8Array>;
+  chunkBytes: number;
+  /** Member digests by how they were taken and the chunks they hash (`as`, size, chunk list). */
+  readonly digests: Map<string, string | null>;
+}
+
+/** The pass the current fiber reads in; null outside one (`withCaptureReadPass`). */
+export const CaptureReadPass: Context.Reference<CaptureReadPassState | null> =
+  Context.Reference<CaptureReadPassState | null>("@mend/store/CaptureReadPass", {
+    defaultValue: () => null,
+  });
+
+/** How many decompressed chunk bytes a pass keeps for member digests. */
+const PASS_CHUNK_BYTES = 64 * 1024 * 1024;
+
+/**
+ * Run `self` as one verification pass (`CaptureReadPassState`) over the current store — or inside
+ * the pass already running, when there is one.
+ */
+export const withCaptureReadPass = <A, E, R>(
+  self: Effect.Effect<A, E, R>,
+): Effect.Effect<A, E, R | BlobStore> =>
+  Effect.gen(function* () {
+    const current = yield* CaptureReadPass;
+    const store = yield* BlobStore;
+    if (current !== null && current.store === store.identity) return yield* self;
+    const pass: CaptureReadPassState = {
+      store: store.identity,
+      startedAtMs: Date.now(),
+      dirReaders: new Map(),
+      indexes: new Map(),
+      locations: new Map(),
+      chunks: new Map(),
+      chunkBytes: 0,
+      digests: new Map(),
+    };
+    return yield* Effect.provideService(self, CaptureReadPass, pass);
+  });
+
+/** What names a chunked section's contents: its root, its packs and its dir packs. */
+const sectionIdentity = (section: ChunkedSection): string =>
+  [section.root, section.packs.join(","), dirPacksOf(section).join(",")].join("\u0000");
+
+/** The pass's reader for `section`'s dir objects, made once per pass; a fresh one outside a pass. */
+const passDirReader = (
+  section: ChunkedSection,
+): Effect.Effect<DirReader, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    const pass = yield* CaptureReadPass;
+    if (pass === null) return yield* makeDirReader(section);
+    const id = sectionIdentity(section);
+    const known = pass.dirReaders.get(id);
+    if (known !== undefined) return known;
+    const reader = yield* makeDirReader(section);
+    pass.dirReaders.set(id, reader);
+    return reader;
+  });
 
 /**
  * Dir packs already fetched, by store and key. A pack key is the sha256 of its bytes and every
@@ -1861,56 +1953,81 @@ export const listCaptureFiles = (
 // ─── Restorability ──────────────────────────────────────────────────────────
 
 /**
- * Chunk sizes by hash, per store and pack key, while the read stands (`proofStands`); bounded by
- * entries, the least recently used pack dropped first. A register whose section re-lists its
- * parent's packs reads only the new packs' indexes.
+ * Pack index entries by hash, per store and pack key, while the read stands (`proofStands`);
+ * bounded by entries, the least recently used pack dropped first. A register whose section
+ * re-lists its parent's packs reads only the new packs' indexes.
  */
 const PACK_INDEX_CACHE_ENTRIES = 1_000_000;
 interface PackIndexRead {
-  readonly sizes: ReadonlyMap<string, number>;
+  readonly entries: ReadonlyMap<string, PackIndexEntry>;
   readonly atMs: number;
 }
 const packIndexCache = new Map<string, PackIndexRead>();
 let packIndexCacheEntries = 0;
 
 const rememberPackIndex = (cacheKey: string, read: PackIndexRead) => {
-  if (read.sizes.size > PACK_INDEX_CACHE_ENTRIES) return;
+  if (read.entries.size > PACK_INDEX_CACHE_ENTRIES) return;
   const previous = packIndexCache.get(cacheKey);
   if (previous !== undefined) {
     packIndexCache.delete(cacheKey);
-    packIndexCacheEntries -= previous.sizes.size;
+    packIndexCacheEntries -= previous.entries.size;
   }
   packIndexCache.set(cacheKey, read);
-  packIndexCacheEntries += read.sizes.size;
+  packIndexCacheEntries += read.entries.size;
   for (const [oldest, held] of packIndexCache) {
     if (packIndexCacheEntries <= PACK_INDEX_CACHE_ENTRIES) break;
     packIndexCache.delete(oldest);
-    packIndexCacheEntries -= held.sizes.size;
+    packIndexCacheEntries -= held.entries.size;
   }
 };
 
-/** Chunk sizes by hash in one pack, from its index (ranged reads; cached by key). */
-const chunkSizesOf = (
+/** Index entries by hash (first listing wins; a chunk twice in one pack is the same bytes). */
+const entriesByHash = (
+  entries: ReadonlyArray<PackIndexEntry>,
+): ReadonlyMap<string, PackIndexEntry> => {
+  const byHash = new Map<string, PackIndexEntry>();
+  for (const entry of entries) if (!byHash.has(entry.hash)) byHash.set(entry.hash, entry);
+  return byHash;
+};
+
+/** A pack's index as read at `atMs` — from its whole bytes, or its trailing index. */
+const notePackIndex = (
+  store: typeof BlobStore.Service,
+  key: string,
+  entries: ReadonlyMap<string, PackIndexEntry>,
+  atMs: number,
+): Effect.Effect<void> =>
+  Effect.gen(function* () {
+    rememberPackIndex(proofKey(store, key), { entries, atMs });
+    const pass = yield* CaptureReadPass;
+    if (pass !== null && pass.store === store.identity) pass.indexes.set(key, entries);
+  });
+
+/** One pack's index entries by hash, from its trailing index (ranged reads; cached by key). */
+const packEntriesOf = (
   key: string,
   knownSize: number | undefined,
-): Effect.Effect<ReadonlyMap<string, number>, CaptureReadError, BlobStore> =>
+): Effect.Effect<ReadonlyMap<string, PackIndexEntry>, CaptureReadError, BlobStore> =>
   Effect.gen(function* () {
     const store = yield* BlobStore;
+    const pass = yield* CaptureReadPass;
+    const inPass =
+      pass !== null && pass.store === store.identity ? pass.indexes.get(key) : undefined;
+    if (inPass !== undefined) return inPass;
     const cacheKey = proofKey(store, key);
     const cached = packIndexCache.get(cacheKey);
     if (cached !== undefined && (yield* proofStands(store, key, cached.atMs))) {
       packIndexCache.delete(cacheKey);
       packIndexCache.set(cacheKey, cached);
-      return cached.sizes;
+      if (pass !== null && pass.store === store.identity) pass.indexes.set(key, cached.entries);
+      return cached.entries;
     }
     const atMs = Date.now();
     const size = knownSize ?? (yield* store.head(key))?.size;
     if (size === undefined) return yield* new BlobNotFoundError({ key });
-    const entries = yield* readPackIndexRemote(key, size);
-    const sizes = new Map<string, number>();
-    for (const entry of entries) sizes.set(entry.hash, entry.size);
-    rememberPackIndex(cacheKey, { sizes, atMs });
-    return sizes;
+    const entries = entriesByHash(yield* readPackIndexRemote(key, size));
+    yield* notePackIndex(store, key, entries, atMs);
+    return entries;
   });
 
 /**
@@ -1965,6 +2082,9 @@ export const verifyPackPayloads = (
       }
       packs += 1;
       rememberPayloadVerified(cacheKey, atMs);
+      // Its index, read from the very bytes just verified: a member lookup later in the pass
+      // does not read it again.
+      yield* notePackIndex(store, key, entriesByHash(entries), atMs);
     }
     return { packs, chunks };
   });
@@ -2003,16 +2123,18 @@ export const verifySectionRestorable = (
   Effect.gen(function* () {
     const stats = { dirs: 0, files: 0, chunks: 0, hardlinks: 0 };
     if (section.root === "") return stats;
-    const dirs = yield* makeDirReader(section);
+    const dirs = yield* passDirReader(section);
     const packs = [...new Set(section.packs)];
     const indexes = yield* Effect.forEach(
       packs,
-      (key) => chunkSizesOf(key, options?.sizes?.get(key)),
+      (key) => packEntriesOf(key, options?.sizes?.get(key)),
       { concurrency: PACK_INDEX_READS_IN_FLIGHT },
     );
     const chunkSizes = new Map<string, number>();
-    for (const sizes of indexes) {
-      for (const [hash, size] of sizes) if (!chunkSizes.has(hash)) chunkSizes.set(hash, size);
+    for (const entries of indexes) {
+      for (const [hash, entry] of entries) {
+        if (!chunkSizes.has(hash)) chunkSizes.set(hash, entry.size);
+      }
     }
     const fail = (at: string, reason: string) =>
       Effect.fail(new CaptureFormatError({ key: section.root, reason: `${at || "/"}: ${reason}` }));
@@ -2558,7 +2680,98 @@ interface ClassMember {
   readonly size: number;
   /** Its chunk hashes, joined: two members with the same list hold the same bytes. */
   readonly chunks: string;
+  /** Its chunk hashes, in order. */
+  readonly chunkList: ReadonlyArray<string>;
 }
+
+/**
+ * Where every chunk of `section` is — hash → the listed pack holding it and its entry — from the
+ * packs' indexes (`packEntriesOf`), once per pass.
+ */
+const sectionChunkLocations = (
+  section: ChunkedSection,
+): Effect.Effect<
+  ReadonlyMap<string, { readonly pack: string; readonly entry: PackIndexEntry }>,
+  CaptureReadError,
+  BlobStore
+> =>
+  Effect.gen(function* () {
+    const pass = yield* CaptureReadPass;
+    const id = sectionIdentity(section);
+    const known = pass?.locations.get(id);
+    if (known !== undefined) return known;
+    const packs = [...new Set(section.packs)];
+    const indexes = yield* Effect.forEach(packs, (key) => packEntriesOf(key, undefined), {
+      concurrency: PACK_INDEX_READS_IN_FLIGHT,
+    });
+    const where = new Map<string, { readonly pack: string; readonly entry: PackIndexEntry }>();
+    packs.forEach((pack, at) => {
+      for (const [hash, entry] of indexes[at] ?? []) {
+        // First listing wins; a chunk in two packs carries the same bytes by definition.
+        if (!where.has(hash)) where.set(hash, { pack, entry });
+      }
+    });
+    pass?.locations.set(id, where);
+    return where;
+  });
+
+/**
+ * One chunk's bytes, decompressed and verified against its hash: a ranged read of its extent in
+ * the pack — never the whole pack — kept for the rest of the pass while the pass's chunk budget
+ * allows.
+ */
+const passChunk = (
+  pack: string,
+  entry: PackIndexEntry,
+): Effect.Effect<Uint8Array, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    const pass = yield* CaptureReadPass;
+    const known = pass?.chunks.get(entry.hash);
+    if (known !== undefined) return known;
+    const store = yield* BlobStore;
+    const compressed = yield* store.getRange(pack, entry.offset, entry.length);
+    if (compressed.byteLength !== entry.length) {
+      return yield* new CaptureFormatError({ key: pack, reason: "a chunk's extent was cut short" });
+    }
+    const bytes = yield* readChunk(pack, compressed, { ...entry, offset: 0 });
+    if (pass !== null && pass.chunkBytes + bytes.byteLength <= PASS_CHUNK_BYTES) {
+      pass.chunks.set(entry.hash, bytes);
+      pass.chunkBytes += bytes.byteLength;
+    }
+    return bytes;
+  });
+
+/**
+ * A class member's bytes hashed — sha256, or as the git blob object a checkout of the same bytes
+ * is — chunk by chunk (`passChunk`), each verified against its hash, the total against the size
+ * the member advertises.
+ */
+const memberDigest = (
+  section: ChunkedSection,
+  member: ClassMember,
+  as: "sha256" | "git-sha1" | "git-sha256",
+): Effect.Effect<string, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    const where = yield* sectionChunkLocations(section);
+    const hash = crypto.createHash(as === "git-sha1" ? "sha1" : "sha256");
+    // A git blob object: `blob <size>\0` then the bytes.
+    if (as !== "sha256") hash.update(`blob ${member.size}\u0000`);
+    let read = 0;
+    for (const chunk of member.chunkList) {
+      const location = where.get(chunk);
+      if (location === undefined) return yield* new ChunkNotFoundError({ hash: chunk });
+      const bytes = yield* passChunk(location.pack, location.entry);
+      hash.update(bytes);
+      read += bytes.byteLength;
+    }
+    if (read !== member.size) {
+      return yield* new CaptureFormatError({
+        key: section.root,
+        reason: `${member.member}: read ${read} bytes, entry says ${member.size}`,
+      });
+    }
+    return hash.digest("hex");
+  });
 
 /**
  * The files a manifest's chunked classes carry, as a restore lays them down: `fileOf` finds a
@@ -2581,7 +2794,7 @@ const makeClassMembers = (manifest: CaptureManifest) => {
       const segments = captureSegments(member);
       if (segments === null || section.root === "") return `${named} is not in its class`;
       const reader =
-        readers.get(cls) ?? (yield* makeDirReader(section).pipe(Effect.orElseSucceed(() => null)));
+        readers.get(cls) ?? (yield* passDirReader(section).pipe(Effect.orElseSucceed(() => null)));
       if (reader === null) return `${named}: its class's dir objects do not read`;
       readers.set(cls, reader);
       const entry = yield* entryAt(reader, section.root, segments).pipe(
@@ -2602,6 +2815,7 @@ const makeClassMembers = (manifest: CaptureManifest) => {
         member: segments.join("/"),
         size: holder.size,
         chunks: (holder.chunks ?? []).join(","),
+        chunkList: holder.chunks ?? [],
       };
     });
   /**
@@ -2619,7 +2833,7 @@ const makeClassMembers = (manifest: CaptureManifest) => {
       const segments = captureSegments(member);
       if (segments === null || section.root === "") return `${named} is not in its class`;
       const reader =
-        readers.get(cls) ?? (yield* makeDirReader(section).pipe(Effect.orElseSucceed(() => null)));
+        readers.get(cls) ?? (yield* passDirReader(section).pipe(Effect.orElseSucceed(() => null)));
       if (reader === null) return `${named}: its class's dir objects do not read`;
       readers.set(cls, reader);
       const entry = yield* entryAt(reader, section.root, segments).pipe(
@@ -2647,7 +2861,7 @@ const makeClassMembers = (manifest: CaptureManifest) => {
       const segments = captureSegments(member);
       if (segments === null || section.root === "") return null;
       const reader =
-        readers.get(cls) ?? (yield* makeDirReader(section).pipe(Effect.orElseSucceed(() => null)));
+        readers.get(cls) ?? (yield* passDirReader(section).pipe(Effect.orElseSucceed(() => null)));
       if (reader === null) return null;
       readers.set(cls, reader);
       const entry = yield* entryAt(reader, section.root, segments).pipe(
@@ -2660,17 +2874,20 @@ const makeClassMembers = (manifest: CaptureManifest) => {
     member: ClassMember,
     as: "sha256" | "git-sha1" | "git-sha256",
   ): Effect.Effect<string | null, never, BlobStore> =>
-    readCaptureFile(manifest, member.cls, member.member).pipe(
-      Effect.flatMap((stream) =>
-        Effect.tryPromise(async () => {
-          const hash = crypto.createHash(as === "git-sha1" ? "sha1" : "sha256");
-          // A git blob object: `blob <size>\0` then the bytes.
-          if (as !== "sha256") hash.update(`blob ${member.size}\u0000`);
-          for await (const chunk of stream) hash.update(chunk);
-          return hash.digest("hex");
-        }),
-      ),
-      Effect.orElseSucceed(() => null),
+    withCaptureReadPass(
+      Effect.gen(function* () {
+        const pass = yield* CaptureReadPass;
+        const section = manifest.sections[member.cls];
+        if (pass === null || section === "pending") return null;
+        // Two members with one chunk list hold one set of bytes: hashed once per pass.
+        const memo = `${as}\u0000${member.size}\u0000${member.chunks}`;
+        if (pass.digests.has(memo)) return pass.digests.get(memo) ?? null;
+        const digest = yield* memberDigest(section, member, as).pipe(
+          Effect.orElseSucceed(() => null),
+        );
+        pass.digests.set(memo, digest);
+        return digest;
+      }),
     );
   return { fileOf, laidDownOf, kindOf, digestOf };
 };
@@ -2880,9 +3097,7 @@ export const verifyWorktreeMeta = (
     const store = yield* BlobStore;
     const where = new Map<string, { readonly pack: string; readonly entry: PackIndexEntry }>();
     for (const pack of new Set(meta.packs)) {
-      const size = options?.sizes?.get(pack) ?? (yield* store.head(pack))?.size;
-      if (size === undefined) return yield* new BlobNotFoundError({ key: pack });
-      for (const entry of yield* readPackIndexRemote(pack, size)) {
+      for (const entry of (yield* packEntriesOf(pack, options?.sizes?.get(pack))).values()) {
         if (!where.has(entry.hash)) where.set(entry.hash, { pack, entry });
       }
     }

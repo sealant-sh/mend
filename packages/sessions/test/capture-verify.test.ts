@@ -26,14 +26,19 @@ import {
   uploadObjects,
   writeCdcPack,
 } from "@mend/store/testing";
-import { Effect, Exit, Layer, Scope } from "effect";
-import type * as Context from "effect/Context";
+import { Effect, Exit, Fiber, Layer, Scope } from "effect";
+import * as Context from "effect/Context";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   CaptureChannel,
+  CaptureRegisterBudget,
   MANIFEST_FEATURES,
   PRESIGN_TTL_SECONDS,
+  PUT_URL_ASSUMED_BYTES_PER_SECOND,
+  PUT_URL_CLOCK_MARGIN_SECONDS,
+  PUT_URL_TTL_MIN_SECONDS,
+  putUrlTtlSeconds,
   type SessionCaptureApi,
   UPLOAD_ANSWER_PRESENT,
 } from "../src/capture-channel.ts";
@@ -2049,7 +2054,10 @@ describeSeals(
       );
       expect(typeof minted.urls[file.key]).toBe("string");
       const authority = world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`);
-      expect(authority?.getTime() ?? 0).toBeGreaterThan(clock + PRESIGN_TTL_SECONDS * 1000 - 5_000);
+      // Sized to the call (e2e8): the shortest URL, plus the clock margin.
+      expect(authority?.getTime() ?? 0).toBeGreaterThan(
+        clock + (PUT_URL_TTL_MIN_SECONDS + PUT_URL_CLOCK_MARGIN_SECONDS) * 1000 - 5_000,
+      );
       await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
       await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
       // Recorded, but not standing: the URL could still replace the pack.
@@ -2934,6 +2942,325 @@ describeSeals(
       expect(world.memory.seals.get(`${at.worktreeId}:${next.epoch}`)?.voidReason).toEqual(
         expect.any(String),
       );
+    });
+  },
+);
+
+// e2e8 F2 (Mend repository on Garage): a sealing register re-read every bulk pack for every member
+// its link checks looked up — the proof caches are void while an upload URL could replace the
+// bytes — 4 m 35 s and ~40 GB of GETs for 0.78 GB of packs; sealantd timed it out at 60 s and
+// retried, and every timed-out attempt ran on beside the next. Reads are now counted per key.
+interface BucketReads {
+  /** Whole-object GETs (`get`, `getStream`) by key. */
+  readonly whole: Map<string, number>;
+  /** Ranged GETs by key and extent. */
+  readonly ranged: Map<string, number>;
+  /** Every GET of either kind. */
+  gets: number;
+  /** Called on each whole GET, before it reads. */
+  onWhole: ((key: string) => Promise<void>) | undefined;
+}
+const bucketReads: BucketReads = {
+  whole: new Map(),
+  ranged: new Map(),
+  gets: 0,
+  onWhole: undefined,
+};
+/** The bucket's answer to `replaceableUntil` in the suite below. */
+let passBucketReplaceable: () => number = () => 0;
+const resetReads = () => {
+  bucketReads.whole.clear();
+  bucketReads.ranged.clear();
+  bucketReads.gets = 0;
+  bucketReads.onWhole = undefined;
+};
+const bump = (map: Map<string, number>, key: string) => map.set(key, (map.get(key) ?? 0) + 1);
+describeSeals(
+  "e2e8 F2 a sealing register reads each object at most once, answers within its budget, and is single-flight",
+  {
+    blobs: (root) =>
+      Layer.effect(
+        BlobStore,
+        Effect.map(BlobStore, (store) => ({
+          ...store,
+          replaceableUntil: () => Effect.sync(() => passBucketReplaceable()),
+          get: (key: string) =>
+            Effect.gen(function* () {
+              bump(bucketReads.whole, key);
+              bucketReads.gets += 1;
+              const hook = bucketReads.onWhole;
+              if (hook !== undefined) yield* Effect.promise(() => hook(key));
+              return yield* store.get(key);
+            }),
+          getStream: (key: string) =>
+            Effect.suspend(() => {
+              bump(bucketReads.whole, key);
+              bucketReads.gets += 1;
+              return store.getStream(key);
+            }),
+          getRange: (key: string, start: number, length: number) =>
+            Effect.suspend(() => {
+              bump(bucketReads.ranged, `${key} ${start}+${length}`);
+              bucketReads.gets += 1;
+              return store.getRange(key, start, length);
+            }),
+        })),
+      ).pipe(Layer.provide(BlobStoreFsLive(root))),
+  },
+  ({ world, run, claimed }) => {
+    const MEMBERS = 12;
+    /**
+     * The shape e2e8 hit: tracked files pnpm hardlinks into `node_modules` (`shared` links), the
+     * bulk members spread over several packs that each hold many of them.
+     */
+    const sharedLinksCapture = (at: Awaited<ReturnType<typeof claimed>>, tag: string) => {
+      const keys = captureKeys(at.worktreeId, at.epoch);
+      const names = Array.from(
+        { length: MEMBERS },
+        (_, index) => `t${String(index).padStart(2, "0")}`,
+      );
+      const bytesOf = (name: string) => `${tag} ${name} ${"x".repeat(900)}\n`;
+      const edited = packEditedTree(world.work, at.worktreeId, at.epoch, world.baseSha, (work) => {
+        for (const name of names) fs.writeFileSync(path.join(work, name), bytesOf(name));
+      });
+      const bulkDir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-e2e8-pass-bulk-"));
+      const pkg = path.join(bulkDir, "node_modules", ".pnpm", "pkg");
+      fs.mkdirSync(pkg, { recursive: true });
+      for (const name of names) {
+        const file = path.join(pkg, name);
+        fs.writeFileSync(file, bytesOf(name));
+        fs.chmodSync(file, 0o644);
+        fs.utimesSync(file, 0, 0);
+      }
+      const bulk = snapshotDirectory(bulkDir, keys, { format: 2, packBudget: 4 * 1024 });
+      fs.rmSync(bulkDir, { recursive: true, force: true });
+      const meta = withMeta(at.worktreeId, at.epoch, {
+        format: 1,
+        entries: names.map((name) => ({ path: name, kind: "file", mode: 0o644, mtime: 0 })),
+        shared: names.map((name) => ({
+          path: name,
+          class: "bulk",
+          member: `node_modules/.pnpm/pkg/${name}`,
+        })),
+      });
+      const built = sealing(
+        at.worktreeId,
+        at.epoch,
+        buildManifest({
+          worktreeId: at.worktreeId,
+          n: 1,
+          parent: at.cap0Id,
+          epoch: at.epoch,
+          seq: 10,
+          kind: "final",
+          git: {
+            packs: [packsOf(world.memory.captures.get(at.cap0Id)?.sections)[0] ?? "", edited.key],
+            refs: {
+              [`refs/heads/mend/wt/${at.worktreeId}`]: world.baseSha,
+              [WORKTREE_TREE_REF]: edited.tree,
+              [INDEX_TREE_REF]: edited.tree,
+            },
+            head: `refs/heads/mend/wt/${at.worktreeId}`,
+            fsck: "verified" as const,
+          },
+          workspace: meta.workspace,
+          bulk: { ...sectionOf(bulk), platform: "linux-x86_64-glibc" },
+        }),
+      );
+      return {
+        built,
+        bulkPacks: bulk.packs,
+        objects: new Map([
+          ...edited.objects,
+          ...bulk.objects,
+          ...meta.objects,
+          [built.key, built.bytes],
+        ]),
+      };
+    };
+    /** Whole GETs of any one key, at most; and of `keys` in all. */
+    const wholeReads = (keys: ReadonlyArray<string>) => ({
+      most: Math.max(0, ...bucketReads.whole.values()),
+      of: keys.reduce((total, key) => total + (bucketReads.whole.get(key) ?? 0), 0),
+    });
+
+    it("reads each pack whole at most once per register while an upload URL could replace it", async () => {
+      // Garage inside the window: no proof from an earlier pass stands.
+      passBucketReplaceable = () => Date.now() + 3_600_000;
+      const at = await claimed();
+      const capture = sharedLinksCapture(at, "once");
+      expect(capture.bulkPacks.length).toBeGreaterThan(2);
+      await run(uploadObjects(capture.objects));
+      resetReads();
+      const answer = await run(registerOn(at.worktreeId, at.epoch, at.api)(capture.built));
+      expect(answer.head_capture_id).toBe(capture.built.id);
+      // Every check passed — recorded, and withheld only because a URL could still replace it.
+      expect(answer.seal).toEqual({ state: "withheld", reason: "write-authority" });
+      const reads = wholeReads(capture.bulkPacks);
+      // Before: every bulk pack was read whole once for the payloads and once more per member
+      // any link looked up (12 members: 20-odd GETs of each pack).
+      expect(reads.most).toBe(1);
+      expect(reads.of).toBe(capture.bulkPacks.length);
+      // No extent is read twice either.
+      expect(Math.max(0, ...bucketReads.ranged.values())).toBe(1);
+    });
+
+    it("a retry of a register still running joins it, an abandoned attempt included: one verification", async () => {
+      passBucketReplaceable = () => Date.now() + 3_600_000;
+      const at = await claimed();
+      const capture = sharedLinksCapture(at, "joined");
+      await run(uploadObjects(capture.objects));
+      resetReads();
+      // The first attempt stalls on its first bulk pack read, and its caller gives up on it —
+      // sealantd's 60 s timeout.
+      const { promise: stalled, resolve: release } = Promise.withResolvers<void>();
+      const { promise: reachedPack, resolve: reached } = Promise.withResolvers<void>();
+      bucketReads.onWhole = async (key) => {
+        if (!capture.bulkPacks.includes(key)) return;
+        bucketReads.onWhole = undefined;
+        reached();
+        await stalled;
+      };
+      const register = registerOn(at.worktreeId, at.epoch, at.api)(capture.built);
+      const first = await run(Effect.forkDetach(register));
+      await reachedPack;
+      await Effect.runPromise(Fiber.interrupt(first));
+      // Two retries arrive while it is still reading; then the read goes on.
+      const retries = Promise.all([run(register), run(register)]);
+      release();
+      const [one, two] = await retries;
+      expect(one).toEqual(two);
+      expect(one.head_capture_id).toBe(capture.built.id);
+      expect(one.seal).toEqual({ state: "withheld", reason: "write-authority" });
+      // Before: each attempt verified the capture itself — every pack read three times over.
+      expect(wholeReads(capture.bulkPacks).most).toBe(1);
+      expect(world.memory.captures.get(capture.built.id)?.id).toBe(capture.built.id);
+    });
+
+    it("past its budget a register answers withheld (verifying), registers the capture, and the re-ask reads the seal once its checks pass", async () => {
+      passBucketReplaceable = () => 0;
+      const at = await claimed();
+      const capture = sharedLinksCapture(at, "budget");
+      await run(uploadObjects(capture.objects));
+      const register = registerOn(at.worktreeId, at.epoch, at.api)(capture.built);
+      const prompt = await run(register.pipe(Effect.provideService(CaptureRegisterBudget, 0)));
+      // Registered at once — the chain moved — the seal not yet.
+      expect(prompt.head_capture_id).toBe(capture.built.id);
+      expect(world.memory.chains.get(at.worktreeId)?.headCapture).toBe(capture.built.id);
+      expect(prompt.seal).toEqual({ state: "withheld", reason: "verifying" });
+      // The executor's re-ask: recorded once the checks passed.
+      const again = await run(register);
+      expect(again.seal).toEqual({ state: "recorded" });
+      expect(
+        (
+          await run(
+            Effect.flatMap(CaptureStoreRepo, (repo) =>
+              repo.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
+            ),
+          )
+        )?.captureId,
+      ).toBe(capture.built.id);
+    });
+
+    it("after a restart the re-ask checks the seal again and records it", async () => {
+      passBucketReplaceable = () => 0;
+      const at = await claimed();
+      const capture = sharedLinksCapture(at, "restart");
+      await run(uploadObjects(capture.objects));
+      // The first process answers `verifying` and is gone before its checks record the seal: its
+      // successor holds no verdict.
+      world.memory.holdRecordSeal.held = true;
+      const quiet = await run(
+        registerOn(
+          at.worktreeId,
+          at.epoch,
+          at.api,
+        )(capture.built).pipe(Effect.provideService(CaptureRegisterBudget, 0)),
+      );
+      expect(quiet.seal).toEqual({ state: "withheld", reason: "verifying" });
+      await new Promise((resolve) => setTimeout(resolve, 200));
+      expect(
+        await run(
+          Effect.flatMap(CaptureStoreRepo, (repo) =>
+            repo.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
+          ),
+        ),
+      ).toBeNull();
+      world.memory.holdRecordSeal.held = false;
+      // A fresh channel over the same store and bucket: the executor's re-ask.
+      const restarted = await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const channel = yield* Layer.build(Layer.fresh(world.channel));
+            const api = Context.get(channel, CaptureChannel).apiFor({
+              worktreeId: at.worktreeId,
+              projectId: world.project.id,
+              executorId: "executor-1",
+              footprintBytes: 0,
+            });
+            return yield* registerOn(at.worktreeId, at.epoch, api)(capture.built);
+          }),
+        ),
+      );
+      expect(restarted.seal).toEqual({ state: "recorded" });
+    });
+  },
+);
+
+/** How long a URL of `ttl` seconds withholds its epoch's seal: its life, plus the clock margin. */
+const withheldFor = (ttl: number) => ttl + PUT_URL_CLOCK_MARGIN_SECONDS;
+
+// e2e8 (the seal window on Garage): every PUT URL lived 15 minutes, and every URL withholds its
+// epoch's seal until it expires plus the clock margin — every Stop waited 20 minutes to seal. A
+// URL now lives as long as its call's bytes need at a conservative rate, never less than
+// sealantd's 5-minute reuse of a URL it holds, never more than 15 minutes.
+describeSeals(
+  "e2e8 a PUT URL lives as long as its call's bytes need",
+  {},
+  ({ world, run, claimed }) => {
+    it("sizes the URL's lifetime, and the write authority recorded for it, to the call's declared bytes", async () => {
+      expect(putUrlTtlSeconds(0)).toBe(PUT_URL_TTL_MIN_SECONDS);
+      expect(PUT_URL_TTL_MIN_SECONDS).toBe(330);
+      expect(putUrlTtlSeconds(100 * PUT_URL_ASSUMED_BYTES_PER_SECOND)).toBe(430);
+      expect(putUrlTtlSeconds(10 * 1024 * 1024 * 1024)).toBe(PRESIGN_TTL_SECONDS);
+      expect(putUrlTtlSeconds(null)).toBe(PRESIGN_TTL_SECONDS);
+      const authorityAfter = async (sizes: Record<string, number | undefined>) => {
+        const at = await claimed();
+        const keys = Object.keys(sizes);
+        const declared = Object.fromEntries(
+          Object.entries(sizes).filter(
+            (entry): entry is [string, number] => entry[1] !== undefined,
+          ),
+        );
+        const before = Date.now();
+        await run(
+          at.api.uploadUrls({
+            worktree_id: at.worktreeId,
+            epoch: at.epoch,
+            keys: keys.map((key) => captureKeys(at.worktreeId, at.epoch).pack(key)),
+            sizes: Object.fromEntries(
+              Object.entries(declared).map(([key, size]) => [
+                captureKeys(at.worktreeId, at.epoch).pack(key),
+                size,
+              ]),
+            ),
+          }),
+        );
+        const recorded = world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`);
+        return Math.round(((recorded?.getTime() ?? 0) - before) / 1000);
+      };
+      // A Stop's final capture: a few small objects. 5.5 min + the 5 min margin, not 20 min.
+      const small = await authorityAfter({ ["1".repeat(64)]: 2_000, ["2".repeat(64)]: 30_000 });
+      expect(Math.abs(small - withheldFor(330))).toBeLessThanOrEqual(2);
+      // A call of 100 MiB, over two keys: 100 s more.
+      const bulk = await authorityAfter({
+        ["3".repeat(64)]: 60 * PUT_URL_ASSUMED_BYTES_PER_SECOND,
+        ["4".repeat(64)]: 40 * PUT_URL_ASSUMED_BYTES_PER_SECOND,
+      });
+      expect(Math.abs(bulk - withheldFor(430))).toBeLessThanOrEqual(2);
+      // A key of unknown size: the cap, as before.
+      const unsized = await authorityAfter({ ["5".repeat(64)]: undefined });
+      expect(Math.abs(unsized - withheldFor(PRESIGN_TTL_SECONDS))).toBeLessThanOrEqual(2);
     });
   },
 );

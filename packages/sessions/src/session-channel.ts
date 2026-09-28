@@ -206,6 +206,21 @@ export const handleSessionRequest = async (
 };
 
 /** Write a CONNECT refusal: status line plus a percent-encoded reason header, then close. */
+/**
+ * A request this server could not answer: the token lookup failed (the store timed out), or
+ * the handler threw. Answered 503 — the executor asks again — and logged; never an unhandled
+ * rejection, which ends the Mend process (e2e8 F8: a statement timeout in the token lookup
+ * took the API down with every session on it).
+ */
+const unanswered = (cause: unknown) =>
+  Effect.runFork(
+    Effect.logWarning("session channel: a request could not be answered · 503").pipe(
+      Effect.annotateLogs({
+        cause: cause instanceof Error ? cause.message : String(cause),
+      }),
+    ),
+  );
+
 export const refuseConnect = (socket: net.Socket, status: string, message: string): void => {
   const reason = encodeURIComponent(message.replace(/[\r\n]+/g, " · ").slice(0, 900));
   socket.write(`HTTP/1.1 ${status}\r\nx-mend-refusal: ${reason}\r\nconnection: close\r\n\r\n`);
@@ -415,26 +430,53 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
     };
 
     const onRequest = (request: http.IncomingMessage, response: http.ServerResponse): void => {
-      void authenticate(request.headers).then((auth) => {
-        if (!auth.ok) {
-          response.writeHead(auth.status, { "content-type": "application/json" });
-          response.end(JSON.stringify({ message: auth.message }));
-          return;
-        }
-        return handleSessionRequest(auth.api, request, response);
-      });
+      authenticate(request.headers)
+        .then((auth) => {
+          if (!auth.ok) {
+            response.writeHead(auth.status, { "content-type": "application/json" });
+            response.end(JSON.stringify({ message: auth.message }));
+            return;
+          }
+          return handleSessionRequest(auth.api, request, response);
+        })
+        .catch((cause: unknown) => {
+          unanswered(cause);
+          if (!response.headersSent) {
+            response.writeHead(503, { "content-type": "application/json" });
+            response.end(
+              JSON.stringify({
+                message: "session channel: this request could not be answered now",
+              }),
+            );
+          } else {
+            response.destroy();
+          }
+        });
     };
     const onConnect = (request: http.IncomingMessage, socket: net.Socket, head: Buffer): void => {
-      void authenticate(request.headers).then((auth) => {
-        if (!auth.ok) {
-          return refuseConnect(
-            socket,
-            `${auth.status} ${auth.status === 401 ? "Unauthorized" : "Conflict"}`,
-            auth.message,
-          );
-        }
-        return handleGitConnect(auth.api, request, socket, head);
-      });
+      authenticate(request.headers)
+        .then((auth) => {
+          if (!auth.ok) {
+            return refuseConnect(
+              socket,
+              `${auth.status} ${auth.status === 401 ? "Unauthorized" : "Conflict"}`,
+              auth.message,
+            );
+          }
+          return handleGitConnect(auth.api, request, socket, head);
+        })
+        .catch((cause: unknown) => {
+          unanswered(cause);
+          if (socket.writable) {
+            refuseConnect(
+              socket,
+              "503 Service Unavailable",
+              "session channel: this request could not be answered now",
+            );
+          } else {
+            socket.destroy();
+          }
+        });
     };
 
     const server =

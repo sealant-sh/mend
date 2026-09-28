@@ -62,10 +62,10 @@ export const sh = (cwd: string, args: ReadonlyArray<string>, input?: string) =>
     .replace(/\n$/, "");
 
 /** A bare project store with one `main` commit, laid out as `Store.adopt` lays it out. */
-export const makeProjectRepo = (scratch: string) => {
+export const makeProjectRepo = (scratch: string, objectFormat: "sha1" | "sha256" = "sha1") => {
   const work = path.join(scratch, "work");
   fs.mkdirSync(work);
-  sh(work, ["init", "-q", "-b", "main"]);
+  sh(work, ["init", "-q", "-b", "main", `--object-format=${objectFormat}`]);
   fs.writeFileSync(path.join(work, "a.txt"), "one\ntwo\n");
   fs.writeFileSync(path.join(work, "keep.md"), "# keep\n");
   sh(work, ["add", "."]);
@@ -269,6 +269,8 @@ export interface CaptureWorld {
   readonly worktrees: Map<string, Worktree>;
   readonly memory: ReturnType<typeof makeMemoryCaptureStore>;
   readonly blobRoot: string;
+  /** The capture channel alone, over the world's store and bucket: build it fresh for a restart. */
+  readonly channel: Layer.Layer<CaptureChannel>;
   /** Store, StoreConfig, BlobStore, CaptureStoreRepo, StoreRefsRepo, GitOpsRunner, CaptureChannel, ProjectsRepo, WorktreesRepo. */
   readonly layer: Layer.Layer<
     | Store
@@ -288,10 +290,12 @@ export const makeCaptureWorld = (
     readonly sources?: Layer.Layer<CaptureSources>;
     /** The bucket, given the directory store's root: the directory store when absent. */
     readonly blobs?: (root: string) => Layer.Layer<BlobStore>;
+    /** The project repository's object format: `sha1` when absent. */
+    readonly objectFormat?: "sha1" | "sha256";
   } = {},
 ): CaptureWorld => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-capture-world-"));
-  const repo = makeProjectRepo(scratch);
+  const repo = makeProjectRepo(scratch, options.objectFormat);
   const project = projectFor(repo.storePath, repo.baseSha);
   const worktrees = new Map<string, Worktree>();
   const memory = makeMemoryCaptureStore();
@@ -342,6 +346,7 @@ export const makeCaptureWorld = (
     worktrees,
     memory,
     blobRoot,
+    channel,
     layer,
   };
 };

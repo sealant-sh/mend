@@ -1205,6 +1205,12 @@ export const agentSessions = pgTable(
     // A running executor whose snaps are failing: since when, and sealantd's error (0078).
     captureFailingSince: timestamp({ mode: "date", withTimezone: true }),
     captureFailingError: text(),
+    // A capture step the executor reported past its bound: what, since when, how long, its
+    // bound (0093).
+    captureOverdueStep: text(),
+    captureOverdueSince: timestamp({ mode: "date", withTimezone: true }),
+    captureOverdueRunningMs: bigint({ mode: "number" }),
+    captureOverdueBoundMs: bigint({ mode: "number" }),
     // The owner discarded what the executor had not saved: when, and who (0078).
     captureDiscardedAt: timestamp({ mode: "date", withTimezone: true }),
     captureDiscardedBy: text(),

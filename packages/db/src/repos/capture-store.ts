@@ -383,6 +383,26 @@ export class CaptureStoreRepo extends Context.Service<
       epoch?: number,
     ) => Effect.Effect<SealedCompletion | null>;
     /**
+     * Record the `final_seal` of a capture already registered (e2e8 F2): what the register's CAS
+     * records with the capture when Mend observed every section restore before it answered, and
+     * this records once those checks finish after the register answered `withheld` (reason
+     * `verifying`). The same conditions as the CAS's seal: the capture is the chain's head under
+     * `epoch` — nothing registered after it — and the live lease under `epoch` names `seal.holder`
+     * and the launch `seal.executorId` (or no launch). The lease row, then the chain row, are held
+     * `FOR SHARE` (the order a register takes), so neither a register nor a claim nor a release
+     * lands between the check and the insert. A seal of a later capture under the epoch is never
+     * replaced. True when the seal is recorded for this capture.
+     */
+    readonly recordSeal: (input: {
+      readonly worktreeId: WorktreeId;
+      readonly epoch: number;
+      readonly captureId: string;
+      readonly n: number;
+      readonly manifestKey: string;
+      readonly names: ReadonlyArray<string>;
+      readonly seal: NonNullable<RegisterCapture["seal"]>;
+    }) => Effect.Effect<boolean>;
+    /**
      * Upload URLs under `worktreeId`'s `epoch` prefix can write until `expiresAt` (0089, review
      * 2026-09-28 (7) #8): kept as the latest such time. Recorded before the URL is handed out.
      * Serialized with `markSealReverified` on the epoch's authority row (0091, cross-repo decision
@@ -916,6 +936,66 @@ export const CaptureStoreRepoLive: Layer.Layer<
         return row?.expiresAt ?? null;
       });
 
+    const recordSeal = Effect.fn("CaptureStoreRepo.recordSeal")(function* (input: {
+      readonly worktreeId: WorktreeId;
+      readonly epoch: number;
+      readonly captureId: string;
+      readonly n: number;
+      readonly manifestKey: string;
+      readonly names: ReadonlyArray<string>;
+      readonly seal: NonNullable<RegisterCapture["seal"]>;
+    }) {
+      const scopes = JSON.stringify(
+        captureScopesOf({ worktreeId: input.worktreeId, epoch: input.epoch }, [
+          input.manifestKey,
+          ...input.names,
+          ...(input.seal.scopes ?? []).map(
+            (scope) => `captures/${scope.worktreeId}/${scope.epoch}/`,
+          ),
+        ]),
+      );
+      const rows = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              SELECT 1 FROM worktree_leases WHERE worktree_id = ${input.worktreeId} FOR SHARE`;
+            yield* sql`
+              SELECT 1 FROM worktree_chain WHERE worktree_id = ${input.worktreeId} FOR SHARE`;
+            return yield* sql<{ readonly worktreeId: string }>`
+              INSERT INTO capture_seals (worktree_id, epoch, executor_id, capture_id, n, boot_id,
+                                         boot_generation, observation, scopes)
+              SELECT ${input.worktreeId}, ${input.epoch}, ${input.seal.executorId}, c.id, c.n,
+                     ${input.seal.bootId ?? null}::text, ${input.seal.bootGeneration ?? null}::bigint,
+                     ${input.seal.observation ?? null}::bigint, ${scopes}::jsonb
+                FROM captures c
+                JOIN worktree_chain ch ON ch.worktree_id = c.worktree_id
+               WHERE c.id = ${input.captureId}
+                 AND c.worktree_id = ${input.worktreeId}
+                 AND c.epoch = ${input.epoch}
+                 AND c.n = ${input.n}
+                 AND ch.head_capture = c.id
+                 AND ch.head_n = c.n
+                 AND ch.head_epoch = ${input.epoch}
+                 AND EXISTS (
+                   SELECT 1 FROM worktree_leases
+                    WHERE worktree_id = ${input.worktreeId}
+                      AND epoch = ${input.epoch}
+                      AND expires_at > now()
+                      AND executor_id = ${input.seal.holder}
+                      AND (launch_id IS NULL OR launch_id = ${input.seal.executorId}))
+              ON CONFLICT (worktree_id, epoch) DO UPDATE
+                 SET executor_id = EXCLUDED.executor_id, capture_id = EXCLUDED.capture_id,
+                     n = EXCLUDED.n, sealed_at = now(), boot_id = EXCLUDED.boot_id,
+                     boot_generation = EXCLUDED.boot_generation, observation = EXCLUDED.observation,
+                     scopes = EXCLUDED.scopes, reverified_at = NULL, void_reason = NULL
+               WHERE capture_seals.n < EXCLUDED.n
+              RETURNING worktree_id`;
+          }),
+        )
+        .pipe(Effect.orDie);
+      return rows.length > 0;
+    });
+
     const recordPutAuthority = Effect.fn("CaptureStoreRepo.recordPutAuthority")(function* (
       worktreeId: WorktreeId,
       epoch: number,
@@ -1261,6 +1341,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       leaseOf,
       headOf,
       sealedCompletion,
+      recordSeal,
       recordPutAuthority,
       putAuthorityUntil,
       putAuthorityUntilOver,

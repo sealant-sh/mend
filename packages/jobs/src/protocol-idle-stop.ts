@@ -102,12 +102,24 @@ export const ProtocolIdleStopLive: Layer.Layer<
       const reading = protocolIdleReading({
         ...facts,
         capture:
-          captures === null ? null : { pending: captures.pending, bulkDirty: captures.bulkDirty },
+          captures === null
+            ? null
+            : {
+                pending: captures.pending,
+                bulkDirty: captures.bulkDirty,
+                overdue: (captures.overdue ?? null) !== null,
+              },
       });
       if (!protocolIdleStopDue(reading, nowMs, minutes)) {
         if (reading.kind === "held" && reading.by === "capture") {
-          yield* Effect.logInfo("protocol idle stop: held · captures still shipping").pipe(
-            Effect.annotateLogs({ sessionId: session.id, pending: captures?.pending ?? null }),
+          yield* Effect.logInfo(
+            "protocol idle stop: held · captures still shipping, or a capture step overdue",
+          ).pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              pending: captures?.pending ?? null,
+              overdue: captures?.overdue?.step ?? null,
+            }),
           );
         }
         return false;
