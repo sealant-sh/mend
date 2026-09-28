@@ -2223,16 +2223,8 @@ const trackedNode = (key: string) => `tracked:${key}`;
 const memberNode = (cls: string, key: string, raw?: string) =>
   `${cls}:${bytesOfPair(key, raw)?.toString("hex") ?? key}`;
 
-/**
- * Whether every inode the document declares shared is promised one mode and one mtime (review
- * 2026-09-28 (7) #10). A tracked `hardlinks` group, a `shared` link from a tracked file to
- * another class's name and a `cross_links` group each say their names are one inode; groups that
- * share a name are one inode too. sealantd links them, then settles each entry the document
- * names in turn — every one on the same inode — so of two entries that promise the inode
- * different modes or mtimes, the later one is what the restore leaves and the earlier promise is
- * broken. The reason, or null when every connected group is promised one mode and one mtime.
- */
-export const metaInodeProblem = (document: WorktreeMetaDocument): string | null => {
+/** The inodes the document's links make: each name's group (`find`), and whether it has one. */
+const inodeGroupsOf = (document: WorktreeMetaDocument) => {
   const parent = new Map<string, string>();
   const find = (node: string): string => {
     let root = node;
@@ -2267,25 +2259,104 @@ export const metaInodeProblem = (document: WorktreeMetaDocument): string | null 
       );
     }
   }
-  if (parent.size === 0) return null;
-  const promised = new Map<string, { readonly path: string; readonly promise: string }>();
-  for (const entry of document.entries) {
-    if (entry.kind !== "file") continue;
-    const node = trackedNode(entry.path);
-    if (!parent.has(node)) continue;
-    const group = find(node);
-    const promise = `mode ${(entry.mode ?? -1).toString(8)} mtime ${exactMtime(entry.mtime)}`;
+  return { empty: parent.size === 0, has: (node: string) => parent.has(node), find };
+};
+
+/** A mode and an mtime one name promises its inode, as text two promises compare by. */
+const inodePromise = (mode: number | undefined, mtime: bigint | number | string) =>
+  `mode ${mode === undefined ? "unset" : (mode & 0o7777).toString(8)} mtime ${
+    typeof mtime === "string" ? mtime : exactMtime(mtime)
+  }`;
+
+/** One promise a name makes its inode: the name (for the reason), and the promise. */
+interface InodePromise {
+  readonly node: string;
+  readonly name: string;
+  readonly promise: string;
+}
+
+/** The first two differing promises one inode group is given, as a reason; null when none. */
+const promisesProblem = (
+  groups: ReturnType<typeof inodeGroupsOf>,
+  promises: ReadonlyArray<InodePromise>,
+): string | null => {
+  const promised = new Map<string, { readonly name: string; readonly promise: string }>();
+  for (const { node, name, promise } of promises) {
+    if (!groups.has(node)) continue;
+    const group = groups.find(node);
     const first = promised.get(group);
     if (first === undefined) {
-      promised.set(group, { path: entry.path, promise });
+      promised.set(group, { name, promise });
       continue;
     }
     if (first.promise !== promise) {
-      return `${JSON.stringify(first.path)} and ${JSON.stringify(entry.path)} are one inode, promised ${first.promise} and ${promise}`;
+      return `${first.name} and ${name} are one inode, promised ${first.promise} and ${promise}`;
     }
   }
   return null;
 };
+
+/** The promises the document's own tracked file entries make. */
+const trackedPromises = (document: WorktreeMetaDocument): Array<InodePromise> =>
+  document.entries
+    .filter((entry) => entry.kind === "file")
+    .map((entry) => ({
+      node: trackedNode(entry.path),
+      name: JSON.stringify(entry.path),
+      promise: inodePromise(entry.mode, entry.mtime),
+    }));
+
+/**
+ * Whether every inode the document declares shared is promised one mode and one mtime (review
+ * 2026-09-28 (7) #10), over the document's own tracked entries. A tracked `hardlinks` group, a
+ * `shared` link from a tracked file to another class's name and a `cross_links` group each say
+ * their names are one inode; groups that share a name are one inode too. sealantd links them,
+ * then settles each entry the document names in turn — every one on the same inode — so of two
+ * entries that promise the inode different modes or mtimes, the later one is what the restore
+ * leaves and the earlier promise is broken. `inodeMetadataProblem` adds the class entries'
+ * promises. The reason, or null when every connected group is promised one mode and one mtime.
+ */
+export const metaInodeProblem = (document: WorktreeMetaDocument): string | null => {
+  const groups = inodeGroupsOf(document);
+  return groups.empty ? null : promisesProblem(groups, trackedPromises(document));
+};
+
+/**
+ * `metaInodeProblem` with every class name a link makes part of an inode (review 2026-09-28 (8)
+ * #9): the entry its class lays that name down with — its mode and its mtime, the resolved file's
+ * for a hardlink member — promises the inode too. sealantd writes each class name with its own
+ * entry, then links the group onto its first member, so a class promise that differs from
+ * another name's is broken by the restore — a group with no tracked member included. A class
+ * name that does not resolve to a file of its class is a problem as well (never sealed on). The
+ * reason, or null when every connected group is promised one mode and one mtime.
+ */
+export const inodeMetadataProblem = (
+  manifest: CaptureManifest,
+  document: WorktreeMetaDocument,
+): Effect.Effect<string | null, never, BlobStore> =>
+  Effect.gen(function* () {
+    const groups = inodeGroupsOf(document);
+    if (groups.empty) return null;
+    const members = makeClassMembers(manifest);
+    const named = [...(document.shared ?? []), ...(document.cross_links ?? []).flat()].map(
+      (link) => ({ cls: link.class, member: link.member, raw: link.raw_member }),
+    );
+    const promises = trackedPromises(document);
+    const seen = new Set<string>();
+    for (const { cls, member, raw } of named) {
+      const node = memberNode(cls, member, raw);
+      if (seen.has(node)) continue;
+      seen.add(node);
+      const laid = yield* members.laidDownOf(cls, member);
+      if (typeof laid === "string") return laid;
+      promises.push({
+        node,
+        name: `${cls} member ${JSON.stringify(member)}`,
+        promise: inodePromise(laid.mode, laid.mtime),
+      });
+    }
+    return promisesProblem(groups, promises);
+  });
 
 /**
  * Whether every cross-class hardlink group the document declares is one the restore makes
@@ -2389,6 +2460,38 @@ const makeClassMembers = (manifest: CaptureManifest) => {
         chunks: (holder.chunks ?? []).join(","),
       };
     });
+  /**
+   * The entry `member`'s class lays that name down with — the resolved file's, for a hardlink
+   * member — or why it is not a file of its class.
+   */
+  const laidDownOf = (
+    cls: CaptureClass,
+    member: string,
+  ): Effect.Effect<DirEntry | string, never, BlobStore> =>
+    Effect.gen(function* () {
+      const named = `${cls} member ${JSON.stringify(member)}`;
+      const section = manifest.sections[cls];
+      if (section === "pending") return `${named}: its class is pending`;
+      const segments = captureSegments(member);
+      if (segments === null || section.root === "") return `${named} is not in its class`;
+      const reader =
+        readers.get(cls) ?? (yield* makeDirReader(section).pipe(Effect.orElseSucceed(() => null)));
+      if (reader === null) return `${named}: its class's dir objects do not read`;
+      readers.set(cls, reader);
+      const entry = yield* entryAt(reader, section.root, segments).pipe(
+        Effect.orElseSucceed(() => null),
+      );
+      if (entry === null || (entry.kind !== "file" && entry.kind !== "hardlink-group")) {
+        return `${named} is not a file of its class`;
+      }
+      const holder = yield* resolveCaptureFileEntry(
+        reader,
+        section.root,
+        segments.join("/"),
+        entry,
+      ).pipe(Effect.orElseSucceed(() => null));
+      return holder ?? `${named} does not resolve to a file of its class`;
+    });
   /** What `member` is in its class, as a restore lays it down; null when the class has no such name. */
   const kindOf = (
     cls: CaptureClass,
@@ -2425,7 +2528,7 @@ const makeClassMembers = (manifest: CaptureManifest) => {
       ),
       Effect.orElseSucceed(() => null),
     );
-  return { fileOf, kindOf, digestOf };
+  return { fileOf, laidDownOf, kindOf, digestOf };
 };
 
 /** A path of the tree a restore checks out: what it is, and the object git holds for it. */

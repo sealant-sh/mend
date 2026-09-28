@@ -40,7 +40,7 @@ import {
   sectionHoldsRawNames,
   gitSectionHoldsRawNames,
   restoreNamespaceProblem,
-  metaInodeProblem,
+  inodeMetadataProblem,
   crossLinksProblem,
   linkTopologyProblem,
   rawTreeOf,
@@ -2119,10 +2119,15 @@ export const CaptureChannelLive: Layer.Layer<
           });
           // …and that every inode those links make is promised one mode and one mtime (review
           // 2026-09-28 (7) #10): the restore settles each entry on the shared inode in turn, so
-          // of two differing promises only the last survives. Healthy captures stat one inode
+          // of two differing promises only the last survives — the class entries a link names
+          // promise the inode too (review 2026-09-28 (8) #9). Healthy captures stat one inode
           // for all its names; one that raced a writer is registered, and seals nothing.
           const inodeMeta =
-            !sealHolds || metaDocument === null ? null : metaInodeProblem(metaDocument);
+            !sealHolds || metaDocument === null
+              ? null
+              : yield* inodeMetadataProblem(manifest, metaDocument).pipe(
+                  Effect.provideService(BlobStore, blobs),
+                );
           const sealed =
             sealHolds &&
             gitFsck === "verified" &&

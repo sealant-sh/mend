@@ -1051,6 +1051,91 @@ describe("a seal rests only on sections Mend observed restore", () => {
     expect(await attempt({ mode: 0o644, mtime: 100 })).toBe(true);
   });
 
+  // Review 2026-09-28 (8) #9 (the reviewer's reproduction): a cross-class group joining a
+  // workspace name at 0600 / 100 s and a bulk name at 0644 / 200 s, holding the same bytes, with no
+  // tracked member: only tracked entries' promises were compared, so it sealed — and the restore
+  // links both names to the first inode, breaking the bulk entry's promise. Every class entry a
+  // link names promises its inode too.
+  it("review 8 #9 cross-class names whose class entries promise one inode two modes or mtimes are never sealed", async () => {
+    const at = await claimedWorktree();
+    const keys = captureKeys(at.worktreeId, at.epoch);
+    let parent = at.cap0Id;
+    let n = 0;
+    const attempt = async (bulkMode: number, bulkMtimeSeconds: number) => {
+      n += 1;
+      const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-review8-cross-ws-"));
+      const bulkDir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-review8-cross-bulk-"));
+      fs.mkdirSync(path.join(workspaceDir, "harness"));
+      fs.mkdirSync(path.join(bulkDir, "node_modules"));
+      const one = path.join(workspaceDir, "harness", "state.json");
+      const two = path.join(bulkDir, "node_modules", "state.json");
+      fs.writeFileSync(one, "one inode's bytes\n");
+      fs.writeFileSync(two, "one inode's bytes\n");
+      fs.chmodSync(one, 0o600);
+      fs.chmodSync(two, bulkMode);
+      fs.utimesSync(one, 100, 100);
+      fs.utimesSync(two, bulkMtimeSeconds, bulkMtimeSeconds);
+      const workspace = snapshotDirectory(workspaceDir, keys, { format: 2 });
+      const bulk = snapshotDirectory(bulkDir, keys, { format: 2 });
+      fs.rmSync(workspaceDir, { recursive: true, force: true });
+      fs.rmSync(bulkDir, { recursive: true, force: true });
+      const meta = withMeta(at.worktreeId, at.epoch, {
+        format: 1,
+        entries: [],
+        cross_links: [
+          [
+            { class: "workspace", member: "harness/state.json" },
+            { class: "bulk", member: "node_modules/state.json" },
+          ],
+        ],
+      });
+      const built = sealing(
+        at.worktreeId,
+        at.epoch,
+        buildManifest({
+          worktreeId: at.worktreeId,
+          epoch: at.epoch,
+          n,
+          parent,
+          seq: 100 + n,
+          kind: "final",
+          git: at.gitSection([at.basePack], at.baseTree),
+          workspace: {
+            ...sectionOf(workspace),
+            packs: [...workspace.packs, ...meta.workspace.packs],
+            worktree_meta: meta.workspace.worktree_meta,
+          },
+          bulk: { ...sectionOf(bulk), platform: "linux-x86_64-glibc" },
+        }),
+      );
+      await run(
+        uploadObjects(
+          new Map([
+            ...workspace.objects,
+            ...bulk.objects,
+            ...meta.objects,
+            [built.key, built.bytes],
+          ]),
+        ),
+      );
+      const answer = await run(registerOn(at.worktreeId, at.epoch, at.api)(built));
+      parent = built.id;
+      return {
+        sealed: (await sealOf(at.worktreeId, at.epoch))?.captureId === built.id,
+        answer,
+      };
+    };
+    // The reviewer's case: both the mode and the mtime differ.
+    const both = await attempt(0o644, 200);
+    expect(both.sealed).toBe(false);
+    expect(both.answer.seal).toEqual({ state: "refused", reason: "unrestorable" });
+    // Only the mtime differs; only the mode differs.
+    expect((await attempt(0o600, 200)).sealed).toBe(false);
+    expect((await attempt(0o644, 100)).sealed).toBe(false);
+    // One inode, one promise: sealed.
+    expect((await attempt(0o600, 100)).sealed).toBe(true);
+  });
+
   // Review 2026-09-28 (6) #10 (the reviewer's reproduction): a `shared` link to a member its class
   // does not carry, and a tracked `hardlinks` group whose members the checkout writes with other
   // bytes, were sealed. Every link is now checked against the tree the restore checks out and
@@ -1079,7 +1164,12 @@ describe("a seal rests only on sections Mend observed restore", () => {
         const bulkDir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-shared-bulk-"));
         if (options?.bulk !== undefined && options.bulk !== null) {
           fs.mkdirSync(path.join(bulkDir, "node_modules"));
-          fs.writeFileSync(path.join(bulkDir, "node_modules", "linked.txt"), options.bulk);
+          const linked = path.join(bulkDir, "node_modules", "linked.txt");
+          fs.writeFileSync(linked, options.bulk);
+          // One inode with a.txt: its class entry promises what the tracked entry does (review
+          // 2026-09-28 (8) #9).
+          fs.chmodSync(linked, 0o644);
+          fs.utimesSync(linked, 0, 0);
         }
         const bulk = snapshotDirectory(bulkDir, keys, { format: 2 });
         fs.rmSync(bulkDir, { recursive: true, force: true });
