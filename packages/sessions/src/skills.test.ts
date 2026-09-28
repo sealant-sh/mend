@@ -178,11 +178,11 @@ const deliver = (home: string, bundles: ReadonlyArray<SkillWithFiles>) =>
  * Review 2026-09-28 (17), sweep: every delivery used to `rm -rf` each bundle's directory before
  * rewriting it, and every retired one, whatever was in it. A skill the agent or the user edited in
  * the harness home, or a directory of the agent's own that a library skill now shares a name with,
- * went at the next launch or resume. Now a directory goes only when it is exactly what Mend
- * delivered there (or is about to); anything else is moved aside whole.
+ * went at the next launch or resume. Now a directory that holds exactly what is about to be
+ * delivered stays as it is; anything else is moved aside whole.
  */
 describe("a delivery never deletes what Mend did not deliver", () => {
-  it("an edited skill is kept aside and the library's version delivered; an untouched one is simply replaced", async () => {
+  it("an edited skill and a replaced one are kept aside and the library's versions delivered", async () => {
     const home = tmpHome();
     await deliver(home, [
       bundle("review", [{ path: "SKILL.md", contents: "v1" }]),
@@ -195,22 +195,33 @@ describe("a delivery never deletes what Mend did not deliver", () => {
       bundle("review", [{ path: "SKILL.md", contents: "v1" }]),
       bundle("plain", [{ path: "SKILL.md", contents: "p2" }]),
     ]);
+    // Review 19: a replaced skill is moved aside too, never deleted, even one exactly as
+    // delivered.
     expect(keptFiles(home)).toEqual({
       ".claude/skills/review/SKILL.md": "v1, with the agent's fix",
       ".claude/skills/review/notes.md": "why",
+      ".claude/skills/plain/SKILL.md": "p1",
+      ".codex/skills/plain/SKILL.md": "p1",
     });
     expect(outcomes.filter((outcome) => outcome.outcome === "kept").map((o) => o.dir)).toEqual([
       ".claude/skills/review",
+      ".claude/skills/plain",
+      ".codex/skills/plain",
     ]);
     expect(fs.readFileSync(skill(home, ".claude/skills", "review"), "utf8")).toBe("v1");
     expect(fs.existsSync(skill(home, ".claude/skills", "review", "notes.md"))).toBe(false);
     for (const target of SKILL_TARGET_DIRS) {
       expect(fs.readFileSync(skill(home, target, "plain"), "utf8")).toBe("p2");
     }
-    // Nothing else moved: the codex copy and the plain skill were Mend's own delivery.
+    // The review skill is unchanged now: left alone. The retired plain skill is moved aside.
     const again = await deliver(home, [bundle("review", [{ path: "SKILL.md", contents: "v1" }])]);
-    expect(again.filter((outcome) => outcome.outcome === "kept")).toEqual([]);
-    expect(Object.keys(keptFiles(home))).toHaveLength(2);
+    expect(again.map((outcome) => [outcome.dir, outcome.outcome])).toEqual([
+      [".claude/skills/plain", "kept"],
+      [".claude/skills/review", "unchanged"],
+      [".codex/skills/plain", "kept"],
+      [".codex/skills/review", "unchanged"],
+    ]);
+    expect(fs.readdirSync(keptRoot(home))).toHaveLength(2);
   });
 
   it("a directory of the agent's own is kept when a library skill takes its name", async () => {
@@ -225,7 +236,7 @@ describe("a delivery never deletes what Mend did not deliver", () => {
     expect(fs.readFileSync(own, "utf8")).toBe("library deploy");
   });
 
-  it("a retired skill goes only as Mend delivered it; an edited one is kept", async () => {
+  it("a retired skill is kept aside, edited or not", async () => {
     const home = tmpHome();
     await deliver(home, [
       bundle("old", [{ path: "SKILL.md", contents: "o" }]),
@@ -237,10 +248,15 @@ describe("a delivery never deletes what Mend did not deliver", () => {
       expect(fs.existsSync(path.join(home, target, "old"))).toBe(false);
       expect(fs.existsSync(path.join(home, target, "edited"))).toBe(false);
     }
-    expect(keptFiles(home)).toEqual({ ".claude/skills/edited/SKILL.md": "e and more" });
+    expect(keptFiles(home)).toEqual({
+      ".claude/skills/old/SKILL.md": "o",
+      ".codex/skills/old/SKILL.md": "o",
+      ".claude/skills/edited/SKILL.md": "e and more",
+      ".codex/skills/edited/SKILL.md": "e",
+    });
   });
 
-  it("a home from a Mend that kept no digests: only a directory equal to the new delivery goes", async () => {
+  it("a home from a Mend that kept no digests: a directory equal to the new delivery stays, the rest is kept aside", async () => {
     const home = tmpHome();
     for (const target of SKILL_TARGET_DIRS) {
       fs.mkdirSync(path.join(home, target, "same"), { recursive: true });
@@ -293,7 +309,7 @@ describe("a delivery never deletes what Mend did not deliver", () => {
     expect(fs.existsSync(path.join(home, MANAGED_SKILLS_MANIFEST))).toBe(false);
   });
 
-  it("the workspace exec applies the same plan: run by sh, it keeps an edit and removes Mend's own", () => {
+  it("the workspace exec applies the same plan: run by sh, it keeps aside an edit and Mend's own", () => {
     const home = tmpHome();
     const files = [{ path: "SKILL.md", contents: "v1" }];
     for (const target of SKILL_TARGET_DIRS) {
@@ -315,7 +331,11 @@ describe("a delivery never deletes what Mend did not deliver", () => {
     expect(run.stderr).toBe("");
     expect(run.status).toBe(0);
     expect(parseSkillsVacateOutcomes(run.stdout)).toEqual([
-      { outcome: "removed", dir: ".claude/skills/review", detail: null },
+      {
+        outcome: "kept",
+        dir: ".claude/skills/review",
+        detail: `${SKILLS_KEPT_DIR}/stamp/.claude/skills/review`,
+      },
       {
         outcome: "kept",
         dir: ".codex/skills/review",
@@ -323,6 +343,12 @@ describe("a delivery never deletes what Mend did not deliver", () => {
       },
     ]);
     expect(fs.existsSync(path.join(home, ".claude/skills/review"))).toBe(false);
+    expect(
+      fs.readFileSync(
+        path.join(home, SKILLS_KEPT_DIR, "stamp/.claude/skills/review/SKILL.md"),
+        "utf8",
+      ),
+    ).toBe("v1");
     expect(
       fs.readFileSync(
         path.join(home, SKILLS_KEPT_DIR, "stamp/.codex/skills/review/SKILL.md"),
@@ -337,8 +363,8 @@ describe("a delivery never deletes what Mend did not deliver", () => {
  * whose script the user made executable, or that gained an empty directory or a hard link, still
  * read as "Mend's delivery". Every resume then removed it and wrote it again: the script came back
  * 0644, the empty directory and the link were gone, the times reset. Now a directory that already
- * holds exactly the bundle is left untouched, and a replaced or retired one goes only when its
- * metadata is also exactly what Mend writes; otherwise it is moved aside whole.
+ * holds exactly the bundle is left untouched, and a replaced or retired one is moved aside whole
+ * (since review 19, never deleted).
  */
 const helper = (contents: string) =>
   bundle("build-helper", [
@@ -388,9 +414,9 @@ describe("a delivery keeps what the user set on a skill's files", () => {
     expect(outcomes.find((outcome) => outcome.dir === ".claude/skills/build-helper")?.outcome).toBe(
       "kept",
     );
-    // The codex copy was exactly Mend's delivery: it goes.
+    // The codex copy was exactly Mend's delivery: kept aside all the same (review 19).
     expect(outcomes.find((outcome) => outcome.dir === ".codex/skills/build-helper")?.outcome).toBe(
-      "removed",
+      "kept",
     );
     const [stamp = ""] = fs.readdirSync(keptRoot(home));
     const keptHome = path.join(keptRoot(home), stamp);
@@ -406,12 +432,13 @@ describe("a delivery keeps what the user set on a skill's files", () => {
     expect(fs.statSync(script).mode & 0o777).toBe(0o644);
   });
 
-  it("a retired skill goes only with nothing of the user's on it", async () => {
+  it("a retired skill is kept aside whatever the user changed on it", async () => {
     const setups: ReadonlyArray<readonly [string, (dir: string, home: string) => void]> = [
       ["a mode", (dir) => fs.chmodSync(path.join(dir, "scripts/check.sh"), 0o755)],
       ["an empty directory", (dir) => fs.mkdirSync(path.join(dir, "notes"))],
       ["a hard link", (dir, home) => fs.linkSync(path.join(dir, "SKILL.md"), path.join(home, "l"))],
       ["a directory mode", (dir) => fs.chmodSync(path.join(dir, "scripts"), 0o700)],
+      ["nothing", () => undefined],
     ];
     for (const [what, setup] of setups) {
       const home = tmpHome();
@@ -423,7 +450,7 @@ describe("a delivery keeps what the user set on a skill's files", () => {
         what,
       ).toEqual([
         [".claude/skills/build-helper", "kept"],
-        [".codex/skills/build-helper", "removed"],
+        [".codex/skills/build-helper", "kept"],
       ]);
     }
   });
@@ -460,5 +487,47 @@ describe("a delivery keeps what the user set on a skill's files", () => {
       ".claude/skills/other/SKILL.md",
       ".codex/skills/other/SKILL.md",
     ]);
+  });
+});
+
+/**
+ * Review 2026-09-28 (19), R18 #1 carried: the ownership check read contents, modes, link counts
+ * and extra entries but no times, so a skill whose only change was a file's mtime still read as
+ * Mend's own and was deleted on retirement. Now a replaced or retired skill directory is never
+ * deleted: it is moved aside whole, times and all, and only a directory that already holds exactly
+ * this delivery is left where it is.
+ */
+describe("a replaced or retired skill is never deleted", () => {
+  it("AUDIT R19 a retired skill with a changed mtime is kept", async () => {
+    const home = tmpHome();
+    await deliver(home, [helper(CHECK)]);
+    const file = path.join(home, ".claude/skills/build-helper/SKILL.md");
+    fs.utimesSync(file, 1700000000.125, 1700000000.125);
+    const outcomes = await deliver(home, []);
+    expect(outcomes.find((outcome) => outcome.dir === ".claude/skills/build-helper")?.outcome).toBe(
+      "kept",
+    );
+    const [stamp = ""] = fs.readdirSync(keptRoot(home));
+    const kept = path.join(keptRoot(home), stamp, ".claude/skills/build-helper/SKILL.md");
+    expect(fs.statSync(kept, { bigint: true }).mtimeNs.toString()).toBe("1700000000125000000");
+    expect(fs.existsSync(path.join(home, ".claude/skills/build-helper"))).toBe(false);
+  });
+
+  it("a replaced skill with a changed mtime is kept aside, and the new version delivered", async () => {
+    const home = tmpHome();
+    await deliver(home, [helper(CHECK)]);
+    const file = path.join(home, ".claude/skills/build-helper/SKILL.md");
+    fs.utimesSync(file, 1700000000.125, 1700000000.125);
+    const outcomes = await deliver(home, [helper("#!/bin/sh\necho checked twice\n")]);
+    expect(outcomes.map((outcome) => [outcome.dir, outcome.outcome])).toEqual([
+      [".claude/skills/build-helper", "kept"],
+      [".codex/skills/build-helper", "kept"],
+    ]);
+    const [stamp = ""] = fs.readdirSync(keptRoot(home));
+    const kept = path.join(keptRoot(home), stamp, ".claude/skills/build-helper/SKILL.md");
+    expect(fs.statSync(kept, { bigint: true }).mtimeNs.toString()).toBe("1700000000125000000");
+    expect(
+      fs.readFileSync(path.join(home, ".claude/skills/build-helper/scripts/check.sh"), "utf8"),
+    ).toBe("#!/bin/sh\necho checked twice\n");
   });
 });

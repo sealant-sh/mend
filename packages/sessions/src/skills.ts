@@ -13,7 +13,7 @@ import { shellQuote } from "./workspace-files.ts";
  * Launch-side skills materialization. The mounted harness home is the seam
  * (plan §17: "skills management writes into `harness-home/.claude/skills`
  * with no workspace exec"): bundles are written server-side before the
- * workspace boots, and the boot relocation's `cp -an` keeps mount-side files
+ * workspace boots, and the boot relocation keeps mount-side files
  * on collision, so what is written here is exactly what the harness reads.
  *
  * Every harness gets the same library in its own discovery location — claude
@@ -28,12 +28,12 @@ import { shellQuote } from "./workspace-files.ts";
  * home comes back whole from a capture. So a directory that already holds exactly the files about
  * to be delivered (`skillTreeDigest`, contents only) is left as it is: not removed, not rewritten,
  * whatever the user did to its modes, times, empty directories or links (review 2026-09-28 (18)).
- * A directory Mend is about to replace or retire is removed only when it is still exactly what
- * Mend wrote: one of the accepted trees, every file 0644 with a single link, every directory 0755
- * and holding a file. Anything else, an edited skill, a script made executable, or a directory of
- * the agent's own that a library skill now shares a name with, is moved aside whole (a rename
- * keeps its metadata) to `.mend/skills-kept/<stamp>/…` in the harness home, never deleted (review
- * 2026-09-28 (17), sweep). One program does this in both stores (`SKILLS_VACATE_PROGRAM`).
+ * A directory Mend is about to replace or retire is never deleted: it is moved aside whole (a
+ * rename keeps its metadata) to `.mend/skills-kept/<stamp>/…` in the harness home. That covers an
+ * edited skill, a script made executable, a file whose time alone changed, and a directory of the
+ * agent's own that a library skill now shares a name with (review 2026-09-28 (17), sweep; (19):
+ * an ownership check that read no times deleted a skill whose only change was an mtime). One
+ * program does this in both stores (`SKILLS_VACATE_PROGRAM`).
  */
 
 /** Harness-home-relative skills directories, one per harness that reads skills. */
@@ -143,7 +143,7 @@ export interface SkillsPlan {
   readonly directories: ReadonlyArray<string>;
   /**
    * Bundle directories to clear before the files are written: stale ones, and the ones about to
-   * be rewritten. Each goes only when its tree digest is one of `accept`; otherwise it is kept.
+   * be rewritten. Each is moved aside, unless it already holds exactly `delivering`.
    */
   readonly vacate: ReadonlyArray<SkillsVacate>;
   readonly files: ReadonlyArray<{ readonly path: string; readonly contents: string }>;
@@ -152,9 +152,13 @@ export interface SkillsPlan {
   readonly digests: string;
 }
 
-/** One directory to clear, relative to the harness home, and the trees that are Mend's to delete. */
+/** One directory to clear, relative to the harness home. */
 export interface SkillsVacate {
   readonly dir: string;
+  /**
+   * The trees Mend delivered here (this delivery's and the last one's). Reported, never a reason
+   * to delete: nothing on disk says the times and the rest are still Mend's.
+   */
   readonly accept: ReadonlyArray<string>;
   /**
    * The tree about to be delivered here, or null for a skill being retired. A directory whose
@@ -229,9 +233,8 @@ export const planSkills = (
  * Clears the plan's directories under a harness home (`node -e`, argv: home, the kept directory
  * relative to it, the `vacate` list as JSON). Prints one `skill <outcome> <dir>[ <detail>]` line
  * per directory: `absent`; `unchanged` (its files are exactly `delivering`; nothing was touched
- * and nothing is written into it); `removed` (its tree was one of `accept` and nothing about it
- * differs from what Mend writes: files 0644 with one link, directories 0755, none empty); `kept`
- * (moved whole to the detail path); `error` (the detail is the code). Exits 1 after any `error`,
+ * and nothing is written into it); `kept` (moved whole to the detail path; nothing is ever
+ * deleted); `error` (the detail is the code). Exits 1 after any `error`,
  * and the caller then writes nothing: a directory that could not be cleared is never written into.
  */
 export const SKILLS_VACATE_PROGRAM = [
@@ -242,18 +245,12 @@ export const SKILLS_VACATE_PROGRAM = [
   `const a=path.join(abs,e.name),r=rel===""?e.name:rel+"/"+e.name;`,
   `if(e.isDirectory())walk(a,r);else if(e.isFile())out.push([r,sha(fs.readFileSync(a))]);else throw new Error("special")}};`,
   `walk(dir,"");out.sort((x,y)=>x[0]<y[0]?-1:x[0]>y[0]?1:0);return sha(out.map(([r,h])=>r+"\\u0000"+h+"\\n").join(""))}`,
-  // Exactly what Mend's writers leave: files 0644 with one link, directories 0755 with a file.
-  `function mine(dir){const walk=abs=>{let files=0;for(const e of fs.readdirSync(abs,{withFileTypes:true})){const a=path.join(abs,e.name),st=fs.lstatSync(a);`,
-  `if(st.isDirectory()){if((st.mode&0o7777)!==0o755)return -1;const n=walk(a);if(n<1)return -1;files+=n}`,
-  `else if(st.isFile()&&(st.mode&0o7777)===0o644&&st.nlink===1)files++;else return -1}return files};`,
-  `return (fs.lstatSync(dir).mode&0o7777)===0o755&&walk(dir)>0}`,
   `function say(o,d,x){process.stdout.write("skill "+o+" "+d+(x?" "+x:"")+"\\n")}`,
   `let failed=false;for(const it of items){const abs=path.join(home,it.dir);let st;`,
   `try{st=fs.lstatSync(abs)}catch(e){if(e.code==="ENOENT"){say("absent",it.dir);continue}say("error",it.dir,e.code);failed=true;continue}`,
   `let digest=null;if(st.isDirectory()){try{digest=tree(abs)}catch{digest=null}}`,
   `if(digest!==null&&it.delivering!==null&&digest===it.delivering){say("unchanged",it.dir);continue}`,
-  `try{if(digest!==null&&it.accept.includes(digest)&&mine(abs)){fs.rmSync(abs,{recursive:true,force:true});say("removed",it.dir)}`,
-  `else{const rel=path.join(kept,it.dir),to=path.join(home,rel);fs.mkdirSync(path.dirname(to),{recursive:true});fs.renameSync(abs,to);say("kept",it.dir,rel)}}`,
+  `try{const rel=path.join(kept,it.dir),to=path.join(home,rel);fs.mkdirSync(path.dirname(to),{recursive:true});fs.renameSync(abs,to);say("kept",it.dir,rel)}`,
   `catch(e){say("error",it.dir,e.code||"error");failed=true}}`,
   `process.exit(failed?1:0)`,
 ].join("");
@@ -267,7 +264,7 @@ export const skillsKeptDir = (now: Date = new Date()): string =>
 
 /**
  * The exec that prepares a workspace's harness home for `plan`: the skills directories exist, and
- * every directory in `plan.vacate` is removed or kept aside.
+ * every directory in `plan.vacate` is left unchanged or kept aside.
  */
 export const vacateSkillsExec = (
   home: string,
@@ -286,20 +283,19 @@ export const vacateSkillsExec = (
 
 /** What the vacate program did with one directory. */
 export interface SkillsVacateOutcome {
-  readonly outcome: "absent" | "unchanged" | "removed" | "kept" | "error";
+  readonly outcome: "absent" | "unchanged" | "kept" | "error";
   readonly dir: string;
   readonly detail: string | null;
 }
 
 export const parseSkillsVacateOutcomes = (stdout: string): ReadonlyArray<SkillsVacateOutcome> =>
   stdout.split("\n").flatMap((line): ReadonlyArray<SkillsVacateOutcome> => {
-    const match = /^skill (absent|unchanged|removed|kept|error) (\S+)(?: (.*))?$/.exec(line);
+    const match = /^skill (absent|unchanged|kept|error) (\S+)(?: (.*))?$/.exec(line);
     if (match === null) return [];
     const outcome = match[1];
     if (
       outcome !== "absent" &&
       outcome !== "unchanged" &&
-      outcome !== "removed" &&
       outcome !== "kept" &&
       outcome !== "error"
     ) {

@@ -433,19 +433,15 @@ const withHarnessBootstrap = (
   argv: ReadonlyArray<string>,
 ): ReadonlyArray<string> => withHarnessSetup(harness, withPermissionDefaults(harness, argv));
 
-/** A skill directory removed, kept aside, or one that could not be cleared, is said once. */
+/** A skill directory kept aside, or one that could not be cleared, is said once. */
 const logSkillsVacated = (sessionId: SessionId, outcomes: ReadonlyArray<SkillsVacateOutcome>) =>
   Effect.forEach(
     outcomes,
     (outcome) => {
       switch (outcome.outcome) {
-        case "removed":
-          return Effect.logInfo(
-            "session engine: skills · a directory exactly as Mend delivered it was removed",
-          ).pipe(Effect.annotateLogs({ sessionId, dir: outcome.dir }));
         case "kept":
-          return Effect.logWarning(
-            "session engine: skills · a directory that was not Mend's delivery was kept aside",
+          return Effect.logInfo(
+            "session engine: skills · a replaced or retired skill directory was kept aside",
           ).pipe(Effect.annotateLogs({ sessionId, dir: outcome.dir, keptAt: outcome.detail }));
         case "error":
           return Effect.logWarning(

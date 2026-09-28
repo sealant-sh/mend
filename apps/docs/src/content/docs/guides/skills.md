@@ -88,16 +88,16 @@ In the workspace, `~/.claude` and `~/.codex` link into the harness home at
 `/workspace/harness-home`. Mend records which skill directories it wrote in
 `/workspace/harness-home/.mend-managed-skills.json`, and a digest of their files in
 `.mend-managed-skills-digests.json` beside it. On the next delivery it replaces the skills the
-libraries still have and removes the ones they no longer have. It leaves any skill directory the
+libraries still have and moves aside the ones they no longer have. It leaves any skill directory the
 agent created itself under another name alone.
 
 A skill directory whose files already match the library is left as it is, so a script you made
-executable, an empty directory or a hard link you added stays. Mend deletes a skill directory only
-when it is still exactly what Mend wrote there: the same files, each 0644 with one link, and no
-empty directories. A directory that differs is moved whole, with its modes and times, to
-`/workspace/harness-home/.mend/skills-kept/<time>/`, and the server logs where it went. That covers
-a skill you or the agent edited during the session, and a directory of the agent's own that a
-library skill now shares a name with. To keep an edit in the library, push it with
+executable, an empty directory or a hard link you added stays. Mend never deletes a skill directory.
+When the library replaces or drops a skill, its old directory is moved whole, with its modes and
+times, to `/workspace/harness-home/.mend/skills-kept/<time>/`, and the server logs where it went.
+That covers a skill you or the agent edited during the session, and a directory of the agent's own
+that a library skill now shares a name with. Nothing clears `.mend/skills-kept`; delete old entries
+there by hand when you no longer need them. To keep an edit in the library, push it with
 `mend skills push`.
 
 This works the same in both storage modes. With the captured store, the default, Mend writes the
