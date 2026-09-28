@@ -20,19 +20,24 @@
  * file that is absent starts empty; a file that cannot be read, is not a JSON object, or is a
  * symlink to nothing is left exactly as it is. A file that already says what the seed would say
  * is not written at all. A write goes to a temporary file beside the target (a symlink's target)
- * and is renamed over it, keeping the mode.
+ * and is renamed over it, keeping the mode. The temporary is created exclusively; a name that is
+ * already taken is someone else's file and is left alone, and another name is tried (review
+ * 2026-09-28 (18)).
  */
 
 const CLAUDE_SEED_PROGRAM = [
-  `const fs=require("fs"),os=require("os"),path=require("path"),h=os.homedir(),t=process.env.CLAUDE_CODE_OAUTH_TOKEN;`,
+  `const fs=require("fs"),os=require("os"),path=require("path"),crypto=require("crypto"),h=os.homedir(),t=process.env.CLAUDE_CODE_OAUTH_TOKEN;`,
   `fs.mkdirSync(h+"/.claude",{recursive:true});`,
   `if(t){try{fs.writeFileSync(h+"/.claude/.credentials.json",JSON.stringify({claudeAiOauth:{accessToken:t,refreshToken:"",expiresAt:9999999999999,scopes:["user:inference","user:profile"],subscriptionType:"max"}}),{mode:0o600,flag:"wx"})}catch{}}`,
   // Absent reads as {}; anything else that is not a JSON object is null: leave the file alone.
   `function read(p){let raw;try{raw=fs.readFileSync(p,"utf8")}catch(e){if(e.code!=="ENOENT")return null;try{fs.lstatSync(p);return null}catch{return {}}}`,
   `try{const v=JSON.parse(raw);return v!==null&&typeof v==="object"&&!Array.isArray(v)?v:null}catch{return null}}`,
   `function put(p,text){let real=p,mode=0o644;try{real=fs.realpathSync(p);mode=fs.statSync(real).mode&0o7777}catch{}`,
-  `const tmp=path.join(path.dirname(real),"."+path.basename(real)+".mend-seed-"+process.pid);`,
-  `try{fs.writeFileSync(tmp,text,{mode,flag:"wx"});fs.chmodSync(tmp,mode);fs.renameSync(tmp,real)}catch{try{fs.unlinkSync(tmp)}catch{}}}`,
+  // The temporary is this run's only once its exclusive create succeeded; a name that is taken
+  // is someone else's file and is never removed: the next try takes a random suffix.
+  `const base=path.join(path.dirname(real),"."+path.basename(real)+".mend-seed-"+process.pid);let tmp=null,fd=null;`,
+  `for(let i=0;fd===null&&i<17;i++){const n=i===0?base:base+"-"+crypto.randomBytes(6).toString("hex");try{fd=fs.openSync(n,"wx",mode);tmp=n}catch(e){if(e.code!=="EEXIST")return}}`,
+  `if(fd===null)return;try{try{fs.writeFileSync(fd,text);fs.fchmodSync(fd,mode)}finally{fs.closeSync(fd)}fs.renameSync(tmp,real)}catch{try{fs.unlinkSync(tmp)}catch{}}}`,
   `function merge(p,f){const v=read(p);if(v===null)return;const before=JSON.stringify(v);f(v);`,
   `if(JSON.stringify(v)===before&&fs.existsSync(p))return;put(p,JSON.stringify(v,null,2))}`,
   `merge(h+"/.claude.json",c=>{c.hasCompletedOnboarding=true;c.bypassPermissionsModeAccepted=true;`,

@@ -154,6 +154,56 @@ describe("claude onboarding seed", () => {
   });
 });
 
+describe("claude onboarding seed, temporary names", () => {
+  it("a temporary name that is already taken is someone else's file: kept, and another name is used", () => {
+    // Review 2026-09-28 (18): the seed's temporary is named by its PID; when a file of that name
+    // already existed (a restored home, a reused PID), the exclusive create failed and the cleanup
+    // then removed that file. The preload takes both names before the program runs, in its process.
+    const home = makeHome();
+    write(path.join(home, ".claude.json"), JSON.stringify({ numStartups: 3 }));
+    write(path.join(home, ".claude", "settings.json"), JSON.stringify({ theme: "dark" }));
+    const preload = path.join(home, "take-temp-names.cjs");
+    const taken = [
+      path.join(home, "..claude.json.mend-seed-"),
+      path.join(home, ".claude", ".settings.json.mend-seed-"),
+    ];
+    fs.writeFileSync(
+      preload,
+      `for(const p of ${JSON.stringify(taken)})require("fs").writeFileSync(p+process.pid,"Saved user work\\n");`,
+    );
+    const env: Record<string, string> = {
+      ...process.env,
+      HOME: home,
+      NODE_OPTIONS: `--require ${preload}`,
+      CLAUDE_CODE_OAUTH_TOKEN: "tok-123",
+    } as Record<string, string>;
+    const result = spawnSync("sh", ["-c", CLAUDE_ONBOARDING_SEED, "sh", "true"], {
+      encoding: "utf8",
+      env,
+    });
+    expect(result.status).toBe(0);
+    expect(readJson(path.join(home, ".claude.json"))).toMatchObject({
+      numStartups: 3,
+      hasCompletedOnboarding: true,
+    });
+    expect(readJson(path.join(home, ".claude", "settings.json"))).toEqual({
+      theme: "dark",
+      skipDangerousModePermissionPrompt: true,
+      model: "claude-fable-5",
+    });
+    for (const prefix of taken) {
+      const siblings = fs
+        .readdirSync(path.dirname(prefix))
+        .filter((name) => name.startsWith(path.basename(prefix)));
+      expect(siblings, prefix).toHaveLength(1);
+      expect(siblings[0]).toMatch(/-\d+$/);
+      expect(fs.readFileSync(path.join(path.dirname(prefix), siblings[0] ?? ""), "utf8")).toBe(
+        "Saved user work\n",
+      );
+    }
+  });
+});
+
 describe("codex trust seed", () => {
   it("adds the trust table on its own line, even after a last line without a newline", () => {
     const home = makeHome();

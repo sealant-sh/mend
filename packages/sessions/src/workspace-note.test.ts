@@ -309,6 +309,38 @@ describe("workspace note", () => {
     expect(fs.existsSync(path.join(home, "nowhere"))).toBe(false);
   });
 
+  it("a temporary name that is already taken is someone else's file: kept, and another name is used", () => {
+    // Review 2026-09-28 (18): the writer's temporary is named by its PID; when a file of that name
+    // already existed (a restored home, a reused PID), the exclusive create failed and the cleanup
+    // then removed that file. The preload takes the name before the program runs, in its process.
+    const home = makeHome();
+    write(claude(home), OWNER);
+    const preload = path.join(path.dirname(home), "take-temp-name.cjs");
+    fs.writeFileSync(
+      preload,
+      `require("fs").writeFileSync(${JSON.stringify(
+        path.join(path.dirname(claude(home)), ".CLAUDE.md.mend-note-"),
+      )}+process.pid,"Saved user work\\n");`,
+    );
+    const [command = "", ...args] = workspaceNoteExec(BODY);
+    const result = spawnSync(command, args, {
+      encoding: "utf8",
+      env: { ...process.env, HOME: home, NODE_OPTIONS: `--require ${preload}` },
+    });
+    expect(result.stderr).toBe("");
+    const outcomes = parseWorkspaceNoteOutcomes(result.stdout);
+    expect(outcomes.find((outcome) => outcome.file === claude(home))?.outcome).toBe("appended");
+    expect(fs.readFileSync(claude(home), "utf8")).toBe(`${OWNER}\n${workspaceNoteBlock(BODY)}`);
+    const siblings = fs
+      .readdirSync(path.dirname(claude(home)))
+      .filter((name) => name !== "CLAUDE.md");
+    expect(siblings).toHaveLength(1);
+    expect(siblings[0]).toMatch(/^\.CLAUDE\.md\.mend-note-\d+$/);
+    expect(fs.readFileSync(path.join(path.dirname(claude(home)), siblings[0] ?? ""), "utf8")).toBe(
+      "Saved user work\n",
+    );
+  });
+
   it("names both harness files", () => {
     expect(WORKSPACE_NOTE_FILES).toEqual([".claude/CLAUDE.md", ".codex/AGENTS.md"]);
   });

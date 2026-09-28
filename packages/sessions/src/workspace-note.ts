@@ -87,10 +87,11 @@ export const workspaceNoteBlock = (body: string): string =>
  * - `ambiguous`: the markers do not form exactly one block; nothing was written.
  * - `unreadable`: reading failed, or the bytes are not UTF-8; nothing was written.
  * - `dangling`: the file is a symlink to nothing; nothing was written.
- * - `failed`: the write failed; the temporary file is removed and the file is as it was.
+ * - `failed`: the write failed; the temporary file this run created is removed and the file is as
+ *   it was. A temporary name that is already taken is never this run's: another name is tried.
  */
 export const WORKSPACE_NOTE_PROGRAM = [
-  `const fs=require("fs"),path=require("path");`,
+  `const fs=require("fs"),path=require("path"),crypto=require("crypto");`,
   `const L=${JSON.stringify(LEGACY_NOTE)};`,
   `const BEGIN=${JSON.stringify(WORKSPACE_NOTE_BEGIN)},END=${JSON.stringify(WORKSPACE_NOTE_END)},MARK=${JSON.stringify(LEGACY_NOTE_MARKER)};`,
   `const DECLARED=new RegExp(L.declared);`,
@@ -122,9 +123,13 @@ export const WORKSPACE_NOTE_PROGRAM = [
   `return {text:s+(s===""?"":s.endsWith("\\n")?"\\n":"\\n\\n")+block,outcome:o===null?"appended":"appended-legacy-kept"}}`,
   `function write(f,st,text){if(st===null){fs.writeFileSync(f,text,{flag:"wx",mode:0o644});return}`,
   `const real=fs.realpathSync(f),rs=fs.statSync(real);if(rs.nlink>1){fs.writeFileSync(real,text);return}`,
-  `const tmp=path.join(path.dirname(real),"."+path.basename(real)+".mend-note-"+process.pid);`,
-  `try{const fd=fs.openSync(tmp,"wx",rs.mode&0o7777);try{fs.writeFileSync(fd,text);fs.fchmodSync(fd,rs.mode&0o7777);fs.fsyncSync(fd)}finally{fs.closeSync(fd)}fs.renameSync(tmp,real)}`,
-  `catch(err){try{fs.unlinkSync(tmp)}catch{}throw err}}`,
+  // The temporary is this run's only once its exclusive create succeeded; a name that is taken
+  // is someone else's file and is never removed: the next try takes a random suffix.
+  `const o=own(path.dirname(real),"."+path.basename(real)+".mend-note-"+process.pid,rs.mode&0o7777);`,
+  `try{try{fs.writeFileSync(o.fd,text);fs.fchmodSync(o.fd,rs.mode&0o7777);fs.fsyncSync(o.fd)}finally{fs.closeSync(o.fd)}fs.renameSync(o.tmp,real)}`,
+  `catch(err){try{fs.unlinkSync(o.tmp)}catch{}throw err}}`,
+  `function own(dir,base,mode){for(let i=0;;i++){const tmp=path.join(dir,i===0?base:base+"-"+crypto.randomBytes(6).toString("hex"));`,
+  `try{return {tmp,fd:fs.openSync(tmp,"wx",mode)}}catch(err){if(err.code!=="EEXIST"||i>=16)throw err}}}`,
   `function report(o,f,d){process.stdout.write("note "+o+" "+(d||"-")+" "+f+"\\n")}`,
   `for(const f of files){let st=null;try{st=fs.lstatSync(f)}catch(err){if(err.code!=="ENOENT"){report("unreadable",f,err.code);continue}}`,
   `let s=null;if(st!==null){let buf;try{buf=fs.readFileSync(f)}catch(err){report(err.code==="ENOENT"?"dangling":"unreadable",f,err.code);continue}`,
