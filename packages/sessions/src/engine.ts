@@ -6674,6 +6674,76 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
 
       /**
+       * What runs in an executor before anything else, once it may admit writers: the custom
+       * image's setup commands (a failing one fails the launch), then the `mend` helper and git's
+       * ssh transport shim. A cold launch runs it right after the create; a capture-mode standby
+       * at claim, after its replan (review 2026-09-28 e2e9 F-B): an exec on an unclaimed standby
+       * clears sealantd's unclaimed marker.
+       */
+      const prepareExecutor = Effect.fn("SessionEngine.prepareExecutor")(function* (input: {
+        readonly sessionId: SessionId;
+        readonly workspace: Workspace;
+        readonly workspaceImage: WorkspaceImage;
+        /** Capture mode: the socket dir is not mounted, so its scripts are written into it. */
+        readonly captured: boolean;
+        readonly onFailure: (message: string) => Effect.Effect<void>;
+        readonly abandon?: (workspace: Workspace, message: string) => Effect.Effect<void>;
+      }) {
+        const { sessionId, workspace, workspaceImage } = input;
+        // Custom-image setup commands run in the fresh workspace BEFORE anything else (state
+        // restore, harness launch). They are part of the image contract, so a failing one fails
+        // the provision loudly instead of handing the agent a half-prepared environment.
+        if (workspaceImage.mode === "custom") {
+          for (const command of workspaceImage.setupCommands) {
+            const result = yield* sealant
+              .exec(workspace, ["sh", "-lc", command])
+              .pipe(Effect.tapError((error) => input.onFailure(error.message).pipe(Effect.ignore)));
+            if (result.exitCode !== 0) {
+              const message = `setup command failed (exit ${result.exitCode}): ${command}`;
+              yield* input.onFailure(message).pipe(Effect.ignore);
+              yield* input.abandon === undefined
+                ? sealant.stopWorkspace(workspace).pipe(Effect.ignore)
+                : input.abandon(workspace, message);
+              return yield* new SessionLaunchSetupError({ sessionId, command, message });
+            }
+          }
+        }
+        // The helper reaches everyone through PATH, not prompt engineering.
+        // Git's ssh becomes the transport shim the same way: system config, so
+        // every process in the workspace — agent, shell, service — pushes and
+        // fetches through the host with zero credentials in the container.
+        // ssh.variant=ssh keeps ports and protocol v2 working through it.
+        // Touches /usr/local/bin and system git config, never $HOME, so it is
+        // safe before any state restore.
+        //
+        // A captured workspace mounts nothing (ADR-0002), so the socket dir that carries the two
+        // scripts never arrives: they are written into it here instead, and reach this machine
+        // over the session endpoint. Without this, both paths above named files that did not
+        // exist, and every push, fetch and `mend service` inside a captured session failed.
+        const notInstalled = (detail: Record<string, unknown>) =>
+          Effect.logWarning(
+            "session engine: the mend helper and git transport were not installed in the workspace",
+          ).pipe(Effect.annotateLogs({ sessionId, ...detail }));
+        // The session still launches: an agent can work without a remote. It must not be
+        // silent, though: that is how a workspace with no git transport went unnoticed.
+        yield* sealant
+          .exec(workspace, [
+            "sh",
+            "-c",
+            `${!input.captured ? "" : `${workspaceScriptStaging(SESSION_SOCKET_MOUNT_PATH)} && `}` +
+              `ln -sf ${SESSION_SOCKET_MOUNT_PATH}/bin/mend /usr/local/bin/mend && ` +
+              `git config --system core.sshCommand ${SESSION_SOCKET_MOUNT_PATH}/bin/mend-git-ssh && ` +
+              `git config --system ssh.variant ssh`,
+          ])
+          .pipe(
+            Effect.flatMap((result) =>
+              result.exitCode === 0 ? Effect.void : notInstalled({ exitCode: result.exitCode }),
+            ),
+            Effect.catch((error) => notInstalled({ message: error.message })),
+          );
+      });
+
+      /**
        * Create a live workspace over `worktree` — the create-time half of a launch, shared by
        * the cold launch path and the hot-session prewarm. Resolves every create-fixed input
        * (image, dotfiles, env, secrets, mounts), runs the credential ladder, executes
@@ -6700,6 +6770,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          * work only that executor holds.
          */
         readonly abandon?: (workspace: Workspace, message: string) => Effect.Effect<void>;
+        /**
+         * A capture-mode standby: nothing executes in it until it is claimed (`prepareExecutor`
+         * runs at claim instead, after the replan).
+         */
+        readonly deferPreparation?: boolean;
         /**
          * Makes the create idempotent on the platform (Core's next SDK): `onAsking` runs once,
          * right before the first create is asked, so the key is on the row before any executor
@@ -7083,55 +7158,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
         if (input.onCreated !== undefined) yield* input.onCreated(workspace);
-        // Custom-image setup commands run in the fresh workspace BEFORE anything else (state
-        // restore, harness launch). They are part of the image contract, so a failing one fails
-        // the provision loudly instead of handing the agent a half-prepared environment.
-        if (workspaceImage.mode === "custom") {
-          for (const command of workspaceImage.setupCommands) {
-            const result = yield* sealant.exec(workspace, ["sh", "-lc", command]).pipe(report);
-            if (result.exitCode !== 0) {
-              const message = `setup command failed (exit ${result.exitCode}): ${command}`;
-              yield* input.onFailure(message).pipe(Effect.ignore);
-              yield* input.abandon === undefined
-                ? sealant.stopWorkspace(workspace).pipe(Effect.ignore)
-                : input.abandon(workspace, message);
-              return yield* new SessionLaunchSetupError({ sessionId, command, message });
-            }
-          }
+        // A capture-mode standby admits no writer until it is claimed (review 2026-09-28 e2e9
+        // F-B, sealantd#121): an exec clears sealantd's unclaimed marker, and a standby that ran
+        // one reads as holding a session's work — a failed replan wedged its launch and a pool
+        // shrink never released it. Its setup commands and tools run at claim, after the replan.
+        if (input.deferPreparation !== true) {
+          yield* prepareExecutor({
+            sessionId,
+            workspace,
+            workspaceImage,
+            captured: captureSource !== null,
+            onFailure: input.onFailure,
+            ...(input.abandon === undefined ? {} : { abandon: input.abandon }),
+          });
         }
-        // The helper reaches everyone through PATH, not prompt engineering.
-        // Git's ssh becomes the transport shim the same way: system config, so
-        // every process in the workspace — agent, shell, service — pushes and
-        // fetches through the host with zero credentials in the container.
-        // ssh.variant=ssh keeps ports and protocol v2 working through it.
-        // Touches /usr/local/bin and system git config, never $HOME, so it is
-        // safe before any state restore.
-        //
-        // A captured workspace mounts nothing (ADR-0002), so the socket dir that carries the two
-        // scripts never arrives: they are written into it here instead, and reach this machine
-        // over the session endpoint. Without this, both paths above named files that did not
-        // exist, and every push, fetch and `mend service` inside a captured session failed.
-        const notInstalled = (detail: Record<string, unknown>) =>
-          Effect.logWarning(
-            "session engine: the mend helper and git transport were not installed in the workspace",
-          ).pipe(Effect.annotateLogs({ sessionId, ...detail }));
-        // The session still launches: an agent can work without a remote. It must not be
-        // silent, though: that is how a workspace with no git transport went unnoticed.
-        yield* sealant
-          .exec(workspace, [
-            "sh",
-            "-c",
-            `${captureSource === null ? "" : `${workspaceScriptStaging(SESSION_SOCKET_MOUNT_PATH)} && `}` +
-              `ln -sf ${SESSION_SOCKET_MOUNT_PATH}/bin/mend /usr/local/bin/mend && ` +
-              `git config --system core.sshCommand ${SESSION_SOCKET_MOUNT_PATH}/bin/mend-git-ssh && ` +
-              `git config --system ssh.variant ssh`,
-          ])
-          .pipe(
-            Effect.flatMap((result) =>
-              result.exitCode === 0 ? Effect.void : notInstalled({ exitCode: result.exitCode }),
-            ),
-            Effect.catch((error) => notInstalled({ message: error.message })),
-          );
         return {
           workspace,
           workspaceImage,
@@ -8251,6 +8291,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               );
             executorStartedAt = new Date();
             provisioned = yield* provisionCold(fallbackKey);
+          } else {
+            // Claimed: what a cold launch runs right after its create runs now, and not before
+            // (e2e9 F-B: an exec on an unclaimed standby clears sealantd's unclaimed marker).
+            yield* prepareExecutor({
+              sessionId,
+              workspace: provisioned.workspace,
+              workspaceImage: provisioned.workspaceImage,
+              captured: true,
+              onFailure: (message) =>
+                sessions
+                  .settle(sessionId, "failed", `launch failed: ${message}`)
+                  .pipe(Effect.ignore),
+              abandon: abandonExecutor,
+            });
           }
         }
         const { workspace, workspaceImage, environmentManifest } = provisioned;
@@ -10781,15 +10835,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             launchId: standbyLaunchIdOf(sessionId),
             ...(capture === null
               ? {}
-              : { createKey: { key: standbyLaunchIdOf(sessionId), onAsking: Effect.void } }),
+              : {
+                  createKey: { key: standbyLaunchIdOf(sessionId), onAsking: Effect.void },
+                  // Nothing executes in a capture-mode standby before its claim (e2e9 F-B).
+                  deferPreparation: true,
+                }),
           });
-          yield* appendWorkspaceNote(
-            provisioned.workspace,
-            project,
-            null,
-            provisioned.referenceMounts,
-            provisioned.extraMounts,
-          );
+          // Capture mode: the note is written at claim, as every launch writes it; an exec here
+          // would clear sealantd's unclaimed marker (e2e9 F-B).
+          if (capture === null) {
+            yield* appendWorkspaceNote(
+              provisioned.workspace,
+              project,
+              null,
+              provisioned.referenceMounts,
+              provisioned.extraMounts,
+            );
+          }
           yield* hotWorkspaces.setReady(sessionId, {
             sealantWorkspaceId: SealantWorkspaceId.make(provisioned.workspace.id),
             workspaceImage: provisioned.workspaceImage,

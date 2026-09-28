@@ -9050,6 +9050,108 @@ describe("SessionEngine capture mode", () => {
     await scenario.run();
   }, 30_000);
 
+  it("e2e9 F-B: nothing executes in a capture-mode standby before its claim; the helper, setup and note run after the replan", async () => {
+    const created: Array<CreateOptions> = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const flushed: string[] = [];
+    const execCalls: ReadonlyArray<string>[] = [];
+    const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
+    /** How many execs had reached the standby when its replan was asked. */
+    const execsAtReplan: Array<number> = [];
+    let executor: SessionId | null = null;
+    const flush = () =>
+      Effect.succeed({
+        epoch: 2,
+        worktreeId: "",
+        pending: 0,
+        stagedBytes: 0,
+        uploadedObjects: 0,
+        uploadedBytes: 0,
+        registered: 0,
+        fenced: false,
+        paused: false,
+        ...readEverything,
+      } satisfies WorkspaceCaptureStatus);
+    const replan = (_workspace: Workspace) =>
+      Effect.gen(function* () {
+        execsAtReplan.push(execCalls.length);
+        if (executor === null) throw new Error("no executor to replan");
+        const api = servedSocketApis.get(executor)?.capture;
+        if (api === undefined) throw new Error("the executor serves no capture api");
+        const plan = yield* api.planGet({ worktree_id: null, epoch: 0 }).pipe(
+          Effect.mapError(
+            (error) =>
+              new SealantPlatformError({
+                code: "replan_refused",
+                status: error.status,
+                message: `${error.reason}: ${error.message}`,
+                cause: error,
+              }),
+          ),
+        );
+        return {
+          worktreeId: plan.worktree_id,
+          epoch: plan.epoch,
+          ...(plan.head === null
+            ? {}
+            : { headN: plan.head.n, headCaptureId: plan.head.capture_id }),
+          filesWritten: 0,
+          bytesWritten: 0,
+          filesSkipped: 0,
+          bytesSkipped: 0,
+          removed: 0,
+          unchanged: false,
+        } satisfies WorkspaceCaptureReplanned;
+      });
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(() => pool.entries.some((entry) => entry.status === "ready"), "a standby");
+          // Warmed and ready: not one exec reached it (before: the helper install and the
+          // prewarm note, each clearing sealantd's unclaimed marker).
+          expect(execCalls).toEqual([]);
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          expect(pool.entries.some((entry) => entry.id === session.id)).toBe(true);
+          executor = session.id;
+          yield* engine.launch(session.id, ["codex"]);
+          expect(execsAtReplan).toEqual([0]);
+          // After the replan: the helper and git transport, and the note, as a cold launch has.
+          expect(execCalls.some((argv) => argv.join(" ").includes("core.sshCommand"))).toBe(true);
+          expect(execCalls.length).toBeGreaterThan(1);
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          spawned,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          execCalls,
+          undefined,
+          { flushed, replan, flush },
+        ),
+        hotWorkspacesLayer: pool.layer,
+      },
+    );
+  });
+
   it("a worktree claims the standby: the session adopts its id, the lease is taken at a fresh epoch with the executor as holder, the launch re-plans it onto the worktree, its first register parents on capture 0, a fresh standby warms, a second worktree claims that one, and a join goes cold", async () => {
     const created: Array<CreateOptions> = [];
     const spawned: ReadonlyArray<string>[] = [];
