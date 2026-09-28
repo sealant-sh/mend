@@ -1,7 +1,12 @@
+import * as fs from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
+
 import { StoreRefsRepo } from "@mend/db";
 import type { ProjectId } from "@mend/domain";
 import {
   type CaptureManifest,
+  digestOfKey,
   type GitFsckOutcome,
   git,
   gitBytes,
@@ -20,10 +25,14 @@ import * as Context from "effect/Context";
  * pack holds (observed on the cluster: a root tree naming subtrees the executor never packed,
  * `fsck: "verified"` notwithstanding) is `failed` here and never poisons a pickup or a read.
  *
- * Two checks, both on the runner cache: `git index-pack --verify` on every pack as it is
- * installed (`GitOpsRunner.ensure`), then `git rev-list --objects --missing=error` from every
- * sha the section names, bounded below by the project's store refs so a large repository is
- * walked only across what the capture added.
+ * Two checks: `git index-pack --verify` on every pack as it is installed in the runner cache
+ * (`GitOpsRunner.ensure`), then `git rev-list --objects --missing=error` from every sha the
+ * section names — in a namespace holding the manifest's listed packs and nothing else
+ * (`isolatedPacks`), never the shared cache: a restore fetches exactly those packs, so an object
+ * another capture left in the cache must not satisfy this one's closure (review 2026-09-28 (4)
+ * #12). The walk is bounded below by the project's store refs that the listed packs themselves
+ * hold (the base the capture carries, which Mend packed whole) so a large repository is walked
+ * only across what the capture added; a store ref the listed packs do not hold bounds nothing.
  */
 
 export interface GitVerification {
@@ -93,6 +102,68 @@ export const parseTreeListing = (output: Buffer): ReadonlyMap<string, WorktreeTr
 
 const HEX40 = /^[0-9a-f]{40}$/;
 
+/**
+ * A bare repository whose object store is exactly `packKeys` as the runner cache at `cachePath`
+ * installed them (links to `objects/pack/pack-<sha256>.{pack,idx}`), made for `use` and removed
+ * after. Nothing else is reachable from it: no other pack, no loose object, no alternate.
+ */
+const isolatedPacks = <A, E>(
+  cachePath: string,
+  packKeys: ReadonlyArray<string>,
+  use: (repo: string) => Effect.Effect<A, E>,
+): Effect.Effect<A, E | { readonly _tag: "IsolationError"; readonly detail: string }> =>
+  Effect.acquireUseRelease(
+    Effect.try({
+      try: () => {
+        const repo = fs.mkdtempSync(path.join(os.tmpdir(), "mend-verify-"));
+        for (const dir of ["objects/pack", "objects/info", "refs"]) {
+          fs.mkdirSync(path.join(repo, dir), { recursive: true });
+        }
+        fs.writeFileSync(path.join(repo, "HEAD"), "ref: refs/heads/main\n");
+        fs.writeFileSync(
+          path.join(repo, "config"),
+          "[core]\n\trepositoryformatversion = 0\n\tbare = true\n",
+        );
+        for (const key of new Set(packKeys)) {
+          const digest = digestOfKey(key);
+          if (digest === null) throw new Error(`pack key carries no sha256: ${key}`);
+          for (const ext of ["pack", "idx"]) {
+            fs.symlinkSync(
+              path.join(cachePath, "objects", "pack", `pack-${digest}.${ext}`),
+              path.join(repo, "objects", "pack", `pack-${digest}.${ext}`),
+            );
+          }
+        }
+        return repo;
+      },
+      catch: (cause) => ({
+        _tag: "IsolationError" as const,
+        detail: cause instanceof Error ? cause.message : String(cause),
+      }),
+    }),
+    use,
+    (repo) => Effect.sync(() => fs.rmSync(repo, { recursive: true, force: true })),
+  );
+
+/** Which of `shas` the repository at `repo` holds (`cat-file --batch-check`). */
+const presentIn = (repo: string, shas: ReadonlyArray<string>) =>
+  shas.length === 0
+    ? Effect.succeed<ReadonlyArray<string>>([])
+    : git(
+        ["cat-file", "--batch-check=%(objectname)"],
+        repo,
+        undefined,
+        undefined,
+        `${shas.join("\n")}\n`,
+      ).pipe(
+        Effect.map((out) =>
+          out
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => HEX40.test(line)),
+        ),
+      );
+
 export const CaptureGitVerifierLive: Layer.Layer<
   CaptureGitVerifier,
   never,
@@ -141,23 +212,37 @@ export const CaptureGitVerifierLive: Layer.Layer<
         }
       }
       const tipSet = new Set(tips);
-      const boundary = [...new Set(Object.values(storeRefs))].filter(
+      const storeTips = [...new Set(Object.values(storeRefs))].filter(
         (sha) => HEX40.test(sha) && !tipSet.has(sha),
       );
-      const walked = yield* git(
-        [
-          "rev-list",
-          "--objects",
-          "--missing=error",
-          "--no-object-names",
-          ...tips,
-          ...(boundary.length === 0 ? [] : ["--not", ...boundary]),
-        ],
-        ensured.success.path,
+      // The closure walk sees the listed packs alone (review 2026-09-28 (4) #12): what a restore
+      // fetches is what must hold it.
+      const walked = yield* isolatedPacks(ensured.success.path, section.packs, (repo) =>
+        Effect.gen(function* () {
+          const boundary = yield* presentIn(repo, storeTips);
+          return yield* git(
+            [
+              "rev-list",
+              "--objects",
+              "--missing=error",
+              "--no-object-names",
+              ...tips,
+              ...(boundary.length === 0 ? [] : ["--not", ...boundary]),
+            ],
+            repo,
+          );
+        }),
       ).pipe(Effect.result);
-      return Result.isFailure(walked)
-        ? ({ outcome: "failed", detail: walked.failure.stderr.trim() } satisfies GitVerification)
-        : ({ outcome: "verified", detail: null } satisfies GitVerification);
+      if (Result.isFailure(walked)) {
+        const error = walked.failure;
+        return error._tag === "IsolationError"
+          ? ({
+              outcome: "unverified",
+              detail: `the listed packs could not be isolated: ${error.detail}`,
+            } satisfies GitVerification)
+          : ({ outcome: "failed", detail: error.stderr.trim() } satisfies GitVerification);
+      }
+      return { outcome: "verified", detail: null } satisfies GitVerification;
     });
 
     const treePaths = Effect.fn("CaptureGitVerifier.treePaths")(function* (

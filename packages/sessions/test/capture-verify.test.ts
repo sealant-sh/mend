@@ -416,6 +416,64 @@ describe("a seal rests only on sections Mend observed restore", () => {
   );
 
   it(
+    "review 4 #12 a closure only another capture's pack completes never verifies: the manifest's listed packs alone must hold it, and nothing is sealed",
+    { timeout: 60_000 },
+    async () => {
+      const at = await claimedWorktree();
+      const edited = packEditedTree(world.work, at.worktreeId, at.epoch, world.baseSha, (dir) => {
+        fs.writeFileSync(path.join(dir, "only-in-warm-cache.txt"), "unique work in omitted pack\n");
+      });
+      // A turn lists the pack that holds the new tree: it verifies, and warms the runner cache.
+      const first = buildManifest({
+        worktreeId: at.worktreeId,
+        n: 1,
+        parent: at.cap0Id,
+        epoch: at.epoch,
+        seq: 10,
+        kind: "turn",
+        git: at.gitSection([at.basePack, edited.key], edited.tree),
+      });
+      await run(uploadObjects(new Map([...edited.objects, [first.key, first.bytes]])));
+      await run(registerOn(at.worktreeId, at.epoch, at.api)(first));
+      expect(world.memory.captures.get(first.id)?.gitFsck).toBe("verified");
+      // The sealing final names the same tree but lists only the base pack.
+      const sealed = sealing(
+        at.worktreeId,
+        at.epoch,
+        buildManifest({
+          worktreeId: at.worktreeId,
+          n: 2,
+          parent: first.id,
+          epoch: at.epoch,
+          seq: 20,
+          kind: "final",
+          git: at.gitSection([at.basePack], edited.tree),
+        }),
+      );
+      await run(uploadObjects(new Map([[sealed.key, sealed.bytes]])));
+      await run(registerOn(at.worktreeId, at.epoch, at.api)(sealed));
+      // What a fresh restore sees — a bare repository holding the listed packs — lacks the tree.
+      const cold = fs.mkdtempSync(path.join(os.tmpdir(), "mend-cold-restore-"));
+      sh(cold, ["init", "-q", "--bare"]);
+      const packDir = path.join(cold, "objects", "pack");
+      fs.mkdirSync(packDir, { recursive: true });
+      for (const key of sealed.manifest.sections.git.packs) {
+        const digest = path.basename(key);
+        fs.copyFileSync(path.join(world.blobRoot, key), path.join(packDir, `pack-${digest}.pack`));
+        fs.copyFileSync(
+          path.join(world.blobRoot, packIdxKeyOf(key)),
+          path.join(packDir, `pack-${digest}.idx`),
+        );
+      }
+      expect(() => sh(cold, ["rev-list", "--objects", "--missing=error", edited.tree])).toThrow();
+      fs.rmSync(cold, { recursive: true, force: true });
+      // Mend observes the same: failed, and no seal.
+      expect(world.memory.captures.get(sealed.id)?.gitFsck).toBe("failed");
+      expect(await sealOf(at.worktreeId, at.epoch)).toBeNull();
+    },
+  );
+
+  it(
     "#18 a sealing capture whose git section verifies is sealed, and its plan keeps the seal",
     { timeout: 60_000 },
     async () => {
