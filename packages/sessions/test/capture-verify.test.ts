@@ -463,6 +463,93 @@ describe("a seal rests only on sections Mend observed restore", () => {
       ),
     );
 
+  // Review 2026-09-28 (9) #7 (the reviewer's overlay-hardlink fixture): a tracked hardlink group's
+  // bytes were compared in the raw tree alone. The workspace overlay laid other bytes over one
+  // member — the kinds still matched — the seal was recorded, and sealantd's relink replaced the
+  // overlay's unique bytes with the first member's. Link equality is now checked over the files
+  // the restore lays down: the overlay over the checkout over the bulk, ancestors included.
+  it("review 9 #7 a tracked hardlink group is one set of bytes in the files the restore lays down, the workspace overlay included", async () => {
+    const at = await claimedWorktree();
+    const attempt = async (tree: { readonly a: string; readonly b: string }, overlayB: string) => {
+      const edit = packEditedTree(world.work, at.worktreeId, at.epoch, world.baseSha, (work) => {
+        fs.writeFileSync(path.join(work, "a.txt"), tree.a);
+        fs.writeFileSync(path.join(work, "b.txt"), tree.b);
+      });
+      const meta = withMeta(at.worktreeId, at.epoch, {
+        format: 1,
+        entries: ["a.txt", "b.txt"].map((name) => ({
+          path: name,
+          kind: "file",
+          mode: 0o644,
+          mtime: 100000000000,
+        })),
+        hardlinks: [["a.txt", "b.txt"]],
+      });
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-r9-overlay-"));
+      fs.mkdirSync(path.join(dir, "tree"));
+      fs.writeFileSync(path.join(dir, "tree", "b.txt"), overlayB);
+      const overlay = snapshotDirectory(dir, captureKeys(at.worktreeId, at.epoch), { format: 2 });
+      fs.rmSync(dir, { recursive: true, force: true });
+      const emptyDir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-r9-empty-bulk-"));
+      const emptyBulk = snapshotDirectory(emptyDir, captureKeys(at.worktreeId, at.epoch), {
+        format: 2,
+      });
+      fs.rmSync(emptyDir, { recursive: true, force: true });
+      const head = await run(
+        Effect.flatMap(CaptureStoreRepo, (repo) => repo.headOf(at.worktreeId)),
+      );
+      const cap = sealing(
+        at.worktreeId,
+        at.epoch,
+        buildManifest({
+          worktreeId: at.worktreeId,
+          epoch: at.epoch,
+          n: (head?.headN ?? 0) + 1,
+          parent: head?.head?.id ?? at.cap0Id,
+          seq: 300 + (head?.headN ?? 0),
+          kind: "final",
+          git: { ...at.gitSection([at.basePack, edit.key], edit.tree), raw_tree: edit.tree },
+          workspace: {
+            ...sectionOf(overlay),
+            packs: [...overlay.packs, ...meta.workspace.packs],
+            worktree_meta: meta.workspace.worktree_meta,
+          },
+          bulk: { ...sectionOf(emptyBulk), platform: "linux-x86_64-gnu" },
+        }),
+      );
+      await run(
+        uploadObjects(
+          new Map([
+            ...edit.objects,
+            ...overlay.objects,
+            ...emptyBulk.objects,
+            ...meta.objects,
+            [cap.key, cap.bytes],
+          ]),
+        ),
+      );
+      const answer = await run(registerOn(at.worktreeId, at.epoch, at.api)(cap));
+      return { answer, sealed: (await sealOf(at.worktreeId, at.epoch))?.captureId === cap.id };
+    };
+    // The reviewer's case: one set of bytes in the raw tree, other bytes laid over b.txt.
+    const overwritten = await attempt(
+      { a: "base group bytes\n", b: "base group bytes\n" },
+      "new unique overlay work\n",
+    );
+    expect(overwritten.sealed).toBe(false);
+    expect(overwritten.answer.seal).toEqual({ state: "refused", reason: "unrestorable" });
+    // The overlay lays down the group's own bytes: one set of bytes, sealed.
+    const same = await attempt(
+      { a: "base group bytes\n", b: "base group bytes\n" },
+      "base group bytes\n",
+    );
+    expect(same.sealed).toBe(true);
+    // Different bytes in the raw tree, made one set by the overlay: what the restore lays down
+    // decides, and it is one set.
+    const joined = await attempt({ a: "joined bytes\n", b: "raw other bytes\n" }, "joined bytes\n");
+    expect(joined.sealed).toBe(true);
+  });
+
   it(
     "#18 a sealing capture whose git section fails verification registers and seals nothing; the plan that restores older git carries no seal",
     { timeout: 60_000 },
