@@ -31,6 +31,8 @@ const adminLayer = PgClient.layer({ url: Redacted.make(ADMIN_URL) });
 // results by camelCase key, and a client without the transform would pass a test the API fails.
 const scratchLayer = PgClient.layer({
   url: Redacted.make(scratchUrl),
+  // Enough connections for a test to hold a row lock while another statement waits on it.
+  maxConnections: 10,
   transformResultNames: Str.snakeToCamel,
   transformQueryNames: Str.camelToSnake,
 });
@@ -638,6 +640,108 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     expect(result.lease?.launchId).toBe("launch-new");
     expect(result.head?.headN).toBe(1);
   });
+
+  it(
+    "a register in flight never crosses a launch handoff: the handoff waits for it, and the chain's epoch never goes back (review 2026-09-28 (5) #8)",
+    { timeout: 30_000 },
+    async () => {
+      const result = await run(
+        Effect.gen(function* () {
+          const repo = yield* CaptureStoreRepo;
+          const sql = yield* SqlClient.SqlClient;
+          const worktreeId = yield* freshWorktree;
+          const foreign = yield* freshWorktree;
+          const first = yield* repo.claim(worktreeId, "session-1", 3600, "launch-old");
+          const zero = captureInput(worktreeId, 0, null, first.epoch);
+          yield* repo.register(zero);
+          const state = yield* repo.referenceState([worktreeId, foreign], []);
+          const guards = [worktreeId, foreign].map((id) => ({
+            worktreeId: id,
+            guard: Number(state.guards.get(id) ?? -1),
+          }));
+          // Another transaction holds the foreign chain row the old launch's register names.
+          const locked = yield* Deferred.make<void>();
+          const unlock = yield* Deferred.make<void>();
+          const holder = yield* Effect.forkChild(
+            sql.withTransaction(
+              Effect.gen(function* () {
+                yield* sql`SELECT worktree_id FROM worktree_chain
+                            WHERE worktree_id = ${foreign} FOR UPDATE`;
+                yield* Deferred.succeed(locked, undefined);
+                yield* Deferred.await(unlock);
+              }),
+            ),
+          );
+          yield* Deferred.await(locked);
+          const order: Array<string> = [];
+          const one = {
+            ...captureInput(worktreeId, 1, zero.id, first.epoch),
+            kind: "final" as const,
+          };
+          const stale = yield* Effect.forkChild(
+            reasonOf(
+              repo.register({
+                ...one,
+                guards,
+                holder: { executorId: "session-1", launchId: "launch-old" },
+                seal: { executorId: "launch-old", holder: "session-1" },
+              }),
+            ).pipe(Effect.tap(() => Effect.sync(() => order.push("register")))),
+          );
+          const lockWaiters = sql<{ readonly waiting: number }>`
+            SELECT count(*)::int AS waiting FROM pg_stat_activity
+             WHERE datname = current_database() AND wait_event_type = 'Lock'`;
+          let registerWaited = false;
+          for (let tries = 0; tries < 200 && !registerWaited; tries++) {
+            registerWaited = ((yield* lockWaiters)[0]?.waiting ?? 0) >= 1;
+            if (!registerWaited) yield* Effect.sleep("20 millis");
+          }
+          // The launch handoff: the old launch released, a new launch of the session claims.
+          const handoff = yield* Effect.forkChild(
+            Effect.gen(function* () {
+              yield* repo.release(worktreeId, first.epoch);
+              const next = yield* repo.claim(worktreeId, "session-1", 3600, "launch-new");
+              order.push("handoff");
+              return next;
+            }),
+          );
+          // Give the handoff every chance to commit while the register still waits.
+          for (let tries = 0; tries < 50 && !order.includes("handoff"); tries++) {
+            if (((yield* lockWaiters)[0]?.waiting ?? 0) >= 2) break;
+            yield* Effect.sleep("20 millis");
+          }
+          yield* Deferred.succeed(unlock, undefined);
+          yield* Fiber.join(holder);
+          const said = yield* Fiber.join(stale);
+          const next = yield* Fiber.join(handoff);
+          return {
+            registerWaited,
+            said,
+            order,
+            next,
+            lease: yield* repo.leaseOf(worktreeId),
+            head: yield* repo.headOf(worktreeId),
+            oldSeal: yield* repo.sealedCompletion(worktreeId, "launch-old", first.epoch),
+          };
+        }),
+      );
+      expect(result.registerWaited).toBe(true);
+      expect(result.next.epoch).toBe(2);
+      expect(result.lease?.epoch).toBe(2);
+      expect(result.lease?.launchId).toBe("launch-new");
+      // Whatever landed, the chain names the live epoch: a replacement planning from it is never
+      // followed by an older launch's capture.
+      expect(result.head?.headEpoch).toBe(2);
+      if (result.said === "ok") {
+        // It landed while the old launch still held the lease, before the handoff took.
+        expect(result.order).toEqual(["register", "handoff"]);
+        expect(result.oldSeal?.n).toBe(1);
+      } else {
+        expect(result.said).toBe("stale_epoch");
+        expect(result.oldSeal).toBeNull();
+      }
+    },
+  );
 
   it("seals (0080): the register CAS records a seal only when it lands and the lease names its executor; the newest epoch reads first", async () => {
     const result = await run(

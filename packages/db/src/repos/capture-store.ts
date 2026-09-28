@@ -438,7 +438,18 @@ export const CaptureStoreRepoLive: Layer.Layer<
       const holderGiven = capture.holder !== undefined;
       const holderExecutor = capture.holder?.executorId ?? "";
       const holderLaunch = capture.holder?.launchId ?? "";
-      const rows = yield* sql<{ readonly id: string }>`
+      // One transaction, lease row first (review 2026-09-28 (5) #8). A register that waits on
+      // another chain's row must not land after its lease changed hands: holding the lease row
+      // (FOR SHARE, the order claim and release take — lease, then chain) makes a release or a
+      // claim wait for this register, and the statement after it reads the lease as it is now.
+      // The chain CAS also requires `head_epoch` to be this capture's epoch — claim moves it in
+      // the same statement as the lease — so an older epoch never lands over a newer claim.
+      const rows = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* sql`
+              SELECT 1 FROM worktree_leases WHERE worktree_id = ${capture.worktreeId} FOR SHARE`;
+            return yield* sql<{ readonly id: string }>`
         WITH expected AS (
           SELECT e.worktree_id, e.guard
             FROM jsonb_to_recordset(${JSON.stringify(
@@ -459,6 +470,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
            WHERE worktree_id = ${capture.worktreeId}
              AND head_n = ${capture.n} - 1
              AND head_capture IS NOT DISTINCT FROM ${capture.parent}
+             AND head_epoch = ${capture.epoch}
              AND (${ownGuard === undefined}::boolean OR guard = ${ownGuard?.guard ?? 0})
              AND (SELECT count(*) FROM foreign_guards) = ${foreign.length}
              AND NOT EXISTS (
@@ -495,7 +507,10 @@ export const CaptureStoreRepoLive: Layer.Layer<
                ${capture.manifestKey}, ${JSON.stringify(capture.sections)}::jsonb,
                ${capture.gitFsck}
           FROM ch
-        RETURNING id`.pipe(Effect.orDie);
+        RETURNING id`;
+          }),
+        )
+        .pipe(Effect.orDie);
       if (rows.length > 0) return { lostAck: false };
       // Zero rows: diagnose. Same n, same id = a retry after a lost ack.
       const [existing] = yield* sql<{
