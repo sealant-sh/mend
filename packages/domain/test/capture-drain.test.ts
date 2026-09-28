@@ -22,6 +22,8 @@ import {
   executorEndWords,
   observeCaptureThroughput,
   planExecutorCap,
+  restatedSummary,
+  executorSavedWords,
 } from "../src/workbench/capture-drain.ts";
 
 const reading = (patch: Partial<CaptureReading> = {}): CaptureReading => ({
@@ -885,5 +887,30 @@ describe("what a discard records (e2e run 4, 2026-09-27)", () => {
     ).toBe(
       "asked at 19:57:10 UTC · last saved capture 37 at 19:54:41 UTC · no final flush completed",
     );
+  });
+});
+
+describe("restatedSummary (e2e run 6 #7)", () => {
+  const saved = executorSavedWords({ at: new Date("2026-09-28T04:48:33Z"), n: 12 });
+  it("replaces Mend's older word on the executor with the latest observation", () => {
+    expect(saved).toBe("saved at 04:48:33 UTC · capture 12");
+    expect(
+      restatedSummary(
+        "executor not answering · last saved capture 30 at 01:06:00 UTC · completion unknown",
+        saved,
+      ),
+    ).toBe(saved);
+    expect(restatedSummary("executor lost · last saved 16:32:06 UTC", saved)).toBe(saved);
+  });
+  it("keeps a failed launch's own words, and replaces only the verdict after them", () => {
+    const once = restatedSummary("launch failed: setup command failed (exit 1)", saved);
+    expect(once).toBe(`launch failed: setup command failed (exit 1) · ${saved}`);
+    expect(restatedSummary(once, "executor lost · last saved 16:32:06 UTC")).toBe(
+      "launch failed: setup command failed (exit 1) · executor lost · last saved 16:32:06 UTC",
+    );
+  });
+  it("leaves a harness's own end alone", () => {
+    expect(restatedSummary("exited with code 1", saved)).toBeNull();
+    expect(restatedSummary(null, saved)).toBeNull();
   });
 });

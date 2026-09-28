@@ -116,6 +116,8 @@ import {
   executorCapDue,
   executorEndOf,
   executorEndWords,
+  executorSavedWords,
+  restatedSummary,
   executorUnansweredWords,
   observeCaptureThroughput,
   planExecutorCap,
@@ -466,6 +468,9 @@ const OPENING_PROMPT_NOT_DELIVERED = "opening prompt not delivered";
 const PLANNED_LAUNCH_ATTEMPTS = 3;
 /** A launch whose executor was created but never reached its harness, with no words of its own. */
 const LAUNCH_NEVER_RAN_SUMMARY = "launch failed · the harness never started";
+
+/** A create Core fenced before it made anything, found with no launch asking again. */
+const LAUNCH_CANCELLED_SUMMARY = "launch cancelled · nothing was created";
 /** Every "executor lost" summary starts with this; a replacement's first word ends it. */
 const EXECUTOR_LOST_PREFIX = "executor lost";
 /** How many looks an agent's end gets at an executor that stops answering before it is judged. */
@@ -2644,8 +2649,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               recoverable: answer.retained.recoverable,
             }),
           );
-          return { ended: false, retained: answer.retained } as const;
+          return { ended: false, retained: answer.retained, saved: null } as const;
         }
+        // The seal Core accepted for this very stop: the executor was saved, as sealed.
+        const attested = sent?.completion;
+        const saved =
+          answer.completion?.outcome === "accepted" &&
+          attested !== undefined &&
+          attested.sealedAt !== undefined
+            ? { at: new Date(attested.sealedAt), n: attested.captureN }
+            : null;
         const confirmed = stopState === "stopped" || (yield* awaitTerminated(workspaceId));
         yield* processes.reapLiveForWorkspace(workspaceId);
         const session = yield* sessions.byId(sessionId);
@@ -2660,7 +2673,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             `session engine: workspace stop asked · ${stopState} · termination not observed yet · the lease lapses on its own`,
           ).pipe(Effect.annotateLogs({ sessionId, workspaceId, stopState }));
         }
-        return { ended: confirmed, retained: null } as const;
+        return { ended: confirmed, retained: null, saved } as const;
       });
 
       /**
@@ -2691,6 +2704,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         yield* sessions.endCaptureDrain(sessionId, discarded);
         yield* settleIfStopping(sessionId);
+      });
+
+      /**
+       * A settled session reads the latest observation of its executor (e2e run 6): one that was
+       * saved and ended after all, or ended later, replaces Mend's older word on it — `executor
+       * not answering · … · completion unknown`, a failed launch's `retained` — and a failed
+       * launch keeps its own words beside it (`restatedSummary`). A harness's own end stands, and
+       * a session that is not settled is left to its fold.
+       */
+      const restateSettled = Effect.fn("SessionEngine.restateSettled")(function* (
+        sessionId: SessionId,
+        latest: { readonly outcome: SessionOutcome; readonly words: string },
+      ) {
+        const session = yield* sessions
+          .byId(sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (session === null || session.settledAt === null || session.status !== "failed") return;
+        const summary = restatedSummary(session.summary, latest.words);
+        if (summary === null || summary === session.summary) return;
+        const launchFailed = session.summary?.startsWith("launch failed") === true;
+        yield* sessions.restate(sessionId, launchFailed ? "failed" : latest.outcome, summary);
+        yield* Effect.logInfo("session engine: capture mode · settled session restated").pipe(
+          Effect.annotateLogs({ sessionId, before: session.summary, after: summary }),
+        );
       });
 
       /** The platform ended it already: nothing to save or stop; tidy up behind it. */
@@ -2781,7 +2818,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 }),
               );
             }
+            // Ended without Mend: how it ended, as observed (read while its lease still names
+            // it), is what a settled session reads.
+            const current = yield* sessions
+              .byId(sessionId)
+              .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+            const end =
+              current !== null && current.sealantWorkspaceId === workspaceId
+                ? yield* executorEndOfSession(current, workspaceId)
+                : null;
             yield* tidyAfterGone(sessionId, workspaceId);
+            if (end !== null) {
+              yield* restateSettled(sessionId, { outcome: end.outcome, words: end.summary });
+            }
             yield* removeIfRequested(sessionId);
             return "gone" as const;
           }
@@ -2812,6 +2861,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
             if (terminated.ended) {
               yield* endDrain(sessionId);
+              // Core ended it on the seal Mend attested and it accepted: saved (e2e run 6).
+              if (terminated.saved !== null) {
+                yield* restateSettled(sessionId, {
+                  outcome: "stopped",
+                  words: executorSavedWords(terminated.saved),
+                });
+              }
               yield* removeIfRequested(sessionId);
               return "gone" as const;
             }
@@ -2880,6 +2936,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             answerLost &&
             (yield* executorSealOf(session, workspaceId)) !== null;
           const step: CaptureDrainStep = sealed ? { kind: "saved" } : answered;
+          // What saved it: the executor's own completed final flush, or the seal standing for a
+          // lost answer.
+          const savedBy =
+            answered.kind === "saved"
+              ? { at: new Date(nowMs), n: reading?.headN ?? null }
+              : sealed
+                ? yield* executorSealOf(session, workspaceId).pipe(
+                    Effect.map((seal) => (seal === null ? null : { at: seal.sealedAt, n: seal.n })),
+                  )
+                : null;
           if (reading !== null) previous = reading;
           if (step.kind === "saved" && lookup.kind === "found") {
             yield* Effect.logInfo("session engine: capture drain · saved · terminating").pipe(
@@ -2898,6 +2964,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // early and nothing reads settled while its container may still run.
             if (ended) {
               yield* endDrain(sessionId);
+              if (savedBy !== null) {
+                yield* restateSettled(sessionId, {
+                  outcome: "stopped",
+                  words: executorSavedWords(savedBy),
+                });
+              }
               yield* removeIfRequested(sessionId);
             } else {
               yield* sessions.endCaptureDrain(sessionId);
@@ -3305,6 +3377,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               yield* Effect.logInfo(
                 "session engine: capture mode · executor create · fenced · none was made · lease released",
               ).pipe(Effect.annotateLogs({ sessionId, key, epoch: lease?.epoch ?? null }));
+              // Found by the reaper, with no launch asking again (a launch resolves its own key
+              // with `drain: false` and goes on): a session left `starting` with no executor has
+              // nothing running and nothing made — it reads so (e2e run 6).
+              if (
+                options?.drain !== false &&
+                session.sealantWorkspaceId === null &&
+                session.settledAt === null
+              ) {
+                yield* sessions.settle(sessionId, "stopped", LAUNCH_CANCELLED_SUMMARY);
+              }
               return "cancelled" as const;
             } else {
               yield* Effect.logInfo(

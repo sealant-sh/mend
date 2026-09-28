@@ -240,6 +240,16 @@ export class SessionsRepo extends Context.Service<
      * status alone, so a picked-up session would otherwise keep reading the loss.
      */
     readonly setSummary: (id: SessionId, summary: string | null) => Effect.Effect<void>;
+    /**
+     * A settled session's outcome and summary, rewritten from what was observed since it settled
+     * (its executor saved after all, ended later, or was never made): the latest observation is
+     * what it reads. Only while it stays settled — a session that reopened keeps its live status.
+     */
+    readonly restate: (
+      id: SessionId,
+      outcome: SessionOutcome,
+      summary: string | null,
+    ) => Effect.Effect<void>;
     readonly setLabel: (id: SessionId, label: string | null) => Effect.Effect<void>;
     /** Share control as `enabledByUserId`, or stop sharing with null; answers the updated row. */
     readonly setSharedControl: (
@@ -853,6 +863,19 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .update(agentSessions)
           .set({ summary, updatedAt: new Date() })
           .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+        yield* notify(id);
+      });
+
+      const restate = Effect.fn("SessionsRepo.restate")(function* (
+        id: SessionId,
+        outcome: SessionOutcome,
+        summary: string | null,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({ status: outcome, summary, updatedAt: new Date() })
+          .where(and(eq(agentSessions.id, id), isNotNull(agentSessions.settledAt)))
           .pipe(Effect.orDie);
         yield* notify(id);
       });
@@ -1496,6 +1519,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         claimIdleStop,
         releaseIdleStop,
         setSummary,
+        restate,
         setLabel,
         setSharedControl,
         disableSharedControlForOwner,

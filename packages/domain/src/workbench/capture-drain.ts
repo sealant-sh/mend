@@ -687,6 +687,38 @@ export const executorEndWords = (end: ExecutorEnd): string => {
 };
 
 /**
+ * `saved at 16:29:51 UTC · capture 21`: what a session reads once its executor was saved and
+ * ended after all (its seal attested and accepted, or its own completed final flush), whatever
+ * it read before.
+ */
+export const executorSavedWords = (saved: { readonly at: Date; readonly n: number | null }) =>
+  `saved at ${utcTime(saved.at)}${saved.n === null ? "" : ` · capture ${saved.n}`}`;
+
+/** Where a verdict on the executor starts in a session's summary (`restatedSummary`). */
+const EXECUTOR_VERDICTS = [
+  "executor not answering",
+  "executor lost",
+  "stopped outside Mend",
+  "saved at ",
+] as const;
+
+/**
+ * A settled session's summary rewritten from the latest observation of its executor, or null
+ * when the summary is not Mend's word on that executor (a harness's own end stands). A verdict
+ * on the executor is replaced; a failed launch keeps its own words and the verdict follows them:
+ * `launch failed: setup command exited 1 · saved at 16:29:51 UTC · capture 21`.
+ */
+export const restatedSummary = (prior: string | null, latest: string): string | null => {
+  if (prior === null) return null;
+  if (EXECUTOR_VERDICTS.some((verdict) => prior.startsWith(verdict))) return latest;
+  if (!prior.startsWith("launch failed")) return null;
+  const cut = EXECUTOR_VERDICTS.map((verdict) => prior.indexOf(` · ${verdict}`))
+    .filter((at) => at >= 0)
+    .toSorted((a, b) => a - b)[0];
+  return `${cut === undefined ? prior : prior.slice(0, cut)} · ${latest}`;
+};
+
+/**
  * A harness that ended while its executor never answered Mend's looks: the executor's fate is
  * unknown, so the harness's own outcome is not what the session reports. `executor not answering
  * · last saved capture 21 at 16:29:51 UTC · completion unknown`, or `· nothing saved`.

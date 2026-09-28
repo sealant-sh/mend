@@ -479,6 +479,7 @@ const testLayer = (world: TestWorld) => {
     claimIdleStop: () => Effect.die("not in test"),
     releaseIdleStop: () => Effect.die("not in test"),
     setSummary: () => Effect.die("not in test"),
+    restate: () => Effect.die("not in test"),
     setLabel: () => Effect.die("not in test"),
     setLabelIfUnset: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),

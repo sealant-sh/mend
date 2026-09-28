@@ -199,6 +199,7 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
   claimIdleStop: () => Effect.succeed(false),
   releaseIdleStop: () => Effect.void,
   setSummary: () => Effect.void,
+  restate: () => Effect.void,
   setLabel: () => Effect.void,
   setLabelIfUnset: () => Effect.succeed(false),
   remove: () => Effect.die("not in test"),
