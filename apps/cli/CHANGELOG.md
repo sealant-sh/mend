@@ -1,5 +1,13 @@
 # @sealant/mend
 
+## 0.34.2
+
+### Patch Changes
+
+- d2c2714: The packaged acceptance gives the degraded dotfiles session as long as the first one (20
+  minutes): a session reads completed only once its final save is sealed, which on the bundle's
+  Garage store waits about 10.5 minutes.
+
 ## 0.34.1
 
 ### Patch Changes
