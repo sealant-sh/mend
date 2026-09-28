@@ -161,6 +161,7 @@ describe("captureDrainStep", () => {
         progressAtMs: 0,
         nowMs: 1000,
         stallSeconds,
+        evidenceSaved: true,
       }),
     ).toEqual({ kind: "saved" });
   });
@@ -173,6 +174,7 @@ describe("captureDrainStep", () => {
         progressAtMs: 0,
         nowMs: 3_600_000,
         stallSeconds,
+        evidenceSaved: true,
       }),
     ).toEqual({ kind: "saving", progressAtMs: 3_600_000 });
   });
@@ -186,6 +188,7 @@ describe("captureDrainStep", () => {
         progressAtMs: 0,
         nowMs: 599_000,
         stallSeconds,
+        evidenceSaved: true,
       }).kind,
     ).toBe("saving");
     expect(
@@ -195,6 +198,7 @@ describe("captureDrainStep", () => {
         progressAtMs: 0,
         nowMs: 600_000,
         stallSeconds,
+        evidenceSaved: true,
       }).kind,
     ).toBe("not-saved");
     // An executor that did not answer is no movement.
@@ -205,6 +209,7 @@ describe("captureDrainStep", () => {
         progressAtMs: 0,
         nowMs: 600_000,
         stallSeconds,
+        evidenceSaved: true,
       }).kind,
     ).toBe("not-saved");
   });
@@ -218,9 +223,39 @@ describe("captureDrainStep", () => {
           progressAtMs: 0,
           nowMs: 1,
           stallSeconds,
+          evidenceSaved: true,
         }).kind,
       ).toBe("not-saved");
     }
+  });
+});
+
+// Review 2026-09-28 (10) #7, cross-repo decision 31: a completed answer is what the executor
+// said; saved is the executor's evidence read as a whole.
+describe("captureDrainStep over a completed answer the executor's evidence does not read saved", () => {
+  it("does not read saved: the drain goes on, and is kept once nothing moved for the window", () => {
+    const completed = reading();
+    expect(captureSaved(completed)).toBe(true);
+    expect(
+      captureDrainStep({
+        previous: completed,
+        reading: completed,
+        progressAtMs: 0,
+        nowMs: 1_000,
+        stallSeconds: 600,
+        evidenceSaved: false,
+      }),
+    ).toEqual({ kind: "saving", progressAtMs: 0 });
+    expect(
+      captureDrainStep({
+        previous: completed,
+        reading: completed,
+        progressAtMs: 0,
+        nowMs: 600_000,
+        stallSeconds: 600,
+        evidenceSaved: false,
+      }).kind,
+    ).toBe("not-saved");
   });
 });
 
@@ -232,6 +267,7 @@ describe("captureDrainStep while a final flush runs", () => {
       progressAtMs: 0,
       nowMs: 1,
       stallSeconds: 600,
+      evidenceSaved: true,
     });
     expect(step.kind).not.toBe("not-saved");
     expect(captureIncompleteWords("in-progress")).toBeNull();
@@ -247,6 +283,7 @@ describe("captureDrainStep while the completed flush is being sealed", () => {
       progressAtMs: 0,
       nowMs: 1,
       stallSeconds: 600,
+      evidenceSaved: true,
     });
     expect(step.kind).not.toBe("not-saved");
     expect(captureIncompleteWords("sealing")).toBe("final seal not registered");
@@ -264,6 +301,7 @@ describe("captureDrainStep when the disk changed after the final flush (decision
       progressAtMs: 0,
       nowMs: 1,
       stallSeconds: 600,
+      evidenceSaved: true,
     });
     expect(step.kind).toBe("saving");
     expect(captureIncompleteWords("changed")).toBe("changed after the final flush");
@@ -281,6 +319,7 @@ describe("captureDrainStep when a capture class is polled (sealantd `unwatched`)
       progressAtMs: 0,
       nowMs: 1,
       stallSeconds: 600,
+      evidenceSaved: true,
     });
     expect(step.kind).toBe("saving");
     expect(captureIncompleteWords("unwatched")).toBe(
@@ -300,6 +339,7 @@ describe("captureDrainStep when the store cannot keep full fidelity (sealantd `s
       progressAtMs: 0,
       nowMs: 1,
       stallSeconds: 600,
+      evidenceSaved: true,
     });
     expect(step.kind).toBe("not-saved");
     expect(captureIncompleteWords("store-fidelity")).toBe(
@@ -318,6 +358,7 @@ describe("captureDrainStep without a completed final flush", () => {
         progressAtMs: 0,
         nowMs: 1,
         stallSeconds: 600,
+        evidenceSaved: true,
       }).kind,
     ).toBe("not-saved");
   });
@@ -338,6 +379,7 @@ describe("captureDrainStep without a completed final flush", () => {
           progressAtMs: 0,
           nowMs: 1,
           stallSeconds: 600,
+          evidenceSaved: true,
         }).kind,
       ).toBe("not-saved");
     }
@@ -363,6 +405,7 @@ describe("captureDrainStep without a completed final flush", () => {
           progressAtMs: 0,
           nowMs: 1,
           stallSeconds: 600,
+          evidenceSaved: true,
         }).kind,
       ).toBe("not-saved");
     }
@@ -377,6 +420,7 @@ describe("captureDrainStep without a completed final flush", () => {
         progressAtMs: 0,
         nowMs: 1000,
         stallSeconds: 600,
+        evidenceSaved: true,
       }).kind,
     ).toBe("saving");
     expect(
@@ -386,6 +430,7 @@ describe("captureDrainStep without a completed final flush", () => {
         progressAtMs: 0,
         nowMs: 600_000,
         stallSeconds: 600,
+        evidenceSaved: true,
       }).kind,
     ).toBe("not-saved");
   });

@@ -108,6 +108,7 @@ import {
   type CapturePosition,
   captureDiscardAuditData,
   captureStatusLine,
+  executorEndOf,
 } from "@mend/domain/workbench";
 import {
   type CaptureFlushKind,
@@ -2544,7 +2545,11 @@ const withEngine = <A, E>(
     Layer.provide(testDrainPolicy(options.drainPolicy)),
     Layer.provide(sessionRepositoryLayer),
     Layer.provide(storeLayer),
-    Layer.provide(options.sealantLayer ?? sealantDeadLayer),
+    Layer.provide(
+      options.captured === undefined || options.sealantLayer === undefined
+        ? (options.sealantLayer ?? sealantDeadLayer)
+        : stampedAnswers(options.sealantLayer, options.captured, world),
+    ),
     Layer.provide(settingsLayer(options.workspaceImage)),
     Layer.provide(projectsLayer(world)),
     Layer.provide(sessionsLayer(world)),
@@ -9329,6 +9334,56 @@ const launchOnce = (world: World, tmp: string) =>
   });
 
 /** A flush answer with `pending` left; the lifetime counters grow with every capture shipped. */
+/**
+ * The stand-in daemon as a current sealantd answers (cross-repo decision 17): every flush answer
+ * under the epoch its lease holds, stamped with where the executor made it — that epoch, the
+ * launch the lease is bound to, its boot and an observation that only counts up — unless the test
+ * stamped it itself. Mend
+ * orders evidence by that alone: an answer without it is ordered against nothing, and a save
+ * never stands over one.
+ */
+const stampedAnswers = (
+  layer: Layer.Layer<SealantClient>,
+  memory: MemoryCaptureStore,
+  world: World,
+): Layer.Layer<SealantClient> => {
+  let observation = 0;
+  return Layer.effect(
+    SealantClient,
+    Effect.map(SealantClient, (client) => ({
+      ...client,
+      captureFlush: (target, kind) =>
+        client.captureFlush(target, kind).pipe(
+          Effect.map((answer) => {
+            if ("origin" in answer) return answer;
+            const lease = [...memory.leases.values()].find((held) => held.executorId !== null);
+            // The launch the lease is bound to, else the one Mend recorded with this workspace.
+            const launch =
+              lease?.launchId ??
+              [...world.executorLaunches.values()].find(
+                (recorded) => recorded.workspaceId === target.id,
+              )?.launchId ??
+              null;
+            if (lease === undefined || launch === null) return answer;
+            observation += 1;
+            return {
+              ...answer,
+              epoch: lease.epoch,
+              origin: {
+                epoch: lease.epoch,
+                launch,
+                bootId: "stand-in-boot",
+                bootGeneration: 1,
+                observation,
+                headN: answer.headN ?? null,
+              },
+            };
+          }),
+        ),
+    })),
+  ).pipe(Layer.provide(layer));
+};
+
 const flushReport = (
   pending: number,
   shipped: number,
@@ -15525,6 +15580,322 @@ describe("SessionEngine ninth review (2026-09-28)", () => {
               flush: () => Effect.succeed(flushReport(2, 1)),
             },
           }),
+        },
+      );
+    },
+  );
+});
+
+// Review 2026-09-28 (10) #7, cross-repo decision 31: the drain's direct FINAL answer reads saved
+// only by the decision a seal and an end are read by — bound to this executor and epoch, made
+// after every unsaved answer its evidence keeps, every answer published — never by the reading
+// alone. Both keep the executor, attest nothing and log no `saved`.
+describe("review 10 #7 a direct complete answer", () => {
+  it(
+    "review 10 #7 a direct complete does not read saved over a retained unsaved answer nothing orders against it",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+      const logs: Array<string> = [];
+      let sample: WorkspaceCaptureStatus | null = null;
+      let sealed = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
+            const built = yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              epoch,
+              crypto.randomUUID(),
+              "final",
+            );
+            records.set(`${session.worktreeId}:${epoch}`, {
+              worktreeId: session.worktreeId,
+              epoch,
+              executorId: launch,
+              captureId: built.id,
+              n: built.manifest.n,
+              sealedAt: new Date(),
+              ...SEAL_STAMP,
+            });
+            sealed = true;
+            // What sealantd answers beyond the SDK's type (`complete`, `origin`, …), as carried.
+            sample = Object.assign(flushReport(0, 1, { epoch }), {
+              complete: false,
+              incompleteReason: "snapshot-failed",
+              unreadable: 1,
+              unreadablePaths: ["tree/recovery-work.txt"],
+              origin: {
+                epoch,
+                launch,
+                bootId: "recovery-boot",
+                bootGeneration: 0,
+                observation: 1,
+                headN: built.manifest.n,
+              },
+            });
+            yield* engine.flushCaptures(session.id, "recovery boot's failure");
+            sample = Object.assign(flushReport(0, 1, { epoch }), {
+              complete: false,
+              incompleteReason: "in-progress",
+              origin: {
+                epoch,
+                launch,
+                bootId: SEAL_STAMP.bootId,
+                bootGeneration: SEAL_STAMP.bootGeneration,
+                observation: SEAL_STAMP.observation - 1,
+                headN: built.manifest.n,
+              },
+            });
+            yield* engine.flushCaptures(session.id, "delayed pre-seal answer");
+            // The drain's FINAL is answered by a delayed complete from the old boot.
+            sample = Object.assign(flushReport(0, 1, { epoch }), {
+              complete: true,
+              incompleteReason: null,
+              origin: {
+                epoch,
+                launch,
+                bootId: SEAL_STAMP.bootId,
+                bootGeneration: SEAL_STAMP.bootGeneration,
+                observation: SEAL_STAMP.observation,
+                headN: built.manifest.n,
+              },
+            });
+            yield* engine.stop(session.id);
+            yield* until(
+              () =>
+                world.sessions.get(session.id)?.captureNotSavedAt != null || stopOptions.length > 0,
+              "the drain's outcome",
+            );
+            // The drain reads not saved: no attestation, no stop, no saved line.
+            expect(stopOptions.filter((options) => options?.completion !== undefined)).toEqual([]);
+            expect(logs.some((line) => line.includes("capture drain · saved · terminating"))).toBe(
+              false,
+            );
+            expect(stopOptions).toEqual([]);
+            expect(world.sessions.get(session.id)?.captureNotSavedAt).not.toBeNull();
+            expect(
+              logs.some((line) =>
+                line.includes(
+                  "the final flush answered complete, but the executor's evidence does not read saved",
+                ),
+              ),
+            ).toBe(true);
+            // Both answers the seal cannot be ordered after are kept.
+            const evidence = world.executorEvidence.get("workspace-1");
+            const kept = evidence?.unsaved ?? [];
+            expect(
+              executorEndOf({
+                head: null,
+                executorStartedAt: null,
+                reading: { pending: null, pendingBytes: null, observedAt: null },
+                finalSaved: evidence?.saved ?? null,
+                unsaved: kept,
+              }).kind,
+            ).not.toBe("saved");
+            expect(kept.map((answer) => answer.position?.bootId).toSorted()).toEqual([
+              SEAL_STAMP.bootId,
+              "recovery-boot",
+            ]);
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          logs,
+          drainPolicy: { stallSeconds: 0 },
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              stopOptions,
+              resourceId: () => "r9-container",
+              finalCompletion: "unreported",
+              flush: () =>
+                sealed
+                  ? sample !== null
+                    ? Effect.succeed(sample)
+                    : Effect.fail(
+                        new SealantPlatformError({
+                          code: "connection_closed",
+                          status: null,
+                          message: "relay closed",
+                          cause: null,
+                        }),
+                      )
+                  : Effect.succeed(flushReport(0, 0)),
+            },
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "review 10 #7 a direct complete does not read saved over an unsaved answer the executor made after it",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+      const logs: Array<string> = [];
+      let sample: WorkspaceCaptureStatus | null = null;
+      let sealed = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
+            const built = yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              epoch,
+              crypto.randomUUID(),
+              "final",
+            );
+            records.set(`${session.worktreeId}:${epoch}`, {
+              worktreeId: session.worktreeId,
+              epoch,
+              executorId: launch,
+              captureId: built.id,
+              n: built.manifest.n,
+              sealedAt: new Date(),
+              ...SEAL_STAMP,
+            });
+            sealed = true;
+            // What sealantd answers beyond the SDK's type (`complete`, `origin`, …), as carried.
+            sample = Object.assign(flushReport(0, 1, { epoch }), {
+              complete: false,
+              incompleteReason: "snapshot-failed",
+              unreadable: 1,
+              unreadablePaths: ["tree/recovery-work.txt"],
+              origin: {
+                epoch,
+                launch,
+                bootId: SEAL_STAMP.bootId,
+                bootGeneration: SEAL_STAMP.bootGeneration,
+                observation: SEAL_STAMP.observation + 1,
+                headN: built.manifest.n,
+              },
+            });
+            yield* engine.flushCaptures(session.id, "recovery boot's failure");
+            sample = Object.assign(flushReport(0, 1, { epoch }), {
+              complete: false,
+              incompleteReason: "in-progress",
+              origin: {
+                epoch,
+                launch,
+                bootId: SEAL_STAMP.bootId,
+                bootGeneration: SEAL_STAMP.bootGeneration,
+                observation: SEAL_STAMP.observation - 1,
+                headN: built.manifest.n,
+              },
+            });
+            yield* engine.flushCaptures(session.id, "delayed pre-seal answer");
+            // The drain's FINAL is answered by a delayed complete from the old boot.
+            sample = Object.assign(flushReport(0, 1, { epoch }), {
+              complete: true,
+              incompleteReason: null,
+              origin: {
+                epoch,
+                launch,
+                bootId: SEAL_STAMP.bootId,
+                bootGeneration: SEAL_STAMP.bootGeneration,
+                observation: SEAL_STAMP.observation,
+                headN: built.manifest.n,
+              },
+            });
+            yield* engine.stop(session.id);
+            yield* until(
+              () =>
+                world.sessions.get(session.id)?.captureNotSavedAt != null || stopOptions.length > 0,
+              "the drain's outcome",
+            );
+            // The drain reads not saved: no attestation, no stop, no saved line.
+            expect(stopOptions.filter((options) => options?.completion !== undefined)).toEqual([]);
+            expect(logs.some((line) => line.includes("capture drain · saved · terminating"))).toBe(
+              false,
+            );
+            expect(stopOptions).toEqual([]);
+            expect(world.sessions.get(session.id)?.captureNotSavedAt).not.toBeNull();
+            expect(
+              logs.some((line) =>
+                line.includes(
+                  "the final flush answered complete, but the executor's evidence does not read saved",
+                ),
+              ),
+            ).toBe(true);
+            // Both answers the seal cannot be ordered after are kept.
+            const evidence = world.executorEvidence.get("workspace-1");
+            const kept = evidence?.unsaved ?? [];
+            expect(
+              executorEndOf({
+                head: null,
+                executorStartedAt: null,
+                reading: { pending: null, pendingBytes: null, observedAt: null },
+                finalSaved: evidence?.saved ?? null,
+                unsaved: kept,
+              }).kind,
+            ).not.toBe("saved");
+            expect(kept).toHaveLength(1);
+            expect(kept[0]?.position?.observation).toBe(SEAL_STAMP.observation + 1);
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          logs,
+          drainPolicy: { stallSeconds: 0 },
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              stopOptions,
+              resourceId: () => "r9-container",
+              finalCompletion: "unreported",
+              flush: () =>
+                sealed
+                  ? sample !== null
+                    ? Effect.succeed(sample)
+                    : Effect.fail(
+                        new SealantPlatformError({
+                          code: "connection_closed",
+                          status: null,
+                          message: "relay closed",
+                          cause: null,
+                        }),
+                      )
+                  : Effect.succeed(flushReport(0, 0)),
+            },
+          ),
         },
       );
     },

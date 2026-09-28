@@ -3198,12 +3198,45 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                     "final",
                   );
           const nowMs = Date.now();
+          // A completed answer is what the executor said; saved is the one decision a seal and an
+          // end are read by (cross-repo decision 31, review 2026-09-28 (10) #7): the executor's
+          // kept evidence, bound to this executor and its epoch, with every answer asked of it
+          // published and a save made after every unsaved answer it keeps — a delayed complete
+          // never reads saved over a failure the executor answered after it, or one nothing
+          // orders against it. Read from the session as it is now, confirmed against the
+          // evidence version it was read at.
+          const directEnd =
+            reading !== null && captureSaved(reading) && lookup.kind === "found"
+              ? yield* Effect.gen(function* () {
+                  const current = yield* sessions
+                    .byId(sessionId)
+                    .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(session)));
+                  return yield* confirmedExecutorEnd(
+                    current,
+                    yield* executorEndOfSession(current, workspaceId),
+                  );
+                })
+              : null;
+          if (directEnd !== null && directEnd.outcome !== "stopped") {
+            yield* Effect.logWarning(
+              "session engine: capture drain · the final flush answered complete, but the executor's evidence does not read saved · not saved yet",
+            ).pipe(
+              Effect.annotateLogs({
+                sessionId,
+                workspaceId,
+                reason,
+                headN: reading?.headN ?? null,
+                evidence: directEnd.summary,
+              }),
+            );
+          }
           const answered = captureDrainStep({
             previous,
             reading,
             progressAtMs,
             nowMs,
             stallSeconds: drainPolicy.stallSeconds,
+            evidenceSaved: directEnd !== null && directEnd.outcome === "stopped",
           });
           // The store's sealed record of this executor's completed final flush stands for an
           // answer that was lost on the way (a relay that closed, a timeout, an SDK that drops
