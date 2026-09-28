@@ -835,32 +835,43 @@ export const CaptureUploadPolicyLive: Layer.Layer<CaptureUploadPolicy> = Layer.e
 );
 
 /**
- * What a plan tells the session beside its answer (review 2026-09-28 (13) #1): `waiting` — the
- * head's git section could not be verified now, and the executor was told to ask again;
- * `restored-older` — the head's git section failed verification, and an older capture was planned
- * whole; `planned` — the head was planned (whatever an earlier `waiting` said no longer holds).
+ * What a plan tells the session beside its answer (review 2026-09-28 (13) #1, (14) #3): `waiting`
+ * — the head's git section could not be verified now, and the executor was told to ask again;
+ * `blocked` — git rejected the head's git section, and the executor was refused; `planned` — the
+ * head was planned (whatever an earlier `waiting` or `blocked` said no longer holds). `launchId`:
+ * the launch whose plan it is — the session hears only its current launch's (review 2026-09-28
+ * (14) #1).
  */
 export type CapturePlanNotice =
-  | { readonly kind: "waiting"; readonly words: string }
-  | { readonly kind: "restored-older"; readonly words: string }
-  | { readonly kind: "planned" };
+  | { readonly kind: "waiting"; readonly words: string; readonly launchId: string }
+  | { readonly kind: "blocked"; readonly words: string; readonly launchId: string }
+  | { readonly kind: "planned"; readonly launchId: string };
 
 /** Every `waiting` notice's words begin with this — a launch's words, cleared once it starts. */
 export const PLAN_WAITING_PREFIX = "launch waiting · ";
+
+/** Every `blocked` notice's words begin with this — cleared once a plan goes ahead. */
+export const PLAN_BLOCKED_PREFIX = "launch blocked · ";
 
 /** The session's words while a plan waits for Mend to verify capture `n`'s git section. */
 export const planWaitingWords = (n: number): string =>
   `${PLAN_WAITING_PREFIX}capture ${n}'s git section could not be verified on the Mend host · asked again`;
 
-/** The session's words once a plan restored capture `restored` because head `head` failed. */
-export const planRestoredOlderWords = (restored: number, head: number): string =>
-  `restored capture ${restored} · capture ${head}'s git section failed verification`;
+/** The session's words once a plan was refused because git rejected capture `n`'s git section. */
+export const planBlockedWords = (n: number): string =>
+  `${PLAN_BLOCKED_PREFIX}capture ${n}'s git section failed verification · discard or contact the operator`;
+
+/**
+ * How many checks in a row may end with the same unexplained git words before the row is
+ * recorded `failed` (review 2026-09-28 (14) #4).
+ */
+export const UNEXPLAINED_CHECKS_BOUND = 5;
 
 /** What `planManifest` decided. */
 type PlanOf =
   | { readonly kind: "head"; readonly manifest: CaptureManifest }
-  | { readonly kind: "older"; readonly manifest: CaptureManifest; readonly restored: CaptureRow }
-  | { readonly kind: "wait"; readonly unverified: CaptureRow };
+  | { readonly kind: "wait"; readonly unverified: CaptureRow }
+  | { readonly kind: "blocked"; readonly failed: CaptureRow; readonly detail: string | null };
 
 export interface CaptureScope {
   readonly worktreeId: WorktreeId;
@@ -1091,6 +1102,16 @@ export const CaptureChannelLive: Layer.Layer<
      * executor of the session (e2e run 5).
      */
     const urlLog = new Map<string, Array<number>>();
+    /**
+     * Per capture row: the words of the latest check that ended with git exiting on its own in
+     * words nothing here explains (`GitVerification.unexplained`), and how many checks in a row
+     * ended so (review 2026-09-28 (14) #4). Any other outcome forgets the row. A Mend restart
+     * forgets them all, which only ever asks again.
+     */
+    const unexplainedChecks = new Map<
+      string,
+      { readonly detail: string; readonly count: number }
+    >();
     /**
      * The keys each launch was handed URLs for (bounded): a call that asks only for those again
      * — an upload retried after its URLs lapsed or its PUT failed — costs no call.
@@ -1443,13 +1464,40 @@ export const CaptureChannelLive: Layer.Layer<
         );
 
       /**
+       * Git exiting on its own in words nothing here explains is not the content's on one ask; the
+       * same words from the same row `UNEXPLAINED_CHECKS_BOUND` asks in a row are (review
+       * 2026-09-28 (14) #4): `failed`, which a later check still re-reads. A signal, Node's own
+       * failure, a host word or the bucket not answering never counts: those stay `unverified`.
+       */
+      const boundUnexplained = (
+        row: CaptureRow,
+        verification: GitVerification,
+      ): GitVerification => {
+        if (verification.unexplained !== true || verification.detail === null) {
+          unexplainedChecks.delete(row.id);
+          return verification;
+        }
+        const before = unexplainedChecks.get(row.id);
+        const count = before?.detail === verification.detail ? before.count + 1 : 1;
+        unexplainedChecks.set(row.id, { detail: verification.detail, count });
+        if (count < UNEXPLAINED_CHECKS_BOUND) return verification;
+        return {
+          outcome: "failed",
+          detail: `${verification.detail} (the same words on ${count} checks in a row)`,
+        };
+      };
+
+      /**
        * Verify a row's git section now and record the outcome. `unverified` (the Mend host could
        * not finish the check) records nothing and answers `unverified` — never the row's older
        * word, which a check that concluded nothing does not confirm.
        */
       const checkRow = (row: CaptureRow, manifest: CaptureManifest) =>
         Effect.gen(function* () {
-          const verification = yield* verifier.verify(scope.projectId, manifest);
+          const verification = boundUnexplained(
+            row,
+            yield* verifier.verify(scope.projectId, manifest),
+          );
           if (verification.outcome === "unverified") {
             yield* Effect.logWarning(
               verification.transient === true
@@ -1495,25 +1543,20 @@ export const CaptureChannelLive: Layer.Layer<
         scope.planNotice === undefined ? Effect.void : scope.planNotice(notice);
 
       /**
-       * The manifest a plan restores (review 2026-09-28 (13) #1). A head whose git section is not
-       * recorded `verified` — an `auto` capture, one registered while the Mend host could not
-       * finish a check, or one recorded `failed`, checked once more before anything routes around
-       * it — is verified now, at the moment it matters. Then:
+       * The manifest a plan restores (review 2026-09-28 (13) #1, (14) #3). A head whose git
+       * section is not recorded `verified` — an `auto` capture, one registered while the Mend host
+       * could not finish a check, or one recorded `failed`, checked once more — is verified now,
+       * at the moment it matters. Then:
        * - verified: the head;
        * - still unverifiable (the Mend host could not finish the check): no plan. The executor is
        *   answered `worktree-leased`, the one `plan.get` answer sealantd waits on and asks again
-       *   after, touching nothing, and the session says why (`PLAN_WAITING_PREFIX`). Never an
-       *   older git section under the head's workspace: that restores the head's reflogs and file
-       *   metadata over an older tree — a repository `git fsck` refuses, or a materialize that
-       *   fails on a path the older tree lacks — and hides the last turns' commits;
-       * - failed (git rejected its pack or its closure): the newest capture below it that
-       *   verifies, whole — every section of it, its checkpoint too — under the head's identity,
-       *   so the executor's next register still parents on the real head (ADR-0002 16: pickup
-       *   prefers the newest verified capture). The session says which capture was restored. A
-       *   capture below that cannot be verified now stops the search: the plan waits, rather than
-       *   reach past it to older work;
-       * - failed, with nothing below it that verifies: the head as registered (the executor's
-       *   materialize is then git's word on it).
+       *   after, touching nothing, and the session says why (`PLAN_WAITING_PREFIX`);
+       * - never verifiable here (a format Mend does not read): the head as registered;
+       * - failed (git rejected its pack or its closure): no plan. The executor is refused, and the
+       *   session says so (`PLAN_BLOCKED_PREFIX`). Never another capture under the head's
+       *   identity: sealantd restores the head's own manifest from its key, so an older capture's
+       *   sections planned in its place are not what it lays down — its boot fails part way and
+       *   the session would name a restore that never happened.
        */
       const planManifest = (head: CaptureRow, stored: CaptureManifest) =>
         Effect.gen(function* () {
@@ -1530,59 +1573,7 @@ export const CaptureChannelLive: Layer.Layer<
               ? ({ kind: "wait", unverified: head } satisfies PlanOf)
               : ({ kind: "head", manifest: stored } satisfies PlanOf);
           }
-          const older = (yield* repo.listChain(worktreeId))
-            .filter((row) => row.n < head.n)
-            .toSorted((a, b) => b.n - a.n);
-          for (const row of older) {
-            if (row.gitFsck === "failed") continue;
-            const manifest = yield* readManifest(row);
-            const check =
-              row.gitFsck === "unverified"
-                ? yield* checkRow(row, manifest)
-                : ({ outcome: row.gitFsck, detail: null } satisfies GitVerification);
-            if (check.outcome === "failed") continue;
-            if (check.outcome === "unverified") {
-              // Not verifiable now: wait rather than reach past it to older work. Never
-              // verifiable here (a format Mend does not read): passed over, as before.
-              if (check.transient === true) {
-                return { kind: "wait", unverified: row } satisfies PlanOf;
-              }
-              continue;
-            }
-            yield* Effect.logWarning(
-              "capture channel: plan restores an older capture · the head's git section failed verification",
-            ).pipe(
-              Effect.annotateLogs({
-                worktreeId,
-                headN: head.n,
-                headCaptureId: head.id,
-                restoredN: row.n,
-                restoredCaptureId: row.id,
-              }),
-            );
-            // The head's seal says the head restores; this plan restores another capture's
-            // state, so it carries no seal (review 2026-09-28 (3) #18), and none of the head's
-            // sections: the older capture's, every one, restore together.
-            const {
-              final_seal: _headSeal,
-              checkpoint: _headCheckpoint,
-              sections: _headSections,
-              ...identity
-            } = stored;
-            return {
-              kind: "older",
-              restored: row,
-              manifest: {
-                ...identity,
-                sections: manifest.sections,
-                ...(manifest.checkpoint === undefined ? {} : { checkpoint: manifest.checkpoint }),
-              },
-            } satisfies PlanOf;
-          }
-          yield* Effect.logWarning(
-            "capture channel: no capture below the head verifies · the plan restores the head as registered",
-          ).pipe(Effect.annotateLogs({ worktreeId, headN: head.n, headCaptureId: head.id }));
-          return { kind: "head", manifest: stored } satisfies PlanOf;
+          return { kind: "blocked", failed: head, detail: headCheck.detail } satisfies PlanOf;
         });
 
       /**
@@ -1656,27 +1647,47 @@ export const CaptureChannelLive: Layer.Layer<
         const chain = yield* repo.headOf(worktreeId);
         const head = chain?.head ?? null;
         const stored = head === null ? null : yield* readManifest(head);
-        const planned = head === null || stored === null ? null : yield* planManifest(head, stored);
-        if (planned !== null && planned.kind === "wait" && head !== null) {
+        // Only a plan that lays the head down checks it (review 2026-09-28 (14) #2). The launch
+        // that holds or last held the lease, asking about a head registered under that lease's
+        // epoch — its own work — restores nothing from the plan: sealantd resumes its own disk (a
+        // daemon restart, a recovery boot shipping what the disk holds, a re-plan). It gets the
+        // head as it stands, verified or not, and never waits on a check it has no use for.
+        const ownHead =
+          head !== null && lease !== null && !heldByAnother(lease) && head.epoch === lease.epoch;
+        const planned =
+          head === null || stored === null
+            ? null
+            : ownHead
+              ? ({ kind: "head", manifest: stored } satisfies PlanOf)
+              : yield* planManifest(head, stored);
+        if (planned !== null && planned.kind === "wait") {
           // Nothing is claimed and nothing is handed out: the executor waits and asks again, and
           // the session says why (review 2026-09-28 (13) #1).
           const words = planWaitingWords(planned.unverified.n);
-          yield* notePlan({ kind: "waiting", words });
+          yield* notePlan({ kind: "waiting", words, launchId });
           return yield* new CaptureRouteError({
             status: 409,
             reason: "worktree-leased",
             message: `${words}: the plan waits until Mend can verify it, rather than restore an older capture — ask again`,
           });
         }
+        if (planned !== null && planned.kind === "blocked") {
+          // Git rejected the head's content: nothing is claimed and nothing is handed out, and
+          // no other capture is planned in its place (review 2026-09-28 (14) #3). sealantd reads
+          // a 422 on `plan.get` as a refusal of the boot, touching nothing.
+          const words = planBlockedWords(planned.failed.n);
+          yield* notePlan({ kind: "blocked", words, launchId });
+          return yield* new CaptureRouteError({
+            status: 422,
+            reason: "unrestorable",
+            message: `${words}: git rejected it${planned.detail === null ? "" : ` (${planned.detail})`} — nothing is planned`,
+          });
+        }
         const manifest =
-          head === null || planned === null || planned.kind === "wait"
+          head === null || planned === null
             ? null
             : yield* planSealStanding(head, planForPlatform(planned.manifest, input.platform));
-        yield* notePlan(
-          planned !== null && planned.kind === "older" && head !== null
-            ? { kind: "restored-older", words: planRestoredOlderWords(planned.restored.n, head.n) }
-            : { kind: "planned" },
-        );
+        yield* notePlan({ kind: "planned", launchId });
         if (manifest !== null && stored !== null && head !== null) {
           const holds = planFormatOf(manifest);
           if (holds > reads) {

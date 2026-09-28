@@ -133,7 +133,7 @@ import {
   CaptureSealsNone,
   captureHoldWords,
   CaptureRuntimeOff,
-  planRestoredOlderWords,
+  planBlockedWords,
   planWaitingWords,
   CaptureUploadPolicyDefault,
   DotfilesCloner,
@@ -7937,10 +7937,25 @@ describe("SessionEngine capture mode", () => {
     );
   });
 
-  it("review 13 #1: a plan that must wait for Mend to verify the head says why in the session's summary, and a plan that goes ahead clears it; one that restores an older capture says which", async () => {
+  /**
+   * Review 2026-09-28 (14) #1 and #3, from the reviewer's "r14c: a pickup plan that waits once …":
+   * an executor killed, the reaper's `executor lost · …`, a resume whose boot plan must wait for
+   * Mend to verify the head, then is refused because git rejects it, then goes ahead.
+   */
+  const pickupAfterLoss = async (
+    body: (at: {
+      readonly world: Parameters<Parameters<typeof withEngine>[0]>[0];
+      readonly session: Session;
+      readonly head: { readonly id: string; readonly manifest: { readonly n: number } };
+      readonly lost: string;
+      readonly answers: Map<string, GitVerification>;
+      readonly headKey: string;
+    }) => Effect.Effect<void, unknown, SessionEngine>,
+  ) => {
     const created: Array<CreateOptions> = [];
     const memory = makeMemoryCaptureStore();
-    // What Mend's verification answers, by manifest key: the Mend host out of disk, then back.
+    let executorDead = false;
+    // What Mend's verification answers, by manifest key; verified unless a test says.
     const answers = new Map<string, GitVerification>();
     const verifier = Layer.succeed(CaptureGitVerifier, {
       verify: (_projectId, manifest) =>
@@ -7965,57 +7980,108 @@ describe("SessionEngine capture mode", () => {
             base: null,
           });
           yield* engine.launch(session.id, ["codex"]);
-          const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
-          const older = yield* shipHarnessCapture(
-            tmp,
-            memory,
-            session.worktreeId,
-            epoch,
-            crypto.randomUUID(),
-          );
           const head = yield* shipHarnessCapture(
             tmp,
             memory,
             session.worktreeId,
-            epoch,
+            memory.leases.get(session.worktreeId)?.epoch ?? 0,
             crypto.randomUUID(),
           );
           const row = memory.captures.get(head.id);
           if (row === undefined) throw new Error("the head did not register");
           memory.captures.set(head.id, { ...row, gitFsck: "unverified" });
-          const api = servedSocketApis.get(session.id)?.capture;
-          if (api === undefined) throw new Error("the session serves no capture api");
-          // The Mend host cannot finish the check: the plan waits, and the session says why.
-          answers.set(keyOf(head.manifest), {
-            outcome: "unverified",
-            detail: "index-pack --verify did not finish: signal SIGKILL",
-            transient: true,
-          });
-          const waiting = yield* Effect.flip(
-            api.planGet({ worktree_id: session.worktreeId, epoch }),
-          );
-          expect(waiting.reason).toBe("worktree-leased");
-          expect(world.sessions.get(session.id)?.summary).toBe(planWaitingWords(head.manifest.n));
-          // Recovered: the plan goes ahead with the head, and the words are gone.
-          answers.delete(keyOf(head.manifest));
-          const plan = yield* api.planGet({ worktree_id: session.worktreeId, epoch });
-          expect(plan.head?.capture_id).toBe(head.id);
-          expect(world.sessions.get(session.id)?.summary).toBeNull();
-          // Git rejects the head's content: the older capture is restored, and the session says so.
-          memory.captures.set(head.id, { ...row, gitFsck: "failed" });
-          answers.set(keyOf(head.manifest), { outcome: "failed", detail: "missing tree" });
-          const routed = yield* api.planGet({ worktree_id: session.worktreeId, epoch });
-          expect(routed.head?.capture_id).toBe(head.id);
-          expect(routed.head?.manifest.sections).toEqual(older.manifest.sections);
-          expect(world.sessions.get(session.id)?.summary).toBe(
-            planRestoredOlderWords(older.manifest.n, head.manifest.n),
-          );
+          const realNow = memory.clock.now;
+          memory.clock.now = () => realNow() + 10 * 60 * 1000;
+          executorDead = true;
+          yield* engine.reapCaptureLeases();
+          const lost = world.sessions.get(session.id)?.summary ?? "";
+          expect(lost).toContain("executor lost · lease expired");
+          yield* body({
+            world,
+            session,
+            head,
+            lost,
+            answers,
+            headKey: keyOf(head.manifest),
+          }).pipe(Effect.ensuring(Effect.sync(() => (memory.clock.now = realNow))));
         }),
       {
         captured: memory,
         verifier,
-        sealantLayer: sealantLaunchLayer(created),
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          () => executorDead,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          [],
+        ),
       },
+    );
+  };
+
+  it("review 14 #1, #3: a pickup plan that waits, then is refused, says so beside 'executor lost', never over it; once it goes ahead the words go and the replacement's heartbeat reads 'picked up · executor replaced'", async () => {
+    await pickupAfterLoss(({ world, session, head, lost, answers, headKey }) =>
+      Effect.gen(function* () {
+        const engine = yield* SessionEngine;
+        yield* engine.resumeSession(session.id, null);
+        expect(world.sessions.get(session.id)?.summary).toBe(lost);
+        const epoch = 0;
+        const api = servedSocketApis.get(session.id)?.capture;
+        if (api === undefined) throw new Error("the picked-up session serves no capture api");
+        // The replacement's boot plan: the Mend host cannot finish the check.
+        answers.set(headKey, {
+          outcome: "unverified",
+          detail: "index-pack --verify did not finish: signal SIGKILL",
+          transient: true,
+        });
+        const waiting = yield* Effect.flip(api.planGet({ worktree_id: session.worktreeId, epoch }));
+        expect(waiting.reason).toBe("worktree-leased");
+        // Before: the waiting words alone — `executor lost · …` gone for good.
+        expect(world.sessions.get(session.id)?.summary).toBe(
+          `${lost} · ${planWaitingWords(head.manifest.n)}`,
+        );
+        // Git rejects the head's content: the launch is blocked, and the session says so.
+        answers.set(headKey, { outcome: "failed", detail: "fatal: bad tree object" });
+        const blocked = yield* Effect.flip(api.planGet({ worktree_id: session.worktreeId, epoch }));
+        expect([blocked.status, blocked.reason]).toEqual([422, "unrestorable"]);
+        expect(world.sessions.get(session.id)?.summary).toBe(
+          `${lost} · ${planBlockedWords(head.manifest.n)}`,
+        );
+        // The check passes: the plan goes ahead with the head, and the loss report is back as it was.
+        answers.delete(headKey);
+        const plan = yield* api.planGet({ worktree_id: session.worktreeId, epoch });
+        expect(plan.head?.capture_id).toBe(head.id);
+        expect(world.sessions.get(session.id)?.summary).toBe(lost);
+        // Its first heartbeat is the observation that ends it.
+        yield* api.heartbeat({ worktree_id: session.worktreeId, epoch: plan.epoch });
+        expect(world.sessions.get(session.id)?.summary).toBe("picked up · executor replaced");
+      }),
+    );
+  });
+
+  it("review 14 #1: a plan notice from a launch that is not the session's current one leaves the summary alone", async () => {
+    await pickupAfterLoss(({ world, session, head, lost, answers, headKey }) =>
+      Effect.gen(function* () {
+        const older = servedSocketApis.get(session.id)?.captureAs?.("launch-the-session-left");
+        if (older === undefined) throw new Error("the session serves no per-launch capture api");
+        answers.set(headKey, {
+          outcome: "unverified",
+          detail: "index-pack --verify did not finish: signal SIGKILL",
+          transient: true,
+        });
+        const waiting = yield* Effect.flip(
+          older.planGet({ worktree_id: session.worktreeId, epoch: 0 }),
+        );
+        expect(waiting.reason).toBe("worktree-leased");
+        // Before: `launch waiting · capture n's …` over the loss report.
+        expect(world.sessions.get(session.id)?.summary).toBe(lost);
+        expect(head.manifest.n).toBeGreaterThan(0);
+      }),
     );
   });
 

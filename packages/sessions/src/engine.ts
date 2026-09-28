@@ -185,6 +185,7 @@ import {
   type CapturePlanNotice,
   type CaptureRouteError,
   LAUNCH_CLAIM_TTL_SECONDS,
+  PLAN_BLOCKED_PREFIX,
   PLAN_WAITING_PREFIX,
   type SessionCaptureApi,
 } from "./capture-channel.ts";
@@ -520,6 +521,20 @@ const LAUNCH_CANCELLED_SUMMARY = "launch cancelled · nothing was created";
  */
 const LAUNCH_INTERRUPTED_SUMMARY =
   "launch interrupted · the create's answer was lost · its executor ended";
+/**
+ * A summary without the plan notice appended to it (`noteCapturePlan`): what it said before a plan
+ * waited or was refused; null when the notice was all it said.
+ */
+const withoutPlanNotice = (summary: string | null): string | null => {
+  if (summary === null) return null;
+  for (const prefix of [PLAN_WAITING_PREFIX, PLAN_BLOCKED_PREFIX]) {
+    if (summary.startsWith(prefix)) return null;
+    const at = summary.indexOf(` · ${prefix}`);
+    if (at >= 0) return summary.slice(0, at);
+  }
+  return summary;
+};
+
 /** Every "executor lost" summary starts with this; a replacement's first word ends it. */
 const EXECUTOR_LOST_PREFIX = "executor lost";
 /** How many looks an agent's end gets at an executor that stops answering before it is judged. */
@@ -1629,10 +1644,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * (`hot-pool.ts` "Capture-mode standby").
        */
       /**
-       * What a plan told the session (review 2026-09-28 (13) #1), as its summary: a plan waiting
-       * for Mend to verify the head's git section (`launch waiting · …`, cleared once the plan
-       * goes ahead or the launch starts), or an older capture restored because the head's failed.
-       * Said once per words: the executor asks again while it waits.
+       * What a plan told the session (review 2026-09-28 (13) #1, (14) #1, #3), beside its summary:
+       * a plan waiting for Mend to verify the head's git section (`launch waiting · …`) or refused
+       * because git rejected it (`launch blocked · …`). The words are appended to what the summary
+       * already says — never written over it: `executor lost · …` stays, for
+       * `observeReplacement` to turn into `picked up · executor replaced` — and taken off again
+       * once a plan goes ahead. Only the session's current launch is heard: a launch the session
+       * moved on from (one whose readiness wait failed, still asking) says nothing here. Said once
+       * per words: the executor asks again while it waits.
        */
       const noteCapturePlan = (sessionId: SessionId, notice: CapturePlanNotice) =>
         Effect.gen(function* () {
@@ -1640,17 +1659,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             .byId(sessionId)
             .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
           if (current === null) return;
-          if (notice.kind === "planned") {
-            if (current.summary?.startsWith(PLAN_WAITING_PREFIX) === true) {
-              yield* sessions.setSummary(sessionId, null);
-            }
+          const currentLaunch =
+            (yield* sessions.executorCreateOf(sessionId)) ??
+            (yield* sessions.executorLaunchOf(sessionId))?.launchId ??
+            sessionId;
+          if (notice.launchId !== currentLaunch) {
+            yield* Effect.logInfo(
+              "session engine: a plan notice from a launch that is not the session's current one · not said",
+            ).pipe(Effect.annotateLogs({ sessionId, launchId: notice.launchId, currentLaunch }));
             return;
           }
-          if (current.summary === notice.words) return;
-          yield* Effect.logWarning(`session engine: ${notice.words}`).pipe(
-            Effect.annotateLogs({ sessionId }),
-          );
-          yield* sessions.setSummary(sessionId, notice.words);
+          const base = withoutPlanNotice(current.summary);
+          const next =
+            notice.kind === "planned"
+              ? base
+              : base === null
+                ? notice.words
+                : `${base} · ${notice.words}`;
+          if (next === current.summary) return;
+          if (notice.kind !== "planned") {
+            yield* Effect.logWarning(`session engine: ${notice.words}`).pipe(
+              Effect.annotateLogs({ sessionId }),
+            );
+          }
+          yield* sessions.setSummary(sessionId, next);
         });
 
       const captureApiFor = (sessionId: SessionId, launchId?: string): SessionCaptureApi => {

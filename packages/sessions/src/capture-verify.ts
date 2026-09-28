@@ -16,6 +16,7 @@ import {
   gitRefFormatOf,
   gitObjectIdPattern,
   gitBytes,
+  gitExitUnexplained,
   gitHostFaultWords,
   gitQuiet,
   gitRejectsContent,
@@ -66,6 +67,12 @@ export interface GitVerification {
    * (a format Mend does not read, no verifier configured), whenever it is asked.
    */
   readonly transient?: true;
+  /**
+   * `transient`, because git exited on its own with words neither the host's nor the content's
+   * lists explain (`gitExitUnexplained`, review 2026-09-28 (14) #4). Asked again, the same words
+   * from the same capture are git's answer about its content: a caller bounds how often it asks.
+   */
+  readonly unexplained?: true;
 }
 
 export class CaptureGitVerifier extends Context.Service<
@@ -390,6 +397,7 @@ export const CaptureGitVerifierLive: Layer.Layer<
               outcome: "unverified",
               detail: `the runner cache could not be prepared: ${error.cause instanceof Error ? error.cause.message : String(error.cause)}`,
               transient: true,
+              ...(error.unexplained === true ? { unexplained: true } : {}),
             } satisfies GitVerification;
           default:
             // The bucket did not answer: nothing was observed.
@@ -447,6 +455,7 @@ export const CaptureGitVerifierLive: Layer.Layer<
               outcome: "unverified",
               detail: `the closure walk did not finish: ${gitHostFaultWords(error)}`,
               transient: true,
+              ...(gitExitUnexplained(error) ? { unexplained: true } : {}),
             } satisfies GitVerification);
       }
       return { outcome: "verified", detail: null } satisfies GitVerification;
