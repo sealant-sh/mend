@@ -28,14 +28,17 @@ import {
   uploadObjects,
   writeCdcPack,
 } from "@mend/store/testing";
-import { Effect, Exit, Fiber, Layer, Scope } from "effect";
+import { Cause, Effect, Exit, Fiber, Layer, Option, Scope } from "effect";
 import * as Context from "effect/Context";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
 import {
   CaptureChannel,
+  type CapturePlanNotice,
   CaptureRegisterBudget,
   MANIFEST_FEATURES,
+  planRestoredOlderWords,
+  planWaitingWords,
   PRESIGN_TTL_SECONDS,
   PUT_URL_ASSUMED_BYTES_PER_SECOND,
   PUT_URL_CLOCK_MARGIN_SECONDS,
@@ -108,6 +111,57 @@ const packsOf = (sections: unknown): ReadonlyArray<string> =>
   (sections as { git: { packs: ReadonlyArray<string> } }).git.packs;
 const refsOf = (sections: unknown): Readonly<Record<string, string>> =>
   (sections as { git: { refs: Readonly<Record<string, string>> } }).git.refs;
+
+/**
+ * The Mend host failing one git step (review 2026-09-28 (13) #1): a `git` first on `PATH` that,
+ * when armed for a subcommand, is killed with SIGKILL (the OOM killer) or fails for disk space,
+ * once, and otherwise runs the real git. The capture's bytes are sound either way.
+ */
+const hostGitFaults = () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-host-git-"));
+  const real = realGit();
+  fs.writeFileSync(
+    path.join(dir, "git"),
+    [
+      "#!/bin/sh",
+      `if [ -e "${dir}/$1.kill" ]; then rm -f "${dir}/$1.kill"; kill -KILL $$; fi`,
+      `if [ -e "${dir}/$1.enospc" ]; then rm -f "${dir}/$1.enospc"; echo "fatal: unable to create temporary file: No space left on device" >&2; exit 128; fi`,
+      `exec "${real}" "$@"`,
+      "",
+    ].join("\n"),
+    { mode: 0o755 },
+  );
+  const realPath = process.env["PATH"] ?? "";
+  return {
+    dir,
+    /** Arm one fault for `subcommand`'s next run, and put the wrapper first on `PATH`. */
+    arm: (subcommand: string, fault: "kill" | "enospc") => {
+      fs.writeFileSync(path.join(dir, `${subcommand}.${fault}`), "");
+      process.env["PATH"] = `${dir}:${realPath}`;
+    },
+    /** Whether the armed fault fired; disarm it and restore `PATH` (the host recovered). */
+    recover: (subcommand: string, fault: "kill" | "enospc") => {
+      process.env["PATH"] = realPath;
+      const armed = path.join(dir, `${subcommand}.${fault}`);
+      const fired = !fs.existsSync(armed);
+      fs.rmSync(armed, { force: true });
+      return fired;
+    },
+    remove: () => {
+      process.env["PATH"] = realPath;
+      fs.rmSync(dir, { recursive: true, force: true });
+    },
+  };
+};
+
+/** The git binary `PATH` resolves now, by absolute path. */
+const realGit = (): string => {
+  for (const at of (process.env["PATH"] ?? "").split(path.delimiter)) {
+    const candidate = path.join(at, "git");
+    if (at !== "" && fs.existsSync(candidate)) return fs.realpathSync(candidate);
+  }
+  return "git";
+};
 
 describe("capture git verification", () => {
   const world = makeCaptureWorld();
@@ -399,6 +453,266 @@ const section = (
  * document checked against the worktree tree it applies to — and a plan that restores other git
  * state than the head's carries no seal.
  */
+describe("review 13 #1: a git step the Mend host could not finish concludes nothing about the capture", () => {
+  const world = makeCaptureWorld();
+  const layer = Layer.mergeAll(
+    SessionRepositoryCapturedLive.pipe(Layer.provide(world.layer)),
+    WorktreeReadsCapturedLive.pipe(Layer.provide(world.layer)),
+    world.layer,
+  );
+  type Services = SessionRepository | WorktreeReads | CaptureStoreRepo | CaptureChannel | BlobStore;
+  const scope = Scope.makeUnsafe();
+  let context: Context.Context<Services>;
+  const run = <A, E>(effect: Effect.Effect<A, E, Services>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(context)));
+  const faults = hostGitFaults();
+  beforeAll(async () => {
+    context = await Effect.runPromise(
+      Layer.build(layer).pipe(Effect.provideService(Scope.Scope, scope)),
+    );
+  });
+  afterAll(async () => {
+    faults.remove();
+    await Effect.runPromise(Scope.close(scope, Exit.void));
+    fs.rmSync(world.scratch, { recursive: true, force: true });
+  });
+
+  /** A claimed worktree with capture 0, its routes, and what its plans told the session. */
+  const claimedWorktree = async () => {
+    const worktreeId = newWorktreeId();
+    const branch = `mend/wt/${worktreeId}`;
+    world.worktrees.set(worktreeId, worktreeRowFor(world, worktreeId, branch));
+    await run(
+      Effect.gen(function* () {
+        const repo = yield* SessionRepository;
+        yield* repo.createWorktree(world.project.id, { directory: worktreeId, branch }, null, null);
+        yield* repo.attachWorktree!(world.project.id, worktreeId);
+      }),
+    );
+    const cap0Id = world.memory.chains.get(worktreeId)?.headCapture ?? "";
+    const cap0 = world.memory.captures.get(cap0Id);
+    if (cap0 === undefined) throw new Error("capture 0 did not register");
+    const notices: Array<CapturePlanNotice> = [];
+    const { epoch, api } = await run(
+      Effect.gen(function* () {
+        const captures = yield* CaptureStoreRepo;
+        const claimed = yield* captures.claim(worktreeId, "executor-1", 300);
+        const channel = yield* CaptureChannel;
+        const routes: SessionCaptureApi = channel.apiFor({
+          worktreeId,
+          projectId: world.project.id,
+          executorId: "executor-1",
+          footprintBytes: 0,
+          planNotice: (notice) => Effect.sync(() => void notices.push(notice)),
+        });
+        return { epoch: claimed.epoch, api: routes };
+      }),
+    );
+    const basePack = packsOf(cap0.sections)[0] ?? "";
+    const gitSection = (packs: ReadonlyArray<string>, tree: string) => ({
+      packs,
+      refs: {
+        [`refs/heads/${branch}`]: world.baseSha,
+        [WORKTREE_TREE_REF]: tree,
+        [INDEX_TREE_REF]: tree,
+      },
+      head: `refs/heads/${branch}`,
+      fsck: "verified" as const,
+    });
+    const register = (built: ReturnType<typeof buildManifest>) =>
+      api.register({
+        worktree_id: worktreeId,
+        epoch,
+        n: built.manifest.n,
+        parent: built.manifest.parent,
+        capture_id: built.id,
+        manifest_key: built.key,
+        manifest: built.manifest,
+      });
+    /** Capture `n` on top of `parent`: `a.txt` reads `words`. */
+    const capture = async (n: number, parent: string, kind: "turn" | "auto", words: string) => {
+      const edited = packEditedTree(world.work, worktreeId, epoch, world.baseSha, (dir) => {
+        fs.writeFileSync(path.join(dir, "a.txt"), `${words}\n`);
+      });
+      const built = buildManifest({
+        worktreeId,
+        n,
+        parent,
+        epoch,
+        seq: n * 10,
+        kind,
+        git: gitSection([basePack, edited.key], edited.tree),
+      });
+      await run(uploadObjects(new Map([...edited.objects, [built.key, built.bytes]])));
+      return { built, tree: edited.tree, pack: edited.key };
+    };
+    const plan = () => run(api.planGet({ worktree_id: worktreeId, epoch }));
+    const planExit = () => run(Effect.exit(api.planGet({ worktree_id: worktreeId, epoch })));
+    return {
+      worktreeId,
+      cap0,
+      cap0Id,
+      basePack,
+      epoch,
+      notices,
+      register,
+      capture,
+      plan,
+      planExit,
+    };
+  };
+
+  for (const fault of ["kill", "enospc"] as const) {
+    it(
+      `${fault}: a turn capture whose index-pack the host could not finish is \`unverified\`, verified again once it recovers, and the plan restores it — never an older git section`,
+      { timeout: 60_000 },
+      async () => {
+        const at = await claimedWorktree();
+        // 1. The session's first turn verifies.
+        const v1 = await at.capture(1, at.cap0Id, "turn", `${fault} session work v1`);
+        expect((await run(at.register(v1.built))).head_n).toBe(1);
+        expect(world.memory.captures.get(v1.built.id)?.gitFsck).toBe("verified");
+        // 2. The next turn, a sound pack: the Mend host fails one git step while verifying it.
+        const v2 = await at.capture(2, v1.built.id, "turn", `${fault} session work v2 (latest)`);
+        faults.arm("index-pack", fault);
+        let landed;
+        try {
+          landed = await run(at.register(v2.built));
+        } finally {
+          expect(faults.recover("index-pack", fault)).toBe(true);
+        }
+        expect(landed.head_n).toBe(2);
+        // Before: `failed`, for good.
+        expect(world.memory.captures.get(v2.built.id)?.gitFsck).toBe("unverified");
+        // 3. The host recovered: a lost-ack re-register, then a resume's plan.
+        expect((await run(at.register(v2.built))).head_n).toBe(2);
+        const plan = await at.plan();
+        expect(plan.head?.n).toBe(2);
+        expect(plan.head?.manifest.sections.git.packs).toEqual([at.basePack, v2.pack]);
+        expect(plan.head?.manifest.sections.git.refs[WORKTREE_TREE_REF]).toBe(v2.tree);
+        expect(world.memory.captures.get(v2.built.id)?.gitFsck).toBe("verified");
+        expect(at.notices.at(-1)).toEqual({ kind: "planned" });
+        const read = await run(
+          Effect.gen(function* () {
+            const reads = yield* WorktreeReads;
+            return yield* reads.diffWorktree(world.project.id, at.worktreeId, world.baseSha);
+          }),
+        );
+        expect(read.stamp.captureN).toBe(2);
+        expect(read.value).toContain("v2 (latest)");
+      },
+    );
+
+    it(
+      `${fault}: a plan that cannot verify an \`auto\` head now waits (the executor asks again, the session says why) and restores the head once the host recovers`,
+      { timeout: 60_000 },
+      async () => {
+        const at = await claimedWorktree();
+        const v1 = await at.capture(1, at.cap0Id, "turn", `${fault} plan-time v1`);
+        expect((await run(at.register(v1.built))).head_n).toBe(1);
+        const v3 = await at.capture(2, v1.built.id, "auto", `${fault} plan-time v3 (auto head)`);
+        expect((await run(at.register(v3.built))).head_n).toBe(2);
+        expect(world.memory.captures.get(v3.built.id)?.gitFsck).toBe("unverified");
+        faults.arm("index-pack", fault);
+        let underFault;
+        try {
+          underFault = await at.planExit();
+        } finally {
+          expect(faults.recover("index-pack", fault)).toBe(true);
+        }
+        // Before: the head was recorded `failed` and the plan restored capture 1's git section
+        // under it, then and on every later plan.
+        expect(Exit.isFailure(underFault)).toBe(true);
+        if (Exit.isFailure(underFault)) {
+          const error = Cause.findErrorOption(underFault.cause);
+          expect(Option.isSome(error) ? error.value.reason : null).toBe("worktree-leased");
+        }
+        expect(world.memory.captures.get(v3.built.id)?.gitFsck).toBe("unverified");
+        expect(at.notices.at(-1)).toEqual({ kind: "waiting", words: planWaitingWords(2) });
+        // The executor asks again once the host recovered: the head, as registered.
+        const later = await at.plan();
+        expect(later.head?.n).toBe(2);
+        expect(later.head?.manifest.sections.git.refs[WORKTREE_TREE_REF]).toBe(v3.tree);
+        expect(world.memory.captures.get(v3.built.id)?.gitFsck).toBe("verified");
+        expect(at.notices.at(-1)).toEqual({ kind: "planned" });
+      },
+    );
+  }
+
+  it(
+    "a head recorded `failed` by an earlier host fault (before this fix, or by an older Mend) is verified again before any plan routes around it",
+    { timeout: 60_000 },
+    async () => {
+      const at = await claimedWorktree();
+      const v1 = await at.capture(1, at.cap0Id, "turn", "recheck v1");
+      expect((await run(at.register(v1.built))).head_n).toBe(1);
+      const v2 = await at.capture(2, v1.built.id, "turn", "recheck v2 (latest)");
+      expect((await run(at.register(v2.built))).head_n).toBe(2);
+      // What an older Mend recorded when one git step was OOM-killed.
+      await run(Effect.flatMap(CaptureStoreRepo, (repo) => repo.setGitFsck(v2.built.id, "failed")));
+      const plan = await at.plan();
+      expect(plan.head?.manifest.sections.git.refs[WORKTREE_TREE_REF]).toBe(v2.tree);
+      expect(world.memory.captures.get(v2.built.id)?.gitFsck).toBe("verified");
+      expect(at.notices.at(-1)).toEqual({ kind: "planned" });
+    },
+  );
+
+  it(
+    "a head git rejects by content is routed around whole: every section of the newest capture that verifies, never its git section under the head's workspace, and the session says so",
+    { timeout: 60_000 },
+    async () => {
+      const at = await claimedWorktree();
+      const v1 = await at.capture(1, at.cap0Id, "turn", "routed v1");
+      expect((await run(at.register(v1.built))).head_n).toBe(1);
+      const partial = packWithoutSubtree(world.work, at.worktreeId, at.epoch, world.baseSha);
+      // The head's workspace class holds what capture 1's does not: a mixed plan would lay it
+      // over capture 1's tree.
+      const wsDir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-ws-"));
+      fs.writeFileSync(path.join(wsDir, "untracked.txt"), "the head's untracked work\n");
+      const workspace = snapshotDirectory(wsDir, captureKeys(at.worktreeId, at.epoch));
+      fs.rmSync(wsDir, { recursive: true, force: true });
+      const broken = buildManifest({
+        worktreeId: at.worktreeId,
+        n: 2,
+        parent: v1.built.id,
+        epoch: at.epoch,
+        seq: 20,
+        kind: "turn",
+        git: {
+          ...v1.built.manifest.sections.git,
+          packs: [at.basePack, partial.key],
+          refs: {
+            ...v1.built.manifest.sections.git.refs,
+            [WORKTREE_TREE_REF]: partial.tree,
+            [INDEX_TREE_REF]: partial.tree,
+          },
+        },
+        workspace: sectionOf(workspace),
+      });
+      expect(broken.manifest.sections.workspace).not.toEqual(v1.built.manifest.sections.workspace);
+      await run(
+        uploadObjects(
+          new Map([...partial.objects, ...workspace.objects, [broken.key, broken.bytes]]),
+        ),
+      );
+      expect((await run(at.register(broken))).head_n).toBe(2);
+      expect(world.memory.captures.get(broken.id)?.gitFsck).toBe("failed");
+      const plan = await at.plan();
+      // The head's identity, capture 1's sections — all of them.
+      expect(plan.head?.n).toBe(2);
+      expect(plan.head?.capture_id).toBe(broken.id);
+      expect(plan.head?.manifest.sections).toEqual(v1.built.manifest.sections);
+      expect(plan.head?.manifest.final_seal).toBeUndefined();
+      expect(at.notices.at(-1)).toEqual({
+        kind: "restored-older",
+        words: planRestoredOlderWords(1, 2),
+      });
+      // Still git's word on its bytes: checked again, still `failed`.
+      expect(world.memory.captures.get(broken.id)?.gitFsck).toBe("failed");
+    },
+  );
+});
+
 describe("a seal rests only on sections Mend observed restore", () => {
   const world = makeCaptureWorld();
   const layer = Layer.mergeAll(
@@ -2115,6 +2429,55 @@ describeSeals(
       fs.writeFileSync(stored, file.bytes);
       expect(await seals(at)).toBeNull();
     });
+
+    it("review 13 #1: a read-back whose index-pack the Mend host could not finish leaves the seal withheld, never void; the next read stands", async () => {
+      let clock = Date.now();
+      const seals = (at: { readonly worktreeId: WorktreeId; readonly epoch: number }) =>
+        run(
+          Effect.flatMap(CaptureSeals, (service) =>
+            service.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
+          ).pipe(Effect.provide(makeCaptureSealsStore({ now: () => clock }))),
+        );
+      const recorded = (at: { readonly worktreeId: WorktreeId; readonly epoch: number }) =>
+        run(
+          Effect.flatMap(CaptureStoreRepo, (repo) =>
+            repo.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
+          ),
+        );
+      bucketReplaceableUntil = clock - 60_000;
+      const at = await claimed();
+      const file = sealedFile(at, "review 13 read-back bytes\n");
+      await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
+      await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
+      expect((await recorded(at))?.captureId).toBe(file.cap.id);
+      // A URL of the epoch is handed out, then expires: every object is read back again.
+      const other = sealedFile(at, "review 13 other bytes\n");
+      await run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [other.key],
+          sizes: { [other.key]: other.bytes.length },
+        }),
+      );
+      clock = (world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`)?.getTime() ?? 0) + 1;
+      const faults = hostGitFaults();
+      try {
+        faults.arm("index-pack", "kill");
+        let during;
+        try {
+          during = await seals(at);
+        } finally {
+          expect(faults.recover("index-pack", "kill")).toBe(true);
+        }
+        // Before: `… does not index …` — void, for good.
+        expect(during).toBeNull();
+        expect((await recorded(at))?.voidReason ?? null).toBeNull();
+        expect((await seals(at))?.captureId).toBe(file.cap.id);
+      } finally {
+        faults.remove();
+      }
+    });
   },
 );
 
@@ -3184,6 +3547,43 @@ describeSeals(
           )
         )?.captureId,
       ).toBe(capture.built.id);
+    });
+
+    it("review 13 #1: a sealing FINAL whose git verification the Mend host could not finish (one index-pack OOM-killed) is withheld (unavailable), never refused, and the re-ask after recovery records it", async () => {
+      passBucketReplaceable = () => 0;
+      const at = await claimed();
+      const capture = sharedLinksCapture(at, "review13-hostgit");
+      await run(uploadObjects(capture.objects));
+      resetReads();
+      const faults = hostGitFaults();
+      try {
+        faults.arm("index-pack", "kill");
+        const register = registerOn(at.worktreeId, at.epoch, at.api)(capture.built);
+        let first;
+        try {
+          first = await run(register);
+        } finally {
+          expect(faults.recover("index-pack", "kill")).toBe(true);
+        }
+        // Before: `refused/unrestorable` on this and every later ask, the row `failed`.
+        expect(first.head_capture_id).toBe(capture.built.id);
+        expect(first.seal).toEqual({ state: "withheld", reason: "unavailable" });
+        expect(world.memory.captures.get(capture.built.id)?.gitFsck).toBe("unverified");
+        const again = await run(register);
+        expect(again.seal).toEqual({ state: "recorded" });
+        expect(world.memory.captures.get(capture.built.id)?.gitFsck).toBe("verified");
+        expect(
+          (
+            await run(
+              Effect.flatMap(CaptureStoreRepo, (repo) =>
+                repo.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
+              ),
+            )
+          )?.captureId,
+        ).toBe(capture.built.id);
+      } finally {
+        faults.remove();
+      }
     });
 
     it("review 12 #4: a read the store failed during the seal checks withholds the seal (unavailable), and the next ask checks again and records it", async () => {

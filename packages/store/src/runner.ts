@@ -19,7 +19,7 @@ import {
   gitObjectIdPattern,
   GIT_OBJECT_ID,
 } from "./captures.ts";
-import { git, type GitError } from "./git.ts";
+import { git, type GitError, gitHostFaultWords, gitRejectsContent } from "./git.ts";
 import {
   type BundleEmptyError,
   type BundleInput,
@@ -373,15 +373,20 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
             yield* cacheIo(projectId, () => fs.mkdirSync(staging, { recursive: true }));
             const stream = yield* blobs.getStream(key);
             const hash = crypto.createHash("sha256");
+            // A download that did not finish — the stream broke, the disk filled — is the
+            // host's, never the pack's (review 2026-09-28 (13) #1): nothing about the bytes was
+            // observed.
             yield* Effect.tryPromise({
               try: async () => {
                 stream.on("data", (chunk: Buffer | string) => hash.update(chunk));
                 await pipeline(stream, fs.createWriteStream(stagedPack));
               },
               catch: (cause) =>
-                new RunnerPackError({
-                  key,
-                  reason: `download: ${cause instanceof Error ? cause.message : String(cause)}`,
+                new RunnerCacheError({
+                  projectId,
+                  cause: new Error(
+                    `download of ${key}: ${cause instanceof Error ? cause.message : String(cause)}`,
+                  ),
                 }),
             });
             const actual = hash.digest("hex");
@@ -393,10 +398,18 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
             }
             const idx = yield* blobs.get(packIdxKeyOf(key));
             yield* cacheIo(projectId, () => fs.writeFileSync(stagedIdx, idx));
+            // `index-pack --verify` rejecting the bytes is about the pack; one the host could
+            // not finish (killed, out of disk or memory) concluded nothing about it.
             yield* verifyGitPack(stagedPack, format).pipe(
-              Effect.mapError(
-                (error) =>
-                  new RunnerPackError({ key, reason: `index-pack --verify: ${error.stderr}` }),
+              Effect.mapError((error) =>
+                gitRejectsContent(error)
+                  ? new RunnerPackError({ key, reason: `index-pack --verify: ${error.stderr}` })
+                  : new RunnerCacheError({
+                      projectId,
+                      cause: new Error(
+                        `index-pack --verify of ${key} did not finish: ${gitHostFaultWords(error)}`,
+                      ),
+                    }),
               ),
             );
             yield* cacheIo(projectId, () => {

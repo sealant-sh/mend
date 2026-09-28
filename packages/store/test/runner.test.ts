@@ -293,6 +293,59 @@ describe("GitOpsRunner", () => {
     const packDir = path.join(runnerCachePathOf(storeRoot(), "proj-bad"), "objects", "pack");
     expect(fs.existsSync(packDir) ? fs.readdirSync(packDir) : []).toEqual([]);
   });
+
+  it("review 13 #1: a sound pack whose index-pack the Mend host could not finish (killed, out of disk) is the cache's failure, never the pack's, and installs on the next ensure", async () => {
+    const keys = captureKeys("wt-host", 1);
+    const good = packRepo(repo, keys, ["refs/heads/main"]);
+    const manifest = buildManifest({
+      worktreeId: "wt-host",
+      n: 1,
+      parent: null,
+      epoch: 1,
+      git: gitSection([good.key], { "refs/heads/main": mainSha }, "refs/heads/main"),
+    }).manifest;
+    const wrapper = fs.mkdtempSync(path.join(os.tmpdir(), "mend-host-git-"));
+    const real = execFileSync("sh", ["-c", "command -v git"]).toString("utf8").trim();
+    fs.writeFileSync(
+      path.join(wrapper, "git"),
+      [
+        "#!/bin/sh",
+        `if [ "$1" = "index-pack" ] && [ -e "${wrapper}/kill" ]; then rm -f "${wrapper}/kill"; kill -KILL $$; fi`,
+        `if [ "$1" = "index-pack" ] && [ -e "${wrapper}/enospc" ]; then rm -f "${wrapper}/enospc"; echo "fatal: unable to create temporary file: No space left on device" >&2; exit 128; fi`,
+        `exec "${fs.realpathSync(real)}" "$@"`,
+        "",
+      ].join("\n"),
+      { mode: 0o755 },
+    );
+    const realPath = process.env["PATH"] ?? "";
+    const ensure = Effect.gen(function* () {
+      yield* upload(good.objects);
+      const runner = yield* GitOpsRunner;
+      return yield* runner.ensure({ projectId: "proj-host", manifest, storeRefs: {} }).pipe(
+        Effect.map(() => "ok"),
+        Effect.catch((error) => Effect.succeed(error._tag)),
+      );
+    });
+    const outcomes: Array<string> = [];
+    try {
+      for (const fault of ["kill", "enospc"]) {
+        fs.writeFileSync(path.join(wrapper, fault), "");
+        process.env["PATH"] = `${wrapper}:${realPath}`;
+        try {
+          outcomes.push(await run(ensure));
+        } finally {
+          process.env["PATH"] = realPath;
+        }
+        expect(fs.existsSync(path.join(wrapper, fault))).toBe(false);
+      }
+      outcomes.push(await run(ensure));
+    } finally {
+      process.env["PATH"] = realPath;
+      fs.rmSync(wrapper, { recursive: true, force: true });
+    }
+    // Before: `RunnerPackError` both times — which Mend records as a `failed` capture.
+    expect(outcomes).toEqual(["RunnerCacheError", "RunnerCacheError", "ok"]);
+  });
 });
 
 /** The key character sealantd escapes byte `byte` to (`tree.rs` `key_of`). */

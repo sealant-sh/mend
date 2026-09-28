@@ -182,8 +182,10 @@ import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
 import {
+  type CapturePlanNotice,
   type CaptureRouteError,
   LAUNCH_CLAIM_TTL_SECONDS,
+  PLAN_WAITING_PREFIX,
   type SessionCaptureApi,
 } from "./capture-channel.ts";
 import {
@@ -1626,6 +1628,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * the executor's replan asks `plan.get` with no worktree named and is answered with it
        * (`hot-pool.ts` "Capture-mode standby").
        */
+      /**
+       * What a plan told the session (review 2026-09-28 (13) #1), as its summary: a plan waiting
+       * for Mend to verify the head's git section (`launch waiting · …`, cleared once the plan
+       * goes ahead or the launch starts), or an older capture restored because the head's failed.
+       * Said once per words: the executor asks again while it waits.
+       */
+      const noteCapturePlan = (sessionId: SessionId, notice: CapturePlanNotice) =>
+        Effect.gen(function* () {
+          const current = yield* sessions
+            .byId(sessionId)
+            .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+          if (current === null) return;
+          if (notice.kind === "planned") {
+            if (current.summary?.startsWith(PLAN_WAITING_PREFIX) === true) {
+              yield* sessions.setSummary(sessionId, null);
+            }
+            return;
+          }
+          if (current.summary === notice.words) return;
+          yield* Effect.logWarning(`session engine: ${notice.words}`).pipe(
+            Effect.annotateLogs({ sessionId }),
+          );
+          yield* sessions.setSummary(sessionId, notice.words);
+        });
+
       const captureApiFor = (sessionId: SessionId, launchId?: string): SessionCaptureApi => {
         /**
          * `named`: the worktree the request names (`worktree_id`), when it names one. A claimed
@@ -1702,6 +1729,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               launchId: launch,
               // Drained, kept or recovered: its uploads are what saves it (e2e run 5).
               unmetered: session.captureDrain !== null,
+              planNotice: (notice) => noteCapturePlan(sessionId, notice),
               footprintBytes: yield* footprintFor(sessionId, session.projectId),
             });
             return yield* call(api);

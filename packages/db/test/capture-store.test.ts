@@ -1482,3 +1482,86 @@ describe.skipIf(!reachable)("migration 0092 over seals recorded before it", () =
     expect(result?.reverifiedAt).toBeNull();
   });
 });
+
+// Review 2026-09-28 (13) #1: a git step the Mend host could not finish recorded a sound capture
+// `failed`, and why was never stored. 0094 puts every `failed` row back to `unverified`, once, so
+// the next plan, register or seal re-ask verifies it again; the other outcomes stay as they were.
+describe.skipIf(!reachable)("migration 0094 over git sections recorded failed before it", () => {
+  const LEGACY_DB = `mend_capture_git_fsck_${process.pid}_${Date.now()}`;
+  const legacyUrl = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${LEGACY_DB}`;
+    return url.toString();
+  })();
+  const legacyLayer = CaptureStoreRepoLive.pipe(
+    Layer.provideMerge(
+      MendDBLive.pipe(
+        Layer.provideMerge(
+          PgClient.layer({
+            url: Redacted.make(legacyUrl),
+            transformResultNames: Str.snakeToCamel,
+            transformQueryNames: Str.camelToSnake,
+          }),
+        ),
+      ),
+    ),
+  );
+  const legacy = <A, E>(effect: Effect.Effect<A, E, CaptureStoreRepo | SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(legacyLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${LEGACY_DB}`);
+      }),
+    );
+  });
+
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${LEGACY_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("puts every failed git section back to unverified and leaves the others", async () => {
+    const result = await legacy(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const repo = yield* CaptureStoreRepo;
+        const ordered = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
+        for (const [name, migration] of ordered) {
+          if (name.localeCompare("0094") >= 0) continue;
+          yield* migration;
+        }
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-legacy', 'web', '/store/p/repo.git', 'main',
+                  (SELECT id FROM organizations LIMIT 1))`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-legacy', 'p-legacy', 'wt-legacy', 'wt-legacy', 'mend/wt/wt-legacy', 'abc')`;
+        const outcomes = ["verified", "failed", "unverified", "failed"] as const;
+        for (const [at, outcome] of outcomes.entries()) {
+          yield* sql`
+            INSERT INTO captures (id, worktree_id, n, parent, epoch, seq, kind, manifest_key,
+                                  sections, git_fsck)
+            VALUES (${`cap-${at}`}, 'wt-legacy', ${at}, NULL, 1, ${at * 10}, 'turn',
+                    ${`captures/wt-legacy/1/manifests/${String(at).repeat(64)}`},
+                    '{}'::jsonb, ${outcome})`;
+        }
+        const [, migration] = ordered.find(([name]) => name.startsWith("0094")) ?? [];
+        if (migration === undefined) return yield* Effect.die("no 0094");
+        yield* migration;
+        const after: Array<string | undefined> = [];
+        for (const at of outcomes.keys())
+          after.push((yield* repo.captureById(`cap-${at}`))?.gitFsck);
+        return after;
+      }),
+    );
+    expect(result).toEqual(["verified", "unverified", "unverified", "unverified"]);
+  });
+});

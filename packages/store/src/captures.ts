@@ -9,8 +9,8 @@ import * as zlib from "node:zlib";
 import { Effect, Schema } from "effect";
 import * as Context from "effect/Context";
 
-import { BlobNotFoundError, BlobStore, type BlobStoreError, isValidBlobKey } from "./blob-store.ts";
-import { git, type GitError } from "./git.ts";
+import { BlobNotFoundError, BlobStore, BlobStoreError, isValidBlobKey } from "./blob-store.ts";
+import { git, type GitError, gitHostFaultWords, gitRejectsContent } from "./git.ts";
 
 /**
  * The capture format of sealantd ADR-0015 ("Capture format"), read-side only: Mend never writes
@@ -688,6 +688,16 @@ const verifyDigest = (key: string, bytes: Uint8Array) => {
     : Effect.fail(new CaptureIntegrityError({ key, expected, actual }));
 };
 
+/**
+ * A check of stored bytes the Mend host could not finish — the copy broke, the disk filled, git
+ * was killed — rather than one that found them wrong (review 2026-09-28 (13) #1): nothing about
+ * the bytes was observed, and the check runs again on the next ask.
+ */
+export class CaptureCheckUnfinishedError extends Schema.TaggedErrorClass<CaptureCheckUnfinishedError>()(
+  "CaptureCheckUnfinishedError",
+  { key: Schema.String, reason: Schema.String },
+) {}
+
 /** The sha256 of `key`'s bytes, streamed (a bulk pack can be gigabytes). */
 const sha256Of = (
   key: string,
@@ -695,15 +705,16 @@ const sha256Of = (
   Effect.gen(function* () {
     const store = yield* BlobStore;
     const stream = yield* store.getStream(key);
+    // A stream that broke part way is the store not answering, never other bytes (review
+    // 2026-09-28 (13) #1): a read-back that hashed nothing concluded nothing.
     return yield* Effect.tryPromise({
       try: async () => {
         const hash = crypto.createHash("sha256");
         for await (const chunk of stream) hash.update(chunk);
         return hash.digest("hex");
       },
-      catch: (cause) =>
-        new CaptureIntegrityError({ key, expected: "readable", actual: String(cause) }),
-    }).pipe(Effect.orElseSucceed(() => ""));
+      catch: (cause) => new BlobStoreError({ operation: "get", key, cause }),
+    });
   });
 
 /** A git pack index's two trailing SHA-1s: the pack's checksum, then its own. */
@@ -3249,7 +3260,11 @@ export const verifyGitPack = (
 const storedGitPackProblem = (
   key: string,
   format: GitObjectFormat,
-): Effect.Effect<string | null, BlobNotFoundError | BlobStoreError, BlobStore> =>
+): Effect.Effect<
+  string | null,
+  BlobNotFoundError | BlobStoreError | CaptureCheckUnfinishedError,
+  BlobStore
+> =>
   Effect.gen(function* () {
     const own = yield* storedObjectProblem(key);
     if (own !== null) return own;
@@ -3262,17 +3277,31 @@ const storedGitPackProblem = (
       (dir) =>
         Effect.gen(function* () {
           const packPath = path.join(dir, "pack.pack");
+          // The pack copied down and checked on the Mend host: a copy or a check the host could
+          // not finish (the stream broke, the disk filled, git was killed) concluded nothing
+          // about the stored bytes (review 2026-09-28 (13) #1) — only git rejecting them does.
           yield* Effect.tryPromise({
             try: async () => {
               await pipelinePromise(stream, fs.createWriteStream(packPath));
               await fs.promises.writeFile(path.join(dir, "pack.idx"), idx);
             },
-            catch: (cause) => cause,
-          }).pipe(Effect.orDie);
+            catch: (cause) =>
+              new CaptureCheckUnfinishedError({
+                key,
+                reason: `copying it to the Mend host: ${cause instanceof Error ? cause.message : String(cause)}`,
+              }),
+          });
           return yield* verifyGitPack(packPath, format).pipe(
             Effect.as(null),
             Effect.catchTag("GitError", (error) =>
-              Effect.succeed(`${idxKey} does not index ${key}: ${error.stderr.trim()}`),
+              gitRejectsContent(error)
+                ? Effect.succeed(`${idxKey} does not index ${key}: ${error.stderr.trim()}`)
+                : Effect.fail(
+                    new CaptureCheckUnfinishedError({
+                      key,
+                      reason: `index-pack --verify did not finish: ${gitHostFaultWords(error)}`,
+                    }),
+                  ),
             ),
           );
         }),
@@ -3287,12 +3316,13 @@ const storedGitPackProblem = (
  * class's own), and every git pack with the index a restore installs beside it. Every capture key
  * is content-addressed, so objects that read back as their names are the bytes register verified,
  * and what the seal said of them still holds. The reason one is not (missing, other bytes, an
- * index of another pack), or null. Fails only when the store could not be read (`BlobStoreError`):
- * nothing is concluded then.
+ * index of another pack), or null. Fails only when the store could not be read (`BlobStoreError`)
+ * or the Mend host could not finish a check (`CaptureCheckUnfinishedError`): nothing is concluded
+ * then.
  */
 export const storedCaptureProblem = (
   manifestKey: string,
-): Effect.Effect<string | null, BlobStoreError, BlobStore> =>
+): Effect.Effect<string | null, BlobStoreError | CaptureCheckUnfinishedError, BlobStore> =>
   Effect.gen(function* () {
     const store = yield* BlobStore;
     const own = yield* storedObjectProblem(manifestKey);

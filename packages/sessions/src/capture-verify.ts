@@ -16,6 +16,9 @@ import {
   gitRefFormatOf,
   gitObjectIdPattern,
   gitBytes,
+  gitHostFaultWords,
+  gitQuiet,
+  gitRejectsContent,
   gitSectionTrees,
   GitOpsRunner,
   type RestoreTreePath,
@@ -45,12 +48,24 @@ import * as Context from "effect/Context";
  * namespace holding that one pack alone, found every object. Packs are immutable (named by their
  * sha256), so that proof is kept per (ref sha, pack) for the process; a store ref no single listed
  * pack closes bounds nothing, and the tips are walked whole.
+ *
+ * `failed` is git's word on the content alone: a pack it rejects, an object the walk misses
+ * (`gitRejectsContent`). A check the Mend host could not finish (a git run killed or out of disk,
+ * a download that broke) is `unverified` and `transient`, checked again on the next ask (review
+ * 2026-09-28 (13) #1). The walk's output is counted, never buffered (`gitQuiet`).
  */
 
 export interface GitVerification {
   readonly outcome: GitFsckOutcome;
   /** What was observed when the outcome is not `verified`: git's stderr, or why nothing ran. */
   readonly detail: string | null;
+  /**
+   * `unverified` because the Mend host could not finish the check now — the download, the disk,
+   * a git run killed or out of memory, the bucket not answering (review 2026-09-28 (13) #1): the
+   * same check may conclude once the host recovers. Absent: nothing here can verify the section
+   * (a format Mend does not read, no verifier configured), whenever it is asked.
+   */
+  readonly transient?: true;
 }
 
 export class CaptureGitVerifier extends Context.Service<
@@ -254,7 +269,10 @@ export const CaptureGitVerifierLive: Layer.Layer<
       isolatedPacks(cachePath, [key], format, (repo) =>
         Effect.gen(function* () {
           if ((yield* presentIn(repo, [sha], format)).length === 0) return false;
-          yield* git(["rev-list", "--objects", "--missing=error", "--no-object-names", sha], repo);
+          yield* gitQuiet(
+            ["rev-list", "--objects", "--missing=error", "--no-object-names", sha],
+            repo,
+          );
           return true;
         }),
       ).pipe(Effect.catch(() => Effect.succeed(false)));
@@ -341,6 +359,13 @@ export const CaptureGitVerifierLive: Layer.Layer<
       if (tips.length === 0) return { outcome: "verified", detail: null } satisfies GitVerification;
       const storeRefs = yield* refs.refsMap(projectId);
       const ensured = yield* runner.ensure({ projectId, manifest, storeRefs }).pipe(Effect.result);
+      // `failed` is a fact about the capture, and only git's word on its bytes or the bucket
+      // missing a pack is one: a pack whose bytes `index-pack --verify` rejects or that hash to
+      // another name (`RunnerPackError`), a pack not stored. Anything the Mend host could not
+      // finish — the download, the disk, a git run killed or out of memory, the cache's own
+      // `git init` (`RunnerCacheError`, `GitError`), the bucket not answering — observed nothing:
+      // `unverified`, verified again on the next ask and at the next plan (review 2026-09-28 (13)
+      // #1).
       if (Result.isFailure(ensured)) {
         const error = ensured.failure;
         switch (error._tag) {
@@ -355,12 +380,23 @@ export const CaptureGitVerifierLive: Layer.Layer<
               detail: `pack missing from the bucket: ${error.key}`,
             } satisfies GitVerification;
           case "GitError":
-            return { outcome: "failed", detail: error.stderr.trim() } satisfies GitVerification;
+            return {
+              outcome: "unverified",
+              detail: `the runner cache could not be prepared: ${gitHostFaultWords(error)}`,
+              transient: true,
+            } satisfies GitVerification;
+          case "RunnerCacheError":
+            return {
+              outcome: "unverified",
+              detail: `the runner cache could not be prepared: ${error.cause instanceof Error ? error.cause.message : String(error.cause)}`,
+              transient: true,
+            } satisfies GitVerification;
           default:
-            // The bucket or the cache directory failed, not the capture: nothing was observed.
+            // The bucket did not answer: nothing was observed.
             return {
               outcome: "unverified",
               detail: `the runner cache could not be prepared: ${error._tag}`,
+              transient: true,
             } satisfies GitVerification;
         }
       }
@@ -379,7 +415,9 @@ export const CaptureGitVerifierLive: Layer.Layer<
           Effect.gen(function* () {
             const held = yield* presentIn(repo, storeTips, format);
             const boundary = yield* closedBoundaries(cachePath, section.packs, held, format);
-            return yield* git(
+            // Its output is counted, never buffered: a walk of millions of objects prints tens
+            // of megabytes (review 2026-09-28 (13) #1).
+            return yield* gitQuiet(
               [
                 "rev-list",
                 "--objects",
@@ -395,12 +433,21 @@ export const CaptureGitVerifierLive: Layer.Layer<
       ).pipe(Effect.result);
       if (Result.isFailure(walked)) {
         const error = walked.failure;
-        return error._tag === "IsolationError"
-          ? ({
+        if (error._tag === "IsolationError") {
+          return {
+            outcome: "unverified",
+            detail: `the listed packs could not be isolated: ${error.detail}`,
+            transient: true,
+          } satisfies GitVerification;
+        }
+        // Only the walk naming an object the packs do not hold is about the capture.
+        return gitRejectsContent(error)
+          ? ({ outcome: "failed", detail: error.stderr.trim() } satisfies GitVerification)
+          : ({
               outcome: "unverified",
-              detail: `the listed packs could not be isolated: ${error.detail}`,
-            } satisfies GitVerification)
-          : ({ outcome: "failed", detail: error.stderr.trim() } satisfies GitVerification);
+              detail: `the closure walk did not finish: ${gitHostFaultWords(error)}`,
+              transient: true,
+            } satisfies GitVerification);
       }
       return { outcome: "verified", detail: null } satisfies GitVerification;
     });

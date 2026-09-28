@@ -2670,6 +2670,19 @@ const captureOverdueMigration = Effect.gen(function* () {
       ADD COLUMN capture_overdue_bound_ms bigint`;
 });
 
+/**
+ * 0094: a git section recorded `failed` is checked again (review 2026-09-28 (13) #1). Until now
+ * any git step the Mend host could not finish — killed by the OOM killer, out of disk, output past
+ * its buffer — recorded a sound capture `failed`, for good: plans restored an older git section
+ * under it and its seal was refused on every ask. Why a row failed was never stored, so every
+ * `failed` row goes back to `unverified`, once: the next plan, register or seal re-ask verifies it
+ * again, and only git rejecting its bytes or its closure records `failed` from now on.
+ */
+const captureGitFsckRecheckMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`UPDATE captures SET git_fsck = 'unverified' WHERE git_fsck = 'failed'`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2764,4 +2777,5 @@ export const migrations = {
   "0091_capture_put_authority_lock": capturePutAuthorityLockMigration,
   "0092_capture_seal_scopes": captureSealScopesMigration,
   "0093_capture_overdue": captureOverdueMigration,
+  "0094_capture_git_fsck_recheck": captureGitFsckRecheckMigration,
 };
