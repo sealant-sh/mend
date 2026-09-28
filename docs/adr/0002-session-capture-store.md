@@ -213,6 +213,29 @@ call, never part of the token. Per route:
   409 or after 30 s without a successful heartbeat, and resumes it (`SIGCONT`) if a later heartbeat
   succeeds with the same epoch; it never kills.
 
+Stored objects are write-once (cross-repo decision 19, review 2026-09-28 (6) #9, amended
+2026-09-28). Every PUT URL has `If-None-Match: *` signed into it (sealantd already sends the header,
+so an upload without it fails the signature). `upload.urls` never mints a URL for a key the bucket
+already holds. It reads that object and checks it against its name first: a pack, dir pack, tree or
+manifest must hash to its sha256, and a git pack index must checksum to its own trailer and name its
+pack's checksum. The key then comes back in `present` (an object that does not match is a 409). A
+completed multipart upload never lands over an existing key. What Mend has already checked about a
+key's bytes (payload reads, dir packs, pack indexes) is kept per store identity and only trusted
+once no URL could replace those bytes (`BlobStore.replaceableUntil`). The directory store publishes
+objects read-only. How backends answer a conditional PUT over an existing key, measured 2026-09-28:
+
+| Backend                  | Conditional PUT / complete over an existing key | What Mend relies on                                                                                                                                                      |
+| ------------------------ | ----------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| AWS S3                   | 412 (its documentation; not measured here)      | the bucket refuses                                                                                                                                                       |
+| Cloudflare R2            | 412 (its documentation; not measured here)      | the bucket refuses                                                                                                                                                       |
+| MinIO RELEASE.2025-09-07 | 412, bytes kept (measured)                      | the bucket refuses                                                                                                                                                       |
+| Garage v2.4.1            | 200, bytes **replaced** (measured)              | no URL for a present key; a HEAD before each complete; payload checks not trusted while a URL for the key could still be used (15 min TTL, and 15 min after Mend starts) |
+
+Mend measures this once per bucket with a probe key (`mend-probes/write-once/<uuid>`, deleted
+afterwards) and never assumes it. On Garage a URL handed out for a key that was still absent can
+replace the object until that URL expires, so a seal recorded in that window rests on bytes read at
+register. That is the remaining exposure, and it closes only with a bucket that refuses overwrites.
+
 The manifest and summary travel over the channel; bulk bytes never do. Presigned URLs carry the host
 the executor resolves (`MEND_BLOB_STORE_PUBLIC_URL`: the Docker network name of the bucket, the
 cluster Service, the R2 S3 endpoint), never `localhost`.

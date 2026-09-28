@@ -321,6 +321,35 @@ describe("BlobStore (dir)", () => {
     expect(url).toBe(`file://${path.join(root, "captures/w/1/packs/abc")}`);
   });
 
+  // Review 2026-09-28 (6) #9, cross-repo decision 19: the directory store's `file://` URL is the
+  // object's path; a holder of it must not be able to rewrite a stored object in place.
+  it.skipIf(process.getuid?.() === 0)(
+    "#9 a stored object is read-only: a PUT through its file:// URL cannot replace its bytes",
+    async () => {
+      const key = "captures/w/1/packs/readonly";
+      const url = await Effect.runPromise(
+        Effect.gen(function* () {
+          const store = yield* BlobStore;
+          yield* store.put(key, bytes("good"), { ifAbsent: true });
+          return yield* store.presign(key, "PUT", 60, 4);
+        }).pipe(Effect.provide(BlobStoreFsLive(root))),
+      );
+      expect(() => fs.writeFileSync(url.slice("file://".length), "evil")).toThrow(/EACCES/);
+      const kept = await Effect.runPromise(
+        Effect.flatMap(BlobStore, (store) => store.get(key)).pipe(
+          Effect.provide(BlobStoreFsLive(root)),
+        ),
+      );
+      expect(text(kept)).toBe("good");
+      const until = await Effect.runPromise(
+        Effect.flatMap(BlobStore, (store) => store.replaceableUntil(key)).pipe(
+          Effect.provide(BlobStoreFsLive(root)),
+        ),
+      );
+      expect(until).toBe(0);
+    },
+  );
+
   it("leaves no temp files behind and never lists them, nor open multipart uploads", async () => {
     const listed = await Effect.runPromise(
       Effect.gen(function* () {
@@ -411,10 +440,58 @@ describe.skipIf(s3Config === null)("BlobStore (s3)", () => {
       }).pipe(Effect.provide(layerOf())),
     );
     expect(new URL(publicUrl).host).toBe("bucket.internal:3900");
-    const put = await fetch(putUrl, { method: "PUT", body: "via-presign" });
+    // Every PUT URL is write-once: the upload carries the `If-None-Match: *` signed into it.
+    const put = await fetch(putUrl, {
+      method: "PUT",
+      body: "via-presign",
+      headers: { "if-none-match": "*" },
+    });
     expect(put.ok).toBe(true);
     const get = await fetch(getUrl);
     expect(await get.text()).toBe("via-presign");
+  });
+
+  // Review 2026-09-28 (6) #9 (the reviewer's MinIO reproduction, packages/store/test/
+  // review6-s3-mutable.test.ts): a size-bound PUT URL replaced a verified content-addressed
+  // object with 200. Now `If-None-Match: *` is signed into it: an upload without the header is
+  // refused as unsigned, and one with it cannot replace the bytes on a bucket that refuses an
+  // overwrite (S3, R2, MinIO: 412). A bucket that accepts the header and replaces anyway
+  // (Garage, measured) says so through `replaceableUntil`: a proof about the key stands only
+  // after the URL expired.
+  it("#9 a signed PUT URL never replaces a stored object where the bucket refuses an overwrite, and says until when it could where it does not", async () => {
+    if (s3Config === null) return;
+    const key = `${prefix}/write-once/packs/${"a".repeat(64)}`;
+    const { url, untilBefore, untilAfter } = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* BlobStore;
+        yield* store.put(key, bytes("good"), { ifAbsent: true });
+        const before = yield* store.replaceableUntil(key);
+        const minted = yield* store.presign(key, "PUT", 900, 4);
+        return { url: minted, untilBefore: before, untilAfter: yield* store.replaceableUntil(key) };
+      }).pipe(Effect.provide(layerOf())),
+    );
+    expect(signedHeadersOf(url)).toContain("if-none-match");
+    const unsigned = await fetch(url, { method: "PUT", body: "evl1" });
+    expect(unsigned.ok).toBe(false);
+    const conditional = await fetch(url, {
+      method: "PUT",
+      body: "evl2",
+      headers: { "if-none-match": "*" },
+    });
+    const now = Date.now();
+    const stored = await Effect.runPromise(
+      Effect.flatMap(BlobStore, (store) => store.get(key)).pipe(Effect.provide(layerOf())),
+    );
+    if (process.env["MEND_TEST_S3_WRITE_ONCE"] === "1") {
+      expect(conditional.status).toBe(412);
+      expect(text(stored)).toBe("good");
+      expect(untilBefore).toBe(0);
+      expect(untilAfter).toBe(0);
+    } else {
+      // Garage: the header is accepted and the bytes replaced — the store never claims otherwise.
+      expect(untilBefore).toBeGreaterThan(now);
+      expect(untilAfter).toBeGreaterThanOrEqual(now + 14 * 60 * 1000);
+    }
   });
 });
 
@@ -504,5 +581,21 @@ describe("upload length binding (docs/adr/0003, multi mode gate)", () => {
     expect(signedHeadersOf(bound)).toContain("content-length");
     expect(signedHeadersOf(unbound)).not.toContain("content-length");
     expect(signedHeadersOf(part)).toContain("content-length");
+  });
+
+  // Review 2026-09-28 (6) #9, cross-repo decision 19: every PUT URL is write-once — the upload
+  // must carry `If-None-Match: *`, which a bucket that honours it answers with 412 over an
+  // existing key. Before, a size-bound URL signed only `content-length;host`.
+  it("#9 signs If-None-Match: * into every PUT URL, sized or not, and lives at most 15 minutes", async () => {
+    const [bound, unbound, long] = await Effect.runPromise(
+      Effect.all([
+        store.presign("captures/w/1/packs/a", "PUT", 60, 1234),
+        store.presign("captures/w/1/packs/b", "PUT", 60),
+        store.presign("captures/w/1/packs/c", "PUT", 7 * 24 * 60 * 60, 4),
+      ]),
+    );
+    expect(signedHeadersOf(bound)).toContain("if-none-match");
+    expect(signedHeadersOf(unbound)).toContain("if-none-match");
+    expect(new URL(long).searchParams.get("X-Amz-Expires")).toBe("900");
   });
 });

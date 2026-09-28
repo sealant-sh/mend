@@ -1,4 +1,5 @@
 import * as crypto from "node:crypto";
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as http from "node:http";
 import * as os from "node:os";
@@ -434,7 +435,10 @@ describe("capture channel routes", () => {
 
   it("upload.urls plans a multipart upload for a sized key at the threshold; upload.complete assembles it write-once", async () => {
     const keys2 = captureKeys(WORKTREE, 2);
-    const big = keys2.pack("c".repeat(64));
+    const body = Buffer.alloc(70);
+    for (let index = 0; index < body.length; index += 1) body[index] = index;
+    // Named by its bytes, as every capture key is: a stored key is verified before it is answered.
+    const big = keys2.pack(createHash("sha256").update(body).digest("hex"));
     const small = keys2.pack("d".repeat(64));
     const unsized = keys2.pack("e".repeat(64));
     // Policy in this file: threshold 64 bytes, parts of 32. 70 bytes = 3 parts; 10 = one PUT;
@@ -459,8 +463,6 @@ describe("capture channel routes", () => {
     expect(plan.part_size).toBe(32);
     expect(plan.part_urls).toHaveLength(3);
     for (const url of plan.part_urls) expect(url).toMatch(/^file:\/\//);
-    const body = Buffer.alloc(70);
-    for (let index = 0; index < body.length; index += 1) body[index] = index;
     const parts = plan.part_urls.map((url, index) => {
       const slice = body.subarray(index * 32, Math.min(70, (index + 1) * 32));
       fs.writeFileSync(url.slice("file://".length), slice);
@@ -502,8 +504,8 @@ describe("capture channel routes", () => {
     expect(done.status).toBe(200);
     expect(done.json).toEqual({ size: 70 });
     expect(Buffer.from(fs.readFileSync(path.join(blobRoot, big))).equals(body)).toBe(true);
-    // The upload is consumed; a sized key the bucket already holds gets a plain PUT URL and no
-    // plan (the wire's `multipart` carries plans only).
+    // The upload is consumed; a sized key the bucket already holds, with the bytes its name
+    // says, gets no URL and no plan: it is answered `present` (review 2026-09-28 (6) #9).
     expect(fs.readdirSync(path.join(blobRoot, ".multipart"))).toEqual([]);
     const again = await post(address, "/upload.urls", token, {
       worktree_id: WORKTREE,
@@ -513,7 +515,8 @@ describe("capture channel routes", () => {
     });
     expect(again.status).toBe(200);
     expect(again.json["multipart"]).toEqual({});
-    expect(Object.keys(again.json["urls"] as Record<string, string>)).toEqual([big]);
+    expect(again.json["urls"]).toEqual({});
+    expect(again.json["present"]).toEqual([big]);
     // Two uploads opened for one key before either completes: the second complete is refused
     // with 409 `exists` — the write-once complete, decided by the store.
     const raced = keys2.pack("f".repeat(64));

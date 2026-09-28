@@ -5,11 +5,12 @@ import * as path from "node:path";
 import { CaptureStoreRepo } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
 import {
-  type BlobStore,
+  BlobStore,
   INDEX_TREE_REF,
   WORKTREE_TREE_REF,
   captureKeys,
   isCaptureObjectKey,
+  readCaptureFileBytes,
   packIdxKeyOf,
   sha256Hex,
 } from "@mend/store";
@@ -702,6 +703,161 @@ describe("a seal rests only on sections Mend observed restore", () => {
     await run(registerOn(at.worktreeId, at.epoch, at.api)(ready));
     expect((await sealOf(at.worktreeId, at.epoch))?.captureId).toBe(ready.id);
   });
+
+  // Review 2026-09-28 (6) #9, cross-repo decision 19 (the reviewer's reproduction): a sealed
+  // pack's key was answered with another PUT URL, the bytes replaced at the same length through
+  // it, and a second seal accepted on the warm cache though the saved file no longer read.
+  it("review 6 #9 a stored pack gets no upload URL (present), cannot be rewritten through its file:// URL, and a second seal over it still reads", async () => {
+    const at = await claimedWorktree();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-write-once-pack-"));
+    fs.mkdirSync(path.join(dir, "tree"));
+    fs.writeFileSync(path.join(dir, "tree", "unique.txt"), "unique saved bytes\n");
+    const snapshot = snapshotDirectory(dir, captureKeys(at.worktreeId, at.epoch), { format: 2 });
+    fs.rmSync(dir, { recursive: true, force: true });
+    const build = (n: number, parent: string) =>
+      sealing(
+        at.worktreeId,
+        at.epoch,
+        buildManifest({
+          worktreeId: at.worktreeId,
+          epoch: at.epoch,
+          n,
+          parent,
+          kind: "final",
+          git: at.gitSection([at.basePack], at.baseTree),
+          workspace: sectionOf(snapshot),
+          bulk: READY_EMPTY_BULK,
+        }),
+      );
+    const cap1 = build(1, at.cap0Id);
+    await run(uploadObjects(new Map([...snapshot.objects, [cap1.key, cap1.bytes]])));
+    await run(registerOn(at.worktreeId, at.epoch, at.api)(cap1));
+    expect((await sealOf(at.worktreeId, at.epoch))?.captureId).toBe(cap1.id);
+    const key = snapshot.packs[0] ?? "";
+    const original = snapshot.objects.get(key) ?? new Uint8Array();
+    const answer = await run(
+      at.api.uploadUrls({
+        worktree_id: at.worktreeId,
+        epoch: at.epoch,
+        keys: [key],
+        sizes: { [key]: original.length },
+      }),
+    );
+    expect(answer.urls[key]).toBeUndefined();
+    expect(answer.multipart[key]).toBeUndefined();
+    expect(answer.present).toEqual([key]);
+    // The object's path is what a URL minted before it existed names: it is published read-only.
+    if (process.getuid?.() !== 0) {
+      const corrupted = Buffer.from(original);
+      corrupted[0] = (corrupted[0] ?? 0) ^ 0xff;
+      const stored = await run(
+        Effect.flatMap(BlobStore, (store) => store.presign(key, "PUT", 60, original.length)),
+      );
+      expect(() => fs.writeFileSync(stored.slice("file://".length), corrupted)).toThrow(/EACCES/);
+    }
+    const cap2 = build(2, cap1.id);
+    await run(uploadObjects(new Map([[cap2.key, cap2.bytes]])));
+    await run(registerOn(at.worktreeId, at.epoch, at.api)(cap2));
+    expect((await sealOf(at.worktreeId, at.epoch))?.captureId).toBe(cap2.id);
+    const saved = await run(readCaptureFileBytes(cap2.manifest, "workspace", "tree/unique.txt"));
+    expect(Buffer.from(saved).toString("utf8")).toBe("unique saved bytes\n");
+  });
+
+  // Review 2026-09-28 (6) #10 (the reviewer's reproduction): a `shared` link to a member its class
+  // does not carry, and a tracked `hardlinks` group whose members the checkout writes with other
+  // bytes, were sealed. Every link is now checked against the tree the restore checks out and
+  // the class that carries the other name; what restores seals.
+  it(
+    "review 6 #10 a final seal needs tracked hardlink groups one blob and every shared link a member of its class holding the tracked file's bytes",
+    { timeout: 60_000 },
+    async () => {
+      const at = await claimedWorktree();
+      const keys = captureKeys(at.worktreeId, at.epoch);
+      const entries = [
+        { path: "a.txt", kind: "file", mode: 0o644, mtime: 0 },
+        { path: "keep.md", kind: "file", mode: 0o644, mtime: 0 },
+      ];
+      // A worktree tree with `copy.txt` holding a.txt's bytes: a group that restores.
+      const edited = packEditedTree(world.work, at.worktreeId, at.epoch, world.baseSha, (work) => {
+        fs.writeFileSync(path.join(work, "copy.txt"), "one\ntwo\n");
+      });
+      let parent = at.cap0Id;
+      let n = 0;
+      const attempt = async (
+        links: object,
+        options?: { readonly bulk?: string | null; readonly edited?: boolean },
+      ) => {
+        n += 1;
+        const bulkDir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-shared-bulk-"));
+        if (options?.bulk !== undefined && options.bulk !== null) {
+          fs.mkdirSync(path.join(bulkDir, "node_modules"));
+          fs.writeFileSync(path.join(bulkDir, "node_modules", "linked.txt"), options.bulk);
+        }
+        const bulk = snapshotDirectory(bulkDir, keys, { format: 2 });
+        fs.rmSync(bulkDir, { recursive: true, force: true });
+        const withCopy = options?.edited === true;
+        const meta = withMeta(at.worktreeId, at.epoch, {
+          format: 1,
+          entries: withCopy
+            ? [...entries, { path: "copy.txt", kind: "file", mode: 0o644, mtime: 0 }].toSorted(
+                (a, b) => a.path.localeCompare(b.path),
+              )
+            : entries,
+          ...links,
+        });
+        const built = sealing(
+          at.worktreeId,
+          at.epoch,
+          buildManifest({
+            worktreeId: at.worktreeId,
+            n,
+            parent,
+            epoch: at.epoch,
+            seq: 20 + n,
+            kind: "final",
+            git: withCopy
+              ? at.gitSection([at.basePack, edited.key], edited.tree)
+              : at.gitSection([at.basePack], at.baseTree),
+            workspace: meta.workspace,
+            bulk:
+              options?.bulk === undefined || options.bulk === null
+                ? READY_EMPTY_BULK
+                : { ...sectionOf(bulk), platform: "linux-x86_64-glibc" },
+          }),
+        );
+        await run(
+          uploadObjects(
+            new Map([
+              ...(withCopy ? edited.objects : []),
+              ...bulk.objects,
+              ...meta.objects,
+              [built.key, built.bytes],
+            ]),
+          ),
+        );
+        expect((await run(registerOn(at.worktreeId, at.epoch, at.api)(built))).head_n).toBe(n);
+        expect(world.memory.captures.get(built.id)?.gitFsck).toBe("verified");
+        parent = built.id;
+        return (await sealOf(at.worktreeId, at.epoch))?.captureId === built.id;
+      };
+      const shared = {
+        shared: [{ path: "a.txt", class: "bulk", member: "node_modules/linked.txt" }],
+      };
+      // The reviewer's two: a shared member the (empty) bulk class does not carry, and a tracked
+      // group whose members the checkout writes with other bytes.
+      expect(
+        await attempt({
+          shared: [{ path: "a.txt", class: "bulk", member: "node_modules/missing" }],
+        }),
+      ).toBe(false);
+      expect(await attempt({ hardlinks: [["a.txt", "keep.md"]] })).toBe(false);
+      // A shared member its class carries with other bytes than the tracked file.
+      expect(await attempt(shared, { bulk: "other bytes\n" })).toBe(false);
+      // What restores seals: the member holding a.txt's bytes, a group of one blob.
+      expect(await attempt(shared, { bulk: "one\ntwo\n" })).toBe(true);
+      expect(await attempt({ hardlinks: [["a.txt", "copy.txt"]] }, { edited: true })).toBe(true);
+    },
+  );
 
   it(
     "review 5 #11 a final seal needs every cross-class hardlink member a file of its class holding the same bytes: absent or differing members register without the seal",

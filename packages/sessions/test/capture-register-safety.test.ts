@@ -79,6 +79,16 @@ const verifierObserving = (tracked: Readonly<Record<string, WorktreeTreeKind>>) 
           Object.entries(tracked).map(([at, kind]) => [Buffer.from(at).toString("hex"), kind]),
         ),
       ),
+    // Every file one blob: a hardlink group of the tracked files holds one set of bytes.
+    treeObjects: () =>
+      Effect.succeed(
+        new Map(
+          Object.entries(tracked).map(([at, kind]) => [
+            Buffer.from(at).toString("hex"),
+            { kind, object: kind === "file" ? "f".repeat(40) : "d".repeat(40) },
+          ]),
+        ),
+      ),
   });
 
 /** What `plainDocument` names, as the worktree tree holds it. */

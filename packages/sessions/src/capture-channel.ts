@@ -31,6 +31,7 @@ import {
   packIdxKeyOf,
   sameBulkSection,
   sectionFormatOf,
+  storedObjectProblem,
   type SectionFormat,
   treePrefixesOfSections,
   verifyPackPayloads,
@@ -40,6 +41,9 @@ import {
   gitSectionHoldsRawNames,
   metaNamespaceProblem,
   crossLinksProblem,
+  linkTopologyProblem,
+  rawTreeOf,
+  type RestoreTreePath,
   gitSectionHoldsTrees,
   worktreeTreeOf,
   type WorktreeMetaDocument,
@@ -298,15 +302,20 @@ export interface MultipartPlan {
 
 /**
  * `upload.urls` response. `urls` is unchanged — one PUT URL per single-part key. A key taken
- * as multipart is present in `multipart` and absent from `urls`. A sized key the bucket already
- * holds is answered in `urls` like any other: the executor's single-PUT path is its own
- * already-present check, and the wire has no third answer (sealantd reads `multipart` as
- * plans only).
+ * as multipart is present in `multipart` and absent from `urls`. A key the bucket already holds,
+ * with the bytes its name says (`storedObjectProblem`), is answered in `present` and in neither
+ * of the others: no upload URL is ever minted for an object that is there (cross-repo decision
+ * 19, review 2026-09-28 (6) #9) — on a bucket that ignores `If-None-Match` it would replace a
+ * verified object. The executor reads a `present` key as already uploaded. Omitted when empty.
  */
 export interface UploadUrlsResponse {
   readonly urls: Readonly<Record<string, string>>;
   readonly multipart: Readonly<Record<string, MultipartPlan>>;
+  readonly present?: ReadonlyArray<string>;
 }
+
+/** How many keys `upload.urls` asks the bucket about at once. */
+const PRESENT_HEADS_IN_FLIGHT = 16;
 
 export const UploadCompleteRequest = Schema.Struct({
   worktree_id: Schema.String,
@@ -1248,6 +1257,41 @@ export const CaptureChannelLive: Layer.Layer<
           const size = sizes[key];
           wanted.set(key, size === undefined || size < 0 ? null : size);
         }
+        // Write-once (cross-repo decision 19): a key the bucket already holds gets no URL. Its
+        // bytes are verified against its name first — an object that is there is accepted only
+        // as what the key says — and it is answered `present`, never priced again.
+        const present: Array<string> = [];
+        const presentOf = (key: string) =>
+          Effect.gen(function* () {
+            const problem = yield* storedObjectProblem(key).pipe(
+              Effect.provideService(BlobStore, blobs),
+              Effect.catchTag("BlobNotFoundError", () => Effect.succeed(null)),
+              Effect.catch(storeError("reading an object already stored", key)),
+            );
+            if (problem !== null) {
+              return yield* new CaptureRouteError({
+                status: 409,
+                reason: "unrestorable",
+                message: `the bucket already holds ${key}, and ${problem}`,
+                key,
+              });
+            }
+            present.push(key);
+          });
+        const heads = yield* Effect.forEach(
+          [...wanted.keys()],
+          (key) =>
+            blobs.head(key).pipe(
+              Effect.map((found) => [key, found !== null] as const),
+              Effect.catch(storeError("asking the bucket for", key)),
+            ),
+          { concurrency: PRESENT_HEADS_IN_FLIGHT },
+        );
+        for (const [key, stored] of heads) {
+          if (!stored) continue;
+          yield* presentOf(key);
+          wanted.delete(key);
+        }
         if (policy.requireSizes) {
           const unsized = [...wanted].find(([, size]) => size === null);
           if (unsized !== undefined) {
@@ -1299,10 +1343,14 @@ export const CaptureChannelLive: Layer.Layer<
               : yield* blobs
                   .createMultipart(plan.key)
                   .pipe(Effect.catch(storeError("creating a multipart upload", plan.key)));
-          if (created === null || created.kind === "exists") {
-            // Below the threshold, or the bucket already holds the key: one PUT URL. For an
-            // existing key the PUT carries the same bytes by construction; no plan is opened.
-            // A declared size is signed into the URL: the bucket takes those bytes or none.
+          if (created !== null && created.kind === "exists") {
+            // Stored since the HEAD above: verified and answered `present`, like any stored key.
+            yield* presentOf(plan.key);
+            continue;
+          }
+          if (created === null) {
+            // Below the threshold: one PUT URL, write-once (`If-None-Match: *` signed in). A
+            // declared size is signed into the URL: the bucket takes those bytes or none.
             urls[plan.key] = yield* blobs
               .presign(plan.key, "PUT", PRESIGN_TTL_SECONDS, plan.size ?? undefined)
               .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
@@ -1328,8 +1376,11 @@ export const CaptureChannelLive: Layer.Layer<
             part_urls: partUrls,
           };
         }
-        noteMinted(plans.map((plan) => plan.key));
-        return { urls, multipart } satisfies UploadUrlsResponse;
+        const answeredPresent = new Set(present);
+        noteMinted(plans.map((plan) => plan.key).filter((key) => !answeredPresent.has(key)));
+        return (
+          present.length === 0 ? { urls, multipart } : { urls, multipart, present }
+        ) satisfies UploadUrlsResponse;
       });
 
       const uploadComplete = Effect.fn("SessionCaptureApi.uploadComplete")(function* (
@@ -1905,13 +1956,38 @@ export const CaptureChannelLive: Layer.Layer<
               : yield* crossLinksProblem(manifest, metaDocument).pipe(
                   Effect.provideService(BlobStore, blobs),
                 );
+          // …and that the tracked side's links restore too (review 2026-09-28 (6) #10): every
+          // `hardlinks` group one blob of the tree the restore checks out, every `shared` link a
+          // tracked file of that tree and a file of its class holding that blob's bytes. A tree
+          // Mend could not list seals nothing.
+          const trackedLinks = yield* Effect.gen(function* () {
+            if (!sealHolds || metaDocument === null) return null;
+            if (
+              (metaDocument.hardlinks ?? []).length === 0 &&
+              (metaDocument.shared ?? []).length === 0
+            ) {
+              return null;
+            }
+            const tree = rawTreeOf(manifest.sections.git);
+            const restoreTree =
+              tree === undefined
+                ? new Map<string, RestoreTreePath>()
+                : verification?.outcome === "verified"
+                  ? yield* verifier.treeObjects(scope.projectId, manifest, tree)
+                  : null;
+            if (restoreTree === null) return "the tree a restore checks out was not listed";
+            return yield* linkTopologyProblem(manifest, metaDocument, restoreTree).pipe(
+              Effect.provideService(BlobStore, blobs),
+            );
+          });
           const sealed =
             sealHolds &&
             gitFsck === "verified" &&
             metaNamespace === "verified" &&
             payloadsRead &&
             bulkCaptured &&
-            crossLinks === null;
+            crossLinks === null &&
+            trackedLinks === null;
           if (sealHolds && !sealed) {
             yield* Effect.logWarning(
               "capture channel: a final seal over sections not verified restorable · registered without it",
@@ -1926,6 +2002,7 @@ export const CaptureChannelLive: Layer.Layer<
                 chunkPayloads: payloadsRead ? "read" : "not read",
                 bulk: bulkCaptured ? "captured" : "pending",
                 crossLinks: crossLinks ?? "restore",
+                trackedLinks: trackedLinks ?? "restore",
               }),
             );
           }
