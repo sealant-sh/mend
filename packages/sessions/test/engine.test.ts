@@ -6441,6 +6441,13 @@ const savedRepository = (state: DotfilesState): DotfilesRepository => {
   return state.repository;
 };
 
+/** A capture route's refusal reason, or `ok`. */
+const routeReason = <A>(effect: Effect.Effect<A, { readonly reason: string }>) =>
+  effect.pipe(
+    Effect.as("ok"),
+    Effect.catch((error) => Effect.succeed(error.reason)),
+  );
+
 describe("SessionEngine capture mode", () => {
   it("tells the daemon only what the deployment stated about its transport", async () => {
     // Without a statement the source names no transport: the daemon then requires verified
@@ -8551,6 +8558,129 @@ describe("SessionEngine capture mode", () => {
         ),
     };
   };
+
+  it("e2e run 6 #4 shrinking the pool honours Core's stop: a standby still draining keeps its token and its row (failed, never claimed); only a confirmed end takes them", async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
+    const tokenEvents: Array<string> = [];
+    let answer: "draining" | "stopped" = "draining";
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(() => pool.entries.some((e) => e.status === "ready"), "standby");
+          const standby = pool.entries[0];
+          if (standby === undefined) throw new Error("no standby");
+          // The pool shrinks while Core is still draining the standby.
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 0 }));
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(
+            () => pool.entries.find((e) => e.id === standby.id)?.status === "failed",
+            "the kept standby's row",
+          );
+          expect(tokenEvents.filter((event) => event.startsWith("revoke"))).toEqual([]);
+          // Core confirms the end: the next pass takes the token and the row.
+          answer = "stopped";
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(
+            () => !pool.entries.some((e) => e.id === standby.id),
+            "the ended standby's row gone",
+          );
+          expect(tokenEvents).toContain(`revokeLaunch:standby:${standby.id}`);
+        }),
+      {
+        captured: memory,
+        hotWorkspacesLayer: pool.layer,
+        tokenEvents,
+        drainPolicy: { terminationWait: Duration.millis(50) },
+        sealantLayer: lifecycleLayer(created, {
+          captureOps: {
+            stopAnswer: () => answer,
+            status: (stopAsked) => (stopAsked && answer === "stopped" ? "stopped" : "ready"),
+            resourceId: () => "standby-container",
+          },
+        }),
+      },
+    );
+  }, 30_000);
+
+  it("e2e run 6 #3 a claimed standby whose replan failed still ships under its placeholder: its launch's routes stay the standby's there, never `wrong-worktree`; the session's worktree stays the session's", async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
+    const answers: Record<string, string> = {};
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(() => pool.entries.some((e) => e.status === "ready"), "standby");
+          const standby = pool.entries[0];
+          if (standby === undefined) throw new Error("no standby");
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+          // The replan failed (the relay paused): the launch drains the standby, which the
+          // platform keeps, and nothing else starts.
+          yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+          const routes = servedSocketApis.get(session.id)?.captureAs?.(`standby:${standby.id}`);
+          if (routes === undefined) throw new Error("no launch-bound routes");
+          const alias = `standby-${standby.id}`;
+          answers["upload.urls · placeholder"] = yield* routeReason(
+            routes.uploadUrls({
+              worktree_id: alias,
+              epoch: standby.createdAt.getTime(),
+              keys: [captureKeys(alias, standby.createdAt.getTime()).pack("a".repeat(64))],
+            }),
+          );
+          answers["heartbeat · placeholder"] = yield* routeReason(
+            routes.heartbeat({ worktree_id: alias, epoch: standby.createdAt.getTime() }),
+          );
+          answers["heartbeat · session"] = yield* routeReason(
+            routes.heartbeat({ worktree_id: session.worktreeId, epoch }),
+          );
+        }),
+      {
+        captured: memory,
+        hotWorkspacesLayer: pool.layer,
+        sealantLayer: lifecycleLayer(created, {
+          captureOps: {
+            stopAnswer: () => "kept",
+            status: () => "ready",
+            retained: () => ({ reason: "kept for recovery", recoverable: true }),
+            finalCompletion: "unreported",
+            resourceId: () => "standby-container",
+            replan: () =>
+              Effect.fail(
+                new SealantPlatformError({
+                  code: "replan_refused",
+                  status: 503,
+                  message: "capture plan.get failed: transport: timeout",
+                  cause: null,
+                }),
+              ),
+          },
+        }),
+      },
+    );
+    // The standby's own answer under its placeholder (nothing to ship until claimed), never the
+    // session's `wrong-worktree`; the session's worktree is still routed as the session's.
+    expect(answers["upload.urls · placeholder"]).toBe("lease-lost");
+    expect(answers["heartbeat · placeholder"]).toBe("ok");
+    expect(answers["heartbeat · session"]).not.toBe("wrong-worktree");
+  }, 30_000);
 
   it("review 3 #1 a standby whose replan answer was lost is the session's executor: it drains, its seal is attested for it alone, and kept, nothing else starts", async () => {
     const scenario = standbyWhoseReplanAnswerIsLost(

@@ -1563,8 +1563,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * (`hot-pool.ts` "Capture-mode standby").
        */
       const captureApiFor = (sessionId: SessionId, launchId?: string): SessionCaptureApi => {
+        /**
+         * `named`: the worktree the request names (`worktree_id`), when it names one. A claimed
+         * standby whose replan did not take still ships under its placeholder (`standby-<id>`):
+         * its launch's routes stay the standby's — the worktree that launch actually holds — until
+         * its replan succeeds and it names the session's worktree (e2e run 6: routed to the
+         * session's, every upload of its drain was refused `wrong-worktree` and the drain wedged
+         * for 686 s).
+         */
         const scoped = <A>(
           call: (api: SessionCaptureApi) => Effect.Effect<A, CaptureRouteError>,
+          named?: string | null,
         ): Effect.Effect<A, CaptureRouteError> =>
           Effect.gen(function* () {
             if (capture === null) return yield* Effect.die("capture routes outside capture mode");
@@ -1590,6 +1599,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               );
             }
             const session = found.value;
+            const standbyLaunch = standbyLaunchIdOf(sessionId);
+            if (
+              capture !== null &&
+              launchId === standbyLaunch &&
+              named === standbyWorktreeAlias(sessionId)
+            ) {
+              return yield* call(
+                capture.channel.standbyApiFor({
+                  alias: standbyWorktreeAlias(sessionId),
+                  projectId: session.projectId,
+                  executorId: sessionId,
+                  launchId: standbyLaunch,
+                  epoch:
+                    session.executorStartedAt === null
+                      ? 0
+                      : standbyEpochOf(session.executorStartedAt),
+                  // Never asked: `plan.get` is routed to the session's worktree.
+                  plan: () => Effect.fail("the standby was claimed"),
+                }),
+              );
+            }
             // The physical executor asking (cross-repo decision 5): the launch its token names
             // (what the network channel always passes). In-process callers without one read the
             // launch whose create is being asked (reserved on the row before the create, so a
@@ -1614,15 +1644,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
         const observed = <A>(
           call: (api: SessionCaptureApi) => Effect.Effect<A, CaptureRouteError>,
+          named?: string | null,
         ): Effect.Effect<A, CaptureRouteError> =>
-          scoped(call).pipe(Effect.tap(() => observeReplacement(sessionId)));
+          scoped(call, named).pipe(Effect.tap(() => observeReplacement(sessionId)));
         return {
+          // A plan is always the session's: a replan names no worktree, and a plan under the
+          // placeholder is never handed out once the standby was claimed.
           planGet: (input) => scoped((api) => api.planGet(input)),
-          uploadUrls: (input) => scoped((api) => api.uploadUrls(input)),
-          uploadComplete: (input) => scoped((api) => api.uploadComplete(input)),
-          register: (input) => observed((api) => api.register(input)),
-          changeSummary: (input) => scoped((api) => api.changeSummary(input)),
-          heartbeat: (input) => observed((api) => api.heartbeat(input)),
+          uploadUrls: (input) => scoped((api) => api.uploadUrls(input), input.worktree_id),
+          uploadComplete: (input) => scoped((api) => api.uploadComplete(input), input.worktree_id),
+          register: (input) => observed((api) => api.register(input), input.worktree_id),
+          changeSummary: (input) => scoped((api) => api.changeSummary(input), input.worktree_id),
+          heartbeat: (input) => observed((api) => api.heartbeat(input), input.worktree_id),
         };
       };
 
@@ -9887,14 +9920,49 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         options?: { readonly keepWorktree?: boolean },
       ) {
         if (entry.sealantWorkspaceId !== null) {
-          yield* sealant.getWorkspace(entry.sealantWorkspaceId).pipe(
+          const workspaceId = SealantWorkspaceId.make(entry.sealantWorkspaceId);
+          const answer = yield* sealant.getWorkspace(workspaceId).pipe(
             Effect.flatMap((workspace) => sealant.stopWorkspace(workspace)),
-            Effect.ignore,
+            Effect.result,
             asSealantUser(entry.ownerUserId),
           );
+          // Capture mode: Core's stop answer is honoured as every other stop's is (e2e run 6).
+          // Kept, still draining, or an end not observed: the standby may still be running its
+          // final flush, so its token, its socket and its pool row stay — revoked, its flush
+          // fails `401` for good — and the row reads failed, so nothing claims it and the next
+          // reconcile pass asks again. Only an end the platform confirmed takes them.
+          if (capture !== null) {
+            const ended =
+              Result.isSuccess(answer) && answer.success.retained === null
+                ? answer.success.state === "stopped" ||
+                  (yield* awaitTerminated(workspaceId).pipe(asSealantUser(entry.ownerUserId)))
+                : (yield* lookupWorkspace(workspaceId).pipe(asSealantUser(entry.ownerUserId)))
+                    .kind === "gone";
+            if (!ended) {
+              const why = Result.isFailure(answer)
+                ? `stop refused · ${answer.failure.message}`
+                : answer.success.retained !== null
+                  ? `kept by the platform · ${answer.success.retained.reason ?? "no reason given"}`
+                  : `stop ${answer.success.state} · end not observed`;
+              yield* Effect.logWarning(
+                "session engine: standby drain · end not observed · token and row kept",
+              ).pipe(Effect.annotateLogs({ entryId: entry.id, workspaceId, why }));
+              yield* hotWorkspaces.setFailed(entry.id, `draining · ${why}`);
+              return false;
+            }
+          }
         }
-        yield* channelTokens.revoke(entry.id).pipe(Effect.ignore);
-        if (options?.keepWorktree !== true) {
+        // A session that adopted the standby's id owns the id's socket, worktree and every other
+        // token of it (a cold launch after an unusable claim): only the standby's own token goes.
+        const adopted =
+          options?.keepWorktree === true ||
+          (yield* sessions.byId(SessionId.make(entry.id)).pipe(
+            Effect.as(true),
+            Effect.catchTag("SessionNotFoundError", () => Effect.succeed(false)),
+          ));
+        yield* channelTokens.revokeLaunch(standbyLaunchIdOf(entry.id)).pipe(Effect.ignore);
+        if (!adopted) yield* channelTokens.revoke(entry.id).pipe(Effect.ignore);
+        if (!adopted) {
           yield* socketHost.stop(entry.id).pipe(Effect.ignore);
           // Only rows from before standby workspaces carry a pre-created worktree.
           if (entry.worktree !== null) {
@@ -9909,6 +9977,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
         }
         yield* hotWorkspaces.remove(entry.id);
+        return true;
       });
 
       /** Provision one skeleton: worktree → row → socket → workspace → prewarm note → ready. */
