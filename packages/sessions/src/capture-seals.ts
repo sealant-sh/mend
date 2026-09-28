@@ -17,7 +17,12 @@ export interface CaptureCompletionSeal {
   readonly executorId: string;
   readonly captureId: string;
   readonly n: number;
+  /** When the store recorded it, by the database's clock: display only (cross-repo decision 17). */
   readonly sealedAt: Date;
+  /** Where sealantd stamped the seal in its own order; null or absent when it did not. */
+  readonly bootId?: string | null;
+  readonly bootGeneration?: number | null;
+  readonly observation?: number | null;
 }
 
 /**

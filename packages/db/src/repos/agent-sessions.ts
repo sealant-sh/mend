@@ -12,6 +12,8 @@ import {
 } from "@mend/domain";
 import {
   type CaptureDrainReason,
+  captureAnswerReplaces,
+  type CapturePosition,
   Session,
   SessionDotfiles,
   type NativeIngestCursor,
@@ -104,6 +106,8 @@ export interface CaptureSavedObservation {
   readonly n: number | null;
   /** The lease epoch the answering executor shipped under; null when the answer did not say. */
   readonly epoch: number | null;
+  /** Where in its own history the executor answered (0087); what orders it, never `at`. */
+  readonly position?: CapturePosition | null;
 }
 
 /**
@@ -115,6 +119,8 @@ export interface CaptureUnsavedObservation {
   readonly workspaceId: string;
   readonly at: Date;
   readonly words: string;
+  /** Where in its own history the executor answered (0087); what orders it, never `at`. */
+  readonly position?: CapturePosition | null;
 }
 
 /**
@@ -129,9 +135,18 @@ export interface ExecutorCaptureEvidence {
   readonly launchId: string | null;
   readonly saved: CaptureSavedObservation | null;
   readonly unsaved: CaptureUnsavedObservation | null;
+  /**
+   * Bumped by every answer taken from the executor (0087, cross-repo decision 18): a decision
+   * made on what it read commits only while this is still what it read.
+   */
+  readonly version: number;
 }
 
-/** One answer to add to an executor's evidence: a newer one of a kind replaces the older. */
+/**
+ * One answer to add to an executor's evidence: of each kind, it replaces the kept one unless the
+ * executor made it before that one (`captureAnswerReplaces`). An answer of neither kind (clean,
+ * or saying nothing either way) still counts: the version moves.
+ */
 export interface ExecutorCaptureAnswer {
   readonly worktreeId: WorktreeId;
   readonly launchId: string | null;
@@ -359,12 +374,14 @@ export class SessionsRepo extends Context.Service<
     readonly captureUnsavedOf: (id: SessionId) => Effect.Effect<CaptureUnsavedObservation | null>;
     /**
      * An answer the executor in `workspaceId` gave, whoever asked, added to that executor's
-     * evidence (0086): a completed final flush, or unsaved work; the newer of each kind stands.
+     * evidence (0086): a completed final flush, or unsaved work, each kept unless the executor
+     * made it before the kept one (0087); every answer moves the version. Answers the new
+     * version.
      */
     readonly recordExecutorEvidence: (
       workspaceId: string,
       answer: ExecutorCaptureAnswer,
-    ) => Effect.Effect<void>;
+    ) => Effect.Effect<number>;
     /** Everything the executor in `workspaceId` answered that Mend kept, or null. */
     readonly executorEvidenceOf: (
       workspaceId: string,
@@ -1310,38 +1327,55 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         workspaceId: string,
         answer: ExecutorCaptureAnswer,
       ) {
-        const saved = answer.saved;
-        const unsaved = answer.unsaved;
-        if (saved === undefined && unsaved === undefined) return;
         const t = executorCaptureEvidence;
-        // Each kind moves only forward: a later answer of that kind replaces an earlier one.
-        const savedNewer = sql`excluded.saved_at IS NOT NULL AND (${t.savedAt} IS NULL OR excluded.saved_at > ${t.savedAt})`;
-        const unsavedNewer = sql`excluded.unsaved_at IS NOT NULL AND (${t.unsavedAt} IS NULL OR excluded.unsaved_at > ${t.unsavedAt})`;
-        yield* db
-          .insert(t)
-          .values({
-            workspaceId,
-            worktreeId: answer.worktreeId,
-            launchId: answer.launchId,
+        // A compare-and-set on the version: the kept answers are weighed against the new one in
+        // the executor's own order (`captureAnswerReplaces`), and a writer that lost the race
+        // weighs again against what won it.
+        while (true) {
+          const kept = yield* executorEvidenceOf(workspaceId);
+          const saved =
+            answer.saved !== undefined &&
+            (kept?.saved === null ||
+              kept === null ||
+              captureAnswerReplaces(answer.saved.position, kept.saved?.position))
+              ? answer.saved
+              : (kept?.saved ?? null);
+          const unsaved =
+            answer.unsaved !== undefined &&
+            (kept?.unsaved === null ||
+              kept === null ||
+              captureAnswerReplaces(answer.unsaved.position, kept.unsaved?.position))
+              ? answer.unsaved
+              : (kept?.unsaved ?? null);
+          const columns = {
+            launchId: answer.launchId ?? kept?.launchId ?? null,
             savedAt: saved?.at ?? null,
             savedN: saved?.n ?? null,
             savedEpoch: saved?.epoch ?? null,
+            savedPosition: saved?.position ?? null,
             unsavedAt: unsaved?.at ?? null,
             unsavedDetail: unsaved?.words ?? null,
-          })
-          .onConflictDoUpdate({
-            target: t.workspaceId,
-            set: {
-              launchId: sql`COALESCE(excluded.launch_id, ${t.launchId})`,
-              savedAt: sql`CASE WHEN ${savedNewer} THEN excluded.saved_at ELSE ${t.savedAt} END`,
-              savedN: sql`CASE WHEN ${savedNewer} THEN excluded.saved_n ELSE ${t.savedN} END`,
-              savedEpoch: sql`CASE WHEN ${savedNewer} THEN excluded.saved_epoch ELSE ${t.savedEpoch} END`,
-              unsavedAt: sql`CASE WHEN ${unsavedNewer} THEN excluded.unsaved_at ELSE ${t.unsavedAt} END`,
-              unsavedDetail: sql`CASE WHEN ${unsavedNewer} THEN excluded.unsaved_detail ELSE ${t.unsavedDetail} END`,
-              updatedAt: new Date(),
-            },
-          })
-          .pipe(Effect.orDie);
+            unsavedPosition: unsaved?.position ?? null,
+            updatedAt: new Date(),
+          };
+          if (kept === null) {
+            const inserted = yield* db
+              .insert(t)
+              .values({ workspaceId, worktreeId: answer.worktreeId, ...columns, version: 1 })
+              .onConflictDoNothing({ target: t.workspaceId })
+              .returning({ version: t.version })
+              .pipe(Effect.orDie);
+            if (inserted[0] !== undefined) return inserted[0].version;
+            continue;
+          }
+          const updated = yield* db
+            .update(t)
+            .set({ ...columns, version: kept.version + 1 })
+            .where(and(eq(t.workspaceId, workspaceId), eq(t.version, kept.version)))
+            .returning({ version: t.version })
+            .pipe(Effect.orDie);
+          if (updated[0] !== undefined) return updated[0].version;
+        }
       });
 
       const executorEvidenceOf = Effect.fn("SessionsRepo.executorEvidenceOf")(function* (
@@ -1360,11 +1394,23 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           saved:
             row.savedAt === null
               ? null
-              : { workspaceId, at: row.savedAt, n: row.savedN, epoch: row.savedEpoch },
+              : {
+                  workspaceId,
+                  at: row.savedAt,
+                  n: row.savedN,
+                  epoch: row.savedEpoch,
+                  position: row.savedPosition,
+                },
           unsaved:
             row.unsavedAt === null
               ? null
-              : { workspaceId, at: row.unsavedAt, words: row.unsavedDetail ?? "not saved" },
+              : {
+                  workspaceId,
+                  at: row.unsavedAt,
+                  words: row.unsavedDetail ?? "not saved",
+                  position: row.unsavedPosition,
+                },
+          version: Number(row.version),
         } satisfies ExecutorCaptureEvidence;
       });
 

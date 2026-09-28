@@ -398,47 +398,96 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
     expect(result.keys).not.toContain("captureUnsavedAt");
   });
 
-  it("keeps what an executor answered per executor, whoever asked, newest of each kind, past the session that asked (0086, review 2026-09-28 (5) #3)", async () => {
+  it("keeps what an executor answered per executor, whoever asked, the latest of each kind as the executor ordered them, past the session that asked (0086, 0087, review 2026-09-28 (5) #3, (6) #6)", async () => {
     const sealed = new Date("2026-09-28T00:01:00.000Z");
     const later = new Date("2026-09-28T00:01:30.000Z");
-    const earlier = new Date("2026-09-28T00:00:30.000Z");
+    // The worker that took the late answer runs a clock ahead: its wall time orders nothing.
+    const skewed = new Date("2026-09-28T00:05:00.000Z");
     const result = await run(
       Effect.gen(function* () {
         const sessions = yield* SessionsRepo;
         const sql = yield* SqlClient.SqlClient;
         const before = yield* sessions.executorEvidenceOf("ws-shared");
         // The holder's own complete answer, then a joined session's unsaved answer of the same
-        // executor, then an older unsaved answer arriving late: the newest of each kind stands.
-        yield* sessions.recordExecutorEvidence("ws-shared", {
+        // executor, then an older answer of each kind arriving late under a clock ahead: the
+        // executor's order decides, and every answer moves the version.
+        const v1 = yield* sessions.recordExecutorEvidence("ws-shared", {
           worktreeId: WORKTREE,
           launchId: "launch-a",
-          saved: { workspaceId: "ws-shared", at: sealed, n: 4, epoch: 2 },
+          saved: { workspaceId: "ws-shared", at: sealed, n: 4, epoch: 2, position: stampAt(10, 4) },
         });
-        yield* sessions.recordExecutorEvidence("ws-shared", {
+        const v2 = yield* sessions.recordExecutorEvidence("ws-shared", {
           worktreeId: WORKTREE,
           launchId: null,
-          unsaved: { workspaceId: "ws-shared", at: later, words: "unreadable tree/after.txt" },
+          unsaved: {
+            workspaceId: "ws-shared",
+            at: later,
+            words: "unreadable tree/after.txt",
+            position: stampAt(20, 4),
+          },
         });
-        yield* sessions.recordExecutorEvidence("ws-shared", {
+        const v3 = yield* sessions.recordExecutorEvidence("ws-shared", {
           worktreeId: WORKTREE,
           launchId: null,
-          unsaved: { workspaceId: "ws-shared", at: earlier, words: "1 pending" },
-          saved: { workspaceId: "ws-shared", at: earlier, n: 3, epoch: 2 },
+          unsaved: {
+            workspaceId: "ws-shared",
+            at: skewed,
+            words: "1 pending",
+            position: stampAt(5, 3),
+          },
+          saved: { workspaceId: "ws-shared", at: skewed, n: 3, epoch: 2, position: stampAt(4, 3) },
+        });
+        // A clean answer keeps what is kept and still moves the version.
+        const v4 = yield* sessions.recordExecutorEvidence("ws-shared", {
+          worktreeId: WORKTREE,
+          launchId: null,
         });
         const kept = yield* sessions.executorEvidenceOf("ws-shared");
         // The sessions that asked go; what the executor said stays with its worktree.
         yield* sql`DELETE FROM agent_sessions WHERE id = ${FAILING}`;
         const afterRemoval = yield* sessions.executorEvidenceOf("ws-shared");
-        return { before, kept, afterRemoval };
+        // An answer nothing orders against the kept one (no stamp) replaces it: the executor's
+        // evidence then orders against nothing, and no save stands over it.
+        yield* sessions.recordExecutorEvidence("ws-shared", {
+          worktreeId: WORKTREE,
+          launchId: null,
+          unsaved: { workspaceId: "ws-shared", at: sealed, words: "incomplete · changed" },
+        });
+        const unstamped = yield* sessions.executorEvidenceOf("ws-shared");
+        return { before, versions: [v1, v2, v3, v4], kept, afterRemoval, unstamped };
       }),
     );
     expect(result.before).toBeNull();
+    expect(result.versions).toEqual([1, 2, 3, 4]);
     expect(result.kept).toEqual({
       workspaceId: "ws-shared",
       launchId: "launch-a",
-      saved: { workspaceId: "ws-shared", at: sealed, n: 4, epoch: 2 },
-      unsaved: { workspaceId: "ws-shared", at: later, words: "unreadable tree/after.txt" },
+      saved: { workspaceId: "ws-shared", at: sealed, n: 4, epoch: 2, position: stampAt(10, 4) },
+      unsaved: {
+        workspaceId: "ws-shared",
+        at: later,
+        words: "unreadable tree/after.txt",
+        position: stampAt(20, 4),
+      },
+      version: 4,
     });
     expect(result.afterRemoval).toEqual(result.kept);
+    expect(result.unstamped?.unsaved).toEqual({
+      workspaceId: "ws-shared",
+      at: sealed,
+      words: "incomplete · changed",
+      position: null,
+    });
+    expect(result.unstamped?.version).toBe(5);
   });
+});
+
+/** Where executor `launch-a` (epoch 2, boot `boot-a`) made an answer: sealantd's stamp. */
+const stampAt = (observation: number, headN: number) => ({
+  epoch: 2,
+  launchId: "launch-a",
+  bootId: "boot-a",
+  bootGeneration: 1,
+  observation,
+  headN,
 });

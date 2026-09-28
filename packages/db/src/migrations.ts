@@ -2489,6 +2489,35 @@ const executorCaptureEvidenceMigration = Effect.gen(function* () {
     CREATE INDEX executor_capture_evidence_worktree_idx ON executor_capture_evidence (worktree_id)`;
 });
 
+/**
+ * 0087: evidence ordered by the executor, and a version every decision reads (cross-repo
+ * decisions 17 and 18, review 2026-09-28 (6) #6).
+ * - `executor_capture_evidence.saved_position` / `unsaved_position`: where in its own history the
+ *   executor made each kept answer (`CapturePosition`: epoch, launch, boot, boot generation,
+ *   observation, head). An answer replaces the kept one of its kind unless the executor made it
+ *   before; a save stands over an unsaved answer only when ordered after it. The `*_at` columns
+ *   stay, for display only.
+ * - `executor_capture_evidence.version`: bumped by every answer taken from the executor, whether
+ *   or not it changed what is kept. A "saved" or an attestation decided on what it read commits
+ *   only while the version it read is still the current one.
+ * - `capture_seals.boot_id` / `boot_generation` / `observation`: where sealantd stamped the seal
+ *   in its own order (`final_seal.boot_id`, `.boot_generation`, `.observation`), when it did;
+ *   without them nothing orders the seal against an answer, and an unsaved answer revokes it.
+ */
+const executorEvidenceOrderMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE executor_capture_evidence
+      ADD COLUMN saved_position jsonb,
+      ADD COLUMN unsaved_position jsonb,
+      ADD COLUMN version bigint NOT NULL DEFAULT 0`;
+  yield* sql`
+    ALTER TABLE capture_seals
+      ADD COLUMN boot_id text,
+      ADD COLUMN boot_generation bigint,
+      ADD COLUMN observation bigint`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2576,4 +2605,5 @@ export const migrations = {
   "0084_capture_unsaved_observation": captureUnsavedObservationMigration,
   "0085_lease_launch": leaseLaunchMigration,
   "0086_executor_capture_evidence": executorCaptureEvidenceMigration,
+  "0087_executor_evidence_order": executorEvidenceOrderMigration,
 };

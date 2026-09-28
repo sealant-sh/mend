@@ -12,6 +12,7 @@ import {
   gitBytes,
   gitSectionTrees,
   GitOpsRunner,
+  type RestoreTreePath,
   type WorktreeTreeKind,
 } from "@mend/store";
 import { Effect, Layer, Result } from "effect";
@@ -64,6 +65,16 @@ export class CaptureGitVerifier extends Context.Service<
       manifest: CaptureManifest,
       tree: string,
     ) => Effect.Effect<ReadonlyMap<string, WorktreeTreeKind> | null>;
+    /**
+     * `treePaths` with each path's git object: what a hardlink group's members and a shared
+     * link's tracked side are checked against before a seal (`linkTopologyProblem`, review
+     * 2026-09-28 (6) #10). Null when nothing could be observed.
+     */
+    readonly treeObjects: (
+      projectId: ProjectId,
+      manifest: CaptureManifest,
+      tree: string,
+    ) => Effect.Effect<ReadonlyMap<string, RestoreTreePath> | null>;
   }
 >()("@mend/sessions/CaptureGitVerifier") {}
 
@@ -73,6 +84,7 @@ export const CaptureGitVerifierOff: Layer.Layer<CaptureGitVerifier> = Layer.succ
   {
     verify: () => Effect.succeed({ outcome: "unverified", detail: "no git verifier configured" }),
     treePaths: () => Effect.succeed(null),
+    treeObjects: () => Effect.succeed(null),
   },
 );
 
@@ -88,8 +100,12 @@ const kindOfMode = (mode: string): WorktreeTreeKind | null => {
  * `git ls-tree -r -t -z --full-tree` output: `<mode> SP <type> SP <object> TAB <path> NUL`, the
  * path as bytes. Answers hex of the path → its kind.
  */
-export const parseTreeListing = (output: Buffer): ReadonlyMap<string, WorktreeTreeKind> => {
-  const paths = new Map<string, WorktreeTreeKind>();
+export const parseTreeListing = (output: Buffer): ReadonlyMap<string, WorktreeTreeKind> =>
+  new Map([...parseTreeObjects(output)].map(([at, found]) => [at, found.kind] as const));
+
+/** `parseTreeListing`, keeping each path's object id beside its kind. */
+export const parseTreeObjects = (output: Buffer): ReadonlyMap<string, RestoreTreePath> => {
+  const paths = new Map<string, RestoreTreePath>();
   let start = 0;
   while (start < output.length) {
     let end = output.indexOf(0, start);
@@ -98,9 +114,9 @@ export const parseTreeListing = (output: Buffer): ReadonlyMap<string, WorktreeTr
     start = end + 1;
     const tab = record.indexOf(0x09);
     if (tab < 0) continue;
-    const mode = record.subarray(0, record.indexOf(0x20)).toString("latin1");
+    const [mode = "", , object = ""] = record.subarray(0, tab).toString("latin1").split(" ");
     const kind = kindOfMode(mode);
-    if (kind !== null) paths.set(record.subarray(tab + 1).toString("hex"), kind);
+    if (kind !== null) paths.set(record.subarray(tab + 1).toString("hex"), { kind, object });
   }
   return paths;
 };
@@ -295,7 +311,7 @@ export const CaptureGitVerifierLive: Layer.Layer<
       return { outcome: "verified", detail: null } satisfies GitVerification;
     });
 
-    const treePaths = Effect.fn("CaptureGitVerifier.treePaths")(function* (
+    const listTree = Effect.fn("CaptureGitVerifier.listTree")(function* (
       projectId: ProjectId,
       manifest: CaptureManifest,
       tree: string,
@@ -308,9 +324,19 @@ export const CaptureGitVerifierLive: Layer.Layer<
         ["ls-tree", "-r", "-t", "-z", "--full-tree", tree],
         ensured.success.path,
       ).pipe(Effect.result);
-      return Result.isFailure(listed) ? null : parseTreeListing(listed.success);
+      return Result.isFailure(listed) ? null : listed.success;
     });
 
-    return { verify, treePaths };
+    const treePaths = (projectId: ProjectId, manifest: CaptureManifest, tree: string) =>
+      listTree(projectId, manifest, tree).pipe(
+        Effect.map((listed) => (listed === null ? null : parseTreeListing(listed))),
+      );
+
+    const treeObjects = (projectId: ProjectId, manifest: CaptureManifest, tree: string) =>
+      listTree(projectId, manifest, tree).pipe(
+        Effect.map((listed) => (listed === null ? null : parseTreeObjects(listed))),
+      );
+
+    return { verify, treePaths, treeObjects };
   }),
 );

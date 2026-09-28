@@ -204,6 +204,15 @@ export const FinalSeal = Schema.Struct({
   complete: Schema.Boolean,
   epoch: Schema.Int,
   executor: Schema.String,
+  /**
+   * Where in the executor's own history it sealed (cross-repo decision 17), when sealantd stamps
+   * it: the daemon process, which boot of the disk that was, and the number the seal took in
+   * that boot's order (the answer to the flush that sealed comes after it). Absent (an older
+   * daemon): nothing orders the seal against an answer.
+   */
+  boot_id: Schema.optionalKey(Schema.String),
+  boot_generation: Schema.optionalKey(Schema.Int),
+  observation: Schema.optionalKey(Schema.Int),
 });
 export type FinalSeal = typeof FinalSeal.Type;
 
@@ -629,6 +638,71 @@ const verifyDigest = (key: string, bytes: Uint8Array) => {
     : Effect.fail(new CaptureIntegrityError({ key, expected, actual }));
 };
 
+/** The sha256 of `key`'s bytes, streamed (a bulk pack can be gigabytes). */
+const sha256Of = (
+  key: string,
+): Effect.Effect<string, BlobNotFoundError | BlobStoreError, BlobStore> =>
+  Effect.gen(function* () {
+    const store = yield* BlobStore;
+    const stream = yield* store.getStream(key);
+    return yield* Effect.tryPromise({
+      try: async () => {
+        const hash = crypto.createHash("sha256");
+        for await (const chunk of stream) hash.update(chunk);
+        return hash.digest("hex");
+      },
+      catch: (cause) =>
+        new CaptureIntegrityError({ key, expected: "readable", actual: String(cause) }),
+    }).pipe(Effect.orElseSucceed(() => ""));
+  });
+
+/** A git pack index's two trailing SHA-1s: the pack's checksum, then its own. */
+const GIT_IDX_TRAILER = 40;
+const GIT_PACK_TRAILER = 20;
+
+/**
+ * Whether the object already stored under a capture key holds the bytes the key names (cross-repo
+ * decision 19: an existing object is accepted only once its bytes are verified): a pack, a dir
+ * pack, a tree or a manifest hashes to the sha256 its key ends in; a git pack index
+ * (`packs/<sha>.idx`) checksums to its own trailer and names the checksum its pack ends in. The
+ * reason it does not, or null when it does.
+ */
+export const storedObjectProblem = (
+  key: string,
+): Effect.Effect<string | null, BlobNotFoundError | BlobStoreError, BlobStore> =>
+  Effect.gen(function* () {
+    const store = yield* BlobStore;
+    if (key.endsWith(".idx")) {
+      const bytes = yield* store.get(key);
+      if (bytes.byteLength < GIT_IDX_TRAILER) return `${key} is too short to be a pack index`;
+      const body = bytes.subarray(0, bytes.byteLength - 20);
+      const own = Buffer.from(bytes.subarray(bytes.byteLength - 20)).toString("hex");
+      if (crypto.createHash("sha1").update(body).digest("hex") !== own) {
+        return `${key} does not checksum to its own trailer`;
+      }
+      const packKey = key.slice(0, -".idx".length);
+      const packHead = yield* store.head(packKey);
+      if (packHead === null) return `${key} names a pack that is not stored`;
+      const packTrailer = yield* store.getRange(
+        packKey,
+        Math.max(0, packHead.size - GIT_PACK_TRAILER),
+        GIT_PACK_TRAILER,
+      );
+      const named = Buffer.from(
+        bytes.subarray(bytes.byteLength - GIT_IDX_TRAILER, bytes.byteLength - 20),
+      ).toString("hex");
+      return Buffer.from(packTrailer).toString("hex") === named
+        ? null
+        : `${key} indexes another pack than ${packKey}`;
+    }
+    const expected = digestOfKey(key);
+    if (expected === null) return `${key} names no sha256`;
+    const actual = yield* sha256Of(key);
+    return actual === expected
+      ? null
+      : `${key} holds bytes that hash to ${actual || "nothing readable"}`;
+  });
+
 // ─── Codec ──────────────────────────────────────────────────────────────────
 
 const decodeJson =
@@ -922,13 +996,30 @@ export interface DirReader {
 interface OpenedPack {
   readonly bytes: Uint8Array;
   readonly entries: ReadonlyArray<PackIndexEntry>;
+  /** When the bytes were read from the store (ms), for `proofStands`. */
+  readonly atMs: number;
 }
 
 /**
- * Dir packs already fetched, by key. A pack key is the sha256 of its bytes and every pack is
- * verified against it on fetch, so an entry can never go stale; the cache is bounded by bytes
- * and drops the least recently used pack first. A restore, a harvest listing and the file reads
- * after it share one fetch of each dir pack instead of one per call.
+ * What a cache here holds about a key is a proof about one store's object (review 2026-09-28 (6)
+ * #9, cross-repo decision 19): kept under the store's identity beside the key, and standing only
+ * when it was taken once nothing could replace the bytes any more — at once on a store that
+ * refuses to replace an object, otherwise after every PUT URL minted for the key has expired
+ * (`BlobStore.replaceableUntil`). A proof taken earlier is taken again.
+ */
+const proofKey = (store: typeof BlobStore.Service, key: string) => `${store.identity}\u0000${key}`;
+
+const proofStands = (
+  store: typeof BlobStore.Service,
+  key: string,
+  atMs: number,
+): Effect.Effect<boolean> => store.replaceableUntil(key).pipe(Effect.map((until) => atMs >= until));
+
+/**
+ * Dir packs already fetched, by store and key. A pack key is the sha256 of its bytes and every
+ * pack is verified against it on fetch; an entry stands while `proofStands`. The cache is bounded
+ * by bytes and drops the least recently used pack first. A restore, a harvest listing and the
+ * file reads after it share one fetch of each dir pack instead of one per call.
  */
 const DIR_PACK_CACHE_BYTES = 64 * 1024 * 1024;
 const dirPackCache = new Map<string, OpenedPack>();
@@ -953,19 +1044,21 @@ const rememberDirPack = (key: string, pack: OpenedPack) => {
 /** Fetch (or reuse) one dir pack: verified against its key, its trailing index read. */
 const openDirPack = (key: string): Effect.Effect<OpenedPack, CaptureReadError, BlobStore> =>
   Effect.gen(function* () {
-    const cached = dirPackCache.get(key);
-    if (cached !== undefined) {
+    const store = yield* BlobStore;
+    const cacheKey = proofKey(store, key);
+    const cached = dirPackCache.get(cacheKey);
+    if (cached !== undefined && (yield* proofStands(store, key, cached.atMs))) {
       // Touch: most recently used goes to the back of the map.
-      dirPackCache.delete(key);
-      dirPackCache.set(key, cached);
+      dirPackCache.delete(cacheKey);
+      dirPackCache.set(cacheKey, cached);
       return cached;
     }
-    const store = yield* BlobStore;
+    const atMs = Date.now();
     const bytes = yield* store.get(key);
     yield* verifyDigest(key, bytes);
     const entries = yield* readPackIndex(key, bytes);
-    const opened = { bytes, entries };
-    rememberDirPack(key, opened);
+    const opened = { bytes, entries, atMs };
+    rememberDirPack(cacheKey, opened);
     return opened;
   });
 
@@ -1680,27 +1773,31 @@ export const listCaptureFiles = (
 // ─── Restorability ──────────────────────────────────────────────────────────
 
 /**
- * Chunk sizes by hash, per pack key. A pack key is the sha256 of its bytes, so an entry never
- * goes stale; the cache is bounded by entries and drops the least recently used pack first. A
- * register whose section re-lists its parent's packs reads only the new packs' indexes.
+ * Chunk sizes by hash, per store and pack key, while the read stands (`proofStands`); bounded by
+ * entries, the least recently used pack dropped first. A register whose section re-lists its
+ * parent's packs reads only the new packs' indexes.
  */
 const PACK_INDEX_CACHE_ENTRIES = 1_000_000;
-const packIndexCache = new Map<string, ReadonlyMap<string, number>>();
+interface PackIndexRead {
+  readonly sizes: ReadonlyMap<string, number>;
+  readonly atMs: number;
+}
+const packIndexCache = new Map<string, PackIndexRead>();
 let packIndexCacheEntries = 0;
 
-const rememberPackIndex = (key: string, sizes: ReadonlyMap<string, number>) => {
-  if (sizes.size > PACK_INDEX_CACHE_ENTRIES) return;
-  const previous = packIndexCache.get(key);
+const rememberPackIndex = (cacheKey: string, read: PackIndexRead) => {
+  if (read.sizes.size > PACK_INDEX_CACHE_ENTRIES) return;
+  const previous = packIndexCache.get(cacheKey);
   if (previous !== undefined) {
-    packIndexCache.delete(key);
-    packIndexCacheEntries -= previous.size;
+    packIndexCache.delete(cacheKey);
+    packIndexCacheEntries -= previous.sizes.size;
   }
-  packIndexCache.set(key, sizes);
-  packIndexCacheEntries += sizes.size;
+  packIndexCache.set(cacheKey, read);
+  packIndexCacheEntries += read.sizes.size;
   for (const [oldest, held] of packIndexCache) {
     if (packIndexCacheEntries <= PACK_INDEX_CACHE_ENTRIES) break;
     packIndexCache.delete(oldest);
-    packIndexCacheEntries -= held.size;
+    packIndexCacheEntries -= held.sizes.size;
   }
 };
 
@@ -1710,34 +1807,38 @@ const chunkSizesOf = (
   knownSize: number | undefined,
 ): Effect.Effect<ReadonlyMap<string, number>, CaptureReadError, BlobStore> =>
   Effect.gen(function* () {
-    const cached = packIndexCache.get(key);
-    if (cached !== undefined) {
-      packIndexCache.delete(key);
-      packIndexCache.set(key, cached);
-      return cached;
-    }
     const store = yield* BlobStore;
+    const cacheKey = proofKey(store, key);
+    const cached = packIndexCache.get(cacheKey);
+    if (cached !== undefined && (yield* proofStands(store, key, cached.atMs))) {
+      packIndexCache.delete(cacheKey);
+      packIndexCache.set(cacheKey, cached);
+      return cached.sizes;
+    }
+    const atMs = Date.now();
     const size = knownSize ?? (yield* store.head(key))?.size;
     if (size === undefined) return yield* new BlobNotFoundError({ key });
     const entries = yield* readPackIndexRemote(key, size);
     const sizes = new Map<string, number>();
     for (const entry of entries) sizes.set(entry.hash, entry.size);
-    rememberPackIndex(key, sizes);
+    rememberPackIndex(cacheKey, { sizes, atMs });
     return sizes;
   });
 
 /**
- * Pack keys whose every chunk was decompressed and hashed (`verifyPackPayloads`). A key is the
- * sha256 of the pack's bytes and a condemned key is never written again, so a key verified once
- * stays verified; bounded, the oldest dropped first.
+ * Pack keys whose every chunk was decompressed and hashed (`verifyPackPayloads`), by store and
+ * key, with when the bytes were read. A key is the sha256 of the pack's bytes and a condemned key
+ * is never written again, but a key is only as immutable as its store keeps it (review
+ * 2026-09-28 (6) #9): the proof stands only while `proofStands` — taken from this very store once
+ * no PUT URL could replace the bytes. Bounded, the oldest dropped first.
  */
 const PAYLOAD_VERIFIED_KEYS = 200_000;
-const payloadVerified = new Set<string>();
+const payloadVerified = new Map<string, number>();
 
-const rememberPayloadVerified = (key: string) => {
-  payloadVerified.delete(key);
-  payloadVerified.add(key);
-  for (const oldest of payloadVerified) {
+const rememberPayloadVerified = (cacheKey: string, atMs: number) => {
+  payloadVerified.delete(cacheKey);
+  payloadVerified.set(cacheKey, atMs);
+  for (const oldest of payloadVerified.keys()) {
     if (payloadVerified.size <= PAYLOAD_VERIFIED_KEYS) break;
     payloadVerified.delete(oldest);
   }
@@ -1763,7 +1864,10 @@ export const verifyPackPayloads = (
     let packs = 0;
     let chunks = 0;
     for (const key of new Set(keys)) {
-      if (payloadVerified.has(key)) continue;
+      const cacheKey = proofKey(store, key);
+      const verifiedAt = payloadVerified.get(cacheKey);
+      if (verifiedAt !== undefined && (yield* proofStands(store, key, verifiedAt))) continue;
+      const atMs = Date.now();
       const bytes = yield* store.get(key);
       yield* verifyDigest(key, bytes);
       const entries = yield* readPackIndex(key, bytes);
@@ -1772,7 +1876,7 @@ export const verifyPackPayloads = (
         chunks += 1;
       }
       packs += 1;
-      rememberPayloadVerified(key);
+      rememberPayloadVerified(cacheKey, atMs);
     }
     return { packs, chunks };
   });
@@ -2034,46 +2138,15 @@ export const crossLinksProblem = (
   Effect.gen(function* () {
     const groups = document.cross_links ?? [];
     if (groups.length === 0) return null;
-    const readers = new Map<CaptureClass, DirReader>();
+    const members = makeClassMembers(manifest);
     for (const group of groups) {
-      const members: Array<{
-        readonly cls: CaptureClass;
-        readonly member: string;
-        readonly size: number;
-        readonly chunks: string;
-      }> = [];
+      const found: Array<ClassMember> = [];
       for (const link of group) {
-        const named = `${link.class} member ${JSON.stringify(link.member)}`;
-        const section = manifest.sections[link.class];
-        if (section === "pending") return `${named}: its class is pending`;
-        const segments = captureSegments(link.member);
-        if (segments === null || section.root === "") return `${named} is not in its class`;
-        const reader =
-          readers.get(link.class) ??
-          (yield* makeDirReader(section).pipe(Effect.orElseSucceed(() => null)));
-        if (reader === null) return `${named}: its class's dir objects do not read`;
-        readers.set(link.class, reader);
-        const entry = yield* entryAt(reader, section.root, segments).pipe(
-          Effect.orElseSucceed(() => null),
-        );
-        if (entry === null || (entry.kind !== "file" && entry.kind !== "hardlink-group")) {
-          return `${named} is not a file of its class`;
-        }
-        const holder = yield* resolveCaptureFileEntry(
-          reader,
-          section.root,
-          segments.join("/"),
-          entry,
-        ).pipe(Effect.orElseSucceed(() => null));
-        if (holder === null) return `${named} does not resolve to a file of its class`;
-        members.push({
-          cls: link.class,
-          member: segments.join("/"),
-          size: holder.size,
-          chunks: (holder.chunks ?? []).join(","),
-        });
+        const member = yield* members.fileOf(link.class, link.member);
+        if (typeof member === "string") return member;
+        found.push(member);
       }
-      const [first, ...rest] = members;
+      const [first, ...rest] = found;
       if (first === undefined) continue;
       if (rest.some((other) => other.size !== first.size)) {
         return `cross-class link group ${JSON.stringify(group)}: members hold different sizes`;
@@ -2081,22 +2154,155 @@ export const crossLinksProblem = (
       if (rest.every((other) => other.chunks === first.chunks)) continue;
       // Chunked differently: the bytes themselves decide.
       const digests = new Set<string>();
-      for (const { cls, member } of members) {
-        const digest = yield* readCaptureFile(manifest, cls, member).pipe(
-          Effect.flatMap((stream) =>
-            Effect.tryPromise(async () => {
-              const hash = crypto.createHash("sha256");
-              for await (const chunk of stream) hash.update(chunk);
-              return hash.digest("hex");
-            }),
-          ),
-          Effect.orElseSucceed(() => null),
-        );
-        if (digest === null) return `${cls} member ${JSON.stringify(member)} does not read`;
+      for (const member of found) {
+        const digest = yield* members.digestOf(member, "sha256");
+        if (digest === null) {
+          return `${member.cls} member ${JSON.stringify(member.member)} does not read`;
+        }
         digests.add(digest);
       }
       if (digests.size > 1) {
         return `cross-class link group ${JSON.stringify(group)}: members hold different bytes`;
+      }
+    }
+    return null;
+  });
+
+/** One file a class carries, as `makeClassMembers` found it. */
+interface ClassMember {
+  readonly cls: CaptureClass;
+  /** Its path in the class, as the class names it. */
+  readonly member: string;
+  readonly size: number;
+  /** Its chunk hashes, joined: two members with the same list hold the same bytes. */
+  readonly chunks: string;
+}
+
+/**
+ * The files a manifest's chunked classes carry, as a restore lays them down: `fileOf` finds a
+ * member (a plain file, or a hardlink member resolving to one) in its class's section — the
+ * workspace class's `tree/…`, `.git/…`, `harness/…` namespace, the bulk class's
+ * worktree-relative one — or says why it is not one; `digestOf` reads its bytes back and hashes
+ * them (sha256, or as the git blob object a checkout of the same bytes is). Dir readers are made
+ * once per class.
+ */
+const makeClassMembers = (manifest: CaptureManifest) => {
+  const readers = new Map<CaptureClass, DirReader>();
+  const fileOf = (
+    cls: CaptureClass,
+    member: string,
+  ): Effect.Effect<ClassMember | string, never, BlobStore> =>
+    Effect.gen(function* () {
+      const named = `${cls} member ${JSON.stringify(member)}`;
+      const section = manifest.sections[cls];
+      if (section === "pending") return `${named}: its class is pending`;
+      const segments = captureSegments(member);
+      if (segments === null || section.root === "") return `${named} is not in its class`;
+      const reader =
+        readers.get(cls) ?? (yield* makeDirReader(section).pipe(Effect.orElseSucceed(() => null)));
+      if (reader === null) return `${named}: its class's dir objects do not read`;
+      readers.set(cls, reader);
+      const entry = yield* entryAt(reader, section.root, segments).pipe(
+        Effect.orElseSucceed(() => null),
+      );
+      if (entry === null || (entry.kind !== "file" && entry.kind !== "hardlink-group")) {
+        return `${named} is not a file of its class`;
+      }
+      const holder = yield* resolveCaptureFileEntry(
+        reader,
+        section.root,
+        segments.join("/"),
+        entry,
+      ).pipe(Effect.orElseSucceed(() => null));
+      if (holder === null) return `${named} does not resolve to a file of its class`;
+      return {
+        cls,
+        member: segments.join("/"),
+        size: holder.size,
+        chunks: (holder.chunks ?? []).join(","),
+      };
+    });
+  const digestOf = (
+    member: ClassMember,
+    as: "sha256" | "git-sha1" | "git-sha256",
+  ): Effect.Effect<string | null, never, BlobStore> =>
+    readCaptureFile(manifest, member.cls, member.member).pipe(
+      Effect.flatMap((stream) =>
+        Effect.tryPromise(async () => {
+          const hash = crypto.createHash(as === "git-sha1" ? "sha1" : "sha256");
+          // A git blob object: `blob <size>\0` then the bytes.
+          if (as !== "sha256") hash.update(`blob ${member.size}\u0000`);
+          for await (const chunk of stream) hash.update(chunk);
+          return hash.digest("hex");
+        }),
+      ),
+      Effect.orElseSucceed(() => null),
+    );
+  return { fileOf, digestOf };
+};
+
+/** A path of the tree a restore checks out: what it is, and the object git holds for it. */
+export interface RestoreTreePath {
+  readonly kind: WorktreeTreeKind;
+  readonly object: string;
+}
+
+/**
+ * Whether the tracked-side link topology the worktree metadata document declares is one the
+ * complete restore makes (review 2026-09-28 (6) #10), over `restoreTree` — every path of the tree
+ * the restore checks out (`rawTreeOf`), hex of its bytes → its kind and git object:
+ * - each `hardlinks` group is tracked files the checkout writes with the same bytes: every member
+ *   a file of that tree, every member the same blob (sealantd relinks later members onto the
+ *   first, so a member holding other bytes would be replaced by the first's);
+ * - each `shared` link names a tracked file of that tree and a file its class carries holding the
+ *   same bytes as that blob (a member the class does not carry, or one holding other bytes, is a
+ *   link the restore cannot make).
+ * `cross_links` are checked by `crossLinksProblem`. The reason, or null when every link restores.
+ */
+export const linkTopologyProblem = (
+  manifest: CaptureManifest,
+  document: WorktreeMetaDocument,
+  restoreTree: ReadonlyMap<string, RestoreTreePath>,
+): Effect.Effect<string | null, never, BlobStore> =>
+  Effect.gen(function* () {
+    const trackedFile = (key: string, raw?: string): RestoreTreePath | string => {
+      const bytes = bytesOfPair(key, raw);
+      if (bytes === null || bytes.length === 0) return `tracked path ${JSON.stringify(key)}`;
+      const found = restoreTree.get(bytes.toString("hex"));
+      if (found === undefined || found.kind !== "file") {
+        return `${JSON.stringify(key)} is ${
+          found === undefined ? "absent from" : `a ${found.kind} in`
+        } the tree the restore checks out`;
+      }
+      return found;
+    };
+    for (const group of document.hardlinks ?? []) {
+      const objects = new Set<string>();
+      for (const member of group) {
+        const found = trackedFile(member);
+        if (typeof found === "string") return `hardlink group ${JSON.stringify(group)}: ${found}`;
+        objects.add(found.object);
+      }
+      if (objects.size > 1) {
+        return `hardlink group ${JSON.stringify(group)}: members hold different bytes in the tree the restore checks out`;
+      }
+    }
+    const members = makeClassMembers(manifest);
+    for (const link of document.shared ?? []) {
+      const named = `shared link ${JSON.stringify(link)}`;
+      const tracked = trackedFile(link.path);
+      if (typeof tracked === "string") return `${named}: ${tracked}`;
+      const memberKey = bytesOfPair(link.member, link.raw_member);
+      if (memberKey === null) return `${named}: its member does not decode`;
+      const member = yield* members.fileOf(link.class, keyOfBytes(memberKey));
+      if (typeof member === "string") return `${named}: ${member}`;
+      const digest = yield* members.digestOf(
+        member,
+        tracked.object.length === 64 ? "git-sha256" : "git-sha1",
+      );
+      if (digest === null) return `${named}: its member does not read`;
+      if (digest !== tracked.object) {
+        return `${named}: its member holds other bytes than ${JSON.stringify(link.path)}`;
       }
     }
     return null;

@@ -87,6 +87,21 @@ export class BlobStore extends Context.Service<
   BlobStore,
   {
     /**
+     * Which store this is — `dir:<root>`, `s3:<endpoint>/<bucket>`. A proof a caller keeps about
+     * a key's bytes (a pack whose chunks were read and hashed) is a proof about this store's
+     * object, never another's (review 2026-09-28 (6) #9, cross-repo decision 19).
+     */
+    readonly identity: string;
+    /**
+     * Until when (ms since the epoch) the bytes under `key` could still be replaced by an upload
+     * URL this store handed out: 0 on a store that refuses to replace an object (the directory
+     * store; a bucket that answers a conditional PUT's `If-None-Match: *` with 412, as S3, R2 and
+     * MinIO do); otherwise the expiry of the last PUT URL minted for `key`, and never earlier than
+     * the longest a URL minted before this process started could live. A proof about `key`'s
+     * bytes taken before that time may be about bytes that are no longer there.
+     */
+    readonly replaceableUntil: (key: string) => Effect.Effect<number>;
+    /**
      * Write `key`. With `ifAbsent`, an existing object is left alone and `written` is false —
      * atomic on the directory store and on S3 backends that honour `If-None-Match: *`; on a
      * backend without conditional writes (Garage) it is head-then-put, which is safe only
@@ -115,9 +130,12 @@ export class BlobStore extends Context.Service<
     /** Every key under `prefix`, sorted; pagination is the implementation's. */
     readonly list: (prefix: string) => Effect.Effect<ReadonlyArray<BlobEntry>, BlobStoreError>;
     /**
-     * A URL an executor can PUT to or GET from for `ttlSeconds`, naming the host executors
-     * resolve (`MEND_BLOB_STORE_PUBLIC_URL`). The directory store answers a `file://` URL —
-     * usable only by a process on this machine (the `local` degenerate case).
+     * A URL an executor can PUT to or GET from for `ttlSeconds` (a PUT's at most
+     * `PUT_URL_TTL_MAX_SECONDS`), naming the host executors resolve (`MEND_BLOB_STORE_PUBLIC_URL`).
+     * A PUT URL is write-once: S3 signs `If-None-Match: *` into it, so the upload must carry that
+     * header and a bucket that honours it refuses to replace an object with a 412. The directory
+     * store answers a `file://` URL — usable only by a process on this machine (the `local`
+     * degenerate case) — over objects it publishes read-only.
      */
     readonly presign: (
       key: string,
@@ -273,6 +291,16 @@ export const BlobStoreConfigLive: Layer.Layer<BlobStoreConfig> = Layer.effect(
 
 // ─── Shared ─────────────────────────────────────────────────────────────────
 
+/**
+ * The longest a PUT URL lives (`presign` clamps to it): what bounds how long after a URL was
+ * minted — by this process or one before it — the object it names could be replaced on a bucket
+ * that does not refuse an overwrite (`replaceableUntil`).
+ */
+export const PUT_URL_TTL_MAX_SECONDS = 15 * 60;
+
+/** Published objects are read-only: a writer holding a `file://` URL cannot open one to rewrite it. */
+const READ_ONLY = 0o444;
+
 const KEY = /^[A-Za-z0-9][A-Za-z0-9._-]*(\/[A-Za-z0-9][A-Za-z0-9._-]*)*$/;
 
 /** Keys are relative, slash-separated, and never climb: the directory store maps them to paths. */
@@ -396,9 +424,11 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
       });
     }
     // Publish atomically: rename replaces; link refuses an existing target (EEXIST) — that is the
-    // `ifAbsent` race decided by the filesystem, not by a check we made a moment ago.
+    // `ifAbsent` race decided by the filesystem, not by a check we made a moment ago. Published
+    // read-only, so a `file://` URL's holder cannot rewrite the bytes in place (decision 19).
     return yield* attempt("put", key, () => {
       try {
+        fs.chmodSync(tmp, READ_ONLY);
         if (options?.ifAbsent === true) {
           try {
             fs.linkSync(tmp, target);
@@ -519,6 +549,7 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
         fs.mkdirSync(path.dirname(objectPath(to)), { recursive: true });
         try {
           fs.copyFileSync(objectPath(from), tmp);
+          fs.chmodSync(tmp, READ_ONLY);
           fs.renameSync(tmp, objectPath(to));
         } finally {
           fs.rmSync(tmp, { force: true });
@@ -622,6 +653,7 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
         } finally {
           fs.closeSync(out);
         }
+        fs.chmodSync(tmp, READ_ONLY);
         try {
           fs.linkSync(tmp, target);
         } catch (error) {
@@ -672,6 +704,9 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
   });
 
   return {
+    identity: `dir:${path.resolve(root)}`,
+    // Every object is published by a link that refuses an existing name, read-only.
+    replaceableUntil: () => Effect.succeed(0),
     put,
     get,
     getRange,
@@ -722,9 +757,17 @@ const bodyOf = (body: Uint8Array | BlobBody) =>
     ? { Body: body, ContentLength: body.byteLength }
     : { Body: body.stream, ContentLength: body.length };
 
-/** Build the S3-backed service value over any S3-compatible endpoint. */
 /** Signing `content-length` makes a presigned upload good for exactly the declared size. */
 const signedLength = (): Set<string> => new Set(["content-length"]);
+
+/** A PUT URL's signed headers: always `if-none-match`, and `content-length` when declared. */
+const signedPutHeaders = (bound: boolean): Set<string> =>
+  new Set(bound ? ["if-none-match", "content-length"] : ["if-none-match"]);
+
+/** PUT URLs minted within this long are remembered by key (`replaceableUntil`). */
+const MINTED_KEYS_REMEMBERED = 200_000;
+
+/** Build the S3-backed service value over any S3-compatible endpoint. */
 
 export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.Service => {
   const clientOptions = {
@@ -749,6 +792,67 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
       try: thunk,
       catch: (cause) => new BlobStoreError({ operation, key, cause }),
     });
+
+  // ── Write-once, as observed (cross-repo decision 19) ──
+  // Whether the bucket refuses to replace an object under a conditional PUT is measured, never
+  // assumed: S3, R2 and MinIO answer `If-None-Match: *` over an existing key with 412; Garage
+  // (v2.4.1, measured 2026-09-28) accepts the header and replaces the bytes. Asked once, on a
+  // probe key of its own, and remembered once answered; a probe that fails is asked again.
+  const startedAtMs = Date.now();
+  let refuses: boolean | null = null;
+  const probeRefusesOverwrite = Effect.gen(function* () {
+    if (refuses !== null) return refuses;
+    const probe = `mend-probes/write-once/${crypto.randomUUID()}`;
+    const conditional = (body: string) =>
+      Effect.tryPromise({
+        try: () =>
+          client.send(
+            new PutObjectCommand({
+              Bucket: bucket,
+              Key: probe,
+              Body: body,
+              ContentLength: body.length,
+              IfNoneMatch: "*",
+            }),
+          ),
+        catch: (cause) => cause,
+      }).pipe(
+        Effect.as(true),
+        Effect.catch((cause) =>
+          s3Status(cause) === 412 ? Effect.succeed(false) : Effect.fail(cause),
+        ),
+      );
+    const answered = yield* Effect.gen(function* () {
+      yield* conditional("a");
+      return !(yield* conditional("b"));
+    }).pipe(
+      Effect.ensuring(
+        Effect.tryPromise(() =>
+          client.send(new DeleteObjectCommand({ Bucket: bucket, Key: probe })),
+        ).pipe(Effect.ignore),
+      ),
+      Effect.option,
+    );
+    if (answered._tag === "None") return false;
+    refuses = answered.value;
+    return refuses;
+  });
+  // Key → until when a PUT URL minted for it lives.
+  const minted = new Map<string, number>();
+  const noteMinted = (key: string, untilMs: number) => {
+    if (minted.size >= MINTED_KEYS_REMEMBERED) {
+      const now = Date.now();
+      for (const [known, until] of minted) if (until <= now) minted.delete(known);
+      if (minted.size >= MINTED_KEYS_REMEMBERED) minted.clear();
+    }
+    minted.set(key, Math.max(untilMs, minted.get(key) ?? 0));
+  };
+  const replaceableUntil = (key: string) =>
+    probeRefusesOverwrite.pipe(
+      Effect.map((refused) =>
+        refused ? 0 : Math.max(minted.get(key) ?? 0, startedAtMs + PUT_URL_TTL_MAX_SECONDS * 1000),
+      ),
+    );
 
   const put = Effect.fn("BlobStore.put")(function* (
     key: string,
@@ -901,21 +1005,32 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
     contentLength?: number,
   ) {
     yield* checkKey("presign", key);
-    const bound = method === "PUT" && contentLength !== undefined;
-    const command =
-      method === "PUT"
-        ? new PutObjectCommand({
-            Bucket: bucket,
-            Key: key,
-            ...(bound ? { ContentLength: contentLength } : {}),
-          })
-        : new GetObjectCommand({ Bucket: bucket, Key: key });
-    return yield* call("presign", key, () =>
-      getSignedUrl(publicClient, command, {
-        expiresIn: ttlSeconds,
-        ...(bound ? { signableHeaders: signedLength() } : {}),
-      }),
+    if (method === "GET") {
+      return yield* call("presign", key, () =>
+        getSignedUrl(publicClient, new GetObjectCommand({ Bucket: bucket, Key: key }), {
+          expiresIn: ttlSeconds,
+        }),
+      );
+    }
+    // Write-once (cross-repo decision 19): `If-None-Match: *` is signed into every PUT URL, so
+    // the upload must send it (sealantd always has) and a bucket that honours it answers an
+    // existing key with 412 instead of replacing the bytes. A declared size is signed too.
+    const bound = contentLength !== undefined;
+    const expiresIn = Math.min(Math.max(1, ttlSeconds), PUT_URL_TTL_MAX_SECONDS);
+    const url = yield* call("presign", key, () =>
+      getSignedUrl(
+        publicClient,
+        new PutObjectCommand({
+          Bucket: bucket,
+          Key: key,
+          IfNoneMatch: "*",
+          ...(bound ? { ContentLength: contentLength } : {}),
+        }),
+        { expiresIn, signableHeaders: signedPutHeaders(bound) },
+      ),
     );
+    noteMinted(key, Date.now() + expiresIn * 1000);
+    return url;
   });
 
   const copy = Effect.fn("BlobStore.copy")(function* (from: string, to: string) {
@@ -1022,6 +1137,12 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
     yield* checkKey("completeMultipart", key);
     yield* checkUploadId("completeMultipart", key, uploadId);
     const ordered = yield* orderedParts("completeMultipart", key, parts);
+    // A bucket that ignores `If-None-Match: *` (Garage) would assemble over existing bytes: there
+    // the HEAD is the write-once check, and an existing key discards the upload.
+    if (!(yield* probeRefusesOverwrite) && (yield* head(key)) !== null) {
+      yield* abortMultipart(key, uploadId).pipe(Effect.ignore);
+      return { written: false };
+    }
     const outcome = yield* Effect.tryPromise({
       try: () =>
         client.send(
@@ -1081,6 +1202,8 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
   });
 
   return {
+    identity: `s3:${options.endpoint ?? "aws"}/${bucket}`,
+    replaceableUntil,
     put,
     get,
     getRange,
