@@ -493,6 +493,8 @@ const testLayer = (world: TestWorld) => {
     finalFlushedWorkspace: () => Effect.succeed(null),
     recordCaptureSaved: () => Effect.void,
     captureSavedOf: () => Effect.succeed(null),
+    recordCaptureUnsaved: () => Effect.void,
+    captureUnsavedOf: () => Effect.succeed(null),
     recordCaptureDrainProgress: () => Effect.die("not in test"),
     markCaptureNotSaved: () => Effect.die("not in test"),
     endCaptureDrain: () => Effect.die("not in test"),

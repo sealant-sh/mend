@@ -130,6 +130,13 @@ export interface CaptureCompletionAttestation {
    * attestation whose launch is not the one the executor's create named (Core's next SDK).
    */
   readonly launchId?: string;
+  /**
+   * When the store recorded the seal (ISO 8601), beside its chain position `captureN`: what
+   * Core weighs against its own latest observation of the executor — an attestation older than
+   * an answer Core received that said the executor held unsaved work does not stand (cross-repo
+   * decision 10). An SDK or a Core that does not read it ignores it.
+   */
+  readonly sealedAt?: string;
 }
 
 /**

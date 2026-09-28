@@ -990,6 +990,11 @@ interface World {
       readonly epoch: number | null;
     }
   >;
+  /** The latest unsaved answer observed per session (`recordCaptureUnsaved`). */
+  readonly captureUnsaved: Map<
+    string,
+    { readonly workspaceId: string; readonly at: Date; readonly words: string }
+  >;
 }
 
 const makeWorld = (): World => ({
@@ -1010,6 +1015,7 @@ const makeWorld = (): World => ({
   relaunches: new Map(),
   finalFlushed: new Map(),
   captureSaved: new Map(),
+  captureUnsaved: new Map(),
   executorResources: new Map(),
   executorLaunches: new Map(),
   executorCreates: new Map(),
@@ -1826,6 +1832,9 @@ const sessionsLayer = (world: World) => {
     finalFlushedWorkspace: (id) => Effect.sync(() => world.finalFlushed.get(id) ?? null),
     recordCaptureSaved: (id, saved) => Effect.sync(() => void world.captureSaved.set(id, saved)),
     captureSavedOf: (id) => Effect.sync(() => world.captureSaved.get(id) ?? null),
+    recordCaptureUnsaved: (id, unsaved) =>
+      Effect.sync(() => void world.captureUnsaved.set(id, unsaved)),
+    captureUnsavedOf: (id) => Effect.sync(() => world.captureUnsaved.get(id) ?? null),
     recordCaptureDrainProgress: (id, at) =>
       Effect.sync(() => {
         if (world.sessions.get(id)?.captureDrain === null) return;
@@ -8561,6 +8570,9 @@ describe("SessionEngine capture mode", () => {
               epoch,
               captureN: scenario.records.get(`${session.worktreeId}:${epoch}`)?.n,
               launchId: standbyLaunch,
+              sealedAt: scenario.records
+                .get(`${session.worktreeId}:${epoch}`)
+                ?.sealedAt.toISOString(),
             });
           }
         }),
@@ -11797,6 +11809,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
               epoch,
               executorId: "container-7f3a",
               launchId: world.executorLaunches.get(session.id)?.launchId,
+              sealedAt: records.get(`${session.worktreeId}:${epoch}`)?.sealedAt.toISOString(),
             });
           }),
         {
@@ -13180,6 +13193,210 @@ describe("SessionEngine idempotent executor creates (Core's next SDK, 2026-09-28
               return { kind: "found", workspaceId: "workspace-1" };
             },
           }),
+        },
+      );
+    },
+  );
+});
+
+describe("SessionEngine received evidence beats stored evidence (review 2026-09-28 (4))", () => {
+  /** A final seal the store holds for the session's current launch and epoch. */
+  const sealCurrent = (
+    world: World,
+    tmp: string,
+    memory: MemoryCaptureStore,
+    records: Map<string, CaptureCompletionSeal>,
+    session: Session,
+  ) =>
+    Effect.gen(function* () {
+      const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+      const built = yield* shipHarnessCapture(
+        tmp,
+        memory,
+        session.worktreeId,
+        epoch,
+        crypto.randomUUID(),
+        "final",
+      );
+      const seal: CaptureCompletionSeal = {
+        worktreeId: session.worktreeId,
+        epoch,
+        executorId: world.executorLaunches.get(session.id)?.launchId ?? "",
+        captureId: built.id,
+        n: built.manifest.n,
+        sealedAt: new Date(Date.now() - 5_000),
+      };
+      records.set(`${session.worktreeId}:${epoch}`, seal);
+      return seal;
+    });
+
+  it(
+    "#1 an older seal never stands for a FINAL answer received incomplete: no saved, no terminate, no attestation",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+      const logs: Array<string> = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* sealCurrent(world, tmp, memory, records, session);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the drain's not saved",
+            );
+            expect(stopOptions).toEqual([]);
+            expect(logs.some((line) => line.includes("capture drain · saved · terminating"))).toBe(
+              false,
+            );
+            // The answer is kept: the seal no longer stands for this executor.
+            expect(world.captureUnsaved.get(session.id)?.words).toBe(
+              "unreadable tree/after-seal.txt",
+            );
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          logs,
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stopOptions,
+              resourceId: () => "container-7f3a",
+              finalCompletion: "unreported",
+              flush: () =>
+                Effect.succeed({
+                  ...flushReport(0, 1),
+                  complete: false,
+                  incompleteReason: "snapshot-failed",
+                  unreadable: 1,
+                  unreadablePaths: ["tree/after-seal.txt"],
+                  lastSnapError: null,
+                }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "#1 an unsaved answer observed after the seal revokes it: a lost FINAL answer then terminates nothing",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* sealCurrent(world, tmp, memory, records, session);
+            const workspaceId = world.sessions.get(session.id)?.sealantWorkspaceId ?? "";
+            world.captureUnsaved.set(session.id, {
+              workspaceId,
+              at: new Date(Date.now() + 1_000),
+              words: "incomplete · changed",
+            });
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the drain's not saved",
+            );
+            expect(stopOptions).toEqual([]);
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          drainPolicy: { stallSeconds: 0 },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stopOptions,
+              resourceId: () => "container-7f3a",
+              finalCompletion: "unreported",
+              // Every answer lost on the way.
+              flush: () =>
+                Effect.fail(
+                  new SealantPlatformError({
+                    code: "connection_closed",
+                    status: null,
+                    message: "the relay closed",
+                    cause: null,
+                  }),
+                ),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "#9 a `docker stop` after the seal and a later unsaved answer reads the last confirmed save and what came after it, never saved",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const ptyStates = new Map<string, InteractiveSessionStatus>();
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      let stopped = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            const seal = yield* sealCurrent(world, tmp, memory, records, session);
+            // Taken a moment after the head registered.
+            const unsavedAt = new Date(Date.now() + 1_000);
+            world.captureUnsaved.set(session.id, {
+              workspaceId: world.sessions.get(session.id)?.sealantWorkspaceId ?? "",
+              at: unsavedAt,
+              words: "4.1 KB pending",
+            });
+            const agent = [...world.processes.values()].find(
+              (process) => process.sessionId === session.id && process.kind === "agent-pty",
+            );
+            if (agent === undefined || agent.sealantSessionId === null) {
+              throw new Error("the launch recorded no agent PTY");
+            }
+            stopped = true;
+            ptyStates.set(agent.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the session's settle",
+            );
+            const settled = world.sessions.get(session.id);
+            expect(settled?.status).toBe("failed");
+            expect(settled?.summary).toContain("executor lost · last saved");
+            expect(settled?.summary).toContain(
+              `4.1 KB pending at ${unsavedAt.toISOString().slice(11, 19)} UTC`,
+            );
+            expect(settled?.summary).not.toContain(
+              `saved at ${seal.sealedAt.toISOString().slice(11, 19)} UTC · capture`,
+            );
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            () => stopped,
+            undefined,
+            ptyStates,
+          ),
         },
       );
     },

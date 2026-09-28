@@ -2431,6 +2431,22 @@ const executorLaunchIdentityMigration = Effect.gen(function* () {
     UPDATE agent_sessions SET executor_launch_id = id WHERE sealant_workspace_id IS NOT NULL`;
 });
 
+/**
+ * 0084: an executor's answer that said it held unsaved work, the latest one (review 2026-09-28
+ * (4) #1 and #9, cross-repo decision 10). `capture_unsaved_workspace_id` / `_at` / `_detail`: the
+ * executor, when Mend took the answer, and its words. Taken after a completed final flush Mend
+ * observed (`capture_saved_*`) or a seal the store holds, it revokes that save: nothing reads the
+ * executor saved on it, and nothing attests it to the platform.
+ */
+const captureUnsavedObservationMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE agent_sessions
+      ADD COLUMN capture_unsaved_workspace_id text,
+      ADD COLUMN capture_unsaved_at timestamptz,
+      ADD COLUMN capture_unsaved_detail text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2515,4 +2531,5 @@ export const migrations = {
   "0081_capture_executor_identity": captureExecutorIdentityMigration,
   "0082_executor_create_key": executorCreateKeyMigration,
   "0083_executor_launch_identity": executorLaunchIdentityMigration,
+  "0084_capture_unsaved_observation": captureUnsavedObservationMigration,
 };

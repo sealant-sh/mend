@@ -153,6 +153,29 @@ export const captureSaved = (reading: CaptureReading): boolean =>
   (reading.refused ?? 0) === 0;
 
 /**
+ * What an answer says the executor holds that its last completed final flush did not save, in
+ * terse words (`4.1 KB pending`, `unreadable tree/a.txt`, `incomplete · changed`); null when it
+ * says nothing against a save. Received evidence beats stored evidence (cross-repo decision 10):
+ * such an answer, taken after a `complete: true` Mend observed or a seal the store holds, revokes
+ * it — whatever registered since, the executor held unsaved work at that moment. An answer that
+ * leaves a field out says nothing with it: only what was reported counts.
+ */
+export const captureUnsavedWordsOf = (reading: CaptureReading): string | null => {
+  if (captureSaved(reading)) return null;
+  if (reading.fenced) return "fenced";
+  if (reading.pending > 0) {
+    return `${reading.pendingBytes === null ? `${reading.pending}` : captureBytesWords(reading.pendingBytes)} pending`;
+  }
+  if ((reading.refused ?? 0) > 0) return "refused";
+  const snap = captureSnapDetailOf(reading);
+  if (snap !== null) return snap;
+  if (reading.complete === false)
+    return `incomplete · ${reading.incompleteReason ?? "no reason given"}`;
+  if (reading.bulkDirty === true) return "bulk changed since its last snapshot";
+  return null;
+};
+
+/**
  * A snap is failing on the executor: sealantd said why (`last_snap_error`), since when, or that
  * the last snap met paths it could not read. A final flush over such a tree fails again however
  * long a drain waits; only the next retry (after the kept backoff) may find it fixed.
@@ -513,6 +536,13 @@ export interface ExecutorEndFacts {
    * none recorded, or none Mend can bind to this executor and epoch.
    */
   readonly sealed?: { readonly at: Date; readonly n: number | null } | null;
+  /**
+   * The latest answer this executor gave that said it held unsaved work
+   * (`captureUnsavedWordsOf`), when Mend took it and in its words. Taken after a completed final
+   * flush or a seal, it revokes that save (cross-repo decision 10): the save is reported as the
+   * last one confirmed, and this beside it. Null or absent: none observed.
+   */
+  readonly unsaved?: { readonly at: Date; readonly words: string } | null;
 }
 
 /**
@@ -526,9 +556,13 @@ export interface ExecutorEndFacts {
  *   so something outside Mend stopped it), and neither word says that flush completed. The last
  *   registered capture is named; its completion is unknown;
  * - `lost`: anything else. `lastSavedAt` is the head's registration.
- * In both of the last two, `pending` is Mend's last reading of the queue, only when it was taken
- * by this executor after that registration and saw something pending. Mend never counts what it
- * did not observe.
+ * In both of the last two, `pending` is what Mend last observed unsaved on this executor after
+ * that registration: an answer that saw something pending, or one that said it held work not
+ * saved (`ExecutorEndFacts.unsaved`). Mend never counts what it did not observe.
+ *
+ * A save that a later answer of this executor contradicted (`unsaved` or a pending reading after
+ * it) is not `saved`: it is `lost`, naming that save as the last one confirmed and what was
+ * observed after it (review 2026-09-28 (4) #9).
  */
 export type ExecutorEnd =
   | { readonly kind: "saved"; readonly savedAt: Date; readonly n?: number | null }
@@ -541,6 +575,8 @@ export type ExecutorEnd =
   | {
       readonly kind: "lost";
       readonly lastSavedAt: Date | null;
+      /** The chain position of that save, when it was a confirmed one; absent otherwise. */
+      readonly lastSavedN?: number | null;
       readonly pending: { readonly words: string; readonly observedAt: Date } | null;
     };
 
@@ -554,23 +590,49 @@ export const executorEndOf = (facts: ExecutorEndFacts): ExecutorEnd => {
     reading.pending > 0 &&
     byThisExecutor(reading.observedAt) &&
     (at === null || reading.observedAt.getTime() > at.getTime());
+  /** What Mend last observed unsaved on this executor after `at`, the latest first. */
+  const unsavedAfter = (at: Date | null) => {
+    const unsaved = facts.unsaved ?? null;
+    const stated =
+      unsaved !== null &&
+      byThisExecutor(unsaved.at) &&
+      (at === null || unsaved.at.getTime() > at.getTime())
+        ? { words: unsaved.words, observedAt: unsaved.at }
+        : null;
+    const queued =
+      reading.observedAt !== null && reading.pending !== null && pendingAfter(at)
+        ? {
+            words: `${
+              reading.pendingBytes !== null
+                ? captureBytesWords(reading.pendingBytes)
+                : `${reading.pending}`
+            } pending`,
+            observedAt: reading.observedAt,
+          }
+        : null;
+    if (stated === null) return queued;
+    if (queued === null) return stated;
+    return queued.observedAt.getTime() >= stated.observedAt.getTime() ? queued : stated;
+  };
+  // The latest save this executor's own word or the store confirms: the completed final flush
+  // Mend observed, or the seal — whichever is newer.
   const finalSaved = facts.finalSaved ?? null;
-  if (finalSaved !== null && byThisExecutor(finalSaved.at)) {
-    return { kind: "saved", savedAt: finalSaved.at, n: finalSaved.n };
-  }
   const sealed = facts.sealed ?? null;
-  if (sealed !== null) return { kind: "saved", savedAt: sealed.at, n: sealed.n };
+  const confirmed = [
+    ...(finalSaved !== null && byThisExecutor(finalSaved.at)
+      ? [{ at: finalSaved.at, n: finalSaved.n }]
+      : []),
+    ...(sealed !== null ? [{ at: sealed.at, n: sealed.n }] : []),
+  ].toSorted((a, b) => b.at.getTime() - a.at.getTime())[0];
+  if (confirmed !== undefined) {
+    // Received evidence beats stored evidence (cross-repo decision 10): an answer after the save
+    // that said the executor held unsaved work revokes it.
+    const after = unsavedAfter(confirmed.at);
+    if (after === null) return { kind: "saved", savedAt: confirmed.at, n: confirmed.n };
+    return { kind: "lost", lastSavedAt: confirmed.at, lastSavedN: confirmed.n, pending: after };
+  }
   const lastSavedAt = head?.registeredAt ?? null;
-  const pending =
-    reading.observedAt !== null && reading.pending !== null && pendingAfter(lastSavedAt)
-      ? {
-          words:
-            reading.pendingBytes !== null
-              ? captureBytesWords(reading.pendingBytes)
-              : `${reading.pending}`,
-          observedAt: reading.observedAt,
-        }
-      : null;
+  const pending = unsavedAfter(lastSavedAt);
   if (head !== null && head.kind === "final" && byThisExecutor(head.registeredAt)) {
     return {
       kind: "unconfirmed",
@@ -596,9 +658,7 @@ export const executorEndWords = (end: ExecutorEnd): string => {
     return `stopped outside Mend · saved at ${utcTime(end.savedAt)}${n === null ? "" : ` · capture ${n}`}`;
   }
   const pending =
-    end.pending === null
-      ? []
-      : [`${end.pending.words} pending at ${utcTime(end.pending.observedAt)}`];
+    end.pending === null ? [] : [`${end.pending.words} at ${utcTime(end.pending.observedAt)}`];
   if (end.kind === "unconfirmed") {
     const capture = end.lastSavedN === null ? "" : `capture ${end.lastSavedN} at `;
     return [
@@ -608,10 +668,14 @@ export const executorEndWords = (end: ExecutorEnd): string => {
       ...pending,
     ].join(" · ");
   }
+  const lastSavedN = end.lastSavedN ?? null;
   const saved =
     end.lastSavedAt === null
       ? ["nothing saved"]
-      : [`last saved ${utcTime(end.lastSavedAt)}`, "changes after that were not saved"];
+      : [
+          `last saved ${lastSavedN === null ? "" : `capture ${lastSavedN} at `}${utcTime(end.lastSavedAt)}`,
+          "changes after that were not saved",
+        ];
   return ["executor lost", ...saved, ...pending].join(" · ");
 };
 

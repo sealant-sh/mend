@@ -369,4 +369,32 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
     expect(result.keys).not.toContain("captureSavedAt");
     expect(result.keys).not.toContain("captureSavedEpoch");
   });
+  it("keeps the executor's latest answer that it held unsaved work (0084, review 2026-09-28 (4) #9)", async () => {
+    const t0 = new Date("2026-09-28T00:00:20.000Z");
+    const t1 = new Date("2026-09-28T00:00:31.000Z");
+    const result = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const before = yield* sessions.captureUnsavedOf(STOPPING);
+        yield* sessions.recordCaptureUnsaved(STOPPING, {
+          workspaceId: "ws-1",
+          at: t0,
+          words: "4.1 KB pending",
+        });
+        const first = yield* sessions.captureUnsavedOf(STOPPING);
+        yield* sessions.recordCaptureUnsaved(STOPPING, {
+          workspaceId: "ws-1",
+          at: t1,
+          words: "incomplete · changed",
+        });
+        const latest = yield* sessions.captureUnsavedOf(STOPPING);
+        const row = yield* sessions.byId(STOPPING);
+        return { before, first, latest, keys: Object.keys(row) };
+      }),
+    );
+    expect(result.before).toBeNull();
+    expect(result.first).toEqual({ workspaceId: "ws-1", at: t0, words: "4.1 KB pending" });
+    expect(result.latest).toEqual({ workspaceId: "ws-1", at: t1, words: "incomplete · changed" });
+    expect(result.keys).not.toContain("captureUnsavedAt");
+  });
 });

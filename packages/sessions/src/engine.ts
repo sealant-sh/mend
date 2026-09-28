@@ -107,6 +107,7 @@ import {
   captureHarvestReady,
   captureIncompleteReasonOf,
   captureSaved,
+  captureUnsavedWordsOf,
   captureSnapDetailOf,
   captureSnapFailing,
   captureStatusLine,
@@ -1767,6 +1768,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             epoch: reading.epoch ?? null,
           });
         }
+        // The executor's own word that it holds work not saved (cross-repo decision 10): kept, so
+        // an older save — a `complete: true` above, or the store's seal — reads revoked from here
+        // on (`executorSealOf`, `executorEndOf`), whatever registers later without a new one.
+        const unsaved = captureUnsavedWordsOf(reading);
+        if (unsaved !== null) {
+          yield* sessions.recordCaptureUnsaved(session.id, {
+            workspaceId,
+            at: observedAt,
+            words: unsaved,
+          });
+        }
         if (failing !== null && before !== null && before.captureFailingSince === null) {
           yield* Effect.logWarning("session engine: capture failing · observed").pipe(
             Effect.annotateLogs({
@@ -2059,7 +2071,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * final flush, bound to that executor and its epoch, with no capture registered after it
        * under that epoch. Null otherwise.
        */
-      const executorSealOf = Effect.fn("SessionEngine.executorSealOf")(function* (
+      const executorSealRecordOf = Effect.fn("SessionEngine.executorSealRecordOf")(function* (
         session: Session,
         workspaceId: SealantWorkspaceId,
       ) {
@@ -2081,6 +2093,47 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const chain = yield* capture.repo.headOf(session.worktreeId);
         if (chain !== null && chain.headEpoch === executor.epoch && chain.headN > seal.n) {
           return null;
+        }
+        return { seal, holder: SessionId.make(executor.executorId) };
+      });
+
+      /**
+       * The sealed record (`executorSealRecordOf`) while it still stands: received evidence beats
+       * stored evidence (cross-repo decision 10, review 2026-09-28 (4) #1) — an answer this
+       * executor gave after the seal that said it held unsaved work (changed, unreadable, a
+       * snapshot that failed, pending) revokes it. Whoever asked (a joined session, or the
+       * holder), the answer is on that session's row. Null otherwise.
+       */
+      const executorSealOf = Effect.fn("SessionEngine.executorSealOf")(function* (
+        session: Session,
+        workspaceId: SealantWorkspaceId,
+      ) {
+        const record = yield* executorSealRecordOf(session, workspaceId);
+        if (record === null) return null;
+        const { seal } = record;
+        const holders = [...new Set([session.id, record.holder])];
+        for (const holder of holders) {
+          const unsaved = yield* sessions.captureUnsavedOf(holder);
+          if (
+            unsaved !== null &&
+            unsaved.workspaceId === workspaceId &&
+            unsaved.at.getTime() > seal.sealedAt.getTime()
+          ) {
+            yield* Effect.logWarning(
+              "session engine: capture mode · sealed, but the executor answered unsaved work after the seal · the seal no longer stands",
+            ).pipe(
+              Effect.annotateLogs({
+                sessionId: session.id,
+                workspaceId,
+                epoch: seal.epoch,
+                n: seal.n,
+                sealedAt: seal.sealedAt.toISOString(),
+                unsavedAt: unsaved.at.toISOString(),
+                unsaved: unsaved.words,
+              }),
+            );
+            return null;
+          }
         }
         return seal;
       });
@@ -2458,6 +2511,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             epoch: seal.epoch,
             executorId: resourceId,
             launchId: seal.executorId,
+            sealedAt: seal.sealedAt.toISOString(),
           },
         };
       });
@@ -2769,11 +2823,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             stallSeconds: drainPolicy.stallSeconds,
           });
           // The store's sealed record of this executor's completed final flush stands for an
-          // answer that was lost on the way (a relay that closed, a timeout): it is the same fact,
-          // made durable by the register.
+          // answer that was lost on the way (a relay that closed, a timeout, an SDK that drops
+          // the `complete` field): it is the same fact, made durable by the register. Never for
+          // an answer received that says otherwise (cross-repo decision 10, review 2026-09-28 (4)
+          // #1): an incomplete, changed, unreadable or pending answer is newer evidence than any
+          // seal, and a lost answer and a received failure are different facts.
+          const answerLost =
+            reading === null ||
+            (reading.complete === null && captureUnsavedWordsOf(reading) === null);
           const sealed =
             answered.kind !== "saved" &&
             lookup.kind === "found" &&
+            answerLost &&
             (yield* executorSealOf(session, workspaceId)) !== null;
           const step: CaptureDrainStep = sealed ? { kind: "saved" } : answered;
           if (reading !== null) previous = reading;
@@ -5289,7 +5350,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           workspaceId === null
             ? null
             : ((yield* leasedExecutorOf(session, workspaceId))?.epoch ?? null);
-        const seal = workspaceId === null ? null : yield* executorSealOf(session, workspaceId);
+        // The seal as recorded: `executorEndOf` weighs it against the answers after it itself,
+        // and names it as the last confirmed save when one revoked it.
+        const seal =
+          workspaceId === null
+            ? null
+            : ((yield* executorSealRecordOf(session, workspaceId))?.seal ?? null);
+        const unsaved = yield* sessions.captureUnsavedOf(session.id);
         const end = executorEndOf({
           head:
             head === null
@@ -5319,6 +5386,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ? null
               : { at: saved.at, n: saved.n },
           sealed: seal === null ? null : { at: seal.sealedAt, n: seal.n },
+          // This executor's latest answer that said it held unsaved work: after a save, it
+          // revokes it (review 2026-09-28 (4) #9).
+          unsaved:
+            unsaved === null || workspaceId === null || unsaved.workspaceId !== workspaceId
+              ? null
+              : { at: unsaved.at, words: unsaved.words },
         });
         const outcome: SessionOutcome = end.kind === "saved" ? "stopped" : "failed";
         return { outcome, summary: executorEndWords(end) };

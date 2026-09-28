@@ -1216,6 +1216,11 @@ export const agentSessions = pgTable(
     captureSavedAt: timestamp({ mode: "date", withTimezone: true }),
     captureSavedN: integer(),
     captureSavedEpoch: integer(),
+    // The latest answer of an executor that said it held unsaved work: which executor, when Mend
+    // took it, and its words (0084). Taken after a save, it revokes that save.
+    captureUnsavedWorkspaceId: text(),
+    captureUnsavedAt: timestamp({ mode: "date", withTimezone: true }),
+    captureUnsavedDetail: text(),
     // The current executor's runtime identity (`details().runtime.resourceId`, 0081).
     executorResourceId: text(),
     // The idempotency key of an executor create not yet answered on the row (0082).
