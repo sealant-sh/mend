@@ -30,9 +30,14 @@ import * as Context from "effect/Context";
  * section names — in a namespace holding the manifest's listed packs and nothing else
  * (`isolatedPacks`), never the shared cache: a restore fetches exactly those packs, so an object
  * another capture left in the cache must not satisfy this one's closure (review 2026-09-28 (4)
- * #12). The walk is bounded below by the project's store refs that the listed packs themselves
- * hold (the base the capture carries, which Mend packed whole) so a large repository is walked
- * only across what the capture added; a store ref the listed packs do not hold bounds nothing.
+ * #12). The walk is bounded below by the project's store refs whose WHOLE closure one listed pack
+ * holds (the base the capture carries, which Mend packed whole), so a large repository is walked
+ * only across what the capture added. `--not <ref>` lets git skip everything below the ref without
+ * reading it, so the ref's presence proves nothing about the blobs a checkout needs under it
+ * (review 2026-09-28 (5) #9): a ref bounds the walk only once a walk of its own closure, in a
+ * namespace holding that one pack alone, found every object. Packs are immutable (named by their
+ * sha256), so that proof is kept per (ref sha, pack) for the process; a store ref no single listed
+ * pack closes bounds nothing, and the tips are walked whole.
  */
 
 export interface GitVerification {
@@ -101,6 +106,9 @@ export const parseTreeListing = (output: Buffer): ReadonlyMap<string, WorktreeTr
 };
 
 const HEX40 = /^[0-9a-f]{40}$/;
+
+/** How many store refs' closure proofs the verifier keeps before it starts over. */
+const CLOSED_BOUNDARY_LIMIT = 10_000;
 
 /**
  * A bare repository whose object store is exactly `packKeys` as the runner cache at `cachePath`
@@ -173,6 +181,46 @@ export const CaptureGitVerifierLive: Layer.Layer<
   Effect.gen(function* () {
     const runner = yield* GitOpsRunner;
     const refs = yield* StoreRefsRepo;
+    // Store ref sha → the pack digests a walk proved hold its whole closure.
+    const closedIn = new Map<string, Set<string>>();
+
+    /** Whether the pack `key` alone holds `sha` and every object reachable from it. */
+    const closureHeldBy = (cachePath: string, key: string, sha: string) =>
+      isolatedPacks(cachePath, [key], (repo) =>
+        Effect.gen(function* () {
+          if ((yield* presentIn(repo, [sha])).length === 0) return false;
+          yield* git(["rev-list", "--objects", "--missing=error", "--no-object-names", sha], repo);
+          return true;
+        }),
+      ).pipe(Effect.catch(() => Effect.succeed(false)));
+
+    /**
+     * Which of `candidates` (store refs the listed packs hold) may bound the walk: those whose
+     * whole closure one of `packKeys` holds, proved by a walk (or remembered from one).
+     */
+    const closedBoundaries = (
+      cachePath: string,
+      packKeys: ReadonlyArray<string>,
+      candidates: ReadonlyArray<string>,
+    ) =>
+      Effect.filter(candidates, (sha) =>
+        Effect.gen(function* () {
+          const proved = closedIn.get(sha);
+          const digests = packKeys.map((key) => ({ key, digest: digestOfKey(key) }));
+          if (digests.some(({ digest }) => digest !== null && proved?.has(digest) === true)) {
+            return true;
+          }
+          for (const { key, digest } of digests) {
+            if (digest === null) continue;
+            if (yield* closureHeldBy(cachePath, key, sha)) {
+              if (closedIn.size >= CLOSED_BOUNDARY_LIMIT) closedIn.clear();
+              closedIn.set(sha, new Set([...(closedIn.get(sha) ?? []), digest]));
+              return true;
+            }
+          }
+          return false;
+        }),
+      );
 
     const verify = Effect.fn("CaptureGitVerifier.verify")(function* (
       projectId: ProjectId,
@@ -217,9 +265,11 @@ export const CaptureGitVerifierLive: Layer.Layer<
       );
       // The closure walk sees the listed packs alone (review 2026-09-28 (4) #12): what a restore
       // fetches is what must hold it.
-      const walked = yield* isolatedPacks(ensured.success.path, section.packs, (repo) =>
+      const cachePath = ensured.success.path;
+      const walked = yield* isolatedPacks(cachePath, section.packs, (repo) =>
         Effect.gen(function* () {
-          const boundary = yield* presentIn(repo, storeTips);
+          const held = yield* presentIn(repo, storeTips);
+          const boundary = yield* closedBoundaries(cachePath, section.packs, held);
           return yield* git(
             [
               "rev-list",
