@@ -621,7 +621,11 @@ export const captureIncompleteWords = (reason: string | null | undefined): strin
     case "ship-failed":
       return "upload failed";
     case "sealing":
-      return "final seal not registered";
+      // Not "not registered" (e2e8): since cross-repo decision 22 sealantd also answers `sealing`
+      // for a seal the store recorded and withheld — the sealing capture registered, the seal on
+      // record, a URL still able to replace what it names. What every case shares is that the
+      // registrar has not confirmed a standing seal.
+      return "final seal not confirmed";
     case "changed":
       return "changed after the final flush";
     case "unwatched":

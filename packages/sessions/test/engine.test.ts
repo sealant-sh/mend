@@ -14203,6 +14203,59 @@ describe("SessionEngine status words from the latest observation (e2e run 6 #7)"
       );
     },
   );
+
+  // e2e8 (i), L: Mend SIGKILLed 0.12 s after asking the create. Its executor started, exited, and
+  // Core's recovery destroyed it; Mend came back, found it by the key, drained it and released the
+  // worktree — and the session read `starting`, summary null, with nothing running, until a resume.
+  it(
+    "a lost create whose executor the reaper finds and drains to its end settles `stopped · launch interrupted · …` — never `starting` with no executor",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            world.executorCreates.set(session.id, `launch:${session.id}:${Date.now()}:k`);
+            expect(world.sessions.get(session.id)?.status).toBe("starting");
+            yield* engine.reapCaptureLeases();
+            yield* until(
+              () => world.sessions.get(session.id)?.status === "stopped",
+              "the interrupted launch settled",
+            );
+            const settled = world.sessions.get(session.id);
+            expect(settled?.sealantWorkspaceId).toBe("workspace-lost");
+            expect(settled?.summary).toBe(
+              "launch interrupted · the create's answer was lost · its executor ended",
+            );
+            expect(world.executorCreates.has(session.id)).toBe(false);
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              loseCreateAnswer: () => true,
+              findByKey: () => ({ kind: "found", workspaceId: "workspace-lost" }),
+              // Core's recovery already destroyed it: the platform says it is gone.
+              status: () => "stopped",
+            },
+          ),
+        },
+      );
+    },
+  );
 });
 
 describe("SessionEngine a failed launch's words follow its executor (e2e run 6 #7)", () => {

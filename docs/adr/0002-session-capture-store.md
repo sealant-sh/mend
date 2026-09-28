@@ -794,7 +794,8 @@ Mend-side details the decision record left open, decided in this ADR:
       whose raw bytes agree with its key.
     - **`sealing`** is a reason an incomplete final flush can give: everything registered but the
       sealing capture (the flush returned at its deadline first). A drain keeps asking; the status
-      line says `final seal not registered`.
+      line says `final seal not confirmed` (it said `not registered` until e2e8, which saw it on a
+      seal the store had recorded and withheld: see decision 36).
 32. (2026-09-28) One launch per executor, keys never reused, a seal only over what restores (review
     2026-09-28 (3); cross-repo decisions 5, 6 and 9).
     - **The launch is the executor.** The session id and the epoch did not name one executor: a

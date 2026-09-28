@@ -303,7 +303,9 @@ describe("captureDrainStep while the completed flush is being sealed", () => {
       evidenceSaved: true,
     });
     expect(step.kind).not.toBe("not-saved");
-    expect(captureIncompleteWords("sealing")).toBe("final seal not registered");
+    // e2e8: the sealing capture registered and its seal recorded, withheld for 20 minutes on
+    // Garage while the line said `not registered`.
+    expect(captureIncompleteWords("sealing")).toBe("final seal not confirmed");
   });
 });
 
