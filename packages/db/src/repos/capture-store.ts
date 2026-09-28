@@ -105,7 +105,14 @@ export interface RegisterCapture {
    * decision 5): the one physical executor the seal speaks for. Absent: the capture seals
    * nothing.
    */
-  readonly seal?: { readonly executorId: string; readonly holder: string };
+  readonly seal?: {
+    readonly executorId: string;
+    readonly holder: string;
+    /** Where sealantd stamped the seal in its own order, when it did (0087). */
+    readonly bootId?: string | null;
+    readonly bootGeneration?: number | null;
+    readonly observation?: number | null;
+  };
   /**
    * Who registers: the lease holder and the physical launch its token names (cross-repo
    * decision 11). The CAS lands only while the live lease names that holder and that launch
@@ -137,6 +144,10 @@ export interface SealedCompletion {
   readonly captureId: string;
   readonly n: number;
   readonly sealedAt: Date;
+  /** Where sealantd stamped the seal in its own order; null when it did not. */
+  readonly bootId: string | null;
+  readonly bootGeneration: number | null;
+  readonly observation: number | null;
 }
 
 export interface ChainGuard {
@@ -433,6 +444,9 @@ export const CaptureStoreRepoLive: Layer.Layer<
       const names = JSON.stringify(capture.names ?? []);
       const sealExecutor = capture.seal?.executorId ?? "";
       const sealHolder = capture.seal?.holder ?? "";
+      const sealBoot = capture.seal?.bootId ?? null;
+      const sealGeneration = capture.seal?.bootGeneration ?? null;
+      const sealObservation = capture.seal?.observation ?? null;
       // The launch registering (cross-repo decision 11): an older launch of the holder never
       // lands under a newer launch's epoch, whatever it learnt of it.
       const holderGiven = capture.holder !== undefined;
@@ -485,8 +499,10 @@ export const CaptureStoreRepoLive: Layer.Layer<
            RETURNING worktree_id
         ),
         sealed AS (
-          INSERT INTO capture_seals (worktree_id, epoch, executor_id, capture_id, n)
-          SELECT ${capture.worktreeId}, ${capture.epoch}, ${sealExecutor}, ${capture.id}, ${capture.n}
+          INSERT INTO capture_seals (worktree_id, epoch, executor_id, capture_id, n, boot_id,
+                                     boot_generation, observation)
+          SELECT ${capture.worktreeId}, ${capture.epoch}, ${sealExecutor}, ${capture.id}, ${capture.n},
+                 ${sealBoot}::text, ${sealGeneration}::bigint, ${sealObservation}::bigint
             FROM ch
            WHERE ${capture.seal !== undefined}::boolean
              AND EXISTS (
@@ -496,7 +512,8 @@ export const CaptureStoreRepoLive: Layer.Layer<
                   AND (launch_id IS NULL OR launch_id = ${sealExecutor}))
           ON CONFLICT (worktree_id, epoch) DO UPDATE
              SET executor_id = EXCLUDED.executor_id, capture_id = EXCLUDED.capture_id,
-                 n = EXCLUDED.n, sealed_at = now()
+                 n = EXCLUDED.n, sealed_at = now(), boot_id = EXCLUDED.boot_id,
+                 boot_generation = EXCLUDED.boot_generation, observation = EXCLUDED.observation
            WHERE capture_seals.n < EXCLUDED.n
           RETURNING worktree_id
         )
@@ -657,8 +674,12 @@ export const CaptureStoreRepoLive: Layer.Layer<
         readonly captureId: string;
         readonly n: number;
         readonly sealedAt: Date;
+        readonly bootId: string | null;
+        readonly bootGeneration: string | number | null;
+        readonly observation: string | number | null;
       }>`
-        SELECT worktree_id, epoch::int AS epoch, executor_id, capture_id, n, sealed_at
+        SELECT worktree_id, epoch::int AS epoch, executor_id, capture_id, n, sealed_at, boot_id,
+               boot_generation, observation
           FROM capture_seals
          WHERE worktree_id = ${worktreeId}
            AND executor_id = ${executorId}
@@ -674,6 +695,9 @@ export const CaptureStoreRepoLive: Layer.Layer<
             captureId: row.captureId,
             n: Number(row.n),
             sealedAt: row.sealedAt,
+            bootId: row.bootId,
+            bootGeneration: row.bootGeneration === null ? null : Number(row.bootGeneration),
+            observation: row.observation === null ? null : Number(row.observation),
           };
     });
 

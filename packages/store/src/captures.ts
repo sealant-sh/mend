@@ -204,6 +204,15 @@ export const FinalSeal = Schema.Struct({
   complete: Schema.Boolean,
   epoch: Schema.Int,
   executor: Schema.String,
+  /**
+   * Where in the executor's own history it sealed (cross-repo decision 17), when sealantd stamps
+   * it: the daemon process, which boot of the disk that was, and the number the seal took in
+   * that boot's order (the answer to the flush that sealed comes after it). Absent (an older
+   * daemon): nothing orders the seal against an answer.
+   */
+  boot_id: Schema.optionalKey(Schema.String),
+  boot_generation: Schema.optionalKey(Schema.Int),
+  observation: Schema.optionalKey(Schema.Int),
 });
 export type FinalSeal = typeof FinalSeal.Type;
 

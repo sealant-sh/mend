@@ -49,7 +49,7 @@ describe("a capture-backed landing's checkpoint", () => {
         Layer.mergeAll(
           engine,
           Layer.mock(CaptureStoreRepo, {}),
-          Layer.mock(BlobStore, {}),
+          Layer.mock(BlobStore, { identity: "test" }),
           Layer.mock(GitOpsRunner, {}),
           Layer.mock(StoreRefsRepo, {}),
           Layer.mock(CheckpointsRepo, {}),

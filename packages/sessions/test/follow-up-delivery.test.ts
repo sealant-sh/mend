@@ -496,7 +496,7 @@ const testLayer = (world: TestWorld) => {
     captureSavedOf: () => Effect.succeed(null),
     recordCaptureUnsaved: () => Effect.void,
     captureUnsavedOf: () => Effect.succeed(null),
-    recordExecutorEvidence: () => Effect.void,
+    recordExecutorEvidence: () => Effect.succeed(0),
     executorEvidenceOf: () => Effect.succeed(null),
     recordCaptureDrainProgress: () => Effect.die("not in test"),
     markCaptureNotSaved: () => Effect.die("not in test"),

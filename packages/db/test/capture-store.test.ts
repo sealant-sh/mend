@@ -577,6 +577,43 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     expect(result.bySession).toBeNull();
   });
 
+  it("seals (0087): a seal keeps where sealantd stamped it in the executor's own order, and none when it did not (review 2026-09-28 (6) #6)", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const worktreeId = yield* freshWorktree;
+        const { epoch } = yield* repo.claim(worktreeId, "session-1", 3600);
+        const zero = captureInput(worktreeId, 0, null, epoch);
+        yield* repo.register({ ...zero, seal: { executorId: "launch-1", holder: "session-1" } });
+        const unstamped = yield* repo.sealedCompletion(worktreeId, "launch-1", epoch);
+        const one = captureInput(worktreeId, 1, zero.id, epoch);
+        yield* repo.register({
+          ...one,
+          seal: {
+            executorId: "launch-1",
+            holder: "session-1",
+            bootId: "0123456789abcdef0123456789abcdef",
+            bootGeneration: 2,
+            observation: 41,
+          },
+        });
+        return { unstamped, stamped: yield* repo.sealedCompletion(worktreeId, "launch-1", epoch) };
+      }),
+    );
+    expect(result.unstamped).toMatchObject({
+      n: 0,
+      bootId: null,
+      bootGeneration: null,
+      observation: null,
+    });
+    expect(result.stamped).toMatchObject({
+      n: 1,
+      bootId: "0123456789abcdef0123456789abcdef",
+      bootGeneration: 2,
+      observation: 41,
+    });
+  });
+
   it("launch-bound leases (0085): another launch of the holder never retakes, renews, registers under or seals a lease its launch does not hold (review 2026-09-28 (4) #11)", async () => {
     const result = await run(
       Effect.gen(function* () {

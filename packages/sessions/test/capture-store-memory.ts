@@ -186,6 +186,9 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
               captureId: capture.id,
               n: capture.n,
               sealedAt: new Date(clock.now()),
+              bootId: capture.seal.bootId ?? null,
+              bootGeneration: capture.seal.bootGeneration ?? null,
+              observation: capture.seal.observation ?? null,
             });
           }
           captures.set(capture.id, {

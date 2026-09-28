@@ -83,7 +83,86 @@ export interface CaptureReading {
   readonly refusedClasses?: ReadonlyArray<CaptureClass> | null;
   /** A refused register is being rebuilt from disk: nothing behind it registers first. */
   readonly repairing?: boolean | null;
+  /**
+   * Where in its own history the executor made this answer (`CapturePosition`, cross-repo
+   * decision 17): what orders it against the executor's other answers and its seal. Absent or
+   * null when the answer carried no epoch.
+   */
+  readonly position?: CapturePosition | null;
 }
+
+/**
+ * Where in its own history an executor made an answer, or sealed (cross-repo decision 17, review
+ * 2026-09-28 (6) #6), as sealantd stamps it (`CaptureStatusReport` fields 27–30, `final_seal`):
+ * the lease epoch it held, the launch it runs as (`launch`), the daemon process that answered
+ * (`boot_id`), which of the processes that opened this disk's staging that was
+ * (`boot_generation`, 0 when it could not persist it), and the number the answer or seal took
+ * (`observation`, strictly increasing within one boot over every answer and every seal). Evidence
+ * is ordered by this and never by the wall clocks of whoever read it: a seal stamped by the
+ * store's clock and an answer stamped by a session worker's say nothing about which came first.
+ * Fields the executor did not report are null.
+ */
+export interface CapturePosition {
+  readonly epoch: number | null;
+  readonly launchId: string | null;
+  readonly bootId: string | null;
+  readonly bootGeneration: number | null;
+  readonly observation: number | null;
+  /** The executor's head (an answer's `headN`, a seal's `n`): for display, never an order. */
+  readonly headN: number | null;
+}
+
+/**
+ * `a` relative to `b`, by sealantd's rule (its README, decision 17):
+ * - the same epoch, launch and boot: by `observation` (the same number is the same answer; two
+ *   heads under one number are contradictory: incomparable);
+ * - the same epoch and launch, two boots with generations above 0 that differ: by
+ *   `(boot_generation, observation)` — a recovery boot of the same disk counts up;
+ * - anything else — a field absent, a generation of 0, one generation under two boots, another
+ *   epoch or launch — is incomparable, and incomparable evidence fails closed.
+ */
+export type CaptureOrder = "before" | "same" | "after" | "incomparable";
+
+export const captureOrderOf = (
+  a: CapturePosition | null | undefined,
+  b: CapturePosition | null | undefined,
+): CaptureOrder => {
+  if (a === null || a === undefined || b === null || b === undefined) return "incomparable";
+  if (a.epoch === null || a.epoch !== b.epoch) return "incomparable";
+  if (a.launchId === null || a.launchId !== b.launchId) return "incomparable";
+  if (a.bootId === null || b.bootId === null) return "incomparable";
+  if (a.observation === null || b.observation === null) return "incomparable";
+  if (a.bootId === b.bootId) {
+    if (a.observation !== b.observation) return a.observation < b.observation ? "before" : "after";
+    return a.headN !== null && b.headN !== null && a.headN !== b.headN ? "incomparable" : "same";
+  }
+  const genA = a.bootGeneration ?? 0;
+  const genB = b.bootGeneration ?? 0;
+  if (genA === 0 || genB === 0 || genA === genB) return "incomparable";
+  return genA < genB ? "before" : "after";
+};
+
+/**
+ * Whether an answer at `incoming` replaces the one of its kind kept at `stored` (an executor's
+ * latest completed final flush, its latest unsaved answer): unless the executor made it strictly
+ * before the kept one. An answer nothing orders against the kept one replaces it: the newer one
+ * received is kept, and a save still stands over it only once it is ordered before that save.
+ */
+export const captureAnswerReplaces = (
+  incoming: CapturePosition | null | undefined,
+  stored: CapturePosition | null | undefined,
+): boolean => captureOrderOf(incoming, stored) !== "before";
+
+/**
+ * Whether a save (a completed final flush, a seal) at `save` stands over an answer at `unsaved`
+ * that said the executor held unsaved work: only when that answer was made strictly before it
+ * (cross-repo decisions 10 and 17). An answer after it, at the same head, or one nothing orders
+ * against it revokes it — contradictory or incomparable evidence fails closed.
+ */
+export const saveCoversUnsaved = (
+  save: CapturePosition | null | undefined,
+  unsaved: CapturePosition | null | undefined,
+): boolean => captureOrderOf(unsaved, save) === "before";
 
 /** sealantd's capture classes: `small` (the worktree, `.git`, the harness home) and `bulk`. */
 export type CaptureClass = "small" | "bulk";
@@ -530,26 +609,40 @@ export interface ExecutorEndFacts {
     readonly pending: number | null;
     readonly pendingBytes: number | null;
     readonly observedAt: Date | null;
+    /** Where the executor made that answer; absent or null when unknown. */
+    readonly position?: CapturePosition | null;
   };
   /**
    * This executor's own word that its final flush completed (`captureSaved`: `complete: true`,
    * nothing pending), as Mend observed it from this executor under its epoch, and the chain
    * position it named. Null or absent: Mend never observed one.
    */
-  readonly finalSaved?: { readonly at: Date; readonly n: number | null } | null;
+  readonly finalSaved?: {
+    readonly at: Date;
+    readonly n: number | null;
+    readonly position?: CapturePosition | null;
+  } | null;
   /**
    * The store's sealed record for this executor and epoch: sealantd registered its sealing
    * capture with `final_seal: { complete: true }` after a completed final flush. Null or absent:
    * none recorded, or none Mend can bind to this executor and epoch.
    */
-  readonly sealed?: { readonly at: Date; readonly n: number | null } | null;
+  readonly sealed?: {
+    readonly at: Date;
+    readonly n: number | null;
+    readonly position?: CapturePosition | null;
+  } | null;
   /**
    * The latest answer this executor gave that said it held unsaved work
    * (`captureUnsavedWordsOf`), when Mend took it and in its words. Taken after a completed final
    * flush or a seal, it revokes that save (cross-repo decision 10): the save is reported as the
    * last one confirmed, and this beside it. Null or absent: none observed.
    */
-  readonly unsaved?: { readonly at: Date; readonly words: string } | null;
+  readonly unsaved?: {
+    readonly at: Date;
+    readonly words: string;
+    readonly position?: CapturePosition | null;
+  } | null;
 }
 
 /**
@@ -587,59 +680,86 @@ export type ExecutorEnd =
       readonly pending: { readonly words: string; readonly observedAt: Date } | null;
     };
 
+/** The words and time of an unsaved answer, as an end names it. */
+const toPending = (answer: { readonly words: string; readonly observedAt: Date } | undefined) =>
+  answer === undefined ? null : { words: answer.words, observedAt: answer.observedAt };
+
 export const executorEndOf = (facts: ExecutorEndFacts): ExecutorEnd => {
   const { head, reading, executorStartedAt } = facts;
+  // Which executor a session row's reading or a legacy save belongs to (display, and a filter
+  // that only ever drops evidence of a save): never an order between answers.
   const byThisExecutor = (at: Date) =>
     executorStartedAt === null || at.getTime() >= executorStartedAt.getTime();
-  const pendingAfter = (at: Date | null) =>
+  const queuedReading =
     reading.observedAt !== null &&
     reading.pending !== null &&
     reading.pending > 0 &&
-    byThisExecutor(reading.observedAt) &&
-    (at === null || reading.observedAt.getTime() > at.getTime());
-  /** What Mend last observed unsaved on this executor after `at`, the latest first. */
-  const unsavedAfter = (at: Date | null) => {
-    const unsaved = facts.unsaved ?? null;
-    const stated =
-      unsaved !== null &&
-      byThisExecutor(unsaved.at) &&
-      (at === null || unsaved.at.getTime() > at.getTime())
-        ? { words: unsaved.words, observedAt: unsaved.at }
-        : null;
-    const queued =
-      reading.observedAt !== null && reading.pending !== null && pendingAfter(at)
-        ? {
-            words: `${
-              reading.pendingBytes !== null
-                ? captureBytesWords(reading.pendingBytes)
-                : `${reading.pending}`
-            } pending`,
-            observedAt: reading.observedAt,
-          }
-        : null;
-    if (stated === null) return queued;
-    if (queued === null) return stated;
-    return queued.observedAt.getTime() >= stated.observedAt.getTime() ? queued : stated;
-  };
-  // The latest save this executor's own word or the store confirms: the completed final flush
-  // Mend observed, or the seal — whichever is newer.
+    byThisExecutor(reading.observedAt)
+      ? {
+          words: `${
+            reading.pendingBytes !== null
+              ? captureBytesWords(reading.pendingBytes)
+              : `${reading.pending}`
+          } pending`,
+          observedAt: reading.observedAt,
+          position: reading.position ?? null,
+        }
+      : null;
+  const stated =
+    facts.unsaved !== null && facts.unsaved !== undefined
+      ? {
+          words: facts.unsaved.words,
+          observedAt: facts.unsaved.at,
+          position: facts.unsaved.position ?? null,
+        }
+      : null;
+  // Every answer that said the executor held unsaved work, as the executor ordered them.
+  const unsavedAnswers = [stated, queuedReading].filter((answer) => answer !== null);
+  /** The unsaved answers a save does not cover, the latest first (cross-repo decision 17). */
+  const uncoveredBy = (save: CapturePosition | null) =>
+    unsavedAnswers
+      .filter((answer) => !saveCoversUnsaved(save, answer.position))
+      .toSorted((a, b) => (captureOrderOf(a.position, b.position) === "before" ? 1 : -1));
+  // Every save this executor's own word or the store confirms: the completed final flush Mend
+  // observed, and the seal.
   const finalSaved = facts.finalSaved ?? null;
   const sealed = facts.sealed ?? null;
-  const confirmed = [
+  const saves = [
     ...(finalSaved !== null && byThisExecutor(finalSaved.at)
-      ? [{ at: finalSaved.at, n: finalSaved.n }]
+      ? [{ at: finalSaved.at, n: finalSaved.n, position: finalSaved.position ?? null }]
       : []),
-    ...(sealed !== null ? [{ at: sealed.at, n: sealed.n }] : []),
-  ].toSorted((a, b) => b.at.getTime() - a.at.getTime())[0];
-  if (confirmed !== undefined) {
-    // Received evidence beats stored evidence (cross-repo decision 10): an answer after the save
-    // that said the executor held unsaved work revokes it.
-    const after = unsavedAfter(confirmed.at);
-    if (after === null) return { kind: "saved", savedAt: confirmed.at, n: confirmed.n };
-    return { kind: "lost", lastSavedAt: confirmed.at, lastSavedN: confirmed.n, pending: after };
+    ...(sealed !== null ? [{ at: sealed.at, n: sealed.n, position: sealed.position ?? null }] : []),
+  ].toSorted((a, b) => {
+    const order = captureOrderOf(a.position, b.position);
+    if (order === "after") return -1;
+    if (order === "before") return 1;
+    return (b.n ?? -1) - (a.n ?? -1);
+  });
+  const latest = saves[0];
+  if (latest !== undefined) {
+    // Received evidence beats stored evidence (cross-repo decision 10): a save stands only over
+    // unsaved answers the executor made strictly before it — never by whose clock said what.
+    const covering = saves.find((save) => uncoveredBy(save.position).length === 0);
+    if (covering !== undefined) {
+      return { kind: "saved", savedAt: covering.at, n: covering.n };
+    }
+    return {
+      kind: "lost",
+      lastSavedAt: latest.at,
+      lastSavedN: latest.n,
+      pending: toPending(uncoveredBy(latest.position)[0]),
+    };
   }
   const lastSavedAt = head?.registeredAt ?? null;
-  const pending = unsavedAfter(lastSavedAt);
+  // Nothing confirmed: what Mend observed pending after the last registration, for the words.
+  const after = unsavedAnswers
+    .filter(
+      (answer) =>
+        byThisExecutor(answer.observedAt) &&
+        (lastSavedAt === null || answer.observedAt.getTime() > lastSavedAt.getTime()),
+    )
+    .toSorted((a, b) => b.observedAt.getTime() - a.observedAt.getTime());
+  const pending = toPending(after[0]);
   if (head !== null && head.kind === "final" && byThisExecutor(head.registeredAt)) {
     return {
       kind: "unconfirmed",

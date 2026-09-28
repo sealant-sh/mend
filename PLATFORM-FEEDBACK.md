@@ -7,6 +7,34 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-28 · 0.37.2 · Review 6: evidence ordered by the executor; stored objects write-once
+
+What Mend now builds to (cross-repo decisions 17–19). sealantd's `fix/capture-review6` and Core's
+`fix/capture-review6` carry the other halves.
+
+- **The executor's order, not a clock (decision 17).**
+  - **Needed:** Mend compared a received answer with the store's seal by wall clocks (the worker
+    that took the answer against the database that stamped `sealed_at`). A clock sixty seconds ahead
+    made an older seal outrank a later observed failure (review 6 #6).
+  - **Today:** Mend reads `origin` (`{ epoch, launch, bootId, bootGeneration, observation, headN }`)
+    on every status and final flush answer and keeps it with the executor's evidence (migration
+    0087). It records `final_seal.boot_id`, `.boot_generation` and `.observation` with the seal, and
+    orders both by sealantd's rule: the same boot compares `observation`; two boots of one disk with
+    generations above 0 compare `(boot_generation, observation)`; anything else is incomparable. A
+    seal stands for a lost answer only when every kept unsaved answer comes strictly before it, and
+    a stop's attestation carries `completion.origin`, the seal's stamp.
+  - **Suggested:** release the SDK with `origin` on `capture.status()`/`capture.flush()` and
+    `stop({ completion: { …, origin } })`. SDK 0.37.2 drops `origin`. Every position then reads
+    incomparable: a seal never stands over an unsaved answer, and those stops stay kept until the
+    SDK is pinned.
+- **Stored objects are write-once (decision 19).**
+  - **Today:** every presigned PUT signs `If-None-Match: *`, and `upload.urls` answers a key the
+    bucket already holds as `present` (after checking its bytes against its name) with no URL.
+    Measured: MinIO refuses the overwrite with 412; Garage v2.4.1 accepts the header and replaces
+    the bytes (ADR 0002).
+  - **Suggested:** sealantd reads `upload.urls`'s `present` as already uploaded (older daemons read
+    a key with no URL as `NoUrl`).
+
 ## 2026-09-28 · 0.37.2 · Review 3: one launch per executor, a create fenced by its key, keys never reused, health never assumed
 
 What Mend now builds to (cross-repo decisions 5, 6 and 9). Core's `fix/capture-review3` and

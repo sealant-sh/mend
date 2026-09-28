@@ -2008,7 +2008,17 @@ export const CaptureChannelLive: Layer.Layer<
           }
           const outcome = yield* repo
             .register({
-              ...(sealed ? { seal: { executorId: launchId, holder: scope.executorId } } : {}),
+              ...(sealed
+                ? {
+                    seal: {
+                      executorId: launchId,
+                      holder: scope.executorId,
+                      bootId: seal?.boot_id ?? null,
+                      bootGeneration: seal?.boot_generation ?? null,
+                      observation: seal?.observation ?? null,
+                    },
+                  }
+                : {}),
               holder,
               worktreeId,
               id: input.capture_id,

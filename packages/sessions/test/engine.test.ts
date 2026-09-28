@@ -101,6 +101,8 @@ import {
   Worktree,
   type SessionExtraMount,
   type SessionReferenceMount,
+  captureAnswerReplaces,
+  type CapturePosition,
   captureDiscardAuditData,
   captureStatusLine,
 } from "@mend/domain/workbench";
@@ -1007,8 +1009,14 @@ interface World {
 }
 
 /** The newer of two observations of one kind: `next` when it came after `prior`. */
-const newerObservation = <T extends { readonly at: Date }>(next: T | undefined, prior: T | null) =>
-  next !== undefined && (prior === null || next.at.getTime() > prior.at.getTime()) ? next : prior;
+/** The repository's rule (0087): kept unless the executor made it before the kept one. */
+const newerObservation = <T extends { readonly position?: CapturePosition | null }>(
+  next: T | undefined,
+  prior: T | null,
+) =>
+  next !== undefined && (prior === null || captureAnswerReplaces(next.position, prior.position))
+    ? next
+    : prior;
 
 const makeWorld = (): World => ({
   projects: new Map(),
@@ -1856,12 +1864,15 @@ const sessionsLayer = (world: World) => {
     recordExecutorEvidence: (workspaceId, answer) =>
       Effect.sync(() => {
         const kept = world.executorEvidence.get(workspaceId);
+        const version = (kept?.version ?? 0) + 1;
         world.executorEvidence.set(workspaceId, {
           workspaceId,
           launchId: answer.launchId ?? kept?.launchId ?? null,
           saved: newerObservation(answer.saved, kept?.saved ?? null),
           unsaved: newerObservation(answer.unsaved, kept?.unsaved ?? null),
+          version,
         });
+        return version;
       }),
     executorEvidenceOf: (workspaceId) =>
       Effect.sync(() => world.executorEvidence.get(workspaceId) ?? null),
@@ -13434,6 +13445,40 @@ describe("SessionEngine idempotent executor creates (Core's next SDK, 2026-09-28
   );
 });
 
+/**
+ * An answer the executor gave after `seal`, kept as the repository keeps it: the next number in
+ * the seal's boot (cross-repo decision 17 orders it, not `at`).
+ */
+const unsavedAfterSeal = (
+  world: World,
+  workspaceId: string,
+  seal: CaptureCompletionSeal,
+  answer: { readonly at: Date; readonly words: string },
+) => {
+  const kept = world.executorEvidence.get(workspaceId);
+  world.executorEvidence.set(workspaceId, {
+    workspaceId,
+    launchId: kept?.launchId ?? seal.executorId,
+    saved: kept?.saved ?? null,
+    unsaved: {
+      workspaceId,
+      ...answer,
+      position: {
+        epoch: seal.epoch,
+        launchId: seal.executorId,
+        bootId: seal.bootId ?? null,
+        bootGeneration: seal.bootGeneration ?? null,
+        observation: (seal.observation ?? 0) + 1,
+        headN: seal.n,
+      },
+    },
+    version: (kept?.version ?? 0) + 1,
+  });
+};
+
+/** Where sealantd stamps the fixtures' seals in its own order (boot `boot-1`, observation 100). */
+const SEAL_STAMP = { bootId: "boot-1", bootGeneration: 1, observation: 100 } as const;
+
 describe("SessionEngine received evidence beats stored evidence (review 2026-09-28 (4))", () => {
   /** A final seal the store holds for the session's current launch and epoch. */
   const sealCurrent = (
@@ -13460,6 +13505,7 @@ describe("SessionEngine received evidence beats stored evidence (review 2026-09-
         captureId: built.id,
         n: built.manifest.n,
         sealedAt: new Date(Date.now() - 5_000),
+        ...SEAL_STAMP,
       };
       records.set(`${session.worktreeId}:${epoch}`, seal);
       return seal;
@@ -13532,10 +13578,9 @@ describe("SessionEngine received evidence beats stored evidence (review 2026-09-
           Effect.gen(function* () {
             const { engine, session } = yield* launchOnce(world, tmp);
             yield* engine.launch(session.id, ["codex"]);
-            yield* sealCurrent(world, tmp, memory, records, session);
+            const seal = yield* sealCurrent(world, tmp, memory, records, session);
             const workspaceId = world.sessions.get(session.id)?.sealantWorkspaceId ?? "";
-            world.captureUnsaved.set(session.id, {
-              workspaceId,
+            unsavedAfterSeal(world, workspaceId, seal, {
               at: new Date(Date.now() + 1_000),
               words: "incomplete · changed",
             });
@@ -13589,11 +13634,15 @@ describe("SessionEngine received evidence beats stored evidence (review 2026-09-
             const seal = yield* sealCurrent(world, tmp, memory, records, session);
             // Taken a moment after the head registered.
             const unsavedAt = new Date(Date.now() + 1_000);
-            world.captureUnsaved.set(session.id, {
-              workspaceId: world.sessions.get(session.id)?.sealantWorkspaceId ?? "",
-              at: unsavedAt,
-              words: "4.1 KB pending",
-            });
+            unsavedAfterSeal(
+              world,
+              world.sessions.get(session.id)?.sealantWorkspaceId ?? "",
+              seal,
+              {
+                at: unsavedAt,
+                words: "4.1 KB pending",
+              },
+            );
             const agent = [...world.processes.values()].find(
               (process) => process.sessionId === session.id && process.kind === "agent-pty",
             );
@@ -14117,7 +14166,9 @@ describe("SessionEngine fifth review (2026-09-28)", () => {
     tmp: string,
     memory: ReturnType<typeof makeMemoryCaptureStore>,
     records: Map<string, CaptureCompletionSeal>,
-    answer: { current: "clean" | "unsaved" | "lost" },
+    answer: { current: "clean" | "unsaved" | "lost"; stamp?: object },
+    sealOffsetMs = -5_000,
+    unsavedHead: "at-seal" | "before-seal" = "at-seal",
   ) =>
     Effect.gen(function* () {
       const { engine, session } = yield* launchOnce(world, tmp);
@@ -14143,9 +14194,23 @@ describe("SessionEngine fifth review (2026-09-28)", () => {
         executorId: world.executorLaunches.get(session.id)?.launchId ?? "",
         captureId: built.id,
         n: built.manifest.n,
-        sealedAt: new Date(Date.now() - 5_000),
+        sealedAt: new Date(Date.now() + sealOffsetMs),
+        ...SEAL_STAMP,
       };
       records.set(`${session.worktreeId}:${epoch}`, seal);
+      // The executor's unsaved answer is stamped in the seal's boot: after the seal, or before it.
+      // As Core's SDK carries sealantd's stamp: `origin`.
+      answer.stamp = {
+        origin: {
+          epoch,
+          launch: seal.executorId,
+          bootId: SEAL_STAMP.bootId,
+          bootGeneration: SEAL_STAMP.bootGeneration,
+          observation:
+            unsavedHead === "at-seal" ? SEAL_STAMP.observation + 1 : SEAL_STAMP.observation - 1,
+          headN: unsavedHead === "at-seal" ? seal.n : seal.n - 1,
+        },
+      };
       answer.current = "unsaved";
       yield* engine.stop(joined.id);
       yield* until(
@@ -14163,7 +14228,7 @@ describe("SessionEngine fifth review (2026-09-28)", () => {
     });
 
   /** Only the second call after the seal answers (unsaved); every other answer is lost. */
-  const flushOf = (answer: { current: "clean" | "unsaved" | "lost" }) => {
+  const flushOf = (answer: { current: "clean" | "unsaved" | "lost"; stamp?: object }) => {
     let afterSeal = 0;
     return () =>
       answer.current === "lost" || (answer.current === "unsaved" && ++afterSeal !== 2)
@@ -14179,6 +14244,7 @@ describe("SessionEngine fifth review (2026-09-28)", () => {
             answer.current === "unsaved"
               ? {
                   ...flushReport(0, 1),
+                  ...answer.stamp,
                   complete: false,
                   incompleteReason: "snapshot-failed",
                   unreadable: 1,
@@ -14294,6 +14360,288 @@ describe("SessionEngine fifth review (2026-09-28)", () => {
               flush: flushOf(answer),
             },
           ),
+        },
+      );
+    },
+  );
+
+  // Review 2026-09-28 (6) #6, cross-repo decision 17 (the reviewer's reproductions): the store
+  // stamped the seal sixty seconds ahead of the worker that took the joined session's later
+  // unsaved answer. Ordered by wall clocks, the older seal looked newer: the owner's lost FINAL
+  // sent the completion attestation (`saved · terminating`), and a natural end read
+  // `stopped outside Mend · saved`. Ordered by the executor — the answer came at the seal's head,
+  // after it registered — neither happens.
+  it(
+    "review 6 #6 a store clock ahead never revives a seal over a later unsaved answer: no attestation, no saved",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+      const logs: Array<string> = [];
+      const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session, seal } = yield* joinedObservesUnsaved(
+              world,
+              tmp,
+              memory,
+              records,
+              answer,
+              60_000,
+            );
+            const evidence = world.executorEvidence.get("workspace-1");
+            expect(evidence?.unsaved?.words).toContain("unreadable");
+            // The wall clocks say the seal came last; the executor says otherwise.
+            expect(evidence?.unsaved?.at.getTime()).toBeLessThan(seal.sealedAt.getTime());
+            expect(evidence?.unsaved?.position?.observation).toBe(SEAL_STAMP.observation + 1);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the owner's drain reads not saved",
+            );
+            expect(stopOptions.some((options) => options?.completion !== undefined)).toBe(false);
+            expect(logs.some((line) => line.includes("capture drain · saved · terminating"))).toBe(
+              false,
+            );
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          logs,
+          drainPolicy: { stallSeconds: 0 },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stopOptions,
+              resourceId: () => "container-7f3a",
+              finalCompletion: "unreported",
+              flush: flushOf(answer),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "review 6 #6 a store clock ahead never reads an executor that ended outside Mend saved over a later unsaved answer",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+      const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
+      const ptyStates = new Map<string, InteractiveSessionStatus>();
+      let dead = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { session } = yield* joinedObservesUnsaved(
+              world,
+              tmp,
+              memory,
+              records,
+              answer,
+              60_000,
+            );
+            dead = true;
+            const agent = [...world.processes.values()].find(
+              (process) => process.sessionId === session.id && process.kind === "agent-pty",
+            );
+            if (agent?.sealantSessionId == null) throw new Error("no agent PTY");
+            ptyStates.set(agent.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the owner's settle",
+            );
+            const settled = world.sessions.get(session.id);
+            expect(settled?.summary).not.toContain("stopped outside Mend · saved at");
+            expect(settled?.summary).toContain("executor lost · last saved");
+            expect(settled?.summary).toContain("unreadable tree/after-seal.txt");
+            expect(settled?.status).toBe("failed");
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          drainPolicy: { stallSeconds: 0 },
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            () => dead,
+            undefined,
+            ptyStates,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              stopOptions,
+              resourceId: () => "container-7f3a",
+              finalCompletion: "unreported",
+              flush: flushOf(answer),
+            },
+          ),
+        },
+      );
+    },
+  );
+
+  // The other direction of the same order: an unsaved answer the executor made before its seal
+  // (an earlier head) is covered by the seal even when the store's clock runs behind the worker's
+  // — the seal stands for the lost FINAL answer and is attested.
+  it(
+    "review 6 #6 a seal the executor made after an unsaved answer stands for a lost FINAL answer, whatever the clocks say",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+      const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session, seal } = yield* joinedObservesUnsaved(
+              world,
+              tmp,
+              memory,
+              records,
+              answer,
+              -60_000,
+              "before-seal",
+            );
+            const evidence = world.executorEvidence.get("workspace-1");
+            expect(evidence?.unsaved?.at.getTime()).toBeGreaterThan(seal.sealedAt.getTime());
+            expect(evidence?.unsaved?.position?.observation).toBe(SEAL_STAMP.observation - 1);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => stopOptions.some((options) => options?.completion !== undefined),
+              "the owner attests the seal",
+            );
+            const completion = stopOptions.find((options) => options?.completion)?.completion;
+            expect(completion?.captureN).toBe(seal.n);
+            // Core orders the attestation by the seal's own stamp, never by `sealedAt`.
+            expect(completion?.origin).toEqual({
+              epoch: seal.epoch,
+              launch: seal.executorId,
+              bootId: SEAL_STAMP.bootId,
+              bootGeneration: SEAL_STAMP.bootGeneration,
+              observation: SEAL_STAMP.observation,
+              headN: seal.n,
+            });
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          drainPolicy: { stallSeconds: 0 },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stopOptions,
+              resourceId: () => "container-7f3a",
+              finalCompletion: "unreported",
+              flush: flushOf(answer),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  // Review 2026-09-28 (6) #6, cross-repo decision 18: an answer asked of the executor and not yet
+  // recorded may say anything — while one is in flight no seal stands and nothing is attested;
+  // once it is recorded (clean here), the kept drain attests.
+  it(
+    "review 6 #6 while an answer of the executor is in flight, its seal is not attested; once recorded, it is",
+    { timeout: 45_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+      const logs: Array<string> = [];
+      const gate = Deferred.makeUnsafe<void>();
+      let sealed = false;
+      let held = 0;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            const built = yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              epoch,
+              crypto.randomUUID(),
+              "final",
+            );
+            records.set(`${session.worktreeId}:${epoch}`, {
+              worktreeId: session.worktreeId,
+              epoch,
+              executorId: world.executorLaunches.get(session.id)?.launchId ?? "",
+              captureId: built.id,
+              n: built.manifest.n,
+              sealedAt: new Date(),
+              ...SEAL_STAMP,
+            });
+            sealed = true;
+            // A status read of the executor is asked, and its answer held on the way.
+            yield* engine.refreshCaptureStatus(session.id);
+            yield* until(() => held > 0, "the status answer in flight");
+            yield* Effect.forkChild(engine.stop(session.id));
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the owner's drain reads not saved while the answer is in flight",
+            );
+            expect(stopOptions.some((options) => options?.completion !== undefined)).toBe(false);
+            expect(logs.some((line) => line.includes("is not recorded yet"))).toBe(true);
+            // The answer arrives (nothing unsaved) and is recorded: the kept drain, asking again
+            // on its backoff (10 s first), attests the seal for its lost FINAL answer.
+            yield* Deferred.succeed(gate, undefined);
+            for (let i = 0; i < 3_500; i++) {
+              if (stopOptions.some((options) => options?.completion !== undefined)) break;
+              yield* Effect.sleep(Duration.millis(10));
+            }
+            expect(stopOptions.some((options) => options?.completion !== undefined)).toBe(true);
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          logs,
+          drainPolicy: { stallSeconds: 0 },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stopOptions,
+              resourceId: () => "container-7f3a",
+              finalCompletion: "unreported",
+              captureStatus: () => {
+                if (!sealed) return Effect.succeed(null);
+                held += 1;
+                return Deferred.await(gate).pipe(Effect.as(flushReport(0, 0)));
+              },
+              flush: () =>
+                sealed
+                  ? Effect.fail(
+                      new SealantPlatformError({
+                        code: "connection_closed",
+                        status: null,
+                        message: "relay closed",
+                        cause: null,
+                      }),
+                    )
+                  : Effect.succeed(flushReport(0, 0)),
+            },
+          }),
         },
       );
     },

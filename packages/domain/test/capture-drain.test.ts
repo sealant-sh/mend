@@ -18,6 +18,7 @@ import {
   captureStatusLine,
   type CaptureReading,
   executorCapDue,
+  captureOrderOf,
   executorEndOf,
   executorEndWords,
   observeCaptureThroughput,
@@ -782,10 +783,68 @@ describe("executorEndOf after a completed final flush (e2e run 4, 2026-09-27)", 
     expect(endWords({ ...afterSave, sealed: { at: at("19:48:49"), n: 8 } })).toBe(
       "executor lost · last saved capture 8 at 19:48:49 UTC · changes after that were not saved · unreadable tree/after-seal.txt at 19:49:20 UTC",
     );
-    // A newer completed final flush stands over the older unsaved answer.
+    // A newer completed final flush stands over the older unsaved answer — newer as the
+    // executor ordered them (cross-repo decision 17); without positions nothing orders them.
     expect(endWords({ ...afterSave, finalSaved: { at: at("19:49:25"), n: 9 } })).toBe(
-      "stopped outside Mend · saved at 19:49:25 UTC · capture 9",
+      "executor lost · last saved capture 9 at 19:49:25 UTC · changes after that were not saved · unreadable tree/after-seal.txt at 19:49:20 UTC",
     );
+    expect(
+      endWords({
+        ...afterSave,
+        unsaved: { ...afterSave.unsaved, position: position(40, 8) },
+        finalSaved: { at: at("19:49:25"), n: 9, position: position(50, 9) },
+      }),
+    ).toBe("stopped outside Mend · saved at 19:49:25 UTC · capture 9");
+  });
+
+  // Review 2026-09-28 (6) #6, cross-repo decision 17: the seal is stamped by the store's clock,
+  // the answer by a session worker's; a clock running ahead made an older seal look newer than a
+  // later observed failure, and the end read `saved`.
+  it("#6 a seal whose clock runs ahead never stands over an unsaved answer the executor made after it", () => {
+    const sealedEnd = {
+      head: { kind: "final", n: 8, registeredAt: at("19:48:48"), bulkPending: false },
+      executorStartedAt: started,
+      reading: { pending: 0, pendingBytes: 0, observedAt: at("19:49:30") },
+      // The store's clock ran sixty seconds ahead of the worker that took the answer.
+      sealed: { at: at("19:50:20"), n: 8, position: sealAt(8) },
+    } as const;
+    // Made after the seal, in the same boot or a later boot of the same disk.
+    for (const after of [
+      position(60, 8),
+      { ...position(3, 8), bootId: "boot-b", bootGeneration: 2 },
+    ]) {
+      expect(
+        executorEndOf({
+          ...sealedEnd,
+          unsaved: { at: at("19:49:20"), words: "unreadable tree/after-seal.txt", position: after },
+        }).kind,
+      ).toBe("lost");
+    }
+    // Nothing orders it against the seal (no stamp, no epoch, another launch, a boot whose
+    // generation was not persisted): fails closed.
+    for (const unordered of [
+      null,
+      { ...position(10, 7), observation: null },
+      { ...position(10, 7), epoch: null },
+      { ...position(10, 7), launchId: "launch-other" },
+      { ...position(10, 7), bootId: "boot-b", bootGeneration: 0 },
+    ]) {
+      expect(
+        executorEndOf({
+          ...sealedEnd,
+          unsaved: { at: at("19:49:20"), words: "incomplete · changed", position: unordered },
+        }).kind,
+      ).toBe("lost");
+    }
+    // Made before it, earlier in the same boot: the seal stands, whatever the wall clock says.
+    for (const before of [position(10, 7), position(49, 8)]) {
+      expect(
+        executorEndOf({
+          ...sealedEnd,
+          unsaved: { at: at("19:51:00"), words: "3 pending", position: before },
+        }).kind,
+      ).toBe("saved");
+    }
   });
 
   it("without that word, a suspend head is still `executor lost`", () => {
@@ -912,5 +971,46 @@ describe("restatedSummary (e2e run 6 #7)", () => {
   it("leaves a harness's own end alone", () => {
     expect(restatedSummary("exited with code 1", saved)).toBeNull();
     expect(restatedSummary(null, saved)).toBeNull();
+  });
+});
+
+/** A position of executor `launch-1`, epoch 3, boot `boot-a` (generation 1). */
+const position = (observation: number, headN: number | null) => ({
+  epoch: 3,
+  launchId: "launch-1",
+  bootId: "boot-a",
+  bootGeneration: 1,
+  observation,
+  headN,
+});
+/** The seal of capture `n` by the same executor and boot, at observation 50. */
+const sealAt = (n: number) => ({ ...position(50, n) });
+
+describe("captureOrderOf (cross-repo decision 17, sealantd's rule)", () => {
+  it("orders one boot by observation, two boots of one disk by generation, and nothing else", () => {
+    expect(captureOrderOf(position(9, 3), position(4, 3))).toBe("after");
+    expect(captureOrderOf(position(4, 3), position(9, 3))).toBe("before");
+    expect(captureOrderOf(position(4, 3), position(4, 3))).toBe("same");
+    // One number naming two heads: contradictory.
+    expect(captureOrderOf(position(4, 3), position(4, 5))).toBe("incomparable");
+    // A recovery boot of the same disk counts up.
+    const recovery = { ...position(2, 3), bootId: "boot-b", bootGeneration: 2 };
+    expect(captureOrderOf(recovery, position(90, 3))).toBe("after");
+    expect(captureOrderOf(position(90, 3), recovery)).toBe("before");
+    // A generation of 0, one generation under two boots, another epoch or launch, a field
+    // absent: nothing orders them.
+    expect(captureOrderOf({ ...recovery, bootGeneration: 0 }, position(4, 3))).toBe("incomparable");
+    expect(captureOrderOf({ ...recovery, bootGeneration: 1 }, position(4, 3))).toBe("incomparable");
+    expect(captureOrderOf({ ...position(9, 3), epoch: 4 }, position(4, 3))).toBe("incomparable");
+    expect(captureOrderOf({ ...position(9, 3), launchId: "other" }, position(4, 3))).toBe(
+      "incomparable",
+    );
+    expect(captureOrderOf({ ...position(9, 3), observation: null }, position(4, 3))).toBe(
+      "incomparable",
+    );
+    expect(captureOrderOf({ ...position(9, 3), bootId: null }, position(4, 3))).toBe(
+      "incomparable",
+    );
+    expect(captureOrderOf(null, position(4, 3))).toBe("incomparable");
   });
 });

@@ -2,6 +2,7 @@ import { CaptureStoreRepo } from "@mend/db";
 import {
   type CaptureClass,
   type CaptureClassSnaps,
+  type CapturePosition,
   type CaptureReading,
   DEFAULT_CAPTURE_DRAIN_ESTIMATE_SECONDS,
   DEFAULT_CAPTURE_DRAIN_STALL_SECONDS,
@@ -217,6 +218,40 @@ const classSnapsOf = (value: unknown): ReadonlyArray<CaptureClassSnaps> | null =
   });
 };
 
+/** A field of an object, when it is one. */
+const fieldOf = (value: unknown, key: string): unknown =>
+  typeof value === "object" && value !== null ? Reflect.get(value, key) : undefined;
+
+const textOf = (value: unknown): string | null =>
+  typeof value === "string" && value.trim() !== "" ? value : null;
+
+const countOf = (value: unknown): number | null =>
+  typeof value === "number" && Number.isInteger(value) && value >= 0 ? value : null;
+
+/**
+ * Where in its own history the executor made an answer (`CapturePosition`, cross-repo decision
+ * 17): sealantd's stamp — `launch`, `boot_id`, `boot_generation`, `observation` (status report
+ * fields 27–30), as Core's SDK surfaces them in camelCase under `origin` — with the answer's own
+ * `epoch` and `headN`. A field the answer does not carry reads null (an older daemon, an SDK that drops it),
+ * and such a position orders nothing. An answer without an epoch has no position.
+ */
+export const capturePositionOf = (report: object): CapturePosition | null => {
+  // Core's SDK carries the stamp as `origin`; a relay that passes sealantd's fields through
+  // carries them on the answer itself.
+  const origin = fieldOf(report, "origin");
+  const stamp = typeof origin === "object" && origin !== null ? origin : report;
+  const epoch = countOf(fieldOf(stamp, "epoch")) ?? countOf(fieldOf(report, "epoch"));
+  if (epoch === null) return null;
+  return {
+    epoch,
+    launchId: textOf(fieldOf(stamp, "launch")),
+    bootId: textOf(fieldOf(stamp, "bootId")),
+    bootGeneration: countOf(fieldOf(stamp, "bootGeneration")),
+    observation: countOf(fieldOf(stamp, "observation")),
+    headN: countOf(fieldOf(report, "headN")) ?? countOf(fieldOf(stamp, "headN")),
+  };
+};
+
 /**
  * A flush or status answer as Mend reads it (`CaptureReading`). The SDK types what sealantd
  * reported when it was cut; `pendingBytes`, `pendingBulk`, `bulkDirty`, `refused`, `complete`,
@@ -258,4 +293,5 @@ export const readCaptureReport = (report: WorkspaceCaptureStatus): CaptureReadin
     typeof Reflect.get(report, "repairing") === "boolean"
       ? Reflect.get(report, "repairing") === true
       : null,
+  position: capturePositionOf(report),
 });

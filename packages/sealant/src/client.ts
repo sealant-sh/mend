@@ -131,12 +131,29 @@ export interface CaptureCompletionAttestation {
    */
   readonly launchId?: string;
   /**
-   * When the store recorded the seal (ISO 8601), beside its chain position `captureN`: what
-   * Core weighs against its own latest observation of the executor — an attestation older than
-   * an answer Core received that said the executor held unsaved work does not stand (cross-repo
-   * decision 10). An SDK or a Core that does not read it ignores it.
+   * When the store recorded the seal (ISO 8601), by the database's clock: for display. It orders
+   * nothing (cross-repo decision 17): `origin` does.
    */
   readonly sealedAt?: string;
+  /**
+   * Where the executor sealed in its own order (`final_seal.boot_id`, `.boot_generation`,
+   * `.observation`, with the seal's epoch, launch and `n`): what Core weighs the attestation
+   * against its own latest observation of the executor by — an answer the executor made after
+   * the seal, or one nothing orders against it, and the attestation does not stand (cross-repo
+   * decisions 10 and 17). Absent when the seal carries no stamp (an older daemon); an SDK that
+   * does not read it ignores it.
+   */
+  readonly origin?: CaptureCompletionOrigin;
+}
+
+/** A seal's stamp in the executor's own order, as Core's stop reads it (`completion.origin`). */
+export interface CaptureCompletionOrigin {
+  readonly epoch: number;
+  readonly launch: string;
+  readonly bootId: string;
+  readonly bootGeneration: number;
+  readonly observation: number;
+  readonly headN?: number;
 }
 
 /**

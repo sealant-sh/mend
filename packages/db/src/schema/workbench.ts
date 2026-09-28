@@ -58,6 +58,7 @@ import type {
   SkillId,
   WorktreeId,
 } from "@mend/domain";
+import type { CapturePosition } from "@mend/domain/workbench";
 import {
   AuditData,
   HotWorkspaceEnvironment,
@@ -1979,6 +1980,10 @@ export const captureSeals = pgTable(
     captureId: text().notNull(),
     n: integer().notNull(),
     sealedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    /** Where sealantd stamped the seal in its own order, when it did (0087). */
+    bootId: text(),
+    bootGeneration: bigint({ mode: "number" }),
+    observation: bigint({ mode: "number" }),
   },
   (table) => [
     primaryKey({ columns: [table.worktreeId, table.epoch] }),
@@ -2004,6 +2009,11 @@ export const executorCaptureEvidence = pgTable(
     savedEpoch: integer(),
     unsavedAt: timestamp({ mode: "date", withTimezone: true }),
     unsavedDetail: text(),
+    /** Where the executor made each kept answer (0087); what orders them, never `*_at`. */
+    savedPosition: jsonb().$type<CapturePosition>(),
+    unsavedPosition: jsonb().$type<CapturePosition>(),
+    /** Bumped by every answer taken (0087): what a decision's compare-and-set reads. */
+    version: bigint({ mode: "number" }).notNull().default(0),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },
   (table) => [index("executor_capture_evidence_worktree_idx").on(table.worktreeId)],
