@@ -16326,3 +16326,96 @@ it.each([
     { sealantLayer: sealantLaunchLayer(created) },
   );
 });
+
+it(
+  "review 12 #5: a resume into the retained workspace clears `executor not answering` once that executor answered and started the new process",
+  { timeout: 30_000 },
+  async () => {
+    const created: CreateOptions[] = [];
+    const stopped: string[] = [];
+    const ptyStates = new Map<string, InteractiveSessionStatus>();
+    const memory = makeMemoryCaptureStore();
+    let answering = true;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          // A Service's open forward retains the workspace across the agent's end.
+          const service = yield* engine.addService(session.id, 5432, "db");
+          const agent = [...world.processes.values()].find(
+            (p) => p.sessionId === session.id && p.kind === "agent-pty",
+          );
+          if (agent?.sealantSessionId == null) throw new Error("no agent");
+          // The agent ends while exec and capture requests fail: the watcher's real verdict.
+          answering = false;
+          ptyStates.set(agent.sealantSessionId, {
+            status: "exited",
+            exitCode: 0,
+            outputHighWater: 0n,
+          });
+          yield* until(
+            () =>
+              world.sessions.get(session.id)?.summary?.startsWith("executor not answering") ===
+              true,
+            "the unanswered verdict",
+          );
+          expect(world.sessions.get(session.id)?.status).toBe("failed");
+          expect(world.services.get(service.service.id)?.currentForwardId).not.toBeNull();
+          // The connection recovers and the resume opens a new process in the retained workspace.
+          answering = true;
+          const resumed = yield* engine.resumeSession(session.id, "shell");
+          yield* Effect.sleep(Duration.millis(150));
+          expect(created).toHaveLength(1);
+          expect(stopped).toEqual([]);
+          expect(resumed.status).toBe("running");
+          expect(resumed.summary ?? "").not.toMatch(/executor not answering/);
+          expect(world.sessions.get(session.id)?.summary ?? "").not.toMatch(
+            /executor not answering/,
+          );
+        }),
+      {
+        captured: memory,
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          stopped,
+          undefined,
+          undefined,
+          undefined,
+          ptyStates,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            exec: (argv) =>
+              answering && argv[0] === "true" ? { exitCode: 0, stdout: "", stderr: "" } : undefined,
+            flush: () =>
+              answering
+                ? Effect.succeed({
+                    epoch: 0,
+                    worktreeId: "",
+                    pending: 0,
+                    stagedBytes: 0,
+                    uploadedObjects: 0,
+                    uploadedBytes: 0,
+                    registered: 0,
+                    fenced: false,
+                    paused: false,
+                    ...readEverything,
+                  })
+                : Effect.fail(
+                    new SealantPlatformError({
+                      code: "connection_closed",
+                      status: null,
+                      message: "executor briefly unreachable",
+                      cause: null,
+                    }),
+                  ),
+          },
+        ),
+      },
+    );
+  },
+);
