@@ -117,9 +117,20 @@ const api = (seen: unknown[]): SessionSocketApi => ({
     }),
 });
 
+/** The token store as the database answers it when its statements time out (e2e8 F8). */
+const TokensTimingOut: Layer.Layer<SessionChannelTokensRepo> = Layer.effect(
+  SessionChannelTokensRepo,
+  Effect.map(SessionChannelTokensRepo, (repo) => ({
+    ...repo,
+    verify: () => Effect.die(new Error("canceling statement due to user request")),
+    resolve: () => Effect.die(new Error("canceling statement due to user request")),
+  })),
+).pipe(Layer.provide(SessionChannelTokensRepoMemory));
+
 const layers = (
   endpoint: { listen: string; url: string } | undefined,
   mode: "local" | "kubernetes",
+  tokensLayer: Layer.Layer<SessionChannelTokensRepo> = SessionChannelTokensRepoMemory,
 ) => {
   const registry = SessionChannelRegistryLive;
   const deployment = Layer.succeed(DeploymentConfig, {
@@ -128,7 +139,7 @@ const layers = (
     sessionStore: "colocated",
   });
   const store = StoreConfig.layerFor(storeRoot);
-  const tokens = SessionChannelTokensRepoMemory;
+  const tokens = tokensLayer;
   const socketHost = SessionSocketHostLive.pipe(
     Layer.provide(store),
     Layer.provide(deployment),
@@ -304,6 +315,50 @@ describe("SessionChannelNetworkHost", () => {
         ),
       ),
     );
+  });
+
+  // e2e8 F8: a statement timeout in the token lookup was an unhandled rejection, and Node ended
+  // the Mend process with every session on it.
+  it("answers 503 when the token lookup fails, and goes on serving", async () => {
+    const rejections: Array<unknown> = [];
+    const onRejection = (reason: unknown) => rejections.push(reason);
+    process.on("unhandledRejection", onRejection);
+    try {
+      await Effect.runPromise(
+        Effect.scoped(
+          Effect.gen(function* () {
+            const network = yield* SessionChannelNetworkHost;
+            const address = network.address ?? "";
+            const auth = {
+              authorization: `Bearer ${"a".repeat(43)}`,
+              "x-mend-session-id": SESSION,
+            };
+            const first = yield* Effect.promise(() => call(address, "GET", "/services", auth));
+            expect(first.status).toBe(503);
+            // A bare bearer is resolved by hash: the same lookup, the same answer.
+            const bare = yield* Effect.promise(() =>
+              call(address, "GET", "/services", { authorization: auth.authorization }),
+            );
+            expect(bare.status).toBe(503);
+            // Still listening.
+            const again = yield* Effect.promise(() => call(address, "GET", "/services", auth));
+            expect(again.status).toBe(503);
+          }).pipe(
+            Effect.provide(
+              layers(
+                { listen: "127.0.0.1:0", url: "http://127.0.0.1:0" },
+                "kubernetes",
+                TokensTimingOut,
+              ),
+            ),
+          ),
+        ),
+      );
+      await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(rejections).toEqual([]);
+    } finally {
+      process.off("unhandledRejection", onRejection);
+    }
   });
 
   it("tunnels a git op over the network with the same frames as the socket", async () => {

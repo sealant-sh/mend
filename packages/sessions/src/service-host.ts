@@ -502,6 +502,8 @@ export const ServiceHostLive: Layer.Layer<
           asSealantUser(ownerUserId),
           Effect.map((forward): WorkspaceForward | null => forward),
           Effect.catch(() => Effect.succeed(null)),
+          // Its callers chain it unawaited: a defect here would end the process (e2e8 F8).
+          Effect.catchDefect(() => Effect.succeed(null)),
         ),
       );
 
