@@ -1265,6 +1265,18 @@ type SessionEngineRequirements =
   | SourcePolicy
   | WorkspaceGitHooks;
 
+/**
+ * The executor answered an ask: its evidence fence now clears only with a publication (review
+ * 2026-09-28 (8) #4).
+ */
+const markAnswered = (fence: { answered: boolean }) =>
+  Effect.sync(() => {
+    fence.answered = true;
+  });
+
+/** A log about evidence: its failure is its own, never the evidence's. */
+const evidenceLog = (log: Effect.Effect<void>) => log.pipe(Effect.catchCause(() => Effect.void));
+
 export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineRequirements> =
   Layer.effect(
     SessionEngine,
@@ -1811,9 +1823,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         kind: CaptureFlushKind,
         fence: EvidenceFence,
       ) {
-        const outcome = yield* sealant
-          .captureFlush(workspace, kind)
-          .pipe(Effect.timeoutOption(timeout), Effect.result, asSealantUser(session.ownerUserId));
+        // Receipt is marked as the answer arrives (review 2026-09-28 (8) #4): from here its fence
+        // clears only with its publication, whatever fails between.
+        const outcome = yield* sealant.captureFlush(workspace, kind).pipe(
+          Effect.tap(() => markAnswered(fence)),
+          Effect.timeoutOption(timeout),
+          Effect.result,
+          asSealantUser(session.ownerUserId),
+        );
         const annotations = {
           sessionId: session.id,
           worktreeId: session.worktreeId,
@@ -1834,6 +1851,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         const report = outcome.success.value;
         const reading = readCaptureReport(report);
+        // Published before anything else is done with it: a log is never what decides whether a
+        // received answer becomes the executor's evidence.
+        yield* recordReading(session, workspace.id, reading, kind, fence);
+        if (kind === "final") recentFinals.set(workspace.id, { reading, atMs: Date.now() });
         throughputs.set(
           workspace.id,
           observeCaptureThroughput(throughputs.get(workspace.id) ?? null, {
@@ -1855,29 +1876,29 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             : behind === null
               ? "completed"
               : `partial · ${behind}`;
-        yield* Effect.logInfo(`session engine: capture flush · ${words} · observed`).pipe(
-          Effect.annotateLogs({
-            ...annotations,
-            kind,
-            complete: reading.complete,
-            incompleteReason: reading.incompleteReason,
-            behind,
-            epoch: report.epoch,
-            headN: report.headN ?? null,
-            pending: report.pending,
-            pendingBytes: reading.pendingBytes,
-            pendingBulk: reading.pendingBulk,
-            refused: reading.refused,
-            stagedBytes: report.stagedBytes,
-            uploadedObjects: report.uploadedObjects,
-            uploadedBytes: report.uploadedBytes,
-            registered: report.registered,
-            fenced: report.fenced,
-            paused: report.paused,
-          }),
+        yield* evidenceLog(
+          Effect.logInfo(`session engine: capture flush · ${words} · observed`).pipe(
+            Effect.annotateLogs({
+              ...annotations,
+              kind,
+              complete: reading.complete,
+              incompleteReason: reading.incompleteReason,
+              behind,
+              epoch: report.epoch,
+              headN: report.headN ?? null,
+              pending: report.pending,
+              pendingBytes: reading.pendingBytes,
+              pendingBulk: reading.pendingBulk,
+              refused: reading.refused,
+              stagedBytes: report.stagedBytes,
+              uploadedObjects: report.uploadedObjects,
+              uploadedBytes: report.uploadedBytes,
+              registered: report.registered,
+              fenced: report.fenced,
+              paused: report.paused,
+            }),
+          ),
         );
-        yield* recordReading(session, workspace.id, reading, kind, fence);
-        if (kind === "final") recentFinals.set(workspace.id, { reading, atMs: Date.now() });
         return reading;
       });
 
@@ -1900,13 +1921,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         fence.answered = true;
         yield* withEvidenceLock(
           workspaceId,
-          persistReading(session, workspaceId, reading, kind, fence).pipe(
-            Effect.tap(() =>
-              Effect.sync(() => {
-                fence.published = true;
-              }),
-            ),
-          ),
+          persistReading(session, workspaceId, reading, kind, fence),
         );
       });
       const persistReading = Effect.fn("SessionEngine.persistReading")(function* (
@@ -1986,19 +2001,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ...(unsaved === null ? {} : { unsaved }),
           },
         });
+        // Published with its fence cleared in the same write: nothing after this reopens it.
+        fence.published = true;
         if (failing !== null && before !== null && before.captureFailingSince === null) {
-          yield* Effect.logWarning("session engine: capture failing · observed").pipe(
-            Effect.annotateLogs({
-              sessionId: session.id,
-              worktreeId: session.worktreeId,
-              workspaceId,
-              since: failing.since.toISOString(),
-              error: failing.error,
-              snapsFailed: reading.snapsFailed,
-              unreadable: reading.unreadable,
-              unreadablePaths: reading.unreadablePaths.slice(0, 5).join(" "),
-              via: kind,
-            }),
+          yield* evidenceLog(
+            Effect.logWarning("session engine: capture failing · observed").pipe(
+              Effect.annotateLogs({
+                sessionId: session.id,
+                worktreeId: session.worktreeId,
+                workspaceId,
+                since: failing.since.toISOString(),
+                error: failing.error,
+                snapsFailed: reading.snapsFailed,
+                unreadable: reading.unreadable,
+                unreadablePaths: reading.unreadablePaths.slice(0, 5).join(" "),
+                via: kind,
+              }),
+            ),
           );
         }
       });
@@ -2020,13 +2039,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         workspace: Workspace,
         fence: EvidenceFence,
       ) {
-        const outcome = yield* sealant
-          .captureStatus(workspace)
-          .pipe(
-            Effect.timeoutOption(CAPTURE_STATUS_TIMEOUT),
-            Effect.result,
-            asSealantUser(session.ownerUserId),
-          );
+        const outcome = yield* sealant.captureStatus(workspace).pipe(
+          // A status the SDK could not ask for (null) is no answer.
+          Effect.tap((status) => (status === null ? Effect.void : markAnswered(fence))),
+          Effect.timeoutOption(CAPTURE_STATUS_TIMEOUT),
+          Effect.result,
+          asSealantUser(session.ownerUserId),
+        );
         if (Result.isFailure(outcome)) {
           yield* Effect.logDebug("session engine: capture status · refused").pipe(
             Effect.annotateLogs({
