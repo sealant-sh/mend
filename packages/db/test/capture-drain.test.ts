@@ -397,4 +397,48 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
     expect(result.latest).toEqual({ workspaceId: "ws-1", at: t1, words: "incomplete · changed" });
     expect(result.keys).not.toContain("captureUnsavedAt");
   });
+
+  it("keeps what an executor answered per executor, whoever asked, newest of each kind, past the session that asked (0086, review 2026-09-28 (5) #3)", async () => {
+    const sealed = new Date("2026-09-28T00:01:00.000Z");
+    const later = new Date("2026-09-28T00:01:30.000Z");
+    const earlier = new Date("2026-09-28T00:00:30.000Z");
+    const result = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const before = yield* sessions.executorEvidenceOf("ws-shared");
+        // The holder's own complete answer, then a joined session's unsaved answer of the same
+        // executor, then an older unsaved answer arriving late: the newest of each kind stands.
+        yield* sessions.recordExecutorEvidence("ws-shared", {
+          worktreeId: WORKTREE,
+          launchId: "launch-a",
+          saved: { workspaceId: "ws-shared", at: sealed, n: 4, epoch: 2 },
+        });
+        yield* sessions.recordExecutorEvidence("ws-shared", {
+          worktreeId: WORKTREE,
+          launchId: null,
+          unsaved: { workspaceId: "ws-shared", at: later, words: "unreadable tree/after.txt" },
+        });
+        yield* sessions.recordExecutorEvidence("ws-shared", {
+          worktreeId: WORKTREE,
+          launchId: null,
+          unsaved: { workspaceId: "ws-shared", at: earlier, words: "1 pending" },
+          saved: { workspaceId: "ws-shared", at: earlier, n: 3, epoch: 2 },
+        });
+        const kept = yield* sessions.executorEvidenceOf("ws-shared");
+        // The sessions that asked go; what the executor said stays with its worktree.
+        yield* sql`DELETE FROM agent_sessions WHERE id = ${FAILING}`;
+        const afterRemoval = yield* sessions.executorEvidenceOf("ws-shared");
+        return { before, kept, afterRemoval };
+      }),
+    );
+    expect(result.before).toBeNull();
+    expect(result.kept).toEqual({
+      workspaceId: "ws-shared",
+      launchId: "launch-a",
+      saved: { workspaceId: "ws-shared", at: sealed, n: 4, epoch: 2 },
+      unsaved: { workspaceId: "ws-shared", at: later, words: "unreadable tree/after.txt" },
+    });
+    expect(result.afterRemoval).toEqual(result.kept);
+  });
 });

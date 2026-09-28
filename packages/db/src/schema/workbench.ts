@@ -1986,6 +1986,29 @@ export const captureSeals = pgTable(
   ],
 );
 
+/**
+ * What a physical executor answered about its capture (migration 0086), whichever session asked:
+ * the latest completed final flush and the latest answer that said it held unsaved work.
+ */
+export const executorCaptureEvidence = pgTable(
+  "executor_capture_evidence",
+  {
+    workspaceId: text().primaryKey(),
+    worktreeId: text()
+      .$type<WorktreeId>()
+      .notNull()
+      .references(() => worktrees.id, { onDelete: "cascade" }),
+    launchId: text(),
+    savedAt: timestamp({ mode: "date", withTimezone: true }),
+    savedN: integer(),
+    savedEpoch: integer(),
+    unsavedAt: timestamp({ mode: "date", withTimezone: true }),
+    unsavedDetail: text(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("executor_capture_evidence_worktree_idx").on(table.worktreeId)],
+);
+
 /** One row per registered capture; `id` is the sha256 of the manifest bytes. */
 export const captures = pgTable(
   "captures",

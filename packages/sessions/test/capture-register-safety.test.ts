@@ -463,6 +463,7 @@ describe("the launch is the executor (review 2026-09-28 (3) #1, cross-repo decis
             n,
             parent,
             kind: "final",
+            bulk: { root: "", packs: [], platform: "linux-x86_64-glibc" },
           });
           const manifest = {
             ...base.manifest,
@@ -851,7 +852,15 @@ describe("capture.register records a completed final flush on the chain (cross-r
     // Mend observed the git section verify: a seal rests on nothing less (review 3 #18).
     const world = worldOf(2, options?.verifier ?? verifierObserving({}));
     const zero = buildManifest({ worktreeId: wt, epoch: 1, n: 0, parent: null, kind: "auto" });
-    const base = buildManifest({ worktreeId: wt, epoch: 1, n: 1, parent: zero.id, kind: "final" });
+    // Every class captured: a seal over a pending bulk class seals nothing (review 5 #10).
+    const base = buildManifest({
+      worktreeId: wt,
+      epoch: 1,
+      n: 1,
+      parent: zero.id,
+      kind: "final",
+      bulk: { root: "", packs: [], platform: "linux-x86_64-glibc" },
+    });
     // The sealing capture: the final capture's manifest, carrying `final_seal`.
     const manifest = seal === undefined ? base.manifest : { ...base.manifest, final_seal: seal };
     const bytes = utf8(JSON.stringify(manifest));

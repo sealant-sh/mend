@@ -2460,6 +2460,35 @@ const leaseLaunchMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE worktree_leases ADD COLUMN launch_id text`;
 });
 
+/**
+ * 0086: what an executor answered, per physical executor (cross-repo decision 14, review
+ * 2026-09-28 (5) #3). `executor_capture_evidence`, one row per workspace — one physical
+ * executor, one disk — holding the latest completed final flush Mend observed from it
+ * (`saved_*`, under `saved_epoch`) and the latest answer that said it held unsaved work
+ * (`unsaved_*`), whichever session asked: a joined session's read of the executor it shares
+ * describes the same disk as its holder's. `launch_id`: the launch Mend knew for it when it
+ * answered. What a seal, an attestation and an executor's end are weighed against; it outlives
+ * the sessions that took it (a removed joined session keeps its answer here) and goes with the
+ * worktree.
+ */
+const executorCaptureEvidenceMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE executor_capture_evidence (
+      workspace_id text PRIMARY KEY,
+      worktree_id text NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
+      launch_id text,
+      saved_at timestamptz,
+      saved_n integer,
+      saved_epoch integer,
+      unsaved_at timestamptz,
+      unsaved_detail text,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`
+    CREATE INDEX executor_capture_evidence_worktree_idx ON executor_capture_evidence (worktree_id)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2546,4 +2575,5 @@ export const migrations = {
   "0083_executor_launch_identity": executorLaunchIdentityMigration,
   "0084_capture_unsaved_observation": captureUnsavedObservationMigration,
   "0085_lease_launch": leaseLaunchMigration,
+  "0086_executor_capture_evidence": executorCaptureEvidenceMigration,
 };

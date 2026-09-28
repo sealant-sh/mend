@@ -39,6 +39,7 @@ import {
   sectionHoldsRawNames,
   gitSectionHoldsRawNames,
   metaNamespaceProblem,
+  crossLinksProblem,
   gitSectionHoldsTrees,
   worktreeTreeOf,
   type WorktreeMetaDocument,
@@ -1891,8 +1892,26 @@ export const CaptureChannelLive: Layer.Layer<
             );
           }
           const payloadsRead = payloads !== null && Result.isSuccess(payloads);
+          // A seal says every class is captured (review 2026-09-28 (5) #10): a manifest whose bulk
+          // class is still `"pending"` names work it does not hold. A class captured empty is a
+          // ready section naming nothing, never pending.
+          const bulkCaptured = manifest.sections.bulk !== "pending";
+          // …and that the worktree metadata's cross-class hardlinks restore as declared (review
+          // 2026-09-28 (5) #11): every member a file of its class, a group's members one set of
+          // bytes. sealantd's apply leaves a missing or differing member unlinked without a word.
+          const crossLinks =
+            !sealHolds || metaDocument === null
+              ? null
+              : yield* crossLinksProblem(manifest, metaDocument).pipe(
+                  Effect.provideService(BlobStore, blobs),
+                );
           const sealed =
-            sealHolds && gitFsck === "verified" && metaNamespace === "verified" && payloadsRead;
+            sealHolds &&
+            gitFsck === "verified" &&
+            metaNamespace === "verified" &&
+            payloadsRead &&
+            bulkCaptured &&
+            crossLinks === null;
           if (sealHolds && !sealed) {
             yield* Effect.logWarning(
               "capture channel: a final seal over sections not verified restorable · registered without it",
@@ -1905,6 +1924,8 @@ export const CaptureChannelLive: Layer.Layer<
                 gitFsck,
                 worktreeMeta: metaNamespace,
                 chunkPayloads: payloadsRead ? "read" : "not read",
+                bulk: bulkCaptured ? "captured" : "pending",
+                crossLinks: crossLinks ?? "restore",
               }),
             );
           }

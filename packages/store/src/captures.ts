@@ -2016,6 +2016,92 @@ export const metaNamespaceProblem = (
   return null;
 };
 
+/**
+ * Whether every cross-class hardlink group the document declares is one the restore makes
+ * (review 2026-09-28 (5) #11). sealantd's `apply` links a group's members onto the first one it
+ * finds, but a member that is missing, is not a file, or holds other bytes is left as its class
+ * restored it — no error, and the declared topology silently not restored. A seal says every
+ * section restores as captured, so before one is recorded each member must be a file (a plain
+ * file, or a hardlink member resolving to one) in its class's section — the workspace class's
+ * `tree/…`, `.git/…`, `harness/…` namespace, the bulk class's worktree-relative one — and every
+ * member of a group must hold the same bytes: the same chunks, or, chunked differently, the same
+ * sha256 read back from the packs. The reason, or null when every group restores.
+ */
+export const crossLinksProblem = (
+  manifest: CaptureManifest,
+  document: WorktreeMetaDocument,
+): Effect.Effect<string | null, never, BlobStore> =>
+  Effect.gen(function* () {
+    const groups = document.cross_links ?? [];
+    if (groups.length === 0) return null;
+    const readers = new Map<CaptureClass, DirReader>();
+    for (const group of groups) {
+      const members: Array<{
+        readonly cls: CaptureClass;
+        readonly member: string;
+        readonly size: number;
+        readonly chunks: string;
+      }> = [];
+      for (const link of group) {
+        const named = `${link.class} member ${JSON.stringify(link.member)}`;
+        const section = manifest.sections[link.class];
+        if (section === "pending") return `${named}: its class is pending`;
+        const segments = captureSegments(link.member);
+        if (segments === null || section.root === "") return `${named} is not in its class`;
+        const reader =
+          readers.get(link.class) ??
+          (yield* makeDirReader(section).pipe(Effect.orElseSucceed(() => null)));
+        if (reader === null) return `${named}: its class's dir objects do not read`;
+        readers.set(link.class, reader);
+        const entry = yield* entryAt(reader, section.root, segments).pipe(
+          Effect.orElseSucceed(() => null),
+        );
+        if (entry === null || (entry.kind !== "file" && entry.kind !== "hardlink-group")) {
+          return `${named} is not a file of its class`;
+        }
+        const holder = yield* resolveCaptureFileEntry(
+          reader,
+          section.root,
+          segments.join("/"),
+          entry,
+        ).pipe(Effect.orElseSucceed(() => null));
+        if (holder === null) return `${named} does not resolve to a file of its class`;
+        members.push({
+          cls: link.class,
+          member: segments.join("/"),
+          size: holder.size,
+          chunks: (holder.chunks ?? []).join(","),
+        });
+      }
+      const [first, ...rest] = members;
+      if (first === undefined) continue;
+      if (rest.some((other) => other.size !== first.size)) {
+        return `cross-class link group ${JSON.stringify(group)}: members hold different sizes`;
+      }
+      if (rest.every((other) => other.chunks === first.chunks)) continue;
+      // Chunked differently: the bytes themselves decide.
+      const digests = new Set<string>();
+      for (const { cls, member } of members) {
+        const digest = yield* readCaptureFile(manifest, cls, member).pipe(
+          Effect.flatMap((stream) =>
+            Effect.tryPromise(async () => {
+              const hash = crypto.createHash("sha256");
+              for await (const chunk of stream) hash.update(chunk);
+              return hash.digest("hex");
+            }),
+          ),
+          Effect.orElseSucceed(() => null),
+        );
+        if (digest === null) return `${cls} member ${JSON.stringify(member)} does not read`;
+        digests.add(digest);
+      }
+      if (digests.size > 1) {
+        return `cross-class link group ${JSON.stringify(group)}: members hold different bytes`;
+      }
+    }
+    return null;
+  });
+
 /** `""` or a relative path of normal components (sealantd `worktree_meta.rs` `is_plain_relative`). */
 const isPlainRelative = (bytes: Buffer): boolean => {
   if (bytes.length === 0) return true;
