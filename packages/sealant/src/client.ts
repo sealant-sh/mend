@@ -161,8 +161,14 @@ interface StoppableWorkspace {
   readonly stop: (options?: WorkspaceStopOptions) => Promise<unknown>;
 }
 
-const stopWith = (workspace: StoppableWorkspace, options: WorkspaceStopOptions | undefined) =>
-  options === undefined ? workspace.stop() : workspace.stop(options);
+/**
+ * `workspace.stop(options)` as Mend sends it: the options exactly as given — the completion
+ * attestation whole, `sealedAt` included — or no argument at all when there are none.
+ */
+export const stopWith = (
+  workspace: StoppableWorkspace,
+  options: WorkspaceStopOptions | undefined,
+) => (options === undefined ? workspace.stop() : workspace.stop(options));
 
 /** A capture surface that can read its status without flushing (Core's next SDK). */
 interface CaptureStatusReadable {
