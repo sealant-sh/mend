@@ -4,6 +4,7 @@ import { redactDetail } from "@mend/network";
 import { Cause, Config, Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
+import { HttpApiSchemaError } from "effect/unstable/httpapi/HttpApiError";
 
 /**
  * The one place error text leaves the API (docs/adr/0004, "Errors and browser headers"; MEND-11).
@@ -12,6 +13,9 @@ import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
  *   what arrived from below: server paths, internal hosts, URL credentials and queries, tokens
  *   (`redactDetail`). Mend's own words pass through unchanged, so the person still reads why.
  * - A plain-text error body (the socket routes' 502s) is scrubbed the same way.
+ * - A request that does not decode (its params, headers, query or payload; the HttpApi builder
+ *   raises it as a defect) is the client's: `400 BadRequest`, naming which part (e2e run 6: a
+ *   discard without its confirmation answered 500).
  * - A defect, or any 5xx nobody declared, crosses as `InternalError` and a reference. The detail
  *   goes to the log under that reference, which is what an operator searches for.
  *
@@ -81,6 +85,28 @@ const internalError = (reference: string) =>
     { status: 500 },
   );
 
+/**
+ * The request part that did not decode, when `cause` is exactly that: a request the client got
+ * wrong. A response body that did not encode (`Body`) is the server's, and stays a defect.
+ */
+const undecodedRequestPart = (cause: Cause.Cause<unknown>): string | null => {
+  for (const reason of cause.reasons) {
+    if (!Cause.isDieReason(reason)) continue;
+    const defect = reason.defect;
+    if (HttpApiSchemaError.is(defect) && defect.kind !== "Body") return defect.kind;
+  }
+  return null;
+};
+
+const badRequest = (part: string) =>
+  HttpServerResponse.jsonUnsafe(
+    {
+      _tag: "BadRequest",
+      message: `the request's ${part.toLowerCase()} is not what this route takes`,
+    },
+    { status: 400 },
+  );
+
 const decoder = new TextDecoder();
 
 /** Everything about a response but its body: a rewritten error still clears a cookie it meant to. */
@@ -142,6 +168,8 @@ export const errorBoundary = (
           // failure (a route that does not exist, a malformed request) is the router's to answer
           // with its own status; both pass through untouched.
           if (!Cause.hasDies(cause)) return Effect.failCause(cause);
+          const part = undecodedRequestPart(cause);
+          if (part !== null) return Effect.succeed(badRequest(part));
           const reference = makeReference();
           return Effect.logError("an unhandled failure reached the error boundary").pipe(
             Effect.annotateLogs({ reference, cause: Cause.pretty(cause) }),
