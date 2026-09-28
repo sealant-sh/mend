@@ -163,13 +163,20 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
       Effect.result,
     );
     if (problem._tag === "Failure") {
+      // The store did not answer, or the Mend host could not finish a check (review 2026-09-28
+      // (13) #1): nothing about the bytes was observed.
+      const failure = problem.failure;
+      const words =
+        failure._tag === "CaptureCheckUnfinishedError"
+          ? `${failure.key}: ${failure.reason}`
+          : failure.message;
       yield* Effect.logWarning(
         "capture seals: sealed, but its objects could not be read back · withheld",
-      ).pipe(Effect.annotateLogs({ ...annotations, error: problem.failure.message }));
+      ).pipe(Effect.annotateLogs({ ...annotations, error: words }));
       return {
         state: "withheld",
         code: "verifying",
-        reason: `its objects could not be read back: ${problem.failure.message}`,
+        reason: `its objects could not be read back: ${words}`,
       } satisfies SealStanding;
     }
     if (problem.success !== null) {

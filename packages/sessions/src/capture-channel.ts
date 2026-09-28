@@ -58,7 +58,7 @@ import * as Context from "effect/Context";
 import { CaptureRemotes, type PlanRemote } from "./capture-remotes.ts";
 import { sealStandingOf } from "./capture-seals.ts";
 import { CaptureSources, type PlanSource } from "./capture-sources.ts";
-import { CaptureGitVerifier } from "./capture-verify.ts";
+import { CaptureGitVerifier, type GitVerification } from "./capture-verify.ts";
 import { makeSingleFlight } from "./single-flight.ts";
 
 /**
@@ -834,6 +834,34 @@ export const CaptureUploadPolicyLive: Layer.Layer<CaptureUploadPolicy> = Layer.e
   Effect.sync(() => resolveCaptureUploadPolicy(process.env)),
 );
 
+/**
+ * What a plan tells the session beside its answer (review 2026-09-28 (13) #1): `waiting` — the
+ * head's git section could not be verified now, and the executor was told to ask again;
+ * `restored-older` — the head's git section failed verification, and an older capture was planned
+ * whole; `planned` — the head was planned (whatever an earlier `waiting` said no longer holds).
+ */
+export type CapturePlanNotice =
+  | { readonly kind: "waiting"; readonly words: string }
+  | { readonly kind: "restored-older"; readonly words: string }
+  | { readonly kind: "planned" };
+
+/** Every `waiting` notice's words begin with this — a launch's words, cleared once it starts. */
+export const PLAN_WAITING_PREFIX = "launch waiting · ";
+
+/** The session's words while a plan waits for Mend to verify capture `n`'s git section. */
+export const planWaitingWords = (n: number): string =>
+  `${PLAN_WAITING_PREFIX}capture ${n}'s git section could not be verified on the Mend host · asked again`;
+
+/** The session's words once a plan restored capture `restored` because head `head` failed. */
+export const planRestoredOlderWords = (restored: number, head: number): string =>
+  `restored capture ${restored} · capture ${head}'s git section failed verification`;
+
+/** What `planManifest` decided. */
+type PlanOf =
+  | { readonly kind: "head"; readonly manifest: CaptureManifest }
+  | { readonly kind: "older"; readonly manifest: CaptureManifest; readonly restored: CaptureRow }
+  | { readonly kind: "wait"; readonly unverified: CaptureRow };
+
 export interface CaptureScope {
   readonly worktreeId: WorktreeId;
   readonly projectId: ProjectId;
@@ -855,6 +883,11 @@ export interface CaptureScope {
   readonly launchId?: string;
   /** The project's compressed footprint in bytes (its base git packs); 0 = unknown, floor applies. */
   readonly footprintBytes: number;
+  /**
+   * Told what a plan did instead of restoring the head, or that it could not plan yet (review
+   * 2026-09-28 (13) #1): the engine says it in the session's summary. Absent: logged only.
+   */
+  readonly planNotice?: (notice: CapturePlanNotice) => Effect.Effect<void>;
 }
 
 /** What a standby's `plan.get` is answered with: the base plan Mend prepared for it. */
@@ -1409,12 +1442,33 @@ export const CaptureChannelLive: Layer.Layer<
           ),
         );
 
-      /** Verify a row's git section now and record the outcome; `unverified` records nothing. */
-      const verifyRow = (row: CaptureRow, manifest: CaptureManifest) =>
+      /**
+       * Verify a row's git section now and record the outcome. `unverified` (the Mend host could
+       * not finish the check) records nothing and answers `unverified` — never the row's older
+       * word, which a check that concluded nothing does not confirm.
+       */
+      const checkRow = (row: CaptureRow, manifest: CaptureManifest) =>
         Effect.gen(function* () {
           const verification = yield* verifier.verify(scope.projectId, manifest);
-          if (verification.outcome === "unverified") return row.gitFsck;
-          yield* repo.setGitFsck(row.id, verification.outcome);
+          if (verification.outcome === "unverified") {
+            yield* Effect.logWarning(
+              verification.transient === true
+                ? "capture channel: git section not verified · the Mend host could not finish the check"
+                : "capture channel: git section not verified · nothing here verifies it",
+            ).pipe(
+              Effect.annotateLogs({
+                worktreeId,
+                n: row.n,
+                captureId: row.id,
+                recorded: row.gitFsck,
+                detail: verification.detail,
+              }),
+            );
+            return verification;
+          }
+          if (verification.outcome !== row.gitFsck) {
+            yield* repo.setGitFsck(row.id, verification.outcome);
+          }
           if (verification.outcome === "failed") {
             yield* Effect.logWarning(
               "capture channel: git section failed verification · observed",
@@ -1429,54 +1483,106 @@ export const CaptureChannelLive: Layer.Layer<
               }),
             );
           }
-          return verification.outcome;
+          return verification;
         });
 
+      /** `checkRow`'s outcome alone. */
+      const verifyRow = (row: CaptureRow, manifest: CaptureManifest) =>
+        checkRow(row, manifest).pipe(Effect.map((verification) => verification.outcome));
+
+      /** Tell the session what this plan did instead of restoring the head (`CaptureScope`). */
+      const notePlan = (notice: CapturePlanNotice) =>
+        scope.planNotice === undefined ? Effect.void : scope.planNotice(notice);
+
       /**
-       * The manifest a plan restores: the head's, unless its git section fails verification —
-       * then the head with the git section of the newest capture below it that verifies
-       * (ADR-0002 16: pickup prefers the newest verified capture; the chain head is unchanged,
-       * so the executor's next register still parents on the real head). A head still
-       * `unverified` (an `auto` capture, or one registered before this check existed) is
-       * verified here, once, at the moment it matters.
+       * The manifest a plan restores (review 2026-09-28 (13) #1). A head whose git section is not
+       * recorded `verified` — an `auto` capture, one registered while the Mend host could not
+       * finish a check, or one recorded `failed`, checked once more before anything routes around
+       * it — is verified now, at the moment it matters. Then:
+       * - verified: the head;
+       * - still unverifiable (the Mend host could not finish the check): no plan. The executor is
+       *   answered `worktree-leased`, the one `plan.get` answer sealantd waits on and asks again
+       *   after, touching nothing, and the session says why (`PLAN_WAITING_PREFIX`). Never an
+       *   older git section under the head's workspace: that restores the head's reflogs and file
+       *   metadata over an older tree — a repository `git fsck` refuses, or a materialize that
+       *   fails on a path the older tree lacks — and hides the last turns' commits;
+       * - failed (git rejected its pack or its closure): the newest capture below it that
+       *   verifies, whole — every section of it, its checkpoint too — under the head's identity,
+       *   so the executor's next register still parents on the real head (ADR-0002 16: pickup
+       *   prefers the newest verified capture). The session says which capture was restored. A
+       *   capture below that cannot be verified now stops the search: the plan waits, rather than
+       *   reach past it to older work;
+       * - failed, with nothing below it that verifies: the head as registered (the executor's
+       *   materialize is then git's word on it).
        */
       const planManifest = (head: CaptureRow, stored: CaptureManifest) =>
         Effect.gen(function* () {
-          const headFsck =
-            head.gitFsck === "unverified" ? yield* verifyRow(head, stored) : head.gitFsck;
-          if (headFsck !== "failed") return stored;
+          if (head.gitFsck === "verified")
+            return { kind: "head", manifest: stored } satisfies PlanOf;
+          const headCheck = yield* checkRow(head, stored);
+          if (headCheck.outcome === "verified") {
+            return { kind: "head", manifest: stored } satisfies PlanOf;
+          }
+          if (headCheck.outcome === "unverified") {
+            // Nothing here can verify it, whenever asked (a format Mend does not read, no
+            // verifier): the head as registered, as before any check existed.
+            return headCheck.transient === true
+              ? ({ kind: "wait", unverified: head } satisfies PlanOf)
+              : ({ kind: "head", manifest: stored } satisfies PlanOf);
+          }
           const older = (yield* repo.listChain(worktreeId))
             .filter((row) => row.n < head.n)
             .toSorted((a, b) => b.n - a.n);
           for (const row of older) {
             if (row.gitFsck === "failed") continue;
             const manifest = yield* readManifest(row);
-            const fsck =
-              row.gitFsck === "unverified" ? yield* verifyRow(row, manifest) : row.gitFsck;
-            if (fsck !== "verified") continue;
+            const check =
+              row.gitFsck === "unverified"
+                ? yield* checkRow(row, manifest)
+                : ({ outcome: row.gitFsck, detail: null } satisfies GitVerification);
+            if (check.outcome === "failed") continue;
+            if (check.outcome === "unverified") {
+              // Not verifiable now: wait rather than reach past it to older work. Never
+              // verifiable here (a format Mend does not read): passed over, as before.
+              if (check.transient === true) {
+                return { kind: "wait", unverified: row } satisfies PlanOf;
+              }
+              continue;
+            }
             yield* Effect.logWarning(
-              "capture channel: plan restores an older git section · the head's failed verification",
+              "capture channel: plan restores an older capture · the head's git section failed verification",
             ).pipe(
               Effect.annotateLogs({
                 worktreeId,
                 headN: head.n,
                 headCaptureId: head.id,
-                gitFromN: row.n,
-                gitFromCaptureId: row.id,
+                restoredN: row.n,
+                restoredCaptureId: row.id,
               }),
             );
-            // The head's seal says the head restores; this plan restores other git state, so
-            // it carries no seal (review 2026-09-28 (3) #18).
-            const { final_seal: _headSeal, ...unsealed } = stored;
+            // The head's seal says the head restores; this plan restores another capture's
+            // state, so it carries no seal (review 2026-09-28 (3) #18), and none of the head's
+            // sections: the older capture's, every one, restore together.
+            const {
+              final_seal: _headSeal,
+              checkpoint: _headCheckpoint,
+              sections: _headSections,
+              ...identity
+            } = stored;
             return {
-              ...unsealed,
-              sections: { ...stored.sections, git: manifest.sections.git },
-            } satisfies CaptureManifest;
+              kind: "older",
+              restored: row,
+              manifest: {
+                ...identity,
+                sections: manifest.sections,
+                ...(manifest.checkpoint === undefined ? {} : { checkpoint: manifest.checkpoint }),
+              },
+            } satisfies PlanOf;
           }
           yield* Effect.logWarning(
             "capture channel: no capture below the head verifies · the plan restores the head as registered",
           ).pipe(Effect.annotateLogs({ worktreeId, headN: head.n, headCaptureId: head.id }));
-          return stored;
+          return { kind: "head", manifest: stored } satisfies PlanOf;
         });
 
       /**
@@ -1550,13 +1656,27 @@ export const CaptureChannelLive: Layer.Layer<
         const chain = yield* repo.headOf(worktreeId);
         const head = chain?.head ?? null;
         const stored = head === null ? null : yield* readManifest(head);
+        const planned = head === null || stored === null ? null : yield* planManifest(head, stored);
+        if (planned !== null && planned.kind === "wait" && head !== null) {
+          // Nothing is claimed and nothing is handed out: the executor waits and asks again, and
+          // the session says why (review 2026-09-28 (13) #1).
+          const words = planWaitingWords(planned.unverified.n);
+          yield* notePlan({ kind: "waiting", words });
+          return yield* new CaptureRouteError({
+            status: 409,
+            reason: "worktree-leased",
+            message: `${words}: the plan waits until Mend can verify it, rather than restore an older capture — ask again`,
+          });
+        }
         const manifest =
-          head === null || stored === null
+          head === null || planned === null || planned.kind === "wait"
             ? null
-            : yield* planSealStanding(
-                head,
-                planForPlatform(yield* planManifest(head, stored), input.platform),
-              );
+            : yield* planSealStanding(head, planForPlatform(planned.manifest, input.platform));
+        yield* notePlan(
+          planned !== null && planned.kind === "older" && head !== null
+            ? { kind: "restored-older", words: planRestoredOlderWords(planned.restored.n, head.n) }
+            : { kind: "planned" },
+        );
         if (manifest !== null && stored !== null && head !== null) {
           const holds = planFormatOf(manifest);
           if (holds > reads) {
@@ -2247,9 +2367,11 @@ export const CaptureChannelLive: Layer.Layer<
           Effect.gen(function* () {
             if (manifest.sections.bulk === "pending") return { problems: ["bulk class pending"] };
             // A git section the register could not verify is verified again now (review
-            // 2026-09-28 (12) #4); still not verifiable, the checks conclude nothing.
+            // 2026-09-28 (12) #4), and so is one recorded `failed` (review 2026-09-28 (13) #1: a
+            // re-ask checks once more before it refuses); still not verifiable, the checks
+            // conclude nothing.
             const gitFsck =
-              row.gitFsck === "unverified" ? yield* verifyRow(row, manifest) : row.gitFsck;
+              row.gitFsck === "verified" ? row.gitFsck : yield* verifyRow(row, manifest);
             if (gitFsck === "unverified") {
               return { problems: [], unavailable: ["the git section could not be verified"] };
             }

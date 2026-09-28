@@ -122,7 +122,9 @@ import {
   CaptureChannelLive,
   CaptureDrainPolicy,
   type CaptureDrainPolicyShape,
+  CaptureGitVerifier,
   CaptureGitVerifierOff,
+  type GitVerification,
   CaptureRemotesOff,
   CaptureSourcesOff,
   CaptureRuntimeLive,
@@ -131,6 +133,8 @@ import {
   CaptureSealsNone,
   captureHoldWords,
   CaptureRuntimeOff,
+  planRestoredOlderWords,
+  planWaitingWords,
   CaptureUploadPolicyDefault,
   DotfilesCloner,
   makeDotfilesClonerLayer,
@@ -2502,6 +2506,8 @@ const withEngine = <A, E>(
     readonly tokensLayer?: Layer.Layer<SessionChannelTokensRepo>;
     /** Where session sockets go; kept in `servedSocketApis` unless a test says. */
     readonly socketHostLayer?: Layer.Layer<SessionSocketHost>;
+    /** Mend's git verification of captures (capture mode); off — every capture unverified — unless a test says. */
+    readonly verifier?: Layer.Layer<CaptureGitVerifier>;
   } = {},
 ): Promise<A> => {
   const tmp = options.fixture?.tmp ?? fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
@@ -2523,7 +2529,7 @@ const withEngine = <A, E>(
             Layer.provide(blobsLayer),
           ),
           CaptureChannelLive.pipe(
-            Layer.provide(CaptureGitVerifierOff),
+            Layer.provide(options.verifier ?? CaptureGitVerifierOff),
             Layer.provide(CaptureSourcesOff),
             Layer.provide(CaptureRemotesOff),
             Layer.provide(options.captured.layer),
@@ -6180,6 +6186,9 @@ describe("SessionEngine hot sessions", () => {
  * rollout under `harness/`, registered under the epoch Mend claimed at launch. Packs and
  * manifests follow ADR-0015's rules through the same writer the store tests prove.
  */
+/** A capture's place on its chain, as a test's fake git verifier keys its answers. */
+const keyOf = (manifest: { readonly n: number }) => `n=${manifest.n}`;
+
 const shipHarnessCapture = (
   tmp: string,
   memory: MemoryCaptureStore,
@@ -7924,6 +7933,88 @@ describe("SessionEngine capture mode", () => {
           undefined,
           { flushed },
         ),
+      },
+    );
+  });
+
+  it("review 13 #1: a plan that must wait for Mend to verify the head says why in the session's summary, and a plan that goes ahead clears it; one that restores an older capture says which", async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    // What Mend's verification answers, by manifest key: the Mend host out of disk, then back.
+    const answers = new Map<string, GitVerification>();
+    const verifier = Layer.succeed(CaptureGitVerifier, {
+      verify: (_projectId, manifest) =>
+        Effect.succeed(
+          answers.get(keyOf(manifest)) ??
+            ({ outcome: "verified", detail: null } satisfies GitVerification),
+        ),
+      treePaths: () => Effect.succeed(null),
+      treeObjects: () => Effect.succeed(null),
+    });
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["codex"]);
+          const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+          const older = yield* shipHarnessCapture(
+            tmp,
+            memory,
+            session.worktreeId,
+            epoch,
+            crypto.randomUUID(),
+          );
+          const head = yield* shipHarnessCapture(
+            tmp,
+            memory,
+            session.worktreeId,
+            epoch,
+            crypto.randomUUID(),
+          );
+          const row = memory.captures.get(head.id);
+          if (row === undefined) throw new Error("the head did not register");
+          memory.captures.set(head.id, { ...row, gitFsck: "unverified" });
+          const api = servedSocketApis.get(session.id)?.capture;
+          if (api === undefined) throw new Error("the session serves no capture api");
+          // The Mend host cannot finish the check: the plan waits, and the session says why.
+          answers.set(keyOf(head.manifest), {
+            outcome: "unverified",
+            detail: "index-pack --verify did not finish: signal SIGKILL",
+            transient: true,
+          });
+          const waiting = yield* Effect.flip(
+            api.planGet({ worktree_id: session.worktreeId, epoch }),
+          );
+          expect(waiting.reason).toBe("worktree-leased");
+          expect(world.sessions.get(session.id)?.summary).toBe(planWaitingWords(head.manifest.n));
+          // Recovered: the plan goes ahead with the head, and the words are gone.
+          answers.delete(keyOf(head.manifest));
+          const plan = yield* api.planGet({ worktree_id: session.worktreeId, epoch });
+          expect(plan.head?.capture_id).toBe(head.id);
+          expect(world.sessions.get(session.id)?.summary).toBeNull();
+          // Git rejects the head's content: the older capture is restored, and the session says so.
+          memory.captures.set(head.id, { ...row, gitFsck: "failed" });
+          answers.set(keyOf(head.manifest), { outcome: "failed", detail: "missing tree" });
+          const routed = yield* api.planGet({ worktree_id: session.worktreeId, epoch });
+          expect(routed.head?.capture_id).toBe(head.id);
+          expect(routed.head?.manifest.sections).toEqual(older.manifest.sections);
+          expect(world.sessions.get(session.id)?.summary).toBe(
+            planRestoredOlderWords(older.manifest.n, head.manifest.n),
+          );
+        }),
+      {
+        captured: memory,
+        verifier,
+        sealantLayer: sealantLaunchLayer(created),
       },
     );
   });
