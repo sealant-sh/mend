@@ -26,6 +26,7 @@ import {
   planExecutorCap,
   restatedSummary,
   executorSavedWords,
+  executorUnansweredWords,
   CAPTURE_UNSAVED_ANSWERS_KEPT,
   withUnsavedAnswer,
 } from "../src/workbench/capture-drain.ts";
@@ -743,7 +744,7 @@ describe("executorEndOf / executorEndWords (an executor that ended without Mend 
     });
     expect(end.kind).toBe("unconfirmed");
     expect(executorEndWords(end)).toBe(
-      "stopped outside Mend · last saved capture 21 at 16:29:51 UTC · completion unknown",
+      "stopped outside Mend · last capture 21 at 16:29:51 UTC · not confirmed",
     );
   });
 
@@ -767,14 +768,14 @@ describe("executorEndOf / executorEndWords (an executor that ended without Mend 
         executorStartedAt: started,
         reading: never,
       }),
-    ).toBe("stopped outside Mend · last saved 16:29:51 UTC · completion unknown");
+    ).toBe("stopped outside Mend · last capture at 16:29:51 UTC · not confirmed");
     expect(
       words({
         head: { kind: "final", registeredAt: at("16:10:00"), bulkPending: false },
         executorStartedAt: started,
         reading: never,
       }),
-    ).toBe("executor lost · last saved 16:10:00 UTC · changes after that were not saved");
+    ).toBe("executor lost · last capture at 16:10:00 UTC · changes after it were not saved");
     expect(
       words({
         head: { kind: "final", registeredAt: at("16:29:51"), bulkPending: false },
@@ -782,11 +783,11 @@ describe("executorEndOf / executorEndWords (an executor that ended without Mend 
         reading: { pending: 2, pendingBytes: null, observedAt: at("16:30:05") },
       }),
     ).toBe(
-      "stopped outside Mend · last saved 16:29:51 UTC · completion unknown · 2 pending at 16:30:05 UTC",
+      "stopped outside Mend · last capture at 16:29:51 UTC · not confirmed · 2 pending at 16:30:05 UTC",
     );
   });
 
-  it("a kill -9 says when it last saved and that later changes were not, never a count it did not observe", () => {
+  it("a kill -9 says when it last captured and that later changes were not saved, never a count it did not observe", () => {
     const words = (observed: Parameters<typeof executorEndOf>[0]["reading"]) =>
       endWords({
         head: { kind: "auto", registeredAt: at("16:32:06"), bulkPending: false },
@@ -795,22 +796,22 @@ describe("executorEndOf / executorEndWords (an executor that ended without Mend 
       });
     // Never read: nothing about pending.
     expect(words(never)).toBe(
-      "executor lost · last saved 16:32:06 UTC · changes after that were not saved",
+      "executor lost · last capture at 16:32:06 UTC · changes after it were not saved",
     );
     // Read before the last save: stale, left out.
     expect(words({ pending: 3, pendingBytes: null, observedAt: at("16:31:00") })).toBe(
-      "executor lost · last saved 16:32:06 UTC · changes after that were not saved",
+      "executor lost · last capture at 16:32:06 UTC · changes after it were not saved",
     );
     // Read after it: what was pending then, and when.
     expect(words({ pending: 1, pendingBytes: 675_321_064, observedAt: at("16:32:09") })).toBe(
-      "executor lost · last saved 16:32:06 UTC · changes after that were not saved · 675 MB pending at 16:32:09 UTC",
+      "executor lost · last capture at 16:32:06 UTC · changes after it were not saved · 675 MB pending at 16:32:09 UTC",
     );
     expect(words({ pending: 3, pendingBytes: null, observedAt: at("16:32:09") })).toBe(
-      "executor lost · last saved 16:32:06 UTC · changes after that were not saved · 3 pending at 16:32:09 UTC",
+      "executor lost · last capture at 16:32:06 UTC · changes after it were not saved · 3 pending at 16:32:09 UTC",
     );
     // Nothing pending read: nothing claimed either way.
     expect(words({ pending: 0, pendingBytes: 0, observedAt: at("16:32:09") })).toBe(
-      "executor lost · last saved 16:32:06 UTC · changes after that were not saved",
+      "executor lost · last capture at 16:32:06 UTC · changes after it were not saved",
     );
     // A reading a previous executor took says nothing of this one.
     expect(
@@ -993,7 +994,7 @@ describe("executorEndOf after a completed final flush (e2e run 4, 2026-09-27)", 
         reading: { pending: 0, pendingBytes: 0, observedAt: at("19:49:25") },
         finalSaved: null,
       }),
-    ).toBe("executor lost · last saved 19:49:26 UTC · changes after that were not saved");
+    ).toBe("executor lost · last capture at 19:49:26 UTC · changes after it were not saved");
   });
 
   it("a save observed from a previous executor says nothing of this one", () => {
@@ -1023,7 +1024,7 @@ describe("what a discard records (e2e run 4, 2026-09-27)", () => {
 
   it("edits made while snaps failed are unsaved since the failure, never `0 pending`", () => {
     expect(captureDiscardWords(failing)).toBe(
-      "asked at 19:57:10 UTC · last saved capture 37 at 19:54:41 UTC · unsaved since 19:55:02 UTC (snaps failing · EACCES: tree/secrets.pem) · no final flush completed",
+      "asked at 19:57:10 UTC · last capture 37 at 19:54:41 UTC · unsaved since 19:55:02 UTC (snaps failing · EACCES: tree/secrets.pem) · no final flush completed",
     );
     const data = captureDiscardAuditData(failing, at("19:57:14"));
     expect(data).toEqual({
@@ -1054,7 +1055,7 @@ describe("what a discard records (e2e run 4, 2026-09-27)", () => {
       queue: { pending: 3, pendingBytes: 12_400_000, observedAt: at("19:57:08") },
     };
     expect(captureDiscardWords(discard)).toBe(
-      "asked at 19:57:10 UTC · last saved capture 37 at 19:54:41 UTC · 12 MB pending at 19:57:08 UTC · no final flush completed",
+      "asked at 19:57:10 UTC · last capture 37 at 19:54:41 UTC · 12 MB pending at 19:57:08 UTC · no final flush completed",
     );
     const data = captureDiscardAuditData(discard, at("19:57:14"));
     expect(data["pending"]).toBe(3);
@@ -1081,9 +1082,7 @@ describe("what a discard records (e2e run 4, 2026-09-27)", () => {
         failingError: null,
         queue: { pending: 3, pendingBytes: null, observedAt: at("19:50:00") },
       }),
-    ).toBe(
-      "asked at 19:57:10 UTC · last saved capture 37 at 19:54:41 UTC · no final flush completed",
-    );
+    ).toBe("asked at 19:57:10 UTC · last capture 37 at 19:54:41 UTC · no final flush completed");
   });
 });
 
@@ -1251,5 +1250,19 @@ describe("withUnsavedAnswer (cross-repo decision 25)", () => {
     // The seal covers boot A's answer, not boot B's: completion unknown, never saved.
     expect(executorEndOf({ ...sealedEnd, unsaved }).kind).toBe("unconfirmed");
     expect(executorEndOf({ ...sealedEnd, unsaved: unsaved.slice(1) }).kind).toBe("saved");
+  });
+});
+
+// e2e8 (i), HK and WU: `executor not answering · last saved capture 10 …` named the chain head,
+// a capture that registered and was never sealed. A registered capture is never called saved.
+describe("executorUnansweredWords (e2e8 (i))", () => {
+  it("names the last registered capture as not confirmed, never as saved", () => {
+    const at = new Date("2026-09-28T07:33:53Z");
+    const words = executorUnansweredWords({ n: 10, at });
+    expect(words).toBe("executor not answering · last capture 10 at 07:33:53 UTC · not confirmed");
+    expect(words).not.toContain("saved");
+    expect(executorUnansweredWords(null)).toBe(
+      "executor not answering · nothing saved · completion unknown",
+    );
   });
 });

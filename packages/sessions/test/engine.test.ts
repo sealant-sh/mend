@@ -9271,6 +9271,93 @@ describe("SessionEngine capture mode", () => {
       );
     },
   );
+
+  /**
+   * e2e8 F7: a claimed standby whose replan failed, on which no writer was ever admitted. sealantd
+   * (b58bdeb) answers its FINAL at once `complete: true`, nothing pending, under the placeholder's
+   * worktree, epoch and launch (`standby:<id>`), then exits 76, and Core releases it as nothing to
+   * save. That answer never reads as the session's save (its epoch is not the session's lease), but
+   * the drain reads the workspace gone and the launch goes on cold at once: no ~12 minute wait for
+   * staging that never ships, and no `failed` line needing a discard.
+   */
+  it("a claimed standby whose replan failed and which held nothing ends at once, and the launch goes on cold", async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
+    let standbyFinal = false;
+    let standbyAlias = "";
+    let standbyEpoch = 0;
+    const flushKinds: Array<CaptureFlushKind> = [];
+    const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(() => pool.entries.some((e) => e.status === "ready"), "standby");
+          const standby = pool.entries[0];
+          if (standby === undefined) throw new Error("no standby");
+          standbyAlias = `standby-${standby.id}`;
+          standbyEpoch = standby.createdAt.getTime();
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const startedAt = Date.now();
+          yield* engine.launch(session.id, ["codex"]);
+          expect(Date.now() - startedAt).toBeLessThan(10_000);
+          expect(standbyFinal).toBe(true);
+          expect(flushKinds).toContain("final");
+          const after = world.sessions.get(session.id);
+          expect(after?.status).toBe("running");
+          expect(after?.summary ?? null).toBeNull();
+          expect(after?.captureNotSavedAt ?? null).toBeNull();
+          // The standby's complete answer is under its placeholder, not the session's epoch: it
+          // is never attested as the session's save.
+          expect(stopOptions.every((options) => options?.completion === undefined)).toBe(true);
+          // One cold executor after the standby, under the session's own launch.
+          expect(created.length).toBeGreaterThanOrEqual(2);
+          expect(world.executorLaunches.get(session.id)?.launchId).not.toBe(
+            `standby:${standby.id}`,
+          );
+        }),
+      {
+        captured: memory,
+        hotWorkspacesLayer: pool.layer,
+        drainPolicy: { terminationWait: Duration.millis(50) },
+        sealantLayer: lifecycleLayer(created, {
+          captureOps: {
+            flushKinds,
+            stopOptions,
+            // Exit 76 after its FINAL, released by Core: the workspace reads stopped from then on.
+            status: () => (standbyFinal ? "stopped" : "ready"),
+            stopAnswer: () => "stopped",
+            resourceId: () => "standby-container",
+            flush: () =>
+              Effect.sync(() => {
+                standbyFinal = true;
+                return flushReport(0, 0, { worktreeId: standbyAlias, epoch: standbyEpoch });
+              }),
+            replan: () =>
+              Effect.fail(
+                new SealantPlatformError({
+                  code: "replan_refused",
+                  status: 503,
+                  message: "capture plan.get failed: transport: timeout",
+                  cause: null,
+                }),
+              ),
+          },
+        }),
+      },
+    );
+  }, 30_000);
 });
 
 /** A path on the fixture's git daemon, beside the adopted origin. */
@@ -11246,7 +11333,9 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
             );
             const settled = world.sessions.get(session.id);
             expect(settled?.status).toBe("failed");
-            expect(settled?.summary).toMatch(/^executor lost · last saved \d\d:\d\d:\d\d UTC/);
+            expect(settled?.summary).toMatch(
+              /^executor lost · last capture (\d+ )?at \d\d:\d\d:\d\d UTC/,
+            );
           }),
         {
           captured: memory,
@@ -11265,7 +11354,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
   );
 
   it(
-    "a `docker stop` whose final capture registered last, with no completed word from it and no seal, names that capture and says completion unknown — never saved (review 2026-09-28 #13)",
+    "a `docker stop` whose final capture registered last, with no completed word from it and no seal, names that capture as not confirmed — never saved (review 2026-09-28 #13)",
     { timeout: 20_000 },
     async () => {
       const created: Array<CreateOptions> = [];
@@ -11305,7 +11394,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
             const settled = world.sessions.get(session.id);
             expect(settled?.status).toBe("failed");
             expect(settled?.summary).toMatch(
-              /^stopped outside Mend · last saved capture \d+ at \d\d:\d\d:\d\d UTC · completion unknown$/,
+              /^stopped outside Mend · last capture \d+ at \d\d:\d\d:\d\d UTC · not confirmed$/,
             );
           }),
         {
@@ -11368,7 +11457,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
             const settled = world.sessions.get(session.id);
             expect(settled?.status).toBe("failed");
             expect(settled?.summary).toMatch(
-              /^executor lost · last saved \d\d:\d\d:\d\d UTC · changes after that were not saved · 3 pending at \d\d:\d\d:\d\d UTC$/,
+              /^executor lost · last capture (\d+ )?at \d\d:\d\d:\d\d UTC · changes after it were not saved · 3 pending at \d\d:\d\d:\d\d UTC$/,
             );
           }),
         {
@@ -12979,7 +13068,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
             const settled = world.sessions.get(session.id);
             expect(settled?.status).toBe("failed");
             expect(settled?.summary).toMatch(
-              /^executor not answering · (nothing saved|last saved capture \d+ at \d\d:\d\d:\d\d UTC) · completion unknown$/,
+              /^executor not answering · (nothing saved · completion unknown|last capture \d+ at \d\d:\d\d:\d\d UTC · not confirmed)$/,
             );
           }),
         {
@@ -14355,7 +14444,7 @@ describe("SessionEngine a failed launch's words follow its executor (e2e run 6 #
 
 describe("SessionEngine a recovered executor's accepted seal is the session's word (e2e run 6 #7)", () => {
   it(
-    "`executor not answering · … · completion unknown`, then Core ends the kept executor on the seal Mend attested and it accepted: `stopped · saved at … · capture N`",
+    "`executor not answering · … · not confirmed`, then Core ends the kept executor on the seal Mend attested and it accepted: `stopped · saved at … · capture N`",
     { timeout: 30_000 },
     async () => {
       const created: Array<CreateOptions> = [];
@@ -14384,7 +14473,7 @@ describe("SessionEngine a recovered executor's accepted seal is the session's wo
               () => world.sessions.get(session.id)?.settledAt != null,
               "the session's settle",
             );
-            expect(world.sessions.get(session.id)?.summary).toMatch(/completion unknown$/);
+            expect(world.sessions.get(session.id)?.summary).toMatch(/not confirmed$/);
             // Core recovered it: it drained, sealed, and ended on its runtime (kept by Core).
             const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
             const built = yield* shipHarnessCapture(
@@ -16065,5 +16154,175 @@ describe("review 10 #7 a direct complete answer", () => {
         },
       );
     },
+  );
+});
+
+/**
+ * Carried review 2026-09-28 (10) #6 (cross-repo decision 35): a final flush Core's deadline or the
+ * daemon's own shutdown asked for runs with no Mend drain, so its uploads used to be metered, and a
+ * held tree past the byte quota stayed unsaved (413). sealantd now names the flush on the wire
+ * (`"flush":"final"`): exempt from the byte and call quotas whether or not Mend drains.
+ */
+it(
+  "exempts an upload.urls call marked flush: final from the byte quota before any Mend drain",
+  { timeout: 20_000 },
+  async () => {
+    const memory = makeMemoryCaptureStore();
+    const created: Array<CreateOptions> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          const launch = world.executorLaunches.get(session.id)?.launchId;
+          if (launch === undefined) throw new Error("missing launch");
+          const api = servedSocketApis.get(session.id)?.captureAs?.(launch);
+          if (api === undefined) throw new Error("missing live capture API");
+          const epoch = memory.leases.get(session.worktreeId)?.epoch;
+          if (epoch === undefined) throw new Error("missing lease");
+          const key = captureKeys(session.worktreeId, epoch).pack("e".repeat(64));
+          const input = {
+            worktree_id: session.worktreeId,
+            epoch,
+            keys: [key],
+            sizes: { [key]: 8 * 1024 * 1024 * 1024 + 1 },
+          };
+          expect(world.sessions.get(session.id)?.captureDrain).toBeNull();
+          // New work over the quota is still refused.
+          const refused = yield* api.uploadUrls(input).pipe(Effect.flip);
+          expect(refused.status).toBe(413);
+          expect(refused.reason).toBe("byte-quota");
+          // The same bytes from a final flush Mend did not start: admitted.
+          const allowed = yield* api.uploadUrls({ ...input, flush: "final" });
+          expect([...Object.keys(allowed.urls), ...Object.keys(allowed.multipart ?? {})]).toContain(
+            key,
+          );
+          expect(world.sessions.get(session.id)?.captureDrain).toBeNull();
+        }),
+      { captured: memory, sealantLayer: sealantLaunchLayer(created) },
+    );
+  },
+);
+
+/**
+ * Owner, 2026-09-28 (e2e8 (d)): Mend does not support SHA-256 or reftable repositories yet. A
+ * project adopted before adoption refused them starts no session: the start is refused with the
+ * reason, before any worktree, row or executor is made.
+ */
+it("refuses to start a session on a SHA-256 project with the reason", async () => {
+  await withEngine((world, tmp) =>
+    Effect.gen(function* () {
+      const project = yield* setup(tmp, world);
+      // A SHA-256 repository with a main branch, as an adoption before the refusal stored it.
+      const work = path.join(tmp, "sha256-work");
+      const sha256 = path.join(tmp, "sha256.git");
+      execFileSync("git", ["init", "-q", "-b", "main", "--object-format=sha256", work]);
+      fs.writeFileSync(path.join(work, "app.ts"), "export const answer = 41\n");
+      execFileSync("git", ["add", "-A"], { cwd: work });
+      execFileSync(
+        "git",
+        ["-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "one"],
+        { cwd: work },
+      );
+      execFileSync("git", ["clone", "-q", "--bare", work, sha256]);
+      world.projects.set(project.id, new Project({ ...project, storePath: sha256 }));
+      const engine = yield* SessionEngine;
+      const refused = yield* engine
+        .provision({
+          projectId: project.id,
+          harness: "codex",
+          label: null,
+          name: null,
+          ownerUserId: "user-fixture",
+          base: null,
+        })
+        .pipe(Effect.flip);
+      expect(refused._tag).toBe("GitError");
+      if (refused._tag === "GitError") {
+        expect(refused.stderr).toBe("Mend doesn't support SHA-256 repositories yet.");
+      }
+      expect(world.sessions.size).toBe(0);
+    }),
+  );
+});
+
+/**
+ * e2e8 (i), HSB: an executor stopped outside Mend that Core keeps for recovery (exit 75) read
+ * `running` beside `retained`. The first word follows the executor: a session whose current
+ * executor the platform keeps for recovery reads `stopping · retained`, never `running`.
+ */
+it(
+  "a session whose executor the platform keeps for recovery reads stopping, not running",
+  { timeout: 20_000 },
+  async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const stops: Array<"drain" | "discard"> = [];
+    let killed = false;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          expect(world.sessions.get(session.id)?.status).toBe("running");
+          killed = true;
+          const afterExpiry = Date.now() + 1_000_000;
+          memory.clock.now = () => afterExpiry;
+          yield* engine.reapCaptureLeases();
+          yield* until(
+            () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+            "the kept executor",
+          );
+          const kept = world.sessions.get(session.id);
+          expect(kept?.captureIncompleteReason).toBe("retained");
+          expect(kept?.status).toBe("stopping");
+        }),
+      {
+        captured: memory,
+        drainPolicy: { terminationWait: Duration.millis(200) },
+        sealantLayer: lifecycleLayer(created, {
+          captureOps: {
+            stops,
+            status: () => (killed ? "failed" : "ready"),
+            stopAnswer: () => "kept",
+            retained: () => ({
+              reason: "exited before its final flush completed",
+              recoverable: true,
+            }),
+          },
+        }),
+      },
+    );
+  },
+);
+
+/**
+ * e2e8 (i), B and WU: a session resumed after its executor was stopped outside Mend and saved read
+ * `running · stopped outside Mend · saved at 07:34:21 UTC · capture 13`, the words of the executor
+ * before. A launch that starts clears Mend's verdict on an earlier executor's end.
+ */
+it.each([
+  "stopped outside Mend · saved at 07:34:21 UTC · capture 13",
+  "saved at 07:42:59 UTC · capture 5",
+  "executor not answering · last capture 10 at 07:33:53 UTC · not confirmed",
+  "launch failed: Budget reached: 120 launches per minute",
+])("a launch that starts clears the earlier executor's summary %s", async (summary) => {
+  const created: Array<CreateOptions> = [];
+  await withEngine(
+    (world, tmp) =>
+      Effect.gen(function* () {
+        const { engine, session } = yield* launchOnce(world, tmp);
+        const current = world.sessions.get(session.id);
+        if (current === undefined) throw new Error("no session");
+        world.sessions.set(
+          session.id,
+          new Session({ ...current, status: "stopped", settledAt: new Date(), summary }),
+        );
+        yield* engine.launch(session.id, ["codex"]);
+        const after = world.sessions.get(session.id);
+        expect(after?.status).toBe("running");
+        expect(after?.summary).toBeNull();
+      }),
+    { sealantLayer: sealantLaunchLayer(created) },
   );
 });

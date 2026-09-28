@@ -249,6 +249,10 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
             Effect.catchTag("ProjectNotFoundError", (error) =>
               Effect.fail(new WorktreeNotFound({ id: error.projectId })),
             ),
+            // A project Mend refuses (SHA-256, reftable): the reason, as the person reads it.
+            Effect.catchTag("GitError", (error) =>
+              Effect.fail(new StoreFailure({ message: error.stderr })),
+            ),
           );
       }),
     )

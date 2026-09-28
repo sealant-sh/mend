@@ -828,6 +828,12 @@ export type ExecutorEnd =
       readonly kind: "unconfirmed";
       readonly lastSavedAt: Date;
       readonly lastSavedN: number | null;
+      /**
+       * Whether that capture was a confirmed save (a completed final flush or a seal) that later
+       * evidence left undecided; false (or absent) when it is only the last registered capture,
+       * which Mend never calls saved (e2e8 (i)).
+       */
+      readonly confirmed?: boolean;
       readonly pending: { readonly words: string; readonly observedAt: Date } | null;
     }
   | {
@@ -835,6 +841,8 @@ export type ExecutorEnd =
       readonly lastSavedAt: Date | null;
       /** The chain position of that save, when it was a confirmed one; absent otherwise. */
       readonly lastSavedN?: number | null;
+      /** With no confirmed save: the last registered capture's chain position, when known. */
+      readonly lastCaptureN?: number | null;
       readonly pending: { readonly words: string; readonly observedAt: Date } | null;
     };
 
@@ -899,6 +907,7 @@ export const executorEndOf = (facts: ExecutorEndFacts): ExecutorEnd => {
         kind: "unconfirmed",
         lastSavedAt: latest.at,
         lastSavedN: latest.n,
+        confirmed: true,
         pending: toPending(uncoveredBy(latest.position)[0]),
       };
     }
@@ -921,6 +930,7 @@ export const executorEndOf = (facts: ExecutorEndFacts): ExecutorEnd => {
         kind: "unconfirmed",
         lastSavedAt: undecided.at,
         lastSavedN: undecided.n,
+        confirmed: true,
         pending: toPending(uncoveredBy(undecided.position)[0]),
       };
     }
@@ -946,19 +956,28 @@ export const executorEndOf = (facts: ExecutorEndFacts): ExecutorEnd => {
       kind: "unconfirmed",
       lastSavedAt: head.registeredAt,
       lastSavedN: head.n ?? null,
+      confirmed: false,
       pending,
     };
   }
-  return { kind: "lost", lastSavedAt, pending };
+  return { kind: "lost", lastSavedAt, lastCaptureN: head?.n ?? null, pending };
 };
+
+/** `last capture 21 at 16:29:51 UTC · not confirmed`: a registered capture, never called saved. */
+const lastCaptureWords = (n: number | null, at: Date): ReadonlyArray<string> => [
+  `last capture ${n === null ? "" : `${n} `}at ${utcTime(at)}`,
+  "not confirmed",
+];
 
 /**
  * `stopped outside Mend · saved at 16:29:51 UTC` (`· capture 21` when the chain position is
- * known); `stopped outside Mend · last saved capture 21 at 16:29:51 UTC · completion unknown`
- * when its own final capture registered without a completed word; or `executor lost · last saved
- * 16:32:06 UTC · changes after that were not saved · 3 pending at 16:32:00 UTC` (the last part
- * only when Mend read the queue after that save). Every "executor lost" line starts with
- * `executor lost`.
+ * known); `stopped outside Mend · last capture 21 at 16:29:51 UTC · not confirmed` when its own
+ * final capture registered without a completed word or a standing seal (e2e8 (i): a registered
+ * capture is never called saved), or `· last saved capture 21 at … · completion unknown` when a
+ * confirmed save was left undecided; or `executor lost · last saved capture 21 at 16:32:06 UTC ·
+ * changes after that were not saved · 3 pending at 16:32:00 UTC` after a confirmed save (the last
+ * part only when Mend read the queue after it), `executor lost · last capture 21 at … · changes
+ * after it were not saved` with none. Every "executor lost" line starts with `executor lost`.
  */
 export const executorEndWords = (end: ExecutorEnd): string => {
   if (end.kind === "saved") {
@@ -968,6 +987,13 @@ export const executorEndWords = (end: ExecutorEnd): string => {
   const pending =
     end.pending === null ? [] : [`${end.pending.words} at ${utcTime(end.pending.observedAt)}`];
   if (end.kind === "unconfirmed") {
+    if (end.confirmed !== true) {
+      return [
+        "stopped outside Mend",
+        ...lastCaptureWords(end.lastSavedN, end.lastSavedAt),
+        ...pending,
+      ].join(" · ");
+    }
     const capture = end.lastSavedN === null ? "" : `capture ${end.lastSavedN} at `;
     return [
       "stopped outside Mend",
@@ -976,15 +1002,23 @@ export const executorEndWords = (end: ExecutorEnd): string => {
       ...pending,
     ].join(" · ");
   }
-  const lastSavedN = end.lastSavedN ?? null;
-  const saved =
-    end.lastSavedAt === null
-      ? ["nothing saved"]
-      : [
-          `last saved ${lastSavedN === null ? "" : `capture ${lastSavedN} at `}${utcTime(end.lastSavedAt)}`,
-          "changes after that were not saved",
-        ];
-  return ["executor lost", ...saved, ...pending].join(" · ");
+  if (end.lastSavedAt === null) return ["executor lost", "nothing saved", ...pending].join(" · ");
+  if (end.lastSavedN === undefined) {
+    const n = end.lastCaptureN ?? null;
+    return [
+      "executor lost",
+      `last capture ${n === null ? "" : `${n} `}at ${utcTime(end.lastSavedAt)}`,
+      "changes after it were not saved",
+      ...pending,
+    ].join(" · ");
+  }
+  const lastSavedN = end.lastSavedN;
+  return [
+    "executor lost",
+    `last saved ${lastSavedN === null ? "" : `capture ${lastSavedN} at `}${utcTime(end.lastSavedAt)}`,
+    "changes after that were not saved",
+    ...pending,
+  ].join(" · ");
 };
 
 /**
@@ -1022,17 +1056,18 @@ export const restatedSummary = (prior: string | null, latest: string): string | 
 /**
  * A harness that ended while its executor never answered Mend's looks: the executor's fate is
  * unknown, so the harness's own outcome is not what the session reports. `executor not answering
- * · last saved capture 21 at 16:29:51 UTC · completion unknown`, or `· nothing saved`.
+ * · last capture 21 at 16:29:51 UTC · not confirmed` — the chain head, registered, which Mend
+ * never calls saved (e2e8 (i): it may be a capture whose seal never stood) — or `· nothing saved ·
+ * completion unknown`.
  */
 export const executorUnansweredWords = (
-  lastSaved: { readonly n: number | null; readonly at: Date } | null,
+  lastCapture: { readonly n: number | null; readonly at: Date } | null,
 ): string =>
   [
     "executor not answering",
-    lastSaved === null
-      ? "nothing saved"
-      : `last saved ${lastSaved.n === null ? "" : `capture ${lastSaved.n} at `}${utcTime(lastSaved.at)}`,
-    "completion unknown",
+    ...(lastCapture === null
+      ? ["nothing saved", "completion unknown"]
+      : lastCaptureWords(lastCapture.n, lastCapture.at)),
   ].join(" · ");
 
 /**
@@ -1212,16 +1247,18 @@ const discardPendingOf = (facts: CaptureDiscardFacts) => {
 };
 
 /**
- * One line of what was discarded: `asked at 19:57:10 UTC · last saved capture 37 at 19:54:41 UTC
+ * One line of what was discarded: `asked at 19:57:10 UTC · last capture 37 at 19:54:41 UTC
  * · unsaved since 19:55:02 UTC (snaps failing · EACCES: …) · no final flush completed`.
  */
 export const captureDiscardWords = (facts: CaptureDiscardFacts): string => {
   const pending = discardPendingOf(facts);
   const parts = [
     `asked at ${utcTime(facts.requestedAt)}`,
+    // The chain head when asked: registered, never called saved (e2e8 (i)); whether a final
+    // flush completed is said last.
     facts.lastSaved === null
       ? "nothing saved"
-      : `last saved capture ${facts.lastSaved.n} at ${utcTime(facts.lastSaved.at)}`,
+      : `last capture ${facts.lastSaved.n} at ${utcTime(facts.lastSaved.at)}`,
   ];
   if (facts.failingSince !== null) {
     const error = facts.failingError === null ? "" : ` · ${clipped(facts.failingError)}`;

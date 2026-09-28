@@ -49,6 +49,39 @@ export class StoreConfig extends Context.Service<
 export const referenceDirectory = (organizationId: string, referenceId: string): string =>
   path.join("_organizations", organizationId, "references", referenceId);
 
+/**
+ * Why Mend refuses the repository at `gitDir`, or null (owner, 2026-09-28; e2e8 (d)): SHA-256
+ * objects. A SHA-256 session does not survive its capture and restore end to end yet, so a project
+ * in that format is refused when it is adopted and when a session starts on it, rather than started
+ * and left unable to save. Read through git itself (`rev-parse --show-object-format`). The reason
+ * is the sentence a person reads.
+ */
+export const unsupportedRepositoryReason = (
+  gitDir: string,
+): Effect.Effect<string | null, GitError> =>
+  Effect.map(git(["rev-parse", "--show-object-format"], gitDir), (out) => {
+    const objectFormat = out.trim();
+    if (objectFormat === "sha1") return null;
+    return objectFormat === "sha256"
+      ? "Mend doesn't support SHA-256 repositories yet."
+      : `Mend doesn't support ${objectFormat} repositories yet.`;
+  });
+
+/** `unsupportedRepositoryReason` as a refusal: a `GitError` whose `stderr` is the reason. */
+export const refuseUnsupportedRepository = (gitDir: string): Effect.Effect<void, GitError> =>
+  Effect.flatMap(unsupportedRepositoryReason(gitDir), (reason) =>
+    reason === null
+      ? Effect.void
+      : Effect.fail(
+          new GitError({
+            args: ["mend", "repository-format"],
+            cwd: gitDir,
+            exitCode: null,
+            stderr: reason,
+          }),
+        ),
+  );
+
 export class AdoptError extends Schema.TaggedErrorClass<AdoptError>()("AdoptError", {
   directory: Schema.String,
   source: RepositoryCloneUrl,
@@ -601,6 +634,18 @@ export class Store extends Context.Service<
         const attempt = Effect.gen(function* () {
           yield* Effect.sync(() => fs.mkdirSync(config.root, { recursive: true }));
           yield* git(["clone", "--bare", "--", source, storePath], config.root, remoteEnv);
+          // A SHA-256 repository is refused before anything is made of it, and the clone it just
+          // made is removed (and the project directory, when that left it empty).
+          yield* refuseUnsupportedRepository(storePath).pipe(
+            Effect.tapError(() =>
+              Effect.sync(() => {
+                fs.rmSync(storePath, { recursive: true, force: true });
+                if (fs.existsSync(projectDir) && fs.readdirSync(projectDir).length === 0) {
+                  fs.rmdirSync(projectDir);
+                }
+              }),
+            ),
+          );
           // Bare clones don't fetch new branches by default — make later syncs sane.
           yield* git(
             ["config", "remote.origin.fetch", "+refs/heads/*:refs/remotes/origin/*"],

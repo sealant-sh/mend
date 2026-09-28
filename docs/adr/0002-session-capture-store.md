@@ -1000,3 +1000,54 @@ Mend-side details the decision record left open, decided in this ADR:
       placeholder worktree, which never ships, so the drain stalls and the launch fails after ~12
       minutes until the owner discards) needs sealantd and Core to agree that a placeholder's
       staging holds nothing of the session.
+37. (2026-09-28) The eleventh review and the eighth end-to-end run, taken pragmatically (owner:
+    common workflows exact and tested; rare layouts refused early or documented on the docs site's
+    Known issues page).
+    - **A final flush names itself, and is never metered (carried review 10 #6, cross-repo decision
+      35).** sealantd sends `"flush":"final"` on `upload.urls` and `capture.register` from the
+      moment a final flush begins until its process exits, whoever asked for the flush. Both request
+      schemas accept it (any other value is metered as before); a request carrying it skips the byte
+      and call quotas whether or not a Mend drain is under way, and the bytes it takes past the byte
+      quota are logged (`exemptedBytes`). There is no per-launch cap: a final flush ships what the
+      executor's disk holds, under its own epoch prefix, and a first final flush is never refused.
+      This closes the open item of decision 35.
+    - **SHA-256 repositories are refused.** `Store.adopt` reads the clone's object format
+      (`rev-parse --show-object-format`) and refuses a SHA-256 one ("Mend doesn't support SHA-256
+      repositories yet."), removing the clone. A project adopted before is refused the same way when
+      a session starts on it (`provision`, `ensureWorktree`, `provisionSessionIn`), before anything
+      is made. Reftable is not refused: Mend's bare clone is never one, and a session that converts
+      its repository to reftable is captured through git (decision 24). The SHA-256 plumbing of
+      decision 36 stays. A session that converts its repository to SHA-256 mid-session (e2e8 F3: the
+      git section said `sha256` but listed the project's SHA-1 base pack, which failed verification)
+      is not supported: its later saves never seal and the executor is kept. Documented, not
+      handled; sealantd stops listing packs of another format.
+    - **Status lines name only what was observed (e2e8 (i)).** The chain head is a registered
+      capture, never a save: `executor not answering · last capture N at … · not confirmed`,
+      `stopped outside Mend · last capture N at … · not confirmed` (its own final capture, no
+      completed word, no seal),
+      `executor lost · last capture N at … · changes after it were not saved`, and a discard's
+      `last capture N at …`. `last saved capture N` is said only of a completed final flush or a
+      seal. A session whose current executor the platform keeps for recovery reads
+      `stopping · retained`, never `running`. A launch that starts clears Mend's verdict on an
+      earlier executor's end (`stopped outside Mend …`, `saved at …`, `executor not answering …`) as
+      it clears `launch …`; `executor lost …` stays for `picked up · executor replaced`.
+    - **A claimed standby that held nothing (e2e8 F7).** sealantd answers the FINAL of a claimed
+      standby whose replan failed, and on which no writer was ever admitted, at once: `complete`,
+      nothing pending, under its placeholder worktree, epoch and launch; it then exits 76 and Core
+      releases it as nothing to save. Mend needs no change: that answer is never read as the
+      session's save (its epoch is not the session's lease, and nothing is attested for it), the
+      drain reads the workspace gone, and the launch goes on cold under the session's own launch.
+    - **Carried format-1 trees are read back at their top level (review 11 #5).** A seal's read-back
+      (`storedCaptureProblem`) walks every format-1 dir object of the workspace and bulk classes,
+      but an `other_bulk` entry contributes only the keys it lists: its root, packs and dir packs. A
+      format-2 section is read back in full through its dir packs; a format-1 section carried from
+      another platform has its child dir objects unverified before a seal. Documented, not fixed:
+      reaching it takes a format-1 tree, a platform move and an overwrite through a live upload URL
+      on a bucket that ignores conditional writes.
+    - **The seal window against a runtime deadline (e2e8 F6).** On a bucket that ignores conditional
+      writes, a seal waits out every upload URL of its epochs plus the clock margin: about 10.5
+      minutes after a small final flush, up to 20 after a large batch, and until 15 minutes after a
+      Mend restart. A runtime that ends an executor at a deadline must begin its final flush at
+      least that long, plus the flush's own time, before the deadline, or the executor ends unsealed
+      (Core's retention keeps it; nothing is deleted). Core's lead is 15 minutes; the only
+      time-limited executors are AWS MicroVMs, which use S3 (no wait). Documented; Core unchanged.

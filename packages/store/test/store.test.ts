@@ -158,6 +158,42 @@ describe("Store", () => {
     );
   });
 
+  it("refuses to adopt a SHA-256 repository, and leaves nothing behind", async () => {
+    await withStore((tmp, _origin, source) =>
+      Effect.gen(function* () {
+        const store = yield* Store;
+        // A SHA-256 origin, served beside the fixture's.
+        const sha256 = path.join(tmp, "sha256");
+        fs.mkdirSync(sha256);
+        execFileSync("git", ["init", "-q", "-b", "main", "--object-format=sha256"], {
+          cwd: sha256,
+        });
+        fs.writeFileSync(path.join(sha256, "README.md"), "# sha256\n");
+        execFileSync("git", ["add", "-A"], { cwd: sha256 });
+        execFileSync(
+          "git",
+          ["-c", "user.name=t", "-c", "user.email=t@localhost", "commit", "-q", "-m", "one"],
+          { cwd: sha256 },
+        );
+        const refusedSha256 = yield* store
+          .adopt("sha256", RepositoryCloneUrl.make(source.replace(/origin$/, "sha256")), {
+            GIT_TERMINAL_PROMPT: "0",
+          })
+          .pipe(Effect.result);
+        expect(Result.isFailure(refusedSha256)).toBe(true);
+        if (Result.isFailure(refusedSha256)) {
+          expect(refusedSha256.failure.cause.stderr).toBe(
+            "Mend doesn't support SHA-256 repositories yet.",
+          );
+        }
+        expect(fs.existsSync(path.join(tmp, "store/sha256"))).toBe(false);
+        // A SHA-1 origin adopts as before.
+        const adopted = yield* store.adopt("files", source, { GIT_TERMINAL_PROMPT: "0" });
+        expect(adopted.defaultBranch).toBe("main");
+      }),
+    );
+  });
+
   it("reports actual Git clone transport failures with positional sources", async () => {
     await withStore((tmp, _origin, source) =>
       Effect.gen(function* () {

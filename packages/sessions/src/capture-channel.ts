@@ -333,6 +333,8 @@ export const UploadUrlsRequest = Schema.Struct({
   epoch: Schema.Int,
   keys: Schema.Array(Schema.String),
   sizes: Schema.optional(Schema.Record(Schema.String, Schema.Int)),
+  /** `final` once the executor began a final flush (`isFinalFlush`). */
+  flush: Schema.optional(Schema.String),
 });
 export type UploadUrlsRequest = typeof UploadUrlsRequest.Type;
 
@@ -379,8 +381,24 @@ export const RegisterRequest = Schema.Struct({
   capture_id: Schema.String,
   manifest_key: Schema.String,
   manifest: Schema.Unknown,
+  /** `final` once the executor began a final flush (`isFinalFlush`). */
+  flush: Schema.optional(Schema.String),
 });
 export type RegisterRequest = typeof RegisterRequest.Type;
+
+/**
+ * `flush` on `upload.urls` and `capture.register` (sealantd `registrar.rs`, cross-repo decision
+ * 35, review 2026-09-28 (10) #6): from the moment an executor begins a final flush — whoever asked
+ * for it: Mend's drain, Core's deadline, the daemon's own shutdown, a recovery boot — until its
+ * process exits, every request it sends says `"flush":"final"`. It is ending, and what it ships is
+ * work it already admitted: the request is exempt from the byte and call quotas, whether or not a
+ * Mend drain is under way (`CaptureScope.unmetered` covers only the drains Mend itself runs), and
+ * the bytes it takes past the byte quota are logged. There is no cap: a final flush ships what the
+ * executor's disk holds, under its own epoch prefix, and a first final flush is never refused.
+ * Absent from an older executor and before a final flush; any other value is metered.
+ */
+export const isFinalFlush = (input: { readonly flush?: string | undefined }): boolean =>
+  input.flush === "final";
 
 export const ChangeSummaryRequest = Schema.Struct({
   worktree_id: Schema.String,
@@ -593,7 +611,8 @@ export const UPLOAD_KEYS_PER_CALL = 1_000;
 /**
  * Byte quota: `max(floor, 4× the project's compressed footprint)` per executor launch, priced
  * once per object key. It bounds new work only: nothing a draining, kept or recovering executor
- * ships, and no `final` capture's register, is refused for it (cross-repo decision 30). `upload.urls` is the enforcement point — a batch whose declared sizes would take
+ * ships, no `final` capture's register, and no request an executor marks `flush: final`
+ * (`isFinalFlush`), is refused for it (cross-repo decisions 30 and 35). `upload.urls` is the enforcement point — a batch whose declared sizes would take
  * the session over is refused with 413 `byte-quota` before any URL is minted, so refused bytes
  * never land; `capture.register` is the backstop for what did land (keys the daemon sends no
  * size for), refusing with 409 `byte-quota`. A key is priced when first reserved or first
@@ -1529,8 +1548,8 @@ export const CaptureChannelLive: Layer.Layer<
        * of a failed upload), and every call of an executor that is being drained, kept or
        * recovered (`CaptureScope.unmetered`) — refusing it could only lose what it is saving.
        */
-      const reserveCall = (keys: ReadonlyArray<string>): boolean => {
-        if (scope.unmetered === true) return true;
+      const reserveCall = (keys: ReadonlyArray<string>, finalFlush: boolean): boolean => {
+        if (scope.unmetered === true || finalFlush) return true;
         const handed = minted.get(launchId);
         if (keys.length > 0 && handed !== undefined && keys.every((key) => handed.has(key))) {
           return true;
@@ -1569,7 +1588,8 @@ export const CaptureChannelLive: Layer.Layer<
             `${input.keys.length} keys in one call; the cap is ${policy.keysPerCall} per upload.urls call`,
           );
         }
-        if (!reserveCall(input.keys)) {
+        const finalFlush = isFinalFlush(input);
+        if (!reserveCall(input.keys, finalFlush)) {
           return yield* new CaptureRouteError({
             status: 429,
             reason: "quota-exceeded",
@@ -1675,7 +1695,7 @@ export const CaptureChannelLive: Layer.Layer<
         const requested = sumOf(unpriced);
         const used = sumOf(ledger);
         if (requested > 0 && used + requested > byteBudget) {
-          if (!preserving) return yield* overByteQuota(413, used, requested);
+          if (!preserving && !finalFlush) return yield* overByteQuota(413, used, requested);
           yield* Effect.logInfo(
             "capture channel: over the byte quota while preserving what the executor holds · not refused",
           ).pipe(
@@ -1686,6 +1706,8 @@ export const CaptureChannelLive: Layer.Layer<
               limit: byteBudget,
               used,
               requested,
+              exemptedBytes: used + requested - Math.max(byteBudget, used),
+              exemptedFor: finalFlush ? "flush: final" : "drain",
             }),
           );
         }
@@ -2510,7 +2532,8 @@ export const CaptureChannelLive: Layer.Layer<
           // pass. What landed is off-chain and retires with its epoch prefix.
           const used = sumOf(ledger);
           if (already === null && sumOf(priced) > byteBudget) {
-            if (!preserving && manifest.kind !== "final") {
+            const finalFlush = isFinalFlush(input);
+            if (!preserving && manifest.kind !== "final" && !finalFlush) {
               return yield* overByteQuota(409, used, newBytes);
             }
             yield* Effect.logInfo(
@@ -2525,6 +2548,8 @@ export const CaptureChannelLive: Layer.Layer<
                 limit: byteBudget,
                 used,
                 requested: newBytes,
+                exemptedBytes: sumOf(priced) - byteBudget,
+                exemptedFor: preserving ? "drain" : finalFlush ? "flush: final" : "final capture",
               }),
             );
           }

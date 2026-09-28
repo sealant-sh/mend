@@ -93,6 +93,7 @@ export default defineConfig({
           label: "Reference",
           items: [
             { label: "Feature status", slug: "reference/feature-status" },
+            { label: "Known issues", slug: "reference/known-issues" },
             { label: "CLI", slug: "reference/cli" },
             { label: "Server environment", slug: "reference/server-environment" },
             { label: "Product language", slug: "reference/product-language" },
