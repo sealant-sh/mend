@@ -1150,3 +1150,21 @@ Mend-side details the decision record left open, decided in this ADR:
       (`UNEXPLAINED_CHECKS_BOUND`, counted per Mend process) record `failed`, and a plan is then
       refused rather than waiting for good. Signals, host words and the bucket not answering never
       count, so decision 39's host faults stay `unverified`.
+41. (2026-09-28) End-to-end run 9's Mend items (F-A, F-B).
+    - **Nothing executes in a capture-mode standby before its claim (F-B).** sealantd marks a
+      `standby:<id>` launch unclaimed on its first boot, and any writer-admitting control command
+      (exec, stdin, sessions, forwards, SFTP, bind mounts, execution start) clears the marker
+      (sealantd#121). A capture-mode standby is now provisioned with nothing executed in it: the
+      custom image's setup commands and the `mend` helper / git transport install
+      (`prepareExecutor`) run at claim, after the replan succeeds, and the workspace note is written
+      by the claim path as for every launch. Before a claim Mend only rebinds the standby's socket
+      on the host, reads its status, and asks Core's stop; none of these admits a writer. A cold
+      launch and a non-capture standby are unchanged.
+    - **A `failed` executor whose drain ended is gone (F-A).** Decision 32's "any terminal status
+      but `stopped` is kept" is narrowed for `failed` and `cancelled`: `lookupWorkspace` asks Core's
+      `workspace.captureDrain()` (read-only), and a drain that ended (`stopped`, `saved`, `gone`,
+      `discarded`) with nothing retained reads `gone`, so a `docker stop` outside Mend that saved
+      settles `stopped outside Mend · saved at … · capture n` instead of `stopping` for good. Status
+      `retained`, a drain still `draining`, `kept` or `stop-failed`, a `retained` record, or an SDK
+      without the method stays kept. For Core: an executor that exits 0 after a complete FINAL is
+      recorded `failed`; `stopped` would describe it.
