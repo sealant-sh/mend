@@ -1051,3 +1051,28 @@ Mend-side details the decision record left open, decided in this ADR:
       least that long, plus the flush's own time, before the deadline, or the executor ends unsealed
       (Core's retention keeps it; nothing is deleted). Core's lead is 15 minutes; the only
       time-limited executors are AWS MicroVMs, which use S3 (no wait). Documented; Core unchanged.
+38. (2026-09-28) The twelfth review's Mend items.
+    - **A seal check that could not finish concludes nothing (review 12 #4).** A seal's checks read
+      the bucket through a store that notes every read it failed (`BlobStoreError`: a 503, a
+      timeout, a reset). Checks that met one, checks that died, and a record of the seal that failed
+      or died (the database away) end `unavailable`, not with a verdict about the capture. The
+      register answers `seal: withheld` with the reason `unavailable`, the capture still registers
+      without the seal, and the job is dropped, so the executor's next register of the same capture
+      checks again and records the seal. A problem observed while the store was failing reads is not
+      trusted as one. The recorder settles its job on every exit, including defects and
+      interruption, and never leaves one marked `recording` with nothing behind it. Only what was
+      observed about the bytes (a missing object, bytes that do not hash to their name, links or
+      metadata that would not restore) refuses a seal as `unrestorable`, and that verdict is kept
+      for the re-asks. sealantd treats any `withheld` reason as "ask again" (the reason is a free
+      code), so no negotiation is needed; its matching change re-asks on the next FINAL after a
+      refusal. The same holds for what the register could not observe: a git section the verifier
+      could not walk (`unverified`: the runner's cache could not be prepared, the bucket did not
+      answer) and a restore tree it could not list withhold the seal as `unavailable` instead of
+      refusing it, and the re-ask verifies the git section again (recording the outcome on the
+      capture) before its other checks. A section that is `unverified` for good (an object format or
+      ref backend Mend does not read) stays withheld, never sealed.
+    - **A start in the retained workspace clears the verdict on the earlier look (review 12 #5).**
+      The summary-clearing step of a fresh start (decision 37) also runs after a start in a
+      workspace a Service or a shell retained. That executor answered and opened the new process, so
+      `executor not answering · …` from the earlier agent's end no longer holds. `executor lost · …`
+      stays for `picked up · executor replaced`.

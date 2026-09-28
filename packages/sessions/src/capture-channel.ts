@@ -52,7 +52,7 @@ import {
   type WorktreeMetaDocument,
   withCaptureReadPass,
 } from "@mend/store";
-import { Cause, Deferred, Duration, Effect, Layer, Option, Result, Schema } from "effect";
+import { Cause, Deferred, Duration, Effect, Exit, Layer, Option, Result, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { CaptureRemotes, type PlanRemote } from "./capture-remotes.ts";
@@ -474,8 +474,10 @@ export class CaptureRouteError extends Schema.TaggedErrorClass<CaptureRouteError
  * - `recorded`: recorded, and it stands now — nothing handed out can replace what it names;
  * - `withheld`: recorded, but it does not stand yet. `reason`: `write-authority` (an upload URL of
  *   its epoch could still replace what it names, or one was handed out while its objects were read
- *   back) or `verifying` (its objects could not be read back). Registering the same capture again
- *   (idempotent) answers it anew;
+ *   back), `verifying` (its objects are still being read back, or could not be) or `unavailable`
+ *   (the checks could not finish: the store did not answer a read, or Mend failed to record the
+ *   seal — nothing was observed wrong with the capture, and the next ask checks it again; review
+ *   2026-09-28 (12) #4). Registering the same capture again (idempotent) answers it anew;
  * - `refused`: not recorded, or void — it never stands. `reason`: `incomplete` (not
  *   `complete`), `epoch` (another epoch than the register's), `executor` (another launch's),
  *   `unrestorable` (a section Mend did not observe restore), `not-recorded`, `void` (an object it
@@ -489,6 +491,7 @@ export interface RegisterSealOutcome {
   readonly reason?:
     | "write-authority"
     | "verifying"
+    | "unavailable"
     | "incomplete"
     | "epoch"
     | "executor"
@@ -505,18 +508,64 @@ interface RegisterAnswer {
   readonly seal?: RegisterSealOutcome;
 }
 
-/** What a sealing capture's read-back checks found (`sealChecks`): nothing, when the seal may stand. */
+/**
+ * What a sealing capture's read-back checks found (`sealChecks`): nothing, when the seal may stand.
+ * `problems` are what the checks observed wrong with the capture — a verdict about its bytes,
+ * kept for the re-asks. `unavailable` says the checks could not conclude (review 2026-09-28 (12)
+ * #4): the store failed a read (a 503, a timeout — `BlobStoreError`), the checks died, or the seal
+ * could not be recorded. Such a verdict says nothing about the capture: it is answered `withheld`
+ * (`unavailable`), never kept, and the next ask checks again. It outranks `problems` — a problem
+ * observed while the store was failing reads is not trusted as one.
+ */
 interface SealVerdict {
   readonly problems: ReadonlyArray<string>;
+  readonly unavailable?: ReadonlyArray<string>;
 }
+
+/** Whether `verdict` concluded nothing (`SealVerdict.unavailable`). */
+const verdictUnavailable = (verdict: SealVerdict): boolean =>
+  (verdict.unavailable ?? []).length > 0;
+
+/**
+ * `blobs`, each read the store fails (`BlobStoreError`: a 503, a timeout, a reset) noted in
+ * `failed` — whatever the reader then makes of it — for seal checks to tell the store not
+ * answering from bytes that are wrong (review 2026-09-28 (12) #4).
+ */
+const noteStoreFailures = (
+  blobs: typeof BlobStore.Service,
+  failed: Array<string>,
+): typeof BlobStore.Service => {
+  const noted =
+    (what: string) =>
+    <A, E extends { readonly _tag: string }>(self: Effect.Effect<A, E>): Effect.Effect<A, E> =>
+      self.pipe(
+        Effect.tapError((error) =>
+          Effect.sync(() => {
+            if (error._tag === "BlobStoreError") failed.push(what);
+          }),
+        ),
+      );
+  return {
+    ...blobs,
+    get: (key) => blobs.get(key).pipe(noted(`get ${key}`)),
+    getRange: (key, start, length) =>
+      blobs.getRange(key, start, length).pipe(noted(`get ${key} @${start}+${length}`)),
+    getStream: (key) => blobs.getStream(key).pipe(noted(`get ${key}`)),
+    head: (key) => blobs.head(key).pipe(noted(`head ${key}`)),
+    list: (prefix) => blobs.list(prefix).pipe(noted(`list ${prefix}`)),
+  };
+};
 
 /**
  * One sealing capture's seal checks (e2e8 F2): `verdict` once they end; `settled` once nothing
  * is left to record on their account — the register's CAS carried the seal (or refused it) with
  * the verdict in hand, or the recorder that took over once the register answered `withheld`
- * finished (`recording`).
+ * finished (`recording`) — however it ended: a recorder that failed or died settles it
+ * `unavailable`, and the job is dropped for the next ask to start again.
  */
 interface SealJob {
+  /** Its key in the channel's jobs (`sealKeyOf`). */
+  readonly key: string;
   readonly verdict: Deferred.Deferred<SealVerdict>;
   readonly settled: Deferred.Deferred<SealVerdict>;
   recording: boolean;
@@ -1066,13 +1115,21 @@ export const CaptureChannelLive: Layer.Layer<
     /**
      * Seal checks by the same key (`SealJob`): one verification per sealing capture at a time,
      * run detached from the register that started it, and kept once ended for the executor's
-     * re-asks. The oldest dropped past `SEAL_VERDICTS_KEPT`; a re-ask that finds none checks again.
+     * re-asks — a verdict about the capture only: one that concluded nothing (`unavailable`) is
+     * dropped, and the next ask checks again (review 2026-09-28 (12) #4). The oldest dropped past
+     * `SEAL_VERDICTS_KEPT`; a re-ask that finds none checks again.
      */
     const sealJobs = new Map<string, SealJob>();
+    /** Forget `job`, unless another job already took its key. */
+    const dropSealJob = (job: SealJob) =>
+      Effect.sync(() => {
+        if (sealJobs.get(job.key) === job) sealJobs.delete(job.key);
+      });
     /**
      * The seal checks for `key`: the ones running (or, unless `fresh`, ended) — else `checks`,
      * started now. A register's own verification is always fresh: a verdict an earlier pass reached
-     * is not a proof about the bytes now (`proofStands`).
+     * is not a proof about the bytes now (`proofStands`). Checks that die, or are interrupted,
+     * conclude nothing (`unavailable`): the job is dropped and its verdict settled all the same.
      */
     const sealJobFor = (key: string, checks: Effect.Effect<SealVerdict>, fresh: boolean) =>
       Effect.gen(function* () {
@@ -1081,6 +1138,7 @@ export const CaptureChannelLive: Layer.Layer<
           return known;
         }
         const job: SealJob = {
+          key,
           verdict: yield* Deferred.make<SealVerdict>(),
           settled: yield* Deferred.make<SealVerdict>(),
           recording: false,
@@ -1093,12 +1151,20 @@ export const CaptureChannelLive: Layer.Layer<
         }
         yield* Effect.forkDetach(
           checks.pipe(
-            Effect.catchCause((cause) =>
-              Effect.succeed({
-                problems: [`the seal checks ended without a verdict: ${Cause.pretty(cause)}`],
+            Effect.onExit((exit) =>
+              Effect.gen(function* () {
+                const verdict: SealVerdict = Exit.isSuccess(exit)
+                  ? exit.value
+                  : {
+                      problems: [],
+                      unavailable: [
+                        `the seal checks ended without a verdict: ${Cause.pretty(exit.cause)}`,
+                      ],
+                    };
+                if (verdictUnavailable(verdict)) yield* dropSealJob(job);
+                yield* Deferred.succeed(job.verdict, verdict);
               }),
             ),
-            Effect.flatMap((verdict) => Deferred.succeed(job.verdict, verdict)),
           ),
         );
         return job;
@@ -1106,7 +1172,11 @@ export const CaptureChannelLive: Layer.Layer<
     /**
      * Once `job`'s checks end, record the seal they allowed (`CaptureStoreRepo.recordSeal`: the
      * capture still the chain's head, the lease still this launch's) and settle the job. Started
-     * once per job; the register that answered `withheld` (`verifying`) no longer waits.
+     * once per job; the register that answered `withheld` (`verifying`) no longer waits. The job
+     * is settled on every exit of the recorder (review 2026-09-28 (12) #4): checks that concluded
+     * nothing, or a record that failed or died (the database away), settle it `unavailable` and
+     * drop it — never a job left `recording` with no recorder, which every later ask would wait
+     * on — so the next ask checks and records again.
      */
     const recordWhenChecked = (
       job: SealJob,
@@ -1121,25 +1191,52 @@ export const CaptureChannelLive: Layer.Layer<
           n: record.n,
           captureId: record.captureId,
         };
+        const recorder = Effect.gen(function* () {
+          const verdict = yield* Deferred.await(job.verdict);
+          if (verdictUnavailable(verdict)) {
+            yield* Effect.logWarning(
+              "capture channel: a final seal whose checks could not finish · not recorded, checked again on the next ask",
+            ).pipe(
+              Effect.annotateLogs({
+                ...annotations,
+                unavailable: (verdict.unavailable ?? []).join("; "),
+              }),
+            );
+          } else if (verdict.problems.length > 0) {
+            yield* Effect.logWarning(
+              "capture channel: a final seal over sections not verified restorable · not recorded",
+            ).pipe(Effect.annotateLogs({ ...annotations, problems: verdict.problems.join("; ") }));
+          } else {
+            const recorded = yield* repo.recordSeal(record);
+            yield* Effect.logInfo(
+              recorded
+                ? "capture channel: final seal · verified after the register answered · recorded"
+                : "capture channel: final seal · verified after the register answered · not recorded (the chain or the lease moved)",
+            ).pipe(Effect.annotateLogs(annotations));
+          }
+          return verdict;
+        });
         return Effect.forkDetach(
-          Effect.gen(function* () {
-            const verdict = yield* Deferred.await(job.verdict);
-            if (verdict.problems.length > 0) {
-              yield* Effect.logWarning(
-                "capture channel: a final seal over sections not verified restorable · not recorded",
-              ).pipe(
-                Effect.annotateLogs({ ...annotations, problems: verdict.problems.join("; ") }),
-              );
-            } else {
-              const recorded = yield* repo.recordSeal(record);
-              yield* Effect.logInfo(
-                recorded
-                  ? "capture channel: final seal · verified after the register answered · recorded"
-                  : "capture channel: final seal · verified after the register answered · not recorded (the chain or the lease moved)",
-              ).pipe(Effect.annotateLogs(annotations));
-            }
-            yield* Deferred.succeed(job.settled, verdict);
-          }),
+          recorder.pipe(
+            Effect.onExit((exit) =>
+              Effect.gen(function* () {
+                const verdict: SealVerdict = Exit.isSuccess(exit)
+                  ? exit.value
+                  : {
+                      problems: [],
+                      unavailable: [`the seal was not recorded: ${Cause.pretty(exit.cause)}`],
+                    };
+                if (Exit.isFailure(exit)) {
+                  yield* Effect.logWarning(
+                    "capture channel: a final seal verified but not recorded · checked again on the next ask",
+                  ).pipe(Effect.annotateLogs({ ...annotations, cause: Cause.pretty(exit.cause) }));
+                }
+                if (verdictUnavailable(verdict)) yield* dropSealJob(job);
+                job.recording = false;
+                yield* Deferred.succeed(job.settled, verdict);
+              }),
+            ),
+          ),
         ).pipe(Effect.asVoid);
       });
 
@@ -2031,6 +2128,38 @@ export const CaptureChannelLive: Layer.Layer<
         detail:
           "its objects are still being read back; registering the same capture again reads how the seal stands",
       };
+      /** A seal whose checks concluded nothing (`SealVerdict.unavailable`): asked again, checked again. */
+      const unavailableAnswer = (verdict: SealVerdict) => ({
+        outcome: { state: "withheld", reason: "unavailable" } satisfies RegisterSealOutcome,
+        detail: `its checks could not finish (${(verdict.unavailable ?? []).join("; ")}); registering the same capture again checks it again`,
+      });
+
+      /**
+       * `checks` over the store, every read the store failed noted (review 2026-09-28 (12) #4): a
+       * `BlobStoreError` — a 503, a timeout — is the store not answering, never a fact about the
+       * capture, so checks that met one conclude nothing (`unavailable`), whatever they made of
+       * the reads that failed. A missing object (`BlobNotFoundError`) or other bytes are facts.
+       */
+      const againstStore = (
+        checks: Effect.Effect<SealVerdict, never, BlobStore>,
+      ): Effect.Effect<SealVerdict> =>
+        Effect.suspend(() => {
+          const failed: Array<string> = [];
+          return checks.pipe(
+            Effect.provideService(BlobStore, noteStoreFailures(blobs, failed)),
+            Effect.map((verdict) =>
+              failed.length === 0
+                ? verdict
+                : {
+                    problems: verdict.problems,
+                    unavailable: [
+                      ...(verdict.unavailable ?? []),
+                      `the store failed ${failed.length} read(s), first ${failed[0]}`,
+                    ],
+                  },
+            ),
+          );
+        });
 
       /**
        * What a seal needs read back from the store, beyond what the register already knows: every
@@ -2043,7 +2172,8 @@ export const CaptureChannelLive: Layer.Layer<
        * tracked file of that tree and a file of its class holding that blob's bytes, and a tree
        * Mend could not list seals nothing; and every inode those links make is promised one mode
        * and one mtime (review 2026-09-28 (7) #10, (8) #9). One verification pass: each object
-       * read at most once (`withCaptureReadPass`, e2e8 F2). No problems: the seal may stand.
+       * read at most once (`withCaptureReadPass`, e2e8 F2). No problems: the seal may stand. A
+       * read the store failed makes the verdict `unavailable` (`againstStore`).
        */
       const sealChecks = (
         manifest: CaptureManifest,
@@ -2052,52 +2182,54 @@ export const CaptureChannelLive: Layer.Layer<
         restoreTree: ReadonlyMap<string, RestoreTreePath> | null,
         annotations: Readonly<Record<string, unknown>>,
       ): Effect.Effect<SealVerdict> =>
-        withCaptureReadPass(
-          Effect.gen(function* () {
-            const problems: Array<string> = [];
-            const payloads = yield* verifyPackPayloads(
-              chunked.flatMap((section) => section.packs),
-            ).pipe(Effect.result);
-            if (Result.isFailure(payloads)) {
-              const error = payloads.failure;
-              yield* Effect.logWarning(
-                "capture channel: a final seal over a pack whose chunks do not read · registered without it",
-              ).pipe(
-                Effect.annotateLogs({
-                  ...annotations,
-                  error: error._tag,
-                  detail:
-                    error._tag === "CaptureFormatError"
-                      ? `${error.key}: ${error.reason}`
-                      : error._tag === "CaptureIntegrityError"
-                        ? `${error.key} does not hash to ${error.expected}`
-                        : error._tag === "ChunkNotFoundError"
-                          ? error.hash
-                          : error._tag === "BlobNotFoundError"
-                            ? error.key
-                            : error.message,
-                }),
-              );
-              problems.push("chunk payloads not read");
-            }
-            if (metaDocument === null) return { problems };
-            const crossLinks = yield* crossLinksProblem(manifest, metaDocument);
-            if (crossLinks !== null) problems.push(`cross-class links: ${crossLinks}`);
-            if (
-              (metaDocument.hardlinks ?? []).length > 0 ||
-              (metaDocument.shared ?? []).length > 0
-            ) {
-              const trackedLinks =
-                restoreTree === null
-                  ? "the tree a restore checks out was not listed"
-                  : yield* linkTopologyProblem(manifest, metaDocument, restoreTree);
-              if (trackedLinks !== null) problems.push(`tracked links: ${trackedLinks}`);
-            }
-            const inodeMeta = yield* inodeMetadataProblem(manifest, metaDocument);
-            if (inodeMeta !== null) problems.push(`inode metadata: ${inodeMeta}`);
-            return { problems };
-          }),
-        ).pipe(Effect.provideService(BlobStore, blobs));
+        againstStore(
+          withCaptureReadPass(
+            Effect.gen(function* () {
+              const problems: Array<string> = [];
+              const payloads = yield* verifyPackPayloads(
+                chunked.flatMap((section) => section.packs),
+              ).pipe(Effect.result);
+              if (Result.isFailure(payloads)) {
+                const error = payloads.failure;
+                yield* Effect.logWarning(
+                  "capture channel: a final seal over a pack whose chunks do not read · registered without it",
+                ).pipe(
+                  Effect.annotateLogs({
+                    ...annotations,
+                    error: error._tag,
+                    detail:
+                      error._tag === "CaptureFormatError"
+                        ? `${error.key}: ${error.reason}`
+                        : error._tag === "CaptureIntegrityError"
+                          ? `${error.key} does not hash to ${error.expected}`
+                          : error._tag === "ChunkNotFoundError"
+                            ? error.hash
+                            : error._tag === "BlobNotFoundError"
+                              ? error.key
+                              : error.message,
+                  }),
+                );
+                problems.push("chunk payloads not read");
+              }
+              if (metaDocument === null) return { problems };
+              const crossLinks = yield* crossLinksProblem(manifest, metaDocument);
+              if (crossLinks !== null) problems.push(`cross-class links: ${crossLinks}`);
+              if (
+                (metaDocument.hardlinks ?? []).length > 0 ||
+                (metaDocument.shared ?? []).length > 0
+              ) {
+                const trackedLinks =
+                  restoreTree === null
+                    ? "the tree a restore checks out was not listed"
+                    : yield* linkTopologyProblem(manifest, metaDocument, restoreTree);
+                if (trackedLinks !== null) problems.push(`tracked links: ${trackedLinks}`);
+              }
+              const inodeMeta = yield* inodeMetadataProblem(manifest, metaDocument);
+              if (inodeMeta !== null) problems.push(`inode metadata: ${inodeMeta}`);
+              return { problems };
+            }),
+          ),
+        );
 
       /**
        * `sealChecks` for a capture registered before — by a register whose checks this process no
@@ -2113,8 +2245,15 @@ export const CaptureChannelLive: Layer.Layer<
       ): Effect.Effect<SealVerdict> =>
         withCaptureReadPass(
           Effect.gen(function* () {
-            if (row.gitFsck !== "verified") return { problems: [`git section ${row.gitFsck}`] };
             if (manifest.sections.bulk === "pending") return { problems: ["bulk class pending"] };
+            // A git section the register could not verify is verified again now (review
+            // 2026-09-28 (12) #4); still not verifiable, the checks conclude nothing.
+            const gitFsck =
+              row.gitFsck === "unverified" ? yield* verifyRow(row, manifest) : row.gitFsck;
+            if (gitFsck === "unverified") {
+              return { problems: [], unavailable: ["the git section could not be verified"] };
+            }
+            if (gitFsck !== "verified") return { problems: [`git section ${gitFsck}`] };
             const meta = yield* verifyWorktreeMeta(manifest.sections.workspace).pipe(Effect.result);
             if (Result.isFailure(meta)) {
               return { problems: [`worktree metadata unrestorable: ${meta.failure._tag}`] };
@@ -2128,16 +2267,22 @@ export const CaptureChannelLive: Layer.Layer<
               tree === undefined
                 ? new Map<string, RestoreTreePath>()
                 : yield* verifier.treeObjects(scope.projectId, manifest, tree);
-            if (restoreTree === null) return { problems: ["worktree metadata unverified"] };
+            if (restoreTree === null) {
+              return {
+                problems: [],
+                unavailable: ["the tree a restore checks out could not be listed"],
+              };
+            }
             const namespace = yield* restoreNamespaceProblem(manifest, metaDocument, restoreTree);
             if (namespace !== null) return { problems: [`worktree metadata: ${namespace}`] };
             return yield* sealChecks(manifest, chunked, metaDocument, restoreTree, annotations);
           }),
         ).pipe(
-          Effect.provideService(BlobStore, blobs),
+          againstStore,
           Effect.catchCause((cause) =>
             Effect.succeed({
-              problems: [`the seal checks ended without a verdict: ${Cause.pretty(cause)}`],
+              problems: [],
+              unavailable: [`the seal checks ended without a verdict: ${Cause.pretty(cause)}`],
             }),
           ),
         );
@@ -2146,8 +2291,9 @@ export const CaptureChannelLive: Layer.Layer<
        * Where the seal of a capture registered before stands, for the executor's re-ask (the same
        * register again): recorded for it — as `sealStandingOf` says; its checks still running —
        * `withheld` (`verifying`), waited for within what is left of the budget; its checks found
-       * problems — refused; nothing known here (Mend restarted) — checked again, the seal recorded
-       * if they pass.
+       * problems — refused; nothing known here (Mend restarted), or its checks or its record
+       * concluded nothing (`unavailable`: the store failed a read, the database failed the record)
+       * — checked again, the seal recorded if they pass.
        */
       const reAsked = Effect.fn("SessionCaptureApi.reAsked")(function* (
         input: RegisterRequest,
@@ -2193,6 +2339,15 @@ export const CaptureChannelLive: Layer.Layer<
         }
         const settled = yield* Deferred.await(job.settled).pipe(Effect.timeoutOption(waitMs));
         if (Option.isNone(settled)) return verifyingAnswer;
+        // Checks or a record that concluded nothing (review 2026-09-28 (12) #4): the job is
+        // dropped, and the next ask checks and records again — unless the record went through.
+        if (verdictUnavailable(settled.value)) {
+          const sealed = yield* repo.sealedCompletion(worktreeId, launchId, input.epoch);
+          if (sealed === null || sealed.captureId !== input.capture_id) {
+            return unavailableAnswer(settled.value);
+          }
+          return yield* registeredSealOutcome(input.epoch, input.capture_id, null);
+        }
         return yield* registeredSealOutcome(
           input.epoch,
           input.capture_id,
@@ -2622,15 +2777,29 @@ export const CaptureChannelLive: Layer.Layer<
           // nothing, never pending.
           const bulkCaptured = manifest.sections.bulk !== "pending";
           const factProblems = [
-            gitFsck === "verified" ? null : `git section ${gitFsck}`,
-            metaNamespace === "verified" ? null : `worktree metadata ${metaNamespace}`,
+            gitFsck === "failed" ? "git section failed" : null,
             bulkCaptured ? null : "bulk class pending",
           ].filter((problem) => problem !== null);
+          // What could not be observed is no fact about the capture (review 2026-09-28 (12) #4):
+          // a git section the verifier could not walk (its cache not prepared, the bucket not
+          // answering), a tree it could not list. Withheld (`unavailable`); the re-ask verifies
+          // again (`lateSealChecks`).
+          const factUnavailable = [
+            gitFsck === "unverified" ? "the git section could not be verified" : null,
+            gitFsck !== "failed" && metaNamespace === "unverified"
+              ? "the tree a restore checks out could not be listed"
+              : null,
+          ].filter((reason) => reason !== null);
           // Then what reads the objects back (`sealChecks`): the chunk payloads, the cross-class
           // links, the tracked links, the inode promises. One verification per sealing capture
           // at a time (`sealJobFor`, e2e8 F2), waited for only within the register's budget: past
           // it, the capture registers without the seal and the checks go on.
-          if (already === null && sealHolds && factProblems.length === 0) {
+          if (
+            already === null &&
+            sealHolds &&
+            factProblems.length === 0 &&
+            factUnavailable.length === 0
+          ) {
             job ??= yield* sealJobFor(
               sealKey,
               sealChecks(manifest, chunked, metaDocument, restoreTree, annotations),
@@ -2642,13 +2811,29 @@ export const CaptureChannelLive: Layer.Layer<
               ? null
               : yield* Deferred.await(job.verdict).pipe(Effect.timeoutOption(remaining()));
           const pendingSeal = verdict !== null && Option.isNone(verdict);
+          // Checks that concluded nothing (the store failed a read, review 2026-09-28 (12) #4):
+          // registered without the seal, answered `withheld` (`unavailable`), checked again on
+          // the next ask — never a verdict about the capture.
+          const unavailable: SealVerdict | null =
+            factProblems.length === 0 && factUnavailable.length > 0
+              ? { problems: [], unavailable: factUnavailable }
+              : verdict !== null && Option.isSome(verdict) && verdictUnavailable(verdict.value)
+                ? verdict.value
+                : null;
           const problems = [
             ...factProblems,
             ...(verdict !== null && Option.isSome(verdict) ? verdict.value.problems : []),
           ];
-          const sealed = sealHolds && already === null && !pendingSeal && problems.length === 0;
+          const sealed =
+            sealHolds &&
+            already === null &&
+            !pendingSeal &&
+            unavailable === null &&
+            problems.length === 0;
           const sealProblem =
-            !sealHolds || sealed || pendingSeal || already !== null ? null : problems.join("; ");
+            !sealHolds || sealed || pendingSeal || unavailable !== null || already !== null
+              ? null
+              : problems.join("; ");
           if (sealProblem !== null) {
             yield* Effect.logWarning(
               "capture channel: a final seal over sections not verified restorable · registered without it",
@@ -2682,30 +2867,49 @@ export const CaptureChannelLive: Layer.Layer<
                     : conflictToRoute(error).pipe(Effect.flatMap(Effect.fail)),
               ),
             );
-          return { outcome, priced, records, sealProblem, pendingSeal, verdict, already };
+          return {
+            outcome,
+            priced,
+            records,
+            sealProblem,
+            pendingSeal,
+            unavailable,
+            verdict,
+            already,
+          };
         });
         // One verification pass (e2e8 F2): whatever the attempts read — dir packs, pack indexes,
         // pack payloads, the chunks a member's digest needs — is read once for all of them.
-        const { outcome, priced, records, sealProblem, pendingSeal, verdict, already } =
-          yield* attempt.pipe(
-            Effect.retry({
-              while: (error) => error._tag === "GuardMovedError",
-              times: GUARD_ATTEMPTS - 1,
-            }),
-            Effect.catchTag("GuardMovedError", () =>
-              Effect.die(
-                `capture channel: retention kept moving the chains this capture names (${GUARD_ATTEMPTS} attempts)`,
-              ),
+        const {
+          outcome,
+          priced,
+          records,
+          sealProblem,
+          pendingSeal,
+          unavailable,
+          verdict,
+          already,
+        } = yield* attempt.pipe(
+          Effect.retry({
+            while: (error) => error._tag === "GuardMovedError",
+            times: GUARD_ATTEMPTS - 1,
+          }),
+          Effect.catchTag("GuardMovedError", () =>
+            Effect.die(
+              `capture channel: retention kept moving the chains this capture names (${GUARD_ATTEMPTS} attempts)`,
             ),
-            withCaptureReadPass,
-            Effect.provideService(BlobStore, blobs),
-          );
+          ),
+          withCaptureReadPass,
+          Effect.provideService(BlobStore, blobs),
+        );
         if (!outcome.lostAck) {
           for (const [key, bytes] of priced) ledger.set(key, bytes);
           yield* repo.recordPacks(records);
           const row = yield* repo.captureById(input.capture_id);
           if (row !== null) publish(row);
         }
+        // A verdict that concluded nothing is not kept: the next ask checks again.
+        if (unavailable !== null && job !== undefined) yield* dropSealJob(job);
         // The seal's outcome, as the store holds it now (cross-repo decision 22): the executor
         // answers its FINAL complete only on `recorded`. A lost-answer retry reads it anew.
         const sealAnswer =
@@ -2742,18 +2946,20 @@ export const CaptureChannelLive: Layer.Layer<
                   })
                 : already !== null || outcome.lostAck
                   ? yield* reAsked(input, manifest, chunked, referenced, remaining())
-                  : yield* Effect.gen(function* () {
-                      // Answered within the budget: the CAS carried the seal, or its problems
-                      // kept it out. Re-asks read that.
-                      if (job !== undefined && verdict !== null && Option.isSome(verdict)) {
-                        yield* Deferred.succeed(job.settled, verdict.value);
-                      }
-                      return yield* registeredSealOutcome(
-                        input.epoch,
-                        input.capture_id,
-                        sealProblem,
-                      );
-                    });
+                  : unavailable !== null
+                    ? unavailableAnswer(unavailable)
+                    : yield* Effect.gen(function* () {
+                        // Answered within the budget: the CAS carried the seal, or its problems
+                        // kept it out. Re-asks read that.
+                        if (job !== undefined && verdict !== null && Option.isSome(verdict)) {
+                          yield* Deferred.succeed(job.settled, verdict.value);
+                        }
+                        return yield* registeredSealOutcome(
+                          input.epoch,
+                          input.capture_id,
+                          sealProblem,
+                        );
+                      });
         if (sealAnswer !== null && sealAnswer.outcome.state !== "recorded") {
           yield* Effect.logInfo(`capture channel: final seal · ${sealAnswer.outcome.state}`).pipe(
             Effect.annotateLogs({

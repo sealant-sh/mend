@@ -8564,19 +8564,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // settled_at, or the first-settle-wins guard ignores this run's exit
         // and the row reads "running" forever — unstoppable and undeletable.
         yield* sessions.reopen(sessionId, "running");
-        // What an earlier launch that never started left (`launch failed · …`, `launch cancelled ·
-        // …`, `launch interrupted · …`), and Mend's verdict on how an earlier executor ended
-        // (`stopped outside Mend · saved at …`), say nothing of this one, which started: a session
-        // read `running · launch failed · the harness never started` or `running · stopped outside
-        // Mend · saved at … · capture 13` after a resume (e2e8 F7, (i)).
-        const reopened = yield* sessions.byId(sessionId);
-        const priorSummary = reopened.summary;
-        if (
-          priorSummary !== null &&
-          STALE_ON_START_PREFIXES.some((prefix) => priorSummary.startsWith(prefix))
-        ) {
-          yield* sessions.setSummary(sessionId, null);
-        }
+        yield* clearStaleStartSummary(sessionId);
         yield* forkSupervision(sessionId, sealantRunId);
 
         // The agent process ends on its own; the fold over every process decides the session.
@@ -8861,6 +8849,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return { sourceHarness: harness, events: canonical?.events ?? [] };
       });
 
+      /**
+       * Once a launch has started — in a fresh executor or in the retained one (review 2026-09-28
+       * (12) #5) — clear what an earlier launch that never started left (`launch failed · …`,
+       * `launch cancelled · …`, `launch interrupted · …`), and Mend's verdict on how an earlier
+       * executor, or an earlier look at this one, ended (`stopped outside Mend · saved at …`,
+       * `executor not answering · …`): they say nothing of this start, and a session read `running
+       * · launch failed · the harness never started`, `running · stopped outside Mend · saved at …
+       * · capture 13` after a resume (e2e8 F7, (i)), or `running · executor not answering · …`
+       * after a resume into the retained workspace whose executor answered it. `executor lost · …`
+       * stays (`STALE_ON_START_PREFIXES`).
+       */
+      const clearStaleStartSummary = Effect.fn("SessionEngine.clearStaleStartSummary")(function* (
+        sessionId: SessionId,
+      ) {
+        const reopened = yield* sessions.byId(sessionId);
+        const priorSummary = reopened.summary;
+        if (
+          priorSummary !== null &&
+          STALE_ON_START_PREFIXES.some((prefix) => priorSummary.startsWith(prefix))
+        ) {
+          yield* sessions.setSummary(sessionId, null);
+        }
+      });
+
       /** Start the next coding-agent run without replacing a workspace retained by live leases. */
       const launchInRetainedWorkspace = Effect.fn("SessionEngine.launchInRetainedWorkspace")(
         function* (
@@ -9018,6 +9030,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);
           // See launchInternal: reopen unconditionally so a retried row settles again.
           yield* sessions.reopen(sessionId, "running");
+          // The retained executor answered and started this process: what an earlier look at it
+          // concluded (`executor not answering · …`) no longer holds (review 2026-09-28 (12) #5).
+          yield* clearStaleStartSummary(sessionId);
           yield* forkSupervision(sessionId, sealantRunId);
           yield* Effect.forkIn(watchProcess(agentProcess), scope);
           if (protocolStart !== null) {

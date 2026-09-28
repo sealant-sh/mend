@@ -6,6 +6,7 @@ import { CaptureStoreRepo } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
 import {
   BlobStore,
+  BlobStoreError,
   BlobStoreFsLive,
   type CaptureManifest,
   BlobStoreS3Live,
@@ -16,6 +17,7 @@ import {
   isCaptureObjectKey,
   readCaptureFileBytes,
   packIdxKeyOf,
+  runnerCachePathOf,
   sha256Hex,
   stringifyExact,
 } from "@mend/store";
@@ -2959,12 +2961,15 @@ interface BucketReads {
   gets: number;
   /** Called on each whole GET, before it reads. */
   onWhole: ((key: string) => Promise<void>) | undefined;
+  /** The next whole GET (or stream) of this key fails as the store not answering (a 503). */
+  failOnce: string | undefined;
 }
 const bucketReads: BucketReads = {
   whole: new Map(),
   ranged: new Map(),
   gets: 0,
   onWhole: undefined,
+  failOnce: undefined,
 };
 /** The bucket's answer to `replaceableUntil` in the suite below. */
 let passBucketReplaceable: () => number = () => 0;
@@ -2973,6 +2978,7 @@ const resetReads = () => {
   bucketReads.ranged.clear();
   bucketReads.gets = 0;
   bucketReads.onWhole = undefined;
+  bucketReads.failOnce = undefined;
 };
 const bump = (map: Map<string, number>, key: string) => map.set(key, (map.get(key) ?? 0) + 1);
 describeSeals(
@@ -2990,12 +2996,30 @@ describeSeals(
               bucketReads.gets += 1;
               const hook = bucketReads.onWhole;
               if (hook !== undefined) yield* Effect.promise(() => hook(key));
+              if (bucketReads.failOnce === key) {
+                bucketReads.failOnce = undefined;
+                return yield* new BlobStoreError({
+                  operation: "get",
+                  key,
+                  cause: new Error("503 Service Unavailable"),
+                });
+              }
               return yield* store.get(key);
             }),
           getStream: (key: string) =>
             Effect.suspend(() => {
               bump(bucketReads.whole, key);
               bucketReads.gets += 1;
+              if (bucketReads.failOnce === key) {
+                bucketReads.failOnce = undefined;
+                return Effect.fail(
+                  new BlobStoreError({
+                    operation: "get",
+                    key,
+                    cause: new Error("503 Service Unavailable"),
+                  }),
+                );
+              }
               return store.getStream(key);
             }),
           getRange: (key: string, start: number, length: number) =>
@@ -3160,6 +3184,97 @@ describeSeals(
           )
         )?.captureId,
       ).toBe(capture.built.id);
+    });
+
+    it("review 12 #4: a read the store failed during the seal checks withholds the seal (unavailable), and the next ask checks again and records it", async () => {
+      passBucketReplaceable = () => 0;
+      const at = await claimed();
+      const capture = sharedLinksCapture(at, "transient-read");
+      await run(uploadObjects(capture.objects));
+      resetReads();
+      // One whole-pack GET answers 503: the store not answering, not a fact about the pack.
+      bucketReads.failOnce = capture.bulkPacks[0];
+      const register = registerOn(at.worktreeId, at.epoch, at.api)(capture.built);
+      const first = await run(register);
+      // Registered at once, the seal withheld as retryable — never refused as unrestorable.
+      expect(first.head_capture_id).toBe(capture.built.id);
+      expect(first.seal).toEqual({ state: "withheld", reason: "unavailable" });
+      expect(world.memory.seals.get(`${at.worktreeId}:${at.epoch}`)).toBeUndefined();
+      // The store answers again: the executor's re-ask checks again and the seal is recorded.
+      const again = await run(register);
+      expect(again.seal).toEqual({ state: "recorded" });
+      expect(
+        (
+          await run(
+            Effect.flatMap(CaptureStoreRepo, (repo) =>
+              repo.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
+            ),
+          )
+        )?.captureId,
+      ).toBe(capture.built.id);
+      expect(await run(register)).toEqual(again);
+    });
+
+    it("review 12 #4: a git section the verifier could not read withholds the seal (unavailable), and the re-ask verifies it again and records the seal", async () => {
+      passBucketReplaceable = () => 0;
+      const at = await claimed();
+      const capture = sharedLinksCapture(at, "transient-git");
+      await run(uploadObjects(capture.objects));
+      resetReads();
+      // The git pack's GET answers 503 while the runner prepares its cache afresh.
+      fs.rmSync(runnerCachePathOf(path.join(world.scratch, "store"), world.project.id), {
+        recursive: true,
+        force: true,
+      });
+      bucketReads.failOnce = packsOf(world.memory.captures.get(at.cap0Id)?.sections)[0];
+      const register = registerOn(at.worktreeId, at.epoch, at.api)(capture.built);
+      const first = await run(register);
+      expect(bucketReads.failOnce).toBeUndefined();
+      expect(first.head_capture_id).toBe(capture.built.id);
+      expect(first.seal).toEqual({ state: "withheld", reason: "unavailable" });
+      expect(world.memory.captures.get(capture.built.id)?.gitFsck).toBe("unverified");
+      const again = await run(register);
+      expect(again.seal).toEqual({ state: "recorded" });
+      expect(world.memory.captures.get(capture.built.id)?.gitFsck).toBe("verified");
+    });
+
+    it("review 12 #4: a seal verified after the register answered but whose record died is recorded on the next ask, not left verifying", async () => {
+      passBucketReplaceable = () => 0;
+      const at = await claimed();
+      const capture = sharedLinksCapture(at, "transient-record");
+      await run(uploadObjects(capture.objects));
+      resetReads();
+      const repo = await run(CaptureStoreRepo);
+      const original = repo.recordSeal;
+      let attempts = 0;
+      // The first record dies (the database connection reset, as `.orDie` surfaces it).
+      Object.assign(repo, {
+        recordSeal: (...args: Parameters<typeof original>) =>
+          Effect.suspend(() => {
+            attempts++;
+            return attempts === 1 ? Effect.die("PostgreSQL connection reset") : original(...args);
+          }),
+      });
+      try {
+        const register = registerOn(at.worktreeId, at.epoch, at.api)(capture.built);
+        const first = await run(register.pipe(Effect.provideService(CaptureRegisterBudget, 0)));
+        expect(first.seal).toEqual({ state: "withheld", reason: "verifying" });
+        const recordRan = () => attempts > 0;
+        for (let i = 0; i < 500 && !recordRan(); i++) {
+          await new Promise((resolve) => setTimeout(resolve, 10));
+        }
+        expect(attempts).toBe(1);
+        await new Promise((resolve) => setTimeout(resolve, 50));
+        // The recorder died: its job is settled and dropped, so the re-ask checks and records.
+        const again = await run(register);
+        expect(again.seal).toEqual({ state: "recorded" });
+        expect(attempts).toBe(2);
+        expect(world.memory.seals.get(`${at.worktreeId}:${at.epoch}`)?.captureId).toBe(
+          capture.built.id,
+        );
+      } finally {
+        Object.assign(repo, { recordSeal: original });
+      }
     });
 
     it("after a restart the re-ask checks the seal again and records it", async () => {
