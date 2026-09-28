@@ -1206,6 +1206,52 @@ describe("a seal rests only on sections Mend observed restore", () => {
     );
   });
 
+  // Review 2026-09-28 (8) #3, Mend's side: one symlink inode with several names. sealantd leaves
+  // such a final flush incomplete; a document that says so anyway is never sealed on.
+  it("review 8 #3 a hardlink group of symlinks is never sealed", async () => {
+    const at = await claimedWorktree();
+    const edit = packEditedTree(world.work, at.worktreeId, at.epoch, world.baseSha, (work) => {
+      fs.symlinkSync("target", path.join(work, "link-a"));
+      fs.symlinkSync("target", path.join(work, "link-b"));
+    });
+    const meta = withMeta(at.worktreeId, at.epoch, {
+      format: 1,
+      entries: [
+        { path: "link-a", kind: "symlink", mode: 0o777, mtime: 100 },
+        { path: "link-b", kind: "symlink", mode: 0o777, mtime: 100 },
+      ],
+      hardlinks: [["link-a", "link-b"]],
+    });
+    const cap = sealing(
+      at.worktreeId,
+      at.epoch,
+      buildManifest({
+        worktreeId: at.worktreeId,
+        epoch: at.epoch,
+        n: 1,
+        parent: at.cap0Id,
+        kind: "final",
+        git: { ...at.gitSection([at.basePack, edit.key], edit.tree), raw_tree: edit.tree },
+        workspace: meta.workspace,
+        bulk: READY_EMPTY_BULK,
+      }),
+    );
+    await run(uploadObjects(new Map([...edit.objects, ...meta.objects, [cap.key, cap.bytes]])));
+    const answer = await run(
+      registerOn(
+        at.worktreeId,
+        at.epoch,
+        at.api,
+      )(cap).pipe(
+        Effect.map((ok) => ok.seal?.state ?? "absent"),
+        // Refused at register, or registered with its seal refused: never recorded.
+        Effect.catch(() => Effect.succeed("refused")),
+      ),
+    );
+    expect(answer).toBe("refused");
+    expect(await sealOf(at.worktreeId, at.epoch)).toBeNull();
+  });
+
   // Review 2026-09-28 (8) #9 (the reviewer's reproduction): a cross-class group joining a
   // workspace name at 0600 / 100 s and a bulk name at 0644 / 200 s, holding the same bytes, with no
   // tracked member: only tracked entries' promises were compared, so it sealed — and the restore
@@ -1403,10 +1449,15 @@ describe("a seal rests only on sections Mend observed restore", () => {
         const workspaceDir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-cross-ws-"));
         fs.mkdirSync(path.join(workspaceDir, "tree"));
         fs.writeFileSync(path.join(workspaceDir, "tree", "ignored.bin"), "one inode's bytes\n");
+        // One inode: both names stat the same mode and mtime (review 2026-09-28 (8) #9).
+        fs.chmodSync(path.join(workspaceDir, "tree", "ignored.bin"), 0o644);
+        fs.utimesSync(path.join(workspaceDir, "tree", "ignored.bin"), 100, 100);
         const bulkDir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-cross-bulk-"));
         fs.mkdirSync(path.join(bulkDir, "node_modules"));
         if (bulkBytes !== null) {
           fs.writeFileSync(path.join(bulkDir, "node_modules", "linked.bin"), bulkBytes);
+          fs.chmodSync(path.join(bulkDir, "node_modules", "linked.bin"), 0o644);
+          fs.utimesSync(path.join(bulkDir, "node_modules", "linked.bin"), 100, 100);
         }
         const workspace = snapshotDirectory(workspaceDir, keys, { format: 2 });
         const bulk = snapshotDirectory(bulkDir, keys, {
@@ -1976,6 +2027,10 @@ describeSeals(
         registerOn(strict.worktreeId, strict.epoch, strict.api)(onStrict.cap),
       );
       expect(strictAnswer.seal).toEqual({ state: "recorded" });
+      // The identical register again (a lost answer): where the seal stands now.
+      expect(
+        (await run(registerOn(strict.worktreeId, strict.epoch, strict.api)(onStrict.cap))).seal,
+      ).toEqual({ state: "recorded" });
       expect((await planned(strict)).head?.manifest.final_seal?.complete).toBe(true);
       // A standing seal is handed on only to an executor that reads it.
       const unread = await run(
@@ -2036,6 +2091,82 @@ describeSeals(
       const refused = await run(registerOn(other.worktreeId, other.epoch, other.api)(foreignCap));
       expect(refused.seal).toEqual({ state: "refused", reason: "executor" });
       expect((await planned(other)).head?.manifest.final_seal).toBeUndefined();
+
+      // Not complete: refused `incomplete`. A manifest carrying no seal: no `seal` answered.
+      const unfinished = await claimed();
+      const partial = sealedFile(unfinished, "partial bytes\n");
+      const partialManifest = {
+        ...partial.cap.manifest,
+        final_seal: { complete: false, epoch: unfinished.epoch, executor: "executor-1" },
+      };
+      const partialBytes = new Uint8Array(Buffer.from(JSON.stringify(partialManifest)));
+      const partialId = sha256Hex(partialBytes);
+      const partialCap = {
+        manifest: partialManifest,
+        bytes: partialBytes,
+        id: partialId,
+        key: captureKeys(unfinished.worktreeId, unfinished.epoch).manifest(partialId),
+      };
+      await run(
+        uploadObjects(new Map([...partial.snapshot.objects, [partialCap.key, partialBytes]])),
+      );
+      expect(
+        (await run(registerOn(unfinished.worktreeId, unfinished.epoch, unfinished.api)(partialCap)))
+          .seal,
+      ).toEqual({ state: "refused", reason: "incomplete" });
+      const { final_seal: _none, ...unsealedManifest } = partial.cap.manifest;
+      const unsealedBytes = new Uint8Array(
+        Buffer.from(JSON.stringify({ ...unsealedManifest, n: 2, parent: partialId })),
+      );
+      const unsealedId = sha256Hex(unsealedBytes);
+      await run(
+        uploadObjects(
+          new Map([
+            [
+              captureKeys(unfinished.worktreeId, unfinished.epoch).manifest(unsealedId),
+              unsealedBytes,
+            ],
+          ]),
+        ),
+      );
+      const plain = await run(
+        registerOn(
+          unfinished.worktreeId,
+          unfinished.epoch,
+          unfinished.api,
+        )({
+          manifest: { ...unsealedManifest, n: 2, parent: partialId },
+          id: unsealedId,
+          key: captureKeys(unfinished.worktreeId, unfinished.epoch).manifest(unsealedId),
+        }),
+      );
+      expect(plain.head_capture_id).toBe(unsealedId);
+      expect("seal" in plain).toBe(false);
+    });
+
+    it("the additive manifest fields register and are planned as written: workspace root_links, git object_format", async () => {
+      bucketReplaceable = 0;
+      const at = await claimed();
+      const file = sealedFile(at, "linked roots\n");
+      const manifest = {
+        ...file.cap.manifest,
+        sections: {
+          ...file.cap.manifest.sections,
+          workspace: {
+            ...file.cap.manifest.sections.workspace,
+            root_links: { ".git": "../dotgit" },
+          },
+        },
+      };
+      const bytes = new Uint8Array(Buffer.from(JSON.stringify(manifest)));
+      const id = sha256Hex(bytes);
+      const key = captureKeys(at.worktreeId, at.epoch).manifest(id);
+      await run(uploadObjects(new Map([...file.snapshot.objects, [key, bytes]])));
+      const answer = await run(registerOn(at.worktreeId, at.epoch, at.api)({ manifest, id, key }));
+      expect(answer.seal).toEqual({ state: "recorded" });
+      expect((await planned(at)).head?.manifest.sections.workspace.root_links).toEqual({
+        ".git": "../dotgit",
+      });
     });
   },
 );

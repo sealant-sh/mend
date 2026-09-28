@@ -432,9 +432,10 @@ export class CaptureRouteError extends Schema.TaggedErrorClass<CaptureRouteError
  *   its epoch could still replace what it names, or one was handed out while its objects were read
  *   back) or `verifying` (its objects could not be read back). Registering the same capture again
  *   (idempotent) answers it anew;
- * - `refused`: not recorded, or void — it never stands. `reason`: `executor` (not a completed
- *   final flush of this launch under this epoch), `unrestorable` (a section Mend did not observe
- *   restore), `not-recorded`, `void` (an object it names read back as other bytes).
+ * - `refused`: not recorded, or void — it never stands. `reason`: `incomplete` (not
+ *   `complete`), `epoch` (another epoch than the register's), `executor` (another launch's),
+ *   `unrestorable` (a section Mend did not observe restore), `not-recorded`, `void` (an object it
+ *   names read back as other bytes). Answered on a lost-ack re-register too, as it stands then.
  * The shape is sealantd's `SealAnswer` (`registrar.rs`): `reason` is a short code; the detail is
  * logged here. Absent: the manifest carried no `final_seal`. An executor that does not read the
  * field ignores it (an unknown field), as before.
@@ -444,6 +445,8 @@ export interface RegisterSealOutcome {
   readonly reason?:
     | "write-authority"
     | "verifying"
+    | "incomplete"
+    | "epoch"
     | "executor"
     | "unrestorable"
     | "not-recorded"
@@ -2239,7 +2242,14 @@ export const CaptureChannelLive: Layer.Layer<
             ? null
             : !sealHolds
               ? {
-                  outcome: { state: "refused", reason: "executor" } satisfies RegisterSealOutcome,
+                  outcome: {
+                    state: "refused",
+                    reason: !seal.complete
+                      ? "incomplete"
+                      : seal.epoch !== input.epoch
+                        ? "epoch"
+                        : "executor",
+                  } satisfies RegisterSealOutcome,
                   detail: `the seal is not this launch's completed final flush under epoch ${input.epoch}`,
                 }
               : yield* registeredSealOutcome(input.epoch, input.capture_id, sealProblem);

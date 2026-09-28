@@ -167,6 +167,13 @@ export type WorktreeMeta = typeof WorktreeMeta.Type;
 export const WorkspaceSection = Schema.Struct({
   ...chunkedSectionFields,
   worktree_meta: Schema.optionalKey(WorktreeMeta),
+  /**
+   * The class's roots that were symlinks to a directory when captured (sealantd review 8 #1:
+   * `.git` linked from beside the worktree, a harness home configured as a link), root name → the
+   * link text, as a key. Informational: the class holds what the link named, and a restore writes
+   * a real directory there. Carried as written, so a plan hands it on.
+   */
+  root_links: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
 });
 export type WorkspaceSection = typeof WorkspaceSection.Type;
 
