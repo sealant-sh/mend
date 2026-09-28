@@ -317,6 +317,15 @@ describe("capture channel routes", () => {
           post(address, "/plan.get", otherToken, { epoch: 0 }),
         );
         expect(missing.status).toBe(404);
+        // Only launch-bound routes are served to a token (review 2026-09-28 (4) #10): a session
+        // registered with the unbound view alone serves none, never whichever launch it names.
+        const unbound = SessionId.make("sess-unbound");
+        const unboundToken = yield* tokensRepo.issue(unbound, "launch-unbound");
+        registryService.register(unbound, { ...inertApi, capture: scopedTo(SESSION) });
+        const refused = yield* Effect.promise(() =>
+          post(address, "/plan.get", unboundToken, { epoch: 0 }),
+        );
+        expect(refused.status).toBe(404);
       }),
     );
   });

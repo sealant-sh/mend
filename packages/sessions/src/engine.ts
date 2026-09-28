@@ -1314,7 +1314,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         gitTransport: (input) => owned(sessionId)(api.gitTransport(input)),
         gitTransportDone: (opId, exitCode, refUpdates) =>
           owned(sessionId)(api.gitTransportDone(opId, exitCode, refUpdates)),
+        // The capture routes pass through as they are, the launch-bound ones included: the
+        // network channel serves a token only the routes of the launch it was issued for
+        // (cross-repo decision 5, review 2026-09-28 (4) #10).
         ...(api.capture === undefined ? {} : { capture: api.capture }),
+        ...(api.captureAs === undefined ? {} : { captureAs: api.captureAs }),
       });
       const conversations = yield* AgentConversationRepo;
       const channelTokens = yield* SessionChannelTokensRepo;
@@ -1586,11 +1590,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               );
             }
             const session = found.value;
-            // The physical executor asking (cross-repo decision 5): the launch its token names,
-            // else the session's current one, else the session id — an executor launched before
-            // launch identities was planned as its session.
+            // The physical executor asking (cross-repo decision 5): the launch its token names
+            // (what the network channel always passes). In-process callers without one read the
+            // launch whose create is being asked (reserved on the row before the create, so a
+            // cold boot planning before its create answers is that launch, never the session —
+            // review 2026-09-28 (4) #10), else the session's current one, else the session id:
+            // an executor launched before launch identities was planned as its session.
             const launch =
-              launchId ?? (yield* sessions.executorLaunchOf(sessionId))?.launchId ?? sessionId;
+              launchId ??
+              (yield* sessions.executorCreateOf(sessionId)) ??
+              (yield* sessions.executorLaunchOf(sessionId))?.launchId ??
+              sessionId;
             const api = capture.channel.apiFor({
               worktreeId: session.worktreeId,
               projectId: session.projectId,

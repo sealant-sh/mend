@@ -1,6 +1,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -135,6 +136,10 @@ import {
   SessionEngineLive,
   SessionRepositoryCapturedLive,
   SessionRepositoryLocalLive,
+  SessionChannelNetworkHost,
+  SessionChannelNetworkHostLive,
+  SessionChannelRegistry,
+  SessionChannelRegistryLive,
   SessionNotLiveError,
   type SessionSocketApi,
   SessionSocketHost,
@@ -180,6 +185,7 @@ import type {
 } from "@sealant/sdk";
 import {
   Cause,
+  Context,
   Deferred,
   Duration,
   Effect,
@@ -2351,6 +2357,10 @@ const withEngine = <A, E>(
     readonly logs?: Array<string>;
     /** Every channel token issue and revocation (`issue:<launch>`, `revoke:<session>`, `revokeLaunch:<launch>`). */
     readonly tokenEvents?: Array<string>;
+    /** The channel tokens, when a test shares them with a network channel of its own. */
+    readonly tokensLayer?: Layer.Layer<SessionChannelTokensRepo>;
+    /** Where session sockets go; kept in `servedSocketApis` unless a test says. */
+    readonly socketHostLayer?: Layer.Layer<SessionSocketHost>;
   } = {},
 ): Promise<A> => {
   const tmp = options.fixture?.tmp ?? fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
@@ -2425,11 +2435,12 @@ const withEngine = <A, E>(
       ),
     ),
     Layer.provide(serviceHostStubLayer),
-    Layer.provide(sessionSocketStubLayer),
+    Layer.provide(options.socketHostLayer ?? sessionSocketStubLayer),
     Layer.provide(
-      options.tokenEvents === undefined
-        ? SessionChannelTokensRepoMemory
-        : recordingTokens(options.tokenEvents),
+      options.tokensLayer ??
+        (options.tokenEvents === undefined
+          ? SessionChannelTokensRepoMemory
+          : recordingTokens(options.tokenEvents)),
     ),
     Layer.provide(deploymentLayer),
     Layer.provide(captureRuntimeLayer),
@@ -13396,6 +13407,169 @@ describe("SessionEngine received evidence beats stored evidence (review 2026-09-
             () => stopped,
             undefined,
             ptyStates,
+          ),
+        },
+      );
+    },
+  );
+});
+
+/** POST one capture route on the network session channel with a bearer token. */
+const channelPost = (
+  address: string,
+  route: string,
+  token: string,
+  body: unknown,
+): Promise<{ status: number; json: Record<string, unknown> }> =>
+  new Promise((resolve, reject) => {
+    const [host, port] = address.split(":");
+    const request = http.request(
+      {
+        host,
+        port: Number(port),
+        method: "POST",
+        path: route,
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        agent: false,
+      },
+      (response) => {
+        let text = "";
+        response.on("data", (chunk) => (text += String(chunk)));
+        response.on("end", () =>
+          resolve({
+            status: response.statusCode ?? 0,
+            json: text === "" ? {} : JSON.parse(text),
+          }),
+        );
+      },
+    );
+    request.on("error", reject);
+    request.end(JSON.stringify(body));
+  });
+
+describe("SessionEngine launch-bound capture routes through the network channel (review 2026-09-28 (4) #10)", () => {
+  it(
+    "a cold boot planning before its create answers is its launch, over the real engine → registry → HTTP path; another launch's valid token never reads as it",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const createKeys: Array<string | undefined> = [];
+      const registry = Effect.runSync(
+        Effect.scoped(
+          Layer.build(SessionChannelRegistryLive).pipe(
+            Effect.map((context) => Context.get(context, SessionChannelRegistry)),
+          ),
+        ),
+      );
+      const tokens = Effect.runSync(
+        Effect.scoped(
+          Layer.build(SessionChannelTokensRepoMemory).pipe(
+            Effect.map((context) => Context.get(context, SessionChannelTokensRepo)),
+          ),
+        ),
+      );
+      const tokensLayer = Layer.succeed(SessionChannelTokensRepo, tokens);
+      const channel = { address: "" };
+      const answers: Array<{
+        readonly phase: string;
+        readonly status: number;
+        readonly executor: unknown;
+      }> = [];
+      let sessionRef: SessionId | null = null;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const host = yield* Layer.build(
+              SessionChannelNetworkHostLive.pipe(
+                Layer.provide(Layer.succeed(SessionChannelRegistry, registry)),
+                Layer.provide(tokensLayer),
+                Layer.provide(
+                  Layer.succeed(DeploymentConfig, {
+                    mode: "local",
+                    sessionEndpoint: { listen: "127.0.0.1:0", url: "http://mend.test:3106" },
+                    sessionStore: "captured",
+                  }),
+                ),
+              ),
+            ).pipe(Effect.map((context) => Context.get(context, SessionChannelNetworkHost)));
+            channel.address = host.address ?? "";
+            const { engine, session } = yield* launchOnce(world, tmp);
+            sessionRef = session.id;
+            yield* engine.launch(session.id, ["codex"]);
+            const key = createKeys[0];
+            expect(key).toMatch(new RegExp(`^launch:${session.id}:`));
+            // Before the create answered: its own launch, never the session id.
+            expect(answers[0]).toEqual({ phase: "before-create", status: 200, executor: key });
+            // Another launch of the same session holding a valid token of its own never reads
+            // as the current launch.
+            expect(answers[1]?.executor).not.toBe(key);
+            expect(answers[1]?.executor).not.toBe(session.id);
+            const source = created[0]?.source;
+            const token = source?.kind === "capture" ? source.token : "";
+            const after = yield* Effect.promise(() =>
+              channelPost(channel.address, "/plan.get", token, { worktree_id: null, epoch: 0 }),
+            );
+            expect(after.status).toBe(200);
+            expect(after.json["executor"]).toBe(key);
+          }),
+        {
+          captured: memory,
+          tokensLayer,
+          socketHostLayer: Layer.succeed(SessionSocketHost, {
+            start: (sessionId, api) =>
+              Effect.sync(() => {
+                servedSocketApis.set(sessionId, api);
+                registry.register(sessionId, api);
+                return "/tmp/mend-test-socket-dir";
+              }),
+            stop: (sessionId) => Effect.sync(() => registry.unregister(sessionId)),
+          }),
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              createKeys,
+              resourceId: () => "container-1",
+              findByKey: () => ({ kind: "none" }),
+              beforeCreate: (options) =>
+                Effect.gen(function* () {
+                  const token = options.source?.kind === "capture" ? options.source.token : "";
+                  const booted = yield* Effect.promise(() =>
+                    channelPost(channel.address, "/plan.get", token, {
+                      worktree_id: null,
+                      epoch: 0,
+                    }),
+                  );
+                  answers.push({
+                    phase: "before-create",
+                    status: booted.status,
+                    executor: booted.json["executor"],
+                  });
+                  if (sessionRef === null) throw new Error("no session");
+                  const other = yield* tokens.issue(sessionRef, "launch-other");
+                  const otherAnswer = yield* Effect.promise(() =>
+                    channelPost(channel.address, "/plan.get", other, {
+                      worktree_id: null,
+                      epoch: 0,
+                    }),
+                  );
+                  answers.push({
+                    phase: "other-launch",
+                    status: otherAnswer.status,
+                    executor: otherAnswer.json["executor"],
+                  });
+                }),
+            },
           ),
         },
       );

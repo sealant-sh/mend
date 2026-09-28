@@ -406,8 +406,12 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
           message: "session channel: this session is not live on this Mend instance",
         };
       }
-      const capture = api.captureAs?.(scope.launchId) ?? api.capture;
-      return { ok: true, api: capture === undefined ? api : { ...api, capture } };
+      // Launch-bound, always (review 2026-09-28 (4) #10): an authenticated executor reaches only
+      // the capture routes of the launch its token names — never the session's unbound view,
+      // which answers whichever launch the row names now (or the session id before a create
+      // answers). A session served without launch-bound routes serves no capture routes here.
+      const capture = api.captureAs?.(scope.launchId);
+      return { ok: true, api: { ...api, capture } };
     };
 
     const onRequest = (request: http.IncomingMessage, response: http.ServerResponse): void => {
