@@ -771,7 +771,8 @@ Mend-side details the decision record left open, decided in this ADR:
     - **`plan.get` negotiates what a manifest means, not only how it is stored.** `manifest_format`
       lets an old reader restore a head whose meaning it ignores. The request now carries
       `manifest_features` (`MANIFEST_FEATURES`: `worktree_meta`, `symrefs`, `other_bulk`,
-      `raw_names`, `final_seal`); a head holding a feature the executor does not list is refused 409
+      `raw_names`, `final_seal`, and since added `git_trees`, `object_format`, `ref_format`,
+      `wide_times`); a head holding a feature the executor does not list is refused 409
       `manifest-features` (`missing` names them) before the claim, like a format. `other_bulk` is
       held by a head with a non-empty `other_bulk`, and by any head whose ready bulk section was
       captured on another platform than the one the request names (the executor must carry it).
@@ -915,3 +916,40 @@ Mend-side details the decision record left open, decided in this ADR:
       `files` repository of its own, where `packed-refs` is read.
     - **Reports follow events.** A discard logs the request before the stop, and `discarded` only
       after the platform confirmed the end.
+35. (2026-09-28) A seal stands over every epoch it carries, preservation is never refused for
+    budget, and a direct answer reads saved only by the executor's evidence (review 2026-09-28 (10);
+    cross-repo decisions 26, 29, 30 and 31).
+    - **A seal's authority is its whole object graph's.** `capture_seals.scopes` (0092) lists every
+      `captures/<worktree>/<epoch>/` prefix the sealed capture's manifest, packs, trees and dir
+      packs live under — a pack carried from an earlier epoch, or from another worktree, included;
+      its own epoch always. The seal is withheld while upload authority of any of them lives
+      (`putAuthorityUntilOver`), and its re-verification mark is a compare-and-set against all of
+      them, their rows locked in one order. Once it is recorded, `recordPutAuthority` refuses any
+      epoch whose prefix a recorded seal's scopes include until the caller checked those seals:
+      `upload.urls` asks the bucket again, and a stored key is answered `present` or refused
+      `409 exists`, never handed a URL. Seals recorded before 0092 get every prefix their capture
+      names and are read back again.
+    - **Issuance re-checks its lease after its bucket reads.** `recordPutAuthority` takes the
+      holder: under the lease row (`FOR SHARE`, as a register takes it) and the epoch's authority
+      lock it records nothing unless the lease is still live, under that epoch, that holder's
+      launch; `upload.urls` then answers the lease error and mints nothing. URLs signed later than
+      half the clock margin after their authority was recorded never leave Mend.
+    - **Preservation is never refused for budget.** While a session drains, keeps or recovers its
+      executor (`CaptureScope.unmetered`), neither `upload.urls` nor `capture.register` refuses
+      bytes for the byte quota; the register of a `final` capture is exempt in any scope. Bytes are
+      still priced. The ledger is per physical launch: a new executor starts its own, the 512 most
+      recently asked about are kept, and a reservation that mints nothing is refunded. The quota
+      bounds new work only. Open: a FINAL sealantd runs while Mend has no drain under way (a Core
+      deadline) is exempt at register by its kind, but its `upload.urls` calls say nothing of it and
+      stay metered until sealantd names the flush on them.
+    - **Saved is one decision.** A drain's direct FINAL answer reads `saved` only when the
+      executor's evidence does (`captureDrainStep`'s `evidenceSaved`, from `executorEndOfSession`
+      confirmed against its evidence version): bound to that executor and epoch, every answer
+      published, a save made after every unsaved answer kept. Otherwise the drain goes on as if the
+      answer had not completed, and is kept once nothing moved for the window.
+    - **Wide times and nested repositories (sealantd round 10).** Manifest feature `wide_times`: a
+      dir entry of the answered sections, or a worktree metadata entry, whose `mtime` lies outside
+      signed 64-bit nanoseconds. Mend reads every integer mtime as the exact `bigint` of its text
+      and writes the same digits; `plan.get` lists the feature and refuses such a head to an
+      executor that does not. `.git/worktrees/<name>/…` in the workspace class and the extra git
+      pack of nested-repository objects are entries and packs like any other.
