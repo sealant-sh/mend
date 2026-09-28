@@ -2195,6 +2195,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
       /** When each session's executor was last asked for its capture status (ms). */
       const statusReads = new Map<SessionId, number>();
+      /**
+       * Executors whose own final flush (a `docker stop`, the platform saving ahead of its cap) Mend
+       * followed with a stop: their saved end reads `stopped outside Mend · saved at …`.
+       */
+      const endedOutsideMend = new Set<SealantWorkspaceId>();
 
       /**
        * `workspace.capture.status()` on the session's running executor: nothing flushed, nothing
@@ -2271,6 +2276,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           yield* Effect.logInfo(
             "session engine: capture mode · the executor is running a final flush Mend did not ask for · stopping",
           ).pipe(Effect.annotateLogs({ sessionId, workspaceId: session.sealantWorkspaceId }));
+          // Not the owner's stop: once saved it reads as the executor's own end does
+          // (`stopped outside Mend · saved at …`), never a bare `stopped` (e2e run 9, D9).
+          endedOutsideMend.add(session.sealantWorkspaceId);
           yield* Effect.forkIn(
             stop(sessionId).pipe(
               asSealantUser(session.ownerUserId),
@@ -3131,6 +3139,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const confirmed = stopState === "stopped" || (yield* awaitTerminated(workspaceId));
         yield* processes.reapLiveForWorkspace(workspaceId);
         const session = yield* sessions.byId(sessionId);
+        // Ended with nothing attested on the stop (a launch whose worker died before `ready`:
+        // the stop found no seal, and the platform's recovery boot sealed while it ended the
+        // executor): the executor's own seal, standing, is the same fact. Read while the lease
+        // still names the executor, so a session reads `… · saved at … · capture n` instead of
+        // its launch's words alone (e2e run 9, RD).
+        const sealedMeanwhile =
+          saved === null && confirmed && options?.discardUnsaved !== true
+            ? yield* executorSealOf(session, workspaceId)
+            : null;
         if (confirmed) {
           // Only an end the platform confirmed takes the executor's channel and its token: one
           // it has not observed end may still ship, or be booted again to (e2e run 5).
@@ -3142,7 +3159,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             `session engine: workspace stop asked · ${stopState} · termination not observed yet · the lease lapses on its own`,
           ).pipe(Effect.annotateLogs({ sessionId, workspaceId, stopState }));
         }
-        return { ended: confirmed, retained: null, saved } as const;
+        return {
+          ended: confirmed,
+          retained: null,
+          saved:
+            saved ??
+            (sealedMeanwhile === null
+              ? null
+              : { at: sealedMeanwhile.sealedAt, n: sealedMeanwhile.n }),
+        } as const;
       });
 
       /**
@@ -3197,6 +3222,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* Effect.logInfo("session engine: capture mode · settled session restated").pipe(
           Effect.annotateLogs({ sessionId, before: session.summary, after: summary }),
         );
+      });
+
+      /**
+       * A session Mend stopped only because its executor ran a final flush of its own reads what
+       * that end was once it is saved — `stopped outside Mend · saved at … · capture n`, as a
+       * session whose end Mend observed from outside does — not the bare `stopped` of the owner's
+       * Stop (e2e run 9: one of ten deadline-preserved sessions read `stopped`, summary null).
+       * Only over a settled `stopped` session with nothing else to say.
+       */
+      const sayEndedOutsideMend = Effect.fn("SessionEngine.sayEndedOutsideMend")(function* (
+        sessionId: SessionId,
+        words: string,
+      ) {
+        const session = yield* sessions
+          .byId(sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (
+          session === null ||
+          session.settledAt === null ||
+          session.status !== "stopped" ||
+          session.summary !== null
+        ) {
+          return;
+        }
+        yield* sessions.setSummary(sessionId, words);
       });
 
       /** The platform ended it already: nothing to save or stop; tidy up behind it. */
@@ -3318,6 +3368,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 outcome: confirmed.outcome,
                 words: confirmed.summary,
               });
+              if (endedOutsideMend.delete(workspaceId) && confirmed.outcome === "stopped") {
+                yield* sayEndedOutsideMend(sessionId, confirmed.summary);
+              }
             }
             yield* removeIfRequested(sessionId);
             return "gone" as const;
@@ -3355,6 +3408,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   outcome: "stopped",
                   words: executorSavedWords(terminated.saved),
                 });
+                if (endedOutsideMend.delete(workspaceId)) {
+                  yield* sayEndedOutsideMend(
+                    sessionId,
+                    `stopped outside Mend · ${executorSavedWords(terminated.saved)}`,
+                  );
+                }
               }
               yield* removeIfRequested(sessionId);
               return "gone" as const;
@@ -3496,6 +3555,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   outcome: "stopped",
                   words: executorSavedWords(savedBy),
                 });
+                if (endedOutsideMend.delete(workspaceId)) {
+                  yield* sayEndedOutsideMend(
+                    sessionId,
+                    `stopped outside Mend · ${executorSavedWords(savedBy)}`,
+                  );
+                }
               }
               yield* removeIfRequested(sessionId);
             } else {

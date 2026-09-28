@@ -17143,3 +17143,174 @@ describe("custom-image setup commands run only on a worktree laid down fresh (re
     });
   }
 });
+
+describe("SessionEngine status words after end-to-end run 9", () => {
+  it(
+    "RD: a failed launch whose kept executor the platform ends after it sealed reads `launch failed: … · saved at … · capture n`, not the launch's words alone",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+      let recovered = false;
+      /** Records the executor's seal: the recovery boot's FINAL, landing while Core ends it. */
+      let sealOnStop: (() => void) | null = null;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the drain kept",
+            );
+            expect(world.sessions.get(session.id)?.summary).toMatch(/^launch failed: /);
+            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            const built = yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              epoch,
+              crypto.randomUUID(),
+              "final",
+            );
+            const sealedAt = new Date(Date.now() + 1_000);
+            sealOnStop = () => {
+              records.set(`${session.worktreeId}:${epoch}`, {
+                worktreeId: session.worktreeId,
+                epoch,
+                executorId: world.executorLaunches.get(session.id)?.launchId ?? "",
+                captureId: built.id,
+                n: built.manifest.n,
+                sealedAt,
+              });
+            };
+            // Core retained it and boots it for recovery; the next stop ends it.
+            recovered = true;
+            for (let round = 0; round < 50; round += 1) {
+              if (world.sessions.get(session.id)?.summary?.includes("saved at ") === true) break;
+              yield* engine.reapCaptureLeases();
+              yield* Effect.sleep(Duration.millis(100));
+            }
+            // The stop that ended it attested nothing: the seal landed after it was sent.
+            expect(records.size).toBe(1);
+            expect(stopOptions.some((o) => o?.completion !== undefined)).toBe(false);
+            const settled = world.sessions.get(session.id);
+            expect(settled?.status).toBe("failed");
+            expect(settled?.summary).toBe(
+              `launch failed: setup command failed (exit 1): exit 1 · saved at ${sealedAt.toISOString().slice(11, 19)} UTC · capture ${built.manifest.n}`,
+            );
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          drainPolicy: {
+            stallSeconds: 0,
+            terminationWait: Duration.millis(500),
+            keptRetryFirst: Duration.millis(100),
+            keptRetryMax: Duration.millis(200),
+          },
+          workspaceImage: { ...CUSTOM_BASE, setupCommands: ["exit 1"] },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stopOptions,
+              status: (stopAsked) => (!recovered ? "ready" : stopAsked ? "stopped" : "failed"),
+              stopAnswer: () => {
+                if (!recovered) return "kept";
+                sealOnStop?.();
+                return "requested";
+              },
+              exec: (argv) =>
+                argv.includes("exit 1") ? { exitCode: 1, stdout: "", stderr: "" } : undefined,
+              flush: () =>
+                Effect.fail(
+                  new SealantPlatformError({
+                    code: "connection_closed",
+                    status: null,
+                    message: "the executor did not answer",
+                    cause: null,
+                  }),
+                ),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "D9: a session Mend stopped because its executor ran a final flush of its own reads `stopped outside Mend · saved at … · capture n` once saved, as its siblings do; the owner's Stop still reads a bare `stopped`",
+    { timeout: 20_000 },
+    async () => {
+      for (const who of ["executor", "owner"] as const) {
+        const created: Array<CreateOptions> = [];
+        const memory = makeMemoryCaptureStore();
+        let ending = false;
+        /** Where the executor answered, in its own order: its FINAL after its status. */
+        let stamp: ((observation: number) => object) | null = null;
+        await withEngine(
+          (world, tmp) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* launchOnce(world, tmp);
+              yield* engine.launch(session.id, ["codex"]);
+              const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+              const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
+              stamp = (observation) => ({
+                epoch,
+                origin: {
+                  epoch,
+                  launch,
+                  bootId: "boot-1",
+                  bootGeneration: 1,
+                  observation,
+                  headN: 1,
+                },
+              });
+              if (who === "executor") {
+                ending = true;
+                yield* engine.refreshCaptureStatus(session.id);
+              } else {
+                yield* engine.stop(session.id);
+              }
+              yield* until(
+                () =>
+                  world.sessions.get(session.id)?.status === "stopped" &&
+                  world.sessions.get(session.id)?.captureDrain === null,
+                `the saved end (${who}: ${JSON.stringify([world.sessions.get(session.id)?.status, world.sessions.get(session.id)?.captureDrain, world.sessions.get(session.id)?.summary])})`,
+              );
+              const summary = world.sessions.get(session.id)?.summary ?? null;
+              if (who === "executor") {
+                expect(summary).toMatch(
+                  /^stopped outside Mend · saved at \d\d:\d\d:\d\d UTC( · capture \d+)?$/,
+                );
+              } else {
+                expect(summary).toBeNull();
+              }
+            }),
+          {
+            captured: memory,
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                stopAnswer: () => "stopped",
+                // The executor's own final flush is under way; Mend's FINAL then completes.
+                captureStatus: () =>
+                  Effect.succeed(
+                    ending
+                      ? {
+                          ...flushReport(1, 1),
+                          ...stamp?.(1),
+                          complete: false,
+                          incompleteReason: "in-progress",
+                        }
+                      : { ...flushReport(0, 1), ...stamp?.(1) },
+                  ),
+                flush: () => Effect.succeed({ ...flushReport(0, 1), ...stamp?.(2) }),
+              },
+            }),
+          },
+        );
+      }
+    },
+  );
+});
