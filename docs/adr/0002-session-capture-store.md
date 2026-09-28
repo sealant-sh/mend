@@ -1076,3 +1076,48 @@ Mend-side details the decision record left open, decided in this ADR:
       workspace a Service or a shell retained. That executor answered and opened the new process, so
       `executor not answering · …` from the earlier agent's end no longer holds. `executor lost · …`
       stays for `picked up · executor replaced`.
+39. (2026-09-28) The thirteenth review's Mend item: a git step the Mend host could not finish is no
+    fact about the capture (review 13 #1).
+    - **`failed` means git rejected the content.** A git section is recorded `failed` only when git
+      said something about what it read: `index-pack --verify` rejecting a pack's bytes (a bad
+      object, a checksum or trailer mismatch, an index of another pack), a pack whose bytes hash to
+      another name, a pack missing from the bucket, or `rev-list --missing=error` naming an object
+      no listed pack holds (`gitRejectsContent` in `packages/store/src/git.ts`). Everything else
+      leaves the section `unverified` and is checked again: a git run ended by a signal (the OOM
+      killer) or with no exit code, Node's own failure (`ERR_CHILD_PROCESS_STDIO_MAXBUFFER`, a spawn
+      error), stderr naming a local resource (no space, file too large, too many open files, out of
+      memory, an I/O error, a file it could not open), words git is not known to say of content, a
+      download or staging copy that broke, and the runner cache's own `git init`. The runner reports
+      those as `RunnerCacheError`, never `RunnerPackError`. A seal's read-back of its packs follows
+      the same rule: a check the host could not finish withholds the seal (`verifying`) and never
+      voids it, and a stream that broke while hashing an object is the store not answering, never
+      other bytes.
+    - **The closure walk is counted, not buffered.** `rev-list --objects` prints 41 bytes an object,
+      so a repository of 1.7M objects printed past `git`'s 64 MiB buffer and was killed on every
+      verification. The walk runs through `gitQuiet`, which discards stdout as git writes it and
+      keeps the tail of stderr.
+    - **`unverified` is checked again wherever it matters.** On the next register of the capture and
+      on a seal re-ask (`lateSealChecks`, which re-verifies a `failed` row too before it refuses),
+      and on every plan whose head is not recorded `verified`.
+    - **A plan never lays an older git section under a newer head.** That restored the head's
+      reflogs and worktree metadata over an older tree: the last turns' commits were gone,
+      `git fsck` refused the repository, and a head that added a file failed to materialize.
+      Decision 16 is amended. A plan verifies a head that is not recorded `verified` (a `failed` one
+      included, once more). Verified: the head. Not verifiable now, because the host could not
+      finish the check: no plan. `plan.get` answers 409 `worktree-leased`, the one answer the
+      deployed sealantd waits on and asks again after (1 s doubling to 30 s), touching nothing and
+      claiming nothing, and the session reads
+      `launch waiting · capture <n>'s git section could not be verified on the Mend host · asked again`
+      until a plan goes ahead or the launch starts. Git rejected the head's content: the newest
+      capture below it that verifies is planned whole, every section and its checkpoint, under the
+      head's identity (so the next register still parents on the real head), and the session reads
+      `restored capture <m> · capture <n>'s git section failed verification`. A capture below that
+      cannot be verified now stops the search, and the plan waits rather than reach past it to older
+      work. A section nothing here can ever verify (a format Mend does not read, no verifier) is
+      planned as registered, as before. The reads keep routing a `failed` head to the newest
+      verified capture, stamped with the capture they read.
+    - **Existing rows.** Why a row failed was never stored, so migration 0094 puts every `failed`
+      row back to `unverified` once; the next plan, register or re-ask verifies it again.
+    - **Follow-up for sealantd.** The wait reuses `worktree-leased`, so a waiting daemon logs
+      "another launch holds the worktree's lease". A distinct reason (for example `plan-unverified`,
+      waited on the same way) would let it say why; Mend can answer it once sealantd advertises it.
