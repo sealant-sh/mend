@@ -7,6 +7,7 @@ import type { WorktreeId } from "@mend/domain";
 import {
   BlobStore,
   BlobStoreFsLive,
+  type CaptureManifest,
   BlobStoreS3Live,
   resolveBlobStoreConfig,
   INDEX_TREE_REF,
@@ -333,9 +334,12 @@ const userFile = (work: string) => fs.writeFileSync(path.join(work, "a.txt"), "u
  * A `git init --object-format=sha256` repository holding one commit of user work (review 8 #10):
  * its commit and tree, a pack of its whole closure, and a pack of the commit alone.
  */
-const sha256Repo = (at: { readonly worktreeId: WorktreeId; readonly epoch: number }) => {
+const sha256Repo = (
+  at: { readonly worktreeId: WorktreeId; readonly epoch: number },
+  init: ReadonlyArray<string> = ["--object-format=sha256"],
+) => {
   const work = fs.mkdtempSync(path.join(os.tmpdir(), "mend-review8-sha256-"));
-  sh(work, ["init", "-q", "--object-format=sha256", "-b", "main"]);
+  sh(work, ["init", "-q", ...init, "-b", "main"]);
   fs.writeFileSync(path.join(work, "work.txt"), "user work in a sha256 repository\n");
   sh(work, ["add", "."]);
   sh(work, ["commit", "-q", "-m", "sha256 work"]);
@@ -369,6 +373,7 @@ const section = (
   packs: ReadonlyArray<string>,
   tips: { readonly commit: string; readonly tree: string },
   objectFormat?: string,
+  refFormat?: string,
 ) => ({
   packs,
   refs: { "refs/heads/main": tips.commit },
@@ -378,6 +383,7 @@ const section = (
   index_tree: tips.tree,
   raw_tree: tips.tree,
   ...(objectFormat === undefined ? {} : { object_format: objectFormat }),
+  ...(refFormat === undefined ? {} : { ref_format: refFormat }),
 });
 
 /**
@@ -1204,6 +1210,7 @@ describe("a seal rests only on sections Mend observed restore", () => {
       parent: string,
       git: ReturnType<typeof section>,
       objects: ReadonlyMap<string, Uint8Array>,
+      workspace?: CaptureManifest["sections"]["workspace"],
     ) => {
       const cap = sealing(
         at.worktreeId,
@@ -1217,6 +1224,7 @@ describe("a seal rests only on sections Mend observed restore", () => {
           kind: "final",
           git,
           bulk: READY_EMPTY_BULK,
+          ...(workspace === undefined ? {} : { workspace }),
         }),
       );
       await run(uploadObjects(new Map([...objects, [cap.key, cap.bytes]])));
@@ -1271,6 +1279,84 @@ describe("a seal rests only on sections Mend observed restore", () => {
             .pipe(Effect.flip),
         );
         expect(unread.missing).toEqual(["object_format"]);
+      },
+    );
+
+    // sealantd review 9 #1 (cross-repo decision 24): a reftable repository's section names its
+    // ref backend (`ref_format`). Mend walks it in a repository of that backend, hands the
+    // backend on only to an executor that reads it, and verifies nothing under one it does not
+    // read.
+    it(
+      "review 9 a reftable section verifies in a reftable repository and is planned only to a reader; an unknown ref backend is never verified",
+      { timeout: 60_000 },
+      async () => {
+        const at = await claimedWorktree();
+        const repo = sha256Repo(at, ["--ref-format=reftable"]);
+        expect(repo.commit).toMatch(/^[0-9a-f]{40}$/);
+        const unknown = await registerFinal(
+          at,
+          1,
+          at.cap0Id,
+          section([repo.whole.key], repo, undefined, "packed-v9"),
+          repo.whole.objects,
+        );
+        expect(unknown.gitFsck).toBe("unverified");
+        expect(unknown.seal).toBeNull();
+        // HEAD read from a reftable repository's `.git/HEAD` file: its stub, never verified.
+        const stub = await registerFinal(
+          at,
+          2,
+          unknown.cap.id,
+          {
+            ...section([repo.whole.key], repo, undefined, "reftable"),
+            head: "refs/heads/.invalid",
+          },
+          repo.whole.objects,
+        );
+        expect(stub.gitFsck).toBe("unverified");
+        expect(stub.seal).toBeNull();
+        // The workspace class brings the backend's own files back byte for byte, and symlinks at
+        // `.git/HEAD` and under `.git/refs/` with any text, as the repository held them.
+        const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-r9-reftable-class-"));
+        fs.mkdirSync(path.join(dir, ".git", "reftable"), { recursive: true });
+        fs.mkdirSync(path.join(dir, ".git", "refs", "heads"), { recursive: true });
+        fs.writeFileSync(path.join(dir, ".git", "reftable", "tables.list"), "");
+        fs.symlinkSync("refs/heads/main", path.join(dir, ".git", "HEAD"));
+        fs.symlinkSync("../../../elsewhere/any text", path.join(dir, ".git", "refs", "heads", "x"));
+        const gitClass = snapshotDirectory(dir, captureKeys(at.worktreeId, at.epoch), {
+          format: 2,
+        });
+        fs.rmSync(dir, { recursive: true, force: true });
+        const reftable = await registerFinal(
+          at,
+          3,
+          stub.cap.id,
+          section([repo.whole.key], repo, undefined, "reftable"),
+          new Map([...repo.whole.objects, ...gitClass.objects]),
+          sectionOf(gitClass),
+        );
+        expect(reftable.gitFsck).toBe("verified");
+        expect(reftable.seal?.captureId).toBe(reftable.cap.id);
+        const plan = await run(
+          at.api.planGet({
+            worktree_id: at.worktreeId,
+            epoch: at.epoch,
+            manifest_format: 2,
+            manifest_features: MANIFEST_FEATURES,
+          }),
+        );
+        expect(plan.head?.manifest.sections.git.ref_format).toBe("reftable");
+        const unread = await run(
+          at.api
+            .planGet({
+              worktree_id: at.worktreeId,
+              epoch: at.epoch,
+              manifest_format: 2,
+              manifest_features: MANIFEST_FEATURES.filter((feature) => feature !== "ref_format"),
+            })
+            .pipe(Effect.flip),
+        );
+        expect(unread.missing).toEqual(["ref_format"]);
       },
     );
 

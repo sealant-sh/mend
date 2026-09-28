@@ -164,6 +164,9 @@ const refuseOtherLaunch = (input: PlanGetRequest, tokenLaunch: string) =>
  * - `object_format`: `sections.git.object_format` (sealantd review 8 #10), the repository's object
  *   format when it is not `sha1`. An executor that does not read it would install a SHA-256 pack
  *   into a SHA-1 repository and fail its restore.
+ * - `ref_format`: `sections.git.ref_format` (sealantd review 9 #1, cross-repo decision 24), the
+ *   repository's ref backend when it is not `files` (`reftable`). An executor that does not read
+ *   it would restore a files repository under a reftable one's tables.
  */
 export const MANIFEST_FEATURES = [
   "worktree_meta",
@@ -173,6 +176,7 @@ export const MANIFEST_FEATURES = [
   "final_seal",
   "git_trees",
   "object_format",
+  "ref_format",
 ] as const;
 export type ManifestFeature = (typeof MANIFEST_FEATURES)[number];
 
@@ -205,6 +209,7 @@ export const missingManifestFeatures = (
     holds("final_seal", planned.final_seal !== undefined);
     holds("git_trees", gitSectionHoldsTrees(planned.sections.git));
     holds("object_format", planned.sections.git.object_format !== undefined);
+    holds("ref_format", planned.sections.git.ref_format !== undefined);
     if (!reads.has("raw_names")) {
       const bulk = planned.sections.bulk;
       const raw =

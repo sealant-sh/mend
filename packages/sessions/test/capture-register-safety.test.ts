@@ -1029,6 +1029,17 @@ describe("plan.get hands a head only to an executor that reads what it means (ma
               },
             }
           : {}),
+        ...(feature === "ref_format"
+          ? {
+              git: {
+                packs: [],
+                refs: {},
+                head: "refs/heads/main",
+                fsck: "unverified" as const,
+                ref_format: "reftable",
+              },
+            }
+          : {}),
         ...(feature === "git_trees"
           ? {
               git: {
@@ -1462,6 +1473,7 @@ describe("plan.get, as sealantd round 4 asks it", () => {
         "final_seal",
         "git_trees",
         "object_format",
+        "ref_format",
       ]);
     }
   });

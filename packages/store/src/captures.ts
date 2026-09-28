@@ -77,8 +77,25 @@ export const GitSection = Schema.Struct({
    * packs — the restore's, the verifier's — is made in it. Absent: `sha1`.
    */
   object_format: Schema.optionalKey(Schema.String),
+  /**
+   * The `ref_format` manifest feature (sealantd review 9 #1, cross-repo decision 24): the backend
+   * the repository keeps its refs in (`extensions.refStorage`) when it is not `files` —
+   * `reftable`. The capture read `HEAD`, the refs and the reflogs through git in that backend; a
+   * restore initializes its repository with it, and the verifier reads the section's packs in a
+   * repository of it. Absent: `files`.
+   */
+  ref_format: Schema.optionalKey(Schema.String),
 });
 export type GitSection = typeof GitSection.Type;
+
+/** The ref backends Mend verifies and plans: a section's `ref_format`, `files` when absent. */
+export type GitRefFormat = "files" | "reftable";
+
+/** The section's ref backend; null when it names one Mend does not read. */
+export const gitRefFormatOf = (section: GitSection): GitRefFormat | null => {
+  const format = section.ref_format ?? "files";
+  return format === "files" || format === "reftable" ? format : null;
+};
 
 /** The object formats Mend verifies and plans: a section's `object_format`, `sha1` when absent. */
 export type GitObjectFormat = "sha1" | "sha256";

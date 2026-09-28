@@ -10,8 +10,10 @@ import {
   type GitFsckOutcome,
   GIT_OBJECT_ID,
   type GitObjectFormat,
+  type GitRefFormat,
   git,
   gitObjectFormatOf,
+  gitRefFormatOf,
   gitObjectIdPattern,
   gitBytes,
   gitSectionTrees,
@@ -125,8 +127,22 @@ export const parseTreeObjects = (output: Buffer): ReadonlyMap<string, RestoreTre
   return paths;
 };
 
+/** What a reftable repository's `.git/HEAD` file names: never a ref, never the real HEAD. */
+const REFTABLE_HEAD_STUB = "refs/heads/.invalid";
+
 /** How many store refs' closure proofs the verifier keeps before it starts over. */
 const CLOSED_BOUNDARY_LIMIT = 10_000;
+
+/** Why the isolated repository could not be made: git's stderr, or the error's message. */
+const isolation = (cause: unknown) => ({
+  _tag: "IsolationError" as const,
+  detail:
+    typeof cause === "object" && cause !== null && "stderr" in cause
+      ? String(cause.stderr).trim()
+      : cause instanceof Error
+        ? cause.message
+        : String(cause),
+});
 
 /**
  * A bare repository whose object store is exactly `packKeys` as the runner cache at `cachePath`
@@ -138,22 +154,11 @@ const isolatedPacks = <A, E>(
   packKeys: ReadonlyArray<string>,
   format: GitObjectFormat,
   use: (repo: string) => Effect.Effect<A, E>,
+  refFormat: GitRefFormat = "files",
 ): Effect.Effect<A, E | { readonly _tag: "IsolationError"; readonly detail: string }> =>
   Effect.acquireUseRelease(
-    Effect.try({
-      try: () => {
-        const repo = fs.mkdtempSync(path.join(os.tmpdir(), "mend-verify-"));
-        for (const dir of ["objects/pack", "objects/info", "refs"]) {
-          fs.mkdirSync(path.join(repo, dir), { recursive: true });
-        }
-        fs.writeFileSync(path.join(repo, "HEAD"), "ref: refs/heads/main\n");
-        // A SHA-256 section's packs are read in a SHA-256 repository (review 2026-09-28 (8) #10).
-        fs.writeFileSync(
-          path.join(repo, "config"),
-          format === "sha1"
-            ? "[core]\n\trepositoryformatversion = 0\n\tbare = true\n"
-            : `[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tobjectformat = ${format}\n`,
-        );
+    Effect.gen(function* () {
+      const linkPacks = (repo: string) => {
         for (const key of new Set(packKeys)) {
           const digest = digestOfKey(key);
           if (digest === null) throw new Error(`pack key carries no sha256: ${key}`);
@@ -164,12 +169,50 @@ const isolatedPacks = <A, E>(
             );
           }
         }
-        return repo;
-      },
-      catch: (cause) => ({
-        _tag: "IsolationError" as const,
-        detail: cause instanceof Error ? cause.message : String(cause),
-      }),
+      };
+      const repo = yield* Effect.try({
+        try: () => fs.mkdtempSync(path.join(os.tmpdir(), "mend-verify-")),
+        catch: isolation,
+      });
+      // A reftable section's packs are read in a reftable repository (cross-repo decision 24,
+      // sealantd review 9 #1), made by git itself: a git too old for the backend makes nothing,
+      // and nothing is verified.
+      if (refFormat !== "files") {
+        yield* git(
+          ["init", "-q", "--bare", `--object-format=${format}`, `--ref-format=${refFormat}`, repo],
+          os.tmpdir(),
+        ).pipe(
+          Effect.mapError(isolation),
+          Effect.tapError(() =>
+            Effect.sync(() => fs.rmSync(repo, { recursive: true, force: true })),
+          ),
+        );
+      }
+      return yield* Effect.try({
+        try: () => {
+          if (refFormat === "files") {
+            for (const dir of ["objects/pack", "objects/info", "refs"]) {
+              fs.mkdirSync(path.join(repo, dir), { recursive: true });
+            }
+            fs.writeFileSync(path.join(repo, "HEAD"), "ref: refs/heads/main\n");
+            // A SHA-256 section's packs are read in a SHA-256 repository (review 2026-09-28 (8)
+            // #10).
+            fs.writeFileSync(
+              path.join(repo, "config"),
+              format === "sha1"
+                ? "[core]\n\trepositoryformatversion = 0\n\tbare = true\n"
+                : `[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tobjectformat = ${format}\n`,
+            );
+          }
+          fs.mkdirSync(path.join(repo, "objects", "pack"), { recursive: true });
+          linkPacks(repo);
+          return repo;
+        },
+        catch: (cause) => {
+          fs.rmSync(repo, { recursive: true, force: true });
+          return isolation(cause);
+        },
+      });
     }),
     use,
     (repo) => Effect.sync(() => fs.rmSync(repo, { recursive: true, force: true })),
@@ -260,6 +303,24 @@ export const CaptureGitVerifierLive: Layer.Layer<
           detail: `object format ${JSON.stringify(section.object_format)} is not one Mend reads`,
         } satisfies GitVerification;
       }
+      // The section's ref backend (`ref_format`, absent: files; cross-repo decision 24): one Mend
+      // does not read is never verified, and the walk runs in a repository of the section's own.
+      const refFormat = gitRefFormatOf(section);
+      if (refFormat === null) {
+        return {
+          outcome: "unverified",
+          detail: `ref backend ${JSON.stringify(section.ref_format)} is not one Mend reads`,
+        } satisfies GitVerification;
+      }
+      // A reftable repository's `.git/HEAD` file is a stub naming `refs/heads/.invalid` (no valid
+      // ref name): a section naming that as HEAD read the file, not the repository's HEAD
+      // (sealantd review 9 #1). It restores nothing that was checked out.
+      if (section.head === REFTABLE_HEAD_STUB) {
+        return {
+          outcome: "unverified",
+          detail: `HEAD names ${REFTABLE_HEAD_STUB}, a reftable repository's stub, not its HEAD`,
+        } satisfies GitVerification;
+      }
       const id = gitObjectIdPattern(format);
       // Every ref, `head`, and every tree the section names beside its refs (the `git_trees`
       // fields, or the pseudo-refs before them): a restore checks each out.
@@ -310,22 +371,27 @@ export const CaptureGitVerifierLive: Layer.Layer<
       // The closure walk sees the listed packs alone (review 2026-09-28 (4) #12): what a restore
       // fetches is what must hold it.
       const cachePath = ensured.success.path;
-      const walked = yield* isolatedPacks(cachePath, section.packs, format, (repo) =>
-        Effect.gen(function* () {
-          const held = yield* presentIn(repo, storeTips, format);
-          const boundary = yield* closedBoundaries(cachePath, section.packs, held, format);
-          return yield* git(
-            [
-              "rev-list",
-              "--objects",
-              "--missing=error",
-              "--no-object-names",
-              ...tips,
-              ...(boundary.length === 0 ? [] : ["--not", ...boundary]),
-            ],
-            repo,
-          );
-        }),
+      const walked = yield* isolatedPacks(
+        cachePath,
+        section.packs,
+        format,
+        (repo) =>
+          Effect.gen(function* () {
+            const held = yield* presentIn(repo, storeTips, format);
+            const boundary = yield* closedBoundaries(cachePath, section.packs, held, format);
+            return yield* git(
+              [
+                "rev-list",
+                "--objects",
+                "--missing=error",
+                "--no-object-names",
+                ...tips,
+                ...(boundary.length === 0 ? [] : ["--not", ...boundary]),
+              ],
+              repo,
+            );
+          }),
+        refFormat,
       ).pipe(Effect.result);
       if (Result.isFailure(walked)) {
         const error = walked.failure;
