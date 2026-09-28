@@ -2129,13 +2129,17 @@ export const metaNamespaceProblem = (
 };
 
 /**
- * `metaNamespaceProblem` over the tree the restore actually checks out and the classes restored
- * over it (review 2026-09-28 (7) #9). sealantd checks out `raw_tree` when the section has one
- * (`rawTreeOf`), not the worktree tree, and applies the document after every class: a path the
- * restore tree does not hold is on disk only when the workspace class carries it (`tree/<path>`)
- * or the bulk class does (`<path>`), as that class holds it. `restoreTree` is every path of the
- * restore tree, hex of its bytes → its kind and object; the classes are read only for a path it
- * does not hold. The reason, or null when the document applies.
+ * `metaNamespaceProblem` over the namespace the restore actually lays down (review 2026-09-28 (7)
+ * #9, (8) #8), in sealantd's order (`materialize.rs`): the git class checks out `raw_tree` when the
+ * section has one (`rawTreeOf`), not the worktree tree; the workspace class is written over it —
+ * a name it carries (`tree/<path>`) is what that class holds there, whatever the checkout wrote,
+ * and a name it carries as anything but a directory removes every checkout path below it; the
+ * bulk class writes only where the checkout tree has no such path; the document applies last.
+ * `restoreTree` is every path of the restore tree (trees included), hex of its bytes → its kind and
+ * object. Every name the document gives must also lie below directories: an ancestor the
+ * namespace holds as a file, a symlink or a gitlink is a path the strict apply cannot create or
+ * match (a directory it names there fails `NotADirectory`). The reason, or null when the document
+ * applies.
  */
 export const restoreNamespaceProblem = (
   manifest: CaptureManifest,
@@ -2144,19 +2148,64 @@ export const restoreNamespaceProblem = (
 ): Effect.Effect<string | null, never, BlobStore> =>
   Effect.gen(function* () {
     const members = makeClassMembers(manifest);
-    const overlays = new Map<string, WorktreeTreeKind>();
+    const workspaceKinds = new Map<string, WorktreeTreeKind | null>();
+    const workspaceKind = (bytes: Buffer) =>
+      Effect.gen(function* () {
+        const hex = bytes.toString("hex");
+        const known = workspaceKinds.get(hex);
+        if (known !== undefined) return known;
+        const found = yield* members.kindOf("workspace", `tree/${keyOfBytes(bytes)}`);
+        workspaceKinds.set(hex, found);
+        return found;
+      });
+    /** Every proper ancestor of `bytes`, outermost first. */
+    const ancestorsOf = (bytes: Buffer): Array<Buffer> => {
+      const out: Array<Buffer> = [];
+      for (let at = bytes.indexOf(SLASH); at > 0; at = bytes.indexOf(SLASH, at + 1)) {
+        out.push(bytes.subarray(0, at));
+      }
+      return out;
+    };
+    const effective = new Map<string, WorktreeTreeKind | null>();
+    /** What the restore leaves at `bytes` before the document applies; null: nothing. */
+    const effectiveKind = (
+      bytes: Buffer,
+    ): Effect.Effect<WorktreeTreeKind | null, never, BlobStore> =>
+      Effect.gen(function* () {
+        const hex = bytes.toString("hex");
+        const known = effective.get(hex);
+        if (known !== undefined) return known;
+        let found: WorktreeTreeKind | null = yield* workspaceKind(bytes);
+        if (found === null) {
+          let replaced = false;
+          for (const ancestor of ancestorsOf(bytes)) {
+            const over = yield* workspaceKind(ancestor);
+            if (over !== null && over !== "dir") replaced = true;
+          }
+          const checkout = replaced ? undefined : restoreTree.get(hex)?.kind;
+          found =
+            checkout !== undefined
+              ? checkout
+              : replaced
+                ? null
+                : yield* members.kindOf("bulk", keyOfBytes(bytes));
+        }
+        effective.set(hex, found);
+        return found;
+      });
+    const namespace = new Map<string, WorktreeTreeKind>();
     for (const entry of document.entries) {
       const bytes = bytesOfPair(entry.path, entry.raw_path);
       if (bytes === null || bytes.length === 0) continue;
-      const hex = bytes.toString("hex");
-      if (restoreTree.has(hex) || overlays.has(hex)) continue;
-      const key = keyOfBytes(bytes);
-      const overlay =
-        (yield* members.kindOf("workspace", `tree/${key}`)) ?? (yield* members.kindOf("bulk", key));
-      if (overlay !== null) overlays.set(hex, overlay);
+      for (const ancestor of ancestorsOf(bytes)) {
+        const over = yield* effectiveKind(ancestor);
+        if (over !== null && over !== "dir") {
+          return `${JSON.stringify(entry.path)} lies below ${JSON.stringify(keyOfBytes(ancestor))}, a ${over} in the namespace the restore lays down`;
+        }
+      }
+      const found = yield* effectiveKind(bytes);
+      if (found !== null) namespace.set(bytes.toString("hex"), found);
     }
-    const namespace = new Map<string, WorktreeTreeKind>(overlays);
-    for (const [hex, found] of restoreTree) namespace.set(hex, found.kind);
     return metaNamespaceProblem(document, namespace, "the tree the restore checks out");
   });
 

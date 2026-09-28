@@ -877,6 +877,126 @@ describe("a seal rests only on sections Mend observed restore", () => {
     expect(await sealOf(at.worktreeId, at.epoch)).toBeNull();
   });
 
+  // Review 2026-09-28 (8) #8 (the reviewer's reproductions): the namespace check read a class only
+  // for a path the raw tree did not hold, and let the raw tree win — but the restore writes the
+  // workspace class over the checkout. And a directory the document named was accepted below a
+  // file. The namespace is the restore's own: the workspace class over the raw tree, the bulk
+  // class where neither holds the path, and every ancestor of a path the document names a
+  // directory (or absent, for a directory it creates).
+  describe("review 8 #8 the metadata is checked against the namespace the restore lays down", () => {
+    const attempt = async (options: {
+      readonly edit: (work: string) => void;
+      readonly entries: ReadonlyArray<{
+        readonly path: string;
+        readonly kind: "file" | "symlink" | "dir";
+        readonly mode: number;
+        readonly mtime: number;
+      }>;
+      readonly overlay?: (tree: string) => void;
+    }) => {
+      const at = await claimedWorktree();
+      const edit = packEditedTree(world.work, at.worktreeId, at.epoch, world.baseSha, options.edit);
+      const meta = withMeta(at.worktreeId, at.epoch, { format: 1, entries: options.entries });
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-review8-overlay-"));
+      fs.mkdirSync(path.join(dir, "tree"));
+      options.overlay?.(path.join(dir, "tree"));
+      const overlay = snapshotDirectory(dir, captureKeys(at.worktreeId, at.epoch), { format: 2 });
+      fs.rmSync(dir, { recursive: true, force: true });
+      const workspace =
+        options.overlay === undefined
+          ? meta.workspace
+          : {
+              ...sectionOf(overlay),
+              packs: [...overlay.packs, ...meta.workspace.packs],
+              worktree_meta: meta.workspace.worktree_meta,
+            };
+      const cap = sealing(
+        at.worktreeId,
+        at.epoch,
+        buildManifest({
+          worktreeId: at.worktreeId,
+          epoch: at.epoch,
+          n: 1,
+          parent: at.cap0Id,
+          kind: "final",
+          git: { ...at.gitSection([at.basePack, edit.key], edit.tree), raw_tree: edit.tree },
+          workspace,
+          bulk: READY_EMPTY_BULK,
+        }),
+      );
+      await run(
+        uploadObjects(
+          new Map([
+            ...edit.objects,
+            ...(options.overlay === undefined ? [] : overlay.objects),
+            ...meta.objects,
+            [cap.key, cap.bytes],
+          ]),
+        ),
+      );
+      const answer = await run(
+        registerOn(
+          at.worktreeId,
+          at.epoch,
+          at.api,
+        )(cap).pipe(
+          Effect.map(() => null),
+          Effect.flip,
+          Effect.orElseSucceed(() => null),
+        ),
+      );
+      return { answer, seal: await sealOf(at.worktreeId, at.epoch), cap };
+    };
+    const userFile = (work: string) => fs.writeFileSync(path.join(work, "a.txt"), "user file\n");
+
+    it("a raw file the workspace class replaces with a symlink is a symlink: a document saying file is refused", async () => {
+      const { answer, seal } = await attempt({
+        edit: userFile,
+        entries: [{ path: "a.txt", kind: "file", mode: 0o644, mtime: 100 }],
+        overlay: (tree) => fs.symlinkSync("elsewhere", path.join(tree, "a.txt")),
+      });
+      expect(answer?.reason).toBe("unrestorable");
+      expect(answer?.message).toContain("a.txt");
+      expect(seal).toBeNull();
+    });
+
+    it("a directory the document names below a raw file is refused", async () => {
+      const { answer, seal } = await attempt({
+        edit: userFile,
+        entries: [
+          { path: "a.txt", kind: "file", mode: 0o644, mtime: 100 },
+          { path: "a.txt/empty", kind: "dir", mode: 0o755, mtime: 100 },
+        ],
+      });
+      expect(answer?.reason).toBe("unrestorable");
+      expect(answer?.message).toContain("a.txt/empty");
+      expect(seal).toBeNull();
+    });
+
+    it("a raw file below a directory the workspace class replaces with a symlink is not there", async () => {
+      const { answer, seal } = await attempt({
+        edit: (work) => {
+          fs.mkdirSync(path.join(work, "sub"), { recursive: true });
+          fs.writeFileSync(path.join(work, "sub", "x.txt"), "inside\n");
+        },
+        entries: [{ path: "sub/x.txt", kind: "file", mode: 0o644, mtime: 100 }],
+        overlay: (tree) => fs.symlinkSync("elsewhere", path.join(tree, "sub")),
+      });
+      expect(answer?.reason).toBe("unrestorable");
+      expect(answer?.message).toContain("sub/x.txt");
+      expect(seal).toBeNull();
+    });
+
+    it("the workspace class's symlink over a raw file, named a symlink, applies", async () => {
+      const { answer } = await attempt({
+        edit: userFile,
+        entries: [{ path: "a.txt", kind: "symlink", mode: 0o777, mtime: 100 }],
+        overlay: (tree) => fs.symlinkSync("elsewhere", path.join(tree, "a.txt")),
+      });
+      expect(answer).toBeNull();
+    });
+  });
+
   // Review 2026-09-28 (7) #10 (the reviewer's reproduction): a tracked hardlink group whose
   // members hold the same bytes but whose entries promise one inode two modes and two mtimes was
   // sealed; the restore can keep only one. Every connected inode group — tracked hardlinks,
