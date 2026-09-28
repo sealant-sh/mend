@@ -405,6 +405,11 @@ const sealantLaunchLayer = (
     /** What the platform reports of the workspace, given whether a stop was asked of it. */
     readonly status?: (stopAsked: boolean) => WorkspaceStatus | undefined;
     /**
+     * `workspace.captureDrain()` (Core's next SDK): what Core last observed of the drain. Absent,
+     * the workspace has no such method, as on SDK 0.37.2.
+     */
+    readonly captureDrain?: () => unknown;
+    /**
      * Stands in for a command inside the executor: an answer here wins over the defaults below
      * (undefined falls through), so a test can put files where only the workspace has them.
      */
@@ -478,6 +483,10 @@ const sealantLaunchLayer = (
     },
     expire: async () => undefined,
   };
+  const readDrain = captureOps?.captureDrain;
+  if (readDrain !== undefined) {
+    Object.assign(workspace, { captureDrain: async () => readDrain() });
+  }
   return Layer.succeed(SealantClient, {
     createWorkspace: (options, launch) =>
       Effect.suspend(() => {
@@ -12516,6 +12525,124 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
           ),
         },
       );
+    },
+  );
+
+  /**
+   * e2e9 F-A: a `docker stop` outside Mend whose FINAL saved (the seal stood). Core then reports
+   * the workspace `failed` ("exited on its own (exitCode: 0)"), its container removed, its drain
+   * `stopped` — and Mend read every non-live status but `stopped` as kept, so the session read
+   * `stopping` for good. `drain`: what Core's `captureDrain()` answers once the executor ended.
+   */
+  const dockerStopReportedFailed = async (drain: unknown) => {
+    const created: Array<CreateOptions> = [];
+    const ptyStates = new Map<string, InteractiveSessionStatus>();
+    const memory = makeMemoryCaptureStore();
+    const records = new Map<string, CaptureCompletionSeal>();
+    let exited = false;
+    let observed: { readonly status: string | undefined; readonly summary: string | null } = {
+      status: undefined,
+      summary: null,
+    };
+    let expectedSaved = "";
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+          const built = yield* shipHarnessCapture(
+            tmp,
+            memory,
+            session.worktreeId,
+            epoch,
+            crypto.randomUUID(),
+            "final",
+          );
+          const sealedAt = new Date();
+          records.set(`${session.worktreeId}:${epoch}`, {
+            worktreeId: session.worktreeId,
+            epoch,
+            executorId: world.executorLaunches.get(session.id)?.launchId ?? "",
+            captureId: built.id,
+            n: built.manifest.n,
+            sealedAt,
+          });
+          expectedSaved = `stopped outside Mend · saved at ${sealedAt.toISOString().slice(11, 19)} UTC · capture ${built.manifest.n}`;
+          const agent = [...world.processes.values()].find(
+            (process) => process.sessionId === session.id && process.kind === "agent-pty",
+          );
+          if (agent === undefined || agent.sealantSessionId === null) {
+            throw new Error("the launch recorded no agent PTY");
+          }
+          exited = true;
+          ptyStates.set(agent.sealantSessionId, {
+            status: "exited",
+            exitCode: 0,
+            outputHighWater: 0n,
+          });
+          // Long enough for the end to be observed and the termination wait to run out.
+          for (let i = 0; i < 500 && world.sessions.get(session.id)?.settledAt == null; i++) {
+            yield* Effect.sleep(Duration.millis(10));
+          }
+          const read = world.sessions.get(session.id);
+          observed = { status: read?.status, summary: read?.summary ?? null };
+        }),
+      {
+        captured: memory,
+        seals: memorySeals(records),
+        drainPolicy: { terminationWait: Duration.millis(50) },
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          ptyStates,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            status: () => (exited ? "failed" : "ready"),
+            captureDrain: () => (exited ? drain : null),
+          },
+        ),
+      },
+    );
+    return { ...observed, expectedSaved };
+  };
+
+  it(
+    "e2e9 F-A: a `docker stop` that saved, which Core reports `failed` with its drain `stopped` and nothing retained, settles `stopped outside Mend · saved at …` — never `stopping` for good",
+    { timeout: 20_000 },
+    async () => {
+      const read = await dockerStopReportedFailed({
+        state: "stopped",
+        detail: "exited on its own (exitCode: 0)",
+      });
+      // Before: `stopping`, for good.
+      expect(read.status).toBe("stopped");
+      expect(read.summary).toBe(read.expectedSaved);
+    },
+  );
+
+  it(
+    "e2e9 F-A: an executor Core reports `failed` but retains for recovery still reads kept, never stopped",
+    { timeout: 20_000 },
+    async () => {
+      const read = await dockerStopReportedFailed({
+        state: "kept",
+        retained: {
+          since: "2026-09-28T11:18:59Z",
+          reason: "ended",
+          recoverable: true,
+          recoveryAttempts: 0,
+        },
+      });
+      expect(read.status).not.toBe("stopped");
+      expect(read.summary ?? "").not.toContain("saved at");
     },
   );
 

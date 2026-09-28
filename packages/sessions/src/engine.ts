@@ -126,6 +126,7 @@ import {
 } from "@mend/domain/workbench";
 import {
   asSealantUser,
+  captureDrainOf,
   type CaptureFlushKind,
   SealantClient,
   SealantPlatformError,
@@ -580,6 +581,20 @@ const SUPERVISE_RETRY = Schedule.exponential("1 second").pipe(
 );
 
 /** Workspace statuses a hot entry can still serve from; anything else drains it. */
+/** What the platform says of one workspace (`lookupWorkspace`). */
+type WorkspaceLookup =
+  | { readonly kind: "found"; readonly workspace: Workspace; readonly status: string }
+  | { readonly kind: "kept"; readonly workspace: Workspace; readonly status: string }
+  | { readonly kind: "gone"; readonly status: string }
+  | { readonly kind: "unknown"; readonly error: string };
+
+/**
+ * The drain states Core records once a capture executor's drain is over and nothing of it is kept
+ * (`WorkspaceCaptureDrain.state`, Core's next SDK): removed after its drain, saved, gone, or its
+ * unsaved captures discarded by the owner.
+ */
+const ENDED_DRAIN_STATES: ReadonlySet<string> = new Set(["stopped", "saved", "gone", "discarded"]);
+
 const workspaceIsLive = (status: string) =>
   status === "queued" || status === "running" || status === "ready";
 
@@ -2328,26 +2343,44 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * What the platform says of one workspace, without running anything in it: `found` (live:
        * queued · running · ready, with its status), `gone` (stopped, or no such workspace),
-       * `unknown` (no answer). Capture mode: any other terminal status (`failed`, `cancelled`) is
-       * `kept` — Core retains a capture executor that ended without a completed final flush
-       * (cross-repo decision 2), so its disk may hold work only it has, and Core may boot it again
-       * to save it. Only Core's stop answer tells a kept executor from an ended one (`runDrain`);
-       * until then its lease and its token stay (e2e run 5).
+       * `unknown` (no answer). Capture mode: any other terminal status (`retained`, `failed`,
+       * `cancelled`) is `kept` — Core retains a capture executor that ended without a completed
+       * final flush (cross-repo decision 2), so its disk may hold work only it has, and Core may
+       * boot it again to save it; until Core says otherwise its lease and its token stay (e2e run
+       * 5). What Core last observed of its drain says otherwise (e2e9 F-A: a `docker stop` outside
+       * Mend that saved read `stopping` for good, Core reporting it `failed` with its container
+       * removed): a `failed` or `cancelled` executor whose drain ended (`stopped` — removed after
+       * it — `saved`, `gone`, `discarded`) and that Core does not retain is `gone`. Retained, still
+       * draining or kept, or a drain Core cannot be asked about (SDK 0.37.2), stays `kept`.
        */
-      const lookupWorkspace = (workspaceId: SealantWorkspaceId) =>
+      const lookupWorkspace = (workspaceId: SealantWorkspaceId): Effect.Effect<WorkspaceLookup> =>
         sealant.getWorkspace(workspaceId).pipe(
           Effect.flatMap((workspace) =>
             Effect.tryPromise({
               try: () => workspace.status(),
               catch: (cause) => cause,
             }).pipe(
-              Effect.map((status) =>
-                workspaceIsLive(status)
-                  ? ({ kind: "found", workspace, status } as const)
-                  : capture !== null && status !== "stopped"
-                    ? ({ kind: "kept", workspace, status } as const)
-                    : ({ kind: "gone", status } as const),
-              ),
+              Effect.flatMap((status): Effect.Effect<WorkspaceLookup> => {
+                if (workspaceIsLive(status)) {
+                  return Effect.succeed({ kind: "found", workspace, status } as const);
+                }
+                if (capture === null || status === "stopped") {
+                  return Effect.succeed({ kind: "gone", status } as const);
+                }
+                const kept: WorkspaceLookup = { kind: "kept", workspace, status };
+                if (status !== "failed" && status !== "cancelled") return Effect.succeed(kept);
+                return captureDrainOf(workspace).pipe(
+                  Effect.map(
+                    (drain): WorkspaceLookup =>
+                      drain.kind === "drain" &&
+                      !drain.retained &&
+                      ENDED_DRAIN_STATES.has(drain.state)
+                        ? { kind: "gone", status }
+                        : kept,
+                  ),
+                  Effect.orElseSucceed(() => kept),
+                );
+              }),
             ),
           ),
           Effect.catch((error) =>

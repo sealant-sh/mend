@@ -310,6 +310,43 @@ export const workspaceStopAnswerOf = (answer: unknown): WorkspaceStopAnswer => {
   return { state, retained, completion };
 };
 
+/**
+ * What Core last observed of a capture executor's drain, read without stopping anything (Core's
+ * next SDK: `workspace.captureDrain()`): `unsupported` on an SDK without it (0.37.2), `none` when
+ * Core recorded no drain, else its `state` (`draining` · `kept` · `saved` · `gone` · `stop-failed`
+ * · `stopped` · `discarded`) and whether Core retains the executor for recovery.
+ */
+export type WorkspaceCaptureDrainReading =
+  | { readonly kind: "unsupported" }
+  | { readonly kind: "none" }
+  | { readonly kind: "drain"; readonly state: string; readonly retained: boolean };
+
+/** A workspace that reads its drain without stopping it (Core's next SDK). */
+interface CaptureDrainReadable {
+  readonly captureDrain: () => Promise<unknown>;
+}
+
+const readsCaptureDrain = (workspace: object): workspace is CaptureDrainReadable =>
+  "captureDrain" in workspace && typeof workspace.captureDrain === "function";
+
+/** `workspace.captureDrain()` as Mend reads it (`WorkspaceCaptureDrainReading`). */
+export const captureDrainOf = (
+  workspace: object,
+): Effect.Effect<WorkspaceCaptureDrainReading, SealantPlatformError> => {
+  if (!readsCaptureDrain(workspace)) return Effect.succeed({ kind: "unsupported" } as const);
+  return wrap(() => workspace.captureDrain()).pipe(
+    Effect.map((answer): WorkspaceCaptureDrainReading => {
+      if (typeof answer !== "object" || answer === null) return { kind: "none" };
+      const retained: unknown = Reflect.get(answer, "retained");
+      return {
+        kind: "drain",
+        state: textIn(answer, "state") ?? "unknown",
+        retained: typeof retained === "object" && retained !== null,
+      };
+    }),
+  );
+};
+
 /** A workspace that reads its executor now (Core's next SDK: `workspace.runtime()`). */
 interface RuntimeReadable {
   readonly runtime: () => Promise<unknown>;
