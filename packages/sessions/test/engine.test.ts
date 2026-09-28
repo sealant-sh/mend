@@ -16067,3 +16067,50 @@ describe("review 10 #7 a direct complete answer", () => {
     },
   );
 });
+
+/**
+ * Carried review 2026-09-28 (10) #6 (cross-repo decision 35): a final flush Core's deadline or the
+ * daemon's own shutdown asked for runs with no Mend drain, so its uploads used to be metered, and a
+ * held tree past the byte quota stayed unsaved (413). sealantd now names the flush on the wire
+ * (`"flush":"final"`): exempt from the byte and call quotas whether or not Mend drains.
+ */
+it(
+  "exempts an upload.urls call marked flush: final from the byte quota before any Mend drain",
+  { timeout: 20_000 },
+  async () => {
+    const memory = makeMemoryCaptureStore();
+    const created: Array<CreateOptions> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          const launch = world.executorLaunches.get(session.id)?.launchId;
+          if (launch === undefined) throw new Error("missing launch");
+          const api = servedSocketApis.get(session.id)?.captureAs?.(launch);
+          if (api === undefined) throw new Error("missing live capture API");
+          const epoch = memory.leases.get(session.worktreeId)?.epoch;
+          if (epoch === undefined) throw new Error("missing lease");
+          const key = captureKeys(session.worktreeId, epoch).pack("e".repeat(64));
+          const input = {
+            worktree_id: session.worktreeId,
+            epoch,
+            keys: [key],
+            sizes: { [key]: 8 * 1024 * 1024 * 1024 + 1 },
+          };
+          expect(world.sessions.get(session.id)?.captureDrain).toBeNull();
+          // New work over the quota is still refused.
+          const refused = yield* api.uploadUrls(input).pipe(Effect.flip);
+          expect(refused.status).toBe(413);
+          expect(refused.reason).toBe("byte-quota");
+          // The same bytes from a final flush Mend did not start: admitted.
+          const allowed = yield* api.uploadUrls({ ...input, flush: "final" });
+          expect([...Object.keys(allowed.urls), ...Object.keys(allowed.multipart ?? {})]).toContain(
+            key,
+          );
+          expect(world.sessions.get(session.id)?.captureDrain).toBeNull();
+        }),
+      { captured: memory, sealantLayer: sealantLaunchLayer(created) },
+    );
+  },
+);
