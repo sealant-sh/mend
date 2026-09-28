@@ -17834,3 +17834,177 @@ it("AUDIT R18 cold resume preserves a saved skill's metadata", { timeout: 60_000
     fs.rmSync(root, { recursive: true, force: true });
   }
 });
+
+/** Core's credential writer (`credential-files.ts`), as it runs in a fresh executor. */
+const injectCoreCredential = (home: string) =>
+  spawnSync(
+    "sh",
+    [
+      "-c",
+      'umask 077 && mkdir -p "$(dirname "$HOME/.claude/.credentials.json")" && ' +
+        'base64 -d > "$HOME/.claude/.credentials.json" && ' +
+        'chmod 600 "$HOME/.claude/.credentials.json"',
+    ],
+    {
+      env: { ...process.env, HOME: home },
+      input: Buffer.from("fresh injected credential\n").toString("base64"),
+    },
+  ).status;
+
+/**
+ * Review 2026-09-28 (19) #1: after a correct cold restore, the relocation merged the fresh
+ * executor's `$HOME/.claude` (Core writes the connected-account credential under `umask 077`) into
+ * the restored harness root with `cp -an source/. root/`, which copied that directory's 0700 and
+ * time over the restored `.claude` saved at 0750. The reviewer's probe: the actual engine launches,
+ * `.claude` is set to 0750 with an exact time, the harness home is registered in a sealed capture,
+ * and the cold resume runs Core's credential write into a fresh home, then the engine's own
+ * relocation and skills commands against a `cp -a` copy of what was saved.
+ */
+it(
+  "AUDIT R19 cold resume preserves directory metadata through actual relocation",
+  { timeout: 60_000 },
+  async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-r19-relocation-"));
+    const saved = path.join(root, "saved");
+    let executorHome = "";
+    let ephemeralHome = "";
+    const relocations: Array<{
+      readonly before: { readonly mode: number; readonly mtime: string } | null;
+      readonly after: { readonly mode: number; readonly mtime: string };
+      readonly status: number | null;
+    }> = [];
+    const dirFacts = () => {
+      const stat = fs.statSync(path.join(executorHome, ".claude"), { bigint: true });
+      return { mode: Number(stat.mode & 0o777n), mtime: stat.mtimeNs.toString() };
+    };
+    const base = launchSkill("build-helper", "# Build helper\nRun scripts/check.sh.\n", {
+      scope: "user",
+      userId: "user-fixture",
+    });
+    const delivered = new SkillWithFiles({
+      ...base,
+      files: [...base.files, { path: "scripts/check.sh", contents: "#!/bin/sh\necho checked\n" }],
+    });
+    const skillsLayer = skillsForLaunchLayer(() =>
+      Effect.succeed({ user: [delivered], project: [] }),
+    );
+    try {
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            fs.chmodSync(path.join(executorHome, ".claude"), 0o750);
+            fs.utimesSync(path.join(executorHome, ".claude"), 1700000000.125, 1700000000.125);
+            fs.mkdirSync(saved);
+            expect(spawnSync("cp", ["-a", `${executorHome}/.`, saved]).status).toBe(0);
+            const chain = memory.chains.get(session.worktreeId);
+            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            const n = (chain?.headN ?? 0) + 1;
+            const snapshotRoot = path.join(root, "snapshot");
+            fs.mkdirSync(snapshotRoot);
+            fs.cpSync(saved, path.join(snapshotRoot, "harness"), { recursive: true });
+            const snapshot = snapshotDirectory(
+              snapshotRoot,
+              captureKeys(session.worktreeId, epoch),
+              { chunkSize: 64 },
+            );
+            const built = buildManifest({
+              worktreeId: session.worktreeId,
+              n,
+              parent: chain?.headCapture ?? null,
+              epoch,
+              seq: n * 10,
+              kind: "final",
+              git: { packs: [], refs: {}, head: "refs/heads/main", fsck: "verified" },
+              workspace: { root: snapshot.root, packs: snapshot.packs },
+            });
+            yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]])).pipe(
+              Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
+            );
+            const api = servedSocketApis.get(session.id)?.capture;
+            if (api === undefined) throw new Error("capture api missing");
+            yield* api.register({
+              worktree_id: session.worktreeId,
+              epoch,
+              n,
+              parent: chain?.headCapture ?? null,
+              capture_id: built.id,
+              manifest_key: built.key,
+              manifest: built.manifest,
+            });
+            yield* engine.stop(session.id);
+            yield* until(
+              () =>
+                world.sessions.get(session.id)?.captureDrain === null &&
+                world.sessions.get(session.id)?.status === "stopped",
+              "saved stop",
+            );
+            const resumed = yield* engine.resumeSession(session.id, "shell");
+            expect(resumed.status).toBe("running");
+            // Both launches relocated; the resume's ran over the restored `.claude`.
+            expect(relocations).toHaveLength(2);
+            const last = relocations.at(-1);
+            expect(last?.status).toBe(0);
+            expect(last?.before).toEqual({ mode: 0o750, mtime: "1700000000125000000" });
+            expect(last?.after).toEqual(last?.before);
+            // The fresh credential arrived beside it, as Core wrote it.
+            const credential = path.join(executorHome, ".claude/.credentials.json");
+            expect(fs.readFileSync(credential, "utf8")).toBe("fresh injected credential\n");
+            expect(fs.statSync(credential).mode & 0o777).toBe(0o600);
+            expect(fs.realpathSync(path.join(ephemeralHome, ".claude"))).toBe(
+              path.join(executorHome, ".claude"),
+            );
+          }),
+        {
+          captured: memory,
+          skillsLayer,
+          workspaceImage: { ...CUSTOM_BASE, setupCommands: [] },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stopAnswer: () => "stopped",
+              beforeCreate: () =>
+                Effect.sync(() => {
+                  executorHome = path.join(root, `capture-${created.length}`);
+                  fs.mkdirSync(executorHome);
+                  ephemeralHome = path.join(root, `home-${created.length}`);
+                  fs.mkdirSync(ephemeralHome);
+                  expect(injectCoreCredential(ephemeralHome)).toBe(0);
+                  if (created.length > 1) {
+                    expect(spawnSync("cp", ["-a", `${saved}/.`, executorHome]).status).toBe(0);
+                  }
+                }),
+              exec: (argv) => {
+                const relocation = (argv[2] ?? "").includes("harness-home relocation failed");
+                const op = argv[3] ?? "";
+                const manifestRead =
+                  argv[0] === "cat" && (argv[1] ?? "").includes(".mend-managed-skills");
+                if (!relocation && op !== "mend-skills" && op !== "mend-write" && !manifestRead) {
+                  return undefined;
+                }
+                const mapped = argv.map((arg) =>
+                  arg.replaceAll("/workspace/harness-home", executorHome),
+                );
+                const before =
+                  relocation && fs.existsSync(path.join(executorHome, ".claude"))
+                    ? dirFacts()
+                    : null;
+                const run = spawnSync(mapped[0] ?? "", mapped.slice(1), {
+                  cwd: executorHome,
+                  env: { ...process.env, HOME: ephemeralHome },
+                  encoding: "utf8",
+                });
+                if (relocation) relocations.push({ before, after: dirFacts(), status: run.status });
+                return { exitCode: run.status ?? 1, stdout: run.stdout, stderr: run.stderr };
+              },
+            },
+          }),
+        },
+      );
+    } finally {
+      fs.rmSync(root, { recursive: true, force: true });
+    }
+  },
+);
