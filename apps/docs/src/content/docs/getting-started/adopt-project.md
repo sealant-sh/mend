@@ -42,6 +42,9 @@ mend adopt ssh://git@example.com/acme/api.git
 The server performs the clone. Local paths, Windows paths, `file://` sources, and custom Git remote
 helpers are rejected, even if the files exist on the server. There is no folder-adoption mode.
 
+A repository that uses SHA-256 object names is refused after the clone, which is removed. See
+[Known issues](/reference/known-issues/).
+
 ## Choose Git authentication
 
 `--auth` selects how the Mend host authenticates remote Git operations:
