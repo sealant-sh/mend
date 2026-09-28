@@ -415,13 +415,15 @@ captures, and git-ignored bulk such as `node_modules` and build output. Mend nev
 go while anything is pending (docs/adr/0002-session-capture-store.md, "Stop drains, then
 terminates"). A stop, an idle stop, a relaunch and a replacement ahead of the platform's cap all
 drain first: Mend flushes, reads what is left and repeats until nothing is, with no short deadline.
-Meanwhile the session reads `saving · 3 left` on the web, in `mend status`, on the phone and in its
-Slack thread, and the workspace stays up.
+Meanwhile the session reads `stopping · saving · 3 left` on the web, in `mend status` and on the
+phone (`stopped · saving · 3 left` in its Slack thread), the workspace stays up, and the session is
+not settled until the platform reports the workspace gone.
 
 - `MEND_CAPTURE_DRAIN_STALL_SECONDS` (default `600`): a drain that moves nothing for this long reads
   `not saved · 3 pending · workspace kept`, and its owner's phone is told once. The workspace is
-  kept; the next sweep tries again. Only the owner's **Discard unsaved and stop** on the session
-  page ends it with captures pending, and the organization's audit log records it.
+  kept; the next sweep tries again after 10 s, doubling to 5 min while nothing about it changes, and
+  at once when something does. Only the owner's **Discard unsaved and stop** on the session page
+  ends it with captures pending, and the organization's audit log records it.
 - `MEND_EXECUTOR_MAX_SECONDS` (unset = unknown): the platform's cap on one executor, counted from
   its start. When set, Mend starts a planned drain and a replacement at the deadline minus
   `MEND_CAPTURE_DRAIN_ESTIMATE_SECONDS` (default `300`) and `MEND_EXECUTOR_DEADLINE_MARGIN_SECONDS`
@@ -429,6 +431,41 @@ Slack thread, and the workspace stays up.
   MicroVM runtime's maximum duration on AWS.
 - The worktree lease is released only after the platform reports the workspace gone. A session
   removed while its workspace is up is removed once the workspace has gone.
+
+### The Docker daemon's shutdown timeout
+
+A `docker stop` of a capture workspace waits up to the container's own stop timeout, which Sealant
+sets to `SEALANT_DOCKER_CAPTURE_STOP_GRACE_SECONDS` (default `3600`) so the executor can finish its
+final flush. The daemon's own shutdown does not honor it: when dockerd stops (a host restart,
+`systemctl stop docker`, quitting Docker Desktop) it gives every container its `shutdown-timeout`,
+15 s unless configured, and then kills it. A workspace killed there loses what it had not shipped.
+
+`mend doctor` reads the timeout of the daemon on the machine it runs on, and `mend server setup`
+prints a line before it starts the containers when the timeout is below the capture grace or could
+not be read:
+
+```text
+○ docker      shutdown-timeout 15 s · dockerd default · not set in /etc/docker/daemon.json · below the 3600 s capture grace → set "shutdown-timeout": 3600 in /etc/docker/daemon.json, then restart dockerd
+```
+
+It reads the running dockerd's `--shutdown-timeout` flag, then its daemon.json (the file named by
+`--config-file`, otherwise the daemon's default location). When no dockerd process is visible and
+the file does not set the key, the line reads `not observed`: a flag may still set the value.
+
+To raise it:
+
+- **Linux dockerd**: add `"shutdown-timeout": 3600` to `/etc/docker/daemon.json`, then
+  `sudo systemctl restart docker`. If the unit passes `--shutdown-timeout`, change the flag instead;
+  dockerd refuses to start when both set it. On NixOS set
+  `virtualisation.docker.daemon.settings."shutdown-timeout" = 3600;`.
+- **Rootless Docker**: add it to `~/.config/docker/daemon.json`, then
+  `systemctl --user restart docker`.
+- **Docker Desktop**: Settings → Docker Engine, add `"shutdown-timeout": 3600` (the file is
+  `~/.docker/daemon.json`), then Apply & restart.
+- **OrbStack**: add it to `~/.orbstack/config/docker.json`, then restart OrbStack.
+
+The host's own shutdown must also wait that long: systemd stops `docker.service` with its
+`TimeoutStopSec`, so raise that too when it is shorter than the daemon's timeout.
 
 ## Scope and evidence
 

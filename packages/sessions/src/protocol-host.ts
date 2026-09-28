@@ -465,15 +465,24 @@ export const ProtocolHostLive: Layer.Layer<
       if (process === undefined) {
         return yield* new ProtocolHostNotLiveError({ processId: sessionId });
       }
-      const turn = yield* conversations.submitTurn(
-        sessionId,
-        process.id,
-        input,
-        author,
-        launchCorrelationId,
-      );
+      // A stop that began after the host was read above is not raced: the idle stop's claim and
+      // this admission take the same lock, and a claimed session refuses the turn. The next
+      // message resumes the session instead.
+      const turn = yield* conversations
+        .submitTurn(sessionId, process.id, input, author, launchCorrelationId)
+        .pipe(
+          Effect.catchTag("SessionStoppingError", () =>
+            Effect.fail(new ProtocolHostNotLiveError({ processId: process.id })),
+          ),
+        );
       const entry = hosted.get(process.id);
-      if (entry !== undefined) yield* dispatchNext(entry);
+      if (entry === undefined) {
+        // Detached while the turn was being queued (a user stop does not take the lock): nothing
+        // will ever dispatch it, so it is cancelled and refused, never acknowledged.
+        yield* conversations.cancelOpenForTurn(turn.id);
+        return yield* new ProtocolHostNotLiveError({ processId: process.id });
+      }
+      yield* dispatchNext(entry);
       return turn;
     });
 

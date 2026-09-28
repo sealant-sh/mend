@@ -23,7 +23,7 @@ import {
   WorktreesRepo,
 } from "@mend/db";
 import { currentAgentProcess } from "@mend/domain/workbench";
-import { SessionEngine } from "@mend/sessions";
+import { captureHoldWords, SessionEngine } from "@mend/sessions";
 import { Store } from "@mend/store";
 import { Effect } from "effect";
 import { HttpApiBuilder } from "effect/unstable/httpapi";
@@ -191,6 +191,16 @@ export const WorktreesGroupLive = HttpApiBuilder.group(MendApi, "worktrees", (ha
         }
         if (liveHolds > 0) {
           return yield* new WorktreeActive({ id: params.id, liveSessions: liveHolds });
+        }
+        // Capture mode: the rows are an executor's identity and the chain its saved work. While a
+        // drain runs, a drain kept its workspace, or an executor was not observed to end, they
+        // stay — `force` overrides unlanded work, never unsaved work; the owner's "discard unsaved
+        // and stop" is how that goes (docs/adr/0002, "Stop drains, then terminates").
+        const holds = yield* (yield* SessionEngine).captureHolds(worktree.id);
+        if (holds.length > 0) {
+          return yield* new StoreFailure({
+            message: `not removed · ${captureHoldWords(holds)} · the worktree stays until its workspaces have saved and ended, or their owner discards what is unsaved`,
+          });
         }
         const project = yield* projects
           .byId(worktree.projectId)

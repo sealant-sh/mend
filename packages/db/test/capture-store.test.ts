@@ -202,20 +202,47 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     expect(result.staleHeartbeat).toBe(false);
   });
 
-  it("an expired lease is claimable and fences the previous holder", async () => {
+  it("a lapsed lease is not an end: another executor waits for the release, which fences the holder", async () => {
     const result = await run(
       Effect.gen(function* () {
         const repo = yield* CaptureStoreRepo;
         const worktreeId = yield* freshWorktree;
         const first = yield* repo.claim(worktreeId, "exec-a", 0);
+        // exec-a's heartbeat lapsed (a partition): it may still be running with work unshipped.
+        const lapsed = yield* tagOf(repo.claim(worktreeId, "exec-b"));
+        const lapsedLease = yield* repo.leaseOf(worktreeId);
+        // The holder itself may take its lapsed lease again (a pickup of the same session).
+        const again = yield* repo.claim(worktreeId, "exec-a", 0);
+        // Its end observed, the holder is released: now the next executor claims and fences it.
+        const released = yield* repo.release(worktreeId, again.epoch);
+        const releasedLease = yield* repo.leaseOf(worktreeId);
+        const revived = yield* repo.heartbeat(worktreeId, again.epoch);
         const second = yield* repo.claim(worktreeId, "exec-b");
-        const stale = yield* tagOf(repo.register(captureInput(worktreeId, 0, null, first.epoch)));
+        const stale = yield* tagOf(repo.register(captureInput(worktreeId, 0, null, again.epoch)));
         const live = yield* tagOf(repo.register(captureInput(worktreeId, 0, null, second.epoch)));
-        return { first, second, stale, live };
+        return {
+          first,
+          lapsed,
+          lapsedHolder: lapsedLease?.executorId,
+          again,
+          released,
+          releasedHolder: releasedLease?.executorId,
+          revived,
+          second,
+          stale,
+          live,
+        };
       }),
     );
     expect(result.first.epoch).toBe(1);
-    expect(result.second.epoch).toBe(2);
+    expect(result.lapsed).toBe("WorktreeLeasedError");
+    expect(result.lapsedHolder).toBe("exec-a");
+    expect(result.again.epoch).toBe(2);
+    expect(result.released).toBe(true);
+    expect(result.releasedHolder).toBeNull();
+    // A released lease is not revived by the ended executor's late heartbeat.
+    expect(result.revived).toBe(false);
+    expect(result.second.epoch).toBe(3);
     expect(result.stale).toBe("CaptureConflictError");
     expect(result.live).toBe("ok");
   });

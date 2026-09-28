@@ -7,6 +7,33 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-27 · 0.37.2 · A capture status read, and a snap that fails says so
+
+- **A capture status read.**
+  - **Needed:** a running session whose captures are failing must say so while it runs
+    (`capture failing since 16:29:51 UTC · <error>` on web, CLI, phone and Slack, and one
+    notification to its owner). Mend reads a running executor's capture status every 45 s
+    (MEND_CAPTURE_STATUS_SECONDS) and when someone opens the session, without flushing or snapping
+    anything.
+  - **Today:** SDK 0.37.2 has only `capture.flush()`; a flush forces a snap and ships, so it is not
+    a cheap read. `SealantClient.captureStatus` calls `workspace.capture.status()` when the SDK has
+    it and answers null otherwise: on 0.37.2 Mend learns of a failing snap only from a flush (a
+    checkpoint, a handoff, a stop).
+  - **Suggested:** `workspace.capture.status()` (Core `fix/drain-before-stop` adds it), carrying
+    sealantd's `last_snap_error`, `snap_failing_since` (unix ms, `snapFailingSinceUnixMs`),
+    `snaps_failed`, `unreadable` / `carried` / `unreadable_paths`, `bulk_building` and
+    `register_refused` / `repairing`, with `complete` false while a class's last snap failed. Mend
+    reads those fields structurally from any answer already, so the new SDK needs no change beyond
+    the version.
+- **A final flush whose snapshot failed.**
+  - **Needed:** `snapshot-failed` and `unreadable` do not heal while a drain waits. Mend now keeps
+    the workspace at once on either (or on any answer reporting a failing snap), names sealantd's
+    error and first unreadable path on the session, and asks again on the kept backoff (10 s
+    doubling to 5 min) instead of a FINAL every few seconds for the 10 min stall window (e2e run 3:
+    80 FINALs in 606.7 s).
+  - **Suggested:** keep `last_snap_error` and `unreadable_paths` on the final flush's answer too, so
+    the owner sees which path to fix before discarding.
+
 ## 2026-09-27 · 0.37.2 · sealantd: say which manifest format it reads; re-upload what register says is missing
 
 Two wire points on the session channel (sealantd `crates/sealant-capture/src/registrar.rs`).
@@ -52,6 +79,9 @@ and stop" ends it with captures pending. Four things it cannot do through the SD
     `platformDeadline: null` in `SessionEngine.captureReaper`).
   - **Suggested:** `workspace.runtimeDeadline(): string | null` (ISO time), or the same on the
     workspace record. Mend reads it into `platformDeadline`, where it wins over the configuration.
+    Core's pending SDK (sealant#285) adds `runtimeDeadline()`; the swap-in is that one argument in
+    `SessionEngine.captureReaper`. Until then the lead before a stated cap also grows with what is
+    pending at the executor's observed throughput.
 - **A final flush with a deadline.**
   - **Needed:** a flush that snapshots bulk as well as small captures, ships everything, and returns
     only at `pending == 0`, a fence or a refusal, bounded by a deadline Mend names (or none).
@@ -63,6 +93,15 @@ and stop" ends it with captures pending. Four things it cannot do through the SD
   - **Suggested:** `capture.flush({ kind: "final", deadlineMs })` and
     `sealantctl capture flush --final --deadline`, with no clamp; the terminate hook calls the final
     kind.
+  - **Agreed with sealantd (2026-09-27):** the final kind quiesces first (no new processes, every
+    managed process ended), then snapshots both classes and ships; the answer carries `complete`
+    and, when false, `incompleteReason` (`not-final`, `processes-remain`, `snapshot-failed`,
+    `fenced`, `conflict`, `deadline`, `ship-failed`, `pending`, `internal`). The executor refuses
+    exec, sessions and replan after it. Mend asks `captureFlush(workspace, "final")` for every drain
+    and treats only `complete: true` as saved; until the SDK passes the kind and the fields through,
+    the answer has no `complete` and every drain keeps its workspace
+    (`not saved · final flush not reported`). Mend never starts anything in an executor it sent a
+    final flush to.
 - **What is pending, in bytes and by class.**
   - **Needed:** `pendingBytes` (what is left to upload), `pendingBulk` (how many of `pending` are
     bulk), whether bulk is dirty since its last snap, and `refused` (the byte quota refused a
@@ -82,6 +121,24 @@ and stop" ends it with captures pending. Four things it cannot do through the SD
   - **Suggested:** `stop()` resolves `{ state: "stopped" }` or `{ state: "draining", capture }` and
     throws only when neither can be observed. Core's reapers (expiry, stranded, superseded,
     orphaned) drain a capture-sourced workspace before they terminate it too.
+
+## 2026-09-27 · 0.37.2 · A stop that discards, and a workspace with no agent
+
+- **A stop that discards.**
+  - **Needed:** the owner's "discard unsaved and stop" (audited on Mend's side) ends a workspace
+    whose captures cannot be saved. With Core draining every capture workspace before it stops it,
+    and keeping one whose queue does not move, a plain `workspace.stop()` never ends it.
+  - **Today:** `stop()` takes no options. Mend sends `stop({ discardUnsaved: true })` for the
+    discard (`SealantClient.stopWorkspace`); SDK 0.37.2 ignores it, Core drains and keeps the
+    workspace, and Mend answers
+    `discard asked · the platform has not ended the workspace · nothing discarded yet`.
+  - **Suggested:** `workspace.stop({ discardUnsaved: true })`: an explicit force stop that skips the
+    drain, audited on Core's side, answering `{ state: "stopped" }` once the runtime is gone.
+- **A workspace with no agent.**
+  - **Needed:** a shell session is an open workbench with no harness of its own.
+  - **Today:** `workspaces.create` requires a harness, so Mend names `codex()` for a shell and
+    sealantd logs `Starting codex workspace` for it.
+  - **Suggested:** a harness-less create (or a `shell` harness) whose banner says what started.
 
 ## 2026-09-25 · 0.37.0 · A file into a workspace
 

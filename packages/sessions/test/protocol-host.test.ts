@@ -1,5 +1,10 @@
 import { describe, expect, it } from "@effect/vitest";
-import { AgentConversationRepo, SessionProcessesRepo, SessionsRepo } from "@mend/db";
+import {
+  AgentConversationRepo,
+  SessionProcessesRepo,
+  SessionsRepo,
+  SessionStoppingError,
+} from "@mend/db";
 import { AgentTurnId, SealantWorkspaceId, SessionId, SessionProcessId } from "@mend/domain";
 import { AgentTurn, SessionProcess } from "@mend/domain/workbench";
 import type { InteractiveSession } from "@sealant/sdk";
@@ -66,8 +71,23 @@ const makeConversationWorld = () => {
     turns.set(turn.id, turn);
     return turn;
   };
+  /**
+   * What the repo's admission sees: `stopping` once an idle stop claimed the session (it refuses
+   * the turn); `beforeAdmit` runs as the turn is admitted — what happens concurrently.
+   */
+  const admission: { stopping: boolean; beforeAdmit: Effect.Effect<void> } = {
+    stopping: false,
+    beforeAdmit: Effect.void,
+  };
   const layer = Layer.succeed(AgentConversationRepo, {
-    submitTurn: (_session, _process, input) => Effect.sync(() => seed(input)),
+    submitTurn: (_session, _process, input) =>
+      admission.beforeAdmit.pipe(
+        Effect.andThen(
+          admission.stopping
+            ? Effect.fail(new SessionStoppingError({ sessionId }))
+            : Effect.sync(() => seed(input)),
+        ),
+      ),
     byTurnId: (id) => Effect.succeed(turns.get(id) ?? null),
     byLaunchCorrelation: () => Effect.succeed(null),
     byProviderTurnId: (_session, providerTurnId) =>
@@ -122,7 +142,7 @@ const makeConversationWorld = () => {
     requeueQueuedTurns: () => Effect.void,
     saveProtocolCursor: () => Effect.void,
   });
-  return { layer, turns, seed };
+  return { layer, turns, seed, admission };
 };
 
 const processesLayer = Layer.succeed(SessionProcessesRepo, {
@@ -185,6 +205,14 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
   setHarness: () => Effect.void,
   recordCaptureObservation: () => Effect.void,
   beginCaptureDrain: () => Effect.void,
+  planRelaunch: () => Effect.void,
+  clearRelaunch: () => Effect.void,
+  stopCaptureDrain: () => Effect.void,
+  relaunchOf: () => Effect.succeed(null),
+  markFinalFlush: () => Effect.void,
+  finalFlushedWorkspace: () => Effect.succeed(null),
+  recordCaptureSaved: () => Effect.void,
+  captureSavedOf: () => Effect.succeed(null),
   recordCaptureDrainProgress: () => Effect.void,
   markCaptureNotSaved: () => Effect.succeed(false),
   endCaptureDrain: () => Effect.void,
@@ -367,6 +395,42 @@ describe("ProtocolHost", () => {
         // Release the pipe generator before scope close: the live-clock teardown
         // otherwise waits on its never-resolving next().
         yield* host.detach(processId);
+      }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
+    },
+  );
+
+  it.effect(
+    "never acknowledges a turn once stopping began: a claimed idle stop refuses it, and a host detached meanwhile cancels it",
+    () => {
+      const world = makeConversationWorld();
+      const { pipe } = makePipe([]);
+      return Effect.gen(function* () {
+        const host = yield* ProtocolHost;
+        yield* host.attach({
+          process: agentProcess,
+          pipe,
+          cwd: "/workspace/repo",
+          permissionMode: "bypass",
+          hooks: {
+            onRequestChanged: () => Effect.void,
+            onTurnCompleted: () => Effect.void,
+          },
+        });
+        // The host was live when the submission read it; the idle stop claimed the session
+        // before the turn was admitted.
+        world.admission.stopping = true;
+        const refused = yield* host
+          .submitTurn(sessionId, "one more thing", "user-1")
+          .pipe(Effect.flip);
+        expect(refused._tag).toBe("ProtocolHostNotLiveError");
+        expect(world.turns.size).toBe(0);
+        // A stop that detaches the host while the turn is being admitted: the turn is cancelled
+        // and the submission refused, never left queued against a stopped process.
+        world.admission.stopping = false;
+        world.admission.beforeAdmit = host.detach(processId);
+        const detached = yield* host.submitTurn(sessionId, "and this", "user-1").pipe(Effect.flip);
+        expect(detached._tag).toBe("ProtocolHostNotLiveError");
+        expect([...world.turns.values()].map((turn) => turn.status)).toEqual(["cancelled"]);
       }).pipe(Effect.scoped, Effect.provide(hostLayer(world.layer)));
     },
   );

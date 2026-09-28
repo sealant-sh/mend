@@ -21,7 +21,19 @@ import {
   type RequestIntentReading,
   type TurnLanding,
 } from "@mend/domain/workbench";
-import { and, asc, eq, gt, inArray, isNull, max, notInArray, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  eq,
+  gt,
+  inArray,
+  isNotNull,
+  isNull,
+  max,
+  notInArray,
+  or,
+  sql,
+} from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
 
@@ -40,6 +52,23 @@ export class AgentTurnNotFoundError extends Schema.TaggedErrorClass<AgentTurnNot
   "AgentTurnNotFoundError",
   { turnId: Schema.String },
 ) {}
+
+/**
+ * A turn asked of a session whose idle stop has begun (`SessionsRepo.claimIdleStop`): the agent is
+ * being stopped, so nothing is queued for it. The next message resumes the session instead.
+ */
+export class SessionStoppingError extends Schema.TaggedErrorClass<SessionStoppingError>()(
+  "SessionStoppingError",
+  { sessionId: Schema.String },
+) {}
+
+/**
+ * The per-session lock turn admission and the idle stop's claim both take, so one of them always
+ * sees the other: a claim never lands while a turn is being queued, and a turn is never queued
+ * once a claim has landed (`SessionsRepo.claimIdleStop`).
+ */
+export const agentConversationLockKey = (sessionId: SessionId): string =>
+  `mend:agent-conversation:${sessionId}`;
 
 /** A requested agent-to-human request does not exist. */
 export class AgentRequestNotFoundError extends Schema.TaggedErrorClass<AgentRequestNotFoundError>()(
@@ -103,7 +132,7 @@ export class AgentConversationRepo extends Context.Service<
       input: string,
       author: string | null,
       launchCorrelationId?: string | null,
-    ) => Effect.Effect<AgentTurn>;
+    ) => Effect.Effect<AgentTurn, SessionStoppingError>;
     readonly byTurnId: (id: AgentTurnId) => Effect.Effect<AgentTurn | null>;
     readonly byLaunchCorrelation: (
       sessionId: SessionId,
@@ -257,8 +286,21 @@ export const AgentConversationRepoLive: Layer.Layer<
         .transaction((tx) =>
           Effect.gen(function* () {
             yield* tx.execute(
-              sql`select pg_advisory_xact_lock(hashtext(${`mend:agent-conversation:${sessionId}`}))`,
+              sql`select pg_advisory_xact_lock(hashtext(${agentConversationLockKey(sessionId)}))`,
             );
+            // Under the lock the idle stop's claim also takes: a claim that landed is seen here,
+            // and a claim after this commits sees the queued turn and does not land. A settled
+            // session has no agent to take a turn either; a resume reopens it first.
+            const [stopping] = yield* tx
+              .select({ id: agentSessions.id })
+              .from(agentSessions)
+              .where(
+                and(
+                  eq(agentSessions.id, sessionId),
+                  or(isNotNull(agentSessions.idleStoppedAt), isNotNull(agentSessions.settledAt)),
+                ),
+              );
+            if (stopping !== undefined) return { _tag: "stopping" } as const;
             if (launchCorrelationId !== null) {
               const [existing] = yield* tx
                 .select()
@@ -318,6 +360,7 @@ export const AgentConversationRepoLive: Layer.Layer<
           }),
         )
         .pipe(Effect.orDie);
+      if (!(created instanceof AgentTurn)) return yield* new SessionStoppingError({ sessionId });
       yield* notify(sessionId);
       return created;
     });

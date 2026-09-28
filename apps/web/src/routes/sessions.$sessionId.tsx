@@ -244,7 +244,11 @@ function SessionPage() {
             )}
             {captureLine !== null && (
               <StatusDot
-                tone={session.captureNotSavedAt === null ? "hollow" : "amber"}
+                tone={
+                  session.captureNotSavedAt === null && session.captureFailingSince === null
+                    ? "hollow"
+                    : "amber"
+                }
                 word={captureLine}
                 pulse={session.captureNotSavedAt === null && session.captureDrain !== null}
               />

@@ -26,6 +26,7 @@ export const statusTone = (status: SessionStatusDto): Tone => {
       return "red";
     case "starting":
     case "idle":
+    case "stopping":
     case "stopped":
       return "hollow";
     default:
@@ -45,6 +46,8 @@ export const statusWord = (session: SessionDto): string => {
       return "waiting for input";
     case "idle":
       return "idle";
+    case "stopping":
+      return "stopping";
     case "completed":
       return recorded ? "completed · observed" : "completed";
     case "failed":

@@ -2,13 +2,20 @@ import { describe, expect, it } from "vitest";
 
 import {
   captureBytesWords,
+  captureDiscardAuditData,
+  captureDiscardWords,
   captureDrainStep,
+  captureIncompleteWords,
   captureHarvestReady,
   captureProgressed,
   captureSaved,
+  captureSnapDetailOf,
   captureStatusLine,
   type CaptureReading,
   executorCapDue,
+  executorEndOf,
+  executorEndWords,
+  observeCaptureThroughput,
   planExecutorCap,
 } from "../src/workbench/capture-drain.ts";
 
@@ -23,6 +30,13 @@ const reading = (patch: Partial<CaptureReading> = {}): CaptureReading => ({
   fenced: false,
   paused: false,
   bulkDirty: null,
+  complete: true,
+  incompleteReason: null,
+  snapError: null,
+  snapFailingSince: null,
+  snapsFailed: null,
+  unreadable: null,
+  unreadablePaths: [],
   ...patch,
 });
 
@@ -35,11 +49,17 @@ const facts = {
 } as const;
 
 describe("captureSaved", () => {
-  it("needs nothing pending, nobody fenced and nothing refused", () => {
+  it("needs a completed final flush, nothing pending, nobody fenced and nothing refused", () => {
     expect(captureSaved(reading())).toBe(true);
     expect(captureSaved(reading({ pending: 1 }))).toBe(false);
     expect(captureSaved(reading({ fenced: true }))).toBe(false);
     expect(captureSaved(reading({ refused: 1 }))).toBe(false);
+  });
+
+  it("never reads an empty queue as saved without the executor's `complete`", () => {
+    // The queue is empty, but nothing says the executor quiesced and snapshotted both classes.
+    expect(captureSaved(reading({ complete: null }))).toBe(false);
+    expect(captureSaved(reading({ complete: false }))).toBe(false);
   });
 });
 
@@ -141,6 +161,158 @@ describe("captureDrainStep", () => {
   });
 });
 
+describe("captureDrainStep while a final flush runs", () => {
+  it("reads a final flush still running (`in-progress`) as saving, not kept", () => {
+    const step = captureDrainStep({
+      previous: null,
+      reading: reading({ complete: false, incompleteReason: "in-progress" }),
+      progressAtMs: 0,
+      nowMs: 1,
+      stallSeconds: 600,
+    });
+    expect(step.kind).not.toBe("not-saved");
+    expect(captureIncompleteWords("in-progress")).toBeNull();
+  });
+});
+
+describe("captureDrainStep without a completed final flush", () => {
+  it("keeps the workspace at once when the executor cannot report `complete`", () => {
+    expect(
+      captureDrainStep({
+        previous: null,
+        reading: reading({ complete: null }),
+        progressAtMs: 0,
+        nowMs: 1,
+        stallSeconds: 600,
+      }).kind,
+    ).toBe("not-saved");
+  });
+
+  it("keeps the workspace at once when the executor cannot run a final flush, or is fenced", () => {
+    for (const stuck of [
+      // An older daemon: incomplete, no reason.
+      reading({ complete: false }),
+      reading({ complete: false, incompleteReason: "not-final" }),
+      reading({ complete: false, incompleteReason: "conflict" }),
+      // A daemon that cannot vouch that every writer stopped (no subreaper).
+      reading({ complete: false, incompleteReason: "sweep-unavailable" }),
+    ]) {
+      expect(
+        captureDrainStep({
+          previous: null,
+          reading: stuck,
+          progressAtMs: 0,
+          nowMs: 1,
+          stallSeconds: 600,
+        }).kind,
+      ).toBe("not-saved");
+    }
+  });
+
+  it("keeps the workspace at once when the final snapshot failed or met unreadable paths (e2e run 3: 80 FINALs over 606.7 s)", () => {
+    for (const failed of [
+      reading({ complete: false, incompleteReason: "snapshot-failed" }),
+      reading({ complete: false, incompleteReason: "unreadable", unreadable: 1 }),
+      // Any other reason, from a daemon that says a snap is failing.
+      reading({ complete: false, incompleteReason: "pending", snapError: "EIO: tree/a" }),
+      reading({
+        complete: false,
+        incompleteReason: "deadline",
+        snapFailingSince: new Date("2026-09-27T10:00:00Z"),
+      }),
+    ]) {
+      // Something moved (the executor shipped what it had), and still nothing will complete.
+      expect(
+        captureDrainStep({
+          previous: reading({ pending: 3, registered: 1, complete: false }),
+          reading: { ...failed, registered: 2 },
+          progressAtMs: 0,
+          nowMs: 1,
+          stallSeconds: 600,
+        }).kind,
+      ).toBe("not-saved");
+    }
+  });
+
+  it("keeps saving while a reported final flush is incomplete, until the stall window", () => {
+    const incomplete = reading({ complete: false, incompleteReason: "ship-failed" });
+    expect(
+      captureDrainStep({
+        previous: incomplete,
+        reading: incomplete,
+        progressAtMs: 0,
+        nowMs: 1000,
+        stallSeconds: 600,
+      }).kind,
+    ).toBe("saving");
+    expect(
+      captureDrainStep({
+        previous: incomplete,
+        reading: incomplete,
+        progressAtMs: 0,
+        nowMs: 600_000,
+        stallSeconds: 600,
+      }).kind,
+    ).toBe("not-saved");
+  });
+});
+
+describe("captureSnapDetailOf", () => {
+  it("names sealantd's error, then the first path it could not read", () => {
+    expect(captureSnapDetailOf(reading())).toBeNull();
+    expect(captureSnapDetailOf(reading({ snapError: "EIO reading tree/db.sqlite" }))).toBe(
+      "EIO reading tree/db.sqlite",
+    );
+    expect(
+      captureSnapDetailOf(
+        reading({ unreadable: 3, unreadablePaths: ["tree/secrets.pem", "tree/b", "tree/c"] }),
+      ),
+    ).toBe("unreadable tree/secrets.pem +2 more");
+    expect(
+      captureSnapDetailOf(
+        reading({ snapError: "permission denied", unreadable: 1, unreadablePaths: ["tree/k"] }),
+      ),
+    ).toBe("permission denied · unreadable tree/k");
+    expect(captureSnapDetailOf(reading({ unreadable: 2 }))).toBe("2 unreadable");
+  });
+});
+
+describe("observeCaptureThroughput", () => {
+  it("reads bytes and captures per second from lifetime counters, smoothed", () => {
+    const first = observeCaptureThroughput(null, { atMs: 0, uploadedBytes: 0, registered: 0 });
+    expect(first.bytesPerSecond).toBeNull();
+    const second = observeCaptureThroughput(first, {
+      atMs: 10_000,
+      uploadedBytes: 10_000_000,
+      registered: 5,
+    });
+    expect(second.bytesPerSecond).toBe(1_000_000);
+    expect(second.objectsPerSecond).toBe(0.5);
+    const third = observeCaptureThroughput(second, {
+      atMs: 20_000,
+      uploadedBytes: 30_000_000,
+      registered: 5,
+    });
+    // 2 MB/s over the new interval, weighted into 1 MB/s; nothing registered keeps the rate.
+    expect(third.bytesPerSecond).toBeCloseTo(1_300_000);
+    expect(third.objectsPerSecond).toBe(0.5);
+  });
+
+  it("starts over when the counters go backwards: a new executor", () => {
+    const moving = observeCaptureThroughput(
+      observeCaptureThroughput(null, { atMs: 0, uploadedBytes: 0, registered: 0 }),
+      { atMs: 10_000, uploadedBytes: 1000, registered: 1 },
+    );
+    const replaced = observeCaptureThroughput(moving, {
+      atMs: 20_000,
+      uploadedBytes: 10,
+      registered: 0,
+    });
+    expect(replaced.bytesPerSecond).toBeNull();
+    expect(replaced.objectsPerSecond).toBeNull();
+  });
+});
+
 describe("captureStatusLine", () => {
   it("says what a drain has left, in captures until sealantd reports bytes", () => {
     expect(captureStatusLine({ ...facts, captureDrain: "stop" })).toBe("saving");
@@ -166,6 +338,64 @@ describe("captureStatusLine", () => {
         captureNotSavedAt: new Date("2026-09-27T10:00:00Z"),
       }),
     ).toBe("not saved · 3 pending · workspace kept");
+  });
+
+  it("says why a final flush did not complete, in plain words", () => {
+    const kept = {
+      ...facts,
+      capturePending: 3,
+      captureDrain: "stop" as const,
+      captureNotSavedAt: new Date("2026-09-27T10:00:00Z"),
+    };
+    expect(captureStatusLine({ ...kept, captureIncompleteReason: "snapshot-failed" })).toBe(
+      "not saved · snapshot failed · 3 pending · workspace kept",
+    );
+    expect(
+      captureStatusLine({ ...kept, capturePending: 0, captureIncompleteReason: "unreported" }),
+    ).toBe("not saved · final flush not reported · 0 pending · workspace kept");
+  });
+
+  it("names what sealantd said behind a failed snapshot", () => {
+    expect(
+      captureStatusLine({
+        ...facts,
+        capturePending: 0,
+        captureDrain: "stop",
+        captureNotSavedAt: new Date("2026-09-27T10:00:00Z"),
+        captureIncompleteReason: "snapshot-failed",
+        captureIncompleteDetail: "unreadable tree/secrets.pem",
+      }),
+    ).toBe(
+      "not saved · snapshot failed · unreadable tree/secrets.pem · 0 pending · workspace kept",
+    );
+  });
+
+  it("says when a running executor's capture started failing, and why", () => {
+    expect(
+      captureStatusLine({
+        ...facts,
+        captureFailingSince: "2026-09-27T16:29:51.000Z",
+        captureFailingError: "EIO: tree/db.sqlite",
+      }),
+    ).toBe("capture failing since 16:29:51 UTC · EIO: tree/db.sqlite");
+    // A drain says what it says; the failure is behind its reason.
+    expect(
+      captureStatusLine({
+        ...facts,
+        captureDrain: "stop",
+        captureFailingSince: new Date("2026-09-27T16:29:51Z"),
+      }),
+    ).toBe("saving");
+  });
+
+  it("says who discarded unsaved work, and when", () => {
+    expect(
+      captureStatusLine({
+        ...facts,
+        captureDiscardedAt: new Date("2026-09-27T16:40:02Z"),
+        captureDiscardedBy: "Ada Lovelace",
+      }),
+    ).toBe("unsaved work discarded by Ada Lovelace at 16:40:02 UTC");
   });
 
   it("names refusals outside a drain, and says nothing otherwise", () => {
@@ -222,11 +452,235 @@ describe("planExecutorCap", () => {
     expect(plan.kind === "planned" && plan.drainAt).toEqual(new Date("2026-09-27T10:35:00Z"));
   });
 
+  it("gives many pending captures the time their registration rate needs", () => {
+    const plan = planExecutorCap({
+      ...base,
+      maxSeconds: 3600,
+      pendingObjects: 600,
+      objectsPerSecond: 0.5,
+    });
+    // 1200 s at half a capture a second + 300 s margin before 11:00.
+    expect(plan.kind === "planned" && plan.drainAt).toEqual(new Date("2026-09-27T10:35:00Z"));
+  });
+
+  it("moves the fallback replacement earlier by what the pending bytes need beyond the estimate", () => {
+    const plan = planExecutorCap({
+      ...base,
+      pendingBytes: 1_200_000_000,
+      bytesPerSecond: 1_000_000,
+    });
+    // 1200 s needed, 300 s already in the estimate: 900 s before 17:30.
+    expect(plan.kind === "planned" && plan.drainAt).toEqual(new Date("2026-09-27T17:15:00Z"));
+  });
+
   it("falls back to the replacement age when nothing states the cap, and knows nothing unlaunched", () => {
     const plan = planExecutorCap(base);
     expect(plan.kind === "planned" && plan.source).toBe("fallback");
     expect(plan.kind === "planned" && plan.drainAt).toEqual(new Date("2026-09-27T17:30:00Z"));
     expect(planExecutorCap({ ...base, executorStartedAt: null })).toEqual({ kind: "unknown" });
     expect(executorCapDue({ kind: "unknown" }, Date.now())).toBe(false);
+  });
+});
+
+const endAt = (time: string) => new Date(`2026-09-27T${time}.000Z`);
+const endWords = (endFacts: Parameters<typeof executorEndOf>[0]) =>
+  executorEndWords(executorEndOf(endFacts));
+
+describe("executorEndOf / executorEndWords (an executor that ended without Mend asking)", () => {
+  const started = new Date("2026-09-27T16:20:00.000Z");
+  const at = endAt;
+  const never = { pending: null, pendingBytes: null, observedAt: null };
+
+  it("a final capture that registered last, taken by this executor, reads saved — never lost", () => {
+    const end = executorEndOf({
+      head: { kind: "final", registeredAt: at("16:29:51"), bulkPending: false },
+      executorStartedAt: started,
+      reading: { pending: 1, pendingBytes: 743_474_373, observedAt: at("16:29:20") },
+    });
+    expect(executorEndWords(end)).toBe("stopped outside Mend · saved at 16:29:51 UTC");
+  });
+
+  it("a final head is not a save when its bulk is pending, a previous executor took it, or Mend saw work pending after it", () => {
+    const words = endWords;
+    expect(
+      words({
+        head: { kind: "final", registeredAt: at("16:29:51"), bulkPending: true },
+        executorStartedAt: started,
+        reading: never,
+      }),
+    ).toBe("executor lost · last saved 16:29:51 UTC · changes after that were not saved");
+    expect(
+      words({
+        head: { kind: "final", registeredAt: at("16:10:00"), bulkPending: false },
+        executorStartedAt: started,
+        reading: never,
+      }),
+    ).toBe("executor lost · last saved 16:10:00 UTC · changes after that were not saved");
+    expect(
+      words({
+        head: { kind: "final", registeredAt: at("16:29:51"), bulkPending: false },
+        executorStartedAt: started,
+        reading: { pending: 2, pendingBytes: null, observedAt: at("16:30:05") },
+      }),
+    ).toBe(
+      "executor lost · last saved 16:29:51 UTC · changes after that were not saved · 2 pending at 16:30:05 UTC",
+    );
+  });
+
+  it("a kill -9 says when it last saved and that later changes were not, never a count it did not observe", () => {
+    const words = (observed: Parameters<typeof executorEndOf>[0]["reading"]) =>
+      endWords({
+        head: { kind: "auto", registeredAt: at("16:32:06"), bulkPending: false },
+        executorStartedAt: started,
+        reading: observed,
+      });
+    // Never read: nothing about pending.
+    expect(words(never)).toBe(
+      "executor lost · last saved 16:32:06 UTC · changes after that were not saved",
+    );
+    // Read before the last save: stale, left out.
+    expect(words({ pending: 3, pendingBytes: null, observedAt: at("16:31:00") })).toBe(
+      "executor lost · last saved 16:32:06 UTC · changes after that were not saved",
+    );
+    // Read after it: what was pending then, and when.
+    expect(words({ pending: 1, pendingBytes: 675_321_064, observedAt: at("16:32:09") })).toBe(
+      "executor lost · last saved 16:32:06 UTC · changes after that were not saved · 675 MB pending at 16:32:09 UTC",
+    );
+    expect(words({ pending: 3, pendingBytes: null, observedAt: at("16:32:09") })).toBe(
+      "executor lost · last saved 16:32:06 UTC · changes after that were not saved · 3 pending at 16:32:09 UTC",
+    );
+    // Nothing pending read: nothing claimed either way.
+    expect(words({ pending: 0, pendingBytes: 0, observedAt: at("16:32:09") })).toBe(
+      "executor lost · last saved 16:32:06 UTC · changes after that were not saved",
+    );
+    // A reading a previous executor took says nothing of this one.
+    expect(
+      executorEndWords(
+        executorEndOf({
+          head: null,
+          executorStartedAt: started,
+          reading: { pending: 4, pendingBytes: null, observedAt: at("16:00:00") },
+        }),
+      ),
+    ).toBe("executor lost · nothing saved");
+  });
+});
+
+describe("executorEndOf after a completed final flush (e2e run 4, 2026-09-27)", () => {
+  const started = new Date("2026-09-27T19:47:45.000Z");
+  const at = endAt;
+
+  it("the executor's own `complete: true` is the save, whatever suspend captures registered after it", () => {
+    // A final flush ran inside the executor (capture 21, complete), then Mend's stop flushes
+    // staged two suspend captures on top: the head is `suspend`, and nothing was lost.
+    const end = executorEndOf({
+      head: { kind: "suspend", registeredAt: at("19:49:26"), bulkPending: false },
+      executorStartedAt: started,
+      reading: { pending: 1, pendingBytes: 4136, observedAt: at("19:49:25") },
+      finalSaved: { at: at("19:48:49"), n: 21 },
+    });
+    expect(end.kind).toBe("saved");
+    expect(executorEndWords(end)).toBe("stopped outside Mend · saved at 19:48:49 UTC · capture 21");
+  });
+
+  it("without that word, a suspend head is still `executor lost`", () => {
+    expect(
+      endWords({
+        head: { kind: "suspend", registeredAt: at("19:49:26"), bulkPending: false },
+        executorStartedAt: started,
+        reading: { pending: 0, pendingBytes: 0, observedAt: at("19:49:25") },
+        finalSaved: null,
+      }),
+    ).toBe("executor lost · last saved 19:49:26 UTC · changes after that were not saved");
+  });
+
+  it("a save observed from a previous executor says nothing of this one", () => {
+    expect(
+      executorEndOf({
+        head: { kind: "suspend", registeredAt: at("19:49:26"), bulkPending: false },
+        executorStartedAt: started,
+        reading: { pending: null, pendingBytes: null, observedAt: null },
+        finalSaved: { at: at("19:40:00"), n: 12 },
+      }).kind,
+    ).toBe("lost");
+  });
+});
+
+describe("what a discard records (e2e run 4, 2026-09-27)", () => {
+  const at = endAt;
+  const failing = {
+    requestedAt: at("19:57:10"),
+    workspaceId: "ws-1",
+    lastSaved: { n: 37, at: at("19:54:41") },
+    finalCompleted: null,
+    failingSince: at("19:55:02"),
+    failingError: "EACCES: tree/secrets.pem",
+    // sealantd's queue read empty: a failing snap stages nothing, so it counts nothing.
+    queue: { pending: 0, pendingBytes: 0, observedAt: at("19:57:08") },
+  } as const;
+
+  it("edits made while snaps failed are unsaved since the failure, never `0 pending`", () => {
+    expect(captureDiscardWords(failing)).toBe(
+      "asked at 19:57:10 UTC · last saved capture 37 at 19:54:41 UTC · unsaved since 19:55:02 UTC (snaps failing · EACCES: tree/secrets.pem) · no final flush completed",
+    );
+    const data = captureDiscardAuditData(failing, at("19:57:14"));
+    expect(data).toEqual({
+      requestedAt: "2026-09-27T19:57:10.000Z",
+      discardedAt: "2026-09-27T19:57:14.000Z",
+      workspaceId: "ws-1",
+      lastSavedN: 37,
+      lastSavedAt: "2026-09-27T19:54:41.000Z",
+      finalCompleted: false,
+      finalCompletedN: null,
+      finalCompletedAt: null,
+      snapsFailingSince: "2026-09-27T19:55:02.000Z",
+      lastError: "EACCES: tree/secrets.pem",
+      pending: null,
+      pendingBytes: null,
+      queuePending: 0,
+      queuePendingBytes: 0,
+      queueObservedAt: "2026-09-27T19:57:08.000Z",
+      words: captureDiscardWords(failing),
+    });
+  });
+
+  it("a queue read after the last save, with snaps succeeding, is what was pending", () => {
+    const discard = {
+      ...failing,
+      failingSince: null,
+      failingError: null,
+      queue: { pending: 3, pendingBytes: 12_400_000, observedAt: at("19:57:08") },
+    };
+    expect(captureDiscardWords(discard)).toBe(
+      "asked at 19:57:10 UTC · last saved capture 37 at 19:54:41 UTC · 12 MB pending at 19:57:08 UTC · no final flush completed",
+    );
+    const data = captureDiscardAuditData(discard, at("19:57:14"));
+    expect(data["pending"]).toBe(3);
+    expect(data["pendingBytes"]).toBe(12_400_000);
+  });
+
+  it("a queue read before the last save, or never, says nothing pending; a completed final is named", () => {
+    const discard = {
+      ...failing,
+      failingSince: null,
+      failingError: null,
+      lastSaved: null,
+      finalCompleted: { n: 40, at: at("19:56:00") },
+      queue: null,
+    };
+    expect(captureDiscardWords(discard)).toBe(
+      "asked at 19:57:10 UTC · nothing saved · final flush completed at 19:56:00 UTC · capture 40",
+    );
+    expect(captureDiscardAuditData(discard, at("19:57:14"))["finalCompleted"]).toBe(true);
+    expect(
+      captureDiscardWords({
+        ...failing,
+        failingSince: null,
+        failingError: null,
+        queue: { pending: 3, pendingBytes: null, observedAt: at("19:50:00") },
+      }),
+    ).toBe(
+      "asked at 19:57:10 UTC · last saved capture 37 at 19:54:41 UTC · no final flush completed",
+    );
   });
 });

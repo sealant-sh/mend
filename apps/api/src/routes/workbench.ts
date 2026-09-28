@@ -40,6 +40,7 @@ import {
   HandoffUnsupported,
   ObservationStamp,
   OpenReviewResult,
+  PathsOutsideGit,
   ProtocolSessionNotLive,
   AgentRequestResolved,
   RemovalReport,
@@ -125,6 +126,7 @@ import {
   canManageProject,
   canSteerSession,
   canToggleSharedControl,
+  captureDiscardAuditData,
   captureStatusLine,
   type SessionControlKind,
   canRemoveProject,
@@ -137,6 +139,7 @@ import { JobRunner, queueReviewPass } from "@mend/jobs";
 import { asSealantUser, SealantClient } from "@mend/sealant";
 import {
   CaptureRuntime,
+  captureHoldWords,
   DotfilesCloner,
   FollowUpDelivery,
   RECIPE_NAME,
@@ -160,6 +163,7 @@ import {
   worktreePathOf,
   type DiffFileFact,
   type GitError,
+  pathsBeyondGitWords,
   SourcePolicy,
 } from "@mend/store";
 import { Effect, Option, Result, Schema } from "effect";
@@ -231,6 +235,29 @@ const observationOf = (stamp: ReadStamp, state: "claimed" | "observed" = "observ
     label: state === "claimed" ? `claimed at capture ${stamp.captureN ?? "?"}` : stampLabel(stamp),
   });
 
+/**
+ * The worktree paths the change view cannot show because git cannot reach them (sealantd
+ * carries them in the workspace class): null when there are none, or Mend cannot tell.
+ */
+const outsideGitOf = (
+  reads: WorktreeReads["Service"],
+  projectId: ProjectId,
+  worktreeId: WorktreeId,
+) =>
+  reads.pathsBeyondGit(projectId, worktreeId).pipe(
+    Effect.map((found) => {
+      const label = found === null ? null : pathsBeyondGitWords(found.value);
+      return found === null || label === null
+        ? null
+        : new PathsOutsideGit({
+            count: found.value.count,
+            paths: found.value.paths,
+            captureN: found.stamp.captureN,
+            label,
+          });
+    }),
+  );
+
 /** The pull-request answer for a project that cannot have any on GitHub. */
 const noPullRequests = (origin: "none" | "not-github", availability: "no-origin" | "not-github") =>
   new ProjectPullRequests({
@@ -283,9 +310,14 @@ interface ProjectSessionVisibility<SessionRow> {
   readonly hiddenEndedSessions: number;
 }
 
+/** Not ended: live, or `stopping` — its workspace still saving, or kept because it could not. */
+const notEnded = (status: SessionStatus): boolean =>
+  LIVE_STATES.has(status) || status === "stopping";
+
 /**
  * Apply project detail's transcript filter and report how many ended sessions it omitted.
- * Live sessions and sessions whose transcript state is still unknown always remain visible.
+ * Sessions not ended (`notEnded`) and sessions whose transcript state is still unknown always
+ * remain visible.
  */
 const projectSessionVisibility = <
   SessionRow extends { readonly status: SessionStatus; readonly hasTranscript: boolean | null },
@@ -296,11 +328,11 @@ const projectSessionVisibility = <
   if (includeDeadEnds) return { sessions, hiddenEndedSessions: 0 };
 
   const hiddenEndedSessions = sessions.filter(
-    (session) => !LIVE_STATES.has(session.status) && session.hasTranscript === false,
+    (session) => !notEnded(session.status) && session.hasTranscript === false,
   );
   return {
     sessions: sessions.filter(
-      (session) => LIVE_STATES.has(session.status) || session.hasTranscript !== false,
+      (session) => notEnded(session.status) || session.hasTranscript !== false,
     ),
     hiddenEndedSessions: hiddenEndedSessions.length,
   };
@@ -623,6 +655,20 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           (session) => engine.stop(session.id).pipe(Effect.ignore),
           { concurrency: 4 },
         );
+        // Capture mode: a stop drains before its workspace goes, and the rows deleted below are
+        // what that drain registers under. Nothing is deleted while a drain runs, a drain kept its
+        // workspace, or an executor was not observed to end: the stops stand, and removal is asked
+        // again once they have saved (docs/adr/0002, "Stop drains, then terminates").
+        const holds = (yield* Effect.forEach(
+          [...new Set(projectSessions.map((session) => session.worktreeId))],
+          (worktreeId) => engine.captureHolds(worktreeId),
+          { concurrency: 4 },
+        )).flat();
+        if (holds.length > 0) {
+          return yield* new StoreFailure({
+            message: `not removed · ${captureHoldWords(holds)} · stops asked · remove the project again once its workspaces have saved and ended, or their owners discard what is unsaved`,
+          });
+        }
         // Hot workspaces too: their rows cascade with the project, but the containers would
         // otherwise burn until the platform TTL. Worktrees go with the store directory below.
         const hotWorkspaces = yield* HotWorkspacesRepo;
@@ -2181,6 +2227,10 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const changes = yield* WorktreeChangesRepo;
         const landings = yield* ChangeLandingsRepo;
         const session = yield* (yield* ProjectAccess).session(params.id);
+        // Someone is looking: read the running executor's capture status (throttled, in the
+        // background) so a failing snap shows now, not at the reaper's next read. The answer
+        // reaches the view as a session event.
+        yield* (yield* SessionEngine).refreshCaptureStatus(params.id);
         // The chain and the change belong to the worktree: this is what makes
         // slices spanning several conversations reviewable from any of them.
         const sessionCheckpoints = yield* checkpoints.listForWorktree(session.worktreeId);
@@ -2693,24 +2743,30 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const steering = yield* SessionSteering;
         const before = yield* steering.owned(params.id);
         const engine = yield* SessionEngine;
-        const session = yield* engine.discardUnsavedAndStop(params.id).pipe(
-          Effect.catchTag("SessionNotFoundError", () =>
-            Effect.fail(new NotFound({ id: params.id })),
-          ),
-          Effect.catchTag("NothingUnsavedError", () =>
-            Effect.fail(
-              new NothingUnsaved({
-                sessionId: params.id,
-                message: "nothing unsaved · no drain under way · stop the session instead",
-              }),
+        const caller = yield* CurrentUser;
+        const discarded = yield* engine
+          .discardUnsavedAndStop(
+            params.id,
+            caller.user.name.trim() === "" ? caller.user.email : caller.user.name,
+          )
+          .pipe(
+            Effect.catchTag("SessionNotFoundError", () =>
+              Effect.fail(new NotFound({ id: params.id })),
             ),
-          ),
-          Effect.catchTag("SealantPlatformError", (error) =>
-            Effect.fail(
-              new StoreFailure({ message: `the workspace was not stopped: ${error.message}` }),
+            Effect.catchTag("NothingUnsavedError", () =>
+              Effect.fail(
+                new NothingUnsaved({
+                  sessionId: params.id,
+                  message: "nothing unsaved · no drain under way · stop the session instead",
+                }),
+              ),
             ),
-          ),
-        );
+            Effect.catchTag("SealantPlatformError", (error) =>
+              Effect.fail(
+                new StoreFailure({ message: `the workspace was not stopped: ${error.message}` }),
+              ),
+            ),
+          );
         yield* recordControl(params.id, "discard-unsaved-stop", before.sealantWorkspaceId);
         const viewer = yield* (yield* ProjectAccess).viewer();
         if (viewer !== null) {
@@ -2720,14 +2776,11 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             action: "session.unsaved_discarded",
             subjectType: "session",
             subjectId: params.id,
-            data: {
-              pending: before.capturePending,
-              pendingBytes: before.capturePendingBytes,
-              workspaceId: before.sealantWorkspaceId,
-            },
+            // What Mend knew when it was asked, both times, and no count it did not observe.
+            data: captureDiscardAuditData(discarded.facts, discarded.discardedAt),
           });
         }
-        return session;
+        return discarded.session;
       }),
     )
     .handle("label", ({ params, payload }) =>
@@ -3256,6 +3309,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
           anchorFiles,
           worktreeChangedSinceSnapshot: !worktreeMatches.value,
           observation: observationOf(worktreeMatches.stamp),
+          outsideGit: yield* outsideGitOf(reads, project.id, worktreeRow.id),
         });
       }),
     )
@@ -3406,6 +3460,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
                 diff: posted.value.diff,
                 files: posted.value.files.map((file) => new ChangedFileView(file)),
                 observation: observationOf(stamp, summaryRow.state),
+                outsideGit: yield* outsideGitOf(reads, project.id, worktreeRow.id),
               });
             }
           }
@@ -3421,6 +3476,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
           diff: diff.value,
           files: files.value.map((file) => new ChangedFileView(file)),
           observation: observationOf(diff.stamp),
+          outsideGit: yield* outsideGitOf(reads, project.id, worktreeRow.id),
         });
       }),
     )

@@ -85,6 +85,14 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
         if (lease === undefined || chain === undefined || live(lease)) {
           return Effect.fail(new WorktreeLeasedError({ worktreeId }));
         }
+        // A lapsed lease of another executor is not an end: only a release clears the holder.
+        if (
+          lease.executorId !== null &&
+          lease.executorId !== executorId &&
+          !lease.executorId.startsWith("mend:")
+        ) {
+          return Effect.fail(new WorktreeLeasedError({ worktreeId }));
+        }
         lease.executorId = executorId;
         lease.epoch += 1;
         lease.expiresAt = clock.now() + ttlSeconds * 1000;
@@ -94,7 +102,7 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
     heartbeat: (worktreeId, epoch, ttlSeconds = 30) =>
       Effect.sync(() => {
         const lease = leases.get(worktreeId);
-        if (lease === undefined || lease.epoch !== epoch) return false;
+        if (lease === undefined || lease.epoch !== epoch || lease.executorId === null) return false;
         lease.expiresAt = clock.now() + ttlSeconds * 1000;
         return true;
       }),
@@ -166,6 +174,7 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
         const lease = leases.get(worktreeId);
         if (lease === undefined || lease.epoch !== epoch) return false;
         lease.expiresAt = clock.now();
+        lease.executorId = null;
         return true;
       }),
     acceptSummary: (worktreeId, captureId, key) =>

@@ -3,6 +3,12 @@ import * as path from "node:path";
 
 import { claudeGrantFacts } from "@mend/domain/workbench";
 
+import {
+  dockerShutdownCheck,
+  observeHostShutdownTimeout,
+  type ShutdownTimeoutReading,
+} from "./docker-shutdown.ts";
+
 /**
  * `mend doctor`: one read-only pass over everything a first run depends on, printed
  * as mono status lines (DESIGN.md §4 — a mark plus a word, never a badge). Every
@@ -43,6 +49,11 @@ export interface DoctorProbes {
    */
   readonly claudeGrant: () => string | null;
   readonly onPath: (command: string) => boolean;
+  /**
+   * This machine's Docker daemon `shutdown-timeout` (`docker-shutdown.ts`), read only when docker
+   * is on PATH. Absent: the line is left out.
+   */
+  readonly dockerShutdown?: () => ShutdownTimeoutReading;
 }
 
 const MARKS: Record<CheckState, string> = { ok: "✓", todo: "○", failed: "✗" };
@@ -383,6 +394,12 @@ export const runChecks = async (
   const exposure = machine === null || machine.value === null ? undefined : machine.value.exposure;
   checks.push(exposure === undefined ? notChecked("exposure") : exposureCheck(exposure));
 
+  // A daemon shutdown (host restart, Docker Desktop quit) kills workspaces after the daemon's own
+  // timeout, whatever their stop grace: read where this machine's daemon sets it.
+  if (probes.dockerShutdown !== undefined && probes.onPath("docker")) {
+    checks.push(dockerShutdownCheck(probes.dockerShutdown()));
+  }
+
   return checks;
 };
 
@@ -412,7 +429,12 @@ export const doctorCommand = async (
   localCredential: (provider: Provider) => string | null,
   claudeGrant: () => string | null,
 ): Promise<void> => {
-  const checks = await runChecks(config, { localCredential, claudeGrant, onPath });
+  const checks = await runChecks(config, {
+    localCredential,
+    claudeGrant,
+    onPath,
+    dockerShutdown: observeHostShutdownTimeout,
+  });
   for (const check of checks) process.stdout.write(`${formatCheck(check, paintMark)}\n`);
   if (checks.some((check) => check.state === "failed")) process.exitCode = 1;
 };

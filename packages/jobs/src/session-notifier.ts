@@ -58,6 +58,8 @@ export const phaseOf = (status: string, currentAgent: SessionProcess | null): Ph
   switch (status) {
     case "waiting":
       return "attention";
+    // `stopping`: the agent ended and its workspace is saving; it settles to that same outcome.
+    case "stopping":
     case "idle": {
       const outcome = currentAgent === null ? null : agentProcessOutcome(currentAgent);
       return outcome === "completed" || outcome === "failed" ? outcome : null;
@@ -89,6 +91,43 @@ export const notificationBody = (session: Session, phase: Phase): string => {
 export const notSavedNotificationBody = (session: Session): string => {
   const name = session.label ?? session.harness;
   return `${name} ${captureStatusLine(session) ?? "not saved · workspace kept"}`;
+};
+
+/**
+ * A running executor's snaps started failing: what it does not capture now is lost if it goes.
+ * `billing-fix capture failing since 16:29:51 UTC · EACCES: tree/secrets.pem`.
+ */
+export const captureFailingNotificationBody = (session: Session): string => {
+  const name = session.label ?? session.harness;
+  return `${name} ${captureStatusLine({ ...session, captureDrain: null }) ?? "capture failing"}`;
+};
+
+/** What the owner is told about a session's captures, as of one event. */
+export interface CaptureAlertState {
+  /** A drain kept its workspace (`not saved · … · workspace kept`). */
+  readonly notSaved: boolean;
+  /** The running executor's snaps are failing (`capture failing since …`). */
+  readonly failing: boolean;
+}
+
+export const captureAlertStateOf = (session: Session): CaptureAlertState => ({
+  notSaved: session.captureNotSavedAt !== null,
+  failing: session.captureFailingSince !== null,
+});
+
+/**
+ * Which capture alerts ring for the owner on this event: each once, when it starts. Nothing on
+ * the first look at a session (the baseline: it was so before anyone listened).
+ */
+export const captureAlertsToRing = (
+  previous: CaptureAlertState | undefined,
+  next: CaptureAlertState,
+): ReadonlyArray<"not-saved" | "failing"> => {
+  if (previous === undefined) return [];
+  const ring: Array<"not-saved" | "failing"> = [];
+  if (next.notSaved && !previous.notSaved) ring.push("not-saved");
+  if (next.failing && !previous.failing) ring.push("failing");
+  return ring;
 };
 
 /** A protocol turn ended while the agent stays live: name the prompt it answered. */
@@ -155,8 +194,8 @@ export const SessionNotifierLive = Layer.effectDiscard(
     /** Per session: the open (queued/running) turn ids seen on the last event. */
     const watchedTurns = new Map<string, ReadonlySet<string>>();
 
-    /** Per session: whether its drain read `not saved` on the last event. */
-    const lastNotSaved = new Map<string, boolean>();
+    /** Per session: what its captures read on the last event (`captureAlertsToRing`). */
+    const lastCaptureAlerts = new Map<string, CaptureAlertState>();
 
     const send = Effect.fn("SessionNotifier.send")(function* (
       session: Session,
@@ -208,11 +247,18 @@ export const SessionNotifierLive = Layer.effectDiscard(
     const observe = Effect.fn("SessionNotifier.observe")(function* (sessionId: string) {
       const session = yield* sessions.byId(SessionId.make(sessionId));
       // A drain that stopped moving rings the owner once: only they can discard what is unsaved.
-      const notSaved = session.captureNotSavedAt !== null;
-      const wasNotSaved = lastNotSaved.get(session.id);
-      lastNotSaved.set(session.id, notSaved);
-      if (notSaved && wasNotSaved === false) {
-        yield* send(session, notSavedNotificationBody(session), true);
+      // A snap that started failing is loss in progress: the owner hears once, when it starts.
+      const alerts = captureAlertStateOf(session);
+      const ring = captureAlertsToRing(lastCaptureAlerts.get(session.id), alerts);
+      lastCaptureAlerts.set(session.id, alerts);
+      for (const alert of ring) {
+        yield* send(
+          session,
+          alert === "not-saved"
+            ? notSavedNotificationBody(session)
+            : captureFailingNotificationBody(session),
+          true,
+        );
       }
       const currentAgent = currentAgentProcess(yield* processes.listForSession(session.id));
       const phase = phaseOf(session.status, currentAgent);
@@ -263,7 +309,7 @@ export const SessionNotifierLive = Layer.effectDiscard(
     for (const session of active) {
       const currentAgent = currentAgentProcess(yield* processes.listForSession(session.id));
       lastPhase.set(session.id, phaseOf(session.status, currentAgent));
-      lastNotSaved.set(session.id, session.captureNotSavedAt !== null);
+      lastCaptureAlerts.set(session.id, captureAlertStateOf(session));
     }
 
     yield* sql.listen(MEND_EVENTS_CHANNEL).pipe(

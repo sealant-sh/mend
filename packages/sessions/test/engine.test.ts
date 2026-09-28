@@ -98,9 +98,10 @@ import {
   Worktree,
   type SessionExtraMount,
   type SessionReferenceMount,
+  captureDiscardAuditData,
   captureStatusLine,
 } from "@mend/domain/workbench";
-import { SealantClient, SealantPlatformError } from "@mend/sealant";
+import { type CaptureFlushKind, SealantClient, SealantPlatformError } from "@mend/sealant";
 import {
   CaptureChannelLive,
   CaptureDrainPolicy,
@@ -109,6 +110,7 @@ import {
   CaptureRemotesOff,
   CaptureSourcesOff,
   CaptureRuntimeLive,
+  captureHoldWords,
   CaptureRuntimeOff,
   CaptureUploadPolicyDefault,
   DotfilesCloner,
@@ -132,6 +134,7 @@ import {
 import {
   AgentBridge,
   BlobStoreFsLive,
+  type CaptureKind,
   captureKeys,
   DeploymentConfig,
   type ExecutorTransport,
@@ -196,6 +199,7 @@ const sealantDeadLayer = Layer.succeed(SealantClient, {
   forward: () => Effect.die("not in test"),
   stopWorkspace: () => Effect.die("not in test"),
   captureFlush: () => Effect.die("not in test"),
+  captureStatus: () => Effect.succeed(null),
   captureReplan: () => Effect.die("not in test"),
   expireWorkspace: () => Effect.die("not in test"),
   getSession: () => Effect.die("not in test"),
@@ -296,6 +300,18 @@ const sealantLaunchLayer = (
    */
   captureOps?: {
     readonly flushed?: string[];
+    /** Every stop asked of the platform: a plain one (`drain`) or the owner's `discard`. */
+    readonly stops?: Array<"drain" | "discard">;
+    /** What the platform answers a stop, given whether it discards; `requested` by default. */
+    readonly stopAnswer?: (discard: boolean) => "stopped" | "draining" | "kept" | "requested";
+    /** Every flush's kind, in order (`suspend` · `final`). */
+    readonly flushKinds?: CaptureFlushKind[];
+    /**
+     * How the stand-in daemon answers a final flush: `reported` (the default) says `complete`
+     * — true once nothing is pending — as the quiescing sealantd does; `unreported` answers
+     * without it, as SDK 0.37.2 does today.
+     */
+    readonly finalCompletion?: "reported" | "unreported";
     /** Map the capture root into a temporary directory and execute the engine's real shell script. */
     readonly relocation?: {
       homePath: string;
@@ -310,6 +326,13 @@ const sealantLaunchLayer = (
     readonly flush?: (
       workspace: Workspace,
     ) => Effect.Effect<WorkspaceCaptureStatus, SealantPlatformError>;
+    /**
+     * Stands in for `capture.status()` (Core's next SDK); absent answers null, as SDK 0.37.2's
+     * seam does.
+     */
+    readonly captureStatus?: (
+      workspace: Workspace,
+    ) => Effect.Effect<WorkspaceCaptureStatus | null, SealantPlatformError>;
     readonly replan?: (
       workspace: Workspace,
     ) => Effect.Effect<WorkspaceCaptureReplanned, SealantPlatformError>;
@@ -457,27 +480,41 @@ const sealantLaunchLayer = (
         return openPty(options?.mode ?? "pty");
       }),
     forward: () => Effect.die("not in test"),
-    stopWorkspace: (target) =>
+    stopWorkspace: (target, options) =>
       Effect.sync(() => {
         stopped?.push(target.id);
-        if (target.id === workspace.id) terminated = true;
+        captureOps?.stops?.push(options?.discardUnsaved === true ? "discard" : "drain");
+        const answer = captureOps?.stopAnswer?.(options?.discardUnsaved === true) ?? "requested";
+        // A platform that keeps the workspace (its drain did not move) terminates nothing.
+        if (target.id === workspace.id && answer !== "kept") terminated = true;
+        // SDK 0.37.2: the stop is accepted and nothing more is said; the status says the rest.
+        return answer;
       }),
-    captureFlush: (target) =>
+    captureFlush: (target, kind) =>
       Effect.gen(function* () {
         captureOps?.flushed?.push(`flush:${target.id}`);
-        if (captureOps?.flush !== undefined) return yield* captureOps.flush(target);
-        return {
-          epoch: 0,
-          worktreeId: "",
-          pending: 0,
-          stagedBytes: 0,
-          uploadedObjects: 0,
-          uploadedBytes: 0,
-          registered: 0,
-          fenced: false,
-          paused: false,
-        } satisfies WorkspaceCaptureStatus;
+        captureOps?.flushKinds?.push(kind);
+        const answer: WorkspaceCaptureStatus =
+          captureOps?.flush !== undefined
+            ? yield* captureOps.flush(target)
+            : {
+                epoch: 0,
+                worktreeId: "",
+                pending: 0,
+                stagedBytes: 0,
+                uploadedObjects: 0,
+                uploadedBytes: 0,
+                registered: 0,
+                fenced: false,
+                paused: false,
+              };
+        if (kind !== "final" || captureOps?.finalCompletion === "unreported") return answer;
+        return { ...answer, ...finalCompletionOf(answer) };
       }),
+    captureStatus: (target) =>
+      captureOps?.captureStatus === undefined
+        ? Effect.succeed(null)
+        : captureOps.captureStatus(target),
     captureReplan: (target) =>
       captureOps?.replan === undefined
         ? Effect.die("capture.replan not in this test world")
@@ -546,6 +583,18 @@ const sealantLaunchLayer = (
     connectionCheck: () => Effect.die("not in test"),
     resolveWorkspacePackage: () => Effect.die("not in test"),
   });
+};
+
+/**
+ * What the quiescing sealantd adds to a final flush's answer (fields SDK 0.37.2 does not type):
+ * complete once nothing is pending and nobody fenced it, else why not.
+ */
+const finalCompletionOf = (answer: WorkspaceCaptureStatus) => {
+  const complete = answer.pending === 0 && !answer.fenced;
+  return {
+    complete,
+    ...(complete ? {} : { incompleteReason: answer.fenced ? "fenced" : "pending" }),
+  };
 };
 
 /** PTY-only engine tests never persist structured conversations. */
@@ -827,6 +876,15 @@ interface World {
   readonly members: Map<string, "owner" | "member">;
   /** Recent owners beyond the world's own sessions, as `recentOwnersForProject` adds them. */
   recentOwners: ReadonlyArray<string>;
+  /** A planned relaunch's harness, by session (`planRelaunch`): bookkeeping off the row. */
+  readonly relaunches: Map<string, string>;
+  /** The executor each session sent a final flush to (`markFinalFlush`). */
+  readonly finalFlushed: Map<string, string>;
+  /** The last completed final flush observed per session (`recordCaptureSaved`). */
+  readonly captureSaved: Map<
+    string,
+    { readonly workspaceId: string; readonly at: Date; readonly n: number | null }
+  >;
 }
 
 const makeWorld = (): World => ({
@@ -844,6 +902,9 @@ const makeWorld = (): World => ({
   worktrees: new Map(),
   members: new Map([["user-fixture", "member"]]),
   recentOwners: ["user-fixture"],
+  relaunches: new Map(),
+  finalFlushed: new Map(),
+  captureSaved: new Map(),
 });
 
 const sessionProcessesLayer = (world: World) => {
@@ -1564,9 +1625,22 @@ const sessionsLayer = (world: World) => {
       Effect.sync(() => update(id, { lastSeenSequence: sequence })),
     notifyProgress: () => Effect.void,
     settle: (id, outcome, summary) =>
-      Effect.sync(() => update(id, { status: outcome, summary, settledAt: now() })),
+      Effect.sync(() =>
+        // A stop drain holds the workspace: `stopping`, not settled (SessionsRepo.settle).
+        world.sessions.get(id)?.captureDrain === "stop"
+          ? update(id, { status: "stopping", summary, settledAt: null })
+          : update(id, { status: outcome, summary, settledAt: now() }),
+      ),
     reopen: (id, status) =>
-      Effect.sync(() => update(id, { status, settledAt: null, idleStoppedAt: null })),
+      Effect.sync(() =>
+        update(id, {
+          status,
+          settledAt: null,
+          idleStoppedAt: null,
+          captureDiscardedAt: null,
+          captureDiscardedBy: null,
+        }),
+      ),
     claimIdleStop: () => Effect.succeed(true),
     releaseIdleStop: () => Effect.void,
     setSummary: (id, summary) => Effect.sync(() => update(id, { summary })),
@@ -1587,17 +1661,63 @@ const sessionsLayer = (world: World) => {
           captureRefused: observation.refused,
           captureRegisteredAt: observation.registeredAt,
           captureObservedAt: observation.observedAt,
+          ...(observation.incompleteReason === undefined
+            ? {}
+            : { captureIncompleteReason: observation.incompleteReason }),
+          ...(observation.incompleteDetail === undefined
+            ? {}
+            : { captureIncompleteDetail: observation.incompleteDetail }),
+          ...(observation.failing === undefined
+            ? {}
+            : observation.failing === null
+              ? { captureFailingSince: null, captureFailingError: null }
+              : {
+                  captureFailingSince:
+                    world.sessions.get(id)?.captureFailingSince ?? observation.failing.since,
+                  captureFailingError: observation.failing.error,
+                }),
         }),
       ),
     beginCaptureDrain: (id, reason, at) =>
       Effect.sync(() => {
         const current = world.sessions.get(id);
+        const drain = current?.captureDrain ?? reason;
         update(id, {
-          captureDrain: reason,
+          captureDrain: drain,
+          captureDrainRequestedAt: current?.captureDrainRequestedAt ?? at,
+          captureDrainProgressAt: current?.captureDrainProgressAt ?? at,
+          ...(drain === "stop" && current?.settledAt != null
+            ? { status: "stopping" as const, settledAt: null }
+            : {}),
+        });
+      }),
+    planRelaunch: (id, resume, at) =>
+      Effect.sync(() => {
+        const current = world.sessions.get(id);
+        world.relaunches.set(id, resume);
+        update(id, {
+          captureDrain: "relaunch",
           captureDrainRequestedAt: current?.captureDrainRequestedAt ?? at,
           captureDrainProgressAt: current?.captureDrainProgressAt ?? at,
         });
       }),
+    clearRelaunch: (id) => Effect.sync(() => void world.relaunches.delete(id)),
+    stopCaptureDrain: (id) =>
+      Effect.sync(() => {
+        world.relaunches.delete(id);
+        const current = world.sessions.get(id);
+        if (current?.captureDrain == null) return;
+        update(id, {
+          captureDrain: "stop",
+          ...(current.settledAt !== null ? { status: "stopping" as const, settledAt: null } : {}),
+        });
+      }),
+    relaunchOf: (id) => Effect.sync(() => world.relaunches.get(id) ?? null),
+    markFinalFlush: (id, workspaceId) =>
+      Effect.sync(() => void world.finalFlushed.set(id, workspaceId)),
+    finalFlushedWorkspace: (id) => Effect.sync(() => world.finalFlushed.get(id) ?? null),
+    recordCaptureSaved: (id, saved) => Effect.sync(() => void world.captureSaved.set(id, saved)),
+    captureSavedOf: (id) => Effect.sync(() => world.captureSaved.get(id) ?? null),
     recordCaptureDrainProgress: (id, at) =>
       Effect.sync(() => {
         if (world.sessions.get(id)?.captureDrain === null) return;
@@ -1611,17 +1731,28 @@ const sessionsLayer = (world: World) => {
         update(id, { captureNotSavedAt: at });
         return true;
       }),
-    endCaptureDrain: (id) =>
+    endCaptureDrain: (id, discarded) =>
       Effect.sync(() =>
         update(id, {
           captureDrain: null,
           captureDrainRequestedAt: null,
           captureDrainProgressAt: null,
           captureNotSavedAt: null,
+          captureIncompleteReason: null,
+          captureIncompleteDetail: null,
+          captureFailingSince: null,
+          captureFailingError: null,
+          ...(discarded === undefined
+            ? {}
+            : { captureDiscardedAt: discarded.at, captureDiscardedBy: discarded.by }),
         }),
       ),
     listCaptureDrains: () =>
-      Effect.sync(() => [...world.sessions.values()].filter((s) => s.captureDrain !== null)),
+      Effect.sync(() =>
+        [...world.sessions.values()].filter(
+          (s) => s.captureDrain !== null || world.relaunches.has(s.id),
+        ),
+      ),
     setExecutorStartedAt: (id, at) => Effect.sync(() => update(id, { executorStartedAt: at })),
     requestRemoval: (id, at) =>
       Effect.sync(() =>
@@ -1968,6 +2099,10 @@ const testDrainPolicy = (overrides: Partial<CaptureDrainPolicyShape> = {}) =>
     executorMaxSeconds: null,
     deadlineMarginSeconds: 300,
     drainEstimateSeconds: 300,
+    keptRetryFirst: Duration.seconds(10),
+    keptRetryMax: Duration.minutes(5),
+    statusInterval: Duration.seconds(45),
+    statusMinInterval: Duration.seconds(10),
     ...overrides,
   });
 
@@ -5681,6 +5816,7 @@ const shipHarnessCapture = (
   worktreeId: WorktreeId,
   epoch: number,
   rolloutId: string,
+  kind: CaptureKind = "turn",
 ) =>
   Effect.gen(function* () {
     const chain = memory.chains.get(worktreeId);
@@ -5703,7 +5839,7 @@ const shipHarnessCapture = (
       parent: parent?.id ?? null,
       epoch,
       seq: 100,
-      kind: "turn",
+      kind,
       git: {
         packs: parent === null ? [] : (parent.sections as { git: { packs: string[] } }).git.packs,
         refs: {},
@@ -5711,6 +5847,8 @@ const shipHarnessCapture = (
         fsck: "verified",
       },
       workspace: { root: snapshot.root, packs: snapshot.packs },
+      // A final flush snapshots the bulk class too (empty here): its section is never pending.
+      ...(kind === "final" ? { bulk: { root: "", packs: [], platform: "linux-x86_64" } } : {}),
     });
     yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]])).pipe(
       Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
@@ -5723,7 +5861,7 @@ const shipHarnessCapture = (
       parent: built.manifest.parent,
       epoch,
       seq: 100n,
-      kind: "turn",
+      kind,
       manifestKey: built.key,
       sections: built.manifest.sections,
       gitFsck: "verified",
@@ -7455,7 +7593,9 @@ describe("SessionEngine capture mode", () => {
           const run = [...world.sessionRuns.values()].find((row) => row.sessionId === session.id);
           expect(run?.summary).toContain("executor lost · lease expired");
           expect(settled?.summary).toContain("executor lost · lease expired");
-          expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+          // Its end confirmed, the lease is released: the holder is cleared, so the next claim
+          // is a new epoch and nobody reads the lapse as a live partition.
+          expect(memory.leases.get(session.worktreeId)?.executorId).toBeNull();
           // What distinguishes this from a planned stop is what was observed: no exit from
           // the platform, and no `final` capture on the chain (sealantd flushes one on
           // SIGTERM — `kubectl delete pod`, `docker stop` — and the harness then exits, so
@@ -8676,7 +8816,7 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
             expect(created).toHaveLength(1);
             expect(events).not.toContain("workspace-1");
             // The owner's discard is the one way the workspace goes with captures pending.
-            const discarded = yield* engine.discardUnsavedAndStop(session.id);
+            const { session: discarded } = yield* engine.discardUnsavedAndStop(session.id);
             expect(discarded.captureDrain).toBeNull();
             expect(discarded.captureNotSavedAt).toBeNull();
             expect(events).toContain("workspace-1");
@@ -8699,6 +8839,224 @@ describe("SessionEngine capture drain (no loss of work product)", () => {
             undefined,
             undefined,
             { flush: () => Effect.succeed(flushReport(2, 1)) },
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "a stopped session reads `stopping` and is not settled until the platform reports its workspace terminated; a kept one stays `stopping`",
+    { timeout: 20_000 },
+    async () => {
+      const world = makeWorld();
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mend-drain-test-"));
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      let pending = 2;
+      await withEngine(
+        (_world, dir) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, dir);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            // The agent ended; its container still runs and holds what is not saved.
+            const answered = world.sessions.get(session.id);
+            expect(answered?.status).toBe("stopping");
+            expect(answered?.settledAt).toBeNull();
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the drain kept its workspace",
+            );
+            const kept = world.sessions.get(session.id);
+            expect(kept?.status).toBe("stopping");
+            expect(kept?.settledAt).toBeNull();
+            expect(events).not.toContain("workspace-1");
+            // The next sweep: still kept, still not settled.
+            yield* engine.reapCaptureLeases();
+            yield* Effect.sleep(Duration.millis(100));
+            expect(world.sessions.get(session.id)?.status).toBe("stopping");
+            expect(world.sessions.get(session.id)?.settledAt).toBeNull();
+            // It saves after all; the stop is asked, and only the observed termination settles.
+            pending = 0;
+            yield* engine.stop(session.id);
+            yield* until(() => events.includes("workspace-1"), "the workspace stop");
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the settle after the termination",
+            );
+            const settled = world.sessions.get(session.id);
+            expect(settled?.status).toBe("stopped");
+            expect(settled?.captureDrain).toBeNull();
+          }),
+        {
+          fixture: { world, tmp },
+          captured: memory,
+          drainPolicy: { stallSeconds: 1, terminationWait: Duration.seconds(5) },
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            events,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              status: (stopAsked) => (stopAsked ? "stopped" : "ready"),
+              flush: () => Effect.succeed(flushReport(pending, 1)),
+            },
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "saved but its termination not observed: the session stays `stopping` until the platform reports the workspace gone",
+    { timeout: 20_000 },
+    async () => {
+      const world = makeWorld();
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mend-drain-test-"));
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      let gone = false;
+      await withEngine(
+        (_world, dir) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, dir);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(() => events.includes("workspace-1"), "the workspace stop");
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === null,
+              "the drain's end",
+            );
+            // Stop asked, the platform still reports it up: not settled.
+            expect(world.sessions.get(session.id)?.status).toBe("stopping");
+            expect(world.sessions.get(session.id)?.settledAt).toBeNull();
+            yield* engine.reapCaptureLeases();
+            expect(world.sessions.get(session.id)?.settledAt).toBeNull();
+            // The platform reports it gone: the next sweep settles it.
+            gone = true;
+            yield* engine.reapCaptureLeases();
+            const settled = world.sessions.get(session.id);
+            expect(settled?.status).toBe("stopped");
+            expect(settled?.settledAt).not.toBeNull();
+          }),
+        {
+          fixture: { world, tmp },
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            events,
+            undefined,
+            () => gone,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { status: () => "ready", flush: () => Effect.succeed(flushReport(0, 1)) },
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "a kept drain backs off while nothing changes — 10 s doubling to its cap — and looks again at once when something does",
+    { timeout: 20_000 },
+    async () => {
+      const world = makeWorld();
+      const tmp = fs.mkdtempSync(path.join(os.tmpdir(), "mend-drain-test-"));
+      const created: Array<CreateOptions> = [];
+      const flushed: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (_world, dir) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, dir);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the drain kept its workspace",
+            );
+            yield* Effect.sleep(Duration.millis(50));
+            const rounds = () => flushed.length;
+            const quiet = (label: string) =>
+              Effect.gen(function* () {
+                const before = rounds();
+                yield* engine.reapCaptureLeases();
+                yield* Effect.sleep(Duration.millis(60));
+                expect(rounds(), label).toBe(before);
+              });
+            const looks = (label: string) =>
+              Effect.gen(function* () {
+                const before = rounds();
+                yield* engine.reapCaptureLeases();
+                yield* until(() => rounds() > before, label);
+                yield* until(
+                  () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+                  `${label} · kept again`,
+                );
+                yield* Effect.sleep(Duration.millis(50));
+              });
+            // Nothing changed: every sweep inside the first wait leaves it alone.
+            yield* quiet("a sweep right after the drain was kept");
+            yield* quiet("a second sweep inside the first wait");
+            // The first wait (300 ms here) has passed: one more round.
+            yield* Effect.sleep(Duration.millis(300));
+            yield* looks("the round after the first wait");
+            // Still nothing changed: the wait doubled, so the first wait is no longer enough.
+            yield* Effect.sleep(Duration.millis(320));
+            yield* quiet("a sweep after one first-wait into the doubled wait");
+            // Something changed (the executor registered a capture on its own): looked at once.
+            yield* shipHarnessCapture(
+              dir,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+            );
+            yield* looks("the round after the head moved");
+            yield* quiet("a sweep right after that round");
+            expect(world.sessions.get(session.id)?.captureDrain).toBe("stop");
+          }),
+        {
+          fixture: { world, tmp },
+          captured: memory,
+          drainPolicy: {
+            stallSeconds: 1,
+            keptRetryFirst: Duration.millis(300),
+            keptRetryMax: Duration.seconds(5),
+          },
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              flushed,
+              // An executor that cannot report `complete`: every round is kept at once.
+              finalCompletion: "unreported",
+              flush: () => Effect.succeed(flushReport(2, 1)),
+            },
           ),
         },
       );
@@ -9400,4 +9758,1404 @@ describe("SessionEngine dotfiles gate", () => {
       },
     );
   });
+});
+
+/** A launch layer for the lifecycle tests: the positional knobs they use, by name. */
+const lifecycleLayer = (
+  created: Array<CreateOptions>,
+  knobs: {
+    readonly events?: string[];
+    readonly spawned?: ReadonlyArray<string>[];
+    readonly dead?: () => boolean;
+    readonly execCalls?: ReadonlyArray<string>[];
+    readonly captureOps?: Parameters<typeof sealantLaunchLayer>[11];
+  } = {},
+) =>
+  sealantLaunchLayer(
+    created,
+    undefined,
+    knobs.events,
+    knobs.spawned,
+    knobs.dead,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    knobs.execCalls,
+    undefined,
+    knobs.captureOps,
+  );
+
+describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
+  it("every planned end asks the executor for a final flush; a checkpoint asks for a suspend one", async () => {
+    const created: Array<CreateOptions> = [];
+    const events: string[] = [];
+    const kinds: CaptureFlushKind[] = [];
+    const memory = makeMemoryCaptureStore();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          yield* engine.checkpointNow(session.id, "user-mark");
+          expect(kinds.length).toBeGreaterThan(0);
+          expect(kinds.every((kind) => kind === "suspend")).toBe(true);
+          const before = kinds.length;
+          yield* engine.stop(session.id);
+          yield* until(() => events.includes("workspace-1"), "the workspace stop");
+          const stopAt = events.indexOf("workspace-1");
+          // The flush right before the stop is final.
+          const flushesBeforeStop = events
+            .slice(0, stopAt)
+            .filter((event) => event.startsWith("flush:")).length;
+          expect(kinds[flushesBeforeStop - 1]).toBe("final");
+          expect(kinds.slice(before)).toContain("final");
+          expect(world.finalFlushed.get(session.id)).toBe("workspace-1");
+        }),
+      {
+        captured: memory,
+        drainPolicy: { terminationWait: Duration.seconds(5) },
+        sealantLayer: lifecycleLayer(created, {
+          events,
+          captureOps: { flushed: events, flushKinds: kinds },
+        }),
+      },
+    );
+  });
+
+  it(
+    "a replacement is saved only by a completed final flush: an executor that cannot say `complete` keeps its workspace and nothing relaunches",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+            );
+            // Due at once: 1000 s cap, 600 s estimate + 400 s margin.
+            yield* engine.reapCaptureLeases();
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept workspace",
+            );
+            // The queue read empty, but nothing said the executor quiesced and snapshotted both
+            // classes: the workspace stays, and no second executor was made.
+            yield* Effect.sleep(Duration.millis(200));
+            expect(events).not.toContain("workspace-1");
+            expect(created).toHaveLength(1);
+            const kept = world.sessions.get(session.id);
+            expect(kept?.captureDrain).toBe("replacement");
+            expect(kept === undefined ? null : captureStatusLine(kept)).toBe(
+              "not saved · final flush not reported · 0 pending · workspace kept",
+            );
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            executorMaxSeconds: 1000,
+            drainEstimateSeconds: 600,
+            deadlineMarginSeconds: 400,
+          },
+          sealantLayer: lifecycleLayer(created, {
+            events,
+            captureOps: { flushed: events, finalCompletion: "unreported" },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "an executor sent a final flush is never reused: a second session is refused instead of joining it",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const spawned: ReadonlyArray<string>[] = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept workspace",
+            );
+            const spawnedBefore = spawned.length;
+            const second = yield* engine.provisionSessionIn(session.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: "user-fixture",
+            });
+            const refused = yield* engine.launch(second.id, ["claude"]).pipe(Effect.flip);
+            expect(refused._tag === "SealantPlatformError" && refused.code).toBe("worktree_leased");
+            expect(refused._tag === "SealantPlatformError" && refused.message).toContain(
+              "saving before it ends",
+            );
+            // Nothing was started in the ending executor, and no second executor was made.
+            expect(spawned).toHaveLength(spawnedBefore);
+            expect(created).toHaveLength(1);
+          }),
+        {
+          captured: memory,
+          sealantLayer: lifecycleLayer(created, {
+            spawned,
+            captureOps: { finalCompletion: "unreported" },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "the lead grows with what is pending at the observed rate: captures registering slowly start the replacement early",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const kinds: CaptureFlushKind[] = [];
+      const memory = makeMemoryCaptureStore();
+      let registered = 0;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            // Two readings a second apart: one capture registered, 5000 still pending.
+            yield* engine.readCaptures(session.id);
+            yield* Effect.sleep(Duration.millis(1100));
+            registered = 1;
+            yield* engine.readCaptures(session.id);
+            expect(world.sessions.get(session.id)?.capturePending).toBe(5000);
+            // A one-hour cap and no configured lead: 5000 captures at under one a second need
+            // longer than the hour, so the planned drain is due now.
+            yield* engine.reapCaptureLeases();
+            yield* until(() => kinds.includes("final"), "the planned drain's final flush");
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            executorMaxSeconds: 3600,
+            drainEstimateSeconds: 0,
+            deadlineMarginSeconds: 0,
+            stallSeconds: 1,
+          },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              flushKinds: kinds,
+              flush: () =>
+                Effect.sync(() =>
+                  kinds.at(-1) === "final"
+                    ? flushReport(0, registered + 5000)
+                    : flushReport(5000, registered),
+                ),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "a lapsed lease is not an end: a second session is refused while the first executor may still run, and takes the worktree once its end is confirmed",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      let firstDead = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            // A partition: the first executor's heartbeats stop reaching Mend.
+            const realNow = memory.clock.now;
+            memory.clock.now = () => realNow() + 10 * 60 * 1000;
+            const second = yield* engine.provisionSessionIn(session.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: "user-fixture",
+            });
+            const refused = yield* engine.launch(second.id, ["claude"]).pipe(Effect.flip);
+            expect(refused._tag === "SealantPlatformError" && refused.code).toBe("worktree_leased");
+            expect(refused._tag === "SealantPlatformError" && refused.message).toContain(
+              "lease lapsed",
+            );
+            expect(created).toHaveLength(1);
+            expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+            // The platform says the first executor is gone: its lease is released and the next
+            // session claims a new epoch.
+            const third = yield* engine.provisionSessionIn(session.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: "user-fixture",
+            });
+            const epochBefore = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            firstDead = true;
+            // Past the claim, the fake's one workspace also reads gone: only the claim matters.
+            yield* engine.launch(third.id, ["claude"]).pipe(Effect.ignore);
+            expect(created).toHaveLength(2);
+            expect(memory.leases.get(session.worktreeId)?.executorId).toBe(third.id);
+            expect(memory.leases.get(session.worktreeId)?.epoch).toBe(epochBefore + 1);
+            memory.clock.now = realNow;
+          }),
+        {
+          captured: memory,
+          sealantLayer: lifecycleLayer(created, { dead: () => firstDead }),
+        },
+      );
+    },
+  );
+
+  it(
+    "the session that owns the executor stays while another works in it: its removal waits for the workspace",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const spawned: ReadonlyArray<string>[] = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            const second = yield* engine.provisionSessionIn(session.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: "user-fixture",
+            });
+            yield* engine.launch(second.id, ["claude"]);
+            expect(world.sessions.get(second.id)?.sealantWorkspaceId).toBe("workspace-1");
+            yield* engine.stop(session.id);
+            yield* Effect.sleep(Duration.millis(300));
+            // The joined session still works in the executor this row identifies.
+            expect(yield* engine.removeWhenStopped(session.id)).toBe("pending");
+            expect(world.sessions.has(session.id)).toBe(true);
+            expect(world.sessions.get(session.id)?.removalRequestedAt).not.toBeNull();
+            // Its capture identity still resolves: the executor's plan is answered as before.
+            const holds = yield* engine.captureHolds(session.worktreeId);
+            expect(holds.map((hold) => hold.kind)).toContain("executor");
+          }),
+        {
+          captured: memory,
+          sealantLayer: lifecycleLayer(created, { spawned }),
+        },
+      );
+    },
+  );
+
+  it(
+    "removal holds: a drain under way holds the worktree's identity, and nothing does once the workspace saved and ended",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      let saveNow = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            // Up and holding its lease: an executor nobody observed end.
+            expect((yield* engine.captureHolds(session.worktreeId)).length).toBeGreaterThan(0);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === "stop",
+              "the drain",
+            );
+            const saving = yield* engine.captureHolds(session.worktreeId);
+            expect(saving).toContainEqual({ sessionId: session.id, kind: "saving" });
+            expect(captureHoldWords(saving)).toContain("saving · 1 session");
+            saveNow = true;
+            yield* until(() => events.includes("workspace-1"), "the workspace stop");
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === null,
+              "the drain's end",
+            );
+            expect(yield* engine.captureHolds(session.worktreeId)).toEqual([]);
+          }),
+        {
+          captured: memory,
+          drainPolicy: { terminationWait: Duration.seconds(5) },
+          sealantLayer: lifecycleLayer(created, {
+            events,
+            captureOps: {
+              flushed: events,
+              flush: () => Effect.succeed(saveNow ? flushReport(0, 2) : flushReport(1, 1)),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "a removal waits for the workspace's end, not only its save: a stop the platform has not carried out keeps the row",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            expect(yield* engine.removeWhenStopped(session.id)).toBe("pending");
+            yield* until(() => events.includes("workspace-1"), "the stop asked");
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === null,
+              "the drain's end",
+            );
+            yield* Effect.sleep(Duration.millis(200));
+            // Saved and asked to stop, but the platform still reports it up: the row the
+            // executor registers under stays, and so does its lease.
+            expect(world.sessions.has(session.id)).toBe(true);
+            expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+          }),
+        {
+          captured: memory,
+          drainPolicy: { terminationWait: Duration.millis(300) },
+          sealantLayer: lifecycleLayer(created, {
+            events,
+            captureOps: { flushed: events, status: () => "ready" },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "a landing waits for the executor's captures: a lapsed lease whose executor may still run is not caught up",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            const checkpointsBefore = world.checkpoints.length;
+            const realNow = memory.clock.now;
+            memory.clock.now = () => realNow() + 10 * 60 * 1000;
+            // Unknown is never `none`: the executor was not answered for.
+            expect(yield* engine.flushCaptures(session.id, "landing")).toBe("incomplete");
+            const behind = yield* engine
+              .landingCheckpoint(session.id, "user-mark")
+              .pipe(Effect.flip);
+            expect(behind._tag).toBe("CapturesBehindError");
+            expect(world.checkpoints.length).toBe(checkpointsBefore);
+            memory.clock.now = realNow;
+            // Caught up: the checkpoint names the capture it was derived from, the chain head.
+            const taken = yield* engine.landingCheckpoint(session.id, "user-mark");
+            expect(taken.captureId).toBe(memory.chains.get(session.worktreeId)?.headCapture);
+          }),
+        { captured: memory, sealantLayer: lifecycleLayer(created) },
+      );
+    },
+  );
+
+  it(
+    "a relaunch interrupted by a restart finishes: the old executor drains and ends, then the session launches again",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+            );
+            // What a restart finds: the relaunch planned, its drain not yet run in this process.
+            const current = world.sessions.get(session.id);
+            if (current === undefined) throw new Error("the session is gone");
+            world.relaunches.set(session.id, "codex");
+            world.sessions.set(
+              session.id,
+              new Session({
+                ...current,
+                captureDrain: "relaunch",
+                captureDrainRequestedAt: new Date(),
+                captureDrainProgressAt: new Date(),
+              }),
+            );
+            yield* engine.reapCaptureLeases();
+            yield* until(() => created.length === 2, "the relaunch");
+            const stopAt = events.indexOf("workspace-1");
+            expect(stopAt).toBeGreaterThan(0);
+            expect(events[stopAt - 1]).toBe("flush:workspace-1");
+            expect(world.relaunches.has(session.id)).toBe(false);
+          }),
+        {
+          captured: memory,
+          drainPolicy: { terminationWait: Duration.seconds(5) },
+          sealantLayer: lifecycleLayer(created, {
+            events,
+            captureOps: { flushed: events },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "the owner's stop wins over a replacement under way: the drain finishes, the executor ends, and no new one starts",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const memory = makeMemoryCaptureStore();
+      let saveNow = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            // A resumable session: without the owner's stop, the replacement relaunches it.
+            yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+            );
+            // Due at once: 1000 s cap, 600 s estimate + 400 s margin.
+            yield* engine.reapCaptureLeases();
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === "replacement",
+              "the replacement's drain",
+            );
+            yield* engine.stop(session.id);
+            // Durable: after a restart the drain ends in a stop, not a relaunch.
+            expect(world.sessions.get(session.id)?.captureDrain).toBe("stop");
+            saveNow = true;
+            yield* until(() => events.includes("workspace-1"), "the terminate");
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === null,
+              "the drain's end",
+            );
+            yield* Effect.sleep(Duration.millis(500));
+            yield* engine.reapCaptureLeases();
+            yield* Effect.sleep(Duration.millis(300));
+            expect(created).toHaveLength(1);
+            expect(world.sessions.get(session.id)?.status).toBe("stopped");
+            expect(world.relaunches.has(session.id)).toBe(false);
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            executorMaxSeconds: 1000,
+            drainEstimateSeconds: 600,
+            deadlineMarginSeconds: 400,
+            terminationWait: Duration.seconds(5),
+          },
+          sealantLayer: lifecycleLayer(created, {
+            events,
+            captureOps: {
+              flushed: events,
+              flush: () => Effect.succeed(saveNow ? flushReport(0, 2) : flushReport(1, 1)),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "a follow-up whose relaunch a restart interrupted is delivered once, with its prompt, after the old executor saved and ended",
+    { timeout: 30_000 },
+    async () => {
+      const fixture = {
+        world: makeWorld(),
+        tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-relaunch-restart-test-")),
+      };
+      const memory = makeMemoryCaptureStore();
+      const created: Array<CreateOptions> = [];
+      const spawned: ReadonlyArray<string>[] = [];
+      const events: string[] = [];
+      const PROMPT = "fix the flaky retry test";
+      const CORRELATION = "follow-up:f-1";
+      let saveNow = false;
+      let sessionId: SessionId | null = null;
+      const layerFor = () =>
+        lifecycleLayer(created, {
+          events,
+          spawned,
+          captureOps: {
+            flushed: events,
+            flush: () => Effect.succeed(saveNow ? flushReport(0, 2) : flushReport(1, 1)),
+          },
+        });
+      // Before the restart: the session is stopped while its executor still saves, and a
+      // follow-up relaunches it — the relaunch waits on that drain when Mend goes down.
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            sessionId = session.id;
+            yield* engine.launch(session.id, ["codex"]);
+            yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+            );
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === "stop",
+              "the stop's drain",
+            );
+            yield* Effect.forkChild(
+              engine.launchFollowUp(session.id, PROMPT, CORRELATION, "user-fixture"),
+            );
+            yield* until(() => world.relaunches.has(session.id), "the planned relaunch");
+            expect(created).toHaveLength(1);
+          }),
+        { fixture, captured: memory, sealantLayer: layerFor() },
+      );
+      // After it: the plan is still there, the old executor saves and ends, and the follow-up
+      // launches with its prompt, once.
+      const planned = sessionId === null ? undefined : fixture.world.relaunches.get(sessionId);
+      expect(planned).toContain(CORRELATION);
+      saveNow = true;
+      await withEngine(
+        (world) =>
+          Effect.gen(function* () {
+            const engine = yield* SessionEngine;
+            if (sessionId === null) throw new Error("no session");
+            const id = sessionId;
+            yield* engine.reapCaptureLeases();
+            yield* until(() => created.length === 2, "the relaunch");
+            const stopAt = events.lastIndexOf("workspace-1");
+            expect(stopAt).toBeGreaterThan(0);
+            expect(events[stopAt - 1]).toBe("flush:workspace-1");
+            // The prompt rides base64-encoded to the harness (`promptArgv`).
+            expect(spawned.at(-1)).toContain(Buffer.from(PROMPT).toString("base64"));
+            yield* until(() => !world.relaunches.has(id), "the plan's end");
+            // A restart after the launch but before the plan was cleared: the process already
+            // carries the correlation id, so nothing launches a second time.
+            if (planned !== undefined) world.relaunches.set(id, planned);
+            yield* engine.reapCaptureLeases();
+            yield* until(() => !world.relaunches.has(id), "the replayed plan's end");
+            yield* Effect.sleep(Duration.millis(300));
+            expect(created).toHaveLength(2);
+            const correlated = [...world.processes.values()].filter(
+              (process) => process.launchCorrelationId === CORRELATION,
+            );
+            expect(correlated).toHaveLength(1);
+          }),
+        { fixture, captured: memory, sealantLayer: layerFor() },
+      );
+    },
+  );
+
+  it(
+    "a restart mid-drain gives the draining session its channel back, so its executor can still ship",
+    { timeout: 20_000 },
+    async () => {
+      const fixture = {
+        world: makeWorld(),
+        tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-channel-restart-test-")),
+      };
+      const memory = makeMemoryCaptureStore();
+      const created: Array<CreateOptions> = [];
+      let sessionId: SessionId | null = null;
+      const layer = () =>
+        lifecycleLayer(created, {
+          captureOps: { flush: () => Effect.succeed(flushReport(1, 1)) },
+        });
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            sessionId = session.id;
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === "stop",
+              "the stop's drain",
+            );
+          }),
+        { fixture, captured: memory, sealantLayer: layer() },
+      );
+      if (sessionId === null) throw new Error("no session");
+      const id: SessionId = sessionId;
+      // The channel registry is this process's memory: a restart starts it empty.
+      servedSocketApis.delete(id);
+      await withEngine(
+        (world) =>
+          Effect.sync(() => {
+            // Stopping, still draining (not settled while its container runs): its executor
+            // calls in all the same.
+            expect(world.sessions.get(id)?.status).toBe("stopping");
+            expect(world.sessions.get(id)?.settledAt).toBeNull();
+            expect(servedSocketApis.has(id)).toBe(true);
+          }),
+        { fixture, captured: memory, sealantLayer: layer() },
+      );
+    },
+  );
+
+  it(
+    "the owner's discard asks the platform for a stop that does not drain, and says so when the platform keeps the workspace",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const stops: Array<"drain" | "discard"> = [];
+      const memory = makeMemoryCaptureStore();
+      let platformKeeps = true;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept workspace",
+            );
+            // The platform keeps it: nothing discarded, and the session still reads its captures.
+            const refused = yield* engine.discardUnsavedAndStop(session.id).pipe(Effect.flip);
+            expect(refused._tag === "SealantPlatformError" && refused.code).toBe(
+              "workspace_not_ended",
+            );
+            expect(stops).toEqual(["discard"]);
+            expect(world.sessions.get(session.id)?.captureDrain).toBe("stop");
+            platformKeeps = false;
+            const { session: discarded } = yield* engine.discardUnsavedAndStop(session.id);
+            expect(discarded.captureDrain).toBeNull();
+            expect(stops).toEqual(["discard", "discard"]);
+          }),
+        {
+          captured: memory,
+          drainPolicy: { stallSeconds: 1, terminationWait: Duration.millis(300) },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stops,
+              stopAnswer: (discard) => (discard && !platformKeeps ? "stopped" : "kept"),
+              flush: () => Effect.succeed(flushReport(2, 1)),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "an agent whose executor went away without Mend asking reads `executor lost`, never `completed`",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const ptyStates = new Map<string, InteractiveSessionStatus>();
+      const memory = makeMemoryCaptureStore();
+      let killed = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+            );
+            const agent = [...world.processes.values()].find(
+              (process) => process.sessionId === session.id && process.kind === "agent-pty",
+            );
+            if (agent === undefined || agent.sealantSessionId === null) {
+              throw new Error("the launch recorded no agent PTY");
+            }
+            // docker kill: the platform reports the workspace gone and the PTY ended clean.
+            killed = true;
+            ptyStates.set(agent.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the session's settle",
+            );
+            const settled = world.sessions.get(session.id);
+            expect(settled?.status).toBe("failed");
+            expect(settled?.summary).toMatch(/^executor lost · last saved \d\d:\d\d:\d\d UTC/);
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            () => killed,
+            undefined,
+            ptyStates,
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "a `docker stop` whose final capture registered last reads `stopped outside Mend · saved at …`, never failed or lost",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const ptyStates = new Map<string, InteractiveSessionStatus>();
+      const memory = makeMemoryCaptureStore();
+      let stopped = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            // sealantd's SIGTERM path: admission closed, processes ended, then the final captures.
+            yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+              "final",
+            );
+            const agent = [...world.processes.values()].find(
+              (process) => process.sessionId === session.id && process.kind === "agent-pty",
+            );
+            if (agent === undefined || agent.sealantSessionId === null) {
+              throw new Error("the launch recorded no agent PTY");
+            }
+            stopped = true;
+            ptyStates.set(agent.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the session's settle",
+            );
+            const settled = world.sessions.get(session.id);
+            expect(settled?.status).toBe("stopped");
+            expect(settled?.summary).toMatch(
+              /^stopped outside Mend · saved at \d\d:\d\d:\d\d UTC$/,
+            );
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            () => stopped,
+            undefined,
+            ptyStates,
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "a kill -9 says when it last saved, that later changes were not saved, and what Mend last read pending — only when it read it after that save",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const ptyStates = new Map<string, InteractiveSessionStatus>();
+      const memory = makeMemoryCaptureStore();
+      let killed = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+              "auto",
+            );
+            yield* Effect.sleep(Duration.millis(20));
+            // A reading after that save: 3 captures still queued in the executor.
+            const reading = yield* engine.readCaptures(session.id);
+            expect(reading?.pending).toBe(3);
+            const agent = [...world.processes.values()].find(
+              (process) => process.sessionId === session.id && process.kind === "agent-pty",
+            );
+            if (agent === undefined || agent.sealantSessionId === null) {
+              throw new Error("the launch recorded no agent PTY");
+            }
+            killed = true;
+            ptyStates.set(agent.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the session's settle",
+            );
+            const settled = world.sessions.get(session.id);
+            expect(settled?.status).toBe("failed");
+            expect(settled?.summary).toMatch(
+              /^executor lost · last saved \d\d:\d\d:\d\d UTC · changes after that were not saved · 3 pending at \d\d:\d\d:\d\d UTC$/,
+            );
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            () => killed,
+            undefined,
+            ptyStates,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            { flush: () => Effect.succeed(flushReport(3, 1)) },
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "a launch that failed before any executor existed leaves the worktree free for the next one",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      let refuse = true;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            const failed = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+            expect(failed._tag).toBe("SealantPlatformError");
+            // Nothing ran: the launch's own claim is released.
+            expect(memory.leases.get(session.worktreeId)?.executorId).toBeNull();
+            refuse = false;
+            yield* engine.launch(session.id, ["codex"]);
+            expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+            expect(world.sessions.get(session.id)?.status).toBe("running");
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(created, () => refuse),
+        },
+      );
+    },
+  );
+});
+
+describe("SessionEngine capture failures shown while they happen (e2e run 3, 2026-09-27)", () => {
+  it(
+    "a final flush whose snapshot failed keeps the workspace at once, with sealantd's error and path, and asks again only on the kept backoff",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const events: string[] = [];
+      const kinds: CaptureFlushKind[] = [];
+      const memory = makeMemoryCaptureStore();
+      let shipped = 0;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            // The default stall window is 600 s: only a reason that cannot complete keeps it now.
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept workspace",
+            );
+            const finals = () => kinds.filter((kind) => kind === "final").length;
+            expect(finals()).toBe(1);
+            const kept = world.sessions.get(session.id);
+            expect(kept === undefined ? null : captureStatusLine(kept)).toBe(
+              "not saved · snapshot failed · EACCES: permission denied · unreadable tree/secrets.pem · 0 pending · workspace kept",
+            );
+            expect(events).not.toContain("workspace-1");
+            expect(leaseHeld(memory, session.worktreeId, session.id)).toBe(true);
+            // Nothing changed: the next sweep inside the first wait sends no FINAL.
+            yield* engine.reapCaptureLeases();
+            yield* Effect.sleep(Duration.millis(60));
+            expect(finals()).toBe(1);
+            // The first wait has passed: one more FINAL, kept again at once.
+            yield* Effect.sleep(Duration.millis(300));
+            yield* engine.reapCaptureLeases();
+            yield* until(() => finals() > 1, "the retry after the first wait");
+            yield* Effect.sleep(Duration.millis(60));
+            const afterRetry = finals();
+            // Kept again at once: nothing more until the doubled wait, however many ticks.
+            yield* engine.reapCaptureLeases();
+            yield* Effect.sleep(Duration.millis(100));
+            expect(finals()).toBe(afterRetry);
+            expect(world.sessions.get(session.id)?.captureNotSavedAt).not.toBeNull();
+            expect(events).not.toContain("workspace-1");
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            keptRetryFirst: Duration.millis(300),
+            keptRetryMax: Duration.seconds(5),
+          },
+          sealantLayer: lifecycleLayer(created, {
+            events,
+            captureOps: {
+              flushKinds: kinds,
+              // The daemon's own answer, as it gave it: its final snapshot failed.
+              finalCompletion: "unreported",
+              flush: () =>
+                Effect.sync(() => {
+                  // Every round ships something (the counters grow): movement is not progress
+                  // toward `complete` when the snapshot itself fails.
+                  shipped += 1;
+                  return {
+                    ...flushReport(0, shipped),
+                    complete: false,
+                    incompleteReason: "snapshot-failed",
+                    lastSnapError: "EACCES: permission denied",
+                    unreadable: 1,
+                    unreadablePaths: ["tree/secrets.pem"],
+                  };
+                }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "a running session whose snaps fail reads `capture failing since … · <error>` from a status read, and not once they succeed again",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const since = Date.parse("2026-09-27T16:29:51.000Z");
+      let failing = true;
+      let reads = 0;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            expect(world.sessions.get(session.id)?.status).toBe("running");
+            // Nothing has read it yet: nothing to say.
+            const before = world.sessions.get(session.id);
+            expect(before === undefined ? "gone" : captureStatusLine(before)).toBeNull();
+            // The reaper reads a running executor's status on its own.
+            yield* engine.reapCaptureLeases();
+            yield* until(
+              () => world.sessions.get(session.id)?.captureFailingSince != null,
+              "the failing snap on the session",
+            );
+            const shown = world.sessions.get(session.id);
+            expect(shown === undefined ? null : captureStatusLine(shown)).toBe(
+              "capture failing since 16:29:51 UTC · EIO: tree/db.sqlite",
+            );
+            // Within the interval the reaper does not ask again.
+            yield* engine.reapCaptureLeases();
+            yield* Effect.sleep(Duration.millis(60));
+            expect(reads).toBe(1);
+            // A client's view asks (throttled per session); the snaps succeed again.
+            failing = false;
+            yield* engine.refreshCaptureStatus(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureFailingSince === null,
+              "the failure cleared",
+            );
+            const cleared = world.sessions.get(session.id);
+            expect(cleared === undefined ? "gone" : captureStatusLine(cleared)).toBeNull();
+            expect(reads).toBe(2);
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            statusInterval: Duration.minutes(1),
+            statusMinInterval: Duration.millis(0),
+          },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              captureStatus: () =>
+                Effect.sync(() => {
+                  reads += 1;
+                  return failing
+                    ? {
+                        ...flushReport(1, 1),
+                        lastSnapError: "EIO: tree/db.sqlite",
+                        snapFailingSinceUnixMs: since,
+                        snapsFailed: 4,
+                      }
+                    : flushReport(0, 2);
+                }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "after the owner's discard the session reads `stopped · unsaved work discarded by <name> at …`",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept workspace",
+            );
+            yield* engine.discardUnsavedAndStop(session.id, "Ada Lovelace");
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the settle after the discard",
+            );
+            const settled = world.sessions.get(session.id);
+            if (settled === undefined) throw new Error("the session went");
+            const line = captureStatusLine(settled);
+            expect(`${settled.status} · ${line}`).toMatch(
+              /^stopped · unsaved work discarded by Ada Lovelace at \d\d:\d\d:\d\d UTC$/,
+            );
+          }),
+        {
+          captured: memory,
+          drainPolicy: { stallSeconds: 1, terminationWait: Duration.millis(300) },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stopAnswer: (discard) => (discard ? "stopped" : "kept"),
+              flush: () => Effect.succeed(flushReport(2, 1)),
+            },
+          }),
+        },
+      );
+    },
+  );
+});
+
+describe("SessionEngine lifecycle after a final flush (e2e run 4, 2026-09-27)", () => {
+  /** A daemon's status once its final flush completed (sealantd 0.19: `complete` on status). */
+  const completedStatus = (headN: number): WorkspaceCaptureStatus => {
+    const completion = { complete: true };
+    return { ...flushReport(0, headN, { headN }), ...completion };
+  };
+
+  /**
+   * The M3 sequence: `sealantctl capture flush --final` inside the executor ends the harness and
+   * closes admission (an exec there is refused), the daemon waits for its stop; Mend's stop then
+   * flushes, and each suspend flush stages a capture on top of the final (the sealantd side is
+   * fixed in parallel); the drain's FINAL completes and the workspace is terminated.
+   */
+  const m3 = (statusAnswers: boolean) => async () => {
+    const created: Array<CreateOptions> = [];
+    const events: string[] = [];
+    const kinds: CaptureFlushKind[] = [];
+    const ptyStates = new Map<string, InteractiveSessionStatus>();
+    const memory = makeMemoryCaptureStore();
+    const seen: Array<string> = [];
+    let dir = "";
+    let finalRan = false;
+    let firstLookAt: number | null = null;
+    let worktree: WorktreeId | null = null;
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          dir = tmp;
+          const { engine, session } = yield* launchOnce(world, tmp);
+          worktree = session.worktreeId;
+          yield* engine.launch(session.id, ["codex"]);
+          yield* Effect.forkScoped(
+            Effect.sync(() => {
+              const status = world.sessions.get(session.id)?.status;
+              if (status !== undefined && seen.at(-1) !== status) seen.push(status);
+            }).pipe(Effect.repeat(Schedule.spaced(Duration.millis(5)))),
+          );
+          const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+          yield* shipHarnessCapture(tmp, memory, session.worktreeId, epoch, "m3", "final");
+          finalRan = true;
+          const agent = [...world.processes.values()].find(
+            (process) => process.sessionId === session.id && process.kind === "agent-pty",
+          );
+          if (agent === undefined || agent.sealantSessionId === null) {
+            throw new Error("the launch recorded no agent PTY");
+          }
+          // The final flush terminated the harness.
+          ptyStates.set(agent.sealantSessionId, {
+            status: "exited",
+            exitCode: 143,
+            outputHighWater: 0n,
+          });
+          yield* until(() => firstLookAt !== null, "the watcher's first look at the executor");
+          // The harness is gone: the line leaves `running` at once, not after the looks.
+          yield* until(
+            () =>
+              world.sessions.get(session.id)?.status !== "running" &&
+              Date.now() - (firstLookAt ?? 0) < 1000,
+            "the session leaving `running` within a second of the harness going",
+          );
+          if (statusAnswers) {
+            // The executor's status says its final flush completed: that is the end reading.
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the settle on the executor's word",
+            );
+            expect(world.sessions.get(session.id)?.status).toBe("stopped");
+            expect(world.sessions.get(session.id)?.summary).toMatch(
+              /^stopped outside Mend · saved at \d\d:\d\d:\d\d UTC · capture \d+$/,
+            );
+          } else {
+            // Nothing says yet how the executor ended: `stopping`, never `running`.
+            expect(world.sessions.get(session.id)?.status).toBe("stopping");
+          }
+          // The owner's stop, while the watcher may still be looking.
+          yield* engine.stop(session.id);
+          yield* until(() => events.includes("workspace-1"), "the workspace stop");
+          yield* until(() => {
+            const current = world.sessions.get(session.id);
+            return current?.settledAt != null && current.captureDrain === null;
+          }, "the settle");
+          // Past every look the watcher could still take.
+          yield* Effect.sleep(Duration.millis(1500));
+          const settled = world.sessions.get(session.id);
+          expect(settled?.status).toBe("stopped");
+          expect(settled?.summary ?? "").not.toMatch(/executor lost/);
+          expect(seen).not.toContain("failed");
+          expect(kinds).toContain("final");
+        }),
+      {
+        captured: memory,
+        drainPolicy: { pollInterval: Duration.seconds(1), terminationWait: Duration.seconds(3) },
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          events,
+          undefined,
+          undefined,
+          undefined,
+          ptyStates,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          {
+            flushKinds: kinds,
+            // Admission is closed once the final ran: nothing is exec'd there.
+            exec: (argv) => {
+              if (argv.length !== 1 || argv[0] !== "true") return undefined;
+              if (!finalRan) return { exitCode: 0, stdout: "", stderr: "" };
+              firstLookAt ??= Date.now();
+              return { exitCode: 1, stdout: "", stderr: "admission closed" };
+            },
+            flush: () =>
+              Effect.gen(function* () {
+                // A suspend flush after the final stages a capture on top of it.
+                if (kinds.at(-1) === "suspend" && finalRan && worktree !== null) {
+                  const epoch = memory.leases.get(worktree)?.epoch ?? 0;
+                  yield* shipHarnessCapture(
+                    dir,
+                    memory,
+                    worktree,
+                    epoch,
+                    crypto.randomUUID(),
+                    "suspend",
+                  ).pipe(Effect.orDie);
+                }
+                const headN = worktree === null ? 0 : (memory.chains.get(worktree)?.headN ?? 0);
+                return finalRan ? completedStatus(headN) : flushReport(0, headN);
+              }),
+            ...(statusAnswers
+              ? {
+                  captureStatus: () =>
+                    Effect.sync(() => {
+                      const headN =
+                        worktree === null ? 0 : (memory.chains.get(worktree)?.headN ?? 0);
+                      return finalRan ? completedStatus(headN) : flushReport(0, headN);
+                    }),
+                }
+              : {}),
+          },
+        ),
+      },
+    );
+  };
+
+  it(
+    "a final flush run inside the executor, then Mend's stop: the executor's `complete` is the save, the line leaves `running` at once, and it ends `stopped`, never `failed · executor lost`",
+    { timeout: 30_000 },
+    m3(true),
+  );
+
+  it(
+    "the same with no status read (an older SDK): the stop's drain is re-checked on every look, and a settled `stopped` is never overwritten with `failed`",
+    { timeout: 30_000 },
+    m3(false),
+  );
+
+  it(
+    "a kept round sends one FINAL: the settle harvest reuses the drain's answer",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const kinds: CaptureFlushKind[] = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept workspace",
+            );
+            yield* Effect.sleep(Duration.millis(100));
+            const finals = () => kinds.filter((kind) => kind === "final").length;
+            expect(finals()).toBe(1);
+            for (const round of [1, 2]) {
+              yield* Effect.sleep(Duration.millis(350 * round));
+              const before = finals();
+              yield* engine.reapCaptureLeases();
+              yield* until(() => finals() > before, `kept round ${round}`);
+              yield* Effect.sleep(Duration.millis(200));
+              expect(finals() - before, `FINALs in kept round ${round}`).toBe(1);
+            }
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            keptRetryFirst: Duration.millis(300),
+            keptRetryMax: Duration.seconds(5),
+          },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              flushKinds: kinds,
+              finalCompletion: "unreported",
+              flush: () =>
+                Effect.succeed({
+                  ...flushReport(0, 1),
+                  complete: false,
+                  incompleteReason: "snapshot-failed",
+                  lastSnapError: "EACCES: permission denied",
+                }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "a discard records what Mend knows — last save, snaps failing since, the error, no completed final — and the line's time is when it was asked",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const failingSince = Date.parse("2026-09-27T19:55:02.000Z");
+      let stopAskedAt: number | null = null;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            const saved = yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              memory.leases.get(session.worktreeId)?.epoch ?? 0,
+              crypto.randomUUID(),
+              "auto",
+            );
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept workspace",
+            );
+            const askedAt = Date.now();
+            const result = yield* engine.discardUnsavedAndStop(session.id, "Ada Lovelace");
+            const { facts } = result;
+            expect(facts.requestedAt.getTime()).toBeGreaterThanOrEqual(askedAt);
+            expect(result.discardedAt.getTime() - facts.requestedAt.getTime()).toBeGreaterThan(250);
+            expect(facts.lastSaved?.n).toBe(saved.manifest.n);
+            expect(facts.failingSince?.getTime()).toBe(failingSince);
+            expect(facts.failingError).toBe("EACCES: permission denied");
+            expect(facts.finalCompleted).toBeNull();
+            expect(facts.queue?.pending).toBe(0);
+            expect(facts.workspaceId).toBe("workspace-1");
+            // What the audit keeps: no `0 pending` for edits a failing snap never staged.
+            const data = captureDiscardAuditData(facts, result.discardedAt);
+            expect(data["pending"]).toBeNull();
+            expect(data["lastSavedN"]).toBe(saved.manifest.n);
+            expect(data["finalCompleted"]).toBe(false);
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the settle after the discard",
+            );
+            // The line says when the discard was asked, not when it was recorded.
+            expect(world.sessions.get(session.id)?.captureDiscardedAt?.getTime()).toBe(
+              facts.requestedAt.getTime(),
+            );
+          }),
+        {
+          captured: memory,
+          drainPolicy: { terminationWait: Duration.seconds(3) },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stopAnswer: (discard) => {
+                if (discard) stopAskedAt ??= Date.now();
+                return discard ? "requested" : "kept";
+              },
+              // The discarding stop takes a moment to be observed.
+              status: () =>
+                stopAskedAt !== null && Date.now() - stopAskedAt > 300 ? "stopped" : "ready",
+              finalCompletion: "unreported",
+              flush: () =>
+                Effect.succeed({
+                  ...flushReport(0, 1),
+                  complete: false,
+                  incompleteReason: "snapshot-failed",
+                  lastSnapError: "EACCES: permission denied",
+                  snapFailingSinceUnixMs: failingSince,
+                }),
+            },
+          }),
+        },
+      );
+    },
+  );
 });

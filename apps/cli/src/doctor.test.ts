@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 
 import { describe, expect, it } from "vitest";
 
+import { readShutdownTimeout } from "./docker-shutdown.ts";
 import { exposureCheck, formatCheck, runChecks } from "./doctor.ts";
 
 type Handler = (request: IncomingMessage, response: ServerResponse) => void;
@@ -311,5 +312,38 @@ describe("the claude grant line", () => {
   /** Someone who connected with --use-my-login has no grant of Mend's own: say nothing. */
   it("prints no line at all when Mend keeps no grant", async () => {
     expect(await grantLine(null)).toBeNull();
+  });
+});
+
+const dockerLine = async (onPath: (command: string) => boolean) => {
+  const checks = await runChecks(
+    { url: "http://127.0.0.1:9", token: null },
+    {
+      localCredential: () => null,
+      claudeGrant: () => null,
+      onPath,
+      dockerShutdown: () =>
+        readShutdownTimeout({
+          info: { operatingSystem: "Ubuntu 24.04.1 LTS", securityOptions: [] },
+          dockerdArgv: ["/usr/bin/dockerd", "-H", "fd://"],
+          readFile: () => ({ kind: "absent" }),
+          home: "/home/op",
+          xdgConfigHome: null,
+        }),
+    },
+  );
+  return checks.find((check) => check.label === "docker") ?? null;
+};
+
+describe("the docker line", () => {
+  it("reads this machine's daemon shutdown timeout against the capture grace when docker is here", async () => {
+    const line = await dockerLine((command) => command === "docker");
+    expect(line === null ? null : formatCheck(line)).toBe(
+      '○ docker      shutdown-timeout 15 s · dockerd default · not set in /etc/docker/daemon.json · below the 3600 s capture grace → set "shutdown-timeout": 3600 in /etc/docker/daemon.json, then restart dockerd',
+    );
+  });
+
+  it("prints no docker line where docker is not on PATH", async () => {
+    expect(await dockerLine(() => false)).toBeNull();
   });
 });

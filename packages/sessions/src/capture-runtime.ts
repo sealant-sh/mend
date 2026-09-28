@@ -80,6 +80,20 @@ export interface CaptureDrainPolicyShape {
   readonly deadlineMarginSeconds: number;
   /** MEND_CAPTURE_DRAIN_ESTIMATE_SECONDS: how long a planned drain is given before the deadline. */
   readonly drainEstimateSeconds: number;
+  /**
+   * A kept drain (`not saved · workspace kept`) is looked at again after this long while nothing
+   * about it changes, and each unchanged look doubles the wait up to `keptRetryMax`. Anything that
+   * changes (the head, the reason, what is pending, the workspace going) is looked at at once.
+   */
+  readonly keptRetryFirst: Duration.Duration;
+  readonly keptRetryMax: Duration.Duration;
+  /**
+   * How often the reaper reads a running executor's capture status (nothing flushed): what shows
+   * a failing snap while it fails. MEND_CAPTURE_STATUS_SECONDS.
+   */
+  readonly statusInterval: Duration.Duration;
+  /** The least time between two status reads a client's view asks for, per session. */
+  readonly statusMinInterval: Duration.Duration;
 }
 
 export class CaptureDrainPolicy extends Context.Service<
@@ -95,6 +109,10 @@ const DEFAULT_DRAIN_POLICY: CaptureDrainPolicyShape = {
   executorMaxSeconds: null,
   deadlineMarginSeconds: DEFAULT_EXECUTOR_DEADLINE_MARGIN_SECONDS,
   drainEstimateSeconds: DEFAULT_CAPTURE_DRAIN_ESTIMATE_SECONDS,
+  keptRetryFirst: Duration.seconds(10),
+  keptRetryMax: Duration.minutes(5),
+  statusInterval: Duration.seconds(45),
+  statusMinInterval: Duration.seconds(10),
 };
 
 /** The defaults, with nothing read from the environment. */
@@ -118,8 +136,12 @@ export const CaptureDrainPolicyLive: Layer.Layer<CaptureDrainPolicy, Config.Conf
       const drainEstimateSeconds = yield* Config.int("MEND_CAPTURE_DRAIN_ESTIMATE_SECONDS").pipe(
         Config.withDefault(DEFAULT_CAPTURE_DRAIN_ESTIMATE_SECONDS),
       );
+      const statusSeconds = yield* Config.int("MEND_CAPTURE_STATUS_SECONDS").pipe(
+        Config.withDefault(Duration.toSeconds(DEFAULT_DRAIN_POLICY.statusInterval)),
+      );
       return {
         ...DEFAULT_DRAIN_POLICY,
+        statusInterval: Duration.seconds(Math.max(5, statusSeconds)),
         stallSeconds: Math.max(1, stallSeconds),
         executorMaxSeconds: Option.getOrNull(executorMaxSeconds),
         deadlineMarginSeconds: Math.max(0, deadlineMarginSeconds),
@@ -138,10 +160,34 @@ const reportedCount = (value: unknown): number | null => {
   return null;
 };
 
+/** The unreadable paths sealantd names (the first 20); anything else reads none. */
+const unreadablePathsOf = (value: unknown): ReadonlyArray<string> =>
+  Array.isArray(value)
+    ? value.filter((path): path is string => typeof path === "string" && path !== "")
+    : [];
+
+/** A time sealantd may report as unix milliseconds (or Core as ISO-8601); null otherwise. */
+const reportedTime = (value: unknown): Date | null => {
+  if (typeof value === "number" && Number.isFinite(value) && value > 0) return new Date(value);
+  if (typeof value === "string" && value !== "") {
+    const at = new Date(value);
+    return Number.isNaN(at.getTime()) ? null : at;
+  }
+  return null;
+};
+
+/** A string field sealantd may report; absent, empty or malformed reads null. */
+const reportedText = (report: object, key: string): string | null => {
+  const value: unknown = Reflect.get(report, key);
+  return typeof value === "string" && value.trim() !== "" ? value : null;
+};
+
 /**
- * A flush answer as Mend reads it (`CaptureReading`). The SDK types what sealantd reported when
- * it was cut; `pendingBytes`, `pendingBulk`, `bulkDirty` and `refused` are read when the answer
- * carries them (a newer sealantd behind the same SDK) and are null otherwise
+ * A flush or status answer as Mend reads it (`CaptureReading`). The SDK types what sealantd
+ * reported when it was cut; `pendingBytes`, `pendingBulk`, `bulkDirty`, `refused`, `complete`,
+ * `incompleteReason` (sealantd's `incomplete_reason`) and a failing snap (`lastSnapError`,
+ * `snapFailingSinceUnixMs`, `snapsFailed`, `unreadable`, `unreadablePaths`) are read when the
+ * answer carries them (a newer sealantd behind the same SDK) and are null otherwise
  * (PLATFORM-FEEDBACK.md 2026-09-27).
  */
 export const readCaptureReport = (report: WorkspaceCaptureStatus): CaptureReading => ({
@@ -156,4 +202,18 @@ export const readCaptureReport = (report: WorkspaceCaptureStatus): CaptureReadin
   paused: report.paused,
   bulkDirty:
     "bulkDirty" in report && typeof report.bulkDirty === "boolean" ? report.bulkDirty : null,
+  // Absent reads null, and null is never saved (`captureSaved`): an answer that does not say a
+  // final flush completed is not proof that one did.
+  complete: "complete" in report && typeof report.complete === "boolean" ? report.complete : null,
+  incompleteReason:
+    "incompleteReason" in report && typeof report.incompleteReason === "string"
+      ? report.incompleteReason
+      : null,
+  snapError: reportedText(report, "lastSnapError"),
+  snapFailingSince: reportedTime(
+    Reflect.get(report, "snapFailingSinceUnixMs") ?? Reflect.get(report, "snapFailingSince"),
+  ),
+  snapsFailed: reportedCount(Reflect.get(report, "snapsFailed")),
+  unreadable: reportedCount(Reflect.get(report, "unreadable")),
+  unreadablePaths: unreadablePathsOf(Reflect.get(report, "unreadablePaths")),
 });

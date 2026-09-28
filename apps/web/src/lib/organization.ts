@@ -82,8 +82,11 @@ export const describeAudit = (entry: Pick<AuditEntryDto, "event" | "subjectName"
       return `shared control of session ${event.subjectId}`;
     case "session.shared_control_off":
       return `turned off shared control of session ${event.subjectId}`;
-    case "session.unsaved_discarded":
-      return `discarded unsaved captures and stopped session ${event.subjectId}`;
+    case "session.unsaved_discarded": {
+      // What Mend knew when it was asked: last save, snaps failing, a completed final or none.
+      const words = text(event.data["words"]);
+      return `discarded unsaved captures and stopped session ${event.subjectId}${words === null ? "" : ` · ${words}`}`;
+    }
     case "member.password_reset_issued":
       return `issued a password reset link for ${subject}`;
     case "organization.created":

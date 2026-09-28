@@ -301,6 +301,10 @@ describe("planAttach", () => {
     expect(planAttach(session({ id: "dead", status: "failed" })).kind).toBe("settled");
   });
 
+  it("reports a stopped session whose workspace is still saving as stopping, never settled", () => {
+    expect(planAttach(session({ id: "saving", status: "stopping" })).kind).toBe("stopping");
+  });
+
   it("holds off on a row the server has not answered for yet", () => {
     expect(planAttach(session({ id: "pending:1", status: "starting" })).kind).toBe("pending");
     expect(planAttach(null)).toEqual({ kind: "none" });

@@ -48,6 +48,17 @@ const PROJECT = ProjectId.make("p-web");
 const WORKTREE = WorktreeId.make("wt-1");
 const DRAINING = SessionId.make("s-draining");
 const REMOVING = SessionId.make("s-removing");
+const STOPPING = SessionId.make("s-stopping");
+const FAILING = SessionId.make("s-failing");
+
+/** A reading with one capture pending, taken at `at`. */
+const observed = (at: Date) => ({
+  pending: 1,
+  pendingBytes: null,
+  refused: null,
+  registeredAt: null,
+  observedAt: at,
+});
 
 describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
   beforeAll(async () => {
@@ -70,7 +81,7 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
         yield* sql`
           INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
           VALUES (${WORKTREE}, ${PROJECT}, 'wt-1', 'wt-1', 'mend/wt-1', 'abc')`;
-        for (const id of [DRAINING, REMOVING]) {
+        for (const id of [DRAINING, REMOVING, STOPPING, FAILING]) {
           yield* sessions.create({
             id,
             projectId: PROJECT,
@@ -108,8 +119,11 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
         const sessions = yield* SessionsRepo;
         yield* sessions.setExecutorStartedAt(DRAINING, t0);
         yield* sessions.beginCaptureDrain(DRAINING, "stop", t0);
-        // A relaunch behind the stop is the latest ask; the drain's history stands.
-        yield* sessions.beginCaptureDrain(DRAINING, "relaunch", t1);
+        // A relaunch behind the stop is asked explicitly; the drain's history stands.
+        yield* sessions.planRelaunch(DRAINING, "claude", t1);
+        // A sweep's stop after it (a restart's settle) does not turn the relaunch into a stop.
+        yield* sessions.beginCaptureDrain(DRAINING, "stop", t2);
+        const resumeAsked = yield* sessions.relaunchOf(DRAINING);
         yield* sessions.recordCaptureObservation(DRAINING, {
           pending: 3,
           pendingBytes: null,
@@ -126,9 +140,27 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
         const moving = yield* sessions.byId(DRAINING);
         yield* sessions.endCaptureDrain(DRAINING);
         const ended = yield* sessions.byId(DRAINING);
+        // The drain ended; the relaunch is still to run, and the reaper lists it until it has.
+        const listedAfterEnd = (yield* sessions.listCaptureDrains()).map((session) => session.id);
+        const resumeAfterEnd = yield* sessions.relaunchOf(DRAINING);
+        yield* sessions.clearRelaunch(DRAINING);
+        const listedAfterClear = (yield* sessions.listCaptureDrains()).length;
         // Nothing to mark once no drain is under way.
         const afterEnd = yield* sessions.markCaptureNotSaved(DRAINING, t2);
-        return { asked, listed, firstStall, secondStall, stalled, moving, ended, afterEnd };
+        return {
+          asked,
+          listed,
+          firstStall,
+          secondStall,
+          stalled,
+          moving,
+          ended,
+          afterEnd,
+          resumeAsked,
+          listedAfterEnd,
+          resumeAfterEnd,
+          listedAfterClear,
+        };
       }),
     );
     expect(result.asked.captureDrain).toBe("relaunch");
@@ -146,6 +178,10 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
     expect(result.ended.captureDrainRequestedAt).toBeNull();
     expect(result.ended.capturePending).toBe(3);
     expect(result.afterEnd).toBe(false);
+    expect(result.resumeAsked).toBe("claude");
+    expect(result.listedAfterEnd).toEqual([DRAINING]);
+    expect(result.resumeAfterEnd).toBe("claude");
+    expect(result.listedAfterClear).toBe(0);
   });
 
   it("keeps the first removal request, and lists what waits on its workspace", async () => {
@@ -166,5 +202,121 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
     );
     expect(result.listed).toEqual([[REMOVING, first]]);
     expect(result.after).toBe(0);
+  });
+  it("a session whose stop drain holds its workspace reads `stopping` and is not settled until the drain ends", async () => {
+    const t0 = new Date("2026-09-27T11:00:00.000Z");
+    const result = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        // Settled first (the agent's own exit), then the sweep's stop drain begins: unsettled.
+        yield* sessions.settle(STOPPING, "completed", "exited with code 0");
+        const settledFirst = yield* sessions.byId(STOPPING);
+        yield* sessions.beginCaptureDrain(STOPPING, "stop", t0);
+        const draining = yield* sessions.byId(STOPPING);
+        // Any settle while the stop drain holds it keeps it `stopping`.
+        yield* sessions.settle(STOPPING, "stopped", null);
+        const held = yield* sessions.byId(STOPPING);
+        // The drain ends once the termination is observed: now it settles.
+        yield* sessions.endCaptureDrain(STOPPING);
+        yield* sessions.settle(STOPPING, "completed", "exited with code 0");
+        const settled = yield* sessions.byId(STOPPING);
+        // A relaunch drain is not a stop: a settle while it runs settles.
+        yield* sessions.reopen(STOPPING, "running");
+        yield* sessions.planRelaunch(STOPPING, "claude", t0);
+        yield* sessions.settle(STOPPING, "failed", "resume failed");
+        const relaunching = yield* sessions.byId(STOPPING);
+        // The owner's stop turns it into a stop drain: unsettled again.
+        yield* sessions.stopCaptureDrain(STOPPING);
+        const stopped = yield* sessions.byId(STOPPING);
+        return { settledFirst, draining, held, settled, relaunching, stopped };
+      }),
+    );
+    expect(result.settledFirst.status).toBe("completed");
+    expect(result.settledFirst.settledAt).not.toBeNull();
+    expect(result.draining.status).toBe("stopping");
+    expect(result.draining.settledAt).toBeNull();
+    expect(result.held.status).toBe("stopping");
+    expect(result.held.settledAt).toBeNull();
+    expect(result.settled.status).toBe("completed");
+    expect(result.settled.settledAt).not.toBeNull();
+    expect(result.relaunching.status).toBe("failed");
+    expect(result.relaunching.settledAt).not.toBeNull();
+    expect(result.stopped.status).toBe("stopping");
+    expect(result.stopped.settledAt).toBeNull();
+  });
+
+  it("keeps when a snap first failed and what sealantd said, clears it once snaps succeed or the executor is gone, and keeps a discard until the session runs again", async () => {
+    const t0 = new Date("2026-09-27T16:29:51.000Z");
+    const t1 = new Date("2026-09-27T16:30:36.000Z");
+    const t2 = new Date("2026-09-27T16:40:02.000Z");
+    const result = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        yield* sessions.recordCaptureObservation(FAILING, {
+          ...observed(t0),
+          failing: { since: t0, error: "EIO: tree/db.sqlite" },
+        });
+        // A later reading of the same failure keeps when it started, and its latest error.
+        yield* sessions.recordCaptureObservation(FAILING, {
+          ...observed(t1),
+          failing: { since: t1, error: "EIO: tree/db.sqlite (2)" },
+        });
+        const failing = yield* sessions.byId(FAILING);
+        // A reading that says nothing of snaps leaves it as it was.
+        yield* sessions.recordCaptureObservation(FAILING, observed(t1));
+        const unsaid = yield* sessions.byId(FAILING);
+        yield* sessions.recordCaptureObservation(FAILING, { ...observed(t1), failing: null });
+        const recovered = yield* sessions.byId(FAILING);
+        // A final flush's incomplete reason carries what sealantd named behind it.
+        yield* sessions.beginCaptureDrain(FAILING, "stop", t1);
+        yield* sessions.recordCaptureObservation(FAILING, {
+          ...observed(t1),
+          failing: { since: t1, error: "EACCES" },
+          incompleteReason: "snapshot-failed",
+          incompleteDetail: "EACCES · unreadable tree/secrets.pem",
+        });
+        const kept = yield* sessions.byId(FAILING);
+        yield* sessions.endCaptureDrain(FAILING, { at: t2, by: "Ada Lovelace" });
+        const discarded = yield* sessions.byId(FAILING);
+        yield* sessions.reopen(FAILING, "running");
+        const reopened = yield* sessions.byId(FAILING);
+        return { failing, unsaid, recovered, kept, discarded, reopened };
+      }),
+    );
+    expect(result.failing.captureFailingSince).toEqual(t0);
+    expect(result.failing.captureFailingError).toBe("EIO: tree/db.sqlite (2)");
+    expect(result.unsaid.captureFailingSince).toEqual(t0);
+    expect(result.recovered.captureFailingSince).toBeNull();
+    expect(result.recovered.captureFailingError).toBeNull();
+    expect(result.kept.captureIncompleteReason).toBe("snapshot-failed");
+    expect(result.kept.captureIncompleteDetail).toBe("EACCES · unreadable tree/secrets.pem");
+    expect(result.discarded.captureDrain).toBeNull();
+    expect(result.discarded.captureIncompleteDetail).toBeNull();
+    expect(result.discarded.captureFailingSince).toBeNull();
+    expect(result.discarded.captureDiscardedAt).toEqual(t2);
+    expect(result.discarded.captureDiscardedBy).toBe("Ada Lovelace");
+    expect(result.reopened.captureDiscardedAt).toBeNull();
+    expect(result.reopened.captureDiscardedBy).toBeNull();
+  });
+  it("keeps the executor's own word that its final flush completed (0079)", async () => {
+    const t0 = new Date("2026-09-27T19:48:49.000Z");
+    const t1 = new Date("2026-09-27T19:49:26.000Z");
+    const result = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const before = yield* sessions.captureSavedOf(STOPPING);
+        yield* sessions.recordCaptureSaved(STOPPING, { workspaceId: "ws-1", at: t0, n: 21 });
+        const first = yield* sessions.captureSavedOf(STOPPING);
+        yield* sessions.recordCaptureSaved(STOPPING, { workspaceId: "ws-1", at: t1, n: null });
+        const latest = yield* sessions.captureSavedOf(STOPPING);
+        // Bookkeeping: the session row reads as it did.
+        const row = yield* sessions.byId(STOPPING);
+        return { before, first, latest, keys: Object.keys(row) };
+      }),
+    );
+    expect(result.before).toBeNull();
+    expect(result.first).toEqual({ workspaceId: "ws-1", at: t0, n: 21 });
+    expect(result.latest).toEqual({ workspaceId: "ws-1", at: t1, n: null });
+    expect(result.keys).not.toContain("captureSavedAt");
   });
 });

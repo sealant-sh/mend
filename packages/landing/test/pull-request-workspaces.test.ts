@@ -143,7 +143,11 @@ const fakePlatform = (options: {
               if (options.createFails !== undefined) return Effect.fail(options.createFails);
               return Effect.succeed(fakeWorkspace("ws-short"));
             }),
-          stopWorkspace: (workspace) => Effect.sync(() => void stopped.push(workspace.id)),
+          stopWorkspace: (workspace) =>
+            Effect.sync(() => {
+              stopped.push(workspace.id);
+              return "stopped" as const;
+            }),
           exec: (workspace, argv) =>
             Effect.sync(() => {
               execs.push({ workspace: workspace.id, argv });

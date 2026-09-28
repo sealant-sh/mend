@@ -205,3 +205,21 @@ describe("planUpload", () => {
     expect(formatBytes(1536)).toBe("1.5 KiB");
   });
 });
+
+describe("describeAudit for a discard (e2e run 4, 2026-09-27)", () => {
+  it("says what Mend knew when the discard was asked", () => {
+    expect(
+      describeAudit(
+        event("session.unsaved_discarded", {
+          words:
+            "asked at 19:57:10 UTC · last saved capture 37 at 19:54:41 UTC · unsaved since 19:55:02 UTC (snaps failing · EACCES) · no final flush completed",
+        }),
+      ),
+    ).toBe(
+      "discarded unsaved captures and stopped session carol · asked at 19:57:10 UTC · last saved capture 37 at 19:54:41 UTC · unsaved since 19:55:02 UTC (snaps failing · EACCES) · no final flush completed",
+    );
+    expect(describeAudit(event("session.unsaved_discarded", { pending: 0 }))).toBe(
+      "discarded unsaved captures and stopped session carol",
+    );
+  });
+});

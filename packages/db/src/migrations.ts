@@ -2275,6 +2275,64 @@ const captureGuardsMigration = Effect.gen(function* () {
   yield* sql`CREATE INDEX capture_tombstones_worktree_idx ON capture_tombstones (worktree_id)`;
 });
 
+/**
+ * 0077: the rest of a drain's transition (docs/adr/0002, "Stop drains, then terminates").
+ * - `capture_drain_resume`: a relaunch drains the previous executor first; the harness it resumes
+ *   with is durable beside the drain, so a restart mid-drain finishes the relaunch instead of
+ *   stopping at the terminate. Cleared once the launch has run its course, or by the user's stop.
+ * - `capture_final_workspace_id`: the executor Mend sent a final flush to. It admits nothing after
+ *   that, so nothing is started, joined or resumed in it again; the next run is a fresh executor.
+ * - `capture_incomplete_reason`: why its last final flush did not complete, as sealantd said.
+ */
+const captureDrainResumeMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE agent_sessions
+      ADD COLUMN capture_drain_resume text,
+      ADD COLUMN capture_final_workspace_id text,
+      ADD COLUMN capture_incomplete_reason text`;
+  yield* sql`
+    CREATE INDEX agent_sessions_capture_drain_resume_idx ON agent_sessions (id)
+      WHERE capture_drain_resume IS NOT NULL`;
+});
+
+/**
+ * 0078: what a failing capture looks like while it happens, and what a discard ended
+ * (docs/adr/0002, "Stop drains, then terminates").
+ * - `capture_incomplete_detail`: what sealantd named behind an incomplete final flush — the
+ *   snap's error, the first path it could not read.
+ * - `capture_failing_since` / `capture_failing_error`: a running executor whose snaps fail,
+ *   observed from its status or a flush; cleared once its snaps succeed again.
+ * - `capture_discarded_at` / `capture_discarded_by`: the owner's "discard unsaved and stop" —
+ *   when, and who; cleared once the session runs again.
+ */
+const captureFailingMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE agent_sessions
+      ADD COLUMN capture_incomplete_detail text,
+      ADD COLUMN capture_failing_since timestamptz,
+      ADD COLUMN capture_failing_error text,
+      ADD COLUMN capture_discarded_at timestamptz,
+      ADD COLUMN capture_discarded_by text`;
+});
+
+/**
+ * 0079: the executor's own word that its final flush completed (docs/adr/0002, "Stop drains, then
+ * terminates"). `capture_saved_workspace_id` / `capture_saved_at` / `capture_saved_n`: the
+ * executor that answered `complete: true` with nothing pending, when Mend observed it, and the
+ * chain position it named. Its writers are stopped and it admits nothing after that, so this is
+ * how its end reads, whatever suspend captures register on top.
+ */
+const captureSavedMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE agent_sessions
+      ADD COLUMN capture_saved_workspace_id text,
+      ADD COLUMN capture_saved_at timestamptz,
+      ADD COLUMN capture_saved_n integer`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2352,4 +2410,7 @@ export const migrations = {
   "0073_landing_reasons": landingReasonsMigration,
   "0075_capture_drain": captureDrainMigration,
   "0076_capture_guards": captureGuardsMigration,
+  "0077_capture_drain_resume": captureDrainResumeMigration,
+  "0078_capture_failing": captureFailingMigration,
+  "0079_capture_saved": captureSavedMigration,
 };

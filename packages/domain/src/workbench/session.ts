@@ -52,12 +52,17 @@ export type SessionDotfiles = typeof SessionDotfiles.Type;
  * Lifecycle of a supervised coding-agent process (plan §5.5). `waiting` and
  * `idle` are workbench states the queue-era RunStatus never had: waiting means
  * the harness asked for input; idle means the PTY is alive with no activity.
+ * `stopping` (capture mode): the agent has ended and its workspace is being
+ * saved before it goes (`saving · 3 left`), or was kept because it could not
+ * be (`not saved · … · workspace kept`). Not settled: the session settles once
+ * the platform reports the workspace terminated.
  */
 export const SessionStatus = Schema.Literals([
   "starting",
   "running",
   "waiting",
   "idle",
+  "stopping",
   "completed",
   "failed",
   "stopped",
@@ -208,6 +213,42 @@ export class Session extends Schema.Class<Session>("Session")({
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
   captureNotSavedAt: Schema.NullOr(Timestamp).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * Why the executor's last final flush did not complete, in sealantd's words
+   * (`captureIncompleteReasonOf`): what `not saved · … · workspace kept` names. Null once one
+   * completed, and outside a drain.
+   */
+  captureIncompleteReason: Schema.NullOr(Schema.String).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * What sealantd named behind that reason (`captureSnapDetailOf`): the snap's error, the first
+   * path it could not read. Null when it named nothing, and outside a drain.
+   */
+  captureIncompleteDetail: Schema.NullOr(Schema.String).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * A running executor whose snaps are failing (`capture failing since … · <error>`): since when,
+   * as sealantd said or as Mend first observed it, and sealantd's last error. Both null once a
+   * reading shows its snaps succeed again.
+   */
+  captureFailingSince: Schema.NullOr(Timestamp).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  captureFailingError: Schema.NullOr(Schema.String).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  /**
+   * The owner's "discard unsaved and stop" ended this executor with work not saved: when, and
+   * who (their display name). Null until then, and again once the session runs again.
+   */
+  captureDiscardedAt: Schema.NullOr(Timestamp).pipe(
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
+  captureDiscardedBy: Schema.NullOr(Schema.String).pipe(
     Schema.withConstructorDefault(Effect.succeed(null)),
   ),
   /**

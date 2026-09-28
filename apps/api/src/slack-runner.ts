@@ -521,6 +521,9 @@ export const slackStateOf = (session: Pick<Session, "status">): SlackSessionStat
     case "idle":
       // Right after launch; the reporter reads the turns and the process (slackSessionState).
       return "running";
+    case "stopping":
+      // Stopped, its workspace still saving; the reporter reads the agent's own end.
+      return "stopped";
     default:
       return session.status;
   }

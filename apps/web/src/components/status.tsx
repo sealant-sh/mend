@@ -68,6 +68,8 @@ export function SessionStatusDot({
       return <StatusDot tone="amber" word="Waiting for input" />;
     case "idle":
       return <StatusDot tone="hollow" word="Idle" />;
+    case "stopping":
+      return <StatusDot tone="hollow" word="Stopping" />;
     case "completed":
       return <StatusDot tone="green" word={recorded ? "Completed · observed" : "Completed"} />;
     case "failed":

@@ -188,11 +188,17 @@ export interface SessionDto {
   readonly captureRefused?: number | null;
   readonly captureDrain?: string | null;
   readonly captureNotSavedAt?: string | null;
+  readonly captureIncompleteReason?: string | null;
+  readonly captureIncompleteDetail?: string | null;
+  readonly captureFailingSince?: string | null;
+  readonly captureFailingError?: string | null;
+  readonly captureDiscardedAt?: string | null;
+  readonly captureDiscardedBy?: string | null;
 }
 
 /**
  * The session's status line: its status, then what a stop is still saving when it is
- * (`stopped · saving · 3 left`, `stopped · not saved · 3 pending · workspace kept`).
+ * (`stopping · saving · 3 left`, `stopping · not saved · 3 pending · workspace kept`).
  */
 export const statusLineOf = (dto: SessionDto): string => {
   const drain = dto.captureDrain;
@@ -203,6 +209,12 @@ export const statusLineOf = (dto: SessionDto): string => {
     captureDrain:
       drain === "stop" || drain === "relaunch" || drain === "replacement" ? drain : null,
     captureNotSavedAt: dto.captureNotSavedAt ?? null,
+    captureIncompleteReason: dto.captureIncompleteReason ?? null,
+    captureIncompleteDetail: dto.captureIncompleteDetail ?? null,
+    captureFailingSince: dto.captureFailingSince ?? null,
+    captureFailingError: dto.captureFailingError ?? null,
+    captureDiscardedAt: dto.captureDiscardedAt ?? null,
+    captureDiscardedBy: dto.captureDiscardedBy ?? null,
   });
   return capture === null ? dto.status : `${dto.status} · ${capture}`;
 };

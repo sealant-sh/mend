@@ -263,6 +263,15 @@ function ChangeReview({
           {" · "}
           <ObservedStamp observation={review.observation} />
         </p>
+        {review.outsideGit == null ? null : (
+          // Saved and restored, but no patch git computes can list them: said, never hidden.
+          <p
+            className="mt-1 font-mono text-xs text-faint"
+            title={review.outsideGit.paths.join("\n")}
+          >
+            {review.outsideGit.label}
+          </p>
+        )}
         {sessionDetail?.control.steer === false ? (
           <p className="mt-2 max-w-[760px] border-l-2 border-[var(--sw-accent)] pl-3 text-[13px] leading-relaxed text-ink-2">
             Comments stay here; only the session&apos;s owner can send them to the session, unless

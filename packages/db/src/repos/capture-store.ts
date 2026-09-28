@@ -139,7 +139,11 @@ export class CaptureStoreRepo extends Context.Service<
     readonly init: (worktreeId: WorktreeId) => Effect.Effect<void>;
     /**
      * Start, pickup or replacement: bump the epoch and fence the chain in one statement. Fails
-     * `WorktreeLeasedError` while another holder's lease is live.
+     * `WorktreeLeasedError` while another holder's lease is live, and while another executor's
+     * lease has lapsed without a `release`: a lapse is a partition until the platform says the
+     * executor ended, and that executor may still hold work it has not shipped. The caller
+     * confirms the end and releases first (`SessionEngine`); the same executor, or Mend's own
+     * short `mend:` claim, may take a lapsed lease again.
      */
     readonly claim: (
       worktreeId: WorktreeId,
@@ -159,7 +163,10 @@ export class CaptureStoreRepo extends Context.Service<
     readonly register: (
       capture: RegisterCapture,
     ) => Effect.Effect<{ readonly lostAck: boolean }, CaptureConflictError>;
-    /** `final` capture, session end: the next claimer may take the worktree at once. */
+    /**
+     * The holder ended (its termination observed, or its final capture registered): the next
+     * claimer may take the worktree at once. Clears the holder, so a lapse and a release differ.
+     */
     readonly release: (worktreeId: WorktreeId, epoch: number) => Effect.Effect<boolean>;
     /** Accept a posted change summary only against the chain head. */
     readonly acceptSummary: (
@@ -272,6 +279,9 @@ export const CaptureStoreRepoLive: Layer.Layer<
                  expires_at = now() + make_interval(secs => ${ttlSeconds})
            WHERE worktree_id = ${worktreeId}
              AND (expires_at IS NULL OR expires_at < now())
+             AND (executor_id IS NULL
+                  OR executor_id = ${executorId}
+                  OR executor_id LIKE 'mend:%')
            RETURNING epoch
         )
         UPDATE worktree_chain ch
@@ -292,7 +302,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       const rows = yield* sql<{ readonly worktreeId: string }>`
         UPDATE worktree_leases
            SET expires_at = now() + make_interval(secs => ${ttlSeconds})
-         WHERE worktree_id = ${worktreeId} AND epoch = ${epoch}
+         WHERE worktree_id = ${worktreeId} AND epoch = ${epoch} AND executor_id IS NOT NULL
          RETURNING worktree_id`.pipe(Effect.orDie);
       return rows.length > 0;
     });
@@ -391,7 +401,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
     ) {
       const rows = yield* sql<{ readonly worktreeId: string }>`
         UPDATE worktree_leases
-           SET expires_at = now()
+           SET expires_at = now(), executor_id = NULL
          WHERE worktree_id = ${worktreeId} AND epoch = ${epoch}
          RETURNING worktree_id`.pipe(Effect.orDie);
       return rows.length > 0;

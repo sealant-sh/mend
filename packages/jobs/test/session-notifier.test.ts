@@ -13,6 +13,8 @@ import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import {
+  captureAlertsToRing,
+  captureFailingNotificationBody,
   latestSenderWhoSees,
   notSavedNotificationBody,
   phaseOf,
@@ -59,6 +61,14 @@ describe("phaseOf", () => {
     );
     // The user's own stop is not news.
     expect(phaseOf("idle", agent({ status: "stopped", exitedAt: ended }))).toBeNull();
+  });
+
+  it("hears a session still saving its workspace as its agent's own end, so the settle after it does not ring again", () => {
+    const ended = new Date("2026-08-21T11:00:00.000Z");
+    const exited = agent({ status: "exited", exitCode: 0, exitedAt: ended });
+    expect(phaseOf("stopping", exited)).toBe("completed");
+    expect(phaseOf("stopping", exited)).toBe(phaseOf("completed", exited));
+    expect(phaseOf("stopping", agent({ status: "stopped", exitedAt: ended }))).toBeNull();
   });
 
   it("keeps the settled and waiting phases", () => {
@@ -201,6 +211,63 @@ describe("notSavedNotificationBody", () => {
     });
     expect(notSavedNotificationBody(session)).toBe(
       "billing-fix not saved · 3 pending · workspace kept",
+    );
+  });
+});
+
+describe("capture alerts", () => {
+  const quiet = { notSaved: false, failing: false };
+  it("ring the owner once when a running executor's snaps start failing, never again while they fail, and not on the baseline", () => {
+    expect(captureAlertsToRing(undefined, { notSaved: false, failing: true })).toEqual([]);
+    expect(captureAlertsToRing(quiet, { notSaved: false, failing: true })).toEqual(["failing"]);
+    expect(
+      captureAlertsToRing({ notSaved: false, failing: true }, { notSaved: false, failing: true }),
+    ).toEqual([]);
+    // Failing again after it recovered is news again.
+    expect(captureAlertsToRing(quiet, { notSaved: false, failing: true })).toEqual(["failing"]);
+    expect(captureAlertsToRing(quiet, { notSaved: true, failing: false })).toEqual(["not-saved"]);
+  });
+
+  it("tell the owner since when and why, in the words every surface uses", () => {
+    const at = new Date("2026-09-27T16:29:51.000Z");
+    const session = new Session({
+      id: SessionId.make("session-1"),
+      projectId: ProjectId.make("p-billing"),
+      worktreeId: WorktreeId.make("wt-1"),
+      harness: "claude",
+      providerSessionId: null,
+      label: "billing-fix",
+      worktree: "wt-1",
+      branch: "mend/wt-1",
+      baseSha: Sha.make("abc"),
+      baseRef: "main",
+      contextSnapshotId: null,
+      referenceMounts: [],
+      extraMounts: [],
+      sealantRunId: null,
+      sealantWorkspaceId: SealantWorkspaceId.make("ws-1"),
+      sealantSessionId: null,
+      workspaceExpiresAt: null,
+      workspaceTtlRenewedAt: null,
+      workspaceTtlRenewalFailedAt: null,
+      workspaceTtlRenewalError: null,
+      workspaceImage: null,
+      dotfiles: null,
+      ownerUserId: "alice",
+      hasTranscript: null,
+      status: "running",
+      summary: null,
+      lastSeenSequence: 0n,
+      recordHistoryComplete: true,
+      startedAt: at,
+      settledAt: null,
+      createdAt: at,
+      updatedAt: at,
+      captureFailingSince: at,
+      captureFailingError: "EIO: tree/db.sqlite",
+    });
+    expect(captureFailingNotificationBody(session)).toBe(
+      "billing-fix capture failing since 16:29:51 UTC · EIO: tree/db.sqlite",
     );
   });
 });

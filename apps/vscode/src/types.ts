@@ -3,6 +3,7 @@ export const SESSION_STATUSES = [
   "running",
   "waiting",
   "idle",
+  "stopping",
   "completed",
   "failed",
   "stopped",
