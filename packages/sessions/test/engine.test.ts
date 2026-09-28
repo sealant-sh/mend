@@ -17694,3 +17694,143 @@ describe("review 17 #1: the workspace note never takes the user's text with it",
     });
   }
 });
+
+/**
+ * Review 2026-09-28 (18) #1: skills delivery on resume decided that a skill directory was its own
+ * delivery by file contents alone, removed it and wrote it again. A helper script the user made
+ * executable came back 0644; an empty directory and a hard link were gone. The reviewer's probe:
+ * the actual engine launches and delivers `build-helper`, the user customizes it, the harness home
+ * is registered in a sealed capture, and the cold resume runs the emitted `mend-skills` and
+ * `mend-write` commands against a `cp -a` copy (the reviewer proved sealantd restores exactly
+ * these: mode, nanosecond mtime, empty directory, both link names).
+ */
+it("AUDIT R18 cold resume preserves a saved skill's metadata", { timeout: 60_000 }, async () => {
+  const created: Array<CreateOptions> = [];
+  const memory = makeMemoryCaptureStore();
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-r18-skills-"));
+  const saved = path.join(root, "saved");
+  let executorHome = "";
+  const base = launchSkill("build-helper", "# Build helper\nRun scripts/check.sh.\n", {
+    scope: "user",
+    userId: "user-fixture",
+  });
+  const delivered = new SkillWithFiles({
+    ...base,
+    files: [...base.files, { path: "scripts/check.sh", contents: "#!/bin/sh\necho checked\n" }],
+  });
+  const skillsLayer = skillsForLaunchLayer(() =>
+    Effect.succeed({ user: [delivered], project: [] }),
+  );
+  const facts = () => {
+    const script = path.join(executorHome, ".claude/skills/build-helper/scripts/check.sh");
+    return {
+      mode: fs.statSync(script).mode & 0o777,
+      empty: fs.existsSync(path.join(executorHome, ".claude/skills/build-helper/scratch/empty")),
+      linked: fs.statSync(script).ino === fs.statSync(path.join(executorHome, "my-check.sh")).ino,
+      mtime: fs.statSync(script, { bigint: true }).mtimeNs.toString(),
+      bytes: fs.readFileSync(script, "utf8"),
+    };
+  };
+  let before: ReturnType<typeof facts> | null = null;
+  const ran: Array<string> = [];
+  try {
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const { engine, session } = yield* launchOnce(world, tmp);
+          yield* engine.launch(session.id, ["codex"]);
+          const dir = path.join(executorHome, ".claude/skills/build-helper");
+          const script = path.join(dir, "scripts/check.sh");
+          fs.chmodSync(script, 0o755);
+          fs.mkdirSync(path.join(dir, "scratch/empty"), { recursive: true });
+          fs.linkSync(script, path.join(executorHome, "my-check.sh"));
+          fs.utimesSync(script, 1700000000.123, 1700000000.123);
+          fs.mkdirSync(saved);
+          expect(spawnSync("cp", ["-a", `${executorHome}/.`, saved]).status).toBe(0);
+          const chain = memory.chains.get(session.worktreeId);
+          const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+          const n = (chain?.headN ?? 0) + 1;
+          const snapshotRoot = path.join(root, "snapshot");
+          fs.mkdirSync(snapshotRoot);
+          fs.cpSync(saved, path.join(snapshotRoot, "harness"), { recursive: true });
+          const snapshot = snapshotDirectory(snapshotRoot, captureKeys(session.worktreeId, epoch), {
+            chunkSize: 64,
+          });
+          const built = buildManifest({
+            worktreeId: session.worktreeId,
+            n,
+            parent: chain?.headCapture ?? null,
+            epoch,
+            seq: n * 10,
+            kind: "final",
+            git: { packs: [], refs: {}, head: "refs/heads/main", fsck: "verified" },
+            workspace: { root: snapshot.root, packs: snapshot.packs },
+          });
+          yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]])).pipe(
+            Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
+          );
+          const api = servedSocketApis.get(session.id)?.capture;
+          if (api === undefined) throw new Error("capture api missing");
+          yield* api.register({
+            worktree_id: session.worktreeId,
+            epoch,
+            n,
+            parent: chain?.headCapture ?? null,
+            capture_id: built.id,
+            manifest_key: built.key,
+            manifest: built.manifest,
+          });
+          yield* engine.stop(session.id);
+          yield* until(
+            () =>
+              world.sessions.get(session.id)?.captureDrain === null &&
+              world.sessions.get(session.id)?.status === "stopped",
+            "saved stop",
+          );
+          const resumed = yield* engine.resumeSession(session.id, "shell");
+          expect(resumed.status).toBe("running");
+          expect(before).toMatchObject({ mode: 0o755, empty: true, linked: true });
+          expect(facts()).toEqual(before);
+          // The resume ran the delivery: it found the skill unchanged and wrote none of its files.
+          expect(ran.filter((op) => op === "mend-skills").length).toBe(2);
+        }),
+      {
+        captured: memory,
+        skillsLayer,
+        workspaceImage: { ...CUSTOM_BASE, setupCommands: [] },
+        sealantLayer: lifecycleLayer(created, {
+          captureOps: {
+            stopAnswer: () => "stopped",
+            beforeCreate: () =>
+              Effect.sync(() => {
+                executorHome = path.join(root, `home-${created.length}`);
+                fs.mkdirSync(executorHome);
+                if (created.length > 1) {
+                  expect(spawnSync("cp", ["-a", `${saved}/.`, executorHome]).status).toBe(0);
+                  before = facts();
+                }
+              }),
+            exec: (argv) => {
+              const op = argv[3] ?? "";
+              const manifestRead =
+                argv[0] === "cat" && (argv[1] ?? "").includes(".mend-managed-skills");
+              if (op !== "mend-skills" && op !== "mend-write" && !manifestRead) return undefined;
+              ran.push(manifestRead ? "cat" : op);
+              const mapped = argv.map((arg) =>
+                arg.replaceAll("/workspace/harness-home", executorHome),
+              );
+              const run = spawnSync(mapped[0] ?? "", mapped.slice(1), {
+                cwd: executorHome,
+                env: { ...process.env, HOME: executorHome },
+                encoding: "utf8",
+              });
+              return { exitCode: run.status ?? 1, stdout: run.stdout, stderr: run.stderr };
+            },
+          },
+        }),
+      },
+    );
+  } finally {
+    fs.rmSync(root, { recursive: true, force: true });
+  }
+});

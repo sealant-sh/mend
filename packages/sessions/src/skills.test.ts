@@ -17,6 +17,7 @@ import {
   planSkills,
   SKILL_TARGET_DIRS,
   SKILLS_KEPT_DIR,
+  skillFilesToWrite,
   skillTreeDigest,
   vacateSkillsExec,
 } from "./skills.ts";
@@ -328,5 +329,136 @@ describe("a delivery never deletes what Mend did not deliver", () => {
         "utf8",
       ),
     ).toBe("v1 edited");
+  });
+});
+
+/**
+ * Review 2026-09-28 (18): the ownership check compared file contents only, so a delivered skill
+ * whose script the user made executable, or that gained an empty directory or a hard link, still
+ * read as "Mend's delivery". Every resume then removed it and wrote it again: the script came back
+ * 0644, the empty directory and the link were gone, the times reset. Now a directory that already
+ * holds exactly the bundle is left untouched, and a replaced or retired one goes only when its
+ * metadata is also exactly what Mend writes; otherwise it is moved aside whole.
+ */
+const helper = (contents: string) =>
+  bundle("build-helper", [
+    { path: "SKILL.md", contents: "# Build helper\nRun scripts/check.sh.\n" },
+    { path: "scripts/check.sh", contents },
+  ]);
+const CHECK = "#!/bin/sh\necho checked\n";
+/** The reviewer's fixture: the helper made executable, an empty directory, a hard link. */
+const customize = (home: string) => {
+  const dir = path.join(home, ".claude/skills/build-helper");
+  const script = path.join(dir, "scripts/check.sh");
+  fs.chmodSync(script, 0o755);
+  fs.mkdirSync(path.join(dir, "scratch/empty"), { recursive: true });
+  fs.linkSync(script, path.join(home, "my-check.sh"));
+  fs.utimesSync(script, 1700000000.123, 1700000000.123);
+  return script;
+};
+const facts = (home: string, script: string) => ({
+  mode: fs.statSync(script).mode & 0o777,
+  empty: fs.existsSync(path.join(home, ".claude/skills/build-helper/scratch/empty")),
+  linked: fs.statSync(script).ino === fs.statSync(path.join(home, "my-check.sh")).ino,
+  mtime: fs.statSync(script, { bigint: true }).mtimeNs.toString(),
+  bytes: fs.readFileSync(script, "utf8"),
+});
+
+describe("a delivery keeps what the user set on a skill's files", () => {
+  it("AUDIT R18 skill delivery keeps user metadata and topology", async () => {
+    const home = tmpHome();
+    await deliver(home, [helper(CHECK)]);
+    const script = customize(home);
+    const before = facts(home, script);
+    const outcomes = await deliver(home, [helper(CHECK)]);
+    expect(facts(home, script)).toEqual(before);
+    expect(before).toMatchObject({ mode: 0o755, empty: true, linked: true });
+    expect(
+      outcomes.filter((outcome) => outcome.dir.endsWith("build-helper")).map((o) => o.outcome),
+    ).toEqual(["unchanged", "unchanged"]);
+    expect(fs.existsSync(keptRoot(home))).toBe(false);
+  });
+
+  it("a replaced skill whose metadata the user changed is kept aside whole, metadata and all", async () => {
+    const home = tmpHome();
+    await deliver(home, [helper(CHECK)]);
+    const script = customize(home);
+    const before = facts(home, script);
+    const outcomes = await deliver(home, [helper("#!/bin/sh\necho checked twice\n")]);
+    expect(outcomes.find((outcome) => outcome.dir === ".claude/skills/build-helper")?.outcome).toBe(
+      "kept",
+    );
+    // The codex copy was exactly Mend's delivery: it goes.
+    expect(outcomes.find((outcome) => outcome.dir === ".codex/skills/build-helper")?.outcome).toBe(
+      "removed",
+    );
+    const [stamp = ""] = fs.readdirSync(keptRoot(home));
+    const keptHome = path.join(keptRoot(home), stamp);
+    const keptScript = path.join(keptHome, ".claude/skills/build-helper/scripts/check.sh");
+    expect(fs.statSync(keptScript).mode & 0o777).toBe(0o755);
+    expect(fs.statSync(keptScript, { bigint: true }).mtimeNs.toString()).toBe(before.mtime);
+    expect(fs.statSync(keptScript).ino).toBe(fs.statSync(path.join(home, "my-check.sh")).ino);
+    expect(fs.existsSync(path.join(keptHome, ".claude/skills/build-helper/scratch/empty"))).toBe(
+      true,
+    );
+    // The new delivery is a fresh tree, written as Mend writes: 0644.
+    expect(fs.readFileSync(script, "utf8")).toBe("#!/bin/sh\necho checked twice\n");
+    expect(fs.statSync(script).mode & 0o777).toBe(0o644);
+  });
+
+  it("a retired skill goes only with nothing of the user's on it", async () => {
+    const setups: ReadonlyArray<readonly [string, (dir: string, home: string) => void]> = [
+      ["a mode", (dir) => fs.chmodSync(path.join(dir, "scripts/check.sh"), 0o755)],
+      ["an empty directory", (dir) => fs.mkdirSync(path.join(dir, "notes"))],
+      ["a hard link", (dir, home) => fs.linkSync(path.join(dir, "SKILL.md"), path.join(home, "l"))],
+      ["a directory mode", (dir) => fs.chmodSync(path.join(dir, "scripts"), 0o700)],
+    ];
+    for (const [what, setup] of setups) {
+      const home = tmpHome();
+      await deliver(home, [helper(CHECK)]);
+      setup(path.join(home, ".claude/skills/build-helper"), home);
+      const outcomes = await deliver(home, []);
+      expect(
+        outcomes.map((outcome) => [outcome.dir, outcome.outcome]),
+        what,
+      ).toEqual([
+        [".claude/skills/build-helper", "kept"],
+        [".codex/skills/build-helper", "removed"],
+      ]);
+    }
+  });
+
+  it("the workspace exec leaves an unchanged skill alone, and the writer skips its files", () => {
+    const home = tmpHome();
+    const files = [{ path: "SKILL.md", contents: "v1" }];
+    for (const target of SKILL_TARGET_DIRS) {
+      fs.mkdirSync(path.join(home, target, "review"), { recursive: true });
+      fs.writeFileSync(skill(home, target, "review"), "v1");
+    }
+    fs.chmodSync(skill(home, ".claude/skills", "review"), 0o600);
+    const plan = planSkills(
+      { ".claude/skills": ["review"], ".codex/skills": ["review"] },
+      [bundle("review", files), bundle("other", [{ path: "SKILL.md", contents: "o" }])],
+      {
+        ".claude/skills": { review: skillTreeDigest(files) },
+        ".codex/skills": { review: skillTreeDigest(files) },
+      },
+    );
+    if (plan === null) throw new Error("no plan");
+    const [command = "", ...args] = vacateSkillsExec(home, `${SKILLS_KEPT_DIR}/stamp`, plan);
+    const run = spawnSync(command, args, { encoding: "utf8" });
+    expect(run.status).toBe(0);
+    const outcomes = parseSkillsVacateOutcomes(run.stdout);
+    expect(outcomes.map((outcome) => outcome.outcome)).toEqual([
+      "unchanged",
+      "absent",
+      "unchanged",
+      "absent",
+    ]);
+    expect(fs.statSync(skill(home, ".claude/skills", "review")).mode & 0o777).toBe(0o600);
+    expect(skillFilesToWrite(plan, outcomes).map((file) => file.path)).toEqual([
+      ".claude/skills/other/SKILL.md",
+      ".codex/skills/other/SKILL.md",
+    ]);
   });
 });
