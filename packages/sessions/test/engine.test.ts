@@ -1,6 +1,7 @@
 import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import * as fs from "node:fs";
+import * as http from "node:http";
 import * as net from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -135,6 +136,10 @@ import {
   SessionEngineLive,
   SessionRepositoryCapturedLive,
   SessionRepositoryLocalLive,
+  SessionChannelNetworkHost,
+  SessionChannelNetworkHostLive,
+  SessionChannelRegistry,
+  SessionChannelRegistryLive,
   SessionNotLiveError,
   type SessionSocketApi,
   SessionSocketHost,
@@ -180,6 +185,7 @@ import type {
 } from "@sealant/sdk";
 import {
   Cause,
+  Context,
   Deferred,
   Duration,
   Effect,
@@ -990,6 +996,11 @@ interface World {
       readonly epoch: number | null;
     }
   >;
+  /** The latest unsaved answer observed per session (`recordCaptureUnsaved`). */
+  readonly captureUnsaved: Map<
+    string,
+    { readonly workspaceId: string; readonly at: Date; readonly words: string }
+  >;
 }
 
 const makeWorld = (): World => ({
@@ -1010,6 +1021,7 @@ const makeWorld = (): World => ({
   relaunches: new Map(),
   finalFlushed: new Map(),
   captureSaved: new Map(),
+  captureUnsaved: new Map(),
   executorResources: new Map(),
   executorLaunches: new Map(),
   executorCreates: new Map(),
@@ -1752,6 +1764,10 @@ const sessionsLayer = (world: World) => {
     claimIdleStop: () => Effect.succeed(true),
     releaseIdleStop: () => Effect.void,
     setSummary: (id, summary) => Effect.sync(() => update(id, { summary })),
+    restate: (id, outcome, summary) =>
+      Effect.sync(() => {
+        if (world.sessions.get(id)?.settledAt != null) update(id, { status: outcome, summary });
+      }),
     setHarness: (id, harness) => Effect.sync(() => update(id, { harness })),
     setLabel: (id, label) => Effect.sync(() => update(id, { label })),
     setLabelIfUnset: (id, label) =>
@@ -1826,6 +1842,9 @@ const sessionsLayer = (world: World) => {
     finalFlushedWorkspace: (id) => Effect.sync(() => world.finalFlushed.get(id) ?? null),
     recordCaptureSaved: (id, saved) => Effect.sync(() => void world.captureSaved.set(id, saved)),
     captureSavedOf: (id) => Effect.sync(() => world.captureSaved.get(id) ?? null),
+    recordCaptureUnsaved: (id, unsaved) =>
+      Effect.sync(() => void world.captureUnsaved.set(id, unsaved)),
+    captureUnsavedOf: (id) => Effect.sync(() => world.captureUnsaved.get(id) ?? null),
     recordCaptureDrainProgress: (id, at) =>
       Effect.sync(() => {
         if (world.sessions.get(id)?.captureDrain === null) return;
@@ -2342,6 +2361,10 @@ const withEngine = <A, E>(
     readonly logs?: Array<string>;
     /** Every channel token issue and revocation (`issue:<launch>`, `revoke:<session>`, `revokeLaunch:<launch>`). */
     readonly tokenEvents?: Array<string>;
+    /** The channel tokens, when a test shares them with a network channel of its own. */
+    readonly tokensLayer?: Layer.Layer<SessionChannelTokensRepo>;
+    /** Where session sockets go; kept in `servedSocketApis` unless a test says. */
+    readonly socketHostLayer?: Layer.Layer<SessionSocketHost>;
   } = {},
 ): Promise<A> => {
   const tmp = options.fixture?.tmp ?? fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
@@ -2416,11 +2439,12 @@ const withEngine = <A, E>(
       ),
     ),
     Layer.provide(serviceHostStubLayer),
-    Layer.provide(sessionSocketStubLayer),
+    Layer.provide(options.socketHostLayer ?? sessionSocketStubLayer),
     Layer.provide(
-      options.tokenEvents === undefined
-        ? SessionChannelTokensRepoMemory
-        : recordingTokens(options.tokenEvents),
+      options.tokensLayer ??
+        (options.tokenEvents === undefined
+          ? SessionChannelTokensRepoMemory
+          : recordingTokens(options.tokenEvents)),
     ),
     Layer.provide(deploymentLayer),
     Layer.provide(captureRuntimeLayer),
@@ -6421,6 +6445,13 @@ const savedRepository = (state: DotfilesState): DotfilesRepository => {
   return state.repository;
 };
 
+/** A capture route's refusal reason, or `ok`. */
+const routeReason = <A>(effect: Effect.Effect<A, { readonly reason: string }>) =>
+  effect.pipe(
+    Effect.as("ok"),
+    Effect.catch((error) => Effect.succeed(error.reason)),
+  );
+
 describe("SessionEngine capture mode", () => {
   it("tells the daemon only what the deployment stated about its transport", async () => {
     // Without a statement the source names no transport: the daemon then requires verified
@@ -8532,6 +8563,129 @@ describe("SessionEngine capture mode", () => {
     };
   };
 
+  it("e2e run 6 #4 shrinking the pool honours Core's stop: a standby still draining keeps its token and its row (failed, never claimed); only a confirmed end takes them", async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
+    const tokenEvents: Array<string> = [];
+    let answer: "draining" | "stopped" = "draining";
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(() => pool.entries.some((e) => e.status === "ready"), "standby");
+          const standby = pool.entries[0];
+          if (standby === undefined) throw new Error("no standby");
+          // The pool shrinks while Core is still draining the standby.
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 0 }));
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(
+            () => pool.entries.find((e) => e.id === standby.id)?.status === "failed",
+            "the kept standby's row",
+          );
+          expect(tokenEvents.filter((event) => event.startsWith("revoke"))).toEqual([]);
+          // Core confirms the end: the next pass takes the token and the row.
+          answer = "stopped";
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(
+            () => !pool.entries.some((e) => e.id === standby.id),
+            "the ended standby's row gone",
+          );
+          expect(tokenEvents).toContain(`revokeLaunch:standby:${standby.id}`);
+        }),
+      {
+        captured: memory,
+        hotWorkspacesLayer: pool.layer,
+        tokenEvents,
+        drainPolicy: { terminationWait: Duration.millis(50) },
+        sealantLayer: lifecycleLayer(created, {
+          captureOps: {
+            stopAnswer: () => answer,
+            status: (stopAsked) => (stopAsked && answer === "stopped" ? "stopped" : "ready"),
+            resourceId: () => "standby-container",
+          },
+        }),
+      },
+    );
+  }, 30_000);
+
+  it("e2e run 6 #3 a claimed standby whose replan failed still ships under its placeholder: its launch's routes stay the standby's there, never `wrong-worktree`; the session's worktree stays the session's", async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
+    const answers: Record<string, string> = {};
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(() => pool.entries.some((e) => e.status === "ready"), "standby");
+          const standby = pool.entries[0];
+          if (standby === undefined) throw new Error("no standby");
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+          // The replan failed (the relay paused): the launch drains the standby, which the
+          // platform keeps, and nothing else starts.
+          yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+          const routes = servedSocketApis.get(session.id)?.captureAs?.(`standby:${standby.id}`);
+          if (routes === undefined) throw new Error("no launch-bound routes");
+          const alias = `standby-${standby.id}`;
+          answers["upload.urls · placeholder"] = yield* routeReason(
+            routes.uploadUrls({
+              worktree_id: alias,
+              epoch: standby.createdAt.getTime(),
+              keys: [captureKeys(alias, standby.createdAt.getTime()).pack("a".repeat(64))],
+            }),
+          );
+          answers["heartbeat · placeholder"] = yield* routeReason(
+            routes.heartbeat({ worktree_id: alias, epoch: standby.createdAt.getTime() }),
+          );
+          answers["heartbeat · session"] = yield* routeReason(
+            routes.heartbeat({ worktree_id: session.worktreeId, epoch }),
+          );
+        }),
+      {
+        captured: memory,
+        hotWorkspacesLayer: pool.layer,
+        sealantLayer: lifecycleLayer(created, {
+          captureOps: {
+            stopAnswer: () => "kept",
+            status: () => "ready",
+            retained: () => ({ reason: "kept for recovery", recoverable: true }),
+            finalCompletion: "unreported",
+            resourceId: () => "standby-container",
+            replan: () =>
+              Effect.fail(
+                new SealantPlatformError({
+                  code: "replan_refused",
+                  status: 503,
+                  message: "capture plan.get failed: transport: timeout",
+                  cause: null,
+                }),
+              ),
+          },
+        }),
+      },
+    );
+    // The standby's own answer under its placeholder (nothing to ship until claimed), never the
+    // session's `wrong-worktree`; the session's worktree is still routed as the session's.
+    expect(answers["upload.urls · placeholder"]).toBe("lease-lost");
+    expect(answers["heartbeat · placeholder"]).toBe("ok");
+    expect(answers["heartbeat · session"]).not.toBe("wrong-worktree");
+  }, 30_000);
+
   it("review 3 #1 a standby whose replan answer was lost is the session's executor: it drains, its seal is attested for it alone, and kept, nothing else starts", async () => {
     const scenario = standbyWhoseReplanAnswerIsLost(
       "kept",
@@ -8561,6 +8715,9 @@ describe("SessionEngine capture mode", () => {
               epoch,
               captureN: scenario.records.get(`${session.worktreeId}:${epoch}`)?.n,
               launchId: standbyLaunch,
+              sealedAt: scenario.records
+                .get(`${session.worktreeId}:${epoch}`)
+                ?.sealedAt.toISOString(),
             });
           }
         }),
@@ -11797,6 +11954,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
               epoch,
               executorId: "container-7f3a",
               launchId: world.executorLaunches.get(session.id)?.launchId,
+              sealedAt: records.get(`${session.worktreeId}:${epoch}`)?.sealedAt.toISOString(),
             });
           }),
         {
@@ -12177,6 +12335,8 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
             expect(stops).toEqual(["drain"]);
             expect(settled?.status).toBe("failed");
             expect(settled?.summary).toMatch(/^launch failed: setup command failed \(exit 1\)/);
+            // It was saved after all, and says so beside the launch's own words (e2e run 6 #7).
+            expect(settled?.summary).toMatch(/ · saved at \d\d:\d\d:\d\d UTC( · capture \d+)?$/);
             // Its end observed: the lease is released.
             expect(memory.leases.get(session.worktreeId)?.executorId).toBeNull();
           }),
@@ -12577,6 +12737,22 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
             undefined,
             undefined,
             ptyStates,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              // The executor answers nothing at all: no exec, no flush.
+              flush: () =>
+                Effect.fail(
+                  new SealantPlatformError({
+                    code: "connection_closed",
+                    status: null,
+                    message: "the executor did not answer",
+                    cause: null,
+                  }),
+                ),
+            },
           ),
         },
       );
@@ -12968,6 +13144,58 @@ describe("SessionEngine idempotent executor creates (Core's next SDK, 2026-09-28
   );
 
   it(
+    "review 4 #14 a reserved create asked again after its claim lapsed keeps the original epoch: the delayed original executor, planned under it, is never fenced",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const createKeys: Array<string | undefined> = [];
+      let lose = true;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+            const original = world.executorCreates.get(session.id);
+            if (original === undefined) throw new Error("no reserved create");
+            const originalEpoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            // The original create commits late, after the lookup found nothing: its executor
+            // boots with its own launch's token and plans under the launch's claim.
+            const executor = servedSocketApis.get(session.id)?.captureAs?.(original);
+            if (executor === undefined) throw new Error("no launch-bound capture routes");
+            const plan = yield* executor.planGet({ worktree_id: null, epoch: 0 });
+            expect(plan.epoch).toBe(originalEpoch);
+            expect(plan.executor).toBe(original);
+            // Its claim lapses before its first heartbeat (a slow boot), and the next launch asks
+            // the very same create again.
+            const later = Date.now() + 1_000_000;
+            memory.clock.now = () => later;
+            lose = false;
+            yield* engine.launch(session.id, ["codex"]);
+            expect(createKeys).toEqual([original, original]);
+            // Ownership was never resolved: the same launch, the same epoch, renewed.
+            expect(memory.leases.get(session.worktreeId)?.epoch).toBe(originalEpoch);
+            expect(memory.leases.get(session.worktreeId)?.launchId).toBe(original);
+            const beat = yield* executor.heartbeat({
+              worktree_id: session.worktreeId,
+              epoch: originalEpoch,
+            });
+            expect(beat.expires_in_secs).toBeGreaterThan(0);
+            expect(world.executorLaunches.get(session.id)?.launchId).toBe(original);
+          }),
+        {
+          captured: memory,
+          sealantLayer: layerWith(created, {
+            createKeys,
+            findByKey: () => ({ kind: "none" }),
+            loseCreateAnswer: () => lose,
+          }),
+        },
+      );
+    },
+  );
+
+  it(
     "review 3 #21 a lookup answer Mend does not read is unknown, never none: the key and the lease stay",
     { timeout: 20_000 },
     async () => {
@@ -13180,6 +13408,677 @@ describe("SessionEngine idempotent executor creates (Core's next SDK, 2026-09-28
               return { kind: "found", workspaceId: "workspace-1" };
             },
           }),
+        },
+      );
+    },
+  );
+});
+
+describe("SessionEngine received evidence beats stored evidence (review 2026-09-28 (4))", () => {
+  /** A final seal the store holds for the session's current launch and epoch. */
+  const sealCurrent = (
+    world: World,
+    tmp: string,
+    memory: MemoryCaptureStore,
+    records: Map<string, CaptureCompletionSeal>,
+    session: Session,
+  ) =>
+    Effect.gen(function* () {
+      const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+      const built = yield* shipHarnessCapture(
+        tmp,
+        memory,
+        session.worktreeId,
+        epoch,
+        crypto.randomUUID(),
+        "final",
+      );
+      const seal: CaptureCompletionSeal = {
+        worktreeId: session.worktreeId,
+        epoch,
+        executorId: world.executorLaunches.get(session.id)?.launchId ?? "",
+        captureId: built.id,
+        n: built.manifest.n,
+        sealedAt: new Date(Date.now() - 5_000),
+      };
+      records.set(`${session.worktreeId}:${epoch}`, seal);
+      return seal;
+    });
+
+  it(
+    "#1 an older seal never stands for a FINAL answer received incomplete: no saved, no terminate, no attestation",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+      const logs: Array<string> = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* sealCurrent(world, tmp, memory, records, session);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the drain's not saved",
+            );
+            expect(stopOptions).toEqual([]);
+            expect(logs.some((line) => line.includes("capture drain · saved · terminating"))).toBe(
+              false,
+            );
+            // The answer is kept: the seal no longer stands for this executor.
+            expect(world.captureUnsaved.get(session.id)?.words).toBe(
+              "unreadable tree/after-seal.txt",
+            );
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          logs,
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stopOptions,
+              resourceId: () => "container-7f3a",
+              finalCompletion: "unreported",
+              flush: () =>
+                Effect.succeed({
+                  ...flushReport(0, 1),
+                  complete: false,
+                  incompleteReason: "snapshot-failed",
+                  unreadable: 1,
+                  unreadablePaths: ["tree/after-seal.txt"],
+                  lastSnapError: null,
+                }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "#1 an unsaved answer observed after the seal revokes it: a lost FINAL answer then terminates nothing",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* sealCurrent(world, tmp, memory, records, session);
+            const workspaceId = world.sessions.get(session.id)?.sealantWorkspaceId ?? "";
+            world.captureUnsaved.set(session.id, {
+              workspaceId,
+              at: new Date(Date.now() + 1_000),
+              words: "incomplete · changed",
+            });
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the drain's not saved",
+            );
+            expect(stopOptions).toEqual([]);
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          drainPolicy: { stallSeconds: 0 },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stopOptions,
+              resourceId: () => "container-7f3a",
+              finalCompletion: "unreported",
+              // Every answer lost on the way.
+              flush: () =>
+                Effect.fail(
+                  new SealantPlatformError({
+                    code: "connection_closed",
+                    status: null,
+                    message: "the relay closed",
+                    cause: null,
+                  }),
+                ),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "#9 a `docker stop` after the seal and a later unsaved answer reads the last confirmed save and what came after it, never saved",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const ptyStates = new Map<string, InteractiveSessionStatus>();
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      let stopped = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            const seal = yield* sealCurrent(world, tmp, memory, records, session);
+            // Taken a moment after the head registered.
+            const unsavedAt = new Date(Date.now() + 1_000);
+            world.captureUnsaved.set(session.id, {
+              workspaceId: world.sessions.get(session.id)?.sealantWorkspaceId ?? "",
+              at: unsavedAt,
+              words: "4.1 KB pending",
+            });
+            const agent = [...world.processes.values()].find(
+              (process) => process.sessionId === session.id && process.kind === "agent-pty",
+            );
+            if (agent === undefined || agent.sealantSessionId === null) {
+              throw new Error("the launch recorded no agent PTY");
+            }
+            stopped = true;
+            ptyStates.set(agent.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the session's settle",
+            );
+            const settled = world.sessions.get(session.id);
+            expect(settled?.status).toBe("failed");
+            expect(settled?.summary).toContain("executor lost · last saved");
+            expect(settled?.summary).toContain(
+              `4.1 KB pending at ${unsavedAt.toISOString().slice(11, 19)} UTC`,
+            );
+            expect(settled?.summary).not.toContain(
+              `saved at ${seal.sealedAt.toISOString().slice(11, 19)} UTC · capture`,
+            );
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            () => stopped,
+            undefined,
+            ptyStates,
+          ),
+        },
+      );
+    },
+  );
+});
+
+/** POST one capture route on the network session channel with a bearer token. */
+const channelPost = (
+  address: string,
+  route: string,
+  token: string,
+  body: unknown,
+): Promise<{ status: number; json: Record<string, unknown> }> =>
+  new Promise((resolve, reject) => {
+    const [host, port] = address.split(":");
+    const request = http.request(
+      {
+        host,
+        port: Number(port),
+        method: "POST",
+        path: route,
+        headers: { authorization: `Bearer ${token}`, "content-type": "application/json" },
+        agent: false,
+      },
+      (response) => {
+        let text = "";
+        response.on("data", (chunk) => (text += String(chunk)));
+        response.on("end", () =>
+          resolve({
+            status: response.statusCode ?? 0,
+            json: text === "" ? {} : JSON.parse(text),
+          }),
+        );
+      },
+    );
+    request.on("error", reject);
+    request.end(JSON.stringify(body));
+  });
+
+describe("SessionEngine launch-bound capture routes through the network channel (review 2026-09-28 (4) #10)", () => {
+  it(
+    "a cold boot planning before its create answers is its launch, over the real engine → registry → HTTP path; another launch's valid token never reads as it",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const createKeys: Array<string | undefined> = [];
+      const registry = Effect.runSync(
+        Effect.scoped(
+          Layer.build(SessionChannelRegistryLive).pipe(
+            Effect.map((context) => Context.get(context, SessionChannelRegistry)),
+          ),
+        ),
+      );
+      const tokens = Effect.runSync(
+        Effect.scoped(
+          Layer.build(SessionChannelTokensRepoMemory).pipe(
+            Effect.map((context) => Context.get(context, SessionChannelTokensRepo)),
+          ),
+        ),
+      );
+      const tokensLayer = Layer.succeed(SessionChannelTokensRepo, tokens);
+      const channel = { address: "" };
+      const answers: Array<{
+        readonly phase: string;
+        readonly status: number;
+        readonly executor: unknown;
+      }> = [];
+      let sessionRef: SessionId | null = null;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const host = yield* Layer.build(
+              SessionChannelNetworkHostLive.pipe(
+                Layer.provide(Layer.succeed(SessionChannelRegistry, registry)),
+                Layer.provide(tokensLayer),
+                Layer.provide(
+                  Layer.succeed(DeploymentConfig, {
+                    mode: "local",
+                    sessionEndpoint: { listen: "127.0.0.1:0", url: "http://mend.test:3106" },
+                    sessionStore: "captured",
+                  }),
+                ),
+              ),
+            ).pipe(Effect.map((context) => Context.get(context, SessionChannelNetworkHost)));
+            channel.address = host.address ?? "";
+            const { engine, session } = yield* launchOnce(world, tmp);
+            sessionRef = session.id;
+            yield* engine.launch(session.id, ["codex"]);
+            const key = createKeys[0];
+            expect(key).toMatch(new RegExp(`^launch:${session.id}:`));
+            // Before the create answered: its own launch, never the session id.
+            expect(answers[0]).toEqual({ phase: "before-create", status: 200, executor: key });
+            // Another launch of the same session holding a valid token of its own never reads
+            // as the current launch, and never joins its lease (cross-repo decision 11).
+            expect(answers[1]).toEqual({ phase: "other-launch", status: 409, executor: undefined });
+            const source = created[0]?.source;
+            const token = source?.kind === "capture" ? source.token : "";
+            const after = yield* Effect.promise(() =>
+              channelPost(channel.address, "/plan.get", token, { worktree_id: null, epoch: 0 }),
+            );
+            expect(after.status).toBe(200);
+            expect(after.json["executor"]).toBe(key);
+          }),
+        {
+          captured: memory,
+          tokensLayer,
+          socketHostLayer: Layer.succeed(SessionSocketHost, {
+            start: (sessionId, api) =>
+              Effect.sync(() => {
+                servedSocketApis.set(sessionId, api);
+                registry.register(sessionId, api);
+                return "/tmp/mend-test-socket-dir";
+              }),
+            stop: (sessionId) => Effect.sync(() => registry.unregister(sessionId)),
+          }),
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              createKeys,
+              resourceId: () => "container-1",
+              findByKey: () => ({ kind: "none" }),
+              beforeCreate: (options) =>
+                Effect.gen(function* () {
+                  const token = options.source?.kind === "capture" ? options.source.token : "";
+                  const booted = yield* Effect.promise(() =>
+                    channelPost(channel.address, "/plan.get", token, {
+                      worktree_id: null,
+                      epoch: 0,
+                    }),
+                  );
+                  answers.push({
+                    phase: "before-create",
+                    status: booted.status,
+                    executor: booted.json["executor"],
+                  });
+                  if (sessionRef === null) throw new Error("no session");
+                  const other = yield* tokens.issue(sessionRef, "launch-other");
+                  const otherAnswer = yield* Effect.promise(() =>
+                    channelPost(channel.address, "/plan.get", other, {
+                      worktree_id: null,
+                      epoch: 0,
+                    }),
+                  );
+                  answers.push({
+                    phase: "other-launch",
+                    status: otherAnswer.status,
+                    executor: otherAnswer.json["executor"],
+                  });
+                }),
+            },
+          ),
+        },
+      );
+    },
+  );
+});
+
+/** An executor that answers nothing at all. */
+const notAnswering = () =>
+  Effect.fail(
+    new SealantPlatformError({
+      code: "connection_closed",
+      status: null,
+      message: "the executor did not answer",
+      cause: null,
+    }),
+  );
+
+describe("SessionEngine status words from the latest observation (e2e run 6 #7)", () => {
+  it(
+    "a session settled `executor not answering · … · completion unknown` whose executor later saves and ends reads `stopped · saved at …`",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const ptyStates = new Map<string, InteractiveSessionStatus>();
+      const memory = makeMemoryCaptureStore();
+      let answering = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            const agent = [...world.processes.values()].find(
+              (process) => process.sessionId === session.id && process.kind === "agent-pty",
+            );
+            if (agent === undefined || agent.sealantSessionId === null) {
+              throw new Error("the launch recorded no agent PTY");
+            }
+            ptyStates.set(agent.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the session's settle",
+            );
+            expect(world.sessions.get(session.id)?.summary).toMatch(/^executor not answering · /);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the drain kept",
+            );
+            // Recovered: it answers its final flush complete, and the kept drain's next round
+            // terminates it.
+            answering = true;
+            for (let round = 0; round < 50; round += 1) {
+              if (world.sessions.get(session.id)?.summary?.startsWith("saved at ") === true) break;
+              yield* engine.reapCaptureLeases();
+              yield* Effect.sleep(Duration.millis(100));
+            }
+            const settled = world.sessions.get(session.id);
+            expect(settled?.status).toBe("stopped");
+            expect(settled?.summary).toMatch(/^saved at \d\d:\d\d:\d\d UTC( · capture \d+)?$/);
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            stallSeconds: 0,
+            keptRetryFirst: Duration.millis(100),
+            keptRetryMax: Duration.millis(200),
+          },
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            ptyStates,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              flush: () => (answering ? Effect.succeed(flushReport(0, 1)) : notAnswering()),
+            },
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "a create Core fenced before it made anything, found by the reaper, settles `stopped · launch cancelled · nothing was created` — never `starting` with no executor",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            // A launch cut short around its create (Mend restarted mid-create): the key is on the
+            // row, the session `starting`, and no launch here asks it again.
+            world.executorCreates.set(session.id, `launch:${session.id}:${Date.now()}:k`);
+            expect(world.sessions.get(session.id)?.status).toBe("starting");
+            yield* engine.reapCaptureLeases();
+            const settled = world.sessions.get(session.id);
+            expect(world.executorCreates.has(session.id)).toBe(false);
+            expect(settled?.sealantWorkspaceId).toBeNull();
+            expect(settled?.status).toBe("stopped");
+            expect(settled?.summary).toBe("launch cancelled · nothing was created");
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              loseCreateAnswer: () => true,
+              findByKey: () => ({ kind: "none" }),
+              fenceCreate: () => ({ kind: "cancelled" }),
+            },
+          ),
+        },
+      );
+    },
+  );
+});
+
+describe("SessionEngine a failed launch's words follow its executor (e2e run 6 #7)", () => {
+  it(
+    "a launch that failed at a setup command and whose kept executor is then killed reads the loss beside the launch's words, never the launch's words alone",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      let killed = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the drain kept",
+            );
+            // `docker kill`: the platform reports it gone.
+            killed = true;
+            for (let round = 0; round < 50; round += 1) {
+              if (world.sessions.get(session.id)?.summary?.includes("executor lost") === true)
+                break;
+              yield* engine.reapCaptureLeases();
+              yield* Effect.sleep(Duration.millis(100));
+            }
+            const settled = world.sessions.get(session.id);
+            expect(settled?.status).toBe("failed");
+            expect(settled?.summary).toMatch(
+              /^launch failed: setup command failed \(exit 1\).* · executor lost · /,
+            );
+          }),
+        {
+          captured: memory,
+          drainPolicy: {
+            stallSeconds: 0,
+            terminationWait: Duration.millis(100),
+            keptRetryFirst: Duration.millis(100),
+            keptRetryMax: Duration.millis(200),
+          },
+          workspaceImage: { ...CUSTOM_BASE, setupCommands: ["exit 1"] },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stopAnswer: () => "kept",
+              status: () => (killed ? "stopped" : "ready"),
+              exec: (argv) =>
+                argv.includes("exit 1") ? { exitCode: 1, stdout: "", stderr: "" } : undefined,
+              flush: () =>
+                Effect.fail(
+                  new SealantPlatformError({
+                    code: "connection_closed",
+                    status: null,
+                    message: "the executor did not answer",
+                    cause: null,
+                  }),
+                ),
+            },
+          }),
+        },
+      );
+    },
+  );
+});
+
+describe("SessionEngine a recovered executor's accepted seal is the session's word (e2e run 6 #7)", () => {
+  it(
+    "`executor not answering · … · completion unknown`, then Core ends the kept executor on the seal Mend attested and it accepted: `stopped · saved at … · capture N`",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const ptyStates = new Map<string, InteractiveSessionStatus>();
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+      let ended = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            const agent = [...world.processes.values()].find(
+              (process) => process.sessionId === session.id && process.kind === "agent-pty",
+            );
+            if (agent === undefined || agent.sealantSessionId === null) {
+              throw new Error("the launch recorded no agent PTY");
+            }
+            ptyStates.set(agent.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the session's settle",
+            );
+            expect(world.sessions.get(session.id)?.summary).toMatch(/completion unknown$/);
+            // Core recovered it: it drained, sealed, and ended on its runtime (kept by Core).
+            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            const built = yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              epoch,
+              crypto.randomUUID(),
+              "final",
+            );
+            const sealedAt = new Date(Date.now() + 1_000);
+            records.set(`${session.worktreeId}:${epoch}`, {
+              worktreeId: session.worktreeId,
+              epoch,
+              executorId: world.executorLaunches.get(session.id)?.launchId ?? "",
+              captureId: built.id,
+              n: built.manifest.n,
+              sealedAt,
+            });
+            ended = true;
+            for (let round = 0; round < 50; round += 1) {
+              if (world.sessions.get(session.id)?.summary?.startsWith("saved at ") === true) break;
+              yield* engine.reapCaptureLeases();
+              yield* Effect.sleep(Duration.millis(100));
+            }
+            expect(stopOptions.some((o) => o?.completion?.captureN === built.manifest.n)).toBe(
+              true,
+            );
+            const settled = world.sessions.get(session.id);
+            expect(settled?.status).toBe("stopped");
+            expect(settled?.summary).toBe(
+              `saved at ${sealedAt.toISOString().slice(11, 19)} UTC · capture ${built.manifest.n}`,
+            );
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          drainPolicy: {
+            stallSeconds: 0,
+            terminationWait: Duration.millis(100),
+            keptRetryFirst: Duration.millis(100),
+            keptRetryMax: Duration.millis(200),
+          },
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            ptyStates,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              stopOptions,
+              resourceId: () => "container-7f3a",
+              // Ended on its runtime and kept by Core until the stop: then stopped.
+              status: (stopAsked) => (!ended ? "ready" : stopAsked ? "stopped" : "failed"),
+              stopAnswer: () => "stopped",
+              flush: () =>
+                Effect.fail(
+                  new SealantPlatformError({
+                    code: "connection_closed",
+                    status: null,
+                    message: "the executor did not answer",
+                    cause: null,
+                  }),
+                ),
+            },
+          ),
         },
       );
     },

@@ -99,13 +99,17 @@ export interface SessionSocketApi {
   ) => Effect.Effect<void>;
   /**
    * The capture routes (ADR-0002): sealantd's registrar port, scoped to this session's
-   * worktree. Absent when the deployment keeps the co-located store — the routes then 404.
+   * worktree, as the session's current launch. In-process callers only: the network channel
+   * never serves it (an executor reaches the routes of its own launch, `captureAs`) and the
+   * Unix socket serves no capture routes (the executor reaches them over the network channel,
+   * never a socket). Absent when the deployment keeps the co-located store.
    */
   readonly capture?: SessionCaptureApi | undefined;
   /**
    * The same routes for one physical executor of the session — the launch its channel token was
    * issued for (cross-repo decision 5): `plan.get` names it as the executor, and a `final_seal`
-   * registers only when it names it. `capture` serves the session's current launch.
+   * registers only when it names it. What the network channel serves an authenticated executor,
+   * and the only thing (review 2026-09-28 (4) #10).
    */
   readonly captureAs?: ((launchId: string) => SessionCaptureApi) | undefined;
 }
@@ -407,11 +411,15 @@ export const SessionSocketHostLive: Layer.Layer<
           // No socket on a shared RWX claim: the helper finds none and uses the endpoint.
           return;
         }
+        // No capture routes on the socket: nothing authenticates a launch there, and the
+        // executor reaches them over the network channel with its launch's token (review
+        // 2026-09-28 (4) #10).
+        const local: SessionSocketApi = { ...api, capture: undefined, captureAs: undefined };
         const server = http.createServer((request, response) => {
-          void handleSessionRequest(api, request, response);
+          void handleSessionRequest(local, request, response);
         });
         server.on("connect", (request, socket, head) => {
-          void handleGitConnect(api, request, socket as net.Socket, head);
+          void handleGitConnect(local, request, socket as net.Socket, head);
         });
         await new Promise<void>((resolve, reject) => {
           server.once("error", reject);

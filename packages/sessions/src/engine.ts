@@ -107,6 +107,7 @@ import {
   captureHarvestReady,
   captureIncompleteReasonOf,
   captureSaved,
+  captureUnsavedWordsOf,
   captureSnapDetailOf,
   captureSnapFailing,
   captureStatusLine,
@@ -115,6 +116,8 @@ import {
   executorCapDue,
   executorEndOf,
   executorEndWords,
+  executorSavedWords,
+  restatedSummary,
   executorUnansweredWords,
   observeCaptureThroughput,
   planExecutorCap,
@@ -465,6 +468,9 @@ const OPENING_PROMPT_NOT_DELIVERED = "opening prompt not delivered";
 const PLANNED_LAUNCH_ATTEMPTS = 3;
 /** A launch whose executor was created but never reached its harness, with no words of its own. */
 const LAUNCH_NEVER_RAN_SUMMARY = "launch failed · the harness never started";
+
+/** A create Core fenced before it made anything, found with no launch asking again. */
+const LAUNCH_CANCELLED_SUMMARY = "launch cancelled · nothing was created";
 /** Every "executor lost" summary starts with this; a replacement's first word ends it. */
 const EXECUTOR_LOST_PREFIX = "executor lost";
 /** How many looks an agent's end gets at an executor that stops answering before it is judged. */
@@ -1313,7 +1319,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         gitTransport: (input) => owned(sessionId)(api.gitTransport(input)),
         gitTransportDone: (opId, exitCode, refUpdates) =>
           owned(sessionId)(api.gitTransportDone(opId, exitCode, refUpdates)),
+        // The capture routes pass through as they are, the launch-bound ones included: the
+        // network channel serves a token only the routes of the launch it was issued for
+        // (cross-repo decision 5, review 2026-09-28 (4) #10).
         ...(api.capture === undefined ? {} : { capture: api.capture }),
+        ...(api.captureAs === undefined ? {} : { captureAs: api.captureAs }),
       });
       const conversations = yield* AgentConversationRepo;
       const channelTokens = yield* SessionChannelTokensRepo;
@@ -1558,8 +1568,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * (`hot-pool.ts` "Capture-mode standby").
        */
       const captureApiFor = (sessionId: SessionId, launchId?: string): SessionCaptureApi => {
+        /**
+         * `named`: the worktree the request names (`worktree_id`), when it names one. A claimed
+         * standby whose replan did not take still ships under its placeholder (`standby-<id>`):
+         * its launch's routes stay the standby's — the worktree that launch actually holds — until
+         * its replan succeeds and it names the session's worktree (e2e run 6: routed to the
+         * session's, every upload of its drain was refused `wrong-worktree` and the drain wedged
+         * for 686 s).
+         */
         const scoped = <A>(
           call: (api: SessionCaptureApi) => Effect.Effect<A, CaptureRouteError>,
+          named?: string | null,
         ): Effect.Effect<A, CaptureRouteError> =>
           Effect.gen(function* () {
             if (capture === null) return yield* Effect.die("capture routes outside capture mode");
@@ -1585,11 +1604,38 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               );
             }
             const session = found.value;
-            // The physical executor asking (cross-repo decision 5): the launch its token names,
-            // else the session's current one, else the session id — an executor launched before
-            // launch identities was planned as its session.
+            const standbyLaunch = standbyLaunchIdOf(sessionId);
+            if (
+              capture !== null &&
+              launchId === standbyLaunch &&
+              named === standbyWorktreeAlias(sessionId)
+            ) {
+              return yield* call(
+                capture.channel.standbyApiFor({
+                  alias: standbyWorktreeAlias(sessionId),
+                  projectId: session.projectId,
+                  executorId: sessionId,
+                  launchId: standbyLaunch,
+                  epoch:
+                    session.executorStartedAt === null
+                      ? 0
+                      : standbyEpochOf(session.executorStartedAt),
+                  // Never asked: `plan.get` is routed to the session's worktree.
+                  plan: () => Effect.fail("the standby was claimed"),
+                }),
+              );
+            }
+            // The physical executor asking (cross-repo decision 5): the launch its token names
+            // (what the network channel always passes). In-process callers without one read the
+            // launch whose create is being asked (reserved on the row before the create, so a
+            // cold boot planning before its create answers is that launch, never the session —
+            // review 2026-09-28 (4) #10), else the session's current one, else the session id:
+            // an executor launched before launch identities was planned as its session.
             const launch =
-              launchId ?? (yield* sessions.executorLaunchOf(sessionId))?.launchId ?? sessionId;
+              launchId ??
+              (yield* sessions.executorCreateOf(sessionId)) ??
+              (yield* sessions.executorLaunchOf(sessionId))?.launchId ??
+              sessionId;
             const api = capture.channel.apiFor({
               worktreeId: session.worktreeId,
               projectId: session.projectId,
@@ -1603,15 +1649,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           });
         const observed = <A>(
           call: (api: SessionCaptureApi) => Effect.Effect<A, CaptureRouteError>,
+          named?: string | null,
         ): Effect.Effect<A, CaptureRouteError> =>
-          scoped(call).pipe(Effect.tap(() => observeReplacement(sessionId)));
+          scoped(call, named).pipe(Effect.tap(() => observeReplacement(sessionId)));
         return {
+          // A plan is always the session's: a replan names no worktree, and a plan under the
+          // placeholder is never handed out once the standby was claimed.
           planGet: (input) => scoped((api) => api.planGet(input)),
-          uploadUrls: (input) => scoped((api) => api.uploadUrls(input)),
-          uploadComplete: (input) => scoped((api) => api.uploadComplete(input)),
-          register: (input) => observed((api) => api.register(input)),
-          changeSummary: (input) => scoped((api) => api.changeSummary(input)),
-          heartbeat: (input) => observed((api) => api.heartbeat(input)),
+          uploadUrls: (input) => scoped((api) => api.uploadUrls(input), input.worktree_id),
+          uploadComplete: (input) => scoped((api) => api.uploadComplete(input), input.worktree_id),
+          register: (input) => observed((api) => api.register(input), input.worktree_id),
+          changeSummary: (input) => scoped((api) => api.changeSummary(input), input.worktree_id),
+          heartbeat: (input) => observed((api) => api.heartbeat(input), input.worktree_id),
         };
       };
 
@@ -1765,6 +1814,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             at: observedAt,
             n: reading.headN,
             epoch: reading.epoch ?? null,
+          });
+        }
+        // The executor's own word that it holds work not saved (cross-repo decision 10): kept, so
+        // an older save — a `complete: true` above, or the store's seal — reads revoked from here
+        // on (`executorSealOf`, `executorEndOf`), whatever registers later without a new one.
+        const unsaved = captureUnsavedWordsOf(reading);
+        if (unsaved !== null) {
+          yield* sessions.recordCaptureUnsaved(session.id, {
+            workspaceId,
+            at: observedAt,
+            words: unsaved,
           });
         }
         if (failing !== null && before !== null && before.captureFailingSince === null) {
@@ -2059,7 +2119,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * final flush, bound to that executor and its epoch, with no capture registered after it
        * under that epoch. Null otherwise.
        */
-      const executorSealOf = Effect.fn("SessionEngine.executorSealOf")(function* (
+      const executorSealRecordOf = Effect.fn("SessionEngine.executorSealRecordOf")(function* (
         session: Session,
         workspaceId: SealantWorkspaceId,
       ) {
@@ -2081,6 +2141,47 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const chain = yield* capture.repo.headOf(session.worktreeId);
         if (chain !== null && chain.headEpoch === executor.epoch && chain.headN > seal.n) {
           return null;
+        }
+        return { seal, holder: SessionId.make(executor.executorId) };
+      });
+
+      /**
+       * The sealed record (`executorSealRecordOf`) while it still stands: received evidence beats
+       * stored evidence (cross-repo decision 10, review 2026-09-28 (4) #1) — an answer this
+       * executor gave after the seal that said it held unsaved work (changed, unreadable, a
+       * snapshot that failed, pending) revokes it. Whoever asked (a joined session, or the
+       * holder), the answer is on that session's row. Null otherwise.
+       */
+      const executorSealOf = Effect.fn("SessionEngine.executorSealOf")(function* (
+        session: Session,
+        workspaceId: SealantWorkspaceId,
+      ) {
+        const record = yield* executorSealRecordOf(session, workspaceId);
+        if (record === null) return null;
+        const { seal } = record;
+        const holders = [...new Set([session.id, record.holder])];
+        for (const holder of holders) {
+          const unsaved = yield* sessions.captureUnsavedOf(holder);
+          if (
+            unsaved !== null &&
+            unsaved.workspaceId === workspaceId &&
+            unsaved.at.getTime() > seal.sealedAt.getTime()
+          ) {
+            yield* Effect.logWarning(
+              "session engine: capture mode · sealed, but the executor answered unsaved work after the seal · the seal no longer stands",
+            ).pipe(
+              Effect.annotateLogs({
+                sessionId: session.id,
+                workspaceId,
+                epoch: seal.epoch,
+                n: seal.n,
+                sealedAt: seal.sealedAt.toISOString(),
+                unsavedAt: unsaved.at.toISOString(),
+                unsaved: unsaved.words,
+              }),
+            );
+            return null;
+          }
         }
         return seal;
       });
@@ -2458,6 +2559,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             epoch: seal.epoch,
             executorId: resourceId,
             launchId: seal.executorId,
+            sealedAt: seal.sealedAt.toISOString(),
           },
         };
       });
@@ -2547,8 +2649,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               recoverable: answer.retained.recoverable,
             }),
           );
-          return { ended: false, retained: answer.retained } as const;
+          return { ended: false, retained: answer.retained, saved: null } as const;
         }
+        // The seal Core accepted for this very stop: the executor was saved, as sealed.
+        const attested = sent?.completion;
+        const saved =
+          answer.completion?.outcome === "accepted" &&
+          attested !== undefined &&
+          attested.sealedAt !== undefined
+            ? { at: new Date(attested.sealedAt), n: attested.captureN }
+            : null;
         const confirmed = stopState === "stopped" || (yield* awaitTerminated(workspaceId));
         yield* processes.reapLiveForWorkspace(workspaceId);
         const session = yield* sessions.byId(sessionId);
@@ -2563,7 +2673,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             `session engine: workspace stop asked · ${stopState} · termination not observed yet · the lease lapses on its own`,
           ).pipe(Effect.annotateLogs({ sessionId, workspaceId, stopState }));
         }
-        return { ended: confirmed, retained: null } as const;
+        return { ended: confirmed, retained: null, saved } as const;
       });
 
       /**
@@ -2594,6 +2704,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       ) {
         yield* sessions.endCaptureDrain(sessionId, discarded);
         yield* settleIfStopping(sessionId);
+      });
+
+      /**
+       * A settled session reads the latest observation of its executor (e2e run 6): one that was
+       * saved and ended after all, or ended later, replaces Mend's older word on it — `executor
+       * not answering · … · completion unknown`, a failed launch's `retained` — and a failed
+       * launch keeps its own words beside it (`restatedSummary`). A harness's own end stands, and
+       * a session that is not settled is left to its fold.
+       */
+      const restateSettled = Effect.fn("SessionEngine.restateSettled")(function* (
+        sessionId: SessionId,
+        latest: { readonly outcome: SessionOutcome; readonly words: string },
+      ) {
+        const session = yield* sessions
+          .byId(sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (session === null || session.settledAt === null || session.status !== "failed") return;
+        const summary = restatedSummary(session.summary, latest.words);
+        if (summary === null || summary === session.summary) return;
+        const launchFailed = session.summary?.startsWith("launch failed") === true;
+        yield* sessions.restate(sessionId, launchFailed ? "failed" : latest.outcome, summary);
+        yield* Effect.logInfo("session engine: capture mode · settled session restated").pipe(
+          Effect.annotateLogs({ sessionId, before: session.summary, after: summary }),
+        );
       });
 
       /** The platform ended it already: nothing to save or stop; tidy up behind it. */
@@ -2684,7 +2818,19 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 }),
               );
             }
+            // Ended without Mend: how it ended, as observed (read while its lease still names
+            // it), is what a settled session reads.
+            const current = yield* sessions
+              .byId(sessionId)
+              .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+            const end =
+              current !== null && current.sealantWorkspaceId === workspaceId
+                ? yield* executorEndOfSession(current, workspaceId)
+                : null;
             yield* tidyAfterGone(sessionId, workspaceId);
+            if (end !== null) {
+              yield* restateSettled(sessionId, { outcome: end.outcome, words: end.summary });
+            }
             yield* removeIfRequested(sessionId);
             return "gone" as const;
           }
@@ -2715,6 +2861,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
             if (terminated.ended) {
               yield* endDrain(sessionId);
+              // Core ended it on the seal Mend attested and it accepted: saved (e2e run 6).
+              if (terminated.saved !== null) {
+                yield* restateSettled(sessionId, {
+                  outcome: "stopped",
+                  words: executorSavedWords(terminated.saved),
+                });
+              }
               yield* removeIfRequested(sessionId);
               return "gone" as const;
             }
@@ -2769,13 +2922,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             stallSeconds: drainPolicy.stallSeconds,
           });
           // The store's sealed record of this executor's completed final flush stands for an
-          // answer that was lost on the way (a relay that closed, a timeout): it is the same fact,
-          // made durable by the register.
+          // answer that was lost on the way (a relay that closed, a timeout, an SDK that drops
+          // the `complete` field): it is the same fact, made durable by the register. Never for
+          // an answer received that says otherwise (cross-repo decision 10, review 2026-09-28 (4)
+          // #1): an incomplete, changed, unreadable or pending answer is newer evidence than any
+          // seal, and a lost answer and a received failure are different facts.
+          const answerLost =
+            reading === null ||
+            (reading.complete === null && captureUnsavedWordsOf(reading) === null);
           const sealed =
             answered.kind !== "saved" &&
             lookup.kind === "found" &&
+            answerLost &&
             (yield* executorSealOf(session, workspaceId)) !== null;
           const step: CaptureDrainStep = sealed ? { kind: "saved" } : answered;
+          // What saved it: the executor's own completed final flush, or the seal standing for a
+          // lost answer.
+          const savedBy =
+            answered.kind === "saved"
+              ? { at: new Date(nowMs), n: reading?.headN ?? null }
+              : sealed
+                ? yield* executorSealOf(session, workspaceId).pipe(
+                    Effect.map((seal) => (seal === null ? null : { at: seal.sealedAt, n: seal.n })),
+                  )
+                : null;
           if (reading !== null) previous = reading;
           if (step.kind === "saved" && lookup.kind === "found") {
             yield* Effect.logInfo("session engine: capture drain · saved · terminating").pipe(
@@ -2794,6 +2964,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // early and nothing reads settled while its container may still run.
             if (ended) {
               yield* endDrain(sessionId);
+              if (savedBy !== null) {
+                yield* restateSettled(sessionId, {
+                  outcome: "stopped",
+                  words: executorSavedWords(savedBy),
+                });
+              }
               yield* removeIfRequested(sessionId);
             } else {
               yield* sessions.endCaptureDrain(sessionId);
@@ -3201,6 +3377,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               yield* Effect.logInfo(
                 "session engine: capture mode · executor create · fenced · none was made · lease released",
               ).pipe(Effect.annotateLogs({ sessionId, key, epoch: lease?.epoch ?? null }));
+              // Found by the reaper, with no launch asking again (a launch resolves its own key
+              // with `drain: false` and goes on): a session left `starting` with no executor has
+              // nothing running and nothing made — it reads so (e2e run 6).
+              if (
+                options?.drain !== false &&
+                session.sealantWorkspaceId === null &&
+                session.settledAt === null
+              ) {
+                yield* sessions.settle(sessionId, "stopped", LAUNCH_CANCELLED_SUMMARY);
+              }
               return "cancelled" as const;
             } else {
               yield* Effect.logInfo(
@@ -5289,7 +5475,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           workspaceId === null
             ? null
             : ((yield* leasedExecutorOf(session, workspaceId))?.epoch ?? null);
-        const seal = workspaceId === null ? null : yield* executorSealOf(session, workspaceId);
+        // The seal as recorded: `executorEndOf` weighs it against the answers after it itself,
+        // and names it as the last confirmed save when one revoked it.
+        const seal =
+          workspaceId === null
+            ? null
+            : ((yield* executorSealRecordOf(session, workspaceId))?.seal ?? null);
+        const unsaved = yield* sessions.captureUnsavedOf(session.id);
         const end = executorEndOf({
           head:
             head === null
@@ -5319,6 +5511,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ? null
               : { at: saved.at, n: saved.n },
           sealed: seal === null ? null : { at: seal.sealedAt, n: seal.n },
+          // This executor's latest answer that said it held unsaved work: after a save, it
+          // revokes it (review 2026-09-28 (4) #9).
+          unsaved:
+            unsaved === null || workspaceId === null || unsaved.workspaceId !== workspaceId
+              ? null
+              : { at: unsaved.at, words: unsaved.words },
         });
         const outcome: SessionOutcome = end.kind === "saved" ? "stopped" : "failed";
         return { outcome, summary: executorEndWords(end) };
@@ -7200,26 +7398,48 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
         }
         let launchClaim: { readonly epoch: number } | null = null;
+        // The cold executor's launch identity, minted before its lease is claimed: the lease is
+        // bound to it (cross-repo decision 11), and so are its token and its create.
+        const coldLaunchKey = reusedCreateKey ?? executorCreateKeyFor(sessionId, new Date());
         // Capture mode: Mend claims the lease at launch (epoch + 1, the chain fenced in the
-        // same statement) with a boot-sized TTL; the executor learns the epoch from its first
-        // plan and the first heartbeat brings the TTL back to the 30 s cadence. The same create
-        // asked again (`reusedCreateKey`) is the same launch: while its claim still holds, it
-        // keeps that epoch — the executor it makes, whichever request commits, plans under it.
+        // same statement) with a boot-sized TTL, bound to the launch; the executor learns the
+        // epoch from its first plan and the first heartbeat brings the TTL back to the 30 s
+        // cadence. The same create asked again (`reusedCreateKey`) is the same launch and keeps
+        // that epoch — the executor it makes, whichever request commits, plans under it — for as
+        // long as its ownership is unresolved: a claim that lapsed meanwhile is renewed under
+        // its own epoch, never fenced by a new one (review 2026-09-28 (4) #14). Only a confirmed
+        // cancellation or end (which releases the lease) lets a new epoch be taken.
         const reusedClaim =
           capture === null || reusedCreateKey === null
             ? null
             : yield* capture.repo.leaseOf(session.worktreeId);
+        const reusedHeld =
+          reusedClaim !== null &&
+          reusedClaim.executorId === sessionId &&
+          ((reusedClaim.launchId ?? null) === null || reusedClaim.launchId === reusedCreateKey);
+        const renewedReserved =
+          capture !== null &&
+          adopted === null &&
+          reusedClaim !== null &&
+          reusedHeld &&
+          !reusedClaim.live &&
+          (yield* capture.repo.heartbeat(
+            session.worktreeId,
+            reusedClaim.epoch,
+            LAUNCH_CLAIM_TTL_SECONDS,
+            { executorId: sessionId, launchId: coldLaunchKey },
+          ));
         if (
           capture !== null &&
           adopted === null &&
           reusedClaim !== null &&
-          reusedClaim.live &&
-          reusedClaim.executorId === sessionId
+          reusedHeld &&
+          (reusedClaim.live || renewedReserved)
         ) {
           launchClaim = { epoch: reusedClaim.epoch };
         } else if (capture !== null && adopted === null) {
           launchClaim = yield* capture.repo
-            .claim(session.worktreeId, sessionId, LAUNCH_CLAIM_TTL_SECONDS)
+            .claim(session.worktreeId, sessionId, LAUNCH_CLAIM_TTL_SECONDS, coldLaunchKey)
             .pipe(
               Effect.mapError(
                 () =>
@@ -7286,11 +7506,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             "session engine: capture mode · launch failed before any executor · lease released",
           ).pipe(Effect.annotateLogs({ sessionId, epoch: launchClaim.epoch }));
         });
-        const provisionCold = (reuseKey: string | null) => {
+        const provisionCold = (key: string) => {
           // One launch per physical executor: a fresh key, or — for a create whose answer was
           // lost and that nothing is on record for yet — the same key asked again, which can
-          // only ever make that one executor.
-          const key = reuseKey ?? executorCreateKeyFor(sessionId, new Date());
+          // only ever make that one executor. Minted before the lease is claimed for it.
           launchId = key;
           return provisionWorkspace({
             project,
@@ -7338,7 +7557,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // executor's real start.
         let executorStartedAt =
           adopted !== null && claimedEntry !== null ? claimedEntry.createdAt : new Date();
-        let provisioned = adopted ?? (yield* provisionCold(reusedCreateKey));
+        let provisioned = adopted ?? (yield* provisionCold(coldLaunchKey));
         // Capture mode, a claimed standby (`hot-pool.ts` "Capture-mode standby"): its executor
         // booted on the project base under a placeholder; `capture.replan` makes it fetch the
         // plan again — the channel answers this session's worktree, the epoch the claim took
@@ -7390,8 +7609,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               return yield* error;
             }
             executorCreated = false;
+            const fallbackKey = executorCreateKeyFor(sessionId, new Date());
             launchClaim = yield* capture.repo
-              .claim(session.worktreeId, sessionId, LAUNCH_CLAIM_TTL_SECONDS)
+              .claim(session.worktreeId, sessionId, LAUNCH_CLAIM_TTL_SECONDS, fallbackKey)
               .pipe(
                 Effect.mapError(
                   () =>
@@ -7405,7 +7625,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 settleOnFailure,
               );
             executorStartedAt = new Date();
-            provisioned = yield* provisionCold(null);
+            provisioned = yield* provisionCold(fallbackKey);
           }
         }
         const { workspace, workspaceImage, environmentManifest } = provisioned;
@@ -9782,14 +10002,49 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         options?: { readonly keepWorktree?: boolean },
       ) {
         if (entry.sealantWorkspaceId !== null) {
-          yield* sealant.getWorkspace(entry.sealantWorkspaceId).pipe(
+          const workspaceId = SealantWorkspaceId.make(entry.sealantWorkspaceId);
+          const answer = yield* sealant.getWorkspace(workspaceId).pipe(
             Effect.flatMap((workspace) => sealant.stopWorkspace(workspace)),
-            Effect.ignore,
+            Effect.result,
             asSealantUser(entry.ownerUserId),
           );
+          // Capture mode: Core's stop answer is honoured as every other stop's is (e2e run 6).
+          // Kept, still draining, or an end not observed: the standby may still be running its
+          // final flush, so its token, its socket and its pool row stay — revoked, its flush
+          // fails `401` for good — and the row reads failed, so nothing claims it and the next
+          // reconcile pass asks again. Only an end the platform confirmed takes them.
+          if (capture !== null) {
+            const ended =
+              Result.isSuccess(answer) && answer.success.retained === null
+                ? answer.success.state === "stopped" ||
+                  (yield* awaitTerminated(workspaceId).pipe(asSealantUser(entry.ownerUserId)))
+                : (yield* lookupWorkspace(workspaceId).pipe(asSealantUser(entry.ownerUserId)))
+                    .kind === "gone";
+            if (!ended) {
+              const why = Result.isFailure(answer)
+                ? `stop refused · ${answer.failure.message}`
+                : answer.success.retained !== null
+                  ? `kept by the platform · ${answer.success.retained.reason ?? "no reason given"}`
+                  : `stop ${answer.success.state} · end not observed`;
+              yield* Effect.logWarning(
+                "session engine: standby drain · end not observed · token and row kept",
+              ).pipe(Effect.annotateLogs({ entryId: entry.id, workspaceId, why }));
+              yield* hotWorkspaces.setFailed(entry.id, `draining · ${why}`);
+              return false;
+            }
+          }
         }
-        yield* channelTokens.revoke(entry.id).pipe(Effect.ignore);
-        if (options?.keepWorktree !== true) {
+        // A session that adopted the standby's id owns the id's socket, worktree and every other
+        // token of it (a cold launch after an unusable claim): only the standby's own token goes.
+        const adopted =
+          options?.keepWorktree === true ||
+          (yield* sessions.byId(SessionId.make(entry.id)).pipe(
+            Effect.as(true),
+            Effect.catchTag("SessionNotFoundError", () => Effect.succeed(false)),
+          ));
+        yield* channelTokens.revokeLaunch(standbyLaunchIdOf(entry.id)).pipe(Effect.ignore);
+        if (!adopted) yield* channelTokens.revoke(entry.id).pipe(Effect.ignore);
+        if (!adopted) {
           yield* socketHost.stop(entry.id).pipe(Effect.ignore);
           // Only rows from before standby workspaces carry a pre-created worktree.
           if (entry.worktree !== null) {
@@ -9804,6 +10059,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
         }
         yield* hotWorkspaces.remove(entry.id);
+        return true;
       });
 
       /** Provision one skeleton: worktree → row → socket → workspace → prewarm note → ready. */
@@ -10110,7 +10366,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // lease taken meanwhile, capture 0 not registrable) drains the consumed entry and
           // goes cold.
           const claimed = yield* ensureCaptureZero(project.id, worktree.id).pipe(
-            Effect.andThen(capture.repo.claim(worktree.id, entry.id, LAUNCH_CLAIM_TTL_SECONDS)),
+            Effect.andThen(
+              capture.repo.claim(
+                worktree.id,
+                entry.id,
+                LAUNCH_CLAIM_TTL_SECONDS,
+                standbyLaunchIdOf(entry.id),
+              ),
+            ),
             Effect.result,
           );
           if (Result.isFailure(claimed)) {

@@ -5,6 +5,7 @@ import {
   CaptureStoreRepo,
   type CaptureRow,
   type PackRecord,
+  type WorktreeLease,
 } from "@mend/db";
 import { type ProjectId, WorktreeId } from "@mend/domain";
 import {
@@ -32,6 +33,7 @@ import {
   sectionFormatOf,
   type SectionFormat,
   treePrefixesOfSections,
+  verifyPackPayloads,
   verifySectionRestorable,
   verifyWorktreeMeta,
   sectionHoldsRawNames,
@@ -41,7 +43,7 @@ import {
   worktreeTreeOf,
   type WorktreeMetaDocument,
 } from "@mend/store";
-import { Duration, Effect, Layer, Option, Schema } from "effect";
+import { Duration, Effect, Layer, Option, Result, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { CaptureRemotes, type PlanRemote } from "./capture-remotes.ts";
@@ -96,8 +98,32 @@ export const PlanGetRequest = Schema.Struct({
    * than was saved or drops it from the captures it writes next. Absent = none.
    */
   manifest_features: Schema.optional(Schema.Array(Schema.String)),
+  /**
+   * The launch the executor says it is (cross-repo decision 11; sealantd round 4), from its first
+   * `plan.get` on: as its launcher named it, or as its own disk last recorded it. The token
+   * already names a launch; a request naming another is refused (409 `launch-mismatch`, which
+   * sealantd reads as a refusal of the boot) — an executor never plans, and so never holds a
+   * lease or seals, as a launch its token was not issued for. Absent = the executor does not
+   * say (an older daemon): the token alone decides.
+   */
+  launch: Schema.optional(Schema.String),
 });
 export type PlanGetRequest = typeof PlanGetRequest.Type;
+
+/**
+ * 409 `launch-mismatch`: the request names a launch other than the one the token was issued
+ * for. Nothing is claimed, planned or told.
+ */
+const refuseOtherLaunch = (input: PlanGetRequest, tokenLaunch: string) =>
+  input.launch === undefined || input.launch === tokenLaunch
+    ? Effect.void
+    : Effect.fail(
+        new CaptureRouteError({
+          status: 409,
+          reason: "launch-mismatch",
+          message: "the request names a launch this token was not issued for",
+        }),
+      );
 
 /**
  * What a manifest can say beyond its sections' formats, each of which a reader must act on:
@@ -324,9 +350,12 @@ export type HeartbeatRequest = typeof HeartbeatRequest.Type;
  * manifest names — nothing is registered. `manifest-format` (409 on `plan.get`): the head holds
  * a section format the executor did not say it reads — refused before the claim.
  * `manifest-features` (409 on `plan.get`): the head holds manifest features the executor did not
- * say it reads (`missing` names them) — refused before the claim.
+ * say it reads (`missing` names them) — refused before the claim. `launch-mismatch` (409 on
+ * `plan.get`): the request names a launch its token was not issued for — sealantd refuses its
+ * boot.
  */
 export const CaptureRefusalReason = Schema.Literals([
+  "launch-mismatch",
   "stale-epoch",
   "wrong-parent",
   "wrong-worktree",
@@ -826,6 +855,7 @@ export const CaptureChannelLive: Layer.Layer<
             message: "this standby token is scoped to its placeholder worktree",
           });
         }
+        yield* refuseOtherLaunch(input, scope.launchId ?? scope.executorId);
         const plan = yield* scope
           .plan(input.platform)
           .pipe(Effect.catch(() => storeError("preparing the standby plan")({ _tag: "plan" })));
@@ -894,16 +924,41 @@ export const CaptureChannelLive: Layer.Layer<
           used,
           requested,
         });
-      /** The lease predicate: live and under the caller's epoch, else the 409 the caller needs. */
+      /** This executor as the store binds a lease holder: its session and its launch. */
+      const holder = { executorId: scope.executorId, launchId };
+      /**
+       * The lease names another holder, or another launch of this one (cross-repo decision 11,
+       * review 2026-09-28 (4) #11): nothing this executor holds is the lease's, and it is told
+       * nothing of that lease's epoch. A lease bound to no launch (taken before leases were
+       * bound, or by Mend itself) is its holder's, whichever launch asks.
+       */
+      const heldByAnother = (lease: WorktreeLease) =>
+        lease.executorId !== scope.executorId ||
+        ((lease.launchId ?? null) !== null && lease.launchId !== launchId);
+      const leaseLost = () =>
+        new CaptureRouteError({
+          status: 409,
+          reason: "lease-lost",
+          message: "the worktree lease is not this executor's — stop shipping and pause",
+        });
+      /**
+       * The lease predicate: live, held by this executor's own launch and under the caller's
+       * epoch, else the 409 the caller needs.
+       */
       const requireLease = (epoch: number) =>
         Effect.gen(function* () {
           const lease = yield* repo.leaseOf(worktreeId);
+          if (lease !== null && lease.live && heldByAnother(lease)) return yield* leaseLost();
           if (lease === null || !lease.live) {
             return yield* new CaptureRouteError({
               status: 409,
               reason: "lease-lost",
               message: "the worktree lease is not live — stop shipping and pause",
-              ...(lease === null || lease.epoch === epoch ? {} : { live_epoch: lease.epoch }),
+              ...(lease === null ||
+              lease.epoch === epoch ||
+              (lease.executorId !== null && heldByAnother(lease))
+                ? {}
+                : { live_epoch: lease.epoch }),
             });
           }
           if (lease.epoch !== epoch) {
@@ -1010,21 +1065,23 @@ export const CaptureChannelLive: Layer.Layer<
 
       const planGet = Effect.fn("SessionCaptureApi.planGet")(function* (input: PlanGetRequest) {
         yield* requireWorktree(input.worktree_id);
+        yield* refuseOtherLaunch(input, launchId);
         const asked = input.epoch ?? 0;
         const reads = readerFormatOf(input);
         const lease = yield* repo.leaseOf(worktreeId);
         let held: number | null = null;
+        if (lease !== null && lease.live && heldByAnother(lease)) {
+          // Another executor holds it: a second executor for a leased worktree is refused
+          // (ADR-0002 "Decisions made here" 9); joins run inside the holder. Another launch of
+          // this very session is another executor (cross-repo decision 11): an older launch's
+          // token never learns or joins a newer launch's epoch, by asking zero or the epoch.
+          return yield* new CaptureRouteError({
+            status: 409,
+            reason: "worktree-leased",
+            message: "another executor holds this worktree's lease",
+          });
+        }
         if (lease !== null && lease.live && (asked === 0 || asked === lease.epoch)) {
-          if (asked === 0 && lease.executorId !== scope.executorId) {
-            // Another executor holds it: a second executor for a leased worktree is refused
-            // (ADR-0002 "Decisions made here" 9); joins run inside the holder.
-            return yield* new CaptureRouteError({
-              status: 409,
-              reason: "worktree-leased",
-              message: "another executor holds this worktree's lease",
-              live_epoch: lease.epoch,
-            });
-          }
           held = lease.epoch;
         } else if (lease !== null && lease.live) {
           return yield* new CaptureRouteError({
@@ -1069,7 +1126,7 @@ export const CaptureChannelLive: Layer.Layer<
           epoch = held;
         } else {
           // Not held: this plan is the claim (start, pickup, replacement — one path).
-          const claimed = yield* repo.claim(worktreeId, scope.executorId).pipe(
+          const claimed = yield* repo.claim(worktreeId, scope.executorId, undefined, launchId).pipe(
             Effect.mapError(
               () =>
                 new CaptureRouteError({
@@ -1799,7 +1856,43 @@ export const CaptureChannelLive: Layer.Layer<
             }
             return "verified" as const;
           });
-          const sealed = sealHolds && gitFsck === "verified" && metaNamespace === "verified";
+          // A seal says every section restores (review 2026-09-28 (4) #13): the chunk bytes
+          // themselves, not only the indexes naming them — every chunk of every pack the chunked
+          // sections list decompresses and hashes to what it names. A pack that does not is
+          // kept (its bytes may still be salvaged) and registered; nothing is sealed on it.
+          const payloads = !sealHolds
+            ? null
+            : yield* verifyPackPayloads(chunked.flatMap((section) => section.packs)).pipe(
+                Effect.provideService(BlobStore, blobs),
+                Effect.result,
+              );
+          if (payloads !== null && Result.isFailure(payloads)) {
+            const error = payloads.failure;
+            yield* Effect.logWarning(
+              "capture channel: a final seal over a pack whose chunks do not read · registered without it",
+            ).pipe(
+              Effect.annotateLogs({
+                worktreeId,
+                n: input.n,
+                captureId: input.capture_id,
+                epoch: input.epoch,
+                error: error._tag,
+                detail:
+                  error._tag === "CaptureFormatError"
+                    ? `${error.key}: ${error.reason}`
+                    : error._tag === "CaptureIntegrityError"
+                      ? `${error.key} does not hash to ${error.expected}`
+                      : error._tag === "ChunkNotFoundError"
+                        ? error.hash
+                        : error._tag === "BlobNotFoundError"
+                          ? error.key
+                          : error.message,
+              }),
+            );
+          }
+          const payloadsRead = payloads !== null && Result.isSuccess(payloads);
+          const sealed =
+            sealHolds && gitFsck === "verified" && metaNamespace === "verified" && payloadsRead;
           if (sealHolds && !sealed) {
             yield* Effect.logWarning(
               "capture channel: a final seal over sections not verified restorable · registered without it",
@@ -1811,12 +1904,14 @@ export const CaptureChannelLive: Layer.Layer<
                 epoch: input.epoch,
                 gitFsck,
                 worktreeMeta: metaNamespace,
+                chunkPayloads: payloadsRead ? "read" : "not read",
               }),
             );
           }
           const outcome = yield* repo
             .register({
               ...(sealed ? { seal: { executorId: launchId, holder: scope.executorId } } : {}),
+              holder,
               worktreeId,
               id: input.capture_id,
               n: input.n,
@@ -1900,9 +1995,17 @@ export const CaptureChannelLive: Layer.Layer<
         input: HeartbeatRequest,
       ) {
         yield* requireWorktree(input.worktree_id);
-        const renewed = yield* repo.heartbeat(worktreeId, input.epoch);
+        const renewed = yield* repo.heartbeat(worktreeId, input.epoch, undefined, holder);
         if (renewed) return { expires_in_secs: LEASE_EXPIRES_IN_SECS };
         const lease = yield* repo.leaseOf(worktreeId);
+        // Another launch's lease: nothing of it is told (cross-repo decision 11).
+        if (lease !== null && lease.executorId !== null && heldByAnother(lease)) {
+          return yield* new CaptureRouteError({
+            status: 404,
+            reason: "lease-lost",
+            message: "the worktree lease is not this executor's — stop shipping and pause",
+          });
+        }
         if (lease !== null && lease.epoch !== input.epoch) {
           return yield* new CaptureRouteError({
             status: 409,

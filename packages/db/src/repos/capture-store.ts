@@ -106,6 +106,24 @@ export interface RegisterCapture {
    * nothing.
    */
   readonly seal?: { readonly executorId: string; readonly holder: string };
+  /**
+   * Who registers: the lease holder and the physical launch its token names (cross-repo
+   * decision 11). The CAS lands only while the live lease names that holder and that launch
+   * (or no launch — a lease taken before leases were bound to one). Absent: Mend's own writes
+   * under its short `mend:` claim.
+   */
+  readonly holder?: LeaseHolder;
+}
+
+/**
+ * A lease holder as the store binds it (cross-repo decision 11, review 2026-09-28 (4) #11): the
+ * session (or Mend's `mend:` claim) and the physical launch — the executor's create key — whose
+ * token it is. An older launch of the same session is another holder: it never learns, renews or
+ * ships under a newer launch's epoch.
+ */
+export interface LeaseHolder {
+  readonly executorId: string;
+  readonly launchId: string;
 }
 
 /**
@@ -149,6 +167,11 @@ export interface DeletionClaim {
 export interface WorktreeLease {
   readonly worktreeId: WorktreeId;
   readonly executorId: string | null;
+  /**
+   * The physical launch the lease is bound to (migration 0085); null for Mend's own `mend:`
+   * claims and a lease taken before leases were bound to a launch. Absent reads null.
+   */
+  readonly launchId?: string | null;
   readonly epoch: number;
   readonly expiresAt: Date | null;
   /** `expires_at > now()` as the database sees it. */
@@ -192,12 +215,22 @@ export class CaptureStoreRepo extends Context.Service<
       worktreeId: WorktreeId,
       executorId: string,
       ttlSeconds?: number,
+      /**
+       * The physical launch taking it (cross-repo decision 11): recorded on the lease, and a
+       * lapsed lease of the same holder is taken again only by the launch it names (or one it
+       * never bound). Absent: Mend's own claims, bound to no launch.
+       */
+      launchId?: string,
     ) => Effect.Effect<{ readonly epoch: number }, WorktreeLeasedError>;
-    /** Renew under the holder's epoch; false = the lease is gone (stop shipping, pause). */
+    /**
+     * Renew under the holder's epoch; false = the lease is gone (stop shipping, pause). With
+     * `holder`, only while the lease names that holder and that launch (or no launch).
+     */
     readonly heartbeat: (
       worktreeId: WorktreeId,
       epoch: number,
       ttlSeconds?: number,
+      holder?: LeaseHolder,
     ) => Effect.Effect<boolean>;
     /**
      * The only write that advances truth. `lostAck` is true when the chain already stood at
@@ -335,7 +368,9 @@ export const CaptureStoreRepoLive: Layer.Layer<
       worktreeId: WorktreeId,
       executorId: string,
       ttlSeconds: number = LEASE_TTL_SECONDS,
+      launchId?: string,
     ) {
+      const launch = launchId ?? null;
       // A concurrent claimer re-evaluates WHERE after the row lock; the chain learns the new
       // epoch in the same statement, so a stale register cannot land between this claim and
       // the new executor's first register.
@@ -343,12 +378,16 @@ export const CaptureStoreRepoLive: Layer.Layer<
         WITH l AS (
           UPDATE worktree_leases
              SET executor_id = ${executorId},
+                 launch_id = ${launch}::text,
                  epoch = epoch + 1,
                  expires_at = now() + make_interval(secs => ${ttlSeconds})
            WHERE worktree_id = ${worktreeId}
              AND (expires_at IS NULL OR expires_at < now())
              AND (executor_id IS NULL
-                  OR executor_id = ${executorId}
+                  OR (executor_id = ${executorId}
+                      AND (launch_id IS NULL
+                           OR ${launch}::text IS NULL
+                           OR launch_id = ${launch}::text))
                   OR executor_id LIKE 'mend:%')
            RETURNING epoch
         )
@@ -366,11 +405,15 @@ export const CaptureStoreRepoLive: Layer.Layer<
       worktreeId: WorktreeId,
       epoch: number,
       ttlSeconds: number = LEASE_TTL_SECONDS,
+      holder?: LeaseHolder,
     ) {
       const rows = yield* sql<{ readonly worktreeId: string }>`
         UPDATE worktree_leases
            SET expires_at = now() + make_interval(secs => ${ttlSeconds})
          WHERE worktree_id = ${worktreeId} AND epoch = ${epoch} AND executor_id IS NOT NULL
+           AND (${holder === undefined}::boolean
+                OR (executor_id = ${holder?.executorId ?? ""}
+                    AND (launch_id IS NULL OR launch_id = ${holder?.launchId ?? ""})))
          RETURNING worktree_id`.pipe(Effect.orDie);
       return rows.length > 0;
     });
@@ -390,6 +433,11 @@ export const CaptureStoreRepoLive: Layer.Layer<
       const names = JSON.stringify(capture.names ?? []);
       const sealExecutor = capture.seal?.executorId ?? "";
       const sealHolder = capture.seal?.holder ?? "";
+      // The launch registering (cross-repo decision 11): an older launch of the holder never
+      // lands under a newer launch's epoch, whatever it learnt of it.
+      const holderGiven = capture.holder !== undefined;
+      const holderExecutor = capture.holder?.executorId ?? "";
+      const holderLaunch = capture.holder?.launchId ?? "";
       const rows = yield* sql<{ readonly id: string }>`
         WITH expected AS (
           SELECT e.worktree_id, e.guard
@@ -418,7 +466,10 @@ export const CaptureStoreRepoLive: Layer.Layer<
                 WHERE t.key IN (SELECT jsonb_array_elements_text(${names}::jsonb)))
              AND ${capture.epoch} = (
                SELECT epoch FROM worktree_leases
-                WHERE worktree_id = ${capture.worktreeId} AND expires_at > now())
+                WHERE worktree_id = ${capture.worktreeId} AND expires_at > now()
+                  AND (NOT ${holderGiven}::boolean
+                       OR (executor_id = ${holderExecutor}
+                           AND (launch_id IS NULL OR launch_id = ${holderLaunch}))))
            RETURNING worktree_id
         ),
         sealed AS (
@@ -426,8 +477,11 @@ export const CaptureStoreRepoLive: Layer.Layer<
           SELECT ${capture.worktreeId}, ${capture.epoch}, ${sealExecutor}, ${capture.id}, ${capture.n}
             FROM ch
            WHERE ${capture.seal !== undefined}::boolean
-             AND ${sealHolder} = (
-               SELECT executor_id FROM worktree_leases WHERE worktree_id = ${capture.worktreeId})
+             AND EXISTS (
+               SELECT 1 FROM worktree_leases
+                WHERE worktree_id = ${capture.worktreeId}
+                  AND executor_id = ${sealHolder}
+                  AND (launch_id IS NULL OR launch_id = ${sealExecutor}))
           ON CONFLICT (worktree_id, epoch) DO UPDATE
              SET executor_id = EXCLUDED.executor_id, capture_id = EXCLUDED.capture_id,
                  n = EXCLUDED.n, sealed_at = now()
@@ -454,7 +508,10 @@ export const CaptureStoreRepoLive: Layer.Layer<
                ch.head_n,
                ch.head_capture,
                (SELECT epoch::int FROM worktree_leases
-                 WHERE worktree_id = ${capture.worktreeId} AND expires_at > now()) AS lease_epoch
+                 WHERE worktree_id = ${capture.worktreeId} AND expires_at > now()
+                   AND (NOT ${holderGiven}::boolean
+                        OR (executor_id = ${holderExecutor}
+                            AND (launch_id IS NULL OR launch_id = ${holderLaunch})))) AS lease_epoch
           FROM worktree_chain ch
           LEFT JOIN captures c
             ON c.worktree_id = ch.worktree_id AND c.n = ${capture.n}
@@ -483,7 +540,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
     ) {
       const rows = yield* sql<{ readonly worktreeId: string }>`
         UPDATE worktree_leases
-           SET expires_at = now(), executor_id = NULL
+           SET expires_at = now(), executor_id = NULL, launch_id = NULL
          WHERE worktree_id = ${worktreeId} AND epoch = ${epoch}
          RETURNING worktree_id`.pipe(Effect.orDie);
       return rows.length > 0;
@@ -534,11 +591,12 @@ export const CaptureStoreRepoLive: Layer.Layer<
       const [row] = yield* sql<{
         readonly worktreeId: WorktreeId;
         readonly executorId: string | null;
+        readonly launchId: string | null;
         readonly epoch: number;
         readonly expiresAt: Date | null;
         readonly live: boolean;
       }>`
-        SELECT worktree_id, executor_id, epoch::int AS epoch, expires_at,
+        SELECT worktree_id, executor_id, launch_id, epoch::int AS epoch, expires_at,
                (expires_at IS NOT NULL AND expires_at > now()) AS live
           FROM worktree_leases WHERE worktree_id = ${worktreeId}`.pipe(Effect.orDie);
       return row === undefined
@@ -546,6 +604,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
         : {
             worktreeId: row.worktreeId,
             executorId: row.executorId,
+            launchId: row.launchId,
             epoch: Number(row.epoch),
             expiresAt: row.expiresAt,
             live: row.live,

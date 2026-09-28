@@ -100,6 +100,17 @@ export interface CaptureSavedObservation {
   readonly epoch: number | null;
 }
 
+/**
+ * An executor's answer that said it held work not saved (`captureUnsavedWordsOf`): which
+ * executor, when Mend took it, and in what words. The latest one stands; taken after a completed
+ * final flush or a seal, it revokes that save (cross-repo decision 10).
+ */
+export interface CaptureUnsavedObservation {
+  readonly workspaceId: string;
+  readonly at: Date;
+  readonly words: string;
+}
+
 /** The owner's "discard unsaved and stop", as the session keeps it: when, and who. */
 export interface CaptureDiscard {
   readonly at: Date;
@@ -229,6 +240,16 @@ export class SessionsRepo extends Context.Service<
      * status alone, so a picked-up session would otherwise keep reading the loss.
      */
     readonly setSummary: (id: SessionId, summary: string | null) => Effect.Effect<void>;
+    /**
+     * A settled session's outcome and summary, rewritten from what was observed since it settled
+     * (its executor saved after all, ended later, or was never made): the latest observation is
+     * what it reads. Only while it stays settled — a session that reopened keeps its live status.
+     */
+    readonly restate: (
+      id: SessionId,
+      outcome: SessionOutcome,
+      summary: string | null,
+    ) => Effect.Effect<void>;
     readonly setLabel: (id: SessionId, label: string | null) => Effect.Effect<void>;
     /** Share control as `enabledByUserId`, or stop sharing with null; answers the updated row. */
     readonly setSharedControl: (
@@ -297,6 +318,17 @@ export class SessionsRepo extends Context.Service<
     ) => Effect.Effect<void>;
     /** The last completed final flush Mend observed for this session's executors, or null. */
     readonly captureSavedOf: (id: SessionId) => Effect.Effect<CaptureSavedObservation | null>;
+    /**
+     * An executor answered that it held unsaved work (pending, incomplete, unreadable, a failing
+     * snap, bulk changed): the latest such answer stands. Nothing takes it back — a newer
+     * completed final flush stands over it by being newer.
+     */
+    readonly recordCaptureUnsaved: (
+      id: SessionId,
+      unsaved: CaptureUnsavedObservation,
+    ) => Effect.Effect<void>;
+    /** The latest unsaved answer Mend observed from this session's executors, or null. */
+    readonly captureUnsavedOf: (id: SessionId) => Effect.Effect<CaptureUnsavedObservation | null>;
     /** Something moved: the stall window starts again and `not saved` clears. */
     readonly recordCaptureDrainProgress: (id: SessionId, at: Date) => Effect.Effect<void>;
     /** Nothing moved for the stall window: true only for the write that set it (one alert). */
@@ -408,6 +440,9 @@ type SessionBookkeepingColumns =
   | "captureSavedAt"
   | "captureSavedN"
   | "captureSavedEpoch"
+  | "captureUnsavedWorkspaceId"
+  | "captureUnsavedAt"
+  | "captureUnsavedDetail"
   | "executorResourceId"
   | "executorCreateKey"
   | "executorLaunchId";
@@ -832,6 +867,19 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         yield* notify(id);
       });
 
+      const restate = Effect.fn("SessionsRepo.restate")(function* (
+        id: SessionId,
+        outcome: SessionOutcome,
+        summary: string | null,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({ status: outcome, summary, updatedAt: new Date() })
+          .where(and(eq(agentSessions.id, id), isNotNull(agentSessions.settledAt)))
+          .pipe(Effect.orDie);
+        yield* notify(id);
+      });
+
       /** A session is a continuous piece of work; the harness is the tool currently driving it. */
       const setLabel = Effect.fn("SessionsRepo.setLabel")(function* (
         id: SessionId,
@@ -1186,6 +1234,38 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return { workspaceId: row.workspaceId, at: row.at, n: row.n, epoch: row.epoch };
       });
 
+      const recordCaptureUnsaved = Effect.fn("SessionsRepo.recordCaptureUnsaved")(function* (
+        id: SessionId,
+        unsaved: CaptureUnsavedObservation,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({
+            captureUnsavedWorkspaceId: unsaved.workspaceId,
+            captureUnsavedAt: unsaved.at,
+            captureUnsavedDetail: unsaved.words,
+          })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+      });
+
+      const captureUnsavedOf = Effect.fn("SessionsRepo.captureUnsavedOf")(function* (
+        id: SessionId,
+      ) {
+        const [row] = yield* db
+          .select({
+            workspaceId: agentSessions.captureUnsavedWorkspaceId,
+            at: agentSessions.captureUnsavedAt,
+            words: agentSessions.captureUnsavedDetail,
+          })
+          .from(agentSessions)
+          .where(eq(agentSessions.id, id))
+          .limit(1)
+          .pipe(Effect.orDie);
+        if (row === undefined || row.workspaceId === null || row.at === null) return null;
+        return { workspaceId: row.workspaceId, at: row.at, words: row.words ?? "not saved" };
+      });
+
       const recordCaptureDrainProgress = Effect.fn("SessionsRepo.recordCaptureDrainProgress")(
         function* (id: SessionId, at: Date) {
           yield* db
@@ -1439,6 +1519,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         claimIdleStop,
         releaseIdleStop,
         setSummary,
+        restate,
         setLabel,
         setSharedControl,
         disableSharedControlForOwner,
@@ -1455,6 +1536,8 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         finalFlushedWorkspace,
         recordCaptureSaved,
         captureSavedOf,
+        recordCaptureUnsaved,
+        captureUnsavedOf,
         recordCaptureDrainProgress,
         markCaptureNotSaved,
         endCaptureDrain,

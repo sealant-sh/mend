@@ -130,6 +130,13 @@ export interface CaptureCompletionAttestation {
    * attestation whose launch is not the one the executor's create named (Core's next SDK).
    */
   readonly launchId?: string;
+  /**
+   * When the store recorded the seal (ISO 8601), beside its chain position `captureN`: what
+   * Core weighs against its own latest observation of the executor — an attestation older than
+   * an answer Core received that said the executor held unsaved work does not stand (cross-repo
+   * decision 10). An SDK or a Core that does not read it ignores it.
+   */
+  readonly sealedAt?: string;
 }
 
 /**
@@ -154,8 +161,14 @@ interface StoppableWorkspace {
   readonly stop: (options?: WorkspaceStopOptions) => Promise<unknown>;
 }
 
-const stopWith = (workspace: StoppableWorkspace, options: WorkspaceStopOptions | undefined) =>
-  options === undefined ? workspace.stop() : workspace.stop(options);
+/**
+ * `workspace.stop(options)` as Mend sends it: the options exactly as given — the completion
+ * attestation whole, `sealedAt` included — or no argument at all when there are none.
+ */
+export const stopWith = (
+  workspace: StoppableWorkspace,
+  options: WorkspaceStopOptions | undefined,
+) => (options === undefined ? workspace.stop() : workspace.stop(options));
 
 /** A capture surface that can read its status without flushing (Core's next SDK). */
 interface CaptureStatusReadable {

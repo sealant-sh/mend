@@ -1,5 +1,7 @@
-import { Effect, Layer } from "effect";
+import { DiscardUnsavedRequest } from "@mend/api-contracts";
+import { Effect, Layer, Schema } from "effect";
 import { HttpRouter, HttpServer, HttpServerResponse } from "effect/unstable/http";
+import { HttpApi, HttpApiBuilder, HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
 import { afterEach, describe, expect, it } from "vitest";
 
 import { errorBoundary, redactErrorBody } from "./error-boundary.ts";
@@ -131,5 +133,49 @@ describe("the error boundary", () => {
       message: "at <path>/repo.git",
       causes: [{ stderr: "in <path>/repo.git", code: 128 }],
     });
+  });
+});
+
+describe("a request that does not decode (e2e run 6)", () => {
+  const DiscardApi = HttpApi.make("discard").add(
+    HttpApiGroup.make("sessions").add(
+      HttpApiEndpoint.post("discardUnsaved", "/sessions/:id/discard-unsaved", {
+        params: { id: Schema.String },
+        payload: DiscardUnsavedRequest,
+        success: Schema.String,
+      }),
+    ),
+  );
+  const serveApi = () => {
+    const routes = HttpApiBuilder.group(DiscardApi, "sessions", (handlers) =>
+      handlers.handle("discardUnsaved", () => Effect.succeed("discarded")),
+    );
+    const app = HttpApiBuilder.layer(DiscardApi).pipe(
+      Layer.provide(routes),
+      Layer.provide(errorBoundary({ mode: "redacted" })),
+      Layer.provide(HttpServer.layerServices),
+    );
+    const { handler, dispose } = HttpRouter.toWebHandler(app, { disableLogger: true });
+    disposers.push(dispose);
+    return (body: unknown) =>
+      handler(
+        new Request("http://api.internal/sessions/s-1/discard-unsaved", {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify(body),
+        }),
+      );
+  };
+
+  it("a discard without its confirmation is the client's 400, never a 500", async () => {
+    const post = serveApi();
+    const refused = await post({});
+    expect(refused.status).toBe(400);
+    expect(await refused.json()).toEqual({
+      _tag: "BadRequest",
+      message: "the request's payload is not what this route takes",
+    });
+    const confirmed = await post({ confirm: "discard unsaved" });
+    expect(confirmed.status).toBe(200);
   });
 });

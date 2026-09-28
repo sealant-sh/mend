@@ -7,6 +7,8 @@ import {
   platformErrorCode,
   runtimeDeadlineOf,
   runtimeResourceIdOf,
+  stopWith,
+  type WorkspaceStopOptions,
   workspaceByKeyOf,
   fenceWorkspaceCreateOf,
   workspaceStopAnswerOf,
@@ -261,5 +263,29 @@ describe("fenceWorkspaceCreateOf", () => {
     await expect(
       Effect.runPromise(fenceWorkspaceCreateOf({ findByIdempotencyKey: async () => null }, "k")),
     ).resolves.toEqual({ kind: "unsupported" });
+  });
+});
+
+describe("stopWith", () => {
+  it("hands Core the completion attestation whole, the seal's time with it; no options, no argument", async () => {
+    const asked: Array<ReadonlyArray<unknown>> = [];
+    const workspace = {
+      stop: (...args: ReadonlyArray<unknown>) => {
+        asked.push(args);
+        return Promise.resolve(undefined);
+      },
+    };
+    const options: WorkspaceStopOptions = {
+      completion: {
+        captureN: 41,
+        epoch: 3,
+        executorId: "container-7f3a",
+        launchId: "launch:s:1:k",
+        sealedAt: "2026-09-28T00:00:11.000Z",
+      },
+    };
+    await stopWith(workspace, options);
+    await stopWith(workspace, undefined);
+    expect(asked).toEqual([[options], []]);
   });
 });

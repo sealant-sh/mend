@@ -1726,6 +1726,57 @@ const chunkSizesOf = (
     return sizes;
   });
 
+/**
+ * Pack keys whose every chunk was decompressed and hashed (`verifyPackPayloads`). A key is the
+ * sha256 of the pack's bytes and a condemned key is never written again, so a key verified once
+ * stays verified; bounded, the oldest dropped first.
+ */
+const PAYLOAD_VERIFIED_KEYS = 200_000;
+const payloadVerified = new Set<string>();
+
+const rememberPayloadVerified = (key: string) => {
+  payloadVerified.delete(key);
+  payloadVerified.add(key);
+  for (const oldest of payloadVerified) {
+    if (payloadVerified.size <= PAYLOAD_VERIFIED_KEYS) break;
+    payloadVerified.delete(oldest);
+  }
+};
+
+/**
+ * Establish that every chunk of every pack in `keys` is readable, without restoring anything:
+ * the pack's bytes hash to its key, its index lies inside it, and every entry decompresses to
+ * the size it states and hashes to the chunk it names (`readChunk`). What a restore needs of the
+ * bytes, where `verifySectionRestorable` checks only the indexes: a pack can carry a valid index
+ * and the right key while a frame inside it does not decode (review 2026-09-28 (4) #13). Packs
+ * are read one at a time; a key verified before is not read again.
+ */
+export const verifyPackPayloads = (
+  keys: ReadonlyArray<string>,
+): Effect.Effect<
+  { readonly packs: number; readonly chunks: number },
+  CaptureReadError,
+  BlobStore
+> =>
+  Effect.gen(function* () {
+    const store = yield* BlobStore;
+    let packs = 0;
+    let chunks = 0;
+    for (const key of new Set(keys)) {
+      if (payloadVerified.has(key)) continue;
+      const bytes = yield* store.get(key);
+      yield* verifyDigest(key, bytes);
+      const entries = yield* readPackIndex(key, bytes);
+      for (const entry of entries) {
+        yield* readChunk(key, bytes, entry);
+        chunks += 1;
+      }
+      packs += 1;
+      rememberPayloadVerified(key);
+    }
+    return { packs, chunks };
+  });
+
 /** What a restorability check walked. */
 export interface SectionCheck {
   readonly dirs: number;
@@ -1747,7 +1798,8 @@ const PACK_INDEX_READS_IN_FLIGHT = 8;
  * acknowledged (`capture-channel.ts`), so a capture Mend accepted is one it can restore.
  *
  * Chunk bytes are not decompressed: the packs are content-addressed and verified whole on every
- * restore; this check reads only their trailing indexes (cached by key), and the dir objects.
+ * restore; this check reads only their trailing indexes (cached by key), and the dir objects. A
+ * register that would seal reads the bytes too (`verifyPackPayloads`).
  */
 export const verifySectionRestorable = (
   section: ChunkedSection,

@@ -32,7 +32,9 @@ import {
   MANIFEST_FEATURES,
   CaptureUploadPolicy,
   CaptureUploadPolicyDefault,
+  dispatchCaptureRoute,
   resolveCaptureUploadPolicy,
+  type SessionCaptureApi,
 } from "../src/capture-channel.ts";
 import { CaptureRemotesOff } from "../src/capture-remotes.ts";
 import { CaptureSourcesOff } from "../src/capture-sources.ts";
@@ -1167,5 +1169,296 @@ describe("plan.get hands a head only to an executor that reads what it means (ma
       samePlatform: "ok",
       otherPlatform: "CaptureRouteError:manifest-features",
     });
+  });
+});
+
+describe("a lease is held by a launch (review 2026-09-28 (4) #11, cross-repo decision 11)", () => {
+  const planAsk = { epoch: 0, manifest_format: 2, manifest_features: MANIFEST_FEATURES };
+
+  it("an older launch's token of the same session never learns, renews or registers under the replacement's epoch", async () => {
+    const wt = WorktreeId.make("wt-stale-launch");
+    const world = worldOf(2, verifierObserving({}));
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.init(wt);
+        const oldApi = yield* apiOf(wt, "session-1", "launch-old");
+        const newApi = yield* apiOf(wt, "session-1", "launch-new");
+        const oldPlan = yield* oldApi.planGet(planAsk);
+        // The old executor's end was observed: its lease released, the replacement claims.
+        yield* repo.release(wt, oldPlan.epoch);
+        const newPlan = yield* newApi.planGet(planAsk);
+        // The old launch asks again, by zero and by the replacement's epoch.
+        const staleByZero = yield* outcome(oldApi.planGet(planAsk));
+        const staleByEpoch = yield* outcome(oldApi.planGet({ ...planAsk, epoch: newPlan.epoch }));
+        const staleHeartbeat = yield* outcome(
+          oldApi.heartbeat({ worktree_id: wt, epoch: newPlan.epoch }),
+        );
+        const staleUpload = yield* outcome(
+          oldApi.uploadUrls({
+            worktree_id: wt,
+            epoch: newPlan.epoch,
+            keys: [captureKeys(wt, newPlan.epoch).pack("a".repeat(64))],
+          }),
+        );
+        // Its bytes, sealed as its own, registered under the replacement's epoch.
+        const source = freshDir("stale-launch-content");
+        fs.writeFileSync(path.join(source, "work.txt"), "bytes from the retired executor");
+        const snapshot = snapshotDirectory(source, captureKeys(wt, newPlan.epoch), { format: 2 });
+        const built = buildManifest({
+          worktreeId: wt,
+          epoch: newPlan.epoch,
+          n: 0,
+          parent: null,
+          kind: "final",
+          workspace: sectionOf(snapshot),
+        });
+        const manifest = {
+          ...built.manifest,
+          final_seal: { complete: true, epoch: newPlan.epoch, executor: "launch-old" },
+        };
+        const bytes = utf8(JSON.stringify(manifest));
+        const id = sha256Hex(bytes);
+        const key = captureKeys(wt, newPlan.epoch).manifest(id);
+        yield* uploadObjects(new Map([...snapshot.objects, [key, bytes]]));
+        const registered = yield* outcome(
+          oldApi.register({
+            worktree_id: wt,
+            epoch: newPlan.epoch,
+            n: 0,
+            parent: null,
+            capture_id: id,
+            manifest_key: key,
+            manifest,
+          }),
+        );
+        const seal = yield* repo.sealedCompletion(wt, "launch-old", newPlan.epoch);
+        // The replacement's own lease is untouched and renews.
+        const newHeartbeat = yield* outcome(
+          newApi.heartbeat({ worktree_id: wt, epoch: newPlan.epoch }),
+        );
+        return {
+          oldEpoch: oldPlan.epoch,
+          newEpoch: newPlan.epoch,
+          staleByZero,
+          staleByEpoch,
+          staleHeartbeat,
+          staleUpload,
+          registered,
+          seal,
+          newHeartbeat,
+          head: (yield* repo.headOf(wt))?.head ?? null,
+        };
+      }).pipe(Effect.provide(world.layer)),
+    );
+    expect(result.newEpoch).toBeGreaterThan(result.oldEpoch);
+    expect(result.staleByZero).toBe("CaptureRouteError:worktree-leased");
+    expect(result.staleByEpoch).toBe("CaptureRouteError:worktree-leased");
+    expect(result.staleHeartbeat).toBe("CaptureRouteError:lease-lost");
+    expect(result.staleUpload).toBe("CaptureRouteError:lease-lost");
+    expect(result.registered).toBe("CaptureRouteError:lease-lost");
+    expect(result.seal).toBeNull();
+    expect(result.head).toBeNull();
+    expect(result.newHeartbeat).toBe("ok");
+  });
+
+  it("the store refuses a register and a heartbeat of another launch under a held epoch, whoever calls it", async () => {
+    const wt = WorktreeId.make("wt-store-launch");
+    const world = worldOf(2, verifierObserving({}));
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.init(wt);
+        // A claim that lapsed at once: only its own launch takes it again.
+        yield* repo.claim(wt, "session-1", 0, "launch-new");
+        const retake = yield* outcome(repo.claim(wt, "session-1", 30, "launch-old"));
+        const claimed = yield* repo.claim(wt, "session-1", 30, "launch-new");
+        const beat = yield* repo.heartbeat(wt, claimed.epoch, 30, {
+          executorId: "session-1",
+          launchId: "launch-old",
+        });
+        const own = yield* repo.heartbeat(wt, claimed.epoch, 30, {
+          executorId: "session-1",
+          launchId: "launch-new",
+        });
+        return { retake, claimed, beat, own, lease: yield* repo.leaseOf(wt) };
+      }).pipe(Effect.provide(world.layer)),
+    );
+    expect(result.retake).toBe("WorktreeLeasedError");
+    expect(result.claimed.epoch).toBe(2);
+    expect(result.beat).toBe(false);
+    expect(result.own).toBe(true);
+    expect(result.lease?.launchId).toBe("launch-new");
+  });
+});
+
+describe("a seal rests on chunk bytes that read (review 2026-09-28 (4) #13)", () => {
+  const sealedRegister = (wt: WorktreeId, corrupt: boolean) =>
+    Effect.gen(function* () {
+      const body = utf8(`irreplaceable content ${corrupt ? "damaged" : "intact"}`);
+      const entry: DirEntry = {
+        name: "unique.txt",
+        kind: "file",
+        mode: 0o100644,
+        size: body.length,
+        mtime: 1,
+        chunks: [sha256Hex(body)],
+      };
+      const source = handWorkspace(wt, 1, [entry], [body]);
+      const packKey = source.workspace.packs[0] ?? "";
+      const packBytes = source.objects.get(packKey);
+      if (packBytes === undefined) throw new Error("no content pack");
+      const objects = new Map(source.objects);
+      let workspace = source.workspace;
+      if (corrupt) {
+        // The frame's first byte flipped, the index intact, the whole pack keyed by its new
+        // digest: content addressing alone holds.
+        const damaged = new Uint8Array(packBytes);
+        damaged[0] = (damaged[0] ?? 0) ^ 0xff;
+        const damagedKey = captureKeys(wt, 1).pack(sha256Hex(damaged));
+        objects.delete(packKey);
+        objects.set(damagedKey, damaged);
+        workspace = { ...source.workspace, packs: [damagedKey] };
+      }
+      const base = buildManifest({
+        worktreeId: wt,
+        epoch: 1,
+        n: 0,
+        parent: null,
+        kind: "final",
+        workspace,
+        bulk: { root: "", packs: [], platform: "linux-x86_64-glibc" },
+      });
+      const manifest = {
+        ...base.manifest,
+        final_seal: { complete: true, epoch: 1, executor: "executor" },
+      };
+      const bytes = utf8(JSON.stringify(manifest));
+      const id = sha256Hex(bytes);
+      const key = captureKeys(wt, 1).manifest(id);
+      const repo = yield* CaptureStoreRepo;
+      yield* repo.init(wt);
+      yield* repo.claim(wt, "executor");
+      const api = yield* apiOf(wt);
+      yield* uploadObjects(new Map([...objects, [key, bytes]]));
+      const registered = yield* outcome(
+        api.register({
+          worktree_id: wt,
+          epoch: 1,
+          n: 0,
+          parent: null,
+          capture_id: id,
+          manifest_key: key,
+          manifest,
+        }),
+      );
+      const seal = yield* repo.sealedCompletion(wt, "executor", 1);
+      const head = (yield* repo.headOf(wt))?.head ?? null;
+      return { registered, sealed: seal?.captureId === id, headId: head?.id ?? null, id };
+    });
+
+  it("a content-addressed pack whose compressed frame does not decode registers (kept for salvage) and seals nothing", async () => {
+    const world = worldOf(2, verifierObserving({}));
+    const result = await Effect.runPromise(
+      sealedRegister(WorktreeId.make("wt-bad-chunk"), true).pipe(Effect.provide(world.layer)),
+    );
+    expect(result.registered).toBe("ok");
+    expect(result.headId).toBe(result.id);
+    expect(result.sealed).toBe(false);
+  });
+
+  it("the same capture over intact bytes is sealed", async () => {
+    const world = worldOf(2, verifierObserving({}));
+    const result = await Effect.runPromise(
+      sealedRegister(WorktreeId.make("wt-good-chunk"), false).pipe(Effect.provide(world.layer)),
+    );
+    expect(result.registered).toBe("ok");
+    expect(result.sealed).toBe(true);
+  });
+});
+
+/** One route through the dispatcher: the request decoded as it arrives off the wire. */
+const routedPlan = (api: SessionCaptureApi, body: unknown) =>
+  Effect.promise(
+    () =>
+      new Promise<{ status: number; json: Record<string, unknown> }>((resolve) => {
+        void dispatchCaptureRoute(api, "/plan.get", body, (status, payload) =>
+          resolve({ status, json: JSON.parse(JSON.stringify(payload)) }),
+        );
+      }),
+  );
+
+describe("plan.get, as sealantd round 4 asks it", () => {
+  it("every answer lists all six manifest features — sealantd answers `store-fidelity` to any FINAL otherwise", async () => {
+    const world = worldOf();
+    const wt = WorktreeId.make("wt-plan-features");
+    const answers = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.init(wt);
+        const api = yield* apiOf(wt, "exec-features", "launch-features");
+        const empty = yield* routedPlan(api, { epoch: 0, manifest_format: 2 });
+        const zero = buildManifest({ worktreeId: wt, epoch: 1, n: 0, parent: null });
+        yield* uploadObjects(new Map([[zero.key, zero.bytes]]));
+        yield* api.register(registerInput(zero));
+        const overHead = yield* routedPlan(api, { epoch: 1, manifest_format: 2 });
+        const standby = (yield* CaptureChannel).standbyApiFor({
+          alias: "standby",
+          projectId: ProjectId.make("p"),
+          executorId: "standby-exec",
+          epoch: 7,
+          plan: () =>
+            Effect.succeed({ captureId: zero.id, manifestKey: zero.key, manifest: zero.manifest }),
+        });
+        const onStandby = yield* routedPlan(standby, { manifest_format: 2 });
+        return [empty, overHead, onStandby];
+      }).pipe(Effect.provide(world.layer)),
+    );
+    for (const answer of answers) {
+      expect(answer.status).toBe(200);
+      expect(answer.json["manifest_features"]).toEqual([
+        "worktree_meta",
+        "symrefs",
+        "other_bulk",
+        "raw_names",
+        "final_seal",
+        "git_trees",
+      ]);
+    }
+  });
+
+  it("a request naming a launch its token was not issued for is refused 409 `launch-mismatch`, before any claim; its own launch, or none, plans", async () => {
+    const world = worldOf();
+    const wt = WorktreeId.make("wt-plan-launch");
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.init(wt);
+        const api = yield* apiOf(wt, "session-1", "launch-a");
+        const other = yield* routedPlan(api, { epoch: 0, manifest_format: 2, launch: "launch-b" });
+        const leaseAfterRefusal = yield* repo.leaseOf(wt);
+        const own = yield* routedPlan(api, { epoch: 0, manifest_format: 2, launch: "launch-a" });
+        const unnamed = yield* routedPlan(api, { epoch: 0, manifest_format: 2 });
+        const standby = (yield* CaptureChannel).standbyApiFor({
+          alias: "standby",
+          projectId: ProjectId.make("p"),
+          executorId: "standby-exec",
+          launchId: "standby-launch",
+          epoch: 7,
+          plan: () => Effect.die("never planned"),
+        });
+        const standbyOther = yield* routedPlan(standby, { manifest_format: 2, launch: "launch-a" });
+        return { other, leaseAfterRefusal, own, unnamed, standbyOther };
+      }).pipe(Effect.provide(world.layer)),
+    );
+    expect(result.other.status).toBe(409);
+    expect(result.other.json["reason"]).toBe("launch-mismatch");
+    expect(result.other.json["live_epoch"]).toBeUndefined();
+    expect(result.leaseAfterRefusal?.executorId ?? null).toBeNull();
+    expect(result.own.status).toBe(200);
+    expect(result.own.json["executor"]).toBe("launch-a");
+    expect(result.unnamed.status).toBe(200);
+    expect(result.standbyOther.status).toBe(409);
+    expect(result.standbyOther.json["reason"]).toBe("launch-mismatch");
   });
 });

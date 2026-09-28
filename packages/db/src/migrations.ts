@@ -2431,6 +2431,35 @@ const executorLaunchIdentityMigration = Effect.gen(function* () {
     UPDATE agent_sessions SET executor_launch_id = id WHERE sealant_workspace_id IS NOT NULL`;
 });
 
+/**
+ * 0084: an executor's answer that said it held unsaved work, the latest one (review 2026-09-28
+ * (4) #1 and #9, cross-repo decision 10). `capture_unsaved_workspace_id` / `_at` / `_detail`: the
+ * executor, when Mend took the answer, and its words. Taken after a completed final flush Mend
+ * observed (`capture_saved_*`) or a seal the store holds, it revokes that save: nothing reads the
+ * executor saved on it, and nothing attests it to the platform.
+ */
+const captureUnsavedObservationMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE agent_sessions
+      ADD COLUMN capture_unsaved_workspace_id text,
+      ADD COLUMN capture_unsaved_at timestamptz,
+      ADD COLUMN capture_unsaved_detail text`;
+});
+
+/**
+ * 0085: a worktree lease is bound to the physical launch that holds it (cross-repo decision 11,
+ * review 2026-09-28 (4) #11). `worktree_leases.launch_id`: the launch — the executor's create key,
+ * what its channel token names — that claimed it. The holder is (session, launch): plan,
+ * heartbeat, upload and register check both, so an older launch of the same session never learns,
+ * renews or ships under a newer launch's epoch. NULL: Mend's own `mend:` claims, and a lease taken
+ * before this — any launch of its holder is accepted until the lease is next claimed.
+ */
+const leaseLaunchMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE worktree_leases ADD COLUMN launch_id text`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2515,4 +2544,6 @@ export const migrations = {
   "0081_capture_executor_identity": captureExecutorIdentityMigration,
   "0082_executor_create_key": executorCreateKeyMigration,
   "0083_executor_launch_identity": executorLaunchIdentityMigration,
+  "0084_capture_unsaved_observation": captureUnsavedObservationMigration,
+  "0085_lease_launch": leaseLaunchMigration,
 };

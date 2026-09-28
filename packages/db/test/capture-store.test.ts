@@ -575,6 +575,70 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     expect(result.bySession).toBeNull();
   });
 
+  it("launch-bound leases (0085): another launch of the holder never retakes, renews, registers under or seals a lease its launch does not hold (review 2026-09-28 (4) #11)", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const worktreeId = yield* freshWorktree;
+        // A launch's lease that lapsed without a release: only that launch takes it again.
+        const lapsed = yield* repo.claim(worktreeId, "session-1", 3600, "launch-new");
+        yield* sql`UPDATE worktree_leases SET expires_at = now() - interval '1 second'
+                    WHERE worktree_id = ${worktreeId}`;
+        const retakeOld = yield* repo.claim(worktreeId, "session-1", 3600, "launch-old").pipe(
+          Effect.map(() => "ok"),
+          Effect.catchTag("WorktreeLeasedError", (error) => Effect.succeed(error._tag)),
+        );
+        const { epoch } = yield* repo.claim(worktreeId, "session-1", 3600, "launch-new");
+        const oldBeat = yield* repo.heartbeat(worktreeId, epoch, 30, {
+          executorId: "session-1",
+          launchId: "launch-old",
+        });
+        const newBeat = yield* repo.heartbeat(worktreeId, epoch, 3600, {
+          executorId: "session-1",
+          launchId: "launch-new",
+        });
+        const zero = captureInput(worktreeId, 0, null, epoch);
+        const oldRegister = yield* reasonOf(
+          repo.register({
+            ...zero,
+            holder: { executorId: "session-1", launchId: "launch-old" },
+            seal: { executorId: "launch-old", holder: "session-1" },
+          }),
+        );
+        yield* repo.register({
+          ...zero,
+          holder: { executorId: "session-1", launchId: "launch-new" },
+          seal: { executorId: "launch-new", holder: "session-1" },
+        });
+        const one = captureInput(worktreeId, 1, zero.id, epoch);
+        // A seal naming another launch lands the capture, never the seal.
+        yield* repo.register({ ...one, seal: { executorId: "launch-old", holder: "session-1" } });
+        return {
+          lapsedEpoch: lapsed.epoch,
+          retakeOld,
+          epoch,
+          oldBeat,
+          newBeat,
+          oldRegister,
+          newSeal: yield* repo.sealedCompletion(worktreeId, "launch-new", epoch),
+          oldSeal: yield* repo.sealedCompletion(worktreeId, "launch-old", epoch),
+          lease: yield* repo.leaseOf(worktreeId),
+          head: yield* repo.headOf(worktreeId),
+        };
+      }),
+    );
+    expect(result.retakeOld).toBe("WorktreeLeasedError");
+    expect(result.epoch).toBe(result.lapsedEpoch + 1);
+    expect(result.oldBeat).toBe(false);
+    expect(result.newBeat).toBe(true);
+    expect(result.oldRegister).toBe("stale_epoch");
+    expect(result.newSeal?.n).toBe(0);
+    expect(result.oldSeal).toBeNull();
+    expect(result.lease?.launchId).toBe("launch-new");
+    expect(result.head?.headN).toBe(1);
+  });
+
   it("seals (0080): the register CAS records a seal only when it lands and the lease names its executor; the newest epoch reads first", async () => {
     const result = await run(
       Effect.gen(function* () {

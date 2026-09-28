@@ -13,6 +13,7 @@ import {
   captureHarvestReady,
   captureProgressed,
   captureSaved,
+  captureUnsavedWordsOf,
   captureSnapDetailOf,
   captureStatusLine,
   type CaptureReading,
@@ -21,6 +22,8 @@ import {
   executorEndWords,
   observeCaptureThroughput,
   planExecutorCap,
+  restatedSummary,
+  executorSavedWords,
 } from "../src/workbench/capture-drain.ts";
 
 const reading = (patch: Partial<CaptureReading> = {}): CaptureReading => ({
@@ -279,6 +282,26 @@ describe("captureDrainStep when a capture class is polled (sealantd `unwatched`)
     expect(captureIncompleteWords("unwatched")).toBe(
       "a capture class is polled, currency not observed",
     );
+  });
+});
+
+describe("captureDrainStep when the store cannot keep full fidelity (sealantd `store-fidelity`)", () => {
+  it("reads `store-fidelity` as not saved at once, with words: no wait makes the store read more", () => {
+    expect(CAPTURE_INCOMPLETE_REASONS).toContain("store-fidelity");
+    const lossy = reading({ complete: false, incompleteReason: "store-fidelity" });
+    expect(captureSaved(lossy)).toBe(false);
+    const step = captureDrainStep({
+      previous: null,
+      reading: lossy,
+      progressAtMs: 0,
+      nowMs: 1,
+      stallSeconds: 600,
+    });
+    expect(step.kind).toBe("not-saved");
+    expect(captureIncompleteWords("store-fidelity")).toBe(
+      "the store does not read every manifest feature this executor writes",
+    );
+    expect(captureUnsavedWordsOf(lossy)).toBe("incomplete · store-fidelity");
   });
 });
 
@@ -713,15 +736,56 @@ describe("executorEndOf after a completed final flush (e2e run 4, 2026-09-27)", 
 
   it("the executor's own `complete: true` is the save, whatever suspend captures registered after it", () => {
     // A final flush ran inside the executor (capture 21, complete), then Mend's stop flushes
-    // staged two suspend captures on top: the head is `suspend`, and nothing was lost.
+    // staged two suspend captures on top: the head is `suspend`, and nothing Mend read after the
+    // save said anything was left.
     const end = executorEndOf({
       head: { kind: "suspend", registeredAt: at("19:49:26"), bulkPending: false },
       executorStartedAt: started,
-      reading: { pending: 1, pendingBytes: 4136, observedAt: at("19:49:25") },
+      reading: { pending: 0, pendingBytes: 0, observedAt: at("19:49:25") },
       finalSaved: { at: at("19:48:49"), n: 21 },
     });
     expect(end.kind).toBe("saved");
     expect(executorEndWords(end)).toBe("stopped outside Mend · saved at 19:48:49 UTC · capture 21");
+  });
+
+  it("a later answer that saw work pending revokes the save: the last confirmed save, and what came after it (review 2026-09-28 (4) #9)", () => {
+    // Final capture 8 completed at 00:00:11; at 00:00:20 the executor reported 4096 bytes
+    // pending; then it disappeared. It was not saved when it ended.
+    const end = executorEndOf({
+      head: {
+        kind: "final",
+        n: 8,
+        registeredAt: new Date("2026-09-28T00:00:10Z"),
+        bulkPending: false,
+      },
+      executorStartedAt: new Date("2026-09-28T00:00:00Z"),
+      finalSaved: { at: new Date("2026-09-28T00:00:11Z"), n: 8 },
+      reading: { pending: 1, pendingBytes: 4096, observedAt: new Date("2026-09-28T00:00:20Z") },
+    });
+    expect(end.kind).toBe("lost");
+    expect(executorEndWords(end)).toBe(
+      "executor lost · last saved capture 8 at 00:00:11 UTC · changes after that were not saved · 4.1 KB pending at 00:00:20 UTC",
+    );
+  });
+
+  it("an unsaved answer Mend persisted after the save revokes it, whatever the last reading says; a seal likewise", () => {
+    // The status after the save said a path was unreadable; the queue read empty after that.
+    const afterSave = {
+      head: { kind: "final", n: 8, registeredAt: at("19:48:48"), bulkPending: false },
+      executorStartedAt: started,
+      reading: { pending: 0, pendingBytes: 0, observedAt: at("19:49:30") },
+      unsaved: { at: at("19:49:20"), words: "unreadable tree/after-seal.txt" },
+    } as const;
+    expect(endWords({ ...afterSave, finalSaved: { at: at("19:48:49"), n: 8 } })).toBe(
+      "executor lost · last saved capture 8 at 19:48:49 UTC · changes after that were not saved · unreadable tree/after-seal.txt at 19:49:20 UTC",
+    );
+    expect(endWords({ ...afterSave, sealed: { at: at("19:48:49"), n: 8 } })).toBe(
+      "executor lost · last saved capture 8 at 19:48:49 UTC · changes after that were not saved · unreadable tree/after-seal.txt at 19:49:20 UTC",
+    );
+    // A newer completed final flush stands over the older unsaved answer.
+    expect(endWords({ ...afterSave, finalSaved: { at: at("19:49:25"), n: 9 } })).toBe(
+      "stopped outside Mend · saved at 19:49:25 UTC · capture 9",
+    );
   });
 
   it("without that word, a suspend head is still `executor lost`", () => {
@@ -823,5 +887,30 @@ describe("what a discard records (e2e run 4, 2026-09-27)", () => {
     ).toBe(
       "asked at 19:57:10 UTC · last saved capture 37 at 19:54:41 UTC · no final flush completed",
     );
+  });
+});
+
+describe("restatedSummary (e2e run 6 #7)", () => {
+  const saved = executorSavedWords({ at: new Date("2026-09-28T04:48:33Z"), n: 12 });
+  it("replaces Mend's older word on the executor with the latest observation", () => {
+    expect(saved).toBe("saved at 04:48:33 UTC · capture 12");
+    expect(
+      restatedSummary(
+        "executor not answering · last saved capture 30 at 01:06:00 UTC · completion unknown",
+        saved,
+      ),
+    ).toBe(saved);
+    expect(restatedSummary("executor lost · last saved 16:32:06 UTC", saved)).toBe(saved);
+  });
+  it("keeps a failed launch's own words, and replaces only the verdict after them", () => {
+    const once = restatedSummary("launch failed: setup command failed (exit 1)", saved);
+    expect(once).toBe(`launch failed: setup command failed (exit 1) · ${saved}`);
+    expect(restatedSummary(once, "executor lost · last saved 16:32:06 UTC")).toBe(
+      "launch failed: setup command failed (exit 1) · executor lost · last saved 16:32:06 UTC",
+    );
+  });
+  it("leaves a harness's own end alone", () => {
+    expect(restatedSummary("exited with code 1", saved)).toBeNull();
+    expect(restatedSummary(null, saved)).toBeNull();
   });
 });
