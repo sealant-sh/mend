@@ -25,12 +25,15 @@ import { shellQuote } from "./workspace-files.ts";
  * the live workspace's harness home through exec, after the launch relocates it.
  *
  * A delivered skill directory is also where the agent or the user edits a skill, and the harness
- * home comes back whole from a capture. So a directory Mend is about to replace or retire is
- * removed only when its files are exactly what Mend delivered there, or exactly what it is about
- * to deliver (`skillTreeDigest`). Anything else, an edited skill or a directory of the agent's own
- * that a library skill now shares a name with, is moved aside whole to
- * `.mend/skills-kept/<stamp>/…` in the harness home, never deleted (review 2026-09-28 (17),
- * sweep). One program does this in both stores (`SKILLS_VACATE_PROGRAM`).
+ * home comes back whole from a capture. So a directory that already holds exactly the files about
+ * to be delivered (`skillTreeDigest`, contents only) is left as it is: not removed, not rewritten,
+ * whatever the user did to its modes, times, empty directories or links (review 2026-09-28 (18)).
+ * A directory Mend is about to replace or retire is removed only when it is still exactly what
+ * Mend wrote: one of the accepted trees, every file 0644 with a single link, every directory 0755
+ * and holding a file. Anything else, an edited skill, a script made executable, or a directory of
+ * the agent's own that a library skill now shares a name with, is moved aside whole (a rename
+ * keeps its metadata) to `.mend/skills-kept/<stamp>/…` in the harness home, never deleted (review
+ * 2026-09-28 (17), sweep). One program does this in both stores (`SKILLS_VACATE_PROGRAM`).
  */
 
 /** Harness-home-relative skills directories, one per harness that reads skills. */
@@ -153,6 +156,11 @@ export interface SkillsPlan {
 export interface SkillsVacate {
   readonly dir: string;
   readonly accept: ReadonlyArray<string>;
+  /**
+   * The tree about to be delivered here, or null for a skill being retired. A directory whose
+   * files are exactly this tree is left untouched and its files are not written again.
+   */
+  readonly delivering: string | null;
 }
 
 /**
@@ -185,7 +193,11 @@ export const planSkills = (
     };
     for (const stale of previous[target] ?? []) {
       if (current.has(stale) || validateSkillName(stale) !== null) continue;
-      vacate.push({ dir: path.posix.join(target, stale), accept: lastDelivered(stale) });
+      vacate.push({
+        dir: path.posix.join(target, stale),
+        accept: lastDelivered(stale),
+        delivering: null,
+      });
     }
     const targetDigests: Record<string, string> = {};
     for (const bundle of deliverable) {
@@ -195,6 +207,7 @@ export const planSkills = (
       vacate.push({
         dir: bundleRoot,
         accept: [...new Set([digest, ...lastDelivered(bundle.skill.name)])],
+        delivering: digest,
       });
       for (const file of bundle.files) {
         files.push({ path: path.posix.join(bundleRoot, file.path), contents: file.contents });
@@ -215,9 +228,11 @@ export const planSkills = (
 /**
  * Clears the plan's directories under a harness home (`node -e`, argv: home, the kept directory
  * relative to it, the `vacate` list as JSON). Prints one `skill <outcome> <dir>[ <detail>]` line
- * per directory: `absent`; `removed` (its tree was one of `accept`); `kept` (moved whole to the
- * detail path); `error` (the detail is the code). Exits 1 after any `error`, and the caller then
- * writes nothing: a directory that could not be cleared is never written into.
+ * per directory: `absent`; `unchanged` (its files are exactly `delivering`; nothing was touched
+ * and nothing is written into it); `removed` (its tree was one of `accept` and nothing about it
+ * differs from what Mend writes: files 0644 with one link, directories 0755, none empty); `kept`
+ * (moved whole to the detail path); `error` (the detail is the code). Exits 1 after any `error`,
+ * and the caller then writes nothing: a directory that could not be cleared is never written into.
  */
 export const SKILLS_VACATE_PROGRAM = [
   `const fs=require("fs"),path=require("path"),crypto=require("crypto");`,
@@ -227,11 +242,17 @@ export const SKILLS_VACATE_PROGRAM = [
   `const a=path.join(abs,e.name),r=rel===""?e.name:rel+"/"+e.name;`,
   `if(e.isDirectory())walk(a,r);else if(e.isFile())out.push([r,sha(fs.readFileSync(a))]);else throw new Error("special")}};`,
   `walk(dir,"");out.sort((x,y)=>x[0]<y[0]?-1:x[0]>y[0]?1:0);return sha(out.map(([r,h])=>r+"\\u0000"+h+"\\n").join(""))}`,
+  // Exactly what Mend's writers leave: files 0644 with one link, directories 0755 with a file.
+  `function mine(dir){const walk=abs=>{let files=0;for(const e of fs.readdirSync(abs,{withFileTypes:true})){const a=path.join(abs,e.name),st=fs.lstatSync(a);`,
+  `if(st.isDirectory()){if((st.mode&0o7777)!==0o755)return -1;const n=walk(a);if(n<1)return -1;files+=n}`,
+  `else if(st.isFile()&&(st.mode&0o7777)===0o644&&st.nlink===1)files++;else return -1}return files};`,
+  `return (fs.lstatSync(dir).mode&0o7777)===0o755&&walk(dir)>0}`,
   `function say(o,d,x){process.stdout.write("skill "+o+" "+d+(x?" "+x:"")+"\\n")}`,
   `let failed=false;for(const it of items){const abs=path.join(home,it.dir);let st;`,
   `try{st=fs.lstatSync(abs)}catch(e){if(e.code==="ENOENT"){say("absent",it.dir);continue}say("error",it.dir,e.code);failed=true;continue}`,
   `let digest=null;if(st.isDirectory()){try{digest=tree(abs)}catch{digest=null}}`,
-  `try{if(digest!==null&&it.accept.includes(digest)){fs.rmSync(abs,{recursive:true,force:true});say("removed",it.dir)}`,
+  `if(digest!==null&&it.delivering!==null&&digest===it.delivering){say("unchanged",it.dir);continue}`,
+  `try{if(digest!==null&&it.accept.includes(digest)&&mine(abs)){fs.rmSync(abs,{recursive:true,force:true});say("removed",it.dir)}`,
   `else{const rel=path.join(kept,it.dir),to=path.join(home,rel);fs.mkdirSync(path.dirname(to),{recursive:true});fs.renameSync(abs,to);say("kept",it.dir,rel)}}`,
   `catch(e){say("error",it.dir,e.code||"error");failed=true}}`,
   `process.exit(failed?1:0)`,
@@ -265,18 +286,19 @@ export const vacateSkillsExec = (
 
 /** What the vacate program did with one directory. */
 export interface SkillsVacateOutcome {
-  readonly outcome: "absent" | "removed" | "kept" | "error";
+  readonly outcome: "absent" | "unchanged" | "removed" | "kept" | "error";
   readonly dir: string;
   readonly detail: string | null;
 }
 
 export const parseSkillsVacateOutcomes = (stdout: string): ReadonlyArray<SkillsVacateOutcome> =>
   stdout.split("\n").flatMap((line): ReadonlyArray<SkillsVacateOutcome> => {
-    const match = /^skill (absent|removed|kept|error) (\S+)(?: (.*))?$/.exec(line);
+    const match = /^skill (absent|unchanged|removed|kept|error) (\S+)(?: (.*))?$/.exec(line);
     if (match === null) return [];
     const outcome = match[1];
     if (
       outcome !== "absent" &&
+      outcome !== "unchanged" &&
       outcome !== "removed" &&
       outcome !== "kept" &&
       outcome !== "error"
@@ -285,6 +307,20 @@ export const parseSkillsVacateOutcomes = (stdout: string): ReadonlyArray<SkillsV
     }
     return [{ outcome, dir: match[2] ?? "", detail: match[3] ?? null }];
   });
+
+/**
+ * The plan's files minus those of every directory the vacate program left `unchanged`: those
+ * already hold exactly these bytes, and writing them again would reset what the user set on them.
+ */
+export const skillFilesToWrite = (
+  plan: SkillsPlan,
+  outcomes: ReadonlyArray<SkillsVacateOutcome>,
+): SkillsPlan["files"] => {
+  const unchanged = outcomes
+    .filter((outcome) => outcome.outcome === "unchanged")
+    .map((outcome) => `${outcome.dir}/`);
+  return plan.files.filter((file) => !unchanged.some((dir) => file.path.startsWith(dir)));
+};
 
 const readOptional = async (file: string): Promise<string | null> => {
   try {
@@ -338,10 +374,14 @@ export const materializeSkills = (
           }`,
         );
       }
-      for (const file of plan.files) {
+      // As the workspace writer does (`workspace-files.ts`): each file's directory 0755, the
+      // file 0644. Every path here is under a directory the vacate just cleared.
+      for (const file of skillFilesToWrite(plan, outcomes)) {
         const filePath = path.join(harnessHomePath, file.path);
         await fs.mkdir(path.dirname(filePath), { recursive: true });
-        await fs.writeFile(filePath, file.contents, "utf8");
+        await fs.chmod(path.dirname(filePath), 0o755);
+        await fs.writeFile(filePath, file.contents, { encoding: "utf8", mode: 0o644 });
+        await fs.chmod(filePath, 0o644);
       }
       await fs.writeFile(path.join(harnessHomePath, MANAGED_MANIFEST), plan.manifest, "utf8");
       await fs.writeFile(path.join(harnessHomePath, MANAGED_DIGESTS), plan.digests, "utf8");

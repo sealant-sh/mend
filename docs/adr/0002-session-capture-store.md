@@ -1263,3 +1263,32 @@ Mend-side details the decision record left open, decided in this ADR:
         `.mend/skills-kept/<stamp>/` in the harness home and logged. One program
         (`SKILLS_VACATE_PROGRAM`) does this in both stores, and a directory it could not clear is
         never written into.
+45. (2026-09-28) The eighteenth review's Mend items.
+    - **Skills delivery keeps what the user set on a skill (#1).** Decision 44's check compared file
+      contents only. A delivered skill whose script the user made executable, or that gained an
+      empty directory or a hard link, still counted as Mend's delivery, so every resume removed it
+      and wrote it again: the script came back 0644, the empty directory and the second link name
+      were gone, and the times were reset. `SKILLS_VACATE_PROGRAM` now makes three decisions:
+      - A directory whose files are exactly the bundle about to be delivered (contents only) is
+        `unchanged`. It is neither removed nor rewritten, and the writer skips its files
+        (`skillFilesToWrite`). Modes, times, empty directories and links the user set all stay.
+      - A replaced or retired directory is `removed` only when it is one of the accepted trees and
+        also matches what Mend's writers produce: every file 0644 with a single link, every
+        directory 0755 with at least one file under it, nothing else. Mend cannot know the times it
+        wrote, so it does not check them.
+      - Anything else is renamed whole into `.mend/skills-kept/<stamp>/`. A rename keeps modes,
+        times, empty directories and inodes.
+
+      Removals are now logged as well as keep-asides. Skill bundles carry no modes, so a skill Mend
+      writes has 0644 files in 0755 directories in both stores (the co-located writer now sets these
+      explicitly). The engine regression runs the emitted `mend-skills` and `mend-write` commands on
+      resume over a copy of the saved harness home. The reviewer showed that sealantd restores the
+      mode, the nanosecond mtime, the empty directory and both link names exactly.
+
+    - **A temporary file is removed only by the run that created it (#2).** The note writer
+      (`workspace-note.ts`) and the claude seed (`harness-seeds.ts`) named their temporary file
+      `.<file>.mend-note-<pid>` / `.mend-seed-<pid>` and opened it with `wx`. When a file of that
+      name already existed (a restored harness home, a reused PID), the exclusive create failed and
+      the cleanup then unlinked that file, which was not theirs. Both now unlink only a temporary
+      whose exclusive create succeeded. On `EEXIST` they try another name with a random suffix (up
+      to 16 more), and the file that holds the name is left alone.

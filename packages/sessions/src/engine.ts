@@ -274,6 +274,7 @@ import {
   parseManagedSkills,
   parseSkillsVacateOutcomes,
   planSkills,
+  skillFilesToWrite,
   type SkillsVacateOutcome,
   skillsKeptDir,
   vacateSkillsExec,
@@ -432,18 +433,28 @@ const withHarnessBootstrap = (
   argv: ReadonlyArray<string>,
 ): ReadonlyArray<string> => withHarnessSetup(harness, withPermissionDefaults(harness, argv));
 
-/** A skill directory kept aside, or one that could not be cleared, is said once. */
+/** A skill directory removed, kept aside, or one that could not be cleared, is said once. */
 const logSkillsVacated = (sessionId: SessionId, outcomes: ReadonlyArray<SkillsVacateOutcome>) =>
   Effect.forEach(
-    outcomes.filter((outcome) => outcome.outcome === "kept" || outcome.outcome === "error"),
-    (outcome) =>
-      outcome.outcome === "kept"
-        ? Effect.logWarning(
+    outcomes,
+    (outcome) => {
+      switch (outcome.outcome) {
+        case "removed":
+          return Effect.logInfo(
+            "session engine: skills · a directory exactly as Mend delivered it was removed",
+          ).pipe(Effect.annotateLogs({ sessionId, dir: outcome.dir }));
+        case "kept":
+          return Effect.logWarning(
             "session engine: skills · a directory that was not Mend's delivery was kept aside",
-          ).pipe(Effect.annotateLogs({ sessionId, dir: outcome.dir, keptAt: outcome.detail }))
-        : Effect.logWarning("session engine: skills · a directory could not be cleared").pipe(
-            Effect.annotateLogs({ sessionId, dir: outcome.dir, code: outcome.detail }),
-          ),
+          ).pipe(Effect.annotateLogs({ sessionId, dir: outcome.dir, keptAt: outcome.detail }));
+        case "error":
+          return Effect.logWarning(
+            "session engine: skills · a directory could not be cleared",
+          ).pipe(Effect.annotateLogs({ sessionId, dir: outcome.dir, code: outcome.detail }));
+        default:
+          return Effect.void;
+      }
+    },
     { discard: true },
   );
 
@@ -7946,7 +7957,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             workspace,
             vacateSkillsExec(home, skillsKeptDir(), plan),
           );
-          yield* logSkillsVacated(session.id, parseSkillsVacateOutcomes(prepared.stdout));
+          const vacated = parseSkillsVacateOutcomes(prepared.stdout);
+          yield* logSkillsVacated(session.id, vacated);
           if (prepared.exitCode !== 0) {
             return yield* new WorkspaceFileError({
               path: home,
@@ -7955,7 +7967,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }
           const encoder = new TextEncoder();
           yield* writeWorkspaceFiles(workspace, [
-            ...plan.files.map((file) => ({
+            ...skillFilesToWrite(plan, vacated).map((file) => ({
               path: inHome(file.path),
               bytes: encoder.encode(file.contents),
             })),
