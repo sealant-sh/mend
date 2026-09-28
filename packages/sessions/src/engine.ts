@@ -1808,23 +1808,27 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // The executor's own word that its final flush completed: it stopped every writer,
         // snapshotted both classes and registered them, and admits nothing after that. How its
         // end reads from here on (`executorEndOf`), whatever registers on top of it.
-        if (captureSaved(reading)) {
-          yield* sessions.recordCaptureSaved(session.id, {
-            workspaceId,
-            at: observedAt,
-            n: reading.headN,
-            epoch: reading.epoch ?? null,
-          });
-        }
+        const saved = captureSaved(reading)
+          ? { workspaceId, at: observedAt, n: reading.headN, epoch: reading.epoch ?? null }
+          : null;
+        if (saved !== null) yield* sessions.recordCaptureSaved(session.id, saved);
         // The executor's own word that it holds work not saved (cross-repo decision 10): kept, so
         // an older save — a `complete: true` above, or the store's seal — reads revoked from here
         // on (`executorSealOf`, `executorEndOf`), whatever registers later without a new one.
-        const unsaved = captureUnsavedWordsOf(reading);
-        if (unsaved !== null) {
-          yield* sessions.recordCaptureUnsaved(session.id, {
-            workspaceId,
-            at: observedAt,
-            words: unsaved,
+        const unsavedWords = captureUnsavedWordsOf(reading);
+        const unsaved =
+          unsavedWords === null ? null : { workspaceId, at: observedAt, words: unsavedWords };
+        if (unsaved !== null) yield* sessions.recordCaptureUnsaved(session.id, unsaved);
+        // Both are the executor's, whoever asked (cross-repo decision 14, review 2026-09-28 (5)
+        // #3): a joined session's read of the executor it shares describes the holder's disk
+        // too, so the answer is kept per executor as well, where every seal, attestation and end
+        // of that executor is weighed against it — and where it outlives the session that asked.
+        if (saved !== null || unsaved !== null) {
+          yield* sessions.recordExecutorEvidence(workspaceId, {
+            worktreeId: session.worktreeId,
+            launchId: yield* executorLaunchIdOf(session, SealantWorkspaceId.make(workspaceId)),
+            ...(saved === null ? {} : { saved }),
+            ...(unsaved === null ? {} : { unsaved }),
           });
         }
         if (failing !== null && before !== null && before.captureFailingSince === null) {
@@ -2115,6 +2119,59 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
+       * The launch of the executor in `workspaceId`, as Mend knows it: the session's own when its
+       * row names that workspace, else the lease holder's whose workspace it is. Null when
+       * neither names one.
+       */
+      const executorLaunchIdOf = Effect.fn("SessionEngine.executorLaunchIdOf")(function* (
+        session: Session,
+        workspaceId: SealantWorkspaceId,
+      ) {
+        const own = yield* sessions.executorLaunchOf(session.id);
+        if (own !== null && own.workspaceId === workspaceId) return own.launchId;
+        const leased = yield* leasedExecutorOf(session, workspaceId);
+        if (leased === null) return null;
+        const held = yield* sessions.executorLaunchOf(SessionId.make(leased.executorId));
+        return held !== null && held.workspaceId === workspaceId ? held.launchId : null;
+      });
+
+      /**
+       * Everything the executor in `workspaceId` answered about its capture, whoever asked
+       * (cross-repo decision 14, review 2026-09-28 (5) #3): its own evidence (0086), and what
+       * the rows of the sessions of its worktree hold of it (answers taken before 0086). The
+       * latest completed final flush and the latest answer that said it held unsaved work.
+       */
+      const executorAnswersOf = Effect.fn("SessionEngine.executorAnswersOf")(function* (
+        session: Session,
+        workspaceId: SealantWorkspaceId,
+      ) {
+        const evidence = yield* sessions.executorEvidenceOf(workspaceId);
+        let saved = evidence?.saved ?? null;
+        let unsaved = evidence?.unsaved ?? null;
+        const members = yield* sessions.listForWorktree(session.worktreeId);
+        const ids = new Set<SessionId>([session.id, ...members.map((member) => member.id)]);
+        for (const id of ids) {
+          const own = yield* sessions.captureSavedOf(id);
+          if (
+            own !== null &&
+            own.workspaceId === workspaceId &&
+            (saved === null || own.at.getTime() > saved.at.getTime())
+          ) {
+            saved = own;
+          }
+          const ownUnsaved = yield* sessions.captureUnsavedOf(id);
+          if (
+            ownUnsaved !== null &&
+            ownUnsaved.workspaceId === workspaceId &&
+            (unsaved === null || ownUnsaved.at.getTime() > unsaved.at.getTime())
+          ) {
+            unsaved = ownUnsaved;
+          }
+        }
+        return { saved, unsaved };
+      });
+
+      /**
        * The store's sealed record (`CaptureSeals`) of the executor in `workspaceId`'s completed
        * final flush, bound to that executor and its epoch, with no capture registered after it
        * under that epoch. Null otherwise.
@@ -2149,8 +2206,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * The sealed record (`executorSealRecordOf`) while it still stands: received evidence beats
        * stored evidence (cross-repo decision 10, review 2026-09-28 (4) #1) — an answer this
        * executor gave after the seal that said it held unsaved work (changed, unreadable, a
-       * snapshot that failed, pending) revokes it. Whoever asked (a joined session, or the
-       * holder), the answer is on that session's row. Null otherwise.
+       * snapshot that failed, pending) revokes it. Whoever asked — the holder, the session
+       * stopping, or any joined session of the same executor — the answer is the executor's
+       * (`executorAnswersOf`, review 2026-09-28 (5) #3). Null otherwise.
        */
       const executorSealOf = Effect.fn("SessionEngine.executorSealOf")(function* (
         session: Session,
@@ -2159,29 +2217,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const record = yield* executorSealRecordOf(session, workspaceId);
         if (record === null) return null;
         const { seal } = record;
-        const holders = [...new Set([session.id, record.holder])];
-        for (const holder of holders) {
-          const unsaved = yield* sessions.captureUnsavedOf(holder);
-          if (
-            unsaved !== null &&
-            unsaved.workspaceId === workspaceId &&
-            unsaved.at.getTime() > seal.sealedAt.getTime()
-          ) {
-            yield* Effect.logWarning(
-              "session engine: capture mode · sealed, but the executor answered unsaved work after the seal · the seal no longer stands",
-            ).pipe(
-              Effect.annotateLogs({
-                sessionId: session.id,
-                workspaceId,
-                epoch: seal.epoch,
-                n: seal.n,
-                sealedAt: seal.sealedAt.toISOString(),
-                unsavedAt: unsaved.at.toISOString(),
-                unsaved: unsaved.words,
-              }),
-            );
-            return null;
-          }
+        const { unsaved } = yield* executorAnswersOf(session, workspaceId);
+        if (unsaved !== null && unsaved.at.getTime() > seal.sealedAt.getTime()) {
+          yield* Effect.logWarning(
+            "session engine: capture mode · sealed, but the executor answered unsaved work after the seal · the seal no longer stands",
+          ).pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              workspaceId,
+              epoch: seal.epoch,
+              n: seal.n,
+              sealedAt: seal.sealedAt.toISOString(),
+              unsavedAt: unsaved.at.toISOString(),
+              unsaved: unsaved.words,
+            }),
+          );
+          return null;
         }
         return seal;
       });
@@ -3067,7 +3118,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           capture === null
             ? null
             : ((yield* capture.repo.headOf(session.worktreeId))?.head ?? null);
-        const saved = yield* sessions.captureSavedOf(sessionId);
+        // The executor's completed final flush, whichever session observed it.
+        const { saved } = yield* executorAnswersOf(session, workspaceId);
         const facts: CaptureDiscardFacts = {
           requestedAt,
           workspaceId,
@@ -5467,7 +5519,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         session: Session,
         workspaceId: SealantWorkspaceId | null,
       ) {
-        const saved = yield* sessions.captureSavedOf(session.id);
+        // What the executor answered, whichever session asked (review 2026-09-28 (5) #3): a
+        // joined session's later unsaved answer revokes the holder's save as much as its own.
+        const answers =
+          workspaceId === null
+            ? { saved: null, unsaved: null }
+            : yield* executorAnswersOf(session, workspaceId);
+        const saved = answers.saved;
         const chain = capture === null ? null : yield* capture.repo.headOf(session.worktreeId);
         const head = chain?.head ?? null;
         const sections = head?.sections;
@@ -5481,7 +5539,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           workspaceId === null
             ? null
             : ((yield* executorSealRecordOf(session, workspaceId))?.seal ?? null);
-        const unsaved = yield* sessions.captureUnsavedOf(session.id);
+        const unsaved = answers.unsaved;
         const end = executorEndOf({
           head:
             head === null

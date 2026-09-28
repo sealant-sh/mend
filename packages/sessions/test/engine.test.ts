@@ -51,6 +51,7 @@ import {
   SessionChannelTokensRepo,
   SessionChannelTokensRepoMemory,
   WorktreeNotFoundError,
+  type ExecutorCaptureEvidence,
 } from "@mend/db";
 import {
   AgentTurnId,
@@ -1001,7 +1002,13 @@ interface World {
     string,
     { readonly workspaceId: string; readonly at: Date; readonly words: string }
   >;
+  /** What each executor answered, whoever asked (`recordExecutorEvidence`, 0086). */
+  readonly executorEvidence: Map<string, ExecutorCaptureEvidence>;
 }
+
+/** The newer of two observations of one kind: `next` when it came after `prior`. */
+const newerObservation = <T extends { readonly at: Date }>(next: T | undefined, prior: T | null) =>
+  next !== undefined && (prior === null || next.at.getTime() > prior.at.getTime()) ? next : prior;
 
 const makeWorld = (): World => ({
   projects: new Map(),
@@ -1022,6 +1029,7 @@ const makeWorld = (): World => ({
   finalFlushed: new Map(),
   captureSaved: new Map(),
   captureUnsaved: new Map(),
+  executorEvidence: new Map(),
   executorResources: new Map(),
   executorLaunches: new Map(),
   executorCreates: new Map(),
@@ -1845,6 +1853,18 @@ const sessionsLayer = (world: World) => {
     recordCaptureUnsaved: (id, unsaved) =>
       Effect.sync(() => void world.captureUnsaved.set(id, unsaved)),
     captureUnsavedOf: (id) => Effect.sync(() => world.captureUnsaved.get(id) ?? null),
+    recordExecutorEvidence: (workspaceId, answer) =>
+      Effect.sync(() => {
+        const kept = world.executorEvidence.get(workspaceId);
+        world.executorEvidence.set(workspaceId, {
+          workspaceId,
+          launchId: answer.launchId ?? kept?.launchId ?? null,
+          saved: newerObservation(answer.saved, kept?.saved ?? null),
+          unsaved: newerObservation(answer.unsaved, kept?.unsaved ?? null),
+        });
+      }),
+    executorEvidenceOf: (workspaceId) =>
+      Effect.sync(() => world.executorEvidence.get(workspaceId) ?? null),
     recordCaptureDrainProgress: (id, at) =>
       Effect.sync(() => {
         if (world.sessions.get(id)?.captureDrain === null) return;
@@ -14079,6 +14099,245 @@ describe("SessionEngine a recovered executor's accepted seal is the session's wo
                 ),
             },
           ),
+        },
+      );
+    },
+  );
+});
+
+/**
+ * Review 2026-09-28 (5): evidence is per physical executor (cross-repo decision 14) — an answer a
+ * joined session took from the executor it shares describes the same disk.
+ */
+describe("SessionEngine fifth review (2026-09-28)", () => {
+  /** A sealed executor A with a joined session B on it; B's settling harvest reads unsaved work. */
+  const joinedObservesUnsaved = (
+    world: World,
+    tmp: string,
+    memory: ReturnType<typeof makeMemoryCaptureStore>,
+    records: Map<string, CaptureCompletionSeal>,
+    answer: { current: "clean" | "unsaved" | "lost" },
+  ) =>
+    Effect.gen(function* () {
+      const { engine, session } = yield* launchOnce(world, tmp);
+      yield* engine.launch(session.id, ["codex"]);
+      const joined = yield* engine.provisionSessionIn(session.worktreeId, {
+        harness: "claude",
+        label: null,
+        ownerUserId: "user-fixture",
+      });
+      yield* engine.launch(joined.id, ["claude"]);
+      const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+      const built = yield* shipHarnessCapture(
+        tmp,
+        memory,
+        session.worktreeId,
+        epoch,
+        crypto.randomUUID(),
+        "final",
+      );
+      const seal: CaptureCompletionSeal = {
+        worktreeId: session.worktreeId,
+        epoch,
+        executorId: world.executorLaunches.get(session.id)?.launchId ?? "",
+        captureId: built.id,
+        n: built.manifest.n,
+        sealedAt: new Date(Date.now() - 5_000),
+      };
+      records.set(`${session.worktreeId}:${epoch}`, seal);
+      answer.current = "unsaved";
+      yield* engine.stop(joined.id);
+      yield* until(
+        () => world.captureUnsaved.has(joined.id),
+        "the joined session's unsaved answer",
+      );
+      yield* until(
+        () => world.sessions.get(joined.id)?.settledAt != null,
+        "the joined session's settle",
+      );
+      // The answer was the joined session's to take; the holder's own row holds none.
+      expect(world.captureUnsaved.has(session.id)).toBe(false);
+      answer.current = "lost";
+      return { engine, session, joined, seal };
+    });
+
+  /** Only the second call after the seal answers (unsaved); every other answer is lost. */
+  const flushOf = (answer: { current: "clean" | "unsaved" | "lost" }) => {
+    let afterSeal = 0;
+    return () =>
+      answer.current === "lost" || (answer.current === "unsaved" && ++afterSeal !== 2)
+        ? Effect.fail(
+            new SealantPlatformError({
+              code: "connection_closed",
+              status: null,
+              message: "relay closed",
+              cause: null,
+            }),
+          )
+        : Effect.succeed(
+            answer.current === "unsaved"
+              ? {
+                  ...flushReport(0, 1),
+                  complete: false,
+                  incompleteReason: "snapshot-failed",
+                  unreadable: 1,
+                  unreadablePaths: ["tree/after-seal.txt"],
+                }
+              : flushReport(0, 0),
+          );
+  };
+
+  it(
+    "#3 an owner's lost FINAL never attests an older seal once a joined session observed unsaved work on the same executor",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+      const logs: Array<string> = [];
+      const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* joinedObservesUnsaved(
+              world,
+              tmp,
+              memory,
+              records,
+              answer,
+            );
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the owner's drain reads not saved",
+            );
+            expect(stopOptions).toEqual([]);
+            expect(logs.some((line) => line.includes("capture drain · saved · terminating"))).toBe(
+              false,
+            );
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          logs,
+          drainPolicy: { stallSeconds: 0 },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stopOptions,
+              resourceId: () => "container-7f3a",
+              finalCompletion: "unreported",
+              flush: flushOf(answer),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "#3 an owner's executor ending outside Mend reads the joined session's later unsaved answer, never saved",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+      const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
+      const ptyStates = new Map<string, InteractiveSessionStatus>();
+      let dead = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { session } = yield* joinedObservesUnsaved(world, tmp, memory, records, answer);
+            dead = true;
+            const agent = [...world.processes.values()].find(
+              (process) => process.sessionId === session.id && process.kind === "agent-pty",
+            );
+            if (agent?.sealantSessionId == null) throw new Error("no agent PTY");
+            ptyStates.set(agent.sealantSessionId, {
+              status: "exited",
+              exitCode: 0,
+              outputHighWater: 0n,
+            });
+            yield* until(
+              () => world.sessions.get(session.id)?.settledAt != null,
+              "the owner's settle",
+            );
+            const settled = world.sessions.get(session.id);
+            expect(settled?.summary).not.toContain("stopped outside Mend · saved at");
+            expect(settled?.summary).toContain("executor lost · last saved");
+            expect(settled?.summary).toContain("unreadable tree/after-seal.txt");
+            expect(settled?.status).toBe("failed");
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          drainPolicy: { stallSeconds: 0 },
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            () => dead,
+            undefined,
+            ptyStates,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              stopOptions,
+              resourceId: () => "container-7f3a",
+              finalCompletion: "unreported",
+              flush: flushOf(answer),
+            },
+          ),
+        },
+      );
+    },
+  );
+
+  it(
+    "#3 the executor's evidence outlives the session that took it: removing the joined session leaves the owner's seal revoked",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+      const answer = { current: "clean" as "clean" | "unsaved" | "lost" };
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session, joined } = yield* joinedObservesUnsaved(
+              world,
+              tmp,
+              memory,
+              records,
+              answer,
+            );
+            // The per-session row goes with the session; the executor's evidence does not.
+            world.captureUnsaved.delete(joined.id);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the owner's drain reads not saved",
+            );
+            expect(stopOptions).toEqual([]);
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          drainPolicy: { stallSeconds: 0 },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stopOptions,
+              resourceId: () => "container-7f3a",
+              finalCompletion: "unreported",
+              flush: flushOf(answer),
+            },
+          }),
         },
       );
     },

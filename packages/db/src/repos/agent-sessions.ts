@@ -26,7 +26,13 @@ import * as Context from "effect/Context";
 
 import { MendDB } from "../client.ts";
 import { notifyEvent } from "../events.ts";
-import { agentRequests, agentSessions, agentTurns, projects } from "../schema/workbench.ts";
+import {
+  agentRequests,
+  agentSessions,
+  agentTurns,
+  executorCaptureEvidence,
+  projects,
+} from "../schema/workbench.ts";
 import { agentConversationLockKey } from "./agent-conversation.ts";
 
 export class SessionNotFoundError extends Schema.TaggedErrorClass<SessionNotFoundError>()(
@@ -109,6 +115,28 @@ export interface CaptureUnsavedObservation {
   readonly workspaceId: string;
   readonly at: Date;
   readonly words: string;
+}
+
+/**
+ * What one physical executor answered about its capture, whichever session asked (migration
+ * 0086, cross-repo decision 14): its latest completed final flush and its latest answer that said
+ * it held unsaved work. A joined session's read of the executor it shares is evidence about the
+ * same disk as its holder's.
+ */
+export interface ExecutorCaptureEvidence {
+  readonly workspaceId: string;
+  /** The launch Mend knew for the executor when it answered, when it knew one. */
+  readonly launchId: string | null;
+  readonly saved: CaptureSavedObservation | null;
+  readonly unsaved: CaptureUnsavedObservation | null;
+}
+
+/** One answer to add to an executor's evidence: a newer one of a kind replaces the older. */
+export interface ExecutorCaptureAnswer {
+  readonly worktreeId: WorktreeId;
+  readonly launchId: string | null;
+  readonly saved?: CaptureSavedObservation;
+  readonly unsaved?: CaptureUnsavedObservation;
 }
 
 /** The owner's "discard unsaved and stop", as the session keeps it: when, and who. */
@@ -329,6 +357,18 @@ export class SessionsRepo extends Context.Service<
     ) => Effect.Effect<void>;
     /** The latest unsaved answer Mend observed from this session's executors, or null. */
     readonly captureUnsavedOf: (id: SessionId) => Effect.Effect<CaptureUnsavedObservation | null>;
+    /**
+     * An answer the executor in `workspaceId` gave, whoever asked, added to that executor's
+     * evidence (0086): a completed final flush, or unsaved work; the newer of each kind stands.
+     */
+    readonly recordExecutorEvidence: (
+      workspaceId: string,
+      answer: ExecutorCaptureAnswer,
+    ) => Effect.Effect<void>;
+    /** Everything the executor in `workspaceId` answered that Mend kept, or null. */
+    readonly executorEvidenceOf: (
+      workspaceId: string,
+    ) => Effect.Effect<ExecutorCaptureEvidence | null>;
     /** Something moved: the stall window starts again and `not saved` clears. */
     readonly recordCaptureDrainProgress: (id: SessionId, at: Date) => Effect.Effect<void>;
     /** Nothing moved for the stall window: true only for the write that set it (one alert). */
@@ -1266,6 +1306,68 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         return { workspaceId: row.workspaceId, at: row.at, words: row.words ?? "not saved" };
       });
 
+      const recordExecutorEvidence = Effect.fn("SessionsRepo.recordExecutorEvidence")(function* (
+        workspaceId: string,
+        answer: ExecutorCaptureAnswer,
+      ) {
+        const saved = answer.saved;
+        const unsaved = answer.unsaved;
+        if (saved === undefined && unsaved === undefined) return;
+        const t = executorCaptureEvidence;
+        // Each kind moves only forward: a later answer of that kind replaces an earlier one.
+        const savedNewer = sql`excluded.saved_at IS NOT NULL AND (${t.savedAt} IS NULL OR excluded.saved_at > ${t.savedAt})`;
+        const unsavedNewer = sql`excluded.unsaved_at IS NOT NULL AND (${t.unsavedAt} IS NULL OR excluded.unsaved_at > ${t.unsavedAt})`;
+        yield* db
+          .insert(t)
+          .values({
+            workspaceId,
+            worktreeId: answer.worktreeId,
+            launchId: answer.launchId,
+            savedAt: saved?.at ?? null,
+            savedN: saved?.n ?? null,
+            savedEpoch: saved?.epoch ?? null,
+            unsavedAt: unsaved?.at ?? null,
+            unsavedDetail: unsaved?.words ?? null,
+          })
+          .onConflictDoUpdate({
+            target: t.workspaceId,
+            set: {
+              launchId: sql`COALESCE(excluded.launch_id, ${t.launchId})`,
+              savedAt: sql`CASE WHEN ${savedNewer} THEN excluded.saved_at ELSE ${t.savedAt} END`,
+              savedN: sql`CASE WHEN ${savedNewer} THEN excluded.saved_n ELSE ${t.savedN} END`,
+              savedEpoch: sql`CASE WHEN ${savedNewer} THEN excluded.saved_epoch ELSE ${t.savedEpoch} END`,
+              unsavedAt: sql`CASE WHEN ${unsavedNewer} THEN excluded.unsaved_at ELSE ${t.unsavedAt} END`,
+              unsavedDetail: sql`CASE WHEN ${unsavedNewer} THEN excluded.unsaved_detail ELSE ${t.unsavedDetail} END`,
+              updatedAt: new Date(),
+            },
+          })
+          .pipe(Effect.orDie);
+      });
+
+      const executorEvidenceOf = Effect.fn("SessionsRepo.executorEvidenceOf")(function* (
+        workspaceId: string,
+      ) {
+        const [row] = yield* db
+          .select()
+          .from(executorCaptureEvidence)
+          .where(eq(executorCaptureEvidence.workspaceId, workspaceId))
+          .limit(1)
+          .pipe(Effect.orDie);
+        if (row === undefined) return null;
+        return {
+          workspaceId: row.workspaceId,
+          launchId: row.launchId,
+          saved:
+            row.savedAt === null
+              ? null
+              : { workspaceId, at: row.savedAt, n: row.savedN, epoch: row.savedEpoch },
+          unsaved:
+            row.unsavedAt === null
+              ? null
+              : { workspaceId, at: row.unsavedAt, words: row.unsavedDetail ?? "not saved" },
+        } satisfies ExecutorCaptureEvidence;
+      });
+
       const recordCaptureDrainProgress = Effect.fn("SessionsRepo.recordCaptureDrainProgress")(
         function* (id: SessionId, at: Date) {
           yield* db
@@ -1538,6 +1640,8 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         captureSavedOf,
         recordCaptureUnsaved,
         captureUnsavedOf,
+        recordExecutorEvidence,
+        executorEvidenceOf,
         recordCaptureDrainProgress,
         markCaptureNotSaved,
         endCaptureDrain,
