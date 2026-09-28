@@ -2584,6 +2584,43 @@ const capturePutAuthorityMigration = Effect.gen(function* () {
       ADD COLUMN void_reason text`;
 });
 
+/**
+ * 0090: an executor's evidence keeps every unsaved answer nothing it keeps was made after
+ * (cross-repo decision 25, review 2026-09-28 (9) #4). `executor_capture_evidence.unsaved_answers`:
+ * the antichain of unsaved answers in the executor's own order (`withUnsavedAnswer`), each
+ * `{at, words, position}`, the latest received last. An answer nothing orders against a kept one
+ * used to replace it, erasing a failure no save covered; now both are kept, and a save stands
+ * only over every one. The `unsaved_*` columns keep the latest received, for display. Existing
+ * rows start from the one answer they kept.
+ */
+const executorUnsavedAnswersMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE executor_capture_evidence
+      ADD COLUMN unsaved_answers jsonb NOT NULL DEFAULT '[]'::jsonb`;
+  yield* sql`
+    UPDATE executor_capture_evidence
+       SET unsaved_answers = jsonb_build_array(jsonb_build_object(
+             'at', to_jsonb(unsaved_at),
+             'words', COALESCE(unsaved_detail, 'not saved'),
+             'position', unsaved_position))
+     WHERE unsaved_at IS NOT NULL`;
+});
+
+/**
+ * 0091: write authority and a seal's acceptance serialize on one row (cross-repo decision 26,
+ * review 2026-09-28 (9) #6). `capture_put_authority.expires_at` may be null: the epoch's row is
+ * created, with no authority, by whichever comes first — issuing an upload URL or marking a seal
+ * re-verified — and both lock it `FOR UPDATE` before reading anything fresh. The mark's old
+ * `NOT EXISTS` read the authority from its statement's snapshot, taken before it waited on the
+ * seal row, and so missed authority committed while it waited. Issuing authority refuses while a
+ * seal of the epoch is recorded that the caller did not check its keys against.
+ */
+const capturePutAuthorityLockMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE capture_put_authority ALTER COLUMN expires_at DROP NOT NULL`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2674,4 +2711,6 @@ export const migrations = {
   "0087_executor_evidence_order": executorEvidenceOrderMigration,
   "0088_executor_evidence_fences": executorEvidenceFencesMigration,
   "0089_capture_put_authority": capturePutAuthorityMigration,
+  "0090_executor_unsaved_answers": executorUnsavedAnswersMigration,
+  "0091_capture_put_authority_lock": capturePutAuthorityLockMigration,
 };

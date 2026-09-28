@@ -21,6 +21,7 @@ import {
   type SessionOrigin,
   type SessionReferenceMount,
   type SessionStatus,
+  withUnsavedAnswer,
 } from "@mend/domain/workbench";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { Effect, Layer, Schema } from "effect";
@@ -35,6 +36,7 @@ import {
   executorCaptureEvidence,
   executorEvidenceFences,
   projects,
+  type StoredUnsavedAnswer,
 } from "../schema/workbench.ts";
 import { agentConversationLockKey } from "./agent-conversation.ts";
 
@@ -113,8 +115,9 @@ export interface CaptureSavedObservation {
 
 /**
  * An executor's answer that said it held work not saved (`captureUnsavedWordsOf`): which
- * executor, when Mend took it, and in what words. The latest one stands; taken after a completed
- * final flush or a seal, it revokes that save (cross-repo decision 10).
+ * executor, when Mend took it, and in what words. Taken after a completed final flush or a seal,
+ * it revokes that save (cross-repo decision 10); the executor's evidence keeps every one no other
+ * was made after (`withUnsavedAnswer`, decision 25).
  */
 export interface CaptureUnsavedObservation {
   readonly workspaceId: string;
@@ -135,7 +138,12 @@ export interface ExecutorCaptureEvidence {
   /** The launch Mend knew for the executor when it answered, when it knew one. */
   readonly launchId: string | null;
   readonly saved: CaptureSavedObservation | null;
-  readonly unsaved: CaptureUnsavedObservation | null;
+  /**
+   * Every answer that said it held unsaved work and that no other kept one was made after, in
+   * the executor's own order (0090, cross-repo decision 25, review 2026-09-28 (9) #4): a save
+   * stands only over every one. The latest received is last. Empty: none.
+   */
+  readonly unsaved: ReadonlyArray<CaptureUnsavedObservation>;
   /**
    * Bumped by every answer taken from the executor (0087, cross-repo decision 18): a decision
    * made on what it read commits only while this is still what it read.
@@ -144,9 +152,10 @@ export interface ExecutorCaptureEvidence {
 }
 
 /**
- * One answer to add to an executor's evidence: of each kind, it replaces the kept one unless the
- * executor made it before that one (`captureAnswerReplaces`). An answer of neither kind (clean,
- * or saying nothing either way) still counts: the version moves.
+ * One answer to add to an executor's evidence: a saved one replaces the kept one unless the
+ * executor made it before that one (`captureAnswerReplaces`); an unsaved one joins the kept ones
+ * (`withUnsavedAnswer`). An answer of neither kind (clean, or saying nothing either way) still
+ * counts: the version moves.
  */
 export interface ExecutorCaptureAnswer {
   readonly worktreeId: WorktreeId;
@@ -175,15 +184,17 @@ export interface ExecutorReading {
 }
 
 /**
- * The executor's evidence once `answer` is weighed against what it keeps: of each kind, the
- * answer replaces the kept one unless the executor made it before (`captureAnswerReplaces`).
+ * The executor's evidence once `answer` is weighed against what it keeps: a saved answer replaces
+ * the kept one unless the executor made it before (`captureAnswerReplaces`); an unsaved one is
+ * added to the kept ones, and only an answer made strictly after one ever removes it
+ * (`withUnsavedAnswer`, cross-repo decision 25).
  */
 const mergedEvidence = (
   kept: ExecutorCaptureEvidence | null,
   answer: ExecutorCaptureAnswer,
 ): {
   readonly saved: CaptureSavedObservation | null;
-  readonly unsaved: CaptureUnsavedObservation | null;
+  readonly unsaved: ReadonlyArray<CaptureUnsavedObservation>;
 } => ({
   saved:
     answer.saved !== undefined &&
@@ -193,13 +204,30 @@ const mergedEvidence = (
       ? answer.saved
       : (kept?.saved ?? null),
   unsaved:
-    answer.unsaved !== undefined &&
-    (kept?.unsaved === null ||
-      kept === null ||
-      captureAnswerReplaces(answer.unsaved.position, kept.unsaved?.position))
-      ? answer.unsaved
-      : (kept?.unsaved ?? null),
+    answer.unsaved === undefined
+      ? (kept?.unsaved ?? [])
+      : withUnsavedAnswer(kept?.unsaved ?? [], answer.unsaved),
 });
+
+/**
+ * The columns that keep an executor's unsaved answers: all of them (`unsaved_answers`), and the
+ * latest received again in `unsaved_*` for display.
+ */
+const unsavedColumns = (unsaved: ReadonlyArray<CaptureUnsavedObservation>) => {
+  const latest = unsaved.at(-1) ?? null;
+  return {
+    unsavedAt: latest?.at ?? null,
+    unsavedDetail: latest?.words ?? null,
+    unsavedPosition: latest?.position ?? null,
+    unsavedAnswers: unsaved.map(
+      (answer): StoredUnsavedAnswer => ({
+        at: answer.at.toISOString(),
+        words: answer.words,
+        position: answer.position ?? null,
+      }),
+    ),
+  };
+};
 
 /** The owner's "discard unsaved and stop", as the session keeps it: when, and who. */
 export interface CaptureDiscard {
@@ -1412,9 +1440,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             savedN: saved?.n ?? null,
             savedEpoch: saved?.epoch ?? null,
             savedPosition: saved?.position ?? null,
-            unsavedAt: unsaved?.at ?? null,
-            unsavedDetail: unsaved?.words ?? null,
-            unsavedPosition: unsaved?.position ?? null,
+            ...unsavedColumns(unsaved),
             updatedAt: new Date(),
           };
           if (kept === null) {
@@ -1562,9 +1588,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
                   savedN: saved?.n ?? null,
                   savedEpoch: saved?.epoch ?? null,
                   savedPosition: saved?.position ?? null,
-                  unsavedAt: unsaved?.at ?? null,
-                  unsavedDetail: unsaved?.words ?? null,
-                  unsavedPosition: unsaved?.position ?? null,
+                  ...unsavedColumns(unsaved),
                   updatedAt: new Date(),
                   version: sql`${t.version} + 1`,
                 })
@@ -1626,15 +1650,12 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
                   epoch: row.savedEpoch,
                   position: row.savedPosition,
                 },
-          unsaved:
-            row.unsavedAt === null
-              ? null
-              : {
-                  workspaceId,
-                  at: row.unsavedAt,
-                  words: row.unsavedDetail ?? "not saved",
-                  position: row.unsavedPosition,
-                },
+          unsaved: row.unsavedAnswers.map((answer) => ({
+            workspaceId,
+            at: new Date(answer.at),
+            words: answer.words,
+            position: answer.position,
+          })),
           version: Number(row.version),
         } satisfies ExecutorCaptureEvidence;
       };

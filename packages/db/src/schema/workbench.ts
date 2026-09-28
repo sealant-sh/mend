@@ -2008,7 +2008,9 @@ export const captureSeals = pgTable(
  * to the bucket (migration 0089, review 2026-09-28 (7) #8): the latest expiry of every PUT and
  * part URL minted for `captures/<worktree>/<epoch>/…`, recorded before the URL is handed out. On
  * a bucket that ignores `If-None-Match` (Garage) no seal of that epoch stands before it, and one
- * stands after it only once its objects are read back as what their names say.
+ * stands after it only once its objects are read back as what their names say. The row is also
+ * the lock issuing authority and marking a seal re-verified serialize on (0091, cross-repo
+ * decision 26): `expires_at` is null while no URL was handed out.
  */
 export const capturePutAuthority = pgTable(
   "capture_put_authority",
@@ -2018,7 +2020,7 @@ export const capturePutAuthority = pgTable(
       .notNull()
       .references(() => worktrees.id, { onDelete: "cascade" }),
     epoch: bigint({ mode: "number" }).notNull(),
-    expiresAt: timestamp({ mode: "date", withTimezone: true }).notNull(),
+    expiresAt: timestamp({ mode: "date", withTimezone: true }),
   },
   (table) => [primaryKey({ columns: [table.worktreeId, table.epoch] })],
 );
@@ -2027,6 +2029,14 @@ export const capturePutAuthority = pgTable(
  * What a physical executor answered about its capture (migration 0086), whichever session asked:
  * the latest completed final flush and the latest answer that said it held unsaved work.
  */
+/** One kept unsaved answer of an executor, as `executor_capture_evidence.unsaved_answers` holds it. */
+export interface StoredUnsavedAnswer {
+  /** When Mend took it (ISO 8601); display only. */
+  readonly at: string;
+  readonly words: string;
+  readonly position: CapturePosition | null;
+}
+
 export const executorCaptureEvidence = pgTable(
   "executor_capture_evidence",
   {
@@ -2044,6 +2054,12 @@ export const executorCaptureEvidence = pgTable(
     /** Where the executor made each kept answer (0087); what orders them, never `*_at`. */
     savedPosition: jsonb().$type<CapturePosition>(),
     unsavedPosition: jsonb().$type<CapturePosition>(),
+    /**
+     * Every unsaved answer no other kept one was made after (0090, cross-repo decision 25): an
+     * antichain in the executor's own order, the latest received last. `unsaved_*` repeat the
+     * latest received, for display.
+     */
+    unsavedAnswers: jsonb().$type<ReadonlyArray<StoredUnsavedAnswer>>().notNull().default([]),
     /** Bumped by every answer taken (0087): what a decision's compare-and-set reads. */
     version: bigint({ mode: "number" }).notNull().default(0),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),

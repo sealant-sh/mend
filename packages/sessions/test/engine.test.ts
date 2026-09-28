@@ -104,6 +104,7 @@ import {
   type SessionExtraMount,
   type SessionReferenceMount,
   captureAnswerReplaces,
+  withUnsavedAnswer,
   type CapturePosition,
   captureDiscardAuditData,
   captureStatusLine,
@@ -1678,7 +1679,10 @@ const sessionsLayer = (world: World) => {
       workspaceId,
       launchId: answer.launchId ?? kept?.launchId ?? null,
       saved: newerObservation(answer.saved, kept?.saved ?? null),
-      unsaved: newerObservation(answer.unsaved, kept?.unsaved ?? null),
+      unsaved:
+        answer.unsaved === undefined
+          ? (kept?.unsaved ?? [])
+          : withUnsavedAnswer(kept?.unsaved ?? [], answer.unsaved),
       version,
     });
     return version;
@@ -13544,7 +13548,7 @@ const unsavedAfterSeal = (
     workspaceId,
     launchId: kept?.launchId ?? seal.executorId,
     saved: kept?.saved ?? null,
-    unsaved: {
+    unsaved: withUnsavedAnswer(kept?.unsaved ?? [], {
       workspaceId,
       ...answer,
       position: {
@@ -13555,7 +13559,7 @@ const unsavedAfterSeal = (
         observation: (seal.observation ?? 0) + 1,
         headN: seal.n,
       },
-    },
+    }),
     version: (kept?.version ?? 0) + 1,
   });
 };
@@ -14476,11 +14480,11 @@ describe("SessionEngine fifth review (2026-09-28)", () => {
               answer,
               60_000,
             );
-            const evidence = world.executorEvidence.get("workspace-1");
-            expect(evidence?.unsaved?.words).toContain("unreadable");
+            const evidence = world.executorEvidence.get("workspace-1")?.unsaved.at(-1);
+            expect(evidence?.words).toContain("unreadable");
             // The wall clocks say the seal came last; the executor says otherwise.
-            expect(evidence?.unsaved?.at.getTime()).toBeLessThan(seal.sealedAt.getTime());
-            expect(evidence?.unsaved?.position?.observation).toBe(SEAL_STAMP.observation + 1);
+            expect(evidence?.at.getTime()).toBeLessThan(seal.sealedAt.getTime());
+            expect(evidence?.position?.observation).toBe(SEAL_STAMP.observation + 1);
             yield* engine.stop(session.id);
             yield* until(
               () => world.sessions.get(session.id)?.captureNotSavedAt != null,
@@ -14603,9 +14607,9 @@ describe("SessionEngine fifth review (2026-09-28)", () => {
               -60_000,
               "before-seal",
             );
-            const evidence = world.executorEvidence.get("workspace-1");
-            expect(evidence?.unsaved?.at.getTime()).toBeGreaterThan(seal.sealedAt.getTime());
-            expect(evidence?.unsaved?.position?.observation).toBe(SEAL_STAMP.observation - 1);
+            const evidence = world.executorEvidence.get("workspace-1")?.unsaved.at(-1);
+            expect(evidence?.at.getTime()).toBeGreaterThan(seal.sealedAt.getTime());
+            expect(evidence?.position?.observation).toBe(SEAL_STAMP.observation - 1);
             yield* engine.stop(session.id);
             yield* until(
               () => stopOptions.some((options) => options?.completion !== undefined),
@@ -14883,9 +14887,9 @@ describe("SessionEngine seventh review (2026-09-28)", () => {
               () => world.sessions.get(session.id)?.capturePending === 1,
               "owner pending status persisted",
             );
-            expect(world.executorEvidence.get("workspace-1")?.unsaved?.position?.observation).toBe(
-              99,
-            );
+            expect(
+              world.executorEvidence.get("workspace-1")?.unsaved.at(-1)?.position?.observation,
+            ).toBe(99);
             sample = null;
             records.set(`${session.worktreeId}:${epoch}`, {
               worktreeId: session.worktreeId,
@@ -15145,7 +15149,7 @@ describe("SessionEngine seventh review (2026-09-28)", () => {
               yield* engine.refreshCaptureStatus(session.id);
               yield* Effect.sleep(Duration.millis(50));
               sample = null;
-              expect(world.executorEvidence.get("workspace-1")?.unsaved ?? null).toBeNull();
+              expect(world.executorEvidence.get("workspace-1")?.unsaved ?? []).toEqual([]);
             }),
           { fixture, captured: memory, seals: memorySeals(records), sealantLayer },
         );
@@ -15294,7 +15298,7 @@ describe("SessionEngine seventh review (2026-09-28)", () => {
             sample = null;
             expect(failedLog).toBe(true);
             // The answer is the executor's evidence, however the log after it went.
-            expect(world.executorEvidence.get("workspace-1")?.unsaved ?? null).not.toBeNull();
+            expect(world.executorEvidence.get("workspace-1")?.unsaved ?? []).not.toEqual([]);
           }),
         { fixture, captured: memory, seals: memorySeals(records), sealantLayer, logs },
       );
@@ -15322,6 +15326,206 @@ describe("SessionEngine seventh review (2026-09-28)", () => {
             expect(ended?.status).toBe("failed");
           }),
         { fixture, captured: memory, seals: memorySeals(records), sealantLayer, logs },
+      );
+    },
+  );
+});
+
+/**
+ * Review 2026-09-28 (9): evidence nothing orders is kept, never erased by a later answer
+ * (cross-repo decision 25), and a report follows the event it names (decision 28).
+ */
+describe("SessionEngine ninth review (2026-09-28)", () => {
+  // #4 (the reviewer's engine sequence): boot A sealed at observation 100; recovery boot B
+  // (generation 0, ordered against nothing) answered a failed snapshot; a delayed answer boot A
+  // made before its seal replaced B's, the seal covered that one, and a lost FINAL answer then
+  // sent Core an attestation for the old seal.
+  it(
+    "#4 a delayed older answer after a recovery boot's failure never revives the old seal: no attestation",
+    { timeout: 30_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+      const logs: Array<string> = [];
+      let sample: WorkspaceCaptureStatus | null = null;
+      let sealed = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
+            const built = yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              epoch,
+              crypto.randomUUID(),
+              "final",
+            );
+            records.set(`${session.worktreeId}:${epoch}`, {
+              worktreeId: session.worktreeId,
+              epoch,
+              executorId: launch,
+              captureId: built.id,
+              n: built.manifest.n,
+              sealedAt: new Date(),
+              ...SEAL_STAMP,
+            });
+            sealed = true;
+            // What sealantd answers beyond the SDK's type (`complete`, `origin`, …), as carried.
+            sample = Object.assign(flushReport(0, 1, { epoch }), {
+              complete: false,
+              incompleteReason: "snapshot-failed",
+              unreadable: 1,
+              unreadablePaths: ["tree/recovery-work.txt"],
+              origin: {
+                epoch,
+                launch,
+                bootId: "recovery-boot",
+                bootGeneration: 0,
+                observation: 1,
+                headN: built.manifest.n,
+              },
+            });
+            yield* engine.flushCaptures(session.id, "recovery boot's failure");
+            sample = Object.assign(flushReport(0, 1, { epoch }), {
+              complete: false,
+              incompleteReason: "in-progress",
+              origin: {
+                epoch,
+                launch,
+                bootId: SEAL_STAMP.bootId,
+                bootGeneration: SEAL_STAMP.bootGeneration,
+                observation: SEAL_STAMP.observation - 1,
+                headN: built.manifest.n,
+              },
+            });
+            yield* engine.flushCaptures(session.id, "delayed pre-seal answer");
+            // Every later answer is lost: only what is kept decides.
+            sample = null;
+            yield* engine.stop(session.id);
+            // The drain either reads not saved, or (the defect) attests the old seal and stops.
+            yield* until(
+              () =>
+                world.sessions.get(session.id)?.captureNotSavedAt != null || stopOptions.length > 0,
+              "the drain's outcome",
+            );
+            expect(stopOptions.filter((options) => options?.completion !== undefined)).toEqual([]);
+            expect(logs.some((line) => line.includes("capture drain · saved · terminating"))).toBe(
+              false,
+            );
+            // Both answers the seal cannot be ordered after are kept.
+            const kept = world.executorEvidence.get("workspace-1")?.unsaved ?? [];
+            expect(kept.map((answer) => answer.position?.bootId).toSorted()).toEqual([
+              SEAL_STAMP.bootId,
+              "recovery-boot",
+            ]);
+          }),
+        {
+          captured: memory,
+          seals: memorySeals(records),
+          logs,
+          drainPolicy: { stallSeconds: 0 },
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            {
+              stopOptions,
+              resourceId: () => "r9-container",
+              finalCompletion: "unreported",
+              flush: () =>
+                sealed
+                  ? sample !== null
+                    ? Effect.succeed(sample)
+                    : Effect.fail(
+                        new SealantPlatformError({
+                          code: "connection_closed",
+                          status: null,
+                          message: "relay closed",
+                          cause: null,
+                        }),
+                      )
+                  : Effect.succeed(flushReport(0, 0)),
+            },
+          ),
+        },
+      );
+    },
+  );
+
+  // #10 (the reviewer's instrumented regression): `unsaved captures discarded by the owner` was
+  // logged before the platform was asked, and stood when the platform kept the workspace (409,
+  // `nothing discarded yet`). The request is logged before the stop; the discard only once the
+  // platform confirmed the end.
+  it(
+    "#10 a discard the platform refuses logs the request, never `discarded`; a confirmed one logs it after the end",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const stops: Array<"drain" | "discard"> = [];
+      const logs: Array<string> = [];
+      const memory = makeMemoryCaptureStore();
+      let platformKeeps = true;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept workspace",
+            );
+            const refused = yield* engine.discardUnsavedAndStop(session.id).pipe(Effect.flip);
+            expect(refused._tag === "SealantPlatformError" && refused.code).toBe(
+              "workspace_not_ended",
+            );
+            const discardedLines = () =>
+              logs.filter((line) => line.includes("unsaved captures discarded by the owner"));
+            expect(discardedLines()).toEqual([]);
+            expect(
+              logs.filter((line) => line.includes("discard of unsaved captures requested")),
+            ).toHaveLength(1);
+            expect(
+              logs.some((line) => line.includes("the platform has not ended the workspace")),
+            ).toBe(true);
+            platformKeeps = false;
+            yield* engine.discardUnsavedAndStop(session.id);
+            expect(stops).toEqual(["discard", "discard"]);
+            expect(discardedLines()).toHaveLength(1);
+            // Logged after the platform's end, never before its stop was asked.
+            const requested = logs.findLastIndex((line) =>
+              line.includes("discard of unsaved captures requested"),
+            );
+            expect(logs.findIndex((line) => discardedLines().includes(line))).toBeGreaterThan(
+              requested,
+            );
+          }),
+        {
+          captured: memory,
+          logs,
+          drainPolicy: { stallSeconds: 1, terminationWait: Duration.millis(300) },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stops,
+              stopAnswer: (discard) => (discard && !platformKeeps ? "stopped" : "kept"),
+              flush: () => Effect.succeed(flushReport(2, 1)),
+            },
+          }),
+        },
       );
     },
   );

@@ -291,13 +291,24 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
             )
             .toSorted((a, b) => b.epoch - a.epoch)[0] ?? null,
       ),
-    recordPutAuthority: (worktreeId, epoch, expiresAt) =>
+    recordPutAuthority: (worktreeId, epoch, expiresAt, checkedSeal) =>
       Effect.sync(() => {
         const key = `${worktreeId}:${epoch}`;
+        // A recorded seal the caller did not check its keys against: nothing recorded (0091,
+        // cross-repo decision 26).
+        const seal = seals.get(key);
+        if (
+          seal !== undefined &&
+          (seal.voidReason ?? null) === null &&
+          seal.captureId !== (checkedSeal ?? null)
+        ) {
+          return { recorded: false, sealedCapture: seal.captureId } as const;
+        }
         const kept = putAuthority.get(key);
         if (kept === undefined || kept.getTime() < expiresAt.getTime()) {
           putAuthority.set(key, expiresAt);
         }
+        return { recorded: true } as const;
       }),
     putAuthorityUntil: (worktreeId, epoch) =>
       Effect.sync(() => putAuthority.get(`${worktreeId}:${epoch}`) ?? null),

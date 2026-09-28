@@ -144,14 +144,68 @@ export const captureOrderOf = (
 
 /**
  * Whether an answer at `incoming` replaces the one of its kind kept at `stored` (an executor's
- * latest completed final flush, its latest unsaved answer): unless the executor made it strictly
- * before the kept one. An answer nothing orders against the kept one replaces it: the newer one
- * received is kept, and a save still stands over it only once it is ordered before that save.
+ * latest completed final flush): unless the executor made it strictly before the kept one. An
+ * answer nothing orders against the kept one replaces it. Unsaved answers are never replaced this
+ * way: see `withUnsavedAnswer`.
  */
 export const captureAnswerReplaces = (
   incoming: CapturePosition | null | undefined,
   stored: CapturePosition | null | undefined,
 ): boolean => captureOrderOf(incoming, stored) !== "before";
+
+/** Whether anything can be ordered against `position`: every field the order reads is known. */
+const capturePositionOrderable = (position: CapturePosition | null | undefined): boolean =>
+  position !== null &&
+  position !== undefined &&
+  position.epoch !== null &&
+  position.launchId !== null &&
+  position.bootId !== null &&
+  position.observation !== null;
+
+/**
+ * The most unsaved answers an executor's evidence keeps apart. Past it they are folded into one
+ * answer nothing orders (`withUnsavedAnswer`), which no save ever covers: fail closed.
+ */
+export const CAPTURE_UNSAVED_ANSWERS_KEPT = 64;
+
+/**
+ * The unsaved answers an executor's evidence keeps once `incoming` is added (cross-repo decision
+ * 25, review 2026-09-28 (9) #4): every answer no other kept answer was made strictly after, in
+ * the executor's own order (`captureOrderOf`) — an antichain. A save stands only over all of them
+ * (`saveCoversUnsaved`, each); an answer merely incomparable with a kept one never erases it,
+ * however late it arrives.
+ * - `incoming` made strictly before a kept answer adds nothing: a save that covers the later one
+ *   covers it too;
+ * - a kept answer made strictly before `incoming`, or the same answer, gives way to it;
+ * - answers nothing can be ordered against (a field of their position unknown) are covered by no
+ *   save and dominated by no answer: one of them stands for all, the latest received.
+ * Past `CAPTURE_UNSAVED_ANSWERS_KEPT`, everything is folded into `incoming` with no position,
+ * which no save covers. The latest received is last.
+ */
+export const withUnsavedAnswer = <
+  T extends { readonly words: string; readonly position?: CapturePosition | null },
+>(
+  kept: ReadonlyArray<T>,
+  incoming: T,
+): ReadonlyArray<T> => {
+  if (kept.some((answer) => captureOrderOf(incoming.position, answer.position) === "before")) {
+    return kept;
+  }
+  const unorderable = !capturePositionOrderable(incoming.position);
+  const standing = kept.filter((answer) => {
+    const order = captureOrderOf(answer.position, incoming.position);
+    if (order === "before" || order === "same") return false;
+    return !(unorderable && !capturePositionOrderable(answer.position));
+  });
+  if (standing.length + 1 <= CAPTURE_UNSAVED_ANSWERS_KEPT) return [...standing, incoming];
+  return [
+    {
+      ...incoming,
+      words: `${incoming.words} · ${standing.length + 1} unsaved answers kept as one`,
+      position: null,
+    },
+  ];
+};
 
 /**
  * Whether a save (a completed final flush, a seal) at `save` stands over an answer at `unsaved`
@@ -633,16 +687,17 @@ export interface ExecutorEndFacts {
     readonly position?: CapturePosition | null;
   } | null;
   /**
-   * The latest answer this executor gave that said it held unsaved work
-   * (`captureUnsavedWordsOf`), when Mend took it and in its words. Taken after a completed final
-   * flush or a seal, it revokes that save (cross-repo decision 10): the save is reported as the
-   * last one confirmed, and this beside it. Null or absent: none observed.
+   * Every answer this executor gave that said it held unsaved work (`captureUnsavedWordsOf`) and
+   * that no other such answer was made after (`withUnsavedAnswer`, cross-repo decision 25): when
+   * Mend took each and in its words. One made after a completed final flush or a seal revokes that
+   * save (cross-repo decision 10), and one nothing orders against it leaves it undecided: a save
+   * stands only over every one of them. Null, absent or empty: none observed.
    */
-  readonly unsaved?: {
+  readonly unsaved?: ReadonlyArray<{
     readonly at: Date;
     readonly words: string;
     readonly position?: CapturePosition | null;
-  } | null;
+  }> | null;
   /**
    * Whether every answer asked of this executor was published as its evidence (cross-repo
    * decision 18, review 2026-09-28 (7) #3). False: an answer is in flight, or arrived and was
@@ -716,16 +771,13 @@ export const executorEndOf = (facts: ExecutorEndFacts): ExecutorEnd => {
           position: reading.position ?? null,
         }
       : null;
-  const stated =
-    facts.unsaved !== null && facts.unsaved !== undefined
-      ? {
-          words: facts.unsaved.words,
-          observedAt: facts.unsaved.at,
-          position: facts.unsaved.position ?? null,
-        }
-      : null;
+  const stated = (facts.unsaved ?? []).map((answer) => ({
+    words: answer.words,
+    observedAt: answer.at,
+    position: answer.position ?? null,
+  }));
   // Every answer that said the executor held unsaved work, as the executor ordered them.
-  const unsavedAnswers = [stated, queuedReading].filter((answer) => answer !== null);
+  const unsavedAnswers = [...stated, queuedReading].filter((answer) => answer !== null);
   /** The unsaved answers a save does not cover, the latest first (cross-repo decision 17). */
   const uncoveredBy = (save: CapturePosition | null) =>
     unsavedAnswers

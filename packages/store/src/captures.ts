@@ -77,8 +77,25 @@ export const GitSection = Schema.Struct({
    * packs — the restore's, the verifier's — is made in it. Absent: `sha1`.
    */
   object_format: Schema.optionalKey(Schema.String),
+  /**
+   * The `ref_format` manifest feature (sealantd review 9 #1, cross-repo decision 24): the backend
+   * the repository keeps its refs in (`extensions.refStorage`) when it is not `files` —
+   * `reftable`. The capture read `HEAD`, the refs and the reflogs through git in that backend; a
+   * restore initializes its repository with it, and the verifier reads the section's packs in a
+   * repository of it. Absent: `files`.
+   */
+  ref_format: Schema.optionalKey(Schema.String),
 });
 export type GitSection = typeof GitSection.Type;
+
+/** The ref backends Mend verifies and plans: a section's `ref_format`, `files` when absent. */
+export type GitRefFormat = "files" | "reftable";
+
+/** The section's ref backend; null when it names one Mend does not read. */
+export const gitRefFormatOf = (section: GitSection): GitRefFormat | null => {
+  const format = section.ref_format ?? "files";
+  return format === "files" || format === "reftable" ? format : null;
+};
 
 /** The object formats Mend verifies and plans: a section's `object_format`, `sha1` when absent. */
 export type GitObjectFormat = "sha1" | "sha256";
@@ -2171,58 +2188,116 @@ export const metaNamespaceProblem = (
  * match (a directory it names there fails `NotADirectory`). The reason, or null when the document
  * applies.
  */
+/**
+ * What a complete restore lays down at a path before the worktree metadata document applies
+ * (sealantd materializes the git class's checkout of `restoreTree`, then the workspace class's
+ * `tree/…` overlay over it, then the bulk class where neither put anything): `effectiveKind` —
+ * what is there, or null for nothing — and `effectiveFile` — the file there and where its bytes
+ * come from (the checkout's blob, or a class member), or why it is not a file. The overlay wins
+ * over the checkout, the checkout over the bulk, and an overlay entry that is not a directory
+ * replaces everything below it.
+ */
+const makeRestoreNamespace = (
+  manifest: CaptureManifest,
+  restoreTree: ReadonlyMap<string, RestoreTreePath>,
+) => {
+  const members = makeClassMembers(manifest);
+  const workspaceKinds = new Map<string, WorktreeTreeKind | null>();
+  const workspaceKind = (bytes: Buffer) =>
+    Effect.gen(function* () {
+      const hex = bytes.toString("hex");
+      const known = workspaceKinds.get(hex);
+      if (known !== undefined) return known;
+      const found = yield* members.kindOf("workspace", `tree/${keyOfBytes(bytes)}`);
+      workspaceKinds.set(hex, found);
+      return found;
+    });
+  /** Every proper ancestor of `bytes`, outermost first. */
+  const ancestorsOf = (bytes: Buffer): Array<Buffer> => {
+    const out: Array<Buffer> = [];
+    for (let at = bytes.indexOf(SLASH); at > 0; at = bytes.indexOf(SLASH, at + 1)) {
+      out.push(bytes.subarray(0, at));
+    }
+    return out;
+  };
+  const effective = new Map<string, WorktreeTreeKind | null>();
+  /** What the restore leaves at `bytes` before the document applies; null: nothing. */
+  const effectiveKind = (bytes: Buffer): Effect.Effect<WorktreeTreeKind | null, never, BlobStore> =>
+    Effect.gen(function* () {
+      const hex = bytes.toString("hex");
+      const known = effective.get(hex);
+      if (known !== undefined) return known;
+      let found: WorktreeTreeKind | null = yield* workspaceKind(bytes);
+      if (found === null) {
+        let replaced = false;
+        for (const ancestor of ancestorsOf(bytes)) {
+          const over = yield* workspaceKind(ancestor);
+          if (over !== null && over !== "dir") replaced = true;
+        }
+        const checkout = replaced ? undefined : restoreTree.get(hex)?.kind;
+        found =
+          checkout !== undefined
+            ? checkout
+            : replaced
+              ? null
+              : yield* members.kindOf("bulk", keyOfBytes(bytes));
+      }
+      effective.set(hex, found);
+      return found;
+    });
+  const named = (bytes: Buffer) => JSON.stringify(keyOfBytes(bytes));
+  /** The file the restore lays down at `bytes`, and where its bytes come from; or why none is. */
+  const effectiveFile = (bytes: Buffer): Effect.Effect<RestoredFile | string, never, BlobStore> =>
+    Effect.gen(function* () {
+      for (const ancestor of ancestorsOf(bytes)) {
+        const over = yield* effectiveKind(ancestor);
+        if (over !== null && over !== "dir") {
+          return `${named(bytes)} lies below ${named(ancestor)}, a ${over} in the files the restore lays down`;
+        }
+      }
+      const kind = yield* effectiveKind(bytes);
+      if (kind === null) return `${named(bytes)} is absent from the files the restore lays down`;
+      if (kind !== "file") return `${named(bytes)} is a ${kind} in the files the restore lays down`;
+      if ((yield* workspaceKind(bytes)) !== null) {
+        const member = yield* members.fileOf("workspace", `tree/${keyOfBytes(bytes)}`);
+        return typeof member === "string" ? member : { source: "class", member };
+      }
+      const checkout = restoreTree.get(bytes.toString("hex"));
+      if (checkout !== undefined) return { source: "checkout", object: checkout.object };
+      const member = yield* members.fileOf("bulk", keyOfBytes(bytes));
+      return typeof member === "string" ? member : { source: "class", member };
+    });
+  return { members, ancestorsOf, effectiveKind, effectiveFile };
+};
+
+/** A file a restore lays down: the checkout's blob, or a class member's bytes. */
+type RestoredFile =
+  | { readonly source: "checkout"; readonly object: string }
+  | { readonly source: "class"; readonly member: ClassMember };
+
+/**
+ * How files a restore lays down are compared: the checkout's objects are git's (sha1, or sha256
+ * in a SHA-256 repository), so a class member is hashed as the git blob of the same bytes to
+ * compare with one; class members alone compare by sha256.
+ */
+const restoredFileDigestOf = (
+  files: ReadonlyArray<RestoredFile>,
+): "sha256" | "git-sha1" | "git-sha256" => {
+  const object = files.find((file) => file.source === "checkout");
+  return object === undefined || object.source !== "checkout"
+    ? "sha256"
+    : object.object.length === 64
+      ? "git-sha256"
+      : "git-sha1";
+};
+
 export const restoreNamespaceProblem = (
   manifest: CaptureManifest,
   document: WorktreeMetaDocument,
   restoreTree: ReadonlyMap<string, RestoreTreePath>,
 ): Effect.Effect<string | null, never, BlobStore> =>
   Effect.gen(function* () {
-    const members = makeClassMembers(manifest);
-    const workspaceKinds = new Map<string, WorktreeTreeKind | null>();
-    const workspaceKind = (bytes: Buffer) =>
-      Effect.gen(function* () {
-        const hex = bytes.toString("hex");
-        const known = workspaceKinds.get(hex);
-        if (known !== undefined) return known;
-        const found = yield* members.kindOf("workspace", `tree/${keyOfBytes(bytes)}`);
-        workspaceKinds.set(hex, found);
-        return found;
-      });
-    /** Every proper ancestor of `bytes`, outermost first. */
-    const ancestorsOf = (bytes: Buffer): Array<Buffer> => {
-      const out: Array<Buffer> = [];
-      for (let at = bytes.indexOf(SLASH); at > 0; at = bytes.indexOf(SLASH, at + 1)) {
-        out.push(bytes.subarray(0, at));
-      }
-      return out;
-    };
-    const effective = new Map<string, WorktreeTreeKind | null>();
-    /** What the restore leaves at `bytes` before the document applies; null: nothing. */
-    const effectiveKind = (
-      bytes: Buffer,
-    ): Effect.Effect<WorktreeTreeKind | null, never, BlobStore> =>
-      Effect.gen(function* () {
-        const hex = bytes.toString("hex");
-        const known = effective.get(hex);
-        if (known !== undefined) return known;
-        let found: WorktreeTreeKind | null = yield* workspaceKind(bytes);
-        if (found === null) {
-          let replaced = false;
-          for (const ancestor of ancestorsOf(bytes)) {
-            const over = yield* workspaceKind(ancestor);
-            if (over !== null && over !== "dir") replaced = true;
-          }
-          const checkout = replaced ? undefined : restoreTree.get(hex)?.kind;
-          found =
-            checkout !== undefined
-              ? checkout
-              : replaced
-                ? null
-                : yield* members.kindOf("bulk", keyOfBytes(bytes));
-        }
-        effective.set(hex, found);
-        return found;
-      });
+    const { ancestorsOf, effectiveKind } = makeRestoreNamespace(manifest, restoreTree);
     const namespace = new Map<string, WorktreeTreeKind>();
     for (const entry of document.entries) {
       const bytes = bytesOfPair(entry.path, entry.raw_path);
@@ -2569,14 +2644,17 @@ export interface RestoreTreePath {
 
 /**
  * Whether the tracked-side link topology the worktree metadata document declares is one the
- * complete restore makes (review 2026-09-28 (6) #10), over `restoreTree` — every path of the tree
- * the restore checks out (`rawTreeOf`), hex of its bytes → its kind and git object:
- * - each `hardlinks` group is tracked files the checkout writes with the same bytes: every member
- *   a file of that tree, every member the same blob (sealantd relinks later members onto the
- *   first, so a member holding other bytes would be replaced by the first's);
- * - each `shared` link names a tracked file of that tree and a file its class carries holding the
- *   same bytes as that blob (a member the class does not carry, or one holding other bytes, is a
- *   link the restore cannot make).
+ * complete restore makes (review 2026-09-28 (6) #10), over the files that restore lays down
+ * (`makeRestoreNamespace`: the checkout of `restoreTree` — every path of the tree it checks out
+ * (`rawTreeOf`), hex of its bytes → its kind and git object — the workspace class's overlay over
+ * it and the bulk class where neither put anything; review 2026-09-28 (9) #7):
+ * - each `hardlinks` group is files the restore lays down with the same bytes: every member a
+ *   file there, every member the same bytes — sealantd relinks later members onto the first, so a
+ *   member holding other bytes (in the checkout, or laid over it by the overlay) would be replaced
+ *   by the first's;
+ * - each `shared` link names a file the restore lays down and a file its class carries holding
+ *   the same bytes (a member the class does not carry, or one holding other bytes, is a link the
+ *   restore cannot make).
  * `cross_links` are checked by `crossLinksProblem`. The reason, or null when every link restores.
  */
 export const linkTopologyProblem = (
@@ -2585,43 +2663,47 @@ export const linkTopologyProblem = (
   restoreTree: ReadonlyMap<string, RestoreTreePath>,
 ): Effect.Effect<string | null, never, BlobStore> =>
   Effect.gen(function* () {
-    const trackedFile = (key: string, raw?: string): RestoreTreePath | string => {
-      const bytes = bytesOfPair(key, raw);
-      if (bytes === null || bytes.length === 0) return `tracked path ${JSON.stringify(key)}`;
-      const found = restoreTree.get(bytes.toString("hex"));
-      if (found === undefined || found.kind !== "file") {
-        return `${JSON.stringify(key)} is ${
-          found === undefined ? "absent from" : `a ${found.kind} in`
-        } the tree the restore checks out`;
-      }
-      return found;
-    };
+    const { members, effectiveFile } = makeRestoreNamespace(manifest, restoreTree);
+    const laidDown = (key: string, raw?: string) =>
+      Effect.gen(function* () {
+        const bytes = bytesOfPair(key, raw);
+        if (bytes === null || bytes.length === 0) return `path ${JSON.stringify(key)}`;
+        return yield* effectiveFile(bytes);
+      });
+    const bytesIdOf = (file: RestoredFile, as: "sha256" | "git-sha1" | "git-sha256") =>
+      file.source === "checkout" ? Effect.succeed(file.object) : members.digestOf(file.member, as);
     for (const group of document.hardlinks ?? []) {
-      const objects = new Set<string>();
+      const files: Array<RestoredFile> = [];
       for (const member of group) {
-        const found = trackedFile(member);
+        const found = yield* laidDown(member);
         if (typeof found === "string") return `hardlink group ${JSON.stringify(group)}: ${found}`;
-        objects.add(found.object);
+        files.push(found);
       }
-      if (objects.size > 1) {
-        return `hardlink group ${JSON.stringify(group)}: members hold different bytes in the tree the restore checks out`;
+      const as = restoredFileDigestOf(files);
+      const ids = new Set<string>();
+      for (const file of files) {
+        const id = yield* bytesIdOf(file, as);
+        if (id === null) return `hardlink group ${JSON.stringify(group)}: a member does not read`;
+        ids.add(id);
+      }
+      if (ids.size > 1) {
+        return `hardlink group ${JSON.stringify(group)}: members hold different bytes in the files the restore lays down`;
       }
     }
-    const members = makeClassMembers(manifest);
     for (const link of document.shared ?? []) {
       const named = `shared link ${JSON.stringify(link)}`;
-      const tracked = trackedFile(link.path);
+      const tracked = yield* laidDown(link.path);
       if (typeof tracked === "string") return `${named}: ${tracked}`;
       const memberKey = bytesOfPair(link.member, link.raw_member);
       if (memberKey === null) return `${named}: its member does not decode`;
       const member = yield* members.fileOf(link.class, keyOfBytes(memberKey));
       if (typeof member === "string") return `${named}: ${member}`;
-      const digest = yield* members.digestOf(
-        member,
-        tracked.object.length === 64 ? "git-sha256" : "git-sha1",
-      );
+      const as = restoredFileDigestOf([tracked]);
+      const trackedId = yield* bytesIdOf(tracked, as);
+      if (trackedId === null) return `${named}: ${JSON.stringify(link.path)} does not read`;
+      const digest = yield* members.digestOf(member, as);
       if (digest === null) return `${named}: its member does not read`;
-      if (digest !== tracked.object) {
+      if (digest !== trackedId) {
         return `${named}: its member holds other bytes than ${JSON.stringify(link.path)}`;
       }
     }
