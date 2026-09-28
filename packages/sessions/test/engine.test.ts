@@ -15181,4 +15181,148 @@ describe("SessionEngine seventh review (2026-09-28)", () => {
       }
     },
   );
+
+  // Review 2026-09-28 (8) #4 (the reviewer's reproduction): a flush answered that the executor
+  // held unsaved work, and the log line written before its publication failed. The fence was
+  // marked answered only once publication began, so it closed as `unanswered` and the answer was
+  // forgotten; after a restart the old seal read saved. Receipt is marked the moment the answer
+  // arrives, it is published before anything is logged, and a log that fails changes no evidence.
+  it(
+    "review 8 #4 a log that fails after an unsaved answer arrives does not revive the old seal",
+    { timeout: 30_000 },
+    async () => {
+      const fixture = {
+        world: makeWorld(),
+        tmp: fs.mkdtempSync(path.join(os.tmpdir(), "mend-review8-log-fence-")),
+      };
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const records = new Map<string, CaptureCompletionSeal>();
+      const ptyStates = new Map<string, InteractiveSessionStatus>();
+      const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+      let sample: WorkspaceCaptureStatus | null = null;
+      let failedLog = false;
+      const logs: Array<string> = [];
+      logs.push = (...items: Array<string>) => {
+        if (
+          !failedLog &&
+          sample !== null &&
+          items.some((line) => line.includes("capture flush · partial"))
+        ) {
+          failedLog = true;
+          throw new Error("log sink unavailable after the unsaved answer arrived");
+        }
+        return Array.prototype.push.apply(logs, items);
+      };
+      let dead = false;
+      let sealed = false;
+      let sessionId: SessionId | undefined;
+      const sealantLayer = sealantLaunchLayer(
+        created,
+        undefined,
+        undefined,
+        undefined,
+        () => dead,
+        undefined,
+        ptyStates,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        {
+          stopOptions,
+          resourceId: () => "container-r8",
+          finalCompletion: "unreported",
+          captureStatus: () => Effect.succeed(sample),
+          flush: () =>
+            sealed
+              ? sample !== null
+                ? Effect.succeed(sample)
+                : Effect.fail(
+                    new SealantPlatformError({
+                      code: "connection_closed",
+                      status: null,
+                      message: "relay closed",
+                      cause: null,
+                    }),
+                  )
+              : Effect.succeed(flushReport(0, 0)),
+        },
+      );
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            sessionId = session.id;
+            yield* engine.launch(session.id, ["codex"]);
+            const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
+            const built = yield* shipHarnessCapture(
+              tmp,
+              memory,
+              session.worktreeId,
+              epoch,
+              crypto.randomUUID(),
+              "final",
+            );
+            records.set(`${session.worktreeId}:${epoch}`, {
+              worktreeId: session.worktreeId,
+              epoch,
+              executorId: launch,
+              captureId: built.id,
+              n: built.manifest.n,
+              sealedAt: new Date(),
+              ...SEAL_STAMP,
+            });
+            sealed = true;
+            sample = Object.assign(flushReport(0, 1, { epoch }), {
+              complete: false,
+              incompleteReason: "snapshot-failed",
+              unreadable: 1,
+              unreadablePaths: ["tree/after-seal.txt"],
+              origin: {
+                epoch,
+                launch,
+                bootId: "boot-1",
+                bootGeneration: 1,
+                observation: 101,
+                headN: built.manifest.n,
+              },
+            });
+            yield* engine.flushCaptures(session.id, "review 8 #4").pipe(Effect.exit);
+            yield* Effect.sleep(Duration.millis(50));
+            sample = null;
+            expect(failedLog).toBe(true);
+            // The answer is the executor's evidence, however the log after it went.
+            expect(world.executorEvidence.get("workspace-1")?.unsaved ?? null).not.toBeNull();
+          }),
+        { fixture, captured: memory, seals: memorySeals(records), sealantLayer, logs },
+      );
+      dead = true;
+      const agent = [...fixture.world.processes.values()].find(
+        (process) => process.sessionId === sessionId && process.kind === "agent-pty",
+      );
+      if (agent?.sealantSessionId == null) throw new Error("no PTY");
+      ptyStates.set(agent.sealantSessionId, {
+        status: "exited",
+        exitCode: 0,
+        outputHighWater: 0n,
+      });
+      // A new engine over the same world: the process-local state is gone.
+      await withEngine(
+        (world) =>
+          Effect.gen(function* () {
+            yield* SessionEngine;
+            yield* until(
+              () => sessionId !== undefined && world.sessions.get(sessionId)?.settledAt != null,
+              "the restarted engine settles the ended executor",
+            );
+            const ended = sessionId === undefined ? undefined : world.sessions.get(sessionId);
+            expect(ended?.summary).not.toContain("saved at");
+            expect(ended?.status).toBe("failed");
+          }),
+        { fixture, captured: memory, seals: memorySeals(records), sealantLayer, logs },
+      );
+    },
+  );
 });

@@ -1018,6 +1018,17 @@ describe("plan.get hands a head only to an executor that reads what it means (ma
               },
             }
           : {}),
+        ...(feature === "object_format"
+          ? {
+              git: {
+                packs: [],
+                refs: {},
+                head: "refs/heads/main",
+                fsck: "unverified" as const,
+                object_format: "sha256",
+              },
+            }
+          : {}),
         ...(feature === "git_trees"
           ? {
               git: {
@@ -1078,6 +1089,14 @@ describe("plan.get hands a head only to an executor that reads what it means (ma
           return { refused, lease, epoch, id, plan };
         }).pipe(Effect.provide(world.layer)),
       );
+      if (feature === "final_seal") {
+        // A seal the store does not hold standing is never handed on (review 2026-09-28 (8) #5):
+        // the plan carries the head without it, so it needs no reader. A standing seal is refused
+        // to an executor that does not read it (capture-verify.test.ts, review 8 #5).
+        expect(result.refused, feature).toBeNull();
+        expect(result.plan.head?.manifest.final_seal, feature).toBeUndefined();
+        continue;
+      }
       expect(result.refused?.reason, feature).toBe("manifest-features");
       expect(result.refused?.status, feature).toBe(409);
       expect(result.refused?.missing, feature).toEqual([feature]);
@@ -1408,7 +1427,7 @@ const routedPlan = (api: SessionCaptureApi, body: unknown) =>
   );
 
 describe("plan.get, as sealantd round 4 asks it", () => {
-  it("every answer lists all six manifest features — sealantd answers `store-fidelity` to any FINAL otherwise", async () => {
+  it("every answer lists all seven manifest features — sealantd answers `store-fidelity` to any FINAL otherwise", async () => {
     const world = worldOf();
     const wt = WorktreeId.make("wt-plan-features");
     const answers = await Effect.runPromise(
@@ -1442,6 +1461,7 @@ describe("plan.get, as sealantd round 4 asks it", () => {
         "raw_names",
         "final_seal",
         "git_trees",
+        "object_format",
       ]);
     }
   });

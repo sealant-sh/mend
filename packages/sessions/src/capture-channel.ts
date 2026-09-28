@@ -40,7 +40,7 @@ import {
   sectionHoldsRawNames,
   gitSectionHoldsRawNames,
   restoreNamespaceProblem,
-  metaInodeProblem,
+  inodeMetadataProblem,
   crossLinksProblem,
   linkTopologyProblem,
   rawTreeOf,
@@ -52,6 +52,7 @@ import { Duration, Effect, Layer, Option, Result, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { CaptureRemotes, type PlanRemote } from "./capture-remotes.ts";
+import { sealStandingOf } from "./capture-seals.ts";
 import { CaptureSources, type PlanSource } from "./capture-sources.ts";
 import { CaptureGitVerifier } from "./capture-verify.ts";
 
@@ -159,6 +160,9 @@ const refuseOtherLaunch = (input: PlanGetRequest, tokenLaunch: string) =>
  *   the trees in their own fields, `refs` the repository's refs whatever their names, and a raw
  *   tree a restore writes back without conversion. An executor that reads the trees from the
  *   pseudo-refs would restore neither the raw bytes nor a user ref under `refs/sealant/capture/`.
+ * - `object_format`: `sections.git.object_format` (sealantd review 8 #10), the repository's object
+ *   format when it is not `sha1`. An executor that does not read it would install a SHA-256 pack
+ *   into a SHA-1 repository and fail its restore.
  */
 export const MANIFEST_FEATURES = [
   "worktree_meta",
@@ -167,6 +171,7 @@ export const MANIFEST_FEATURES = [
   "raw_names",
   "final_seal",
   "git_trees",
+  "object_format",
 ] as const;
 export type ManifestFeature = (typeof MANIFEST_FEATURES)[number];
 
@@ -198,6 +203,7 @@ export const missingManifestFeatures = (
     );
     holds("final_seal", planned.final_seal !== undefined);
     holds("git_trees", gitSectionHoldsTrees(planned.sections.git));
+    holds("object_format", planned.sections.git.object_format !== undefined);
     if (!reads.has("raw_names")) {
       const bulk = planned.sections.bulk;
       const raw =
@@ -417,6 +423,36 @@ export class CaptureRouteError extends Schema.TaggedErrorClass<CaptureRouteError
   },
 ) {}
 
+/**
+ * What became of a registered manifest's `final_seal` (cross-repo decision 22, review 2026-09-28
+ * (8) #5), answered as `seal` on `capture.register` whenever the manifest carries one — the
+ * registrar's word, which the executor's own FINAL waits on before it answers complete:
+ * - `recorded`: recorded, and it stands now — nothing handed out can replace what it names;
+ * - `withheld`: recorded, but it does not stand yet. `reason`: `write-authority` (an upload URL of
+ *   its epoch could still replace what it names, or one was handed out while its objects were read
+ *   back) or `verifying` (its objects could not be read back). Registering the same capture again
+ *   (idempotent) answers it anew;
+ * - `refused`: not recorded, or void — it never stands. `reason`: `incomplete` (not
+ *   `complete`), `epoch` (another epoch than the register's), `executor` (another launch's),
+ *   `unrestorable` (a section Mend did not observe restore), `not-recorded`, `void` (an object it
+ *   names read back as other bytes). Answered on a lost-ack re-register too, as it stands then.
+ * The shape is sealantd's `SealAnswer` (`registrar.rs`): `reason` is a short code; the detail is
+ * logged here. Absent: the manifest carried no `final_seal`. An executor that does not read the
+ * field ignores it (an unknown field), as before.
+ */
+export interface RegisterSealOutcome {
+  readonly state: "recorded" | "withheld" | "refused";
+  readonly reason?:
+    | "write-authority"
+    | "verifying"
+    | "incomplete"
+    | "epoch"
+    | "executor"
+    | "unrestorable"
+    | "not-recorded"
+    | "void";
+}
+
 /** What the network host serves for one session once the engine registers it. */
 export interface SessionCaptureApi {
   readonly planGet: (input: PlanGetRequest) => Effect.Effect<PlanGetResponse, CaptureRouteError>;
@@ -430,10 +466,12 @@ export interface SessionCaptureApi {
   readonly uploadComplete: (
     input: UploadCompleteRequest,
   ) => Effect.Effect<{ readonly size?: number }, CaptureRouteError>;
-  readonly register: (
-    input: RegisterRequest,
-  ) => Effect.Effect<
-    { readonly head_n: number; readonly head_capture_id: string },
+  readonly register: (input: RegisterRequest) => Effect.Effect<
+    {
+      readonly head_n: number;
+      readonly head_capture_id: string;
+      readonly seal?: RegisterSealOutcome;
+    },
     CaptureRouteError
   >;
   readonly changeSummary: (
@@ -1104,6 +1142,41 @@ export const CaptureChannelLive: Layer.Layer<
           return stored;
         });
 
+      /**
+       * The plan hands a seal on only while it stands (cross-repo decision 22, review 2026-09-28
+       * (8) #5): the head's `final_seal` is answered when the store holds that very seal for the
+       * head and `sealStandingOf` says it stands. Withheld, void or never recorded, the plan carries
+       * the head without it — the bytes restore the same; nothing reads complete on them.
+       */
+      const planSealStanding = (head: CaptureRow, manifest: CaptureManifest) =>
+        Effect.gen(function* () {
+          const planned = manifest.final_seal;
+          if (planned === undefined) return manifest;
+          const { final_seal: _unstanding, ...unsealed } = manifest;
+          const recorded = planned.complete
+            ? yield* repo.sealedCompletion(worktreeId, planned.executor, planned.epoch)
+            : null;
+          const standing =
+            recorded === null || recorded.captureId !== head.id
+              ? null
+              : yield* sealStandingOf(recorded, Date.now).pipe(
+                  Effect.provideService(CaptureStoreRepo, repo),
+                  Effect.provideService(BlobStore, blobs),
+                );
+          if (standing?.state === "standing") return manifest;
+          yield* Effect.logInfo(
+            "capture channel: plan carries the head without its final seal · not standing",
+          ).pipe(
+            Effect.annotateLogs({
+              worktreeId,
+              headN: head.n,
+              headCaptureId: head.id,
+              seal: standing === null ? "not recorded for this capture" : standing.state,
+            }),
+          );
+          return unsealed satisfies CaptureManifest;
+        });
+
       const planGet = Effect.fn("SessionCaptureApi.planGet")(function* (input: PlanGetRequest) {
         yield* requireWorktree(input.worktree_id);
         yield* refuseOtherLaunch(input, launchId);
@@ -1143,7 +1216,10 @@ export const CaptureChannelLive: Layer.Layer<
         const manifest =
           head === null || stored === null
             ? null
-            : planForPlatform(yield* planManifest(head, stored), input.platform);
+            : yield* planSealStanding(
+                head,
+                planForPlatform(yield* planManifest(head, stored), input.platform),
+              );
         if (manifest !== null && stored !== null && head !== null) {
           const holds = planFormatOf(manifest);
           if (holds > reads) {
@@ -2051,10 +2127,15 @@ export const CaptureChannelLive: Layer.Layer<
           });
           // …and that every inode those links make is promised one mode and one mtime (review
           // 2026-09-28 (7) #10): the restore settles each entry on the shared inode in turn, so
-          // of two differing promises only the last survives. Healthy captures stat one inode
+          // of two differing promises only the last survives — the class entries a link names
+          // promise the inode too (review 2026-09-28 (8) #9). Healthy captures stat one inode
           // for all its names; one that raced a writer is registered, and seals nothing.
           const inodeMeta =
-            !sealHolds || metaDocument === null ? null : metaInodeProblem(metaDocument);
+            !sealHolds || metaDocument === null
+              ? null
+              : yield* inodeMetadataProblem(manifest, metaDocument).pipe(
+                  Effect.provideService(BlobStore, blobs),
+                );
           const sealed =
             sealHolds &&
             gitFsck === "verified" &&
@@ -2064,6 +2145,20 @@ export const CaptureChannelLive: Layer.Layer<
             crossLinks === null &&
             trackedLinks === null &&
             inodeMeta === null;
+          const sealProblem =
+            !sealHolds || sealed
+              ? null
+              : [
+                  gitFsck === "verified" ? null : `git section ${gitFsck}`,
+                  metaNamespace === "verified" ? null : `worktree metadata ${metaNamespace}`,
+                  payloadsRead ? null : "chunk payloads not read",
+                  bulkCaptured ? null : "bulk class pending",
+                  crossLinks === null ? null : `cross-class links: ${crossLinks}`,
+                  trackedLinks === null ? null : `tracked links: ${trackedLinks}`,
+                  inodeMeta === null ? null : `inode metadata: ${inodeMeta}`,
+                ]
+                  .filter((problem) => problem !== null)
+                  .join("; ");
           if (sealHolds && !sealed) {
             yield* Effect.logWarning(
               "capture channel: a final seal over sections not verified restorable · registered without it",
@@ -2121,9 +2216,9 @@ export const CaptureChannelLive: Layer.Layer<
                     : conflictToRoute(error).pipe(Effect.flatMap(Effect.fail)),
               ),
             );
-          return { outcome, priced, records };
+          return { outcome, priced, records, sealProblem };
         });
-        const { outcome, priced, records } = yield* attempt.pipe(
+        const { outcome, priced, records, sealProblem } = yield* attempt.pipe(
           Effect.retry({
             while: (error) => error._tag === "GuardMovedError",
             times: GUARD_ATTEMPTS - 1,
@@ -2140,7 +2235,78 @@ export const CaptureChannelLive: Layer.Layer<
           const row = yield* repo.captureById(input.capture_id);
           if (row !== null) publish(row);
         }
-        return { head_n: input.n, head_capture_id: input.capture_id, epoch: lease.epoch };
+        // The seal's outcome, as the store holds it now (cross-repo decision 22): the executor
+        // answers its FINAL complete only on `recorded`. A lost-answer retry reads it anew.
+        const sealAnswer =
+          seal === null
+            ? null
+            : !sealHolds
+              ? {
+                  outcome: {
+                    state: "refused",
+                    reason: !seal.complete
+                      ? "incomplete"
+                      : seal.epoch !== input.epoch
+                        ? "epoch"
+                        : "executor",
+                  } satisfies RegisterSealOutcome,
+                  detail: `the seal is not this launch's completed final flush under epoch ${input.epoch}`,
+                }
+              : yield* registeredSealOutcome(input.epoch, input.capture_id, sealProblem);
+        if (sealAnswer !== null && sealAnswer.outcome.state !== "recorded") {
+          yield* Effect.logInfo(`capture channel: final seal · ${sealAnswer.outcome.state}`).pipe(
+            Effect.annotateLogs({
+              worktreeId,
+              n: input.n,
+              captureId: input.capture_id,
+              epoch: input.epoch,
+              reason: sealAnswer.outcome.reason,
+              detail: sealAnswer.detail,
+            }),
+          );
+        }
+        return {
+          head_n: input.n,
+          head_capture_id: input.capture_id,
+          epoch: lease.epoch,
+          ...(sealAnswer === null ? {} : { seal: sealAnswer.outcome }),
+        };
+      });
+
+      /**
+       * How the seal of `captureId` under `epoch` stands for this launch now: `recorded` only when
+       * the store holds it for that very capture and it stands (`sealStandingOf`).
+       */
+      const registeredSealOutcome = Effect.fn("SessionCaptureApi.registeredSealOutcome")(function* (
+        epoch: number,
+        captureId: string,
+        problem: string | null,
+      ) {
+        const recorded = yield* repo.sealedCompletion(worktreeId, launchId, epoch);
+        if (recorded === null || recorded.captureId !== captureId) {
+          return problem === null
+            ? {
+                outcome: { state: "refused", reason: "not-recorded" } satisfies RegisterSealOutcome,
+                detail: "not recorded when this capture registered",
+              }
+            : {
+                outcome: { state: "refused", reason: "unrestorable" } satisfies RegisterSealOutcome,
+                detail: `not observed restorable: ${problem}`,
+              };
+        }
+        const standing = yield* sealStandingOf(recorded, Date.now).pipe(
+          Effect.provideService(CaptureStoreRepo, repo),
+          Effect.provideService(BlobStore, blobs),
+        );
+        return standing.state === "standing"
+          ? { outcome: { state: "recorded" } satisfies RegisterSealOutcome, detail: null }
+          : {
+              outcome: {
+                state: standing.state === "void" ? "refused" : "withheld",
+                reason: standing.code,
+              } satisfies RegisterSealOutcome,
+              detail: standing.reason,
+            };
       });
 
       const changeSummary = Effect.fn("SessionCaptureApi.changeSummary")(function* (

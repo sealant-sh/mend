@@ -655,6 +655,33 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     expect(result.newer).toMatchObject({ n: 1, reverifiedAt: null, voidReason: null });
   });
 
+  it("a seal's re-verification is a compare-and-set against its epoch's write authority: a URL handed out since the read began voids it (review 2026-09-28 (8) #5)", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const worktreeId = yield* freshWorktree;
+        const { epoch } = yield* repo.claim(worktreeId, "session-1", 3600);
+        const zero = captureInput(worktreeId, 0, null, epoch);
+        yield* repo.register({ ...zero, seal: { executorId: "launch-1", holder: "session-1" } });
+        yield* repo.recordPutAuthority(worktreeId, epoch, new Date("2026-09-28T01:00:00.000Z"));
+        // Every URL expired before the read began: the mark is recorded.
+        const readBegan = new Date("2026-09-28T01:10:00.000Z");
+        const first = yield* repo.markSealReverified(worktreeId, epoch, zero.id, readBegan);
+        const reverified = yield* repo.sealedCompletion(worktreeId, "launch-1", epoch);
+        // A URL handed out while the next read-back ran: its authority outlives the read's start.
+        const nextRead = new Date("2026-09-28T01:30:00.000Z");
+        yield* repo.recordPutAuthority(worktreeId, epoch, new Date("2026-09-28T01:50:00.000Z"));
+        const raced = yield* repo.markSealReverified(worktreeId, epoch, zero.id, nextRead);
+        const after = yield* repo.sealedCompletion(worktreeId, "launch-1", epoch);
+        return { first, reverified, raced, after };
+      }),
+    );
+    expect(result.first).toBe(true);
+    expect(result.reverified?.reverifiedAt?.toISOString()).toBe("2026-09-28T01:10:00.000Z");
+    expect(result.raced).toBe(false);
+    expect(result.after?.reverifiedAt?.toISOString()).toBe("2026-09-28T01:10:00.000Z");
+  });
+
   it("launch-bound leases (0085): another launch of the holder never retakes, renews, registers under or seals a lease its launch does not hold (review 2026-09-28 (4) #11)", async () => {
     const result = await run(
       Effect.gen(function* () {

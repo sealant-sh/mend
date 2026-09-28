@@ -14,6 +14,10 @@ import {
   digestOfKey,
   packIdxKeyOf,
   verifyGitPack,
+  type GitObjectFormat,
+  gitObjectFormatOf,
+  gitObjectIdPattern,
+  GIT_OBJECT_ID,
 } from "./captures.ts";
 import { git, type GitError } from "./git.ts";
 import {
@@ -221,8 +225,21 @@ export class GitOpsRunner extends Context.Service<
 
 export const runnerCacheRootOf = (storeRoot: string) => path.join(storeRoot, "_cache", "runner");
 
-export const runnerCachePathOf = (storeRoot: string, projectId: string) =>
-  path.join(runnerCacheRootOf(storeRoot), projectId, "repo.git");
+/**
+ * A project's runner cache: `repo.git` for SHA-1 captures; a SHA-256 capture's packs go to a
+ * repository made in that format beside it (`repo-sha256.git`), since one repository holds one
+ * object format (review 2026-09-28 (8) #10).
+ */
+export const runnerCachePathOf = (
+  storeRoot: string,
+  projectId: string,
+  format: GitObjectFormat = "sha1",
+) =>
+  path.join(
+    runnerCacheRootOf(storeRoot),
+    projectId,
+    format === "sha1" ? "repo.git" : `repo-${format}.git`,
+  );
 
 /** How many project caches stay on disk; the least recently ensured go first. */
 export const RUNNER_CACHE_PROJECTS = 32;
@@ -291,9 +308,13 @@ export const parseLog = (raw: string): ReadonlyArray<LogEntry> =>
  * break the file's lines and is left out, as a value that is not a sha is. Refnames are otherwise
  * validated by git on read.
  */
-export const renderPackedRefs = (refs: Readonly<Record<string, string>>): Buffer => {
+export const renderPackedRefs = (
+  refs: Readonly<Record<string, string>>,
+  format: GitObjectFormat = "sha1",
+): Buffer => {
+  const id = gitObjectIdPattern(format);
   const lines = Object.entries(refs)
-    .filter(([, sha]) => HEX40.test(sha))
+    .filter(([, sha]) => id.test(sha))
     .map(([name, sha]) => ({ name: bytesOfKey(name), sha }))
     .filter(({ name }) => !name.includes(0x0a) && !name.includes(0x0d) && !name.includes(0))
     .toSorted((a, b) => Buffer.compare(a.name, b.name))
@@ -330,7 +351,12 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         Effect.try({ try: thunk, catch: (cause) => new RunnerCacheError({ projectId, cause }) });
 
       /** Fetch pack + idx into a temp dir, verify both ways, then move them under objects/pack. */
-      const installPack = (projectId: string, cache: string, key: string) =>
+      const installPack = (
+        projectId: string,
+        cache: string,
+        key: string,
+        format: GitObjectFormat,
+      ) =>
         Effect.gen(function* () {
           const digest = digestOfKey(key);
           if (digest === null) {
@@ -367,7 +393,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
             }
             const idx = yield* blobs.get(packIdxKeyOf(key));
             yield* cacheIo(projectId, () => fs.writeFileSync(stagedIdx, idx));
-            yield* verifyGitPack(stagedPack).pipe(
+            yield* verifyGitPack(stagedPack, format).pipe(
               Effect.mapError(
                 (error) =>
                   new RunnerPackError({ key, reason: `index-pack --verify: ${error.stderr}` }),
@@ -408,16 +434,23 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
 
       const ensure = Effect.fn("GitOpsRunner.ensure")(function* (input: EnsureInput) {
         const { projectId, manifest } = input;
-        const cache = runnerCachePathOf(config.root, projectId);
+        const format = gitObjectFormatOf(manifest.sections.git);
+        if (format === null) {
+          return yield* new RunnerPackError({
+            key: manifest.sections.git.packs[0] ?? "",
+            reason: `object format ${JSON.stringify(manifest.sections.git.object_format)} is not one Mend reads`,
+          });
+        }
+        const cache = runnerCachePathOf(config.root, projectId, format);
         const lock = yield* lockFor(projectId);
         return yield* lock.withPermits(1)(
           Effect.gen(function* () {
             if (!fs.existsSync(path.join(cache, "HEAD"))) {
               yield* cacheIo(projectId, () => fs.mkdirSync(cache, { recursive: true }));
-              yield* git(["init", "-q", "--bare"], cache);
+              yield* git(["init", "-q", "--bare", `--object-format=${format}`], cache);
             }
             for (const key of [...manifest.sections.git.packs, ...(input.extraPacks ?? [])]) {
-              yield* installPack(projectId, cache, key);
+              yield* installPack(projectId, cache, key, format);
             }
             // The manifest's refs are the worktree's own view (its branch tips, checkpoint
             // refs) and win over the project's store refs inside this cache; `store_refs`
@@ -429,7 +462,7 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
             const head = manifest.sections.git.head;
             yield* cacheIo(projectId, () => {
               const tmp = path.join(cache, `packed-refs.${process.pid}.${crypto.randomUUID()}`);
-              fs.writeFileSync(tmp, renderPackedRefs(refs));
+              fs.writeFileSync(tmp, renderPackedRefs(refs, format));
               fs.renameSync(tmp, path.join(cache, "packed-refs"));
               fs.writeFileSync(path.join(cache, "HEAD"), renderHead(head));
               const marker = path.join(path.dirname(cache), LAST_USED);
@@ -445,13 +478,13 @@ export const GitOpsRunnerLive: Layer.Layer<GitOpsRunner, never, Store | StoreCon
         cache: RunnerCache,
         ref: string,
       ) {
-        if (HEX40.test(ref)) return Sha.make(ref);
+        if (GIT_OBJECT_ID.test(ref)) return Sha.make(ref);
         const direct = cache.refs[ref];
         if (direct !== undefined) return Sha.make(direct);
         if (ref === "HEAD") {
           const head = cache.refs[cache.head];
           if (head !== undefined) return Sha.make(head);
-          if (HEX40.test(cache.head)) return Sha.make(cache.head);
+          if (GIT_OBJECT_ID.test(cache.head)) return Sha.make(cache.head);
         }
         return Sha.make(yield* git(["rev-parse", "--verify", `${ref}^{commit}`], cache.path));
       });

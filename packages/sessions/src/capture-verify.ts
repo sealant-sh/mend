@@ -8,7 +8,11 @@ import {
   type CaptureManifest,
   digestOfKey,
   type GitFsckOutcome,
+  GIT_OBJECT_ID,
+  type GitObjectFormat,
   git,
+  gitObjectFormatOf,
+  gitObjectIdPattern,
   gitBytes,
   gitSectionTrees,
   GitOpsRunner,
@@ -121,8 +125,6 @@ export const parseTreeObjects = (output: Buffer): ReadonlyMap<string, RestoreTre
   return paths;
 };
 
-const HEX40 = /^[0-9a-f]{40}$/;
-
 /** How many store refs' closure proofs the verifier keeps before it starts over. */
 const CLOSED_BOUNDARY_LIMIT = 10_000;
 
@@ -134,6 +136,7 @@ const CLOSED_BOUNDARY_LIMIT = 10_000;
 const isolatedPacks = <A, E>(
   cachePath: string,
   packKeys: ReadonlyArray<string>,
+  format: GitObjectFormat,
   use: (repo: string) => Effect.Effect<A, E>,
 ): Effect.Effect<A, E | { readonly _tag: "IsolationError"; readonly detail: string }> =>
   Effect.acquireUseRelease(
@@ -144,9 +147,12 @@ const isolatedPacks = <A, E>(
           fs.mkdirSync(path.join(repo, dir), { recursive: true });
         }
         fs.writeFileSync(path.join(repo, "HEAD"), "ref: refs/heads/main\n");
+        // A SHA-256 section's packs are read in a SHA-256 repository (review 2026-09-28 (8) #10).
         fs.writeFileSync(
           path.join(repo, "config"),
-          "[core]\n\trepositoryformatversion = 0\n\tbare = true\n",
+          format === "sha1"
+            ? "[core]\n\trepositoryformatversion = 0\n\tbare = true\n"
+            : `[core]\n\trepositoryformatversion = 1\n\tbare = true\n[extensions]\n\tobjectformat = ${format}\n`,
         );
         for (const key of new Set(packKeys)) {
           const digest = digestOfKey(key);
@@ -170,7 +176,7 @@ const isolatedPacks = <A, E>(
   );
 
 /** Which of `shas` the repository at `repo` holds (`cat-file --batch-check`). */
-const presentIn = (repo: string, shas: ReadonlyArray<string>) =>
+const presentIn = (repo: string, shas: ReadonlyArray<string>, format: GitObjectFormat) =>
   shas.length === 0
     ? Effect.succeed<ReadonlyArray<string>>([])
     : git(
@@ -184,7 +190,7 @@ const presentIn = (repo: string, shas: ReadonlyArray<string>) =>
           out
             .split("\n")
             .map((line) => line.trim())
-            .filter((line) => HEX40.test(line)),
+            .filter((line) => gitObjectIdPattern(format).test(line)),
         ),
       );
 
@@ -201,10 +207,10 @@ export const CaptureGitVerifierLive: Layer.Layer<
     const closedIn = new Map<string, Set<string>>();
 
     /** Whether the pack `key` alone holds `sha` and every object reachable from it. */
-    const closureHeldBy = (cachePath: string, key: string, sha: string) =>
-      isolatedPacks(cachePath, [key], (repo) =>
+    const closureHeldBy = (cachePath: string, key: string, sha: string, format: GitObjectFormat) =>
+      isolatedPacks(cachePath, [key], format, (repo) =>
         Effect.gen(function* () {
-          if ((yield* presentIn(repo, [sha])).length === 0) return false;
+          if ((yield* presentIn(repo, [sha], format)).length === 0) return false;
           yield* git(["rev-list", "--objects", "--missing=error", "--no-object-names", sha], repo);
           return true;
         }),
@@ -218,6 +224,7 @@ export const CaptureGitVerifierLive: Layer.Layer<
       cachePath: string,
       packKeys: ReadonlyArray<string>,
       candidates: ReadonlyArray<string>,
+      format: GitObjectFormat,
     ) =>
       Effect.filter(candidates, (sha) =>
         Effect.gen(function* () {
@@ -228,7 +235,7 @@ export const CaptureGitVerifierLive: Layer.Layer<
           }
           for (const { key, digest } of digests) {
             if (digest === null) continue;
-            if (yield* closureHeldBy(cachePath, key, sha)) {
+            if (yield* closureHeldBy(cachePath, key, sha, format)) {
               if (closedIn.size >= CLOSED_BOUNDARY_LIMIT) closedIn.clear();
               closedIn.set(sha, new Set([...(closedIn.get(sha) ?? []), digest]));
               return true;
@@ -243,11 +250,32 @@ export const CaptureGitVerifierLive: Layer.Layer<
       manifest: CaptureManifest,
     ) {
       const section = manifest.sections.git;
+      // The section's object format (`object_format`, absent: sha1): the width of every id it
+      // names, and the format of the repository its packs are read in (review 2026-09-28 (8)
+      // #10). One Mend does not read is never verified — nor failed: nothing was observed.
+      const format = gitObjectFormatOf(section);
+      if (format === null) {
+        return {
+          outcome: "unverified",
+          detail: `object format ${JSON.stringify(section.object_format)} is not one Mend reads`,
+        } satisfies GitVerification;
+      }
+      const id = gitObjectIdPattern(format);
       // Every ref, `head`, and every tree the section names beside its refs (the `git_trees`
       // fields, or the pseudo-refs before them): a restore checks each out.
-      const tips = [
+      const named = [
         ...new Set([...Object.values(section.refs), section.head, ...gitSectionTrees(section)]),
-      ].filter((sha) => HEX40.test(sha));
+      ].filter((value) => GIT_OBJECT_ID.test(value));
+      // An id of another width than the section's format names objects no walk here reads: never
+      // verified by walking nothing.
+      const otherWidth = named.filter((sha) => !id.test(sha));
+      if (otherWidth.length > 0) {
+        return {
+          outcome: "unverified",
+          detail: `${otherWidth.length} object id(s) the git section names are not ${format} ids`,
+        } satisfies GitVerification;
+      }
+      const tips = named;
       // Nothing named, nothing to walk: a git section without objects restores nothing.
       if (tips.length === 0) return { outcome: "verified", detail: null } satisfies GitVerification;
       const storeRefs = yield* refs.refsMap(projectId);
@@ -277,15 +305,15 @@ export const CaptureGitVerifierLive: Layer.Layer<
       }
       const tipSet = new Set(tips);
       const storeTips = [...new Set(Object.values(storeRefs))].filter(
-        (sha) => HEX40.test(sha) && !tipSet.has(sha),
+        (sha) => id.test(sha) && !tipSet.has(sha),
       );
       // The closure walk sees the listed packs alone (review 2026-09-28 (4) #12): what a restore
       // fetches is what must hold it.
       const cachePath = ensured.success.path;
-      const walked = yield* isolatedPacks(cachePath, section.packs, (repo) =>
+      const walked = yield* isolatedPacks(cachePath, section.packs, format, (repo) =>
         Effect.gen(function* () {
-          const held = yield* presentIn(repo, storeTips);
-          const boundary = yield* closedBoundaries(cachePath, section.packs, held);
+          const held = yield* presentIn(repo, storeTips, format);
+          const boundary = yield* closedBoundaries(cachePath, section.packs, held, format);
           return yield* git(
             [
               "rev-list",
@@ -316,7 +344,8 @@ export const CaptureGitVerifierLive: Layer.Layer<
       manifest: CaptureManifest,
       tree: string,
     ) {
-      if (!HEX40.test(tree)) return null;
+      const format = gitObjectFormatOf(manifest.sections.git);
+      if (format === null || !gitObjectIdPattern(format).test(tree)) return null;
       const storeRefs = yield* refs.refsMap(projectId);
       const ensured = yield* runner.ensure({ projectId, manifest, storeRefs }).pipe(Effect.result);
       if (Result.isFailure(ensured)) return null;

@@ -307,14 +307,17 @@ export class CaptureStoreRepo extends Context.Service<
     ) => Effect.Effect<Date | null>;
     /**
      * Every object the seal's capture names read back as what its name says, starting at `at`:
-     * recorded on the seal while it still names that capture.
+     * recorded on the seal while it still names that capture — and only if no upload URL of its
+     * epoch was handed out since `at` (review 2026-09-28 (8) #5): a compare-and-set against the
+     * epoch's recorded write authority, in one statement, so a URL handed out while the objects
+     * were being read back voids that read. True when it was recorded.
      */
     readonly markSealReverified: (
       worktreeId: WorktreeId,
       epoch: number,
       captureId: string,
       at: Date,
-    ) => Effect.Effect<void>;
+    ) => Effect.Effect<boolean>;
     /** An object the seal's capture names read back as other bytes: it never stands again. */
     readonly voidSeal: (
       worktreeId: WorktreeId,
@@ -774,11 +777,19 @@ export const CaptureStoreRepoLive: Layer.Layer<
       captureId: string,
       at: Date,
     ) {
-      yield* sql`
+      // One statement: an authority recorded before it (`recordPutAuthority` commits before the
+      // URL leaves Mend) expires after `at` and refuses the mark; a URL whose authority commits
+      // after it was handed out after every object had been read back.
+      const marked = yield* sql<{ readonly captureId: string }>`
         UPDATE capture_seals
            SET reverified_at = GREATEST(COALESCE(reverified_at, ${at}), ${at})
          WHERE worktree_id = ${worktreeId} AND epoch = ${epoch} AND capture_id = ${captureId}
-           AND void_reason IS NULL`.pipe(Effect.orDie);
+           AND void_reason IS NULL
+           AND NOT EXISTS (
+             SELECT 1 FROM capture_put_authority
+              WHERE worktree_id = ${worktreeId} AND epoch = ${epoch} AND expires_at > ${at})
+        RETURNING capture_id`.pipe(Effect.orDie);
+      return marked.length > 0;
     });
 
     const voidSeal = Effect.fn("CaptureStoreRepo.voidSeal")(function* (
