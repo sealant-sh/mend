@@ -13,6 +13,7 @@ import {
   readCaptureFileBytes,
   packIdxKeyOf,
   sha256Hex,
+  stringifyExact,
 } from "@mend/store";
 import {
   buildManifest,
@@ -264,7 +265,7 @@ const READY_EMPTY_BULK = { root: "", packs: [], platform: "linux-x86_64-glibc" }
 
 /** A workspace section holding only a worktree metadata document. */
 const withMeta = (worktreeId: string, epoch: number, document: object) => {
-  const bytes = new Uint8Array(Buffer.from(JSON.stringify(document)));
+  const bytes = new Uint8Array(Buffer.from(stringifyExact(document)));
   const content = writeCdcPack([bytes]);
   const contentKey = captureKeys(worktreeId, epoch).pack(sha256Hex(content.bytes));
   return {
@@ -565,14 +566,16 @@ describe("a seal rests only on sections Mend observed restore", () => {
         at.cap0Id,
       );
       expect(missing.said).toMatch(
-        /^unrestorable: .*missing-work\.txt.*absent from the worktree tree/,
+        /^unrestorable: .*missing-work\.txt.*absent from the tree the restore checks out/,
       );
       const wrongKind = await attempt(
         [root, { path: "kept.txt", kind: "symlink", mtime: ns }],
         1,
         at.cap0Id,
       );
-      expect(wrongKind.said).toMatch(/^unrestorable: .*kept\.txt.*a file in the worktree tree/);
+      expect(wrongKind.said).toMatch(
+        /^unrestorable: .*kept\.txt.*a file in the tree the restore checks out/,
+      );
       const dirOverFile = await attempt(
         [root, { path: "kept.txt", kind: "dir", mode: 0o755, mtime: ns }],
         1,
@@ -761,6 +764,95 @@ describe("a seal rests only on sections Mend observed restore", () => {
     expect((await sealOf(at.worktreeId, at.epoch))?.captureId).toBe(cap2.id);
     const saved = await run(readCaptureFileBytes(cap2.manifest, "workspace", "tree/unique.txt"));
     expect(Buffer.from(saved).toString("utf8")).toBe("unique saved bytes\n");
+  });
+
+  // Review 2026-09-28 (7) #9 (the reviewer's reproduction): the worktree metadata was checked
+  // against the worktree tree while the restore checks out the raw tree. A document naming a file
+  // the raw tree does not hold cannot be applied, so it is refused like any other namespace miss.
+  it("review 7 #9 a document naming a file the raw tree does not hold is refused, never sealed", async () => {
+    const at = await claimedWorktree();
+    const edited = packEditedTree(world.work, at.worktreeId, at.epoch, world.baseSha, (work) => {
+      fs.unlinkSync(path.join(work, "a.txt"));
+    });
+    const meta = withMeta(at.worktreeId, at.epoch, {
+      format: 1,
+      entries: [{ path: "a.txt", kind: "file", mode: 0o644, mtime: 0 }],
+    });
+    const cap = sealing(
+      at.worktreeId,
+      at.epoch,
+      buildManifest({
+        worktreeId: at.worktreeId,
+        n: 1,
+        parent: at.cap0Id,
+        epoch: at.epoch,
+        seq: 21,
+        kind: "final",
+        git: { ...at.gitSection([at.basePack, edited.key], at.baseTree), raw_tree: edited.tree },
+        workspace: meta.workspace,
+        bulk: READY_EMPTY_BULK,
+      }),
+    );
+    await run(uploadObjects(new Map([...edited.objects, ...meta.objects, [cap.key, cap.bytes]])));
+    expect(sh(world.work, ["ls-tree", "-r", edited.tree])).not.toContain("a.txt");
+    const answer = await run(registerOn(at.worktreeId, at.epoch, at.api)(cap).pipe(Effect.flip));
+    expect(answer.reason).toBe("unrestorable");
+    expect(answer.message).toContain("tree the restore checks out");
+    expect(await sealOf(at.worktreeId, at.epoch)).toBeNull();
+  });
+
+  // Review 2026-09-28 (7) #10 (the reviewer's reproduction): a tracked hardlink group whose
+  // members hold the same bytes but whose entries promise one inode two modes and two mtimes was
+  // sealed; the restore can keep only one. Every connected inode group — tracked hardlinks,
+  // shared links and cross-class links — must promise one mode and one mtime.
+  it("review 7 #10 one inode promised two modes or two mtimes is never sealed", async () => {
+    const at = await claimedWorktree();
+    const edited = packEditedTree(world.work, at.worktreeId, at.epoch, world.baseSha, (work) =>
+      fs.writeFileSync(path.join(work, "copy.txt"), "one\ntwo\n"),
+    );
+    let parent = at.cap0Id;
+    let n = 0;
+    const attempt = async (copy: { readonly mode: number; readonly mtime: number | bigint }) => {
+      n += 1;
+      const meta = withMeta(at.worktreeId, at.epoch, {
+        format: 1,
+        entries: [
+          { path: "a.txt", kind: "file", mode: 0o644, mtime: 100 },
+          { path: "copy.txt", kind: "file", ...copy },
+          { path: "keep.md", kind: "file", mode: 0o644, mtime: 100 },
+        ],
+        hardlinks: [["a.txt", "copy.txt"]],
+      });
+      const built = sealing(
+        at.worktreeId,
+        at.epoch,
+        buildManifest({
+          worktreeId: at.worktreeId,
+          epoch: at.epoch,
+          n,
+          parent,
+          seq: 30 + n,
+          kind: "final",
+          git: at.gitSection([at.basePack, edited.key], edited.tree),
+          workspace: meta.workspace,
+          bulk: READY_EMPTY_BULK,
+        }),
+      );
+      await run(
+        uploadObjects(new Map([...edited.objects, ...meta.objects, [built.key, built.bytes]])),
+      );
+      await run(registerOn(at.worktreeId, at.epoch, at.api)(built));
+      parent = built.id;
+      return (await sealOf(at.worktreeId, at.epoch))?.captureId === built.id;
+    };
+    // The reviewer's case: 0644 at 100 ns beside 0600 at 200 ns.
+    expect(await attempt({ mode: 0o600, mtime: 200 })).toBe(false);
+    // Only the mtime differs.
+    expect(await attempt({ mode: 0o644, mtime: 200 })).toBe(false);
+    // Nanoseconds beyond a double's 53 bits: two mtimes one apart are two promises.
+    expect(await attempt({ mode: 0o644, mtime: 1790544318484764716n })).toBe(false);
+    // One inode, one promise: sealed.
+    expect(await attempt({ mode: 0o644, mtime: 100 })).toBe(true);
   });
 
   // Review 2026-09-28 (6) #10 (the reviewer's reproduction): a `shared` link to a member its class

@@ -39,13 +39,13 @@ import {
   verifyWorktreeMeta,
   sectionHoldsRawNames,
   gitSectionHoldsRawNames,
-  metaNamespaceProblem,
+  restoreNamespaceProblem,
+  metaInodeProblem,
   crossLinksProblem,
   linkTopologyProblem,
   rawTreeOf,
   type RestoreTreePath,
   gitSectionHoldsTrees,
-  worktreeTreeOf,
   type WorktreeMetaDocument,
 } from "@mend/store";
 import { Duration, Effect, Layer, Option, Result, Schema } from "effect";
@@ -1881,29 +1881,39 @@ export const CaptureChannelLive: Layer.Layer<
               }),
             );
           }
+          // The tree a restore checks out (`rawTreeOf`: `raw_tree` when the section has one, else
+          // the worktree tree), listed once from the packs the verification installed: what the
+          // worktree metadata document and its links are checked against. Null when Mend could
+          // not list it (git not verified, the runner unavailable); an empty map when the capture
+          // names no tree (nothing tracked).
+          const restoreTree = yield* Effect.gen(function* () {
+            if (metaDocument === null) return null;
+            const tree = rawTreeOf(manifest.sections.git);
+            if (tree === undefined) return new Map<string, RestoreTreePath>();
+            return verification?.outcome === "verified"
+              ? yield* verifier.treeObjects(scope.projectId, manifest, tree)
+              : null;
+          });
           // The worktree metadata document against the namespace it applies to (review
-          // 2026-09-28 (3) #20): sealantd applies it over the worktree tree the git class checked
-          // out, and fails the whole materialize on a file or a symlink it names that is not
-          // there. A capture with no worktree tree has nothing tracked; otherwise the tree's paths
-          // are listed from the packs the verification installed. A document that names what the
-          // tree does not hold is refused (422 `unrestorable`); one Mend could not list (git not
-          // verified, the runner unavailable) registers unchecked and seals nothing.
+          // 2026-09-28 (3) #20, (7) #9): sealantd applies it over the tree the git class checked
+          // out — the raw tree, not the worktree tree, when the section has one — and the classes
+          // restored over it, and fails the whole materialize on a file or a symlink it names
+          // that is not there. A document that names what that namespace does not hold is
+          // refused (422 `unrestorable`); one Mend could not list registers unchecked and seals
+          // nothing.
           const metaNamespace = yield* Effect.gen(function* () {
             if (metaDocument === null) return "verified" as const;
-            const tree = worktreeTreeOf(manifest.sections.git);
-            const tracked =
-              tree === undefined
-                ? new Map()
-                : verification?.outcome === "verified"
-                  ? yield* verifier.treePaths(scope.projectId, manifest, tree)
-                  : null;
-            if (tracked === null) return "unverified" as const;
-            const problem = metaNamespaceProblem(metaDocument, tracked);
+            if (restoreTree === null) return "unverified" as const;
+            const problem = yield* restoreNamespaceProblem(
+              manifest,
+              metaDocument,
+              restoreTree,
+            ).pipe(Effect.provideService(BlobStore, blobs));
             if (problem !== null) {
               return yield* new CaptureRouteError({
                 status: 422,
                 reason: "unrestorable",
-                message: `the worktree metadata would not apply over the worktree tree: ${problem}`,
+                message: `the worktree metadata would not apply over the tree the restore checks out: ${problem}`,
               });
             }
             return "verified" as const;
@@ -1968,18 +1978,17 @@ export const CaptureChannelLive: Layer.Layer<
             ) {
               return null;
             }
-            const tree = rawTreeOf(manifest.sections.git);
-            const restoreTree =
-              tree === undefined
-                ? new Map<string, RestoreTreePath>()
-                : verification?.outcome === "verified"
-                  ? yield* verifier.treeObjects(scope.projectId, manifest, tree)
-                  : null;
             if (restoreTree === null) return "the tree a restore checks out was not listed";
             return yield* linkTopologyProblem(manifest, metaDocument, restoreTree).pipe(
               Effect.provideService(BlobStore, blobs),
             );
           });
+          // …and that every inode those links make is promised one mode and one mtime (review
+          // 2026-09-28 (7) #10): the restore settles each entry on the shared inode in turn, so
+          // of two differing promises only the last survives. Healthy captures stat one inode
+          // for all its names; one that raced a writer is registered, and seals nothing.
+          const inodeMeta =
+            !sealHolds || metaDocument === null ? null : metaInodeProblem(metaDocument);
           const sealed =
             sealHolds &&
             gitFsck === "verified" &&
@@ -1987,7 +1996,8 @@ export const CaptureChannelLive: Layer.Layer<
             payloadsRead &&
             bulkCaptured &&
             crossLinks === null &&
-            trackedLinks === null;
+            trackedLinks === null &&
+            inodeMeta === null;
           if (sealHolds && !sealed) {
             yield* Effect.logWarning(
               "capture channel: a final seal over sections not verified restorable · registered without it",
@@ -2003,6 +2013,7 @@ export const CaptureChannelLive: Layer.Layer<
                 bulk: bulkCaptured ? "captured" : "pending",
                 crossLinks: crossLinks ?? "restore",
                 trackedLinks: trackedLinks ?? "restore",
+                inodeMetadata: inodeMeta ?? "one promise per inode",
               }),
             );
           }
