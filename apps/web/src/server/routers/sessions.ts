@@ -60,6 +60,15 @@ export const sessionsRouter = router({
     .mutation(({ ctx, input: i }) =>
       run(ctx, (api) => api.sessions.stop({ params: { id: i.id } })),
     ),
+  // The owner's "discard unsaved and stop" (docs/adr/0002): the page arms it with a second click.
+  discardUnsaved: procedure.input(byId).mutation(({ ctx, input: i }) =>
+    run(ctx, (api) =>
+      api.sessions.discardUnsaved({
+        params: { id: i.id },
+        payload: { confirm: "discard unsaved" },
+      }),
+    ),
+  ),
   stopServices: procedure
     .input(byId)
     .mutation(({ ctx, input: i }) =>

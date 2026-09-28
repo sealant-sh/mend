@@ -16,6 +16,7 @@ import {
   EnvironmentStaleWrite,
   MendApi,
   NotFound,
+  NothingUnsaved,
   PastedImage,
   PastedImageRejected,
   ProjectBranch,
@@ -124,6 +125,7 @@ import {
   canManageProject,
   canSteerSession,
   canToggleSharedControl,
+  captureStatusLine,
   type SessionControlKind,
   canRemoveProject,
   type GitAuthMode,
@@ -2668,8 +2670,64 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
             }
           }
         }
-        yield* sessions.remove(params.id);
-        return new RemovalReport({ removed: true, leftover: null });
+        // The row goes after the workspace does, never before: a row removed under its own sweep
+        // leaves the workspace unaddressable (and, in capture mode, whatever it has not saved).
+        const removal = yield* (yield* SessionEngine)
+          .removeWhenStopped(params.id)
+          .pipe(Effect.mapError(() => new NotFound({ id: params.id })));
+        if (removal === "removed") return new RemovalReport({ removed: true, leftover: null });
+        const pending = yield* sessions.byId(params.id).pipe(Effect.option);
+        const line = Option.match(pending, {
+          onNone: () => null,
+          onSome: (row) => captureStatusLine(row),
+        });
+        return new RemovalReport({
+          removed: false,
+          leftover: `${line ?? "workspace stopping"} · removed once its workspace has stopped`,
+        });
+      }),
+    )
+    .handle("discardUnsaved", ({ params }) =>
+      Effect.gen(function* () {
+        // The owner's act alone, even while control is shared: it spends work, not credentials.
+        const steering = yield* SessionSteering;
+        const before = yield* steering.owned(params.id);
+        const engine = yield* SessionEngine;
+        const session = yield* engine.discardUnsavedAndStop(params.id).pipe(
+          Effect.catchTag("SessionNotFoundError", () =>
+            Effect.fail(new NotFound({ id: params.id })),
+          ),
+          Effect.catchTag("NothingUnsavedError", () =>
+            Effect.fail(
+              new NothingUnsaved({
+                sessionId: params.id,
+                message: "nothing unsaved · no drain under way · stop the session instead",
+              }),
+            ),
+          ),
+          Effect.catchTag("SealantPlatformError", (error) =>
+            Effect.fail(
+              new StoreFailure({ message: `the workspace was not stopped: ${error.message}` }),
+            ),
+          ),
+        );
+        yield* recordControl(params.id, "discard-unsaved-stop", before.sealantWorkspaceId);
+        const viewer = yield* (yield* ProjectAccess).viewer();
+        if (viewer !== null) {
+          yield* (yield* AuditEventsRepo).record({
+            organizationId: viewer.organizationId,
+            actorUserId: viewer.userId,
+            action: "session.unsaved_discarded",
+            subjectType: "session",
+            subjectId: params.id,
+            data: {
+              pending: before.capturePending,
+              pendingBytes: before.capturePendingBytes,
+              workspaceId: before.sealantWorkspaceId,
+            },
+          });
+        }
+        return session;
       }),
     )
     .handle("label", ({ params, payload }) =>

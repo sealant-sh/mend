@@ -4,6 +4,7 @@
  * is a server URL + a token stored on device — minted by pairing, or the
  * CLI bearer token typed in by hand.
  */
+import { captureStatusLine } from "@mend/domain/workbench";
 import AsyncStorage from "@react-native-async-storage/async-storage";
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import * as SecureStore from "expo-secure-store";
@@ -181,7 +182,30 @@ export interface SessionDto {
   readonly settledAt: string | null;
   readonly startedAt: string | null;
   readonly createdAt: string;
+  /** What the executor still holds (docs/adr/0002); absent on servers from before it. */
+  readonly capturePending?: number | null;
+  readonly capturePendingBytes?: number | null;
+  readonly captureRefused?: number | null;
+  readonly captureDrain?: string | null;
+  readonly captureNotSavedAt?: string | null;
 }
+
+/**
+ * The session's status line: its status, then what a stop is still saving when it is
+ * (`stopped · saving · 3 left`, `stopped · not saved · 3 pending · workspace kept`).
+ */
+export const statusLineOf = (dto: SessionDto): string => {
+  const drain = dto.captureDrain;
+  const capture = captureStatusLine({
+    capturePending: dto.capturePending ?? null,
+    capturePendingBytes: dto.capturePendingBytes ?? null,
+    captureRefused: dto.captureRefused ?? null,
+    captureDrain:
+      drain === "stop" || drain === "relaunch" || drain === "replacement" ? drain : null,
+    captureNotSavedAt: dto.captureNotSavedAt ?? null,
+  });
+  return capture === null ? dto.status : `${dto.status} · ${capture}`;
+};
 
 export interface SessionProcessDto {
   readonly id: string;

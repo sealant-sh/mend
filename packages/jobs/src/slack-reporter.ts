@@ -18,6 +18,7 @@ import {
 } from "@mend/db";
 import { SessionId } from "@mend/domain";
 import {
+  captureStatusLine,
   currentAgentProcess,
   latestDecidedTurn,
   type AgentItem,
@@ -439,6 +440,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
         switchSession: switchOffered(state, look.turns) ? session.id : null,
         landing: landingStatusLines({ landings: look.landings, latestTurn: look.decided }),
         summary: session.summary,
+        capture: captureStatusLine(session),
       });
       yield* moveStatus(token, look, message);
     });

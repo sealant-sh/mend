@@ -183,6 +183,15 @@ const sessionsLayer = Layer.succeed(SessionsRepo, {
   setLabelIfUnset: () => Effect.succeed(false),
   remove: () => Effect.die("not in test"),
   setHarness: () => Effect.void,
+  recordCaptureObservation: () => Effect.void,
+  beginCaptureDrain: () => Effect.void,
+  recordCaptureDrainProgress: () => Effect.void,
+  markCaptureNotSaved: () => Effect.succeed(false),
+  endCaptureDrain: () => Effect.void,
+  listCaptureDrains: () => Effect.succeed([]),
+  setExecutorStartedAt: () => Effect.void,
+  requestRemoval: () => Effect.void,
+  listRemovalRequested: () => Effect.succeed([]),
 });
 
 /**

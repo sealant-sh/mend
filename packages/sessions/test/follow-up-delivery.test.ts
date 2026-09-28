@@ -483,6 +483,15 @@ const testLayer = (world: TestWorld) => {
     setLabelIfUnset: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),
     setHarness: () => Effect.die("not in test"),
+    recordCaptureObservation: () => Effect.die("not in test"),
+    beginCaptureDrain: () => Effect.die("not in test"),
+    recordCaptureDrainProgress: () => Effect.die("not in test"),
+    markCaptureNotSaved: () => Effect.die("not in test"),
+    endCaptureDrain: () => Effect.die("not in test"),
+    listCaptureDrains: () => Effect.die("not in test"),
+    setExecutorStartedAt: () => Effect.die("not in test"),
+    requestRemoval: () => Effect.die("not in test"),
+    listRemovalRequested: () => Effect.die("not in test"),
   });
 
   const launcherLayer = Layer.succeed(FollowUpLauncher, {

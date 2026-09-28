@@ -22,6 +22,8 @@ export const AuditAction = Schema.Literals([
   "reference.removed",
   "session.shared_control_on",
   "session.shared_control_off",
+  // The owner ended a session's workspace with captures still pending: work was discarded.
+  "session.unsaved_discarded",
   "member.password_reset_issued",
   "organization.created",
   "organization.renamed",

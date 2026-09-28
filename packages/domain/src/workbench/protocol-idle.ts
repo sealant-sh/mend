@@ -18,16 +18,26 @@ export interface ProtocolIdleFacts {
   readonly requests: ReadonlyArray<Pick<AgentRequest, "status" | "createdAt" | "decidedAt">>;
   /** Services holding the workspace: a live attempt or an open forward (`liveCountsForSessions`). */
   readonly liveServices: number;
+  /**
+   * Capture mode: what the executor answered when asked just now — captures still pending (bulk
+   * included on today's sealantd), and whether bulk changed since its last snapshot once sealantd
+   * reports it (null until then). Absent or null outside capture mode, or when nobody answered.
+   */
+  readonly capture?: {
+    readonly pending: number;
+    readonly bulkDirty: boolean | null;
+  } | null;
 }
 
 /** What holds a live protocol agent up while it is not idle. */
-export type ProtocolIdleHold = "turn" | "request" | "services" | "shell";
+export type ProtocolIdleHold = "turn" | "request" | "services" | "shell" | "capture";
 
 /**
  * - `not-protocol`: settled, or the session's agent is not a live protocol process; nothing here
  *   stops it.
- * - `held`: a turn is in flight, a question or approval waits, or Services or a shell hold the
- *   workspace, which someone is using.
+ * - `held`: a turn is in flight, a question or approval waits, Services or a shell hold the
+ *   workspace, which someone is using, or the executor still has captures to ship (a stop now would
+ *   only sit draining them; the next pass looks again).
  * - `idle`: none of those, since `since` — the latest activity seen.
  */
 export type ProtocolIdleReading =
@@ -61,6 +71,13 @@ export const protocolIdleReading = (facts: ProtocolIdleFacts): ProtocolIdleReadi
   if (facts.liveServices > 0) return { kind: "held", by: "services" };
   if (facts.processes.some((process) => process.kind === "shell" && isLiveProcess(process))) {
     return { kind: "held", by: "shell" };
+  }
+  if (
+    facts.capture !== undefined &&
+    facts.capture !== null &&
+    (facts.capture.pending > 0 || facts.capture.bulkDirty === true)
+  ) {
+    return { kind: "held", by: "capture" };
   }
   const since = latest([
     ...facts.turns.flatMap((turn) => [turn.createdAt, turn.startedAt, turn.endedAt]),

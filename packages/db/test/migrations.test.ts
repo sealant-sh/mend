@@ -1727,3 +1727,112 @@ describe.skipIf(!reachable)("0073 landing reasons", () => {
     });
   });
 });
+
+describe.skipIf(!reachable)("0075 capture drain", () => {
+  const DRAIN_DB = `${SCRATCH_DB}_capture_drain`;
+  const drainLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${DRAIN_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withDrainDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(drainLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${DRAIN_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${DRAIN_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("gives an existing session no drain, and admits only whole drain intents and the discard", async () => {
+    const result = await withDrainDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0073_landing_reasons");
+        const [organization] = yield* sql<{ readonly id: string }>`SELECT id FROM organizations`;
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-1', 'api', '/store/p-1/repo.git', 'main', ${organization?.id ?? ""})`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-1', 'p-1', 'one', 'one', 'mend/one', 'abc')`;
+        yield* sql`
+          INSERT INTO agent_sessions
+            (id, project_id, worktree_id, harness, worktree, branch, base_sha, status)
+          VALUES ('s-1', 'p-1', 'wt-1', 'claude', 'one', 'mend/one', 'abc', 'running')`;
+        yield* sql`
+          INSERT INTO "user" ("id", "name", "email", "createdAt")
+          VALUES ('alice', 'Alice', 'alice@example.com', '2026-01-01T00:00:00Z')`;
+        const discardBefore = yield* attempt(sql`
+          INSERT INTO session_control_events (id, session_id, actor_user_id, kind)
+          VALUES ('e-0', 's-1', 'alice', 'discard-unsaved-stop')`);
+        yield* migrations["0075_capture_drain"];
+        const [existing] = yield* sql<{
+          readonly captureDrain: string | null;
+          readonly capturePending: number | null;
+          readonly executorStartedAt: Date | null;
+          readonly removalRequestedAt: Date | null;
+        }>`
+          SELECT capture_drain AS "captureDrain", capture_pending AS "capturePending",
+                 executor_started_at AS "executorStartedAt",
+                 removal_requested_at AS "removalRequestedAt"
+            FROM agent_sessions WHERE id = 's-1'`;
+        const drain = (reason: string | null, requestedAt: string | null, notSaved: boolean) =>
+          attempt(sql`
+            UPDATE agent_sessions
+               SET capture_drain = ${reason},
+                   capture_drain_requested_at = ${requestedAt}::timestamptz,
+                   capture_not_saved_at = CASE WHEN ${notSaved} THEN now() ELSE NULL END
+             WHERE id = 's-1'`);
+        return {
+          existing,
+          discardBefore,
+          discardAfter: yield* attempt(sql`
+            INSERT INTO session_control_events (id, session_id, actor_user_id, kind)
+            VALUES ('e-1', 's-1', 'alice', 'discard-unsaved-stop')`),
+          drains: {
+            stop: yield* drain("stop", "2026-09-27T10:00:00Z", false),
+            notSaved: yield* drain("replacement", "2026-09-27T10:00:00Z", true),
+            relaunch: yield* drain("relaunch", "2026-09-27T10:00:00Z", false),
+            unknown: yield* drain("cap", "2026-09-27T10:00:00Z", false),
+            reasonWithoutTime: yield* drain("stop", null, false),
+            timeWithoutReason: yield* drain(null, "2026-09-27T10:00:00Z", false),
+            notSavedWithoutDrain: yield* drain(null, null, true),
+            none: yield* drain(null, null, false),
+          },
+        };
+      }),
+    );
+    expect(result).toEqual({
+      existing: {
+        captureDrain: null,
+        capturePending: null,
+        executorStartedAt: null,
+        removalRequestedAt: null,
+      },
+      discardBefore: "refused",
+      discardAfter: "inserted",
+      drains: {
+        stop: "inserted",
+        notSaved: "inserted",
+        relaunch: "inserted",
+        unknown: "refused",
+        reasonWithoutTime: "refused",
+        timeWithoutReason: "refused",
+        notSavedWithoutDrain: "refused",
+        none: "inserted",
+      },
+    });
+  });
+});

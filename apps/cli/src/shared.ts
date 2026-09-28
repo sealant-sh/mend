@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import * as path from "node:path";
 
-import { servicesHoldLine } from "@mend/domain/workbench";
+import { captureStatusLine, servicesHoldLine } from "@mend/domain/workbench";
 
 /**
  * Facts both entry points need: how each harness launches and resumes, which
@@ -301,6 +301,32 @@ export const servicesHoldOf = (
     agentOutcome: agentOutcome(currentAgent),
     liveServices,
   });
+
+/** The capture facts a session carries on the wire; absent on servers from before them. */
+export interface SessionCaptureLike {
+  readonly capturePending?: number | null;
+  readonly capturePendingBytes?: number | null;
+  readonly captureRefused?: number | null;
+  readonly captureDrain?: string | null;
+  readonly captureNotSavedAt?: string | null;
+}
+
+/**
+ * What the session's executor still holds (docs/adr/0002, "Stop drains, then terminates"):
+ * `saving · 3 left` while a stop drains it, `not saved · 3 pending · workspace kept` once the
+ * drain stopped moving; null when there is nothing to say (or the server says nothing).
+ */
+export const captureLineOf = (session: SessionCaptureLike): string | null => {
+  const drain = session.captureDrain;
+  return captureStatusLine({
+    capturePending: session.capturePending ?? null,
+    capturePendingBytes: session.capturePendingBytes ?? null,
+    captureRefused: session.captureRefused ?? null,
+    captureDrain:
+      drain === "stop" || drain === "relaunch" || drain === "replacement" ? drain : null,
+    captureNotSavedAt: session.captureNotSavedAt ?? null,
+  });
+};
 
 export interface CwdProjectLike {
   readonly name: string;

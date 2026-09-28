@@ -19,6 +19,7 @@ import {
   agentIsActive,
   canDeliverFollowUp,
   loadConfig,
+  statusLineOf,
   toneOf,
   usePendingFollowUp,
   useSession,
@@ -466,7 +467,7 @@ export default function SessionScreen() {
             </DisplayTitle>
             <View style={{ flex: 1 }} />
             {session !== undefined && (
-              <StatusWord tone={toneOf(session.status)} word={session.status} />
+              <StatusWord tone={toneOf(session.status)} word={statusLineOf(session)} />
             )}
           </View>
           {session !== undefined && (

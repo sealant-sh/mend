@@ -11,6 +11,7 @@ import {
   WorkspaceImage,
 } from "@mend/domain";
 import {
+  type CaptureDrainReason,
   Session,
   SessionDotfiles,
   type NativeIngestCursor,
@@ -60,6 +61,15 @@ export interface NewSession {
    * the composer's override, or a Slack request's `autopr=`. Absent or null follows the project.
    */
   readonly autoLand?: boolean | null;
+}
+
+/** One flush answer as a session records it (see `Session.capturePending`). */
+export interface CaptureObservation {
+  readonly pending: number;
+  readonly pendingBytes: number | null;
+  readonly refused: number | null;
+  readonly registeredAt: Date | null;
+  readonly observedAt: Date;
 }
 
 /** Terminal session states; `stopped` is the user's stop, not a failure. */
@@ -193,6 +203,38 @@ export class SessionsRepo extends Context.Service<
     readonly setLabelIfUnset: (id: SessionId, label: string) => Effect.Effect<boolean>;
     /** Hard delete — comments, checkpoints, follow-ups, change and tour cascade. */
     readonly remove: (id: SessionId) => Effect.Effect<void>;
+    /**
+     * Capture mode: what the session's executor answered to a flush just now (0075). Written on
+     * every drain step and every reading an idle stop or a landing takes.
+     */
+    readonly recordCaptureObservation: (
+      id: SessionId,
+      observation: CaptureObservation,
+    ) => Effect.Effect<void>;
+    /**
+     * The durable drain intent (docs/adr/0002, "Stop drains, then terminates"): the reason is the
+     * latest ask; the request and progress times keep the first ones, so a restart does not reset
+     * a drain's history.
+     */
+    readonly beginCaptureDrain: (
+      id: SessionId,
+      reason: CaptureDrainReason,
+      at: Date,
+    ) => Effect.Effect<void>;
+    /** Something moved: the stall window starts again and `not saved` clears. */
+    readonly recordCaptureDrainProgress: (id: SessionId, at: Date) => Effect.Effect<void>;
+    /** Nothing moved for the stall window: true only for the write that set it (one alert). */
+    readonly markCaptureNotSaved: (id: SessionId, at: Date) => Effect.Effect<boolean>;
+    /** The workspace is saved and terminated, or discarded: no drain is under way. */
+    readonly endCaptureDrain: (id: SessionId) => Effect.Effect<void>;
+    /** Every session with a drain under way, oldest first: what the reaper takes up again. */
+    readonly listCaptureDrains: () => Effect.Effect<ReadonlyArray<Session>>;
+    /** Stamp the current executor's start — what the platform's cap counts from. */
+    readonly setExecutorStartedAt: (id: SessionId, at: Date) => Effect.Effect<void>;
+    /** Removal asked while the workspace was up; the sweep removes the row once it has gone. */
+    readonly requestRemoval: (id: SessionId, at: Date) => Effect.Effect<void>;
+    /** Sessions whose removal waits on their workspace. */
+    readonly listRemovalRequested: () => Effect.Effect<ReadonlyArray<Session>>;
     readonly setHarness: (id: SessionId, harness: string) => Effect.Effect<void>;
   }
 >()("@mend/db/SessionsRepo") {}
@@ -790,6 +832,134 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .pipe(Effect.orDie);
       });
 
+      const recordCaptureObservation = Effect.fn("SessionsRepo.recordCaptureObservation")(
+        function* (id: SessionId, observation: CaptureObservation) {
+          yield* db
+            .update(agentSessions)
+            .set({
+              capturePending: observation.pending,
+              capturePendingBytes: observation.pendingBytes,
+              captureRefused: observation.refused,
+              captureRegisteredAt: observation.registeredAt,
+              captureObservedAt: observation.observedAt,
+            })
+            .where(eq(agentSessions.id, id))
+            .pipe(Effect.orDie);
+          yield* notify(id);
+        },
+      );
+
+      const beginCaptureDrain = Effect.fn("SessionsRepo.beginCaptureDrain")(function* (
+        id: SessionId,
+        reason: CaptureDrainReason,
+        at: Date,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({
+            captureDrain: reason,
+            captureDrainRequestedAt: sql`COALESCE(${agentSessions.captureDrainRequestedAt}, ${at})`,
+            captureDrainProgressAt: sql`COALESCE(${agentSessions.captureDrainProgressAt}, ${at})`,
+            updatedAt: at,
+          })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+        yield* notify(id);
+      });
+
+      const recordCaptureDrainProgress = Effect.fn("SessionsRepo.recordCaptureDrainProgress")(
+        function* (id: SessionId, at: Date) {
+          yield* db
+            .update(agentSessions)
+            .set({ captureDrainProgressAt: at, captureNotSavedAt: null })
+            .where(and(eq(agentSessions.id, id), isNotNull(agentSessions.captureDrain)))
+            .pipe(Effect.orDie);
+          yield* notify(id);
+        },
+      );
+
+      const markCaptureNotSaved = Effect.fn("SessionsRepo.markCaptureNotSaved")(function* (
+        id: SessionId,
+        at: Date,
+      ) {
+        const rows = yield* db
+          .update(agentSessions)
+          .set({ captureNotSavedAt: at, updatedAt: at })
+          .where(
+            and(
+              eq(agentSessions.id, id),
+              isNotNull(agentSessions.captureDrain),
+              isNull(agentSessions.captureNotSavedAt),
+            ),
+          )
+          .returning({ id: agentSessions.id })
+          .pipe(Effect.orDie);
+        if (rows.length === 0) return false;
+        yield* notify(id);
+        return true;
+      });
+
+      const endCaptureDrain = Effect.fn("SessionsRepo.endCaptureDrain")(function* (id: SessionId) {
+        yield* db
+          .update(agentSessions)
+          .set({
+            captureDrain: null,
+            captureDrainRequestedAt: null,
+            captureDrainProgressAt: null,
+            captureNotSavedAt: null,
+            updatedAt: new Date(),
+          })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+        yield* notify(id);
+      });
+
+      const listCaptureDrains = Effect.fn("SessionsRepo.listCaptureDrains")(function* () {
+        const rows = yield* db
+          .select()
+          .from(agentSessions)
+          .where(isNotNull(agentSessions.captureDrain))
+          .orderBy(asc(agentSessions.captureDrainRequestedAt))
+          .pipe(Effect.orDie);
+        return rows.map(toSession);
+      });
+
+      const setExecutorStartedAt = Effect.fn("SessionsRepo.setExecutorStartedAt")(function* (
+        id: SessionId,
+        at: Date,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({ executorStartedAt: at })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+      });
+
+      const requestRemoval = Effect.fn("SessionsRepo.requestRemoval")(function* (
+        id: SessionId,
+        at: Date,
+      ) {
+        yield* db
+          .update(agentSessions)
+          .set({
+            removalRequestedAt: sql`COALESCE(${agentSessions.removalRequestedAt}, ${at})`,
+            updatedAt: at,
+          })
+          .where(eq(agentSessions.id, id))
+          .pipe(Effect.orDie);
+        yield* notify(id);
+      });
+
+      const listRemovalRequested = Effect.fn("SessionsRepo.listRemovalRequested")(function* () {
+        const rows = yield* db
+          .select()
+          .from(agentSessions)
+          .where(isNotNull(agentSessions.removalRequestedAt))
+          .orderBy(asc(agentSessions.removalRequestedAt))
+          .pipe(Effect.orDie);
+        return rows.map(toSession);
+      });
+
       return {
         create,
         byId,
@@ -828,6 +998,15 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         setLabelIfUnset,
         remove,
         setHarness,
+        recordCaptureObservation,
+        beginCaptureDrain,
+        recordCaptureDrainProgress,
+        markCaptureNotSaved,
+        endCaptureDrain,
+        listCaptureDrains,
+        setExecutorStartedAt,
+        requestRemoval,
+        listRemovalRequested,
       };
     }),
   );

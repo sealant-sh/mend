@@ -2204,6 +2204,54 @@ const landingReasonsMigration = Effect.gen(function* () {
       )`;
 });
 
+/**
+ * docs/adr/0002-session-capture-store.md, "Stop drains, then terminates" (2026-09-27): nothing an
+ * executor holds is lost to a stop. A session records what its executor last answered to a flush
+ * (pending captures, bytes once sealantd reports them, refusals, the head's registration time) and
+ * a drain under way — why, since when, the last movement, and when it stopped moving — so a Mend
+ * restart takes the drain up again. The cap is counted from the executor's own start, and a
+ * removal asked while the workspace was up waits for it. The owner's "discard unsaved and stop" is
+ * a control event of its own.
+ */
+const captureDrainMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    ALTER TABLE agent_sessions
+      ADD COLUMN capture_pending integer,
+      ADD COLUMN capture_pending_bytes bigint,
+      ADD COLUMN capture_refused integer,
+      ADD COLUMN capture_registered_at timestamptz,
+      ADD COLUMN capture_observed_at timestamptz,
+      ADD COLUMN capture_drain text,
+      ADD COLUMN capture_drain_requested_at timestamptz,
+      ADD COLUMN capture_drain_progress_at timestamptz,
+      ADD COLUMN capture_not_saved_at timestamptz,
+      ADD COLUMN executor_started_at timestamptz,
+      ADD COLUMN removal_requested_at timestamptz`;
+  yield* sql`
+    ALTER TABLE agent_sessions
+      ADD CONSTRAINT agent_sessions_capture_drain_check CHECK (
+        (capture_drain IS NULL OR capture_drain IN ('stop', 'relaunch', 'replacement'))
+        AND ((capture_drain IS NULL) = (capture_drain_requested_at IS NULL))
+        AND (capture_not_saved_at IS NULL OR capture_drain IS NOT NULL)
+      )`;
+  yield* sql`
+    CREATE INDEX agent_sessions_capture_drain_idx ON agent_sessions (capture_drain_requested_at)
+      WHERE capture_drain IS NOT NULL`;
+  yield* sql`
+    CREATE INDEX agent_sessions_removal_requested_idx ON agent_sessions (removal_requested_at)
+      WHERE removal_requested_at IS NOT NULL`;
+  yield* sql`
+    ALTER TABLE session_control_events
+      DROP CONSTRAINT IF EXISTS session_control_events_kind_check`;
+  yield* sql`
+    ALTER TABLE session_control_events
+      ADD CONSTRAINT session_control_events_kind_check CHECK (kind IN (
+        'interrupt', 'terminal-attach', 'shell-open', 'stop', 'services-stop', 'idle-stop',
+        'shared-control-on', 'shared-control-off', 'discard-unsaved-stop'
+      ))`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2279,4 +2327,5 @@ export const migrations = {
   "0071_project_default_shell_profile": projectDefaultShellProfileMigration,
   "0072_protocol_idle_stop": protocolIdleStopMigration,
   "0073_landing_reasons": landingReasonsMigration,
+  "0075_capture_drain": captureDrainMigration,
 };

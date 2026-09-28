@@ -12,6 +12,7 @@ import {
 import { AgentTurnId, SessionId } from "@mend/domain";
 import {
   agentProcessOutcome,
+  captureStatusLine,
   currentAgentProcess,
   type AgentTurn,
   type ProjectTenancy,
@@ -81,6 +82,15 @@ export const notificationBody = (session: Session, phase: Phase): string => {
   return phase === "completed" ? `${name} completed${summary}` : `${name} failed${summary}`;
 };
 
+/**
+ * A drain stopped moving (docs/adr/0002, "Stop drains, then terminates"): the workspace is kept
+ * and only its owner can let it go. `billing-fix not saved · 3 pending · workspace kept`.
+ */
+export const notSavedNotificationBody = (session: Session): string => {
+  const name = session.label ?? session.harness;
+  return `${name} ${captureStatusLine(session) ?? "not saved · workspace kept"}`;
+};
+
 /** A protocol turn ended while the agent stays live: name the prompt it answered. */
 export const turnNotificationBody = (session: Session, turn: AgentTurn): string => {
   const name = session.label ?? session.harness;
@@ -145,13 +155,22 @@ export const SessionNotifierLive = Layer.effectDiscard(
     /** Per session: the open (queued/running) turn ids seen on the last event. */
     const watchedTurns = new Map<string, ReadonlySet<string>>();
 
-    const send = Effect.fn("SessionNotifier.send")(function* (session: Session, body: string) {
+    /** Per session: whether its drain read `not saved` on the last event. */
+    const lastNotSaved = new Map<string, boolean>();
+
+    const send = Effect.fn("SessionNotifier.send")(function* (
+      session: Session,
+      body: string,
+      ownerOnly = false,
+    ) {
       const turns = yield* conversations.listTurns(session.id);
       const project = yield* projects
         .byId(session.projectId)
         .pipe(Effect.catchTag("ProjectNotFoundError", () => Effect.succeed(null)));
       const latestSender =
-        project === null ? null : yield* latestSenderWhoSees(organizations, project, turns);
+        project === null || ownerOnly
+          ? null
+          : yield* latestSenderWhoSees(organizations, project, turns);
       const targets = yield* pushTargets(devices, session, latestSender);
       if (targets.length === 0) return;
       const title = project?.name ?? session.harness;
@@ -188,6 +207,13 @@ export const SessionNotifierLive = Layer.effectDiscard(
 
     const observe = Effect.fn("SessionNotifier.observe")(function* (sessionId: string) {
       const session = yield* sessions.byId(SessionId.make(sessionId));
+      // A drain that stopped moving rings the owner once: only they can discard what is unsaved.
+      const notSaved = session.captureNotSavedAt !== null;
+      const wasNotSaved = lastNotSaved.get(session.id);
+      lastNotSaved.set(session.id, notSaved);
+      if (notSaved && wasNotSaved === false) {
+        yield* send(session, notSavedNotificationBody(session), true);
+      }
       const currentAgent = currentAgentProcess(yield* processes.listForSession(session.id));
       const phase = phaseOf(session.status, currentAgent);
       const previous = lastPhase.get(session.id);
@@ -237,6 +263,7 @@ export const SessionNotifierLive = Layer.effectDiscard(
     for (const session of active) {
       const currentAgent = currentAgentProcess(yield* processes.listForSession(session.id));
       lastPhase.set(session.id, phaseOf(session.status, currentAgent));
+      lastNotSaved.set(session.id, session.captureNotSavedAt !== null);
     }
 
     yield* sql.listen(MEND_EVENTS_CHANNEL).pipe(

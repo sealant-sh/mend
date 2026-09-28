@@ -172,9 +172,18 @@ export interface StatusInput {
    * (`idle · stopped after 15 min · reply to resume`); other states ignore it.
    */
   readonly summary?: string | null;
+  /**
+   * What the session's executor still holds (`captureStatusLine`): `saving · 3 left` while a stop
+   * drains it, `not saved · 3 pending · workspace kept` once the drain stopped moving. Absent or
+   * null says nothing.
+   */
+  readonly capture?: string | null;
 }
 
-/** `billing-api · from the thread · claude · running · mend/flaky-login-test`. */
+/**
+ * `billing-api · from the thread · claude · running · mend/flaky-login-test`, and while a stop
+ * drains the workspace `… · stopped · saving · 3 left · mend/flaky-login-test`.
+ */
 export const statusLine = (input: StatusInput): string =>
   [
     input.project,
@@ -183,6 +192,7 @@ export const statusLine = (input: StatusInput): string =>
     input.state === "idle-stopped" && input.summary !== undefined && input.summary !== null
       ? input.summary
       : stateWords(input.state, input.recorded),
+    ...(input.capture === undefined || input.capture === null ? [] : [input.capture]),
     input.branch,
     ...(input.change === null ? [] : [changeWords(input.change)]),
   ].join(" · ");

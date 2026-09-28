@@ -9,7 +9,9 @@ import type { OrganizationRole } from "./organization.ts";
  * Turns carry their author and approvals their decider; these are the other steering acts, so a
  * shared session always says who interrupted, attached or stopped it, or stopped its Services.
  * `idle-stop` is Mend's own: the protocol agent sat idle past MEND_PROTOCOL_IDLE_STOP_MINUTES, and
- * the actor is the session's owner, whose agent it was.
+ * the actor is the session's owner, whose agent it was. `discard-unsaved-stop` is the owner's
+ * explicit "discard unsaved and stop": the one act that ends a workspace while captures are still
+ * pending (docs/adr/0002-session-capture-store.md, "Stop drains, then terminates").
  */
 export const SessionControlKind = Schema.Literals([
   "interrupt",
@@ -20,6 +22,7 @@ export const SessionControlKind = Schema.Literals([
   "idle-stop",
   "shared-control-on",
   "shared-control-off",
+  "discard-unsaved-stop",
 ]);
 export type SessionControlKind = typeof SessionControlKind.Type;
 

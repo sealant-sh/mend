@@ -95,6 +95,21 @@ describe("protocolIdleReading", () => {
     ).toEqual({ kind: "held", by: "shell" });
   });
 
+  it("is held while its executor still has captures to ship, or bulk changed since its snap", () => {
+    expect(protocolIdleReading(idleFacts({ capture: { pending: 2, bulkDirty: null } }))).toEqual({
+      kind: "held",
+      by: "capture",
+    });
+    expect(protocolIdleReading(idleFacts({ capture: { pending: 0, bulkDirty: true } }))).toEqual({
+      kind: "held",
+      by: "capture",
+    });
+    expect(protocolIdleReading(idleFacts({ capture: { pending: 0, bulkDirty: false } })).kind).toBe(
+      "idle",
+    );
+    expect(protocolIdleReading(idleFacts({ capture: null })).kind).toBe("idle");
+  });
+
   it("stops nothing but a live protocol agent of an unsettled session", () => {
     expect(protocolIdleReading(idleFacts({ processes: [process("agent-pty", true)] }))).toEqual({
       kind: "not-protocol",

@@ -1,4 +1,4 @@
-import { agentProcessOutcome, servicesHoldLine } from "@mend/domain/workbench";
+import { agentProcessOutcome, captureStatusLine, servicesHoldLine } from "@mend/domain/workbench";
 import type { inferRouterOutputs } from "@trpc/server";
 
 import type { AppRouter } from "../server/routers/index.ts";
@@ -365,6 +365,12 @@ export const pasteSessionImage = (id: string, contentsBase64: string) =>
 export const resumeSession = (id: string, harness: string | null) =>
   orLogin(trpcClient.sessions.resume.mutate({ id, request: { harness } }));
 export const removeSession = (id: string) => orLogin(trpcClient.sessions.remove.mutate({ id }));
+/**
+ * The owner's "discard unsaved and stop" (docs/adr/0002): ends the workspace while its captures
+ * are still pending. What was not saved is gone; the page arms it with a second click.
+ */
+export const discardUnsavedAndStop = (id: string) =>
+  orLogin(trpcClient.sessions.discardUnsaved.mutate({ id }));
 
 /**
  * Provision the worktree alone — the deliberate "New worktree" flow. No
@@ -635,6 +641,14 @@ export const sessionServicesHold = (
     agentOutcome: currentAgent === null ? null : agentProcessOutcome(currentAgent),
     liveServices,
   });
+
+/**
+ * What the session's executor still holds, as every surface words it (`captureStatusLine`):
+ * `saving · 3 left` while a stop drains it, `not saved · 3 pending · workspace kept` once the
+ * drain stopped moving. Null when there is nothing to say.
+ */
+export const sessionCaptureLine = (session: SessionDto): string | null =>
+  captureStatusLine(session);
 
 const preferredEndpoint = (view: ServiceViewDto): ServiceEndpointDto | null =>
   view.endpoints.find((endpoint) => endpoint.scope === "private") ?? view.endpoints[0] ?? null;

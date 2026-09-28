@@ -79,6 +79,7 @@ import type {
   AgentTurnStatus,
   AgentTurnUsage,
   AutomationChoice,
+  CaptureDrainReason,
   CheckpointTrigger,
   ClusterBindingKind,
   ContextItem,
@@ -1173,6 +1174,22 @@ export const agentSessions = pgTable(
     hasTranscript: boolean(),
     // The idle stop's claim (0072): set when Mend stops an idle protocol agent, null on reopen.
     idleStoppedAt: timestamp({ mode: "date", withTimezone: true }),
+    // Capture mode (0075): the executor's last flush answer as Mend observed it, and a drain under
+    // way — the durable intent a restart takes up again (docs/adr/0002, "Stop drains, then
+    // terminates").
+    capturePending: integer(),
+    capturePendingBytes: bigint({ mode: "number" }),
+    captureRefused: integer(),
+    captureRegisteredAt: timestamp({ mode: "date", withTimezone: true }),
+    captureObservedAt: timestamp({ mode: "date", withTimezone: true }),
+    captureDrain: text().$type<CaptureDrainReason>(),
+    captureDrainRequestedAt: timestamp({ mode: "date", withTimezone: true }),
+    captureDrainProgressAt: timestamp({ mode: "date", withTimezone: true }),
+    captureNotSavedAt: timestamp({ mode: "date", withTimezone: true }),
+    // When the current executor started: what the platform's cap counts from (0075).
+    executorStartedAt: timestamp({ mode: "date", withTimezone: true }),
+    // Removal asked while the workspace was up; the row goes once it has (0075).
+    removalRequestedAt: timestamp({ mode: "date", withTimezone: true }),
     status: text().$type<SessionStatus>().notNull().default("starting"),
     summary: text(),
     lastSeenSequence: bigint({ mode: "bigint" }).notNull().default(0n),

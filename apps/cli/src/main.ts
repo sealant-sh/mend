@@ -91,6 +91,8 @@ import {
   gitCurrentBranch,
   parseLaunchArgs,
   servicesHoldOf,
+  captureLineOf,
+  type SessionCaptureLike,
 } from "./shared.ts";
 import { DEFAULT_SKILLS_DIR, scanSkillLibrary } from "./skills.ts";
 import { sshCommand } from "./ssh-setup.ts";
@@ -189,7 +191,7 @@ interface WorktreeDto {
   readonly createdAt: string;
 }
 
-interface SessionDto {
+interface SessionDto extends SessionCaptureLike {
   readonly id: string;
   readonly projectId: string;
   /** Present once the server is worktree-aware. */
@@ -1224,6 +1226,11 @@ const stopSessions = async (
         : servicesHoldOf(after.session, after.currentAgent, after.liveServices ?? 0);
     if (hold !== null) {
       say(`${amber("  " + hold)} · mend stop --services ${session.id.slice(0, 8)}`);
+    }
+    // Capture mode: the workspace goes once it has saved (docs/adr/0002); say what is left.
+    const capture = after === null ? null : captureLineOf(after.session);
+    if (capture !== null) {
+      say(`${amber("  " + capture)} · the workspace stops once nothing is pending`);
     }
     say(`${cobalt("  review")} · ${config.url}/sessions/${session.id}`);
   }
@@ -3701,6 +3708,19 @@ interface SessionJson {
     readonly totalComments: number;
     readonly pendingFollowUp: boolean;
   } | null;
+  /**
+   * What the executor still holds, when the server says (docs/adr/0002): pending captures,
+   * bytes once sealantd reports them, refusals, a drain under way and whether it stopped moving,
+   * and the line every surface shows. Null when the server says nothing.
+   */
+  readonly capture: {
+    readonly pending: number | null;
+    readonly pendingBytes: number | null;
+    readonly refused: number | null;
+    readonly drain: string | null;
+    readonly notSaved: boolean;
+    readonly line: string | null;
+  } | null;
 }
 
 interface SessionsJson {
@@ -3710,9 +3730,11 @@ interface SessionsJson {
 
 /** The session's Services-hold line from its list facts; null without them or without a hold. */
 const rowHold = (row: SessionRow): string | null =>
-  row.annotation === undefined
+  // A workspace a stop is still saving (docs/adr/0002) reads what is left, first.
+  captureLineOf(row.session) ??
+  (row.annotation === undefined
     ? null
-    : servicesHoldOf(row.session, row.annotation.currentAgent, row.annotation.liveServices ?? 0);
+    : servicesHoldOf(row.session, row.annotation.currentAgent, row.annotation.liveServices ?? 0));
 
 const printSessionRow = (row: SessionRow) => {
   const { session, annotation } = row;
@@ -3835,6 +3857,17 @@ const sessionsCommand = async (config: CliConfig, args: ReadonlyArray<string>) =
                 openComments: annotation.openComments,
                 totalComments: annotation.totalComments,
                 pendingFollowUp: annotation.pendingFollowUp,
+              },
+        capture:
+          session.capturePending === undefined
+            ? null
+            : {
+                pending: session.capturePending ?? null,
+                pendingBytes: session.capturePendingBytes ?? null,
+                refused: session.captureRefused ?? null,
+                drain: session.captureDrain ?? null,
+                notSaved: (session.captureNotSavedAt ?? null) !== null,
+                line: captureLineOf(session),
               },
       })),
     };

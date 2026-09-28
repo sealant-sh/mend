@@ -3,10 +3,12 @@ import { servicesHoldLine } from "@mend/domain/workbench";
 import {
   agentIsLive,
   agentOutcome,
+  captureLineOf,
   HARNESS_COMMANDS,
   isPendingId,
   LIVE_STATUSES,
   type AgentProcessLike,
+  type SessionCaptureLike,
 } from "./shared.ts";
 
 /**
@@ -25,7 +27,7 @@ export interface ProjectDto {
   readonly defaultBranch: string;
 }
 
-export interface SessionDto {
+export interface SessionDto extends SessionCaptureLike {
   readonly id: string;
   /** Present once the server is worktree-aware; absent on older servers. */
   readonly worktreeId?: string;
@@ -567,6 +569,9 @@ const AGENT_WORKING: ReadonlySet<string> = new Set(["starting", "running", "wait
  * Services running, so the status word alone would hide a workspace that is still up.
  */
 export const sessionHold = (item: SessionItem): string | null => {
+  // A workspace a stop is still saving (docs/adr/0002) reads what is left, first.
+  const capture = captureLineOf(item.session);
+  if (capture !== null) return capture;
   const agent = item.annotation?.currentAgent ?? null;
   const agentProcessLive = item.processes.some(
     (process) => process.kind !== "shell" && process.exitedAt === null,

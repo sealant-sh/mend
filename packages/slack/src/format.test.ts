@@ -81,6 +81,22 @@ describe("the status message", () => {
     );
   });
 
+  it("says what a stop is still saving, and what it kept, beside the state", () => {
+    expect(statusLine({ ...status, state: "stopped", capture: "saving · 3 left" })).toBe(
+      "billing-api · from the thread · claude · stopped · saving · 3 left · mend/flaky-login-test",
+    );
+    expect(
+      statusLine({
+        ...status,
+        state: "stopped",
+        capture: "not saved · 3 pending · workspace kept",
+      }),
+    ).toBe(
+      "billing-api · from the thread · claude · stopped · not saved · 3 pending · workspace kept · mend/flaky-login-test",
+    );
+    expect(statusLine({ ...status, capture: null })).toBe(statusLine(status));
+  });
+
   it("claims observed only when a run stands behind the session", () => {
     expect(statusLine({ ...status, state: "completed", recorded: false })).toContain(
       "· completed ·",

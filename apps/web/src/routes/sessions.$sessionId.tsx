@@ -12,8 +12,10 @@ import { SessionTerminal } from "#/components/terminal";
 import {
   agentIsLive,
   checkpointSession,
+  discardUnsavedAndStop,
   removeSession,
   resumeSession,
+  sessionCaptureLine,
   sessionServicesHold,
   setSessionLabel,
   setSharedControl,
@@ -121,6 +123,8 @@ function SessionPage() {
   const agentPty = currentAgent?.sealantSessionId ?? session.sealantSessionId;
   // A stop leaves Services running and they keep the workspace up: say so, with their own stop.
   const servicesHold = sessionServicesHold(session, currentAgent, liveServices);
+  // A stop drains the executor before its workspace goes (docs/adr/0002): what it still holds.
+  const captureLine = sessionCaptureLine(session);
   const followUp = useSuspenseQuery(
     trpc.sessions.pendingFollowUp.queryOptions({ id: sessionId }),
   ).data;
@@ -129,6 +133,8 @@ function SessionPage() {
   );
   const [labelDraft, setLabelDraft] = useState<string | null>(null);
   const [deleting, setDeleting] = useState<"idle" | "armed" | "working">("idle");
+  const [removalLeftover, setRemovalLeftover] = useState<string | null>(null);
+  const [discarding, setDiscarding] = useState<"idle" | "armed" | "working">("idle");
   const navigate = useNavigate();
   const dark = useResolvedDark();
   useWorkbenchEvents();
@@ -152,11 +158,30 @@ function SessionPage() {
     if (deleting !== "armed") return;
     setDeleting("working");
     void removeSession(sessionId)
-      .then(() => {
+      .then((report) => {
         void queryClient.invalidateQueries();
+        // The row goes after its workspace: a removal asked mid-drain says what it waits on.
+        if (!report.removed) {
+          setDeleting("idle");
+          setRemovalLeftover(report.leftover);
+          return;
+        }
         return navigate({ to: "/projects/$projectId", params: { projectId: session.projectId } });
       })
       .catch(() => setDeleting("idle"));
+  };
+
+  /** Second click executes: what the workspace has not saved is gone once it stops. */
+  const discardUnsaved = () => {
+    if (discarding === "idle") {
+      setDiscarding("armed");
+      return;
+    }
+    if (discarding !== "armed") return;
+    setDiscarding("working");
+    void discardUnsavedAndStop(sessionId)
+      .then(() => queryClient.invalidateQueries(trpc.sessions.pathFilter()))
+      .finally(() => setDiscarding("idle"));
   };
 
   const act = (kind: "stop" | "stop-services" | "checkpoint") => {
@@ -211,11 +236,20 @@ function SessionPage() {
               />
             </div>
           )}
-          {servicesHold === null ? (
-            <SessionStatusDot status={session.status} recorded={session.sealantRunId !== null} />
-          ) : (
-            <StatusDot tone="hollow" word={servicesHold} />
-          )}
+          <div className="flex flex-wrap items-center gap-4">
+            {servicesHold === null ? (
+              <SessionStatusDot status={session.status} recorded={session.sealantRunId !== null} />
+            ) : (
+              <StatusDot tone="hollow" word={servicesHold} />
+            )}
+            {captureLine !== null && (
+              <StatusDot
+                tone={session.captureNotSavedAt === null ? "hollow" : "amber"}
+                word={captureLine}
+                pulse={session.captureNotSavedAt === null && session.captureDrain !== null}
+              />
+            )}
+          </div>
         </div>
         <p className="mt-2 font-mono text-xs text-faint">
           {session.branch} · worktree {session.worktree} · base{" "}
@@ -235,6 +269,9 @@ function SessionPage() {
             {line.text}
           </p>
         ))}
+        {removalLeftover !== null && (
+          <p className="mt-2 font-mono text-xs text-warning">{removalLeftover}</p>
+        )}
         {session.summary !== null && (
           <p className="mt-3 max-w-[760px] text-[14.5px] leading-relaxed text-ink-2">
             {session.summary}
@@ -296,6 +333,22 @@ function SessionPage() {
               className="font-sans text-sm font-medium text-muted-foreground transition-colors hover:text-foreground"
             >
               {pending === "stop-services" ? "Stopping services…" : "Stop services"}
+            </button>
+          )}
+          {session.captureDrain !== null && control.own && (
+            <button
+              type="button"
+              disabled={discarding === "working"}
+              onClick={discardUnsaved}
+              onBlur={() => setDiscarding((current) => (current === "armed" ? "idle" : current))}
+              title="End the workspace now, with captures still pending"
+              className={`font-sans text-sm font-medium transition-colors disabled:opacity-50 ${discarding === "armed" ? "text-[var(--sw-red)]" : "text-muted-foreground hover:text-foreground"}`}
+            >
+              {discarding === "working"
+                ? "Discarding…"
+                : discarding === "armed"
+                  ? "Really discard what is not saved? It is gone once the workspace stops."
+                  : "Discard unsaved and stop…"}
             </button>
           )}
           {!agentLive && control.own && (
