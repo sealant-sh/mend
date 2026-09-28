@@ -3370,20 +3370,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
         let discardedAt = requestedAt;
         discards.add(workspaceId);
+        // What is logged follows what happened (cross-repo decision 28, review 2026-09-28 (9)
+        // #10): the request now; `discarded` only once the platform confirmed the end.
+        const annotations = {
+          sessionId,
+          workspaceId,
+          pending: session.capturePending,
+          pendingBytes: session.capturePendingBytes,
+        };
         yield* Effect.gen(function* () {
+          yield* Effect.logWarning(
+            "session engine: discard of unsaved captures requested by the owner · stopping",
+          ).pipe(Effect.annotateLogs(annotations));
           yield* stop(sessionId, null);
           const running = drains.get(workspaceId);
           if (running !== undefined) yield* Deferred.await(running);
-          yield* Effect.logWarning(
-            "session engine: unsaved captures discarded by the owner · terminating",
-          ).pipe(
-            Effect.annotateLogs({
-              sessionId,
-              workspaceId,
-              pending: session.capturePending,
-              pendingBytes: session.capturePendingBytes,
-            }),
-          );
           const lookup = yield* lookupWorkspace(workspaceId);
           if (lookup.kind === "unknown") {
             // Nothing is known gone and nothing was stopped: the lease stays with the executor.
@@ -3407,6 +3408,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           if (!ended) {
             // The platform kept it (or has not ended it yet): nothing is discarded, and the
             // session still reads what it holds.
+            yield* Effect.logWarning(
+              "session engine: discard asked · the platform has not ended the workspace · nothing discarded yet",
+            ).pipe(Effect.annotateLogs(annotations));
             return yield* new SealantPlatformError({
               code: "workspace_not_ended",
               status: 409,
@@ -3416,6 +3420,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             });
           }
           discardedAt = new Date();
+          yield* Effect.logWarning(
+            "session engine: unsaved captures discarded by the owner · the platform ended the workspace",
+          ).pipe(Effect.annotateLogs(annotations));
           // The line says when the owner asked; the audit keeps both times.
           yield* endDrain(sessionId, {
             at: requestedAt,

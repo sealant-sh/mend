@@ -15326,3 +15326,73 @@ describe("SessionEngine seventh review (2026-09-28)", () => {
     },
   );
 });
+
+/**
+ * Review 2026-09-28 (9): evidence nothing orders is kept, never erased by a later answer
+ * (cross-repo decision 25), and a report follows the event it names (decision 28).
+ */
+describe("SessionEngine ninth review (2026-09-28)", () => {
+  // #10 (the reviewer's instrumented regression): `unsaved captures discarded by the owner` was
+  // logged before the platform was asked, and stood when the platform kept the workspace (409,
+  // `nothing discarded yet`). The request is logged before the stop; the discard only once the
+  // platform confirmed the end.
+  it(
+    "#10 a discard the platform refuses logs the request, never `discarded`; a confirmed one logs it after the end",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const stops: Array<"drain" | "discard"> = [];
+      const logs: Array<string> = [];
+      const memory = makeMemoryCaptureStore();
+      let platformKeeps = true;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept workspace",
+            );
+            const refused = yield* engine.discardUnsavedAndStop(session.id).pipe(Effect.flip);
+            expect(refused._tag === "SealantPlatformError" && refused.code).toBe(
+              "workspace_not_ended",
+            );
+            const discardedLines = () =>
+              logs.filter((line) => line.includes("unsaved captures discarded by the owner"));
+            expect(discardedLines()).toEqual([]);
+            expect(
+              logs.filter((line) => line.includes("discard of unsaved captures requested")),
+            ).toHaveLength(1);
+            expect(
+              logs.some((line) => line.includes("the platform has not ended the workspace")),
+            ).toBe(true);
+            platformKeeps = false;
+            yield* engine.discardUnsavedAndStop(session.id);
+            expect(stops).toEqual(["discard", "discard"]);
+            expect(discardedLines()).toHaveLength(1);
+            // Logged after the platform's end, never before its stop was asked.
+            const requested = logs.findLastIndex((line) =>
+              line.includes("discard of unsaved captures requested"),
+            );
+            expect(logs.findIndex((line) => discardedLines().includes(line))).toBeGreaterThan(
+              requested,
+            );
+          }),
+        {
+          captured: memory,
+          logs,
+          drainPolicy: { stallSeconds: 1, terminationWait: Duration.millis(300) },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stops,
+              stopAnswer: (discard) => (discard && !platformKeeps ? "stopped" : "kept"),
+              flush: () => Effect.succeed(flushReport(2, 1)),
+            },
+          }),
+        },
+      );
+    },
+  );
+});
