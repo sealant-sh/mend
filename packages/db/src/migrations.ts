@@ -2174,6 +2174,36 @@ const protocolIdleStopMigration = Effect.gen(function* () {
       ))`;
 });
 
+/**
+ * docs/adr/0007-landing.md, amended 2026-09-27: a turn's request may ask to `land` the change as
+ * it stands, and every turn that did not land records why: the change is empty, nothing is new
+ * since the last landing, or the executor's captures never caught up with the turn.
+ */
+const landingReasonsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE agent_turns DROP CONSTRAINT IF EXISTS agent_turns_intent_check`;
+  yield* sql`
+    ALTER TABLE agent_turns
+      ADD CONSTRAINT agent_turns_intent_check CHECK (
+        CASE
+          WHEN intent_source IS NULL OR intent_source = 'unread' THEN intent IS NULL
+          WHEN intent_source IN ('read', 'option') THEN
+            intent IS NOT NULL AND intent IN ('change', 'question', 'land')
+          ELSE false
+        END
+      )`;
+  yield* sql`ALTER TABLE agent_turns DROP CONSTRAINT IF EXISTS agent_turns_landing_check`;
+  yield* sql`
+    ALTER TABLE agent_turns
+      ADD CONSTRAINT agent_turns_landing_check CHECK (
+        (landing IS NULL
+          OR landing IN ('attempted', 'question', 'option', 'off', 'not-owner', 'no-change',
+                         'nothing-new', 'not-captured', 'skipped'))
+        AND (landing IS NULL OR landing_claimed_at IS NOT NULL)
+        AND (landing_id IS NULL OR landing = 'attempted')
+      )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2248,4 +2278,5 @@ export const migrations = {
   "0070_organization_settings": organizationSettingsMigration,
   "0071_project_default_shell_profile": projectDefaultShellProfileMigration,
   "0072_protocol_idle_stop": protocolIdleStopMigration,
+  "0073_landing_reasons": landingReasonsMigration,
 };

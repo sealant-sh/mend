@@ -3,6 +3,7 @@ import {
   landingFactLine,
   landingFacts,
   notLandedReasonOf,
+  offersLanding,
   type AgentTurn,
   type ChangeLanding,
   type DecidedTurn,
@@ -575,8 +576,9 @@ export interface LandOffer {
 
 /**
  * The offer for the latest turn Mend decided about, or null: only when the turn left its change
- * unlanded (a question, `autopr=false`, automatic landing off, someone other than the owner) and
- * no landing was made since it ended. `landings` are newest first.
+ * unlanded (a question, `autopr=false`, automatic landing off, someone other than the owner, or
+ * captures that never caught up) and no landing was made since it ended. `landings` are newest
+ * first.
  */
 export const landOfferOf = (input: {
   readonly sessionId: string;
@@ -588,7 +590,9 @@ export const landOfferOf = (input: {
   const { turn } = input;
   if (turn === null || turn.endedAt === null) return null;
   const reason = notLandedReasonOf(turn.landing);
-  if (reason === null) return null;
+  // An empty change, or one the last landing already pushed, has nothing for the button to push;
+  // the status line says why instead.
+  if (reason === null || !offersLanding(reason)) return null;
   const endedAt = turn.endedAt;
   if (input.landings.some((landing) => landing.createdAt >= endedAt)) return null;
   return {

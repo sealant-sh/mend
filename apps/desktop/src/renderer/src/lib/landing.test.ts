@@ -113,6 +113,18 @@ const FACTS: ReadonlyArray<readonly [LandingFactDto, LandingFact]> = [
     { _tag: "not-landed", reason: "not-owner" },
     { _tag: "not-landed", reason: "not-owner" },
   ],
+  [
+    { _tag: "not-landed", reason: "no-change" },
+    { _tag: "not-landed", reason: "no-change" },
+  ],
+  [
+    { _tag: "not-landed", reason: "nothing-new" },
+    { _tag: "not-landed", reason: "nothing-new" },
+  ],
+  [
+    { _tag: "not-landed", reason: "not-captured" },
+    { _tag: "not-landed", reason: "not-captured" },
+  ],
   [{ _tag: "intent-not-read" }, { _tag: "intent-not-read" }],
 ];
 

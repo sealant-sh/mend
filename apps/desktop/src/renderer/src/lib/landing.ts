@@ -22,10 +22,13 @@ const plural = (count: number, one: string, many: string): string =>
   `${count} ${count === 1 ? one : many}`;
 
 const NOT_LANDED: Record<Extract<LandingFactDto, { _tag: "not-landed" }>["reason"], string> = {
-  question: "the request read as a question",
-  option: "the request said autopr=false",
-  off: "automatic landing is off",
-  "not-owner": "the turn was not sent by the owner",
+  question: "changes not landed · the request read as a question",
+  option: "changes not landed · the request said autopr=false",
+  off: "changes not landed · automatic landing is off",
+  "not-owner": "changes not landed · the turn was not sent by the owner",
+  "no-change": "not landed · the change is empty",
+  "nothing-new": "not landed · nothing new since the last landing",
+  "not-captured": "not landed · the change was not captured",
 };
 
 /**
@@ -60,7 +63,7 @@ export const factLine = (fact: LandingFactDto, now: Date): string => {
         ? `deleted by the agent · ${fact.ref}`
         : `pushed by the agent · ${fact.ref} · ${shortSha(fact.sha)}`;
     case "not-landed":
-      return `changes not landed · ${NOT_LANDED[fact.reason]}`;
+      return NOT_LANDED[fact.reason];
     case "intent-not-read":
       return "intent not read";
   }

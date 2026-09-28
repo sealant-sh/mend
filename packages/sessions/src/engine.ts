@@ -567,6 +567,14 @@ export class SessionLaunchSetupError extends Schema.TaggedErrorClass<SessionLaun
  *
  * Fibers fork into the layer scope, so they live as long as the process.
  */
+/**
+ * What a capture flush came to (`SessionEngine.flushCaptures`): `flushed` when the executor
+ * shipped and registered everything it held; `none` when there is nothing to flush (the store is
+ * co-located, nobody holds the worktree, or its holder has no workspace yet), so the registered
+ * head is all there is; `incomplete` when the flush was refused, timed out or was partial.
+ */
+export type CaptureFlushObservation = "flushed" | "none" | "incomplete";
+
 export class SessionEngine extends Context.Service<
   SessionEngine,
   {
@@ -729,6 +737,16 @@ export class SessionEngine extends Context.Service<
       sessionId: SessionId,
       trigger: CheckpointTrigger,
     ) => Effect.Effect<Checkpoint, SessionNotFoundError | ProjectNotFoundError | GitError>;
+    /**
+     * Ask the executor holding the session's worktree to ship and register what its disk holds
+     * (`capture.flush`), once any checkpoint under way has finished, and say what was observed.
+     * Automatic landing asks before it reads a turn's change, so a stale head is neither landed
+     * nor called empty (docs/adr/0007-landing.md, "When a completed turn lands").
+     */
+    readonly flushCaptures: (
+      sessionId: SessionId,
+      why: string,
+    ) => Effect.Effect<CaptureFlushObservation, SessionNotFoundError>;
     /**
      * The user's stop: end every live agent process (close its PTY, settle its run). Shells
      * survive a stop that ended a live agent — you may be sitting in one — and the session
@@ -994,6 +1012,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         stopService: (reference) => owned(sessionId)(api.stopService(reference)),
         restartService: (reference) => owned(sessionId)(api.restartService(reference)),
         stopSession: () => owned(sessionId)(api.stopSession()),
+        land: () => owned(sessionId)(api.land()),
         gitTransport: (input) => owned(sessionId)(api.gitTransport(input)),
         gitTransportDone: (opId, exitCode, refUpdates) =>
           owned(sessionId)(api.gitTransportDone(opId, exitCode, refUpdates)),
@@ -1358,14 +1377,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       /**
        * Flush whoever holds a worktree's lease, when that is a session's live executor: the
        * head a checkpoint is observed from is then the disk as of now, not the last cadence
-       * tick. False when nobody holds it, the holder has no workspace yet, or the flush did not
-       * complete — the caller then observes whatever head is registered.
+       * tick. `none` when there is no capture store, nobody holds the lease, or the holder has no
+       * workspace yet: the registered head is all there is. `incomplete` when the flush was
+       * refused, timed out or was partial — the caller then observes whatever head is registered,
+       * or waits (`flushCaptures`).
        */
       const flushLeaseHolder = Effect.fn("SessionEngine.flushLeaseHolder")(function* (
         worktreeId: WorktreeId,
         why: string,
       ) {
-        if (capture === null) return false;
+        if (capture === null) return "none" satisfies CaptureFlushObservation;
         const lease = yield* capture.repo.leaseOf(worktreeId);
         if (
           lease === null ||
@@ -1373,17 +1394,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           lease.executorId === null ||
           lease.executorId.startsWith("mend:")
         ) {
-          return false;
+          return "none" satisfies CaptureFlushObservation;
         }
         const holder = yield* sessions
           .byId(SessionId.make(lease.executorId))
           .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
-        if (holder === null || holder.sealantWorkspaceId === null) return false;
+        if (holder === null || holder.sealantWorkspaceId === null) {
+          return "none" satisfies CaptureFlushObservation;
+        }
         const workspace = yield* sealant
           .getWorkspace(holder.sealantWorkspaceId)
           .pipe(Effect.option, asSealantUser(holder.ownerUserId));
-        if (Option.isNone(workspace)) return false;
-        return yield* observeCaptureFlush(holder, workspace.value, why, CHECKPOINT_FLUSH_TIMEOUT);
+        if (Option.isNone(workspace)) return "none" satisfies CaptureFlushObservation;
+        const complete = yield* observeCaptureFlush(
+          holder,
+          workspace.value,
+          why,
+          CHECKPOINT_FLUSH_TIMEOUT,
+        );
+        return (complete ? "flushed" : "incomplete") satisfies CaptureFlushObservation;
       });
 
       /**
@@ -1756,7 +1785,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             // Capture mode: the lease holder flushes first, so the head this checkpoint is
             // observed from is the disk as of now. A flush that does not complete costs nothing
             // but the wait for a capture to land.
-            const flushed = yield* flushLeaseHolder(worktree.id, `checkpoint · ${trigger}`);
+            const flushed =
+              (yield* flushLeaseHolder(worktree.id, `checkpoint · ${trigger}`)) === "flushed";
             const snapshot = yield* sessionRepo.checkpoint({
               projectId: worktree.projectId,
               scope: worktree.id,
@@ -5244,6 +5274,23 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         return yield* protocolHost.respondRequest(request, response, decidedBy);
       });
 
+      /**
+       * Bring the worktree's registered captures up to its disk: the lease holder's flush, after
+       * any checkpoint under way for the worktree (the checkpoint writer's permit), so a turn's own
+       * boundary checkpoint finishes first. Takes no checkpoint and records nothing.
+       */
+      const flushCaptures = Effect.fn("SessionEngine.flushCaptures")(function* (
+        sessionId: SessionId,
+        why: string,
+      ) {
+        const session = yield* sessions.byId(sessionId);
+        if (capture === null) return "none" satisfies CaptureFlushObservation;
+        return yield* withCheckpointWriter(
+          session.worktreeId,
+          flushLeaseHolder(session.worktreeId, why),
+        );
+      });
+
       const checkpointNow = Effect.fn("SessionEngine.checkpointNow")(function* (
         sessionId: SessionId,
         trigger: CheckpointTrigger,
@@ -6686,6 +6733,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               Effect.mapError((error) => new Error(String(error.message))),
               Effect.orDie,
             ),
+          // The landing worker answers (`WorkspaceGitHooks`): it depends on the engine, so it
+          // cannot be one of the engine's dependencies.
+          land: () => gitHooks.landRequested(sessionId),
           // The credential seam (docs/GIT-ACCESS.md): session → project → auth
           // mode, resolved per request so a mode change applies to the next op
           // without touching the workspace. The op is recorded before the
@@ -7892,6 +7942,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           owned(sessionId)(launchFollowUp(sessionId, instruction, launchCorrelationId, author)),
         reconcileHotSessions: requestHotReconcile,
         checkpointNow: (sessionId, trigger) => owned(sessionId)(checkpointNow(sessionId, trigger)),
+        flushCaptures: (sessionId, why) => owned(sessionId)(flushCaptures(sessionId, why)),
         stop: (sessionId, summary) => owned(sessionId)(stop(sessionId, summary ?? null)),
         openShell: (sessionId) => owned(sessionId)(openShell(sessionId)),
         stopShell: (processId) => ownedByProcess(processId)(stopShell(processId)),

@@ -21,6 +21,7 @@ import {
   handleSessionRequest,
   SessionChannelRegistry,
 } from "./session-channel.ts";
+import type { WorkspaceLandOutcome } from "./workspace-git-hooks.ts";
 
 /**
  * The in-workspace control surface (docs/SESSION-SERVICES.md): one unix
@@ -76,6 +77,13 @@ export interface SessionSocketApi {
    * route answers before the engine acts.
    */
   readonly stopSession: () => Effect.Effect<unknown>;
+  /**
+   * `mend land` (docs/adr/0007-landing.md, "Surfaces"): the agent asks Mend to land the session's
+   * change, because the person asked it to publish. Mend lands as the change's owner, exactly as
+   * the Land panel does, never force-pushes and never moves the session's branch, and answers
+   * with the landing's lines or why it did not land.
+   */
+  readonly land: () => Effect.Effect<WorkspaceLandOutcome>;
   /**
    * Resolve a workspace git transport request (docs/GIT-ACCESS.md): the
    * engine turns session → project → auth mode into the ssh argv the host
@@ -191,6 +199,19 @@ const printService = (s) =>
 
 const main = async () => {
   const [group, verb, ...rest] = process.argv.slice(2);
+  if (group === "land") {
+    // Mend lands the change as its owner: the push, the pull request, or why not.
+    let outcome;
+    try {
+      outcome = await request("POST", "/session/land");
+    } catch (error) {
+      fail(error.message);
+    }
+    const lines = Array.isArray(outcome?.lines) ? outcome.lines : [];
+    if (outcome?.landed !== true) fail(lines.join("\\n") || "not landed");
+    for (const line of lines) console.log(line);
+    return;
+  }
   if (group === "stop") {
     try {
       await request("POST", "/session/stop");
@@ -201,7 +222,7 @@ const main = async () => {
     return;
   }
   if (group !== "service") {
-    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend stop");
+    fail("this workspace helper speaks: mend service <run|add|list|stop|restart|NAME> · mend land · mend stop");
   }
   try {
     switch (verb) {

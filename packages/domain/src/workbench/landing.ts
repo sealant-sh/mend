@@ -125,10 +125,11 @@ export const changeOwnerOf = (
 // ─── Request intent ─────────────────────────────────────────────────────────
 
 /**
- * What a turn's request asked for ("Questions do not open pull requests"): a `change`, or a
- * `question` that an answer settles.
+ * What a turn's request asked for ("Questions do not open pull requests"): a `change`, a
+ * `question` that an answer settles, or `land`: publish the change as it stands ("land it", "open
+ * a PR", "push it"), which lands it for the change's owner even when the turn changed nothing.
  */
-export const RequestIntent = Schema.Literals(["change", "question"]);
+export const RequestIntent = Schema.Literals(["change", "question", "land"]);
 export type RequestIntent = typeof RequestIntent.Type;
 
 /**
@@ -163,20 +164,35 @@ export const intentAllowsLanding = (turn: { readonly intent: RequestIntent | nul
  */
 export const LANDING_GUARD = [
   "--- How this work is published ---",
-  "Mend publishes the changes this session makes: it pushes the branch and opens or updates the pull request.",
+  "Mend publishes this session's change, not you: after a turn that asked for a change, Mend pushes the branch and opens or updates the pull request.",
   "- If the request is a question, answer it and change no files.",
   "- Change code only when the request asks for a change.",
-  "- Never push and never open a pull request. Committing is fine.",
+  "- If the user asks you to land, push, publish or open a pull request, run `mend land` and report the lines it prints as they are. It lands as the change's owner, or says why it did not.",
+  "- Never push and never open a pull request yourself. Committing is fine.",
   "--- End of how this work is published ---",
 ].join("\n");
+
+/** Guards earlier releases appended, so their turns still read as what the requester wrote. */
+const EARLIER_LANDING_GUARDS: ReadonlyArray<string> = [
+  [
+    "--- How this work is published ---",
+    "Mend publishes the changes this session makes: it pushes the branch and opens or updates the pull request.",
+    "- If the request is a question, answer it and change no files.",
+    "- Change code only when the request asks for a change.",
+    "- Never push and never open a pull request. Committing is fine.",
+    "--- End of how this work is published ---",
+  ].join("\n"),
+];
 
 /** The opening turn with the guard after it; an empty prompt stays empty. */
 export const withLandingGuard = (prompt: string): string =>
   prompt.trim() === "" ? prompt : `${prompt.trimEnd()}\n\n${LANDING_GUARD}`;
 
 /** A turn's request without the guard Mend added to it: what the requester wrote. */
-export const requestOfTurn = (input: string): string =>
-  input.endsWith(LANDING_GUARD) ? input.slice(0, -LANDING_GUARD.length).trimEnd() : input;
+export const requestOfTurn = (input: string): string => {
+  const guard = [LANDING_GUARD, ...EARLIER_LANDING_GUARDS].find((text) => input.endsWith(text));
+  return guard === undefined ? input : input.slice(0, -guard.length).trimEnd();
+};
 
 // ─── When a session lands by itself ─────────────────────────────────────────
 
@@ -209,7 +225,7 @@ export const resolveAutoLand = (inputs: AutoLandInputs): boolean => {
 
 // ─── Observed facts ─────────────────────────────────────────────────────────
 
-/** Why a change that a completed turn left behind was not landed. */
+/** Why a completed turn did not land the change. */
 export const NotLandedReason = Schema.Literals([
   /** The request read as a question. */
   "question",
@@ -219,18 +235,36 @@ export const NotLandedReason = Schema.Literals([
   "off",
   /** Someone other than the owner sent the turn under shared control. */
   "not-owner",
+  /** The request asked for a change or a landing, and the change is empty. */
+  "no-change",
+  /** The request asked for a change or a landing, and the last landing already pushed it all. */
+  "nothing-new",
+  /**
+   * The executor's captures never caught up with the turn (`capture.flush` refused, timed out
+   * or partial however often Mend asked), so the change Mend can read may be stale. Mend does not
+   * land it, and does not call it empty either.
+   */
+  "not-captured",
 ]);
 export type NotLandedReason = typeof NotLandedReason.Type;
+
+/**
+ * Whether a reason leaves a change the owner can still land by hand, so the thread offers "Push
+ * and open pull request". An empty change, or one the last landing already pushed, has nothing
+ * to push.
+ */
+export const offersLanding = (reason: NotLandedReason): boolean =>
+  reason !== "no-change" && reason !== "nothing-new";
 
 /**
  * What Mend decided about a turn once it ended ("When a completed turn lands"), recorded on the
  * turn so a second worker never decides it again:
  *
- * - `attempted`: an automatic landing ran; how it ended is on its `change_landings` row.
- * - a `NotLandedReason`: the turn left changes that did not land, for that reason.
+ * - `attempted`: a landing ran; how it ended is on its `change_landings` row.
+ * - a `NotLandedReason`: the turn did not land the change, for that reason.
  * - `skipped`: nothing to say. The turn did not complete, the agent is waiting on the owner,
- *   another turn follows it, the change is empty or unchanged since its last landing, or
- *   automatic landing is off for a session whose owner watches it.
+ *   another turn follows it, a question left nothing to land, or automatic landing is off for a
+ *   session whose owner watches it.
  */
 export const TurnLanding = Schema.Literals([
   "attempted",
@@ -238,6 +272,9 @@ export const TurnLanding = Schema.Literals([
   "option",
   "off",
   "not-owner",
+  "no-change",
+  "nothing-new",
+  "not-captured",
   "skipped",
 ]);
 export type TurnLanding = typeof TurnLanding.Type;
@@ -249,6 +286,9 @@ export const notLandedReasonOf = (landing: TurnLanding | null): NotLandedReason 
     case "option":
     case "off":
     case "not-owner":
+    case "no-change":
+    case "nothing-new":
+    case "not-captured":
       return landing;
     default:
       return null;
@@ -544,11 +584,17 @@ export const observedAgo = (at: Date, now: Date): string => {
 };
 
 const NOT_LANDED: Record<NotLandedReason, string> = {
-  question: "the request read as a question",
-  option: "the request said autopr=false",
-  off: "automatic landing is off",
-  "not-owner": "the turn was not sent by the owner",
+  question: "changes not landed · the request read as a question",
+  option: "changes not landed · the request said autopr=false",
+  off: "changes not landed · automatic landing is off",
+  "not-owner": "changes not landed · the turn was not sent by the owner",
+  "no-change": "not landed · the change is empty",
+  "nothing-new": "not landed · nothing new since the last landing",
+  "not-captured": "not landed · the change was not captured",
 };
+
+/** Why a turn did not land, as its status line: terse, observed, and never a verdict. */
+export const notLandedLine = (reason: NotLandedReason): string => NOT_LANDED[reason];
 
 /** One fact as its status line: terse, observed, and never a verdict. */
 export const landingFactLine = (fact: LandingFact, now: Date): string => {
@@ -576,7 +622,7 @@ export const landingFactLine = (fact: LandingFact, now: Date): string => {
         ? `deleted by the agent · ${fact.ref}`
         : `pushed by the agent · ${fact.ref} · ${shortSha(fact.sha)}`;
     case "not-landed":
-      return `changes not landed · ${NOT_LANDED[fact.reason]}`;
+      return notLandedLine(fact.reason);
     case "intent-not-read":
       return "intent not read";
   }

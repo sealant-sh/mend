@@ -211,6 +211,7 @@ import { SessionSteeringLive } from "./session-steering.ts";
 import { SlackRunnerLive } from "./slack-runner.ts";
 import { SlackLinkedMentionWorkerLive, SlackSocketsLive } from "./slack-worker.ts";
 import { TenancyConfigLive } from "./tenancy.ts";
+import { WorkspaceLandingLive } from "./workspace-landing.ts";
 
 /**
  * The machine passes over a change run side by side: a tour composing for minutes must not hold
@@ -652,6 +653,8 @@ const WorkerLive = Layer.mergeAll(
   AutomaticLandingLive,
   // Adopts a pull request the agent opened itself, after its push and when its turn ends.
   PullRequestAdoptionLive,
+  // Answers `mend land` inside a workspace: the change's owner's landing, as the Land panel's.
+  WorkspaceLandingLive,
   // Queues tour + suggestion passes at settle, per the automation cascade.
   ReviewPrepLive,
   // Capture mode (ADR-0002 "Review", "Retention"): the observed pass over posted summaries,

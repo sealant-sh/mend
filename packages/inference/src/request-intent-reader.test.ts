@@ -106,7 +106,33 @@ describe("RequestIntentReader (docs/adr/0007, Questions do not open pull request
     });
   });
 
-  it.effect("fails when the answer is not one of the two intents", () =>
+  it.effect(
+    "reads a request to publish the work as land, and a question about it as a question",
+    () => {
+      const requests: Array<InferenceRequest> = [];
+      return Effect.gen(function* () {
+        const land = yield* readWith([Effect.succeed({ intent: "land" })], requests, {
+          request: "ok land it",
+          context: [{ author: "the owner", text: "did you open a pr ?" }],
+        });
+        expect(land).toBe("land");
+        // The instructions keep the three apart, and keep asking about a landing a question.
+        const system = requests[0]?.system ?? "";
+        expect(system).toContain('"change", "question" or "land"');
+        expect(system).toContain(
+          'whether something was done ("did you open a PR?", "is it pushed?")',
+        );
+        expect(system).toContain('"land": the request asks only to publish the work already done');
+        expect(system).toContain("Asking whether it was published is a question");
+        expect(system).toContain(
+          "A request that asks for a change and to open a pull request is a change.",
+        );
+        expect(requests[0]?.prompt).toContain("The request:\nok land it");
+      });
+    },
+  );
+
+  it.effect("fails when the answer is not one of the three intents", () =>
     Effect.gen(function* () {
       const error = yield* readWith([Effect.succeed({ intent: "chat" })], []).pipe(Effect.flip);
       expect(error.message).toContain("did not match its schema");

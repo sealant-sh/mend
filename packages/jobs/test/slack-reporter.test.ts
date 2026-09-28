@@ -1246,6 +1246,7 @@ describe("landing in the thread (docs/adr/0007-landing.md)", () => {
       ["off", "changes not landed · automatic landing is off"],
       ["not-owner", "changes not landed · the turn was not sent by the owner"],
       ["option", "changes not landed · the request said autopr=false"],
+      ["not-captured", "not landed · the change was not captured"],
     ] as const) {
       const w = world({ threadCreatedAt: NOW });
       w.state.change = change;
@@ -1260,6 +1261,19 @@ describe("landing in the thread (docs/adr/0007-landing.md)", () => {
       w.state.turns = [decidedTurn(1, landing)];
       await w.observe(w.worker());
       expect(w.posts()).toEqual([]);
+    }
+
+    // Nothing to push: no button, and the status line says why.
+    for (const [landing, line] of [
+      ["no-change", "not landed · the change is empty"],
+      ["nothing-new", "not landed · nothing new since the last landing"],
+    ] as const) {
+      const w = world({ threadCreatedAt: NOW });
+      w.state.change = change;
+      w.state.turns = [decidedTurn(1, landing)];
+      await w.observe(w.worker());
+      expect(w.posts()).toEqual([]);
+      expect(w.updates().at(-1)).toContain(line);
     }
 
     // Ten minutes after the turn ended the offer is history; the status line still says it.

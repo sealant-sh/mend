@@ -44,9 +44,9 @@ import {
   type TurnLanding,
 } from "@mend/domain/workbench";
 import { InferenceError, RequestIntentReader, type RequestIntentInput } from "@mend/inference";
-import { Landing, type LandInput } from "@mend/landing";
+import { Landing, LandingNotStartedError, type LandInput } from "@mend/landing";
 import { makePublicNetwork, NetworkConfig, PublicOrigin } from "@mend/network";
-import { WorktreeReads } from "@mend/sessions";
+import { type CaptureFlushObservation, SessionEngine, WorktreeReads } from "@mend/sessions";
 import {
   AgentBridge,
   type ChangedFile,
@@ -54,7 +54,7 @@ import {
   MendKeys,
   SourcePolicy,
 } from "@mend/store";
-import { Effect, Layer, Schema } from "effect";
+import { Duration, Effect, Layer, Schema } from "effect";
 import { beforeEach, describe, expect, it } from "vitest";
 
 import { makeProject, makeSession } from "../test/support/tenancy-harness.ts";
@@ -100,8 +100,13 @@ interface World {
   reads: Array<RequestIntentInput>;
   intents: Array<{ readonly turnId: string; readonly reading: RequestIntentReading }>;
   lands: Array<LandInput>;
+  /** Why the landing does not start, when it does not. */
+  landRefusal: LandingNotStartedError | null;
   audited: Array<NewAuditEvent>;
   changedFilesReads: number;
+  /** What each ask for a capture flush answers, in order; `flushed` once they run out. */
+  flushes: Array<CaptureFlushObservation>;
+  flushAsks: number;
 }
 
 const blankWorld = (): World => ({
@@ -121,8 +126,11 @@ const blankWorld = (): World => ({
   reads: [],
   intents: [],
   lands: [],
+  landRefusal: null,
   audited: [],
   changedFilesReads: 0,
+  flushes: [],
+  flushAsks: 0,
 });
 
 let world: World = blankWorld();
@@ -347,10 +355,18 @@ const layer = Layer.mergeAll(
   }),
   Layer.mock(Landing, {
     land: (input) =>
-      Effect.sync(() => {
+      Effect.suspend(() => {
         world.lands.push(input);
+        if (world.landRefusal !== null) return Effect.fail(world.landRefusal);
         const row = landed(`landing-${world.lands.length}`, { createdAt: NOW });
-        return { landing: row, pullRequest: { _tag: "off" as const } };
+        return Effect.succeed({ landing: row, pullRequest: { _tag: "off" as const } });
+      }),
+  }),
+  Layer.mock(SessionEngine, {
+    flushCaptures: () =>
+      Effect.sync(() => {
+        world.flushAsks += 1;
+        return world.flushes.shift() ?? "flushed";
       }),
   }),
   Layer.succeed(
@@ -377,7 +393,10 @@ const layer = Layer.mergeAll(
 const look = (times = 1) =>
   Effect.runPromise(
     Effect.gen(function* () {
-      const lander = yield* makeAutomaticLanding({ now: () => NOW.getTime() });
+      const lander = yield* makeAutomaticLanding({
+        now: () => NOW.getTime(),
+        flushPause: Duration.zero,
+      });
       for (let index = 0; index < times; index += 1) yield* lander.consider(SESSION);
     }).pipe(Effect.provide(OwnerLandingLive.pipe(Layer.provideMerge(layer)))),
   );
@@ -571,22 +590,30 @@ describe("automatic landing (docs/adr/0007, When a completed turn lands)", () =>
     ]);
   });
 
-  it("says nothing for an empty change, and reads no intent for it", async () => {
+  it("says the change is empty when a change was asked for, and nothing after a question", async () => {
     world.turns = [turn(0)];
     world.changed = new Map();
     await look();
     expect(world.lands).toEqual([]);
-    expect(world.reads).toEqual([]);
+    expect(decisions()).toEqual([[0, "no-change"]]);
+
+    world = { ...blankWorld(), changed: new Map(), intent: "question" };
+    world.turns = [turn(0, { input: "why does the login test flake?" })];
+    await look();
+    expect(world.reads).toHaveLength(1);
+    // A question reads the change as it is: it waits on no flush.
+    expect(world.flushAsks).toBe(0);
     expect(decisions()).toEqual([[0, "skipped"]]);
   });
 
-  it("says nothing when nothing changed since the last landing", async () => {
+  it("says nothing new since the last landing when a change turn added nothing", async () => {
     world.turns = [turn(0)];
-    world.landings = [landed("landing-0")];
+    // Landed before the turn started.
+    world.landings = [landed("landing-0", { createdAt: new Date(NOW.getTime() - 120_000) })];
     world.changed = new Map([[BASE, [file("src/login.ts")]]]);
     await look();
     expect(world.lands).toEqual([]);
-    expect(decisions()).toEqual([[0, "skipped"]]);
+    expect(decisions()).toEqual([[0, "nothing-new"]]);
 
     // Work since the landed checkpoint lands again.
     world.turns = [turn(1)];
@@ -662,6 +689,174 @@ describe("automatic landing (docs/adr/0007, When a completed turn lands)", () =>
     world.ownerUserId = null;
     world.turns = [turn(0)];
     await look();
+    expect(world.lands).toEqual([]);
+    expect(decisions()).toEqual([[0, "skipped"]]);
+  });
+});
+
+describe("automatic landing waits for the captures (docs/adr/0007, amended 2026-09-27)", () => {
+  it("asks the executor to flush before it reads the change, and lands once it caught up", async () => {
+    world.turns = [turn(0)];
+    world.flushes = ["incomplete"];
+    await look();
+    expect(world.flushAsks).toBe(2);
+    expect(world.lands).toHaveLength(1);
+    expect(decisions()).toEqual([[0, "attempted"]]);
+  });
+
+  it("neither lands nor calls the change empty while the captures never catch up", async () => {
+    // The alpha run: the edits were never registered, so the head read `0 files · +0 −0`.
+    world.origin = "slack";
+    world.projectAutoLand = "inherit";
+    world.changed = new Map();
+    world.flushes = ["incomplete", "incomplete", "incomplete"];
+    world.turns = [
+      turn(0, {
+        input: "Can you take a look and sort it out",
+        intent: "change",
+        intentSource: "read",
+      }),
+    ];
+    await look();
+    expect(world.flushAsks).toBe(3);
+    expect(world.changedFilesReads).toBe(0);
+    expect(world.lands).toEqual([]);
+    expect(decisions()).toEqual([[0, "not-captured"]]);
+  });
+
+  it("reads nothing as stale where nothing holds the worktree", async () => {
+    world.turns = [turn(0)];
+    world.flushes = ["none"];
+    await look();
+    expect(world.flushAsks).toBe(1);
+    expect(world.lands).toHaveLength(1);
+  });
+});
+
+describe("a request to land (docs/adr/0007, amended 2026-09-27)", () => {
+  const afterALanding = () => {
+    // Turn 0 landed; the follow-up changed nothing of its own.
+    world.landings = [landed("landing-0", { createdAt: new Date(NOW.getTime() - 120_000) })];
+    world.turns = [
+      new AgentTurn({
+        ...turn(0, { endedAt: new Date(NOW.getTime() - 120_000) }),
+        intent: "change",
+        intentSource: "read",
+        landing: "attempted",
+      }),
+      turn(1, { input: "ok land it" }),
+    ];
+    world.claimed.add("turn-0");
+  };
+
+  it("lands a follow-up that read as land for the owner, as their own landing", async () => {
+    afterALanding();
+    world.intent = "land";
+    await look();
+    expect(world.reads).toEqual([
+      {
+        request: "ok land it",
+        context: [{ author: "the owner", text: "fix the flaky login test" }],
+      },
+    ]);
+    // Nothing is new since the landing, and it lands anyway: the landing knows what is left.
+    expect(world.lands).toEqual([
+      expect.objectContaining({ trigger: "manual", actorUserId: "alice" }),
+    ]);
+    expect(decisions()).toEqual([
+      [0, "attempted"],
+      [1, "attempted"],
+    ]);
+  });
+
+  it("says nothing new since the last landing when the landing finds nothing to push", async () => {
+    afterALanding();
+    world.intent = "land";
+    world.landRefusal = new LandingNotStartedError({
+      reason: "nothing-new",
+      message: "landing not started · nothing new since the last landing",
+    });
+    await look();
+    expect(decisions()).toEqual([
+      [0, "attempted"],
+      [1, "nothing-new"],
+    ]);
+  });
+
+  it("says nothing more for a change turn whose agent already ran `mend land`", async () => {
+    world.turns = [turn(0)];
+    world.landings = [landed("landing-0", { createdAt: NOW })];
+    world.changed = new Map([[BASE, [file("src/login.ts")]]]);
+    await look();
+    expect(world.lands).toEqual([]);
+    expect(decisions()).toEqual([[0, "skipped"]]);
+  });
+
+  it("says nothing more when `mend land` already landed during the turn", async () => {
+    afterALanding();
+    world.intent = "land";
+    world.landings = [landed("landing-1", { createdAt: NOW }), ...world.landings];
+    world.landRefusal = new LandingNotStartedError({
+      reason: "nothing-new",
+      message: "landing not started · nothing new since the last landing",
+    });
+    await look();
+    expect(decisions()).toEqual([
+      [0, "attempted"],
+      [1, "skipped"],
+    ]);
+  });
+
+  it("lands a Slack request to land even with automatic landing off", async () => {
+    world.origin = "slack";
+    world.slackLands = false;
+    world.projectAutoLand = "inherit";
+    world.turns = [turn(0, { input: "open a PR for this" })];
+    world.intent = "land";
+    await look();
+    expect(world.lands).toEqual([expect.objectContaining({ trigger: "manual" })]);
+
+    // The same thread, a change request: automatic landing is off, and the thread hears it.
+    world = { ...blankWorld(), origin: "slack", slackLands: false, projectAutoLand: "inherit" };
+    world.turns = [turn(0)];
+    await look();
+    expect(world.lands).toEqual([]);
+    expect(decisions()).toEqual([[0, "off"]]);
+  });
+
+  it("keeps a question about a landing a question", async () => {
+    world.turns = [turn(0, { input: "did you open a pr ?" })];
+    world.intent = "question";
+    await look();
+    expect(world.lands).toEqual([]);
+    expect(decisions()).toEqual([[0, "question"]]);
+  });
+
+  it("does not land a request to land that someone else sent", async () => {
+    world.turns = [turn(0, { author: "bob", input: "land it" })];
+    world.intent = "land";
+    await look();
+    expect(world.lands).toEqual([]);
+    expect(world.reads).toEqual([]);
+    expect(decisions()).toEqual([[0, "not-owner"]]);
+  });
+
+  it("says the change is empty when a request to land finds nothing", async () => {
+    world.turns = [turn(0, { input: "ship it" })];
+    world.intent = "land";
+    world.changed = new Map();
+    await look();
+    expect(world.lands).toEqual([]);
+    expect(decisions()).toEqual([[0, "no-change"]]);
+  });
+
+  it("with landing off, reads nothing for a web session, even a request to land", async () => {
+    // The agent's `mend land` answers there; the turn itself says nothing.
+    world.projectAutoLand = "inherit";
+    world.turns = [turn(0, { input: "land it" })];
+    world.intent = "land";
+    await look();
+    expect(world.reads).toEqual([]);
     expect(world.lands).toEqual([]);
     expect(decisions()).toEqual([[0, "skipped"]]);
   });

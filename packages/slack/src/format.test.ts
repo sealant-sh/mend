@@ -736,6 +736,29 @@ describe("landing in the thread", () => {
     expect(landOfferOf({ sessionId: "s1", turn: null, landings: [] })).toBeNull();
   });
 
+  it("offers the button when the captures never caught up, and not when there is nothing to push", () => {
+    const turn = { id: AgentTurnId.make("turn-4"), landing: "not-captured", endedAt: AT } as const;
+    expect(landOfferOf({ sessionId: "s1", turn, landings: [] })?.reason).toBe("not-captured");
+    for (const decided of ["no-change", "nothing-new"] as const) {
+      expect(
+        landOfferOf({ sessionId: "s1", turn: { ...turn, landing: decided }, landings: [] }),
+      ).toBeNull();
+    }
+    // The status line says why all the same: the thread is never left without a reason.
+    for (const [decided, line] of [
+      ["not-captured", "not landed · the change was not captured"],
+      ["no-change", "not landed · the change is empty"],
+      ["nothing-new", "not landed · nothing new since the last landing"],
+    ] as const) {
+      expect(
+        landingStatusLines({
+          landings: [],
+          latestTurn: { landing: decided, intentSource: "read", endedAt: AT },
+        }),
+      ).toEqual([line]);
+    }
+  });
+
   it("puts the offer's button on a reply everyone sees, naming the owner it acts for", () => {
     const offer = { sessionId: "s1", turnId: "t1", reason: "not-owner", updates: false } as const;
     const message = landOfferMessage(offer, "U-alice");

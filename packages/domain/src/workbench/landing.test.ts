@@ -16,7 +16,9 @@ import {
   landingFactsFromWire,
   latestDecidedTurn,
   nextLandingBranch,
+  notLandedLine,
   notLandedReasonOf,
+  offersLanding,
   observedAgo,
   openForkPullRequest,
   parseRefUpdate,
@@ -216,6 +218,20 @@ describe("the landing facts (docs/adr/0007, What Mend records and shows)", () =>
     expect(landingFactLine({ _tag: "intent-not-read" }, NOW)).toBe("intent not read");
   });
 
+  it("says why a request for a change or a landing landed nothing, and never stays silent", () => {
+    expect(notLandedLine("no-change")).toBe("not landed · the change is empty");
+    expect(notLandedLine("nothing-new")).toBe("not landed · nothing new since the last landing");
+    expect(notLandedLine("not-captured")).toBe("not landed · the change was not captured");
+    expect(landingFactLine({ _tag: "not-landed", reason: "not-captured" }, NOW)).toBe(
+      "not landed · the change was not captured",
+    );
+    // Only a change the owner can still push by hand offers the button.
+    expect(offersLanding("not-captured")).toBe(true);
+    expect(offersLanding("question")).toBe(true);
+    expect(offersLanding("no-change")).toBe(false);
+    expect(offersLanding("nothing-new")).toBe(false);
+  });
+
   it("never renders a verdict", () => {
     const every: ReadonlyArray<LandingFact> = [
       { _tag: "pushed", branch: "mend/x", sha: sha("a") },
@@ -326,7 +342,9 @@ describe("request intent (docs/adr/0007, Questions do not open pull requests)", 
       intent: "change",
       source: "option",
     });
+    expect(decode({ intent: "land", source: "read" })).toEqual({ intent: "land", source: "read" });
     expect(decode({ intent: null, source: "unread" })).toEqual({ intent: null, source: "unread" });
+    expect(() => decode({ intent: "publish", source: "read" })).toThrow();
     expect(() => decode({ intent: "change", source: "unread" })).toThrow();
     expect(() => decode({ intent: null, source: "read" })).toThrow();
   });
@@ -408,6 +426,8 @@ describe("a turn's landing decision, as facts (docs/adr/0007, Questions do not o
 
   it("reads a reason only from a not-landed decision", () => {
     expect(notLandedReasonOf("question")).toBe("question");
+    expect(notLandedReasonOf("not-captured")).toBe("not-captured");
+    expect(notLandedReasonOf("no-change")).toBe("no-change");
     expect(notLandedReasonOf("attempted")).toBeNull();
     expect(notLandedReasonOf("skipped")).toBeNull();
     expect(notLandedReasonOf(null)).toBeNull();
@@ -435,15 +455,37 @@ describe("the prompt guard (docs/adr/0007, Questions do not open pull requests)"
     expect(guarded).toBe(`  why does the login test flake?\n\n${LANDING_GUARD}`);
     expect(LANDING_GUARD).toContain("answer it and change no files");
     expect(LANDING_GUARD).toContain("Change code only when the request asks for a change.");
-    expect(LANDING_GUARD).toContain("Never push and never open a pull request.");
+    expect(LANDING_GUARD).toContain("Never push and never open a pull request yourself.");
     expect(LANDING_GUARD).toContain("Committing is fine.");
     expect(LANDING_GUARD).not.toMatch(/ready to merge|safe|verified/i);
+  });
+
+  it("tells the agent Mend lands after a change, and to run `mend land` when asked to publish", () => {
+    expect(LANDING_GUARD).toContain(
+      "after a turn that asked for a change, Mend pushes the branch and opens or updates the pull request",
+    );
+    expect(LANDING_GUARD).toContain(
+      "If the user asks you to land, push, publish or open a pull request, run `mend land`",
+    );
+    expect(LANDING_GUARD).toContain("report the lines it prints as they are");
+    // It names no skill: the verb is the workspace helper's.
+    expect(LANDING_GUARD).not.toMatch(/skill/i);
   });
 
   it("leaves an empty prompt empty, and gives back what the requester wrote", () => {
     expect(withLandingGuard("")).toBe("");
     expect(requestOfTurn(withLandingGuard("fix the flaky test"))).toBe("fix the flaky test");
     expect(requestOfTurn("fix the flaky test")).toBe("fix the flaky test");
+    // A turn guarded by an earlier release still reads as what its requester wrote.
+    const earlier = [
+      "--- How this work is published ---",
+      "Mend publishes the changes this session makes: it pushes the branch and opens or updates the pull request.",
+      "- If the request is a question, answer it and change no files.",
+      "- Change code only when the request asks for a change.",
+      "- Never push and never open a pull request. Committing is fine.",
+      "--- End of how this work is published ---",
+    ].join("\n");
+    expect(requestOfTurn(`fix the flaky test\n\n${earlier}`)).toBe("fix the flaky test");
   });
 });
 

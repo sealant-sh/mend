@@ -8,3 +8,4 @@ export * from "./landing-git-captured.ts";
 export * from "./pull-request-workspaces.ts";
 export * from "./pull-requests.ts";
 export * from "./tour-description.ts";
+export * from "./workspace-land.ts";
