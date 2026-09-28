@@ -5,6 +5,7 @@ import {
   captureDiscardAuditData,
   captureDiscardWords,
   captureDrainStep,
+  CAPTURE_INCOMPLETE_REASONS,
   captureIncompleteWords,
   captureHarvestReady,
   captureProgressed,
@@ -172,6 +173,21 @@ describe("captureDrainStep while a final flush runs", () => {
     });
     expect(step.kind).not.toBe("not-saved");
     expect(captureIncompleteWords("in-progress")).toBeNull();
+  });
+});
+
+describe("captureDrainStep while the completed flush is being sealed", () => {
+  it("reads sealantd's `sealing` as a known reason the drain keeps asking about, worded as what is missing", () => {
+    expect(CAPTURE_INCOMPLETE_REASONS).toContain("sealing");
+    const step = captureDrainStep({
+      previous: null,
+      reading: reading({ complete: false, incompleteReason: "sealing" }),
+      progressAtMs: 0,
+      nowMs: 1,
+      stallSeconds: 600,
+    });
+    expect(step.kind).not.toBe("not-saved");
+    expect(captureIncompleteWords("sealing")).toBe("final seal not registered");
   });
 });
 

@@ -32,6 +32,13 @@ import {
  * that chain's objects (`capture_tombstones`), and each writes only while the guard still reads
  * what it read before it looked — so a register never lands on bytes retention is deleting, and
  * retention never deletes bytes a register it did not see has named.
+ *
+ * Deletion then owns what it condemned (migration 0080): the condemnation takes a claim on every
+ * key (`capture_deletion_claims`, one token per condemnation) that lasts until the pass has
+ * deleted the bytes and settled the tombstone. A register brings a condemned key back only while
+ * its tombstone reads deleted and no claim on it is live — a second pass that deleted the same
+ * objects and finished first leaves the first pass's claim standing, so nothing is revived that
+ * the first pass may still delete (review 2026-09-28 #1).
  */
 
 /** 409 `worktree_leased`: someone holds the worktree and the lease has not expired. */
@@ -88,6 +95,25 @@ export interface RegisterCapture {
    * bucket again (uploaded anew): the CAS lifts their tombstones.
    */
   readonly revive?: ReadonlyArray<string>;
+  /**
+   * The capture's `final_seal`, validated by the caller (complete, this epoch, this executor):
+   * the CAS records it when it lands and the lease names `executorId` — so a seal exists only
+   * for a capture registered on a contiguous chain. Absent: the capture seals nothing.
+   */
+  readonly seal?: { readonly executorId: string };
+}
+
+/**
+ * A completed final flush, as the store holds it (migration 0080): the executor, the epoch it
+ * held, and the sealing capture — what "saved" rests on.
+ */
+export interface SealedCompletion {
+  readonly worktreeId: WorktreeId;
+  readonly epoch: number;
+  readonly executorId: string;
+  readonly captureId: string;
+  readonly n: number;
+  readonly sealedAt: Date;
 }
 
 export interface ChainGuard {
@@ -99,8 +125,20 @@ export interface ChainGuard {
 export interface ReferenceState {
   /** The guard of every chain asked about that exists. */
   readonly guards: ReadonlyMap<WorktreeId, number>;
-  /** The keys asked about that retention condemned; `deleted` once their bytes are gone. */
+  /**
+   * The keys asked about that retention condemned. `deleted` once their bytes are gone AND no
+   * pass holds a live deletion claim on them: only then may a register bring one back.
+   */
   readonly tombstones: ReadonlyArray<{ readonly key: string; readonly deleted: boolean }>;
+}
+
+/**
+ * A retention pass's hold on what it condemns: `token` names this condemnation (fresh for each),
+ * `ttlSeconds` how long the claim lives unless renewed. A lapsed claim is a pass that crashed.
+ */
+export interface DeletionClaim {
+  readonly token: string;
+  readonly ttlSeconds: number;
 }
 
 export interface WorktreeLease {
@@ -187,6 +225,16 @@ export class CaptureStoreRepo extends Context.Service<
     readonly setGitFsck: (captureId: string, outcome: CaptureGitFsck) => Effect.Effect<boolean>;
     readonly leaseOf: (worktreeId: WorktreeId) => Effect.Effect<WorktreeLease | null>;
     readonly headOf: (worktreeId: WorktreeId) => Effect.Effect<ChainHead | null>;
+    /**
+     * The sealed completion of `executorId`'s final flush on this worktree: under `epoch` when
+     * given, else the newest epoch it sealed. Null when that executor never registered a sealed
+     * capture — then nothing says its final flush completed.
+     */
+    readonly sealedCompletion: (
+      worktreeId: WorktreeId,
+      executorId: string,
+      epoch?: number,
+    ) => Effect.Effect<SealedCompletion | null>;
     /** Every registered capture of the worktree, oldest first. */
     readonly listChain: (worktreeId: WorktreeId) => Effect.Effect<ReadonlyArray<CaptureRow>>;
     readonly captureById: (captureId: string) => Effect.Effect<CaptureRow | null>;
@@ -215,15 +263,27 @@ export class CaptureStoreRepo extends Context.Service<
     /**
      * Retention: tombstone `keys` (objects of `worktreeId`'s chain no row names) while the
      * chain's guard still reads `guard` — no register has named anything of the chain since
-     * retention read it — and bump the guard. False: something moved; delete nothing.
+     * retention read it — bump the guard, and hold `claim` on every key until
+     * `finishDeletion`. False: something moved; delete nothing.
      */
     readonly condemn: (
       worktreeId: WorktreeId,
       guard: number,
       keys: ReadonlyArray<string>,
+      claim: DeletionClaim,
     ) => Effect.Effect<boolean>;
-    /** Retention: these tombstoned objects' bytes are gone. */
-    readonly markDeleted: (keys: ReadonlyArray<string>) => Effect.Effect<void>;
+    /**
+     * Retention, before it deletes: extend every claim `token` holds by `ttlSeconds`. Only while
+     * none of them has lapsed — a lapsed one is renewed never, since a register may have brought
+     * its key back. The number renewed: fewer than the keys condemned means stop deleting.
+     */
+    readonly renewDeletion: (token: string, ttlSeconds: number) => Effect.Effect<number>;
+    /**
+     * Retention, done with one condemnation: the tombstones of `deleted` read deleted (their
+     * bytes are gone), and every claim `token` holds ends. A key whose delete failed keeps its
+     * tombstone undeleted, so a register naming it is refused until a later pass removes it.
+     */
+    readonly finishDeletion: (token: string, deleted: ReadonlyArray<string>) => Effect.Effect<void>;
     /** Drop thinned capture rows; `checkpoints.capture_id` nulls and summaries cascade. */
     readonly deleteCaptures: (
       worktreeId: WorktreeId,
@@ -317,6 +377,10 @@ export const CaptureStoreRepoLive: Layer.Layer<
       const guards = capture.guards ?? [];
       const ownGuard = guards.find((entry) => entry.worktreeId === capture.worktreeId);
       const foreign = guards.filter((entry) => entry.worktreeId !== capture.worktreeId);
+      // A condemned key comes back only once its bytes are gone and no pass holds a live claim
+      // on it: a pass still holding one may delete it after this lands (migration 0080).
+      const revive = JSON.stringify(capture.revive ?? []);
+      const sealExecutor = capture.seal?.executorId ?? "";
       const rows = yield* sql<{ readonly id: string }>`
         WITH expected AS (
           SELECT e.worktree_id, e.guard
@@ -340,14 +404,33 @@ export const CaptureStoreRepoLive: Layer.Layer<
              AND head_capture IS NOT DISTINCT FROM ${capture.parent}
              AND (${ownGuard === undefined}::boolean OR guard = ${ownGuard?.guard ?? 0})
              AND (SELECT count(*) FROM foreign_guards) = ${foreign.length}
+             AND NOT EXISTS (
+               SELECT 1 FROM capture_tombstones t
+                WHERE t.key IN (SELECT jsonb_array_elements_text(${revive}::jsonb))
+                  AND (t.deleted_at IS NULL
+                       OR EXISTS (SELECT 1 FROM capture_deletion_claims d
+                                   WHERE d.key = t.key AND d.expires_at > now())))
              AND ${capture.epoch} = (
                SELECT epoch FROM worktree_leases
                 WHERE worktree_id = ${capture.worktreeId} AND expires_at > now())
            RETURNING worktree_id
         ),
+        sealed AS (
+          INSERT INTO capture_seals (worktree_id, epoch, executor_id, capture_id, n)
+          SELECT ${capture.worktreeId}, ${capture.epoch}, ${sealExecutor}, ${capture.id}, ${capture.n}
+            FROM ch
+           WHERE ${capture.seal !== undefined}::boolean
+             AND ${sealExecutor} = (
+               SELECT executor_id FROM worktree_leases WHERE worktree_id = ${capture.worktreeId})
+          ON CONFLICT (worktree_id, epoch) DO UPDATE
+             SET executor_id = EXCLUDED.executor_id, capture_id = EXCLUDED.capture_id,
+                 n = EXCLUDED.n, sealed_at = now()
+           WHERE capture_seals.n < EXCLUDED.n
+          RETURNING worktree_id
+        ),
         revived AS (
           DELETE FROM capture_tombstones t
-           WHERE t.key IN (SELECT jsonb_array_elements_text(${JSON.stringify(capture.revive ?? [])}::jsonb))
+           WHERE t.key IN (SELECT jsonb_array_elements_text(${revive}::jsonb))
              AND t.deleted_at IS NOT NULL
              AND EXISTS (SELECT 1 FROM ch)
            RETURNING t.key
@@ -489,6 +572,38 @@ export const CaptureStoreRepoLive: Layer.Layer<
       };
     });
 
+    const sealedCompletion = Effect.fn("CaptureStoreRepo.sealedCompletion")(function* (
+      worktreeId: WorktreeId,
+      executorId: string,
+      epoch?: number,
+    ) {
+      const [row] = yield* sql<{
+        readonly worktreeId: WorktreeId;
+        readonly epoch: number;
+        readonly executorId: string;
+        readonly captureId: string;
+        readonly n: number;
+        readonly sealedAt: Date;
+      }>`
+        SELECT worktree_id, epoch::int AS epoch, executor_id, capture_id, n, sealed_at
+          FROM capture_seals
+         WHERE worktree_id = ${worktreeId}
+           AND executor_id = ${executorId}
+           AND (${epoch === undefined}::boolean OR epoch = ${epoch ?? 0})
+         ORDER BY epoch DESC
+         LIMIT 1`.pipe(Effect.orDie);
+      return row === undefined
+        ? null
+        : {
+            worktreeId: row.worktreeId,
+            epoch: Number(row.epoch),
+            executorId: row.executorId,
+            captureId: row.captureId,
+            n: Number(row.n),
+            sealedAt: row.sealedAt,
+          };
+    });
+
     const listChain = Effect.fn("CaptureStoreRepo.listChain")(function* (worktreeId: WorktreeId) {
       return yield* db
         .select()
@@ -581,10 +696,14 @@ export const CaptureStoreRepoLive: Layer.Layer<
              FROM worktree_chain
             WHERE worktree_id IN (SELECT jsonb_array_elements_text(${JSON.stringify(worktreeIds)}::jsonb)))
             AS guards,
-          (SELECT coalesce(jsonb_agg(jsonb_build_object('key', key, 'deleted', deleted_at IS NOT NULL)),
-                           '[]'::jsonb)
-             FROM capture_tombstones
-            WHERE key IN (SELECT jsonb_array_elements_text(${JSON.stringify(keys)}::jsonb)))
+          (SELECT coalesce(jsonb_agg(jsonb_build_object(
+                     'key', t.key,
+                     'deleted', t.deleted_at IS NOT NULL AND NOT EXISTS (
+                       SELECT 1 FROM capture_deletion_claims d
+                        WHERE d.key = t.key AND d.expires_at > now()))),
+                   '[]'::jsonb)
+             FROM capture_tombstones t
+            WHERE t.key IN (SELECT jsonb_array_elements_text(${JSON.stringify(keys)}::jsonb)))
             AS tombstones`.pipe(Effect.orDie);
       const decoded = Schema.decodeUnknownSync(ReferenceStateRow)(row ?? {});
       const guards = new Map<WorktreeId, number>();
@@ -599,10 +718,12 @@ export const CaptureStoreRepoLive: Layer.Layer<
       worktreeId: WorktreeId,
       guard: number,
       keys: ReadonlyArray<string>,
+      hold: DeletionClaim,
     ) {
       if (keys.length === 0) return true;
-      // A tombstone already there (a pass that condemned it and failed to delete, or one whose
-      // bytes came back) is condemned again: its bytes may be going now.
+      // A tombstone already there (a pass that condemned it and failed to delete, one whose
+      // bytes came back, or one another pass still holds) is condemned again: its bytes may be
+      // going now. The claim rows land in the same statement, only if the guard held.
       const rows = yield* sql<{ readonly worktreeId: string }>`
         WITH ch AS (
           UPDATE worktree_chain SET guard = guard + 1
@@ -615,19 +736,45 @@ export const CaptureStoreRepoLive: Layer.Layer<
             FROM ch, jsonb_array_elements_text(${JSON.stringify(keys)}::jsonb) AS k(key)
           ON CONFLICT (key) DO UPDATE SET deleted_at = NULL, created_at = now()
           RETURNING key
+        ),
+        c AS (
+          INSERT INTO capture_deletion_claims (key, token, expires_at)
+          SELECT t.key, ${hold.token}, now() + make_interval(secs => ${hold.ttlSeconds})
+            FROM t
+          ON CONFLICT (key, token) DO NOTHING
+          RETURNING key
         )
         SELECT worktree_id FROM ch`.pipe(Effect.orDie);
       return rows.length > 0;
     });
 
-    const markDeleted = Effect.fn("CaptureStoreRepo.markDeleted")(function* (
-      keys: ReadonlyArray<string>,
+    const renewDeletion = Effect.fn("CaptureStoreRepo.renewDeletion")(function* (
+      token: string,
+      ttlSeconds: number,
     ) {
-      if (keys.length === 0) return;
+      const rows = yield* sql<{ readonly key: string }>`
+        UPDATE capture_deletion_claims
+           SET expires_at = now() + make_interval(secs => ${ttlSeconds})
+         WHERE token = ${token}
+           AND NOT EXISTS (
+             SELECT 1 FROM capture_deletion_claims
+              WHERE token = ${token} AND expires_at <= now())
+         RETURNING key`.pipe(Effect.orDie);
+      return rows.length;
+    });
+
+    const finishDeletion = Effect.fn("CaptureStoreRepo.finishDeletion")(function* (
+      token: string,
+      deleted: ReadonlyArray<string>,
+    ) {
       yield* sql`
-        UPDATE capture_tombstones SET deleted_at = now()
-         WHERE key IN (SELECT jsonb_array_elements_text(${JSON.stringify(keys)}::jsonb))
-           AND deleted_at IS NULL`.pipe(Effect.orDie);
+        WITH settled AS (
+          UPDATE capture_tombstones SET deleted_at = now()
+           WHERE key IN (SELECT jsonb_array_elements_text(${JSON.stringify(deleted)}::jsonb))
+             AND deleted_at IS NULL
+           RETURNING key
+        )
+        DELETE FROM capture_deletion_claims WHERE token = ${token}`.pipe(Effect.orDie);
     });
 
     const deleteCaptures = Effect.fn("CaptureStoreRepo.deleteCaptures")(function* (
@@ -678,6 +825,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       setGitFsck,
       leaseOf,
       headOf,
+      sealedCompletion,
       listChain,
       captureById,
       recordPacks,
@@ -685,7 +833,8 @@ export const CaptureStoreRepoLive: Layer.Layer<
       listChains,
       referenceState,
       condemn,
-      markDeleted,
+      renewDeletion,
+      finishDeletion,
       deleteCaptures,
       listPacks,
       setPackState,

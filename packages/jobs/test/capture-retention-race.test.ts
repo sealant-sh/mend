@@ -15,7 +15,7 @@ import {
   CaptureUploadPolicyDefault,
 } from "@mend/sessions";
 import { makeMemoryCaptureStore } from "@mend/sessions/testing";
-import { BlobStoreFsLive, captureKeys, readCaptureFileBytes } from "@mend/store";
+import { BlobStore, BlobStoreFsLive, captureKeys, readCaptureFileBytes } from "@mend/store";
 import { buildManifest, sectionOf, snapshotDirectory, uploadObjects } from "@mend/store/testing";
 import { Effect, Layer, Redacted } from "effect";
 import * as Str from "effect/String";
@@ -133,7 +133,7 @@ const registerWith = (wt: WorktreeId) =>
     return (built: Built) =>
       api.register({
         worktree_id: wt,
-        epoch: 1,
+        epoch: built.manifest.epoch,
         n: built.manifest.n,
         parent: built.manifest.parent,
         capture_id: built.id,
@@ -268,6 +268,109 @@ const scenarios = (store: Store) => {
     expect(result.read).toBe(`ok:original work ${wt}`);
     expect(result.nextPass).toBe(`ok:original work ${wt}`);
   });
+
+  it(`${store.label}: a pass that finished first never lets a register revive what an overlapping pass is still deleting (review 2026-09-28 #1)`, async () => {
+    const wt = WorktreeId.make(`wt-race-c-${process.pid}-${Date.now()}`);
+    // Capture 0 under epoch 1; capture 1 under epoch 2 (a new executor); capture 2 is its
+    // final, holding capture 0's tree again — it reuses the epoch-1 packs.
+    const source = freshDir("overlap-source");
+    fs.writeFileSync(path.join(source, "saved.txt"), `original work ${wt}`);
+    const old = snapshotDirectory(source, captureKeys(wt, 1), { format: 2 });
+    fs.writeFileSync(path.join(source, "saved.txt"), `new work ${wt}`);
+    const fresh = snapshotDirectory(source, captureKeys(wt, 2), { format: 2 });
+    const zero = buildManifest({
+      worktreeId: wt,
+      epoch: 1,
+      n: 0,
+      parent: null,
+      kind: "auto",
+      workspace: sectionOf(old),
+    });
+    const one = buildManifest({
+      worktreeId: wt,
+      epoch: 2,
+      n: 1,
+      parent: zero.id,
+      kind: "auto",
+      workspace: sectionOf(fresh),
+    });
+    const two = buildManifest({
+      worktreeId: wt,
+      epoch: 2,
+      n: 2,
+      parent: one.id,
+      kind: "final",
+      workspace: sectionOf(old),
+    });
+    let afterRetire: Effect.Effect<unknown> = Effect.void;
+    const world = worldOf(store.repo(), (inner) => ({
+      ...inner,
+      // Pass A has condemned capture 0's packs and retired their rows; before it deletes a
+      // byte, `afterRetire` runs (once).
+      setPackState: (ids, state) =>
+        inner.setPackState(ids, state).pipe(
+          Effect.andThen(
+            Effect.suspend(() => {
+              const run = afterRetire;
+              afterRetire = Effect.void;
+              return run;
+            }),
+          ),
+        ),
+    }));
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* uploadObjects(
+          new Map([
+            ...old.objects,
+            ...fresh.objects,
+            [zero.key, zero.bytes],
+            [one.key, one.bytes],
+            [two.key, two.bytes],
+          ]),
+        );
+        yield* store.setup(wt);
+        const repo = yield* CaptureStoreRepo;
+        const register = yield* registerWith(wt);
+        yield* register(zero);
+        yield* repo.release(wt, 1);
+        yield* repo.claim(wt, "executor", 20 * 86_400).pipe(Effect.orDie);
+        yield* register(one);
+        store.age();
+        const retention = yield* CaptureRetention;
+        const bucket = yield* BlobStore;
+        let during = "";
+        afterRetire = Effect.gen(function* () {
+          // Pass B sees the retired rows as untracked epoch-1 objects, deletes them and
+          // settles their tombstones. The executor uploads them again and registers its
+          // final: pass A still holds its claim, so the register is refused.
+          yield* retention.run(store.retentionNow());
+          yield* uploadObjects(old.objects).pipe(
+            Effect.provideService(BlobStore, bucket),
+            Effect.orDie,
+          );
+          during = yield* outcome(register(two));
+        });
+        // Pass A resumes and deletes what it condemned.
+        yield* retention.run(store.retentionNow());
+        const headAfterA = (yield* repo.headOf(wt))?.head?.id;
+        // Pass A is done: the executor uploads again and the final lands, and reads back.
+        yield* uploadObjects(old.objects);
+        const again = yield* outcome(register(two));
+        const read = yield* readBack(two);
+        yield* retention.run(store.retentionNow());
+        const nextPass = yield* readBack(two);
+        const head = (yield* repo.headOf(wt))?.head?.id;
+        return { during, headAfterA, again, read, nextPass, head };
+      }).pipe(Effect.provide(world.layer)),
+    );
+    expect(result.during).toBe("CaptureRouteError:missing-objects");
+    expect(result.headAfterA).toBe(one.id);
+    expect(result.again).toBe("ok");
+    expect(result.read).toBe(`ok:original work ${wt}`);
+    expect(result.nextPass).toBe(`ok:original work ${wt}`);
+    expect(result.head).toBe(two.id);
+  });
 };
 
 // ─── In memory ─────────────────────────────────────────────────────────────
@@ -294,6 +397,61 @@ describe("retention racing a register (in memory)", () => {
       time = 9 * DAY;
     },
   });
+});
+
+it("memory: a pass whose deletion claim lapsed deletes nothing more and leaves its tombstones undeleted", async () => {
+  const wt = WorktreeId.make(`wt-race-lapse-${process.pid}`);
+  const chain = chainOf(wt);
+  const memory = makeMemoryCaptureStore();
+  let time = 0;
+  memory.clock.now = () => time;
+  let afterRetire: Effect.Effect<unknown> = Effect.void;
+  const world = worldOf(memory.layer, (inner) => ({
+    ...inner,
+    setPackState: (ids, state) =>
+      inner.setPackState(ids, state).pipe(
+        Effect.andThen(
+          Effect.suspend(() => {
+            const run = afterRetire;
+            afterRetire = Effect.void;
+            return run;
+          }),
+        ),
+      ),
+  }));
+  const result = await Effect.runPromise(
+    Effect.gen(function* () {
+      yield* uploadObjects(chain.objects);
+      const repo = yield* CaptureStoreRepo;
+      yield* repo.init(wt);
+      yield* repo.claim(wt, "executor", 20 * 86_400).pipe(Effect.orDie);
+      const register = yield* registerWith(wt);
+      yield* register(chain.zero);
+      yield* register(chain.one);
+      time = 9 * DAY;
+      // The pass stalls between the condemnation and its first delete past the claim's life.
+      afterRetire = Effect.sync(() => {
+        time += 2 * 60 * 60 * 1000;
+      });
+      const retention = yield* CaptureRetention;
+      yield* retention.run(10 * DAY);
+      const kept = chain.old.packs.every((key) => fs.existsSync(path.join(world.blobRoot, key)));
+      const tombstones = [...memory.tombstones.values()].map((tombstone) => tombstone.deleted);
+      // The next pass weighs the packs again, deletes them and settles their tombstones.
+      yield* retention.run(time + DAY);
+      return {
+        kept,
+        tombstones,
+        nextGone: chain.old.packs.every((key) => !fs.existsSync(path.join(world.blobRoot, key))),
+        nextTombstones: [...memory.tombstones.values()].map((tombstone) => tombstone.deleted),
+      };
+    }).pipe(Effect.provide(world.layer)),
+  );
+  expect(result.kept).toBe(true);
+  expect(result.tombstones.length).toBeGreaterThan(0);
+  expect(result.tombstones.every((deleted) => !deleted)).toBe(true);
+  expect(result.nextGone).toBe(true);
+  expect(result.nextTombstones.every((deleted) => deleted)).toBe(true);
 });
 
 // ─── Postgres ──────────────────────────────────────────────────────────────

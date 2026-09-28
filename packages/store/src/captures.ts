@@ -19,7 +19,8 @@ import { git, type GitError } from "./git.ts";
  * `sections.workspace.{root, packs, format?, dir_packs?}`,
  * `sections.bulk.{root, packs, platform, format?, dir_packs?} | "pending"`,
  * `sections.other_bulk?.<platform>` (each a ready bulk section),
- * `checkpoint?.{ordinal, sha, ref}`. Unknown fields pass through undecoded.
+ * `checkpoint?.{ordinal, sha, ref}`, `sections.workspace.worktree_meta?` (validated at register),
+ * `final_seal?.{complete, epoch, executor}`. Unknown fields are not decoded.
  *
  * The chunked sections are versioned one by one (sealantd `manifest.rs`, PR #99 "Dir packs"),
  * because one manifest can hold both: a capture staged over a head an older executor wrote
@@ -48,6 +49,11 @@ export const GitSection = Schema.Struct({
   refs: Schema.Record(Schema.String, Schema.String),
   head: Schema.String,
   fsck: GitFsckOutcome,
+  /**
+   * Symbolic refs other than `HEAD`, name → target (sealantd `manifest.rs`); each is in `refs`
+   * too, by the sha it resolved to. Absent when there are none.
+   */
+  symrefs: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
 });
 export type GitSection = typeof GitSection.Type;
 
@@ -71,7 +77,30 @@ const chunkedSectionFields = {
   dir_packs: Schema.optionalKey(Schema.Array(Schema.String)),
 };
 
-export const WorkspaceSection = Schema.Struct(chunkedSectionFields);
+/** The worktree metadata document format Mend reads (sealantd `WORKTREE_META_FORMAT`). */
+export const WORKTREE_META_FORMAT = 1;
+
+/**
+ * `sections.workspace.worktree_meta` (sealantd `manifest.rs` `WorktreeMeta`): the worktree
+ * metadata overlay — exact modes, nanosecond mtimes, untracked directories and hardlink groups of
+ * the working tree the worktree pseudo-ref describes — a JSON document CDC chunked into the
+ * workspace section's own packs. A restore needs it whenever it is present: sealantd's
+ * materializer refuses a document whose chunks do not add up to `size` and `sha256`, or whose
+ * format it does not read.
+ */
+export const WorktreeMeta = Schema.Struct({
+  format: Schema.Int,
+  size: Schema.Int,
+  sha256: Schema.String,
+  chunks: Schema.Array(Schema.String),
+  packs: Schema.Array(Schema.String),
+});
+export type WorktreeMeta = typeof WorktreeMeta.Type;
+
+export const WorkspaceSection = Schema.Struct({
+  ...chunkedSectionFields,
+  worktree_meta: Schema.optionalKey(WorktreeMeta),
+});
 export type WorkspaceSection = typeof WorkspaceSection.Type;
 
 export const BulkSectionReady = Schema.Struct({
@@ -122,6 +151,20 @@ export const CaptureSections = Schema.Struct({
 });
 export type CaptureSections = typeof CaptureSections.Type;
 
+/**
+ * `final_seal` (cross-repo decision 1, 2026-09-28): sealantd, when a final flush completes —
+ * everything shipped, writers stopped — registers a sealing capture carrying it. `executor` is the
+ * executor sealantd was planned as, `epoch` the lease epoch it held. Register records it on the
+ * chain only when it is complete and names the registering executor and epoch; it is then the
+ * only store-side evidence that the executor's work is saved.
+ */
+export const FinalSeal = Schema.Struct({
+  complete: Schema.Boolean,
+  epoch: Schema.Int,
+  executor: Schema.String,
+});
+export type FinalSeal = typeof FinalSeal.Type;
+
 export const CaptureManifest = Schema.Struct({
   worktree_id: Schema.String,
   n: Schema.Int,
@@ -132,6 +175,7 @@ export const CaptureManifest = Schema.Struct({
   created_at: Schema.String,
   sections: CaptureSections,
   checkpoint: Schema.optionalKey(CaptureCheckpoint),
+  final_seal: Schema.optionalKey(FinalSeal),
 });
 export type CaptureManifest = typeof CaptureManifest.Type;
 
@@ -216,6 +260,12 @@ export type DirEntryKind = typeof DirEntryKind.Type;
  * an RFC 3339 string is accepted too — ADR-0015 fixes the field, not its unit, and both are
  * unambiguous to read. `chunks` for files, `target` for symlinks and hardlink groups (the
  * group's canonical path, relative to the class root), `child` for directories.
+ *
+ * `name` and `target` are keys (sealantd `tree.rs`, "Names that are not UTF-8"): a name that is
+ * not UTF-8, or holds a character of `U+10FF80..=U+10FFFF`, is escaped byte by byte into that
+ * range, and the entry carries the bytes themselves, hex, in `raw_name` (`raw_target` for a
+ * symlink's text). A reader lays down the bytes (`nameBytesOf`, `symlinkTargetBytesOf`), never
+ * the escaped key.
  */
 export const DirEntry = Schema.Struct({
   name: Schema.String,
@@ -227,6 +277,8 @@ export const DirEntry = Schema.Struct({
   target: Schema.optionalKey(Schema.String),
   child: Schema.optionalKey(Schema.String),
   group: Schema.optionalKey(Schema.String),
+  raw_name: Schema.optionalKey(Schema.String),
+  raw_target: Schema.optionalKey(Schema.String),
 });
 export type DirEntry = typeof DirEntry.Type;
 
@@ -252,6 +304,150 @@ const DirObjectWire = Schema.Union([
 /** The bytes of a dir object as the daemon writes and reads them. */
 export const encodeDirObject = (entries: DirObject): Uint8Array =>
   new Uint8Array(Buffer.from(JSON.stringify({ entries }), "utf8"));
+
+// ─── Names that are not UTF-8 ───────────────────────────────────────────────
+
+/**
+ * sealantd's key encoding (`tree.rs` `key_of` / `bytes_of`): a file name, a path or a symlink's
+ * text is bytes; JSON strings are Unicode. The bytes read as UTF-8 when they are UTF-8 and hold no
+ * character of the escape range `U+10FF80..=U+10FFFF`; otherwise every byte of an invalid
+ * sequence, and every byte of an escape-range character, becomes the character `U+10FF00 + byte`.
+ * The mapping is a bijection, `/` is never escaped, so a path keys component by component.
+ */
+const ESCAPE_BASE = 0x10_ff00;
+const ESCAPE_FIRST = 0x10_ff80;
+
+/** Length of the well-formed UTF-8 sequence starting at `at`, or 0 (Rust's `from_utf8` rules). */
+const utf8SequenceAt = (bytes: Uint8Array, at: number): number => {
+  const b0 = bytes[at] ?? -1;
+  const inRange = (offset: number, low: number, high: number) => {
+    const b = bytes[at + offset] ?? -1;
+    return b >= low && b <= high;
+  };
+  const tail = (from: number, to: number) => {
+    for (let offset = from; offset <= to; offset += 1) {
+      if (!inRange(offset, 0x80, 0xbf)) return false;
+    }
+    return true;
+  };
+  if (b0 >= 0 && b0 < 0x80) return 1;
+  if (b0 >= 0xc2 && b0 <= 0xdf) return tail(1, 1) ? 2 : 0;
+  if (b0 === 0xe0) return inRange(1, 0xa0, 0xbf) && tail(2, 2) ? 3 : 0;
+  if ((b0 >= 0xe1 && b0 <= 0xec) || b0 === 0xee || b0 === 0xef) return tail(1, 2) ? 3 : 0;
+  if (b0 === 0xed) return inRange(1, 0x80, 0x9f) && tail(2, 2) ? 3 : 0;
+  if (b0 === 0xf0) return inRange(1, 0x90, 0xbf) && tail(2, 3) ? 4 : 0;
+  if (b0 >= 0xf1 && b0 <= 0xf3) return tail(1, 3) ? 4 : 0;
+  if (b0 === 0xf4) return inRange(1, 0x80, 0x8f) && tail(2, 3) ? 4 : 0;
+  return 0;
+};
+
+/** The key of a byte string: sealantd `key_of`. */
+export const keyOfBytes = (bytes: Uint8Array): string => {
+  let out = "";
+  let at = 0;
+  while (at < bytes.length) {
+    const length = utf8SequenceAt(bytes, at);
+    if (length === 0) {
+      out += String.fromCodePoint(ESCAPE_BASE + (bytes[at] ?? 0));
+      at += 1;
+      continue;
+    }
+    const sequence = bytes.subarray(at, at + length);
+    const char = Buffer.from(sequence).toString("utf8");
+    if ((char.codePointAt(0) ?? 0) >= ESCAPE_FIRST) {
+      for (const byte of sequence) out += String.fromCodePoint(ESCAPE_BASE + byte);
+    } else {
+      out += char;
+    }
+    at += length;
+  }
+  return out;
+};
+
+/** The bytes a key stands for: sealantd `bytes_of`, the inverse of `keyOfBytes`. */
+export const bytesOfKey = (key: string): Buffer => {
+  const out: Array<number> = [];
+  for (const char of key) {
+    const point = char.codePointAt(0) ?? 0;
+    if (point >= ESCAPE_FIRST) out.push(point - ESCAPE_BASE);
+    else out.push(...Buffer.from(char, "utf8"));
+  }
+  return Buffer.from(out);
+};
+
+/** Whether a key holds a character of the escape range: its bytes are not the key's UTF-8. */
+export const isEscapedKey = (key: string): boolean => {
+  for (const char of key) if ((char.codePointAt(0) ?? 0) >= ESCAPE_FIRST) return true;
+  return false;
+};
+
+/**
+ * Whether a git section names a ref, a symbolic ref or `HEAD` by an escaped key (sealantd
+ * `gitpack.rs`: ref names and symbolic targets are keys of their bytes): a reader that does not
+ * decode them writes the escaped text as the ref's name.
+ */
+export const gitSectionHoldsRawNames = (section: GitSection): boolean =>
+  isEscapedKey(section.head) ||
+  Object.keys(section.refs).some(isEscapedKey) ||
+  Object.entries(section.symrefs ?? {}).some(
+    ([name, target]) => isEscapedKey(name) || isEscapedKey(target),
+  );
+
+/** `raw_name` / `raw_target` for a key: the hex of its bytes when the key was escaped. */
+export const rawOfKey = (key: string): string | undefined =>
+  isEscapedKey(key) ? bytesOfKey(key).toString("hex") : undefined;
+
+const HEX_BYTES = /^(?:[0-9a-fA-F]{2})*$/;
+
+/**
+ * The bytes a key and its raw field stand for: `raw` when present (hex, and it must be the bytes
+ * the key encodes — sealantd's metadata reader refuses a disagreeing pair the same way); the
+ * decoded key otherwise. Null when the raw field is not hex, the two disagree, or the key is not
+ * one sealantd writes (a key that does not round-trip, such as one holding a lone surrogate).
+ */
+export const bytesOfPair = (key: string, raw: string | undefined): Buffer | null => {
+  const bytes =
+    raw === undefined ? bytesOfKey(key) : HEX_BYTES.test(raw) ? Buffer.from(raw, "hex") : null;
+  if (bytes === null) return null;
+  return keyOfBytes(bytes) === key ? bytes : null;
+};
+
+const SLASH = 0x2f;
+const isSafeNameBytes = (name: Uint8Array) =>
+  name.length > 0 &&
+  !name.includes(SLASH) &&
+  !name.includes(0) &&
+  !(name.length === 1 && name[0] === 0x2e) &&
+  !(name.length === 2 && name[0] === 0x2e && name[1] === 0x2e);
+
+/** A dir entry's name as it is on disk; null when it is not one safe name. */
+export const nameBytesOf = (entry: DirEntry): Buffer | null => {
+  const bytes = bytesOfPair(entry.name, entry.raw_name);
+  return bytes !== null && isSafeNameBytes(bytes) ? bytes : null;
+};
+
+/** A symlink's text as it is on disk; null without a target, or when it is malformed. */
+export const symlinkTargetBytesOf = (entry: DirEntry): Buffer | null => {
+  if (entry.target === undefined) return null;
+  const bytes = bytesOfPair(entry.target, entry.raw_target);
+  return bytes !== null && bytes.length > 0 && !bytes.includes(0) ? bytes : null;
+};
+
+/**
+ * A class-root-relative path (a hardlink group's `target`, a key) as the bytes of each segment;
+ * null when it could leave the root or names nothing: absolute, empty, an empty, `.` or `..`
+ * segment, or a segment that is not a key sealantd writes.
+ */
+const pathSegmentBytes = (relPath: string): ReadonlyArray<Buffer> | null => {
+  if (relPath === "" || relPath.startsWith("/")) return null;
+  const out: Array<Buffer> = [];
+  for (const segment of relPath.split("/")) {
+    const bytes = bytesOfPair(segment, undefined);
+    if (bytes === null || !isSafeNameBytes(bytes)) return null;
+    out.push(bytes);
+  }
+  return out;
+};
 
 // ─── Errors ─────────────────────────────────────────────────────────────────
 
@@ -727,6 +923,32 @@ export const makeDirReader = (
     return { read };
   });
 
+/**
+ * Whether any dir object of a section names an entry by raw bytes (`raw_name` / `raw_target`):
+ * a reader that ignores those fields would lay down the escaped key instead. Walks every dir
+ * object; stops at the first one found.
+ */
+export const sectionHoldsRawNames = (
+  section: ChunkedSection,
+): Effect.Effect<boolean, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    if (section.root === "") return false;
+    const dirs = yield* makeDirReader(section);
+    const visited = new Set<string>();
+    const queue = [section.root];
+    while (queue.length > 0) {
+      const ref = queue.pop();
+      if (ref === undefined) break;
+      if (visited.has(ref)) continue;
+      visited.add(ref);
+      for (const entry of yield* dirs.read(ref)) {
+        if (entry.raw_name !== undefined || entry.raw_target !== undefined) return true;
+        if (entry.kind === "dir" && entry.child !== undefined) queue.push(entry.child);
+      }
+    }
+    return false;
+  });
+
 // ─── Materialize ────────────────────────────────────────────────────────────
 
 export interface MaterializeStats {
@@ -743,17 +965,17 @@ const mtimeSeconds = (value: number | string): number =>
 const isSafeName = (name: string) =>
   name !== "" && name !== "." && name !== ".." && !name.includes("/") && !name.includes("\0");
 
-/** Never leave the root: resolve the relative path and check it stays inside. */
-const insideRoot = (root: string, relative: string): string | null => {
-  const resolved = path.resolve(root, relative);
-  return resolved === root || resolved.startsWith(`${root}${path.sep}`) ? resolved : null;
-};
+/** `dir` + `/` + `name`, as bytes: names that are not UTF-8 reach the filesystem unchanged. */
+const joinBytes = (dir: Buffer, name: Uint8Array): Buffer =>
+  Buffer.concat([dir, Buffer.from([SLASH]), name]);
 
 /**
  * Write one class of a capture into `targetDir` (created; expected empty or absent): files
  * chunk by chunk with every chunk sha256-verified, symlinks by target (never followed),
  * hardlink groups as links to the canonical member, modes and mtimes as recorded. Directory
- * mtimes are applied last so the writes beneath do not disturb them.
+ * mtimes are applied last so the writes beneath do not disturb them. Every path is bytes: a name
+ * or a symlink's text that is not UTF-8 is written as the bytes `raw_name` / `raw_target` carry,
+ * never as its escaped key.
  */
 export const materialize = (
   manifest: CaptureManifest,
@@ -770,20 +992,23 @@ export const materialize = (
     const source = yield* makeChunkSource(section.packs);
     // Dir packs are fetched before anything is written, as the content packs are.
     const dirs = yield* makeDirReader(section);
-    const root = path.resolve(targetDir);
-    const io = <A>(at: string, thunk: () => A) =>
-      Effect.try({ try: thunk, catch: (cause) => new MaterializeError({ at, cause }) });
+    const root = Buffer.from(path.resolve(targetDir));
+    const io = <A>(at: Buffer, thunk: () => A) =>
+      Effect.try({
+        try: thunk,
+        catch: (cause) => new MaterializeError({ at: at.toString("utf8"), cause }),
+      });
     yield* io(root, () => fs.mkdirSync(root, { recursive: true }));
 
     const stats = { dirs: 0, files: 0, symlinks: 0, hardlinks: 0, bytes: 0 };
-    const dirTimes: Array<{ readonly at: string; readonly mtime: number }> = [];
+    const dirTimes: Array<{ readonly at: Buffer; readonly mtime: number }> = [];
     const deferredLinks: Array<{
-      readonly at: string;
+      readonly at: Buffer;
       readonly target: string;
       readonly key: string;
     }> = [];
 
-    const writeFile = (at: string, entry: DirEntry, key: string) =>
+    const writeFile = (at: Buffer, entry: DirEntry, key: string) =>
       Effect.gen(function* () {
         const fd = yield* io(at, () => fs.openSync(at, "w"));
         let written = 0;
@@ -808,9 +1033,15 @@ export const materialize = (
         stats.bytes += written;
       });
 
-    const link = (at: string, target: string, key: string) =>
+    /** A hardlink group's canonical member below the root, as bytes; null when it would escape. */
+    const canonicalOf = (target: string): Buffer | null => {
+      const segments = pathSegmentBytes(target);
+      return segments === null ? null : segments.reduce(joinBytes, root);
+    };
+
+    const link = (at: Buffer, target: string, key: string) =>
       Effect.gen(function* () {
-        const canonical = insideRoot(root, target);
+        const canonical = canonicalOf(target);
         if (canonical === null) {
           return yield* new CaptureFormatError({
             key,
@@ -825,15 +1056,19 @@ export const materialize = (
 
     const walk = (
       key: string,
-      dir: string,
+      dir: Buffer,
     ): Effect.Effect<void, CaptureReadError | MaterializeError, never> =>
       Effect.gen(function* () {
         const entries = yield* dirs.read(key);
         for (const entry of entries) {
-          if (!isSafeName(entry.name)) {
-            return yield* new CaptureFormatError({ key, reason: `unsafe name "${entry.name}"` });
+          const name = nameBytesOf(entry);
+          if (name === null) {
+            return yield* new CaptureFormatError({
+              key,
+              reason: `unsafe or malformed name "${entry.name}"`,
+            });
           }
-          const at = path.join(dir, entry.name);
+          const at = joinBytes(dir, name);
           const mode = entry.mode & 0o7777;
           switch (entry.kind) {
             case "dir": {
@@ -856,11 +1091,11 @@ export const materialize = (
               break;
             }
             case "symlink": {
-              const target = entry.target;
-              if (target === undefined) {
+              const target = symlinkTargetBytesOf(entry);
+              if (target === null) {
                 return yield* new CaptureFormatError({
                   key,
-                  reason: `${entry.name}: symlink without target`,
+                  reason: `${entry.name}: symlink without a well-formed target`,
                 });
               }
               const mtime = mtimeSeconds(entry.mtime);
@@ -879,7 +1114,7 @@ export const materialize = (
                   reason: `${entry.name}: hardlink without target`,
                 });
               }
-              if (path.relative(root, at) === target) {
+              if (canonicalOf(target)?.equals(at) === true) {
                 // A writer that lists the canonical member as part of the group too.
                 yield* writeFile(at, entry, key);
                 break;
@@ -1443,7 +1678,13 @@ export const verifySectionRestorable = (
       const names = new Set<string>();
       for (const entry of entries) {
         const at = next.at === "" ? entry.name : `${next.at}/${entry.name}`;
-        if (!isSafeName(entry.name)) return yield* fail(next.at, `unsafe name "${entry.name}"`);
+        // The bytes laid down: `raw_name` when present, agreeing with the key; never the key.
+        if (nameBytesOf(entry) === null) {
+          return yield* fail(
+            next.at,
+            `unsafe or malformed name "${entry.name}"${entry.raw_name === undefined ? "" : ` (raw_name ${entry.raw_name})`}`,
+          );
+        }
         if (names.has(entry.name)) return yield* fail(at, "listed twice");
         names.add(entry.name);
         switch (entry.kind) {
@@ -1454,10 +1695,19 @@ export const verifySectionRestorable = (
           }
           case "symlink": {
             if (entry.target === undefined) return yield* fail(at, "symlink without target");
+            if (symlinkTargetBytesOf(entry) === null) {
+              return yield* fail(
+                at,
+                `malformed symlink target${entry.raw_target === undefined ? "" : ` (raw_target ${entry.raw_target})`}`,
+              );
+            }
             break;
           }
           case "hardlink-group": {
-            const target = entry.target === undefined ? null : captureSegments(entry.target);
+            const target =
+              entry.target === undefined || pathSegmentBytes(entry.target) === null
+                ? null
+                : captureSegments(entry.target);
             if (target === null) {
               return yield* fail(at, `hardlink target escapes or is missing: ${entry.target}`);
             }
@@ -1503,6 +1753,189 @@ export const verifySectionRestorable = (
       }
     }
     return stats;
+  });
+
+// ─── The worktree metadata overlay ──────────────────────────────────────────
+
+const MetaDocument = Schema.Struct({
+  format: Schema.Int,
+  entries: Schema.Array(
+    Schema.Struct({
+      path: Schema.String,
+      raw_path: Schema.optionalKey(Schema.String),
+      kind: Schema.Literals(["file", "symlink", "dir"]),
+      mode: Schema.optionalKey(Schema.Int),
+      mtime: Schema.Number,
+    }),
+  ),
+  hardlinks: Schema.optionalKey(Schema.Array(Schema.Array(Schema.String))),
+  shared: Schema.optionalKey(
+    Schema.Array(
+      Schema.Struct({
+        path: Schema.String,
+        class: Schema.Literals(["workspace", "bulk"]),
+        member: Schema.String,
+        raw_member: Schema.optionalKey(Schema.String),
+      }),
+    ),
+  ),
+  /**
+   * Inodes the workspace and bulk classes both name and no tracked file does (sealantd
+   * `worktree_meta.rs` `cross_links`): each group every name those classes carry of one inode.
+   */
+  cross_links: Schema.optionalKey(
+    Schema.Array(
+      Schema.Array(
+        Schema.Struct({
+          class: Schema.Literals(["workspace", "bulk"]),
+          member: Schema.String,
+          raw_member: Schema.optionalKey(Schema.String),
+        }),
+      ),
+    ),
+  ),
+});
+
+/** `""` or a relative path of normal components (sealantd `worktree_meta.rs` `is_plain_relative`). */
+const isPlainRelative = (bytes: Buffer): boolean => {
+  if (bytes.length === 0) return true;
+  let start = 0;
+  for (let at = 0; at <= bytes.length; at += 1) {
+    if (at < bytes.length && bytes[at] !== SLASH) continue;
+    const component = bytes.subarray(start, at);
+    if (
+      component.length === 0 ||
+      component.includes(0) ||
+      (component.length === 1 && component[0] === 0x2e) ||
+      (component.length === 2 && component[0] === 0x2e && component[1] === 0x2e)
+    ) {
+      return false;
+    }
+    start = at + 1;
+  }
+  return true;
+};
+
+/**
+ * The document's own rules, as sealantd's `MetaDocument::decode` enforces them before a restore
+ * writes anything: a format it reads, every path plain and relative with raw bytes that agree
+ * with its key, a mode on everything but a symlink, hardlink groups of two or more files of the
+ * document, shared links from a file of the document to a plain relative member, cross-class
+ * groups of two or more distinct plain members. The reason, or null when the document restores.
+ */
+const metaDocumentProblem = (bytes: Uint8Array): string | null => {
+  let document: typeof MetaDocument.Type;
+  try {
+    document = Schema.decodeUnknownSync(MetaDocument)(
+      JSON.parse(Buffer.from(bytes).toString("utf8")),
+    );
+  } catch (cause) {
+    return cause instanceof Error ? cause.message : String(cause);
+  }
+  if (document.format < 1 || document.format > WORKTREE_META_FORMAT) {
+    return `format ${document.format}; Mend reads up to ${WORKTREE_META_FORMAT}`;
+  }
+  const kinds = new Map<string, string>();
+  for (const entry of document.entries) {
+    const bytesOfPath = bytesOfPair(entry.path, entry.raw_path);
+    if (bytesOfPath === null || !isPlainRelative(bytesOfPath))
+      return `path ${JSON.stringify(entry.path)}`;
+    if (entry.kind !== "symlink" && entry.mode === undefined) {
+      return `${JSON.stringify(entry.path)} has no mode`;
+    }
+    kinds.set(entry.path, entry.kind);
+  }
+  const isFile = (key: string) => kinds.get(key) === "file";
+  for (const group of document.hardlinks ?? []) {
+    if (group.length < 2 || !group.every(isFile)) {
+      return `hardlink group ${JSON.stringify(group)} does not name files of the document`;
+    }
+  }
+  for (const link of document.shared ?? []) {
+    const member = bytesOfPair(link.member, link.raw_member);
+    if (!isFile(link.path) || member === null || member.length === 0 || !isPlainRelative(member)) {
+      return `shared link ${JSON.stringify(link)}`;
+    }
+  }
+  // Each cross-class group: two or more distinct members (class and bytes), each a plain,
+  // non-empty relative path whose raw bytes agree with its key.
+  for (const group of document.cross_links ?? []) {
+    const seen = new Set<string>();
+    for (const link of group) {
+      const member = bytesOfPair(link.member, link.raw_member);
+      const id = member === null ? "" : `${link.class}:${member.toString("hex")}`;
+      if (member === null || member.length === 0 || !isPlainRelative(member) || seen.has(id)) {
+        return `cross-class link ${JSON.stringify(link)}`;
+      }
+      seen.add(id);
+    }
+    if (seen.size < 2) {
+      return `cross-class link group ${JSON.stringify(group)} names fewer than two members`;
+    }
+  }
+  return null;
+};
+
+/**
+ * Establish that a workspace section's worktree metadata document restores, as sealantd's
+ * materializer reads it: a format Mend reads, packs among the section's own, every chunk in one
+ * of them, the chunks adding up to `size` bytes whose sha256 is `sha256`, and a document that
+ * decodes under its own rules. Reads the listed packs' indexes and each chunk by ranged GET.
+ */
+export const verifyWorktreeMeta = (
+  section: WorkspaceSection,
+  options?: { readonly sizes?: ReadonlyMap<string, number> },
+): Effect.Effect<void, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    const meta = section.worktree_meta;
+    if (meta === undefined) return;
+    const key = `worktree_meta ${meta.sha256}`;
+    const fail = (reason: string) => Effect.fail(new CaptureFormatError({ key, reason }));
+    if (meta.format < 1 || meta.format > WORKTREE_META_FORMAT) {
+      return yield* fail(`format ${meta.format}; Mend reads up to ${WORKTREE_META_FORMAT}`);
+    }
+    if (!Number.isSafeInteger(meta.size) || meta.size < 0) return yield* fail(`size ${meta.size}`);
+    if (!HEX64.test(meta.sha256)) return yield* fail("sha256 is not a sha256 digest");
+    const outside = meta.packs.filter((pack) => !section.packs.includes(pack));
+    if (outside.length > 0) {
+      return yield* fail(`packs not among the section's: ${outside.slice(0, 3).join(", ")}`);
+    }
+    const store = yield* BlobStore;
+    const where = new Map<string, { readonly pack: string; readonly entry: PackIndexEntry }>();
+    for (const pack of new Set(meta.packs)) {
+      const size = options?.sizes?.get(pack) ?? (yield* store.head(pack))?.size;
+      if (size === undefined) return yield* new BlobNotFoundError({ key: pack });
+      for (const entry of yield* readPackIndexRemote(pack, size)) {
+        if (!where.has(entry.hash)) where.set(entry.hash, { pack, entry });
+      }
+    }
+    let total = 0;
+    for (const hash of meta.chunks) {
+      const location = where.get(hash);
+      if (location === undefined) return yield* new ChunkNotFoundError({ hash });
+      total += location.entry.size;
+    }
+    if (total !== meta.size) {
+      return yield* fail(`its chunks hold ${total} bytes, the section says ${meta.size}`);
+    }
+    const parts: Array<Uint8Array> = [];
+    for (const hash of meta.chunks) {
+      const location = where.get(hash);
+      if (location === undefined) return yield* new ChunkNotFoundError({ hash });
+      const compressed = yield* store.getRange(
+        location.pack,
+        location.entry.offset,
+        location.entry.length,
+      );
+      parts.push(yield* readChunk(location.pack, compressed, { ...location.entry, offset: 0 }));
+    }
+    const document = Buffer.concat(parts);
+    const actual = sha256Hex(document);
+    if (actual !== meta.sha256) {
+      return yield* new CaptureIntegrityError({ key, expected: meta.sha256, actual });
+    }
+    const problem = metaDocumentProblem(document);
+    if (problem !== null) return yield* fail(`document: ${problem}`);
   });
 
 // ─── What a capture row names ───────────────────────────────────────────────
@@ -1562,7 +1995,18 @@ export const keysOfSections = (sections: unknown): ReadonlyArray<string> => {
       ...rowTreeOf(section),
       ...rowDirPacksOf(section),
     ]),
+    // The worktree metadata document's packs are the workspace section's own (sealantd), and
+    // register refuses one that is not; named anyway, since keeping one alive is never the loss.
+    ...rowPacksOf(worktreeMetaOf(sections)),
   ];
+};
+
+/** A row's `workspace.worktree_meta`, whatever it holds. */
+const worktreeMetaOf = (sections: object): unknown => {
+  const workspace: unknown = Reflect.get(sections, "workspace");
+  return typeof workspace === "object" && workspace !== null
+    ? Reflect.get(workspace, "worktree_meta")
+    : undefined;
 };
 
 /**

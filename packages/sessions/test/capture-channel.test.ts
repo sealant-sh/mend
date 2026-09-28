@@ -1260,7 +1260,21 @@ describe("capture channel routes", () => {
 
     // The session moves to an amd64 executor: the arm tree is not its to restore.
     const onX86 = apiOf("exec-x86");
-    const x86Claim = await onX86("/plan.get", { manifest_format: 2, epoch: 0, platform: X86 });
+    // An executor that does not say it carries `other_bulk` would drop the arm tree from the
+    // captures it writes: refused before it claims anything.
+    const notCarrying = await onX86("/plan.get", { manifest_format: 2, epoch: 0, platform: X86 });
+    expect(notCarrying.status).toBe(409);
+    expect(notCarrying.json).toMatchObject({
+      reason: "manifest-features",
+      missing: ["other_bulk"],
+    });
+    const carries = { manifest_features: ["other_bulk"] };
+    const x86Claim = await onX86("/plan.get", {
+      manifest_format: 2,
+      epoch: 0,
+      platform: X86,
+      ...carries,
+    });
     expect(x86Claim.status).toBe(200);
     const x86Epoch = Number(x86Claim.json["epoch"]);
     expect(x86Epoch).toBeGreaterThan(armEpoch);
@@ -1305,7 +1319,12 @@ describe("capture channel routes", () => {
     });
 
     // Each platform is answered its own tree, with its keys presigned and the other's not.
-    const forArm = await onX86("/plan.get", { manifest_format: 2, epoch: x86Epoch, platform: ARM });
+    const forArm = await onX86("/plan.get", {
+      manifest_format: 2,
+      epoch: x86Epoch,
+      platform: ARM,
+      ...carries,
+    });
     expect(forArm.status).toBe(200);
     expect(bulkOf(forArm)).toEqual(armSection);
     expect(urlsOf(forArm)).toEqual(
@@ -1314,7 +1333,12 @@ describe("capture channel routes", () => {
     for (const key of [...x86Tree.packs, ...x86Tree.dirPacks]) {
       expect(urlsOf(forArm)).not.toContain(key);
     }
-    const forX86 = await onX86("/plan.get", { manifest_format: 2, epoch: x86Epoch, platform: X86 });
+    const forX86 = await onX86("/plan.get", {
+      manifest_format: 2,
+      epoch: x86Epoch,
+      platform: X86,
+      ...carries,
+    });
     expect(bulkOf(forX86)).toEqual(x86Section);
     expect(urlsOf(forX86)).toEqual(expect.arrayContaining([...x86Tree.packs, ...x86Tree.dirPacks]));
     for (const key of armTree.packs) expect(urlsOf(forX86)).not.toContain(key);
@@ -1327,15 +1351,16 @@ describe("capture channel routes", () => {
       manifest_format: 2,
       epoch: x86Epoch,
       platform: "linux-riscv64-gnu",
+      ...carries,
     });
     expect(bulkOf(forRiscv)).toBe("pending");
     for (const key of [...armTree.packs, ...x86Tree.packs, ...x86Tree.dirPacks]) {
       expect(urlsOf(forRiscv)).not.toContain(key);
     }
     // An executor that names no platform gets the head as it is.
-    expect(bulkOf(await onX86("/plan.get", { manifest_format: 2, epoch: x86Epoch }))).toEqual(
-      x86Section,
-    );
+    expect(
+      bulkOf(await onX86("/plan.get", { manifest_format: 2, epoch: x86Epoch, ...carries })),
+    ).toEqual(x86Section);
 
     // An other_bulk entry the parent does not hold is checked like a bulk section: a malformed
     // key is refused before any HEAD, and missing objects are named.

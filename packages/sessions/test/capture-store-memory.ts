@@ -9,6 +9,7 @@ import {
   WorktreeLeasedError,
   type CaptureSummaryRow,
   type PackState,
+  type SealedCompletion,
 } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
 import { Effect, Layer } from "effect";
@@ -29,6 +30,10 @@ export interface MemoryCaptureStore {
   readonly captures: Map<string, CaptureRow>;
   /** `capture_tombstones`: key → owning worktree and whether the bytes are gone. */
   readonly tombstones: Map<string, { worktreeId: string; deleted: boolean }>;
+  /** `capture_seals`: `<worktree>:<epoch>` → the sealed completion. */
+  readonly seals: Map<string, SealedCompletion>;
+  /** `capture_deletion_claims`: key → token → when the claim lapses (store clock, ms). */
+  readonly claims: Map<string, Map<string, number>>;
   readonly packs: Map<string, PackRow>;
   readonly summaries: Map<string, CaptureSummaryRow>;
 }
@@ -51,6 +56,13 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
   >();
   const chains = new Map<string, MemoryChain>();
   const tombstones = new Map<string, { worktreeId: string; deleted: boolean }>();
+  const claims = new Map<string, Map<string, number>>();
+  const seals = new Map<string, SealedCompletion>();
+  /** A live deletion claim on `key`: some pass may still delete its bytes. */
+  const claimed = (key: string) =>
+    [...(claims.get(key)?.values() ?? [])].some((expiresAt) => expiresAt > clock.now());
+  /** A condemned key a register may bring back: its bytes gone, no pass still holding it. */
+  const revivable = (key: string) => tombstones.get(key)?.deleted === true && !claimed(key);
   const captures = new Map<string, CaptureRow>();
   const packs = new Map<string, PackRow>();
   const summaries = new Map<string, CaptureSummaryRow>();
@@ -127,14 +139,34 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
           chain.headN === capture.n - 1 &&
           chain.headCapture === capture.parent &&
           leaseEpoch === capture.epoch &&
-          guardsHold
+          guardsHold &&
+          (capture.revive ?? []).every((key) => !tombstones.has(key) || revivable(key))
         ) {
           chain.headN = capture.n;
           chain.headCapture = capture.id;
           chain.headEpoch = capture.epoch;
           chain.guard = (chain.guard ?? 0) + 1;
           for (const key of capture.revive ?? []) {
-            if (tombstones.get(key)?.deleted === true) tombstones.delete(key);
+            if (revivable(key)) {
+              tombstones.delete(key);
+              claims.delete(key);
+            }
+          }
+          const sealKey = `${capture.worktreeId}:${capture.epoch}`;
+          const sealed = seals.get(sealKey);
+          if (
+            capture.seal !== undefined &&
+            lease?.executorId === capture.seal.executorId &&
+            (sealed === undefined || sealed.n < capture.n)
+          ) {
+            seals.set(sealKey, {
+              worktreeId: capture.worktreeId,
+              epoch: capture.epoch,
+              executorId: capture.seal.executorId,
+              captureId: capture.id,
+              n: capture.n,
+              sealedAt: new Date(clock.now()),
+            });
           }
           captures.set(capture.id, {
             id: capture.id,
@@ -219,6 +251,18 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
           head: chain.headCapture === null ? null : (captures.get(chain.headCapture) ?? null),
         };
       }),
+    sealedCompletion: (worktreeId, executorId, epoch) =>
+      Effect.sync(
+        () =>
+          [...seals.values()]
+            .filter(
+              (seal) =>
+                seal.worktreeId === worktreeId &&
+                seal.executorId === executorId &&
+                (epoch === undefined || seal.epoch === epoch),
+            )
+            .toSorted((a, b) => b.epoch - a.epoch)[0] ?? null,
+      ),
     listChain: (worktreeId) =>
       Effect.sync(() =>
         [...captures.values()]
@@ -270,24 +314,40 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
           guards,
           tombstones: keys.flatMap((key) => {
             const tombstone = tombstones.get(key);
-            return tombstone === undefined ? [] : [{ key, deleted: tombstone.deleted }];
+            return tombstone === undefined ? [] : [{ key, deleted: revivable(key) }];
           }),
         };
       }),
-    condemn: (worktreeId, guard, keys) =>
+    condemn: (worktreeId, guard, keys, claim) =>
       Effect.sync(() => {
         if (keys.length === 0) return true;
         const chain = chains.get(worktreeId);
         if (chain === undefined || (chain.guard ?? 0) !== guard) return false;
         chain.guard = guard + 1;
-        for (const key of keys) tombstones.set(key, { worktreeId, deleted: false });
+        for (const key of keys) {
+          tombstones.set(key, { worktreeId, deleted: false });
+          const held = claims.get(key) ?? new Map<string, number>();
+          if (!held.has(claim.token)) held.set(claim.token, clock.now() + claim.ttlSeconds * 1000);
+          claims.set(key, held);
+        }
         return true;
       }),
-    markDeleted: (keys) =>
+    renewDeletion: (token, ttlSeconds) =>
       Effect.sync(() => {
-        for (const key of keys) {
+        const held = [...claims.values()].filter((byToken) => byToken.has(token));
+        if (held.some((byToken) => (byToken.get(token) ?? 0) <= clock.now())) return 0;
+        for (const byToken of held) byToken.set(token, clock.now() + ttlSeconds * 1000);
+        return held.length;
+      }),
+    finishDeletion: (token, deleted) =>
+      Effect.sync(() => {
+        for (const key of deleted) {
           const tombstone = tombstones.get(key);
           if (tombstone !== undefined) tombstone.deleted = true;
+        }
+        for (const [key, byToken] of claims) {
+          byToken.delete(token);
+          if (byToken.size === 0) claims.delete(key);
         }
       }),
     deleteCaptures: (worktreeId, captureIds) =>
@@ -317,5 +377,5 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
       }),
   });
 
-  return { layer, clock, leases, chains, captures, packs, summaries, tombstones };
+  return { layer, clock, leases, chains, captures, packs, summaries, tombstones, claims, seals };
 };

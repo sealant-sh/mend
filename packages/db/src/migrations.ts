@@ -2333,6 +2333,47 @@ const captureSavedMigration = Effect.gen(function* () {
       ADD COLUMN capture_saved_n integer`;
 });
 
+/**
+ * 0080: deletion owns its objects until it is done, and a completed final flush is a fact on the
+ * chain (docs/adr/0002-session-capture-store.md).
+ *
+ * - `capture_deletion_claims`: each retention pass that condemns a key holds a claim on it
+ *   (`token`, one per pass) from the condemnation until it has deleted the bytes and settled the
+ *   tombstone. A register may bring a condemned key back only once its tombstone reads deleted
+ *   AND no claim on it is live: a second pass that finished first no longer lets a register
+ *   revive bytes the first pass is still about to delete (review 2026-09-28 #1). A claim lapses
+ *   at `expires_at` (a crashed pass); its holder renews it before every delete and stops deleting
+ *   once a renewal fails.
+ * - `capture_seals`: the `final_seal` a registered capture carried (cross-repo decision 1,
+ *   2026-09-28) — sealantd's word, on the store, that the final flush of `executor_id` under
+ *   `epoch` completed: everything shipped, writers stopped. Written by the register CAS itself,
+ *   so it exists only for a capture that landed on a contiguous chain; one per worktree and epoch
+ *   (the newest sealing capture of that epoch). Mend's saved evidence, and what it attests to
+ *   Sealant when it asks to stop that executor.
+ */
+const captureClaimsAndSealsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE capture_deletion_claims (
+      key text NOT NULL REFERENCES capture_tombstones(key) ON DELETE CASCADE,
+      token text NOT NULL,
+      expires_at timestamptz NOT NULL,
+      PRIMARY KEY (key, token)
+    )`;
+  yield* sql`CREATE INDEX capture_deletion_claims_token_idx ON capture_deletion_claims (token)`;
+  yield* sql`
+    CREATE TABLE capture_seals (
+      worktree_id text NOT NULL REFERENCES worktrees(id) ON DELETE CASCADE,
+      epoch bigint NOT NULL,
+      executor_id text NOT NULL,
+      capture_id text NOT NULL,
+      n integer NOT NULL,
+      sealed_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (worktree_id, epoch)
+    )`;
+  yield* sql`CREATE INDEX capture_seals_executor_idx ON capture_seals (worktree_id, executor_id)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2413,4 +2454,5 @@ export const migrations = {
   "0077_capture_drain_resume": captureDrainResumeMigration,
   "0078_capture_failing": captureFailingMigration,
   "0079_capture_saved": captureSavedMigration,
+  "0080_capture_claims_and_seals": captureClaimsAndSealsMigration,
 };
