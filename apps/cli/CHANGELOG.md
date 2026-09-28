@@ -1,5 +1,450 @@
 # @sealant/mend
 
+## 0.34.0
+
+### Minor Changes
+
+- 9cbcfe3: Mend reads and registers captures whose directories travel in dir packs (sealantd's
+  capture manifest format 2): a pnpm `node_modules` that was about 20,000 uploads, one per
+  directory, is now a few packs to upload and a few to restore. `plan.get` tells executors they may
+  write it (`manifest_format: 2`); `MEND_CAPTURE_MANIFEST_FORMAT=1` tells them to go back to one
+  object per directory. Captures already written one object per directory keep restoring, and so
+  does a capture that holds one section of each. Register checks, prices and records dir packs like
+  any pack; retention keeps them; the dependency cache promotes them.
+
+  Retention also stops removing the directories below a live capture's older-format section once its
+  epoch is fenced. It kept only that section's root, so when a head moved to a new executor and
+  carried its bulk section along, the bulk tree's directories were swept once the head had stood for
+  the 30-minute grace.
+
+- 85dc7e8: A session that moves between executors of different platforms, such as arm64 and amd64,
+  keeps each platform's dependency tree. sealantd now carries the bulk sections built on other
+  platforms in the capture manifest (`sections.other_bulk`). `plan.get` answers each executor the
+  tree built for its own platform, from `bulk` or `other_bulk`, and `"pending"` when there is none,
+  so no executor restores a tree built for another platform. Register checks each carried section.
+  It does not ask the bucket again about a section the parent capture already holds. Retention keeps
+  every object a carried section names, under fenced epochs as well. The engine skips the install
+  command when the head carries a tree for the executor's platform. The dependency cache never
+  serves a record under the wrong platform. Manifests without `other_bulk` read and register exactly
+  as before.
+- ee1236e: A device token minted by hand. Settings → Devices gains "Mint a token by hand": name the
+  device and Mend mints the same token a pairing claim would, shown once beside the configured
+  origins, for a device that cannot scan a code: an App Review tester, a headless box. It lists and
+  revokes like any paired device. `POST /api/me/devices` carries it.
+- fb47287: Landing says why it did not land, and a request to land lands. Every turn automatic
+  landing decides records a reason and logs it; beside a question, `autopr=false`, landing off and
+  someone else's turn, a turn now reads `not landed · the change is empty`,
+  `not landed · nothing new since the last landing` or `not landed · the change was not captured`
+  (migration 0073). Before it reads the change for a landing, Mend asks the executor to flush its
+  captures, up to three times: a stale head is neither landed nor called empty. Follow-ups are read
+  before the change, and a request can read as `land` ("land it", "open a PR"), which lands the
+  owner's change even when the turn changed nothing, and in a Slack thread even with automatic
+  landing off. Inside a workspace, `mend land` lands the session's change as its owner and prints
+  what was pushed and what GitHub said, or why not; the opening prompt tells the agent to run it
+  when asked to publish, and never to push itself.
+- da47b7e: A conversation session (started from Slack, or from the web or phone composer) no longer
+  keeps its agent and workspace up until the platform's cap ends it. Mend stops an agent that has
+  sat idle for `MEND_PROTOCOL_IDLE_STOP_MINUTES` (default 15; 0 turns the stop off): no turn in
+  flight, no question or approval waiting, no live Service and no open shell. The stop is the Stop
+  button's, so review prep runs, and the session reads
+  `idle · stopped after 15 min · reply to resume`, with an `idle-stop` in its control log. The Slack
+  thread's status message says the same and its reaction becomes 💤. The next message, a Slack reply
+  or Resume, continues the same conversation. Migration 0072 adds the claim that stops each session
+  once across workers.
+- 5f18699: A stop no longer loses work an executor has not shipped. In capture mode every stop Mend
+  asks for (the Stop button, `mend stop`, the idle stop, a relaunch, a replacement ahead of the
+  platform's cap) drains first: Mend flushes, reads what is left and repeats until nothing is
+  pending, then terminates the workspace, and releases the worktree lease only once the platform
+  reports the workspace gone. While it drains the session reads `saving · 3 left` on the web, in
+  `mend status`, on the phone and in its Slack thread. A drain that moves nothing for
+  `MEND_CAPTURE_DRAIN_STALL_SECONDS` (default 600) reads `not saved · 3 pending · workspace kept`,
+  tells the owner's phone once, and keeps the workspace; only the owner's **Discard unsaved and
+  stop** (audited) ends it. The idle stop waits while captures are still shipping.
+  `MEND_EXECUTOR_MAX_SECONDS` states the platform's cap, and a planned drain starts ahead of it,
+  counted from the executor's own start. An executor the platform does not answer for is no longer
+  taken for dead, and a session removed while its workspace is up is removed once the workspace has
+  gone. Migration 0075 adds the capture columns to sessions.
+
+### Patch Changes
+
+- 645229d: A sealing register reads each pack at most once. On a bucket that does not refuse
+  overwrites (Garage), one register of a large repository had read every pack again for each
+  hardlinked file it checked: about 40 GB of reads for 0.78 GB of packs, taking 4.5 minutes. A
+  register now answers within 40 seconds. If the seal checks take longer, the capture registers, the
+  answer says the seal is withheld while verifying, and the seal is recorded once the checks pass. A
+  retried register joins the one already running instead of starting a second.
+
+  Upload URLs now last as long as their uploads need: at least 5.5 minutes, at most 15. On Garage a
+  Stop's seal is withheld for about 10.5 minutes instead of 20.
+
+  A capture step that runs past its bound (sealantd's `overdue`) shows on the session as
+  `capture step overdue · <step> · running … · bound …`, and such a session never reads idle or
+  saved. Migration 0093 adds the columns. Core does not forward the field yet.
+
+  Sessions on SHA-256 projects start: capture 0 names the object format. A launch interrupted by a
+  lost create answer now settles `stopped` once its executor ended, instead of staying `starting`. A
+  withheld seal reads `final seal not confirmed`, not `not registered`. A session-channel request
+  whose token lookup fails gets a 503 instead of stopping the Mend process.
+
+- 8c721d7: A hot-pool standby in capture mode no longer runs anything before a session claims it.
+  Mend used to run its helper install and workspace note in every standby right after it booted,
+  which told the executor it held a session's work. A standby whose replan then failed wedged for
+  about eleven minutes and ended `failed` with a discard needed, and shrinking the pool never
+  released it. The setup commands, the helper and the note now run at claim, after the replan.
+
+  After a `docker stop` outside Mend that saved, the session now settles
+  `stopped outside Mend · saved at … · capture <n>`. Before, Core reported the executor `failed`
+  with its container removed, and Mend read that as kept, so the session stayed `stopping`. An
+  executor Core retains for recovery still reads as kept.
+
+- bfa8d08: A seal now stands only while no upload URL of any epoch its objects live under could
+  replace one, including packs it carries from an earlier epoch. Migration 0092 records those epochs
+  on the seal. Once a seal is recorded, no epoch gets a URL for an object it names. A request for
+  upload URLs that waited past its epoch's end records nothing and mints nothing.
+
+  Saving what an executor already holds is never refused for the byte quota. That covers a draining,
+  kept or recovering executor's uploads and registers, and every `final` capture's register. The
+  byte ledger is now per executor launch, so a new executor starts with its own budget.
+
+  A drain's FINAL answer reads saved only when the executor's recorded evidence does. That is the
+  same decision seals and executor ends use. A delayed `complete` no longer logs `saved` or stops an
+  executor whose evidence still holds an unsaved answer made after it, or one that cannot be ordered
+  against it.
+
+  Mend reads sealantd round 10's stores: the `wide_times` manifest feature (modification times
+  before 1677 or after 2262, kept exactly and handed only to executors that read them), linked
+  worktree admin under `.git/worktrees/`, and the extra git pack of nested-repository objects.
+
+- a2d5b77: A final flush that Core's deadline or sealantd's own shutdown started is no longer
+  refused for the byte or call quota. sealantd marks such requests `"flush":"final"`, and Mend
+  exempts them whether or not it is draining the session, logging the bytes it admits over the
+  quota.
+
+  Mend refuses to adopt SHA-256 repositories ("Mend doesn't support SHA-256 repositories yet.") and
+  removes the clone. A SHA-256 project adopted earlier is refused the same way when a session starts
+  on it.
+
+  Status lines no longer call a registered capture saved:
+  `executor not answering · last capture 10 at 07:33:53 UTC · not confirmed` replaces
+  `last saved capture 10 …`. A session whose executor the platform keeps for recovery reads
+  `stopping · retained` instead of `running`, and a resumed session no longer shows the previous
+  executor's `stopped outside Mend · saved at …` line.
+
+  A launch that claimed a standby whose re-plan failed, and which held nothing, goes on with a cold
+  executor at once (with sealantd's matching fix) instead of failing after about 12 minutes.
+
+  The docs site has a new Known issues page: the seal wait on Garage, SHA-256 repositories, how
+  build output carried from another platform is checked, and what a machine failure can lose.
+
+- 9e0f933: A final seal is no longer refused because the store failed a read while Mend checked it.
+  A 503 or a timeout from the bucket, or a database error while recording the seal, now answers
+  `seal: withheld` with the reason `unavailable`. Mend drops that check, and the executor's next
+  register checks the capture again and records the seal. Before, the refusal was cached as
+  `unrestorable`, or the seal read `verifying` forever, until Mend restarted. Only bytes that are
+  missing or read back wrong refuse a seal.
+
+  A session resumed into a workspace kept by a Service no longer reads
+  `running · executor not answering · …` once that executor has answered and started the new
+  process. `executor lost · …` stays until a replacement picks the session up.
+
+- 56794c2: A git step the Mend host could not finish no longer marks a sound capture `failed`.
+  Before, one `git index-pack` killed by the OOM killer, a full disk while a pack was staged, or a
+  large repository whose object walk printed past the 64 MiB buffer recorded the capture `failed`
+  for good. Every later plan then restored an older git section under the newest capture, which
+  dropped the last turns' commits and left a repository `git fsck` refused, and the final seal was
+  refused on every ask. Now only git rejecting a pack's bytes, or a missing object, records
+  `failed`. Anything else leaves the capture unverified, and it is checked again on the next
+  register, seal re-ask or plan. The object walk no longer buffers git's output.
+
+  A plan never mixes an older git section with a newer capture. If Mend cannot verify the head right
+  now, the executor waits and asks again, and the session reads
+  `launch waiting · capture <n>'s git section could not be verified on the Mend host · asked again`.
+  If git rejects the head's content, the newest capture that verifies is restored whole, and the
+  session reads `restored capture <m> · capture <n>'s git section failed verification`. Migration
+  0094 resets every capture recorded `failed` to unverified, once, so it is verified again.
+
+- 8c721d7: A recovery boot or an executor's own restart no longer waits on Mend verifying a capture
+  it never restores. Before, a host fault on the Mend server (a full disk, a killed git) left a
+  crashed executor's recovery unable to ship its staged captures until the fault cleared. Only a
+  plan that lays the head down (a fresh launch, a resume or a claimed standby) checks it now.
+
+  If git rejects the head's content, the launch is refused and the session reads
+  `launch blocked · capture <n>'s git section failed verification · discard or contact the operator`.
+  Mend no longer plans an older capture in its place, which the executor could not restore. A commit
+  whose parent is missing now counts as a content rejection, and a check that keeps failing with the
+  same unexplained git words is recorded `failed` after five tries instead of waiting forever.
+
+  The `launch waiting · …` and `launch blocked · …` words are added beside the session's summary
+  instead of replacing it, so `executor lost · …` is kept until the replacement answers. Words from
+  a launch the session has moved on from are ignored.
+
+- 592ab7c: A cold resume no longer changes the saved harness directories' modes and times while it
+  moves the new executor's credentials into place. Before, a restored `~/.claude` saved at 0750 came
+  back 0700. The move now copies only the entries the restored directory is missing. A session whose
+  lost launch Mend recovers reads `stopping · … · stop requested · end not observed yet` until the
+  platform reports its executor gone. Before, it said the executor had ended as soon as the stop was
+  asked. Mend no longer deletes a skill directory the library replaces or drops. It moves the
+  directory to `/workspace/harness-home/.mend/skills-kept/`, even when the directory is exactly as
+  Mend wrote it.
+- 97d92db: Every executor is one launch: the key its create is asked under names it (migration
+  0083). Its session channel token is issued for that launch alone, `plan.get` names it as the
+  executor, the store records a completed final flush only when the seal names it, and a stop
+  attests the seal only with that launch's own runtime. A new launch never rotates another's token.
+  A claimed standby is the session's executor before it is re-planned: when the replan answer is
+  lost it drains like any executor, a kept standby refuses the launch, and a cold executor starts
+  only once the standby's end is confirmed, under a fresh epoch.
+
+  A create whose answer was lost holds every relaunch, the owning session's too, until its key is
+  reconciled: an executor it made drains before anything new starts; nothing on record frees the
+  worktree only once Core cancels the key (`cancelCreate`), and on SDK 0.37.2 the next launch asks
+  the same create again under the same key.
+
+  A key retention condemned is never registered again (`missing-objects` naming it); sealantd
+  uploads the content under a new key generation, and Mend reads both key forms. A completion seal
+  is recorded only over a git section Mend verified and worktree metadata that names only what the
+  worktree tree holds; metadata naming a missing file is refused. A flush answer that does not
+  report snapshot health holds a landing (`snapshot health not reported`), and a suspend flush logs
+  `completed` only when the head caught up. A dir entry's nanosecond mtime is read and written back
+  exactly.
+
+  A capture whose git section names its trees (`worktree_tree`, `index_tree`, `raw_tree`: the
+  `git_trees` feature) is read from `worktree_tree`, verified over all three trees, and planned only
+  for an executor that reads the feature; every ref in it is the user's, `refs/sealant/capture/*`
+  included. A final flush that answers `changed` (the disk changed after it) is not saved: the drain
+  asks again, and never ends an executor on a completed answer it did not ask for in that round.
+
+  An executor that ended on its runtime and that the platform keeps for recovery (`failed` in
+  capture mode) is no longer read as dead: its lease and its channel token stay, the session reads
+  `not saved · executor kept for recovery`, and only an end the platform confirms releases them. A
+  `docker stop` that runs the executor's own final flush reads `stopping · saving`. A runtime that
+  is not ready is kept on the kept backoff instead of being flushed every few seconds. The upload
+  URL quota is per executor, free for keys already handed out, and never applied while a drain
+  saves.
+
+- fcd6e0a: Mend orders capture evidence by the executor's own stamp (`origin`: launch, boot, boot
+  generation, observation), never by wall clocks (migration 0087). A seal stands for a lost final
+  flush answer only when every unsaved answer the executor gave comes strictly before it; an answer
+  nothing orders against it keeps the workspace. Every answer moves a per-executor evidence version.
+  An answer still in flight, or one that failed to persist, leaves the executor's evidence unknown.
+  A completion attestation, and a `stopped outside Mend · saved` end, commit only on the version
+  they read. A stop's attestation carries the seal's stamp.
+
+  Stored capture objects are write-once. Presigned PUTs sign `If-None-Match: *`, and `upload.urls`
+  answers a key the bucket already holds as `present` after checking its bytes against its name.
+  Cached checks of a key's bytes are bound to the store, and are trusted only once no upload URL can
+  replace the object. The directory store publishes objects read-only. Garage v2.4.1 replaces bytes
+  despite the header (measured). MinIO refuses with 412.
+
+  A final seal also needs every tracked `hardlinks` group to be one blob of the tree the restore
+  checks out, and every `shared` link to name a file its class carries with the tracked file's
+  bytes.
+
+- 73f049e: An executor's capture evidence is fenced in the database (migration 0088). A row is
+  written before Mend asks the executor anything and deleted in the one transaction that publishes
+  the answer: the session's reading, its saved or unsaved word, and the executor's evidence. An
+  answer that arrived and could not be published keeps the executor's evidence unknown across
+  restarts and engine processes, so an older seal no longer reads saved after a Mend restart. The
+  session's queue reading keeps the executor's stamp, so a seal that covers it stands. Evidence that
+  nothing orders against a save, or an answer not yet published, reads `completion unknown`, never
+  `changes after that were not saved`.
+
+  `upload.urls` answers `present` only to an executor whose `plan.get` listed it in
+  `upload_answers`. An older daemon gets a write-once URL for a stored key whose bytes were
+  verified, as before.
+
+  On a bucket that ignores `If-None-Match` (Garage), a seal no longer stands while an upload URL of
+  its epoch could still replace what it names (migration 0089 records each URL's expiry before it is
+  handed out). Once none can, every object the seal names is read back first, and one that reads
+  back as other bytes voids the seal. On such a bucket a seal stands up to twenty minutes after the
+  last upload URL of its epoch.
+
+  Register checks the worktree metadata against the tree the restore checks out (the raw tree when
+  there is one) and the classes restored over it. A final seal also needs every inode the metadata
+  links (hardlinks, shared, cross-class) to be promised one mode and one nanosecond mtime.
+
+- 05497dc: `capture.register` now says whether the final seal it carried stands:
+  `seal: {state: "recorded" | "withheld" | "refused", reason?}`. sealantd answers a final flush
+  complete only on `recorded`. `plan.get` hands a head's `final_seal` on only while that seal
+  stands. An upload URL handed out while a seal's objects are being read back leaves the seal
+  withheld.
+
+  Register checks worktree metadata against what the restore actually lays down: the workspace class
+  over the raw tree, the bulk class where neither holds the path, and every ancestor of a named
+  path. Every class entry a hardlink names promises its inode a mode and an mtime, so two different
+  promises for one inode are never sealed.
+
+  A SHA-256 repository's git section (`object_format: "sha256"`) is verified in a SHA-256
+  repository. Object ids of another width are `unverified`, where before they read `verified`
+  without a walk.
+
+  A capture answer that arrives is kept as evidence even when the log line after it fails.
+
+- 164dade: Mend now keeps every unsaved capture answer an executor gave, unless a later answer from
+  the same boot or a later boot replaced it. A delayed old answer no longer erases a recovery boot's
+  failure and makes an old seal read as saved again. A seal or a completed final flush counts as
+  saved only when it came after every one of those answers. Migration 0090 adds the column that
+  holds them.
+
+  Issuing upload URLs and accepting a seal now wait on the same row (migration 0091), so a URL
+  issued during a seal's verification is always seen. Once a seal is recorded, the stored objects it
+  names never get an upload URL: `upload.urls` answers them `present`, or refuses them with
+  `409 exists` if the executor does not read `present`.
+
+  A tracked hardlink group, or a shared link's tracked file, has its bytes compared in the files the
+  restore actually writes, including the workspace overlay. A group whose members differ only after
+  the overlay is applied is not sealed.
+
+  The git section's `ref_format` (sealantd's `ref_format` manifest feature, `reftable`) is decoded,
+  handed only to executors that read it, and verified in a reftable repository. A ref backend Mend
+  does not read is `unverified`, as is a section whose HEAD is `refs/heads/.invalid`, the
+  placeholder in a reftable repository's `.git/HEAD` file.
+
+  A discard logs the request before the stop, and logs `discarded` only after the platform confirms
+  the end.
+
+- 0b96ddc: Two retention passes that overlapped no longer delete a capture registered between them.
+  A pass that condemned objects now holds a claim on them until it has deleted them and settled
+  their tombstones (migration 0080); while any pass holds one, a register naming those objects is
+  refused with `missing-objects`, and it registers once that pass is done and the executor has
+  uploaded them again. A pass whose claim lapsed stops deleting and leaves the rest for the next
+  pass.
+
+  Mend's capture reader writes a file name or symlink text that is not UTF-8 as its bytes, as
+  sealantd carries them in `raw_name` / `raw_target`, instead of the escaped name, and register
+  refuses an entry whose raw bytes disagree with its name.
+
+  Register validates the manifest as it is stored — a request carrying a different copy is refused —
+  and refuses a capture whose worktree metadata document would not restore: an unread format, packs
+  outside the workspace section, chunks that do not add up to its size and digest, or a document
+  sealantd would reject.
+
+  A capture whose manifest carries sealantd's `final_seal` (a completed final flush) records it on
+  the chain for that executor and epoch (migration 0080), when it is complete and names the executor
+  and epoch that registered it. It is what Mend reads as "saved".
+
+  `plan.get` refuses a head holding `worktree_meta`, `symrefs`, `other_bulk`, raw names or a
+  `final_seal` to an executor that does not list the feature in `manifest_features`, before it
+  claims the lease (409 `manifest-features`), and answers the features Mend reads.
+
+  `plan.get` names the executor a completed final flush must seal as. A ref name that is not UTF-8
+  counts as a raw name, and the runner writes it into `packed-refs` and `HEAD` as its bytes.
+  Register checks the metadata document's cross-class link groups, and a drain reads sealantd's
+  `sealing` as "final seal not registered" and keeps asking.
+
+- 323d9ac: Retention no longer deletes packs a capture registered during its pass still needs. A
+  final capture that reused packs from a capture being thinned registered, and the pass then deleted
+  those packs: the head could not be read. Register and retention now meet on a per-chain guard
+  (migration 0076), so one of the two always sees the other; a capture naming objects retention is
+  deleting is refused with `missing-objects`, and registers again once the executor has uploaded
+  them again.
+
+  Register refuses a capture Mend could not restore: a root no listed dir pack holds, a dir object
+  that is not in the bucket, a chunk in no listed pack, a file whose chunks do not add up to its
+  size, or a hardlink whose canonical member is missing (422 `unrestorable` or `missing-objects`).
+  Sections carried unchanged from the parent are not walked again.
+
+  Reading one file of a capture follows a hardlink member to its canonical member instead of
+  returning an empty file, and fails when the bytes read are not the size the entry says. Transcript
+  harvesting reads files this way.
+
+  `plan.get` hands a head holding dir packs (format 2) only to an executor that says it reads them
+  (`manifest_format` on the request), refusing any other with `manifest-format` before it claims the
+  lease, and never tells an executor to write a format it did not say it reads. Rolling sealantd
+  back is in ADR 0002 decision 30 and the server environment reference.
+
+- 9b445f6: A resume no longer runs the dependency install when it cannot read the saved capture's
+  manifest. Before, one failed read (a 503 from the bucket) counted as "no dependency tree for this
+  platform", so `npm ci` ran over the restored `node_modules` and put a patched file back to the
+  published bytes. Now Mend installs only when the manifest it read has no tree for the executor's
+  platform, or the worktree has nothing saved yet. When the read fails, nothing is installed and the
+  session says `dependency install skipped · capture <n> manifest unavailable`. Run the install
+  yourself if the dependencies are missing.
+- 90512b7: Two status lines now say what was saved. A launch that failed, and whose kept executor
+  the platform ended after it sealed, reads `launch failed: … · saved at … · capture <n>`. A session
+  Mend stopped because its executor ran a final flush on its own (a `docker stop`, a platform
+  deadline) reads `stopped outside Mend · saved at … · capture <n>` once saved, as other sessions
+  ended outside Mend do.
+- 0a04c67: A resume keeps what you and the agent wrote in the harness's memory files. Mend's note in
+  `~/.claude/CLAUDE.md` and `~/.codex/AGENTS.md` used to run from a `<!-- mend:mounts -->` line to
+  the end of the file, and every launch cut the file there, so instructions added below the note
+  were lost at the next resume. The note is now a block between two marker lines, and a launch
+  replaces only that block. An old note becomes the block when it is exactly what Mend wrote; an
+  edited one is left in place and the block is added after it. A file Mend cannot read is left
+  alone. Three other launch writes no longer replace your files: Claude Code's `settings.json` and
+  `~/.claude.json` are only merged into when they parse, Codex's trust table starts on its own line
+  in `config.toml`, and a skill directory that differs from what Mend delivered is moved to
+  `/workspace/harness-home/.mend/skills-kept/` instead of being deleted.
+- 20bf55b: Mend runs Sealant 0.38.0 (sealantd 0.19.0): the bundle's Sealant API, worker and SSH
+  gateway move to 0.38.0, and a capture flush now tells the platform whether it is a final flush, so
+  a Stop's final save reaches the executor as a FINAL.
+- c19da44: A session's executor is on its row from the moment the platform accepts it, before any
+  setup command, relocation, install or harness runs in it. A launch that fails after that (a custom
+  setup command that exits non-zero, a relocation, the harness PTY) drains the executor instead of
+  stopping it outright, keeps holding removal and the worktree until its end is observed, and
+  settles `failed` with the launch's own words. A lease that still names a session with no workspace
+  on its row (a launch cut short around its create) holds removal and the worktree too, lapsed or
+  not.
+
+  A restart serves the channel of every session a worktree lease names, so an owner that stopped
+  while a joined session still works keeps shipping. A relaunch whose opening prompt no process took
+  after a restart launches again, or keeps the prompt and says `opening prompt not delivered · …`;
+  the plan clears only once a turn with its correlation is accepted or the owner stops.
+
+  Nothing reads `saved` from a capture's kind any more: only the executor's own `complete: true` for
+  that executor and epoch, or the store's sealed record of it. An executor stopped outside Mend
+  whose final capture registered without either reads
+  `stopped outside Mend · last saved capture 21 at … · completion unknown`. A landing waits for a
+  small snapshot that read everything: a failing small snap, an unreadable path or a small refusal
+  hold it, however empty the queue; a failing bulk snap does not. An agent whose executor never
+  answered reads `executor not answering · … · completion unknown`, never the harness's `completed`.
+  The planned drain ahead of a platform's cap counts back from `workspace.runtimeDeadline()` once
+  the SDK has it, and every drained stop tells Core the completion the store sealed.
+
+  Every capture-mode executor create carries an idempotency key written on the session before the
+  create is asked (migration 0082). A create whose answer was lost, in the launch or across a
+  restart, is found by that key once the SDK can look (Core's next SDK): the executor goes on the
+  session and drains, or, when none was made, the worktree is free again. The executor's runtime
+  identity comes from the create's `launch.runtime`, else `workspace.runtime()`.
+
+- 89d3c52: Capture mode: nothing an executor holds is let go on an empty queue alone.
+  - Every drain (stop, idle stop, relaunch, replacement) asks for a final flush and counts only the
+    executor's `complete: true` as saved. Until the SDK carries it, a drain keeps its workspace and
+    reads `not saved · final flush not reported · workspace kept`; an incomplete flush names
+    sealantd's reason. Nothing is started, joined or resumed in an executor sent a final flush.
+  - The lead before a stated cap grows with what is pending at the executor's observed throughput.
+  - A lapsed lease is not an end: another session is refused until the platform confirms the holder
+    ended, and a release now clears the holder.
+  - Worktree and project removal wait for drains, kept workspaces, unended executors and held
+    leases; the session that owns an executor stays while another session works in it.
+  - Every landing (Land panel, Slack, `mend land`, a completed turn) checkpoints only once the
+    captures caught up; unknown is not caught up, and the landing reads exactly that capture.
+  - A turn asked after the idle stop's claim is refused instead of queued against a stopped agent.
+  - A relaunch interrupted by a restart finishes: drain, terminate, then the launch it was asked
+    for, opening prompt included, exactly once (migration 0077).
+  - The owner's stop during a replacement wins: the executor saves and ends, and no new one starts.
+  - After a restart, a session still draining gets its executor channel back, so the drain can
+    finish.
+  - "Discard unsaved and stop" asks the platform for a stop that does not drain, and says so when
+    the platform keeps the workspace.
+  - An agent whose executor went away without Mend asking reads
+    `failed · executor lost · last saved …`, never `completed`.
+  - A launch that failed before any executor existed releases its worktree lease.
+
+- 90512b7: Custom-image setup commands now run only on a worktree's first launch. Before, a resume
+  ran them again over the restored worktree, so `npm ci` put a patched file in `node_modules` back
+  to the published bytes before the shell opened. A launch that restores a saved capture (a resume,
+  a recovery, a relaunch, a standby claimed onto saved work) runs none of them. It still installs
+  the `mend` helper and git transport, and the session says
+  `setup skipped · restored from capture <n>`. Run the install yourself after a resume if a lockfile
+  changed. Put anything setup installs outside the worktree in Extra packages or the base image.
+- 288727f: A resume leaves a skill directory alone when its files already match the library. Mend
+  used to remove and rewrite it at every launch, so a script you made executable came back without
+  its executable bit, and empty directories and hard links you added were lost. A skill Mend
+  replaces or retires is deleted only when it is still exactly what Mend wrote, modes included;
+  otherwise it is moved, unchanged, to `/workspace/harness-home/.mend/skills-kept/`. Mend's note and
+  Claude Code settings writers no longer delete a file that happens to have their temporary file's
+  name.
+
 ## 0.33.0
 
 ### Minor Changes
