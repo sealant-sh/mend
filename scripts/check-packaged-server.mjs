@@ -1381,12 +1381,19 @@ async function main() {
   await docker(["rm", "-f", fixtureId]);
   fixtureId = undefined;
   if (gitAccess) await docker(["rm", "-f", gitAccess.containerId]);
-  await until("executor reclamation", async () => {
-    const { now } = await collectOwned();
-    return !now.containers.some(
-      (item) => item.State.Running && ownsWorkspaceContainer(item, initialIds),
-    );
-  });
+  // The bundle stores captures on Garage, which ignores conditional writes: a stopped session's
+  // executor is kept until its final seal stands, after the last upload URL it was handed expires
+  // (about 10.5 minutes; docs reference/known-issues). Wait past that horizon.
+  await until(
+    "executor reclamation",
+    async () => {
+      const { now } = await collectOwned();
+      return !now.containers.some(
+        (item) => item.State.Running && ownsWorkspaceContainer(item, initialIds),
+      );
+    },
+    15 * 60_000,
+  );
   await idle();
 
   async function retained(expected = saved, expectedAssets = assets) {
