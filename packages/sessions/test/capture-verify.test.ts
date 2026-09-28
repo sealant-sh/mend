@@ -2812,3 +2812,128 @@ describeSeals(
     });
   },
 );
+
+// Review 2026-09-28 (10) #5 on a real bucket that ignores `If-None-Match` (Garage): the old
+// epoch's URL, minted before its pack was uploaded, really replaces that pack after a newer
+// epoch sealed a capture carrying it — and that seal never stands on the replaced bytes. The
+// process that reads the seal has been up past its startup horizon and did not mint that URL
+// (another Mend replica did): only the recorded authority knows it lives.
+describeSeals(
+  "review 10 #5 on a real bucket (MEND_TEST_S3_URL)",
+  {
+    skip: garageConfig === null,
+    blobs: (root) =>
+      garageConfig === null
+        ? BlobStoreFsLive(root)
+        : Layer.effect(
+            BlobStore,
+            Effect.map(BlobStore, (store) => ({
+              ...store,
+              replaceableUntil: (key: string) =>
+                store
+                  .replaceableUntil(key)
+                  .pipe(Effect.map((until) => (until === 0 ? 0 : review10StartupHorizon))),
+            })),
+          ).pipe(Layer.provide(BlobStoreS3Live(garageConfig))),
+  },
+  ({ world, run, claimed }) => {
+    it("an old epoch's live URL replaces a pack a newer seal carries: the seal is withheld, then void", async () => {
+      const at = await claimed();
+      const file = sealedFile(at, "unique inherited bytes on a real bucket\n");
+      const minted = await run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [file.key],
+          sizes: { [file.key]: file.bytes.length },
+        }),
+      );
+      const url = minted.urls[file.key] ?? "";
+      const headers = { "if-none-match": "*", "content-length": String(file.bytes.length) };
+      expect(
+        (await fetch(url, { method: "PUT", headers, body: Buffer.from(file.bytes) })).status,
+      ).toBe(200);
+      const cap1 = buildManifest({
+        worktreeId: at.worktreeId,
+        epoch: at.epoch,
+        n: 1,
+        parent: at.cap0Id,
+        kind: "turn",
+        git: JSON.parse(JSON.stringify(at.git)),
+        workspace: sectionOf(file.snapshot),
+        bulk: READY_EMPTY_BULK,
+      });
+      await run(
+        uploadObjects(
+          new Map(
+            [...file.snapshot.objects]
+              .filter(([key]) => key !== file.key)
+              .concat([[cap1.key, cap1.bytes]]),
+          ),
+        ),
+      );
+      await run(registerOn(at.worktreeId, at.epoch, at.api)(cap1));
+      const next = await run(
+        Effect.gen(function* () {
+          const repo = yield* CaptureStoreRepo;
+          yield* repo.release(at.worktreeId, at.epoch);
+          const lease = yield* repo.claim(at.worktreeId, "executor-next", 3600, "launch-next");
+          const api = (yield* CaptureChannel).apiFor({
+            worktreeId: at.worktreeId,
+            projectId: world.project.id,
+            executorId: "executor-next",
+            launchId: "launch-next",
+            footprintBytes: 0,
+          });
+          return { epoch: lease.epoch, api };
+        }),
+      );
+      const built = buildManifest({
+        worktreeId: at.worktreeId,
+        epoch: next.epoch,
+        n: 2,
+        parent: cap1.id,
+        kind: "final",
+        git: JSON.parse(JSON.stringify(at.git)),
+        workspace: sectionOf(file.snapshot),
+        bulk: READY_EMPTY_BULK,
+      });
+      const manifest = {
+        ...built.manifest,
+        final_seal: { complete: true, epoch: next.epoch, executor: "launch-next" },
+      };
+      const bytes = new Uint8Array(Buffer.from(JSON.stringify(manifest)));
+      const cap = {
+        manifest,
+        bytes,
+        id: sha256Hex(bytes),
+        key: captureKeys(at.worktreeId, next.epoch).manifest(sha256Hex(bytes)),
+      };
+      await run(uploadObjects(new Map([[cap.key, bytes]])));
+      const answer = await run(registerOn(at.worktreeId, next.epoch, next.api)(cap));
+      if (
+        (await run(Effect.flatMap(BlobStore, (store) => store.replaceableUntil(file.key)))) === 0
+      ) {
+        // A bucket that honours the precondition: nothing can replace the pack.
+        expect(answer.seal).toEqual({ state: "recorded" });
+        return;
+      }
+      expect(answer.seal?.state).toBe("withheld");
+      // The old epoch's URL replaces the carried pack's first byte.
+      const bad = Buffer.from(file.bytes);
+      bad[0] = (bad[0] ?? 0) ^ 0xff;
+      expect((await fetch(url, { method: "PUT", headers, body: bad })).status).toBe(200);
+      // Once every URL has expired, the read-back finds other bytes: void, never standing.
+      const after = Date.now() + 2 * 60 * 60 * 1000;
+      const standing = await run(
+        Effect.flatMap(CaptureSeals, (service) =>
+          service.sealedCompletion(at.worktreeId, "launch-next", next.epoch),
+        ).pipe(Effect.provide(makeCaptureSealsStore({ now: () => after }))),
+      );
+      expect(standing).toBeNull();
+      expect(world.memory.seals.get(`${at.worktreeId}:${next.epoch}`)?.voidReason).toEqual(
+        expect.any(String),
+      );
+    });
+  },
+);
