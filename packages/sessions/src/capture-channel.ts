@@ -98,8 +98,32 @@ export const PlanGetRequest = Schema.Struct({
    * than was saved or drops it from the captures it writes next. Absent = none.
    */
   manifest_features: Schema.optional(Schema.Array(Schema.String)),
+  /**
+   * The launch the executor says it is (cross-repo decision 11; sealantd round 4), from its first
+   * `plan.get` on: as its launcher named it, or as its own disk last recorded it. The token
+   * already names a launch; a request naming another is refused (409 `launch-mismatch`, which
+   * sealantd reads as a refusal of the boot) — an executor never plans, and so never holds a
+   * lease or seals, as a launch its token was not issued for. Absent = the executor does not
+   * say (an older daemon): the token alone decides.
+   */
+  launch: Schema.optional(Schema.String),
 });
 export type PlanGetRequest = typeof PlanGetRequest.Type;
+
+/**
+ * 409 `launch-mismatch`: the request names a launch other than the one the token was issued
+ * for. Nothing is claimed, planned or told.
+ */
+const refuseOtherLaunch = (input: PlanGetRequest, tokenLaunch: string) =>
+  input.launch === undefined || input.launch === tokenLaunch
+    ? Effect.void
+    : Effect.fail(
+        new CaptureRouteError({
+          status: 409,
+          reason: "launch-mismatch",
+          message: "the request names a launch this token was not issued for",
+        }),
+      );
 
 /**
  * What a manifest can say beyond its sections' formats, each of which a reader must act on:
@@ -326,9 +350,12 @@ export type HeartbeatRequest = typeof HeartbeatRequest.Type;
  * manifest names — nothing is registered. `manifest-format` (409 on `plan.get`): the head holds
  * a section format the executor did not say it reads — refused before the claim.
  * `manifest-features` (409 on `plan.get`): the head holds manifest features the executor did not
- * say it reads (`missing` names them) — refused before the claim.
+ * say it reads (`missing` names them) — refused before the claim. `launch-mismatch` (409 on
+ * `plan.get`): the request names a launch its token was not issued for — sealantd refuses its
+ * boot.
  */
 export const CaptureRefusalReason = Schema.Literals([
+  "launch-mismatch",
   "stale-epoch",
   "wrong-parent",
   "wrong-worktree",
@@ -828,6 +855,7 @@ export const CaptureChannelLive: Layer.Layer<
             message: "this standby token is scoped to its placeholder worktree",
           });
         }
+        yield* refuseOtherLaunch(input, scope.launchId ?? scope.executorId);
         const plan = yield* scope
           .plan(input.platform)
           .pipe(Effect.catch(() => storeError("preparing the standby plan")({ _tag: "plan" })));
@@ -1037,6 +1065,7 @@ export const CaptureChannelLive: Layer.Layer<
 
       const planGet = Effect.fn("SessionCaptureApi.planGet")(function* (input: PlanGetRequest) {
         yield* requireWorktree(input.worktree_id);
+        yield* refuseOtherLaunch(input, launchId);
         const asked = input.epoch ?? 0;
         const reads = readerFormatOf(input);
         const lease = yield* repo.leaseOf(worktreeId);

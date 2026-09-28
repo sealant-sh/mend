@@ -13,6 +13,7 @@ import {
   captureHarvestReady,
   captureProgressed,
   captureSaved,
+  captureUnsavedWordsOf,
   captureSnapDetailOf,
   captureStatusLine,
   type CaptureReading,
@@ -279,6 +280,26 @@ describe("captureDrainStep when a capture class is polled (sealantd `unwatched`)
     expect(captureIncompleteWords("unwatched")).toBe(
       "a capture class is polled, currency not observed",
     );
+  });
+});
+
+describe("captureDrainStep when the store cannot keep full fidelity (sealantd `store-fidelity`)", () => {
+  it("reads `store-fidelity` as not saved at once, with words: no wait makes the store read more", () => {
+    expect(CAPTURE_INCOMPLETE_REASONS).toContain("store-fidelity");
+    const lossy = reading({ complete: false, incompleteReason: "store-fidelity" });
+    expect(captureSaved(lossy)).toBe(false);
+    const step = captureDrainStep({
+      previous: null,
+      reading: lossy,
+      progressAtMs: 0,
+      nowMs: 1,
+      stallSeconds: 600,
+    });
+    expect(step.kind).toBe("not-saved");
+    expect(captureIncompleteWords("store-fidelity")).toBe(
+      "the store does not read every manifest feature this executor writes",
+    );
+    expect(captureUnsavedWordsOf(lossy)).toBe("incomplete · store-fidelity");
   });
 });
 

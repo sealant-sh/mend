@@ -32,7 +32,9 @@ import {
   MANIFEST_FEATURES,
   CaptureUploadPolicy,
   CaptureUploadPolicyDefault,
+  dispatchCaptureRoute,
   resolveCaptureUploadPolicy,
+  type SessionCaptureApi,
 } from "../src/capture-channel.ts";
 import { CaptureRemotesOff } from "../src/capture-remotes.ts";
 import { CaptureSourcesOff } from "../src/capture-sources.ts";
@@ -1372,5 +1374,91 @@ describe("a seal rests on chunk bytes that read (review 2026-09-28 (4) #13)", ()
     );
     expect(result.registered).toBe("ok");
     expect(result.sealed).toBe(true);
+  });
+});
+
+/** One route through the dispatcher: the request decoded as it arrives off the wire. */
+const routedPlan = (api: SessionCaptureApi, body: unknown) =>
+  Effect.promise(
+    () =>
+      new Promise<{ status: number; json: Record<string, unknown> }>((resolve) => {
+        void dispatchCaptureRoute(api, "/plan.get", body, (status, payload) =>
+          resolve({ status, json: JSON.parse(JSON.stringify(payload)) }),
+        );
+      }),
+  );
+
+describe("plan.get, as sealantd round 4 asks it", () => {
+  it("every answer lists all six manifest features — sealantd answers `store-fidelity` to any FINAL otherwise", async () => {
+    const world = worldOf();
+    const wt = WorktreeId.make("wt-plan-features");
+    const answers = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.init(wt);
+        const api = yield* apiOf(wt, "exec-features", "launch-features");
+        const empty = yield* routedPlan(api, { epoch: 0, manifest_format: 2 });
+        const zero = buildManifest({ worktreeId: wt, epoch: 1, n: 0, parent: null });
+        yield* uploadObjects(new Map([[zero.key, zero.bytes]]));
+        yield* api.register(registerInput(zero));
+        const overHead = yield* routedPlan(api, { epoch: 1, manifest_format: 2 });
+        const standby = (yield* CaptureChannel).standbyApiFor({
+          alias: "standby",
+          projectId: ProjectId.make("p"),
+          executorId: "standby-exec",
+          epoch: 7,
+          plan: () =>
+            Effect.succeed({ captureId: zero.id, manifestKey: zero.key, manifest: zero.manifest }),
+        });
+        const onStandby = yield* routedPlan(standby, { manifest_format: 2 });
+        return [empty, overHead, onStandby];
+      }).pipe(Effect.provide(world.layer)),
+    );
+    for (const answer of answers) {
+      expect(answer.status).toBe(200);
+      expect(answer.json["manifest_features"]).toEqual([
+        "worktree_meta",
+        "symrefs",
+        "other_bulk",
+        "raw_names",
+        "final_seal",
+        "git_trees",
+      ]);
+    }
+  });
+
+  it("a request naming a launch its token was not issued for is refused 409 `launch-mismatch`, before any claim; its own launch, or none, plans", async () => {
+    const world = worldOf();
+    const wt = WorktreeId.make("wt-plan-launch");
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.init(wt);
+        const api = yield* apiOf(wt, "session-1", "launch-a");
+        const other = yield* routedPlan(api, { epoch: 0, manifest_format: 2, launch: "launch-b" });
+        const leaseAfterRefusal = yield* repo.leaseOf(wt);
+        const own = yield* routedPlan(api, { epoch: 0, manifest_format: 2, launch: "launch-a" });
+        const unnamed = yield* routedPlan(api, { epoch: 0, manifest_format: 2 });
+        const standby = (yield* CaptureChannel).standbyApiFor({
+          alias: "standby",
+          projectId: ProjectId.make("p"),
+          executorId: "standby-exec",
+          launchId: "standby-launch",
+          epoch: 7,
+          plan: () => Effect.die("never planned"),
+        });
+        const standbyOther = yield* routedPlan(standby, { manifest_format: 2, launch: "launch-a" });
+        return { other, leaseAfterRefusal, own, unnamed, standbyOther };
+      }).pipe(Effect.provide(world.layer)),
+    );
+    expect(result.other.status).toBe(409);
+    expect(result.other.json["reason"]).toBe("launch-mismatch");
+    expect(result.other.json["live_epoch"]).toBeUndefined();
+    expect(result.leaseAfterRefusal?.executorId ?? null).toBeNull();
+    expect(result.own.status).toBe(200);
+    expect(result.own.json["executor"]).toBe("launch-a");
+    expect(result.unnamed.status).toBe(200);
+    expect(result.standbyOther.status).toBe(409);
+    expect(result.standbyOther.json["reason"]).toBe("launch-mismatch");
   });
 });

@@ -101,7 +101,10 @@ export interface CaptureClassSnaps {
  * deadline first) — the final flush asked again stages it, so a drain keeps asking; `changed`:
  * the flush completed but the disk changed after it (a change the watcher saw, or its overflow;
  * cross-repo decision 7) — nothing is saved until a final flush asked again completes, so a drain
- * keeps asking; the rest name the step that failed.
+ * keeps asking; `store-fidelity`: the store's `plan.get` answer did not list every manifest
+ * feature this executor writes, so it cannot keep what was captured byte for byte (cross-repo
+ * decision 12) — no wait fixes it, so a drain reads `not saved` at once and keeps the workspace;
+ * the rest name the step that failed.
  */
 export const CAPTURE_INCOMPLETE_REASONS = [
   "not-final",
@@ -118,6 +121,7 @@ export const CAPTURE_INCOMPLETE_REASONS = [
   "sealing",
   "changed",
   "unwatched",
+  "store-fidelity",
   "internal",
 ] as const;
 
@@ -201,6 +205,7 @@ const finalFlushCannotComplete = (reading: CaptureReading): boolean => {
     reason === "sweep-unavailable" ||
     reason === "snapshot-failed" ||
     reason === "unreadable" ||
+    reason === "store-fidelity" ||
     (reading.complete !== true && captureSnapFailing(reading))
   );
 };
@@ -416,6 +421,8 @@ export const captureIncompleteWords = (reason: string | null | undefined): strin
       return "changed after the final flush";
     case "unwatched":
       return "a capture class is polled, currency not observed";
+    case "store-fidelity":
+      return "the store does not read every manifest feature this executor writes";
     case "internal":
       return "executor error";
     case CAPTURE_EXECUTOR_RETAINED:
