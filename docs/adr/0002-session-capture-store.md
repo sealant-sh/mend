@@ -1121,3 +1121,32 @@ Mend-side details the decision record left open, decided in this ADR:
     - **Follow-up for sealantd.** The wait reuses `worktree-leased`, so a waiting daemon logs
       "another launch holds the worktree's lease". A distinct reason (for example `plan-unverified`,
       waited on the same way) would let it say why; Mend can answer it once sealantd advertises it.
+40. (2026-09-28) The fourteenth review's Mend items: decision 39's plan and verification change,
+    corrected (review 14 #1–#4).
+    - **Only a plan that lays the head down checks it (#2).** The launch that holds or last held the
+      lease (a live or lapsed lease bound to that launch, or an unbound one of its session), asking
+      about a head registered under that lease's epoch, restores nothing from the plan: sealantd
+      resumes its own disk (a daemon restart, a recovery boot that ships what the disk holds, a
+      re-plan). It gets the head as it stands, verified or not, and never waits on a check. A fresh
+      launch, a resume's replacement or a claimed standby's replan still verifies and waits. Mend's
+      own pre-claim for a launch does not count as its work: the head is from an earlier epoch.
+    - **A head git rejects is refused, never replaced (#3).** Decision 39's `restored-older` route
+      is removed. sealantd fetches and hash-checks the head's own manifest from `manifest_key` and
+      takes only `bulk` from the plan, so another capture's sections under the head's identity were
+      not what it restored: the head's own packs had no GET URL and the boot failed part way. Now
+      `plan.get` answers 422 `unrestorable` (sealantd reads it as a refusal of the boot; nothing is
+      claimed or handed out), and the session reads
+      `launch blocked · capture <n>'s git section failed verification · discard or contact the operator`.
+      A later plan checks the head once more, and one that goes ahead clears the words.
+    - **Plan notices sit beside the summary (#1).** `launch waiting · …` and `launch blocked · …`
+      are appended to what the summary says (`·` between), replaced by the next notice, and taken
+      off when a plan goes ahead, so `executor lost · …` stays until `observeReplacement` turns it
+      into `picked up · executor replaced`. A notice from a launch other than the session's current
+      one (its create in flight, else its recorded launch) is dropped.
+    - **A missing parent commit is content (#4).** `could not read <40–64 hex>` and
+      `failed to traverse parents` join `gitRejectsContent`, only on exit 128 with no signal and no
+      host word. Git exiting on its own in words neither list explains (`gitExitUnexplained`: no
+      signal, no Node code, no host word) is bounded: the same words on 5 checks of one row in a row
+      (`UNEXPLAINED_CHECKS_BOUND`, counted per Mend process) record `failed`, and a plan is then
+      refused rather than waiting for good. Signals, host words and the bucket not answering never
+      count, so decision 39's host faults stay `unverified`.
