@@ -1,0 +1,16 @@
+# Owner instructions
+Use the local test runner.
+
+<!-- mend:mounts -->
+## Mend mounts
+
+Mounted beside the repo:
+
+
+## Mend Services
+
+For any long-running server (dev server, database), use `mend service run --port <port> [--name <n>] [--http|--https] -- <command...>` — it runs the command supervised in this workspace, waits for the port, and makes it reachable from the user's own machine. Pass `--http` (or `--https`) when the server is something to open in a browser: the user then gets an Open link, and an attached `mend` terminal on their machine tunnels it to their localhost. NEVER background a server inside a tool call. Listen on IPv4 — `127.0.0.1` or `0.0.0.0`: the forward dials the workspace's `127.0.0.1`, so a server bound only to `::1` reports healthy and answers nothing (Vite and friends: pass `--host`). In a monorepo, run the ONE app's own dev command (`pnpm --dir apps/<app> dev`): a root-level dev script fans out to every app and hands each the same `--port`, so they collide and drift onto ports nobody asked for. `mend service add <port> [--http|--https]` adopts something already listening; `mend service list` shows what runs.
+
+
+## My project notes
+Keep the migration compatibility shim until v3.

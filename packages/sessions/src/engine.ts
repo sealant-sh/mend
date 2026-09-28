@@ -279,6 +279,11 @@ import {
   writeFilesExecs,
 } from "./workspace-files.ts";
 import { WorkspaceGitHooks } from "./workspace-git-hooks.ts";
+import {
+  parseWorkspaceNoteOutcomes,
+  WORKSPACE_NOTE_NOT_WRITTEN,
+  workspaceNoteExec,
+} from "./workspace-note.ts";
 
 /** Whether a push's ref commands created or moved a branch (not a tag, not a delete). */
 const pushedBranches = (refUpdates: ReadonlyArray<string> | null): boolean =>
@@ -7540,10 +7545,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
-       * Tell the harness what rides beside the repo — appended to each harness's global memory
-       * file in the workspace $HOME (never the worktree: the note is not review content). A cold
-       * launch runs this after state restore, which rewrites $HOME; a prewarm runs it at
-       * provision time (no restore ever lands in a hot workspace's $HOME).
+       * Tell the harness what rides beside the repo — Mend's block in each harness's global
+       * memory file in the workspace $HOME (never the worktree: the note is not review content).
+       * A cold launch runs this after state restore, which rewrites $HOME; a prewarm runs it at
+       * provision time (no restore ever lands in a hot workspace's $HOME). Only the bounded block
+       * is Mend's: what the user or the agent wrote around it stays byte for byte, and a file
+       * that could not be read is never written (`workspace-note.ts`, review 2026-09-28 (17) #1).
        */
       const appendWorkspaceNote = Effect.fn("SessionEngine.appendWorkspaceNote")(function* (
         workspace: Workspace,
@@ -7620,26 +7627,37 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           `\`mend service list\` shows what runs.\n\n` +
           recipesLine;
         const note =
-          `\n<!-- mend:mounts -->\n## Mend mounts\n\nMounted beside the repo:\n\n` +
+          `## Mend mounts\n\nMounted beside the repo:\n\n` +
           referencesSection +
           linkedSection +
           foldersSection +
           `\n` +
           servicesSection;
-        yield* sealant
-          .exec(workspace, [
-            "sh",
-            "-c",
-            `mkdir -p "$HOME/.claude" "$HOME/.codex"; ` +
-              `for f in "$HOME/.claude/CLAUDE.md" "$HOME/.codex/AGENTS.md"; do ` +
-              `node -e 'const fs=require("fs"),p=process.argv[1],n=process.argv[2];` +
-              `let s="";try{s=fs.readFileSync(p,"utf8")}catch{}` +
-              `s=s.replace(/\\n?<!-- mend:mounts -->[\\s\\S]*$/,"");fs.writeFileSync(p,s+n)' ` +
-              `"$f" "$1"; done`,
-            "sh",
-            note,
-          ])
-          .pipe(Effect.ignore);
+        const notWritten = (detail: Record<string, unknown>) =>
+          Effect.logWarning("session engine: the workspace note was not written").pipe(
+            Effect.annotateLogs({ workspaceId: workspace.id, ...detail }),
+          );
+        // Best-effort for the launch, never silent: a file left alone says why.
+        yield* sealant.exec(workspace, workspaceNoteExec(note)).pipe(
+          Effect.flatMap((result) =>
+            Effect.gen(function* () {
+              if (result.exitCode !== 0) {
+                return yield* notWritten({
+                  exitCode: result.exitCode,
+                  stderr: result.stderr.trim().slice(-400),
+                });
+              }
+              for (const file of parseWorkspaceNoteOutcomes(result.stdout)) {
+                yield* WORKSPACE_NOTE_NOT_WRITTEN.has(file.outcome)
+                  ? notWritten({ file: file.file, outcome: file.outcome, detail: file.detail })
+                  : Effect.logInfo(`session engine: workspace note · ${file.outcome}`).pipe(
+                      Effect.annotateLogs({ workspaceId: workspace.id, file: file.file }),
+                    );
+              }
+            }),
+          ),
+          Effect.catch((error) => notWritten({ message: error.message })),
+        );
       });
 
       /**

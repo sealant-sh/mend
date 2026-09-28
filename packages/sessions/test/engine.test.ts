@@ -17493,3 +17493,194 @@ for (const fault of [false, true]) {
     },
   );
 }
+
+/**
+ * Review 2026-09-28 (17) #1: a cold resume rewrote Mend's note in the restored harness memory
+ * files by cutting each file at the old `<!-- mend:mounts -->` marker, so whatever the user or
+ * the agent wrote below the note was lost. The reviewer's probe, kept whole: the actual engine
+ * launches, the note command it emits runs against a real directory standing in for the executor
+ * home, the text appended after the note is registered in a sealed capture, and the resume runs
+ * the note command again over the restored copy. Three starting points: a fresh home (owner text
+ * before, user text after the bounded block), a home holding the note the pre-fix engine wrote
+ * with user text after it (`fixtures/workspace-note-legacy.txt`: that engine's output, captured and
+ * cold-restored by sealantd), and the same old note with a line the user wrote inside it.
+ */
+const noteBlockCount = (text: string) => text.split("<!-- mend:workspace-note:begin").length - 1;
+
+describe("review 17 #1: the workspace note never takes the user's text with it", () => {
+  const legacyFixture = fs.readFileSync(
+    new URL("./fixtures/workspace-note-legacy.txt", import.meta.url),
+    "utf8",
+  );
+  const legacyUserText = "\n## My project notes\nKeep the migration compatibility shim until v3.\n";
+  const insideEdit = "Never touch /workspace/ref/api by hand.\n";
+  const scenarios = [
+    {
+      name: "a fresh home: owner text before the block and user text after it survive a resume",
+      initial: "# Owner instructions\nUse the local test runner.\n",
+      kept: ["# Owner instructions\nUse the local test runner.\n"],
+      legacyKept: false,
+    },
+    {
+      name: "the pre-fix engine's open-ended note becomes the block; the text after it stays",
+      initial: legacyFixture,
+      kept: ["# Owner instructions\nUse the local test runner.\n", legacyUserText],
+      legacyKept: false,
+    },
+    {
+      name: "an old note with the user's own line inside it is left whole, and the block is added",
+      initial: legacyFixture.replace(
+        "Mounted beside the repo:\n\n",
+        `Mounted beside the repo:\n\n${insideEdit}`,
+      ),
+      kept: ["# Owner instructions\nUse the local test runner.\n", insideEdit, legacyUserText],
+      legacyKept: true,
+    },
+  ] as const;
+
+  for (const scenario of scenarios) {
+    it(scenario.name, { timeout: 60_000 }, async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-r17-notes-"));
+      const saved = path.join(root, "saved");
+      const notes = [".claude/CLAUDE.md", ".codex/AGENTS.md"];
+      const userText = "\n## Appended in the session\nRun the migration check before every push.\n";
+      let executorHome = "";
+      let noteRuns = 0;
+      const beforeResume: string[] = [];
+      try {
+        await withEngine(
+          (world, tmp) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* launchOnce(world, tmp);
+              yield* engine.launch(session.id, ["codex"]);
+              expect(noteRuns).toBe(1);
+              const firstLaunch: Array<string> = [];
+              for (const note of notes) {
+                const target = path.join(executorHome, note);
+                const written = fs.readFileSync(target, "utf8");
+                for (const text of scenario.kept) expect(written).toContain(text);
+                firstLaunch.push(written);
+                fs.appendFileSync(target, userText);
+              }
+              const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+              const chain = memory.chains.get(session.worktreeId);
+              const n = (chain?.headN ?? 0) + 1;
+              const snapshotRoot = path.join(root, "snapshot");
+              fs.mkdirSync(snapshotRoot);
+              fs.cpSync(executorHome, path.join(snapshotRoot, "harness"), { recursive: true });
+              const snapshot = snapshotDirectory(
+                snapshotRoot,
+                captureKeys(session.worktreeId, epoch),
+                { chunkSize: 64 },
+              );
+              const built = buildManifest({
+                worktreeId: session.worktreeId,
+                n,
+                parent: chain?.headCapture ?? null,
+                epoch,
+                seq: n * 10,
+                kind: "final",
+                git: { packs: [], refs: {}, head: "refs/heads/main", fsck: "verified" },
+                workspace: { root: snapshot.root, packs: snapshot.packs },
+              });
+              yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]])).pipe(
+                Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
+              );
+              const api = servedSocketApis.get(session.id)?.capture;
+              if (api === undefined) throw new Error("capture api missing");
+              const registered = yield* api.register({
+                worktree_id: session.worktreeId,
+                epoch,
+                n,
+                parent: chain?.headCapture ?? null,
+                capture_id: built.id,
+                manifest_key: built.key,
+                manifest: built.manifest,
+              });
+              expect(registered.head_n).toBe(n);
+              fs.cpSync(executorHome, saved, { recursive: true, preserveTimestamps: true });
+              yield* engine.stop(session.id);
+              yield* until(
+                () =>
+                  world.sessions.get(session.id)?.captureDrain === null &&
+                  world.sessions.get(session.id)?.status === "stopped",
+                "saved stop",
+              );
+              const resumed = yield* engine.resumeSession(session.id, "shell");
+              expect(created).toHaveLength(2);
+              expect(noteRuns).toBe(2);
+              expect(beforeResume).toHaveLength(2);
+              for (const text of beforeResume) expect(text).toContain(userText);
+              expect(resumed.status).toBe("running");
+              const afterResume = notes.map((note) =>
+                fs.readFileSync(path.join(executorHome, note), "utf8"),
+              );
+              // What the user and the agent wrote comes through the resume.
+              for (const after of afterResume) {
+                expect(after).toContain(userText);
+                for (const text of scenario.kept) expect(after).toContain(text);
+              }
+              // One bounded block; an old note is gone only where it matched exactly.
+              for (const written of firstLaunch) {
+                expect(noteBlockCount(written)).toBe(1);
+                expect(written.includes("<!-- mend:mounts -->")).toBe(scenario.legacyKept);
+              }
+              // The restored file was already current: the resume wrote nothing, byte for byte.
+              for (const [index, after] of afterResume.entries()) {
+                expect(after).toBe(beforeResume[index]);
+                expect(noteBlockCount(after)).toBe(1);
+              }
+            }),
+          {
+            captured: memory,
+            workspaceImage: { ...CUSTOM_BASE, setupCommands: [] },
+            sealantLayer: lifecycleLayer(created, {
+              captureOps: {
+                stopAnswer: () => "stopped",
+                beforeCreate: () =>
+                  Effect.sync(() => {
+                    executorHome = path.join(root, `home-${created.length}`);
+                    if (created.length === 1) {
+                      for (const note of notes) {
+                        fs.mkdirSync(path.dirname(path.join(executorHome, note)), {
+                          recursive: true,
+                        });
+                        fs.writeFileSync(path.join(executorHome, note), scenario.initial);
+                      }
+                    } else {
+                      fs.cpSync(saved, executorHome, { recursive: true, preserveTimestamps: true });
+                      beforeResume.push(
+                        ...notes.map((note) =>
+                          fs.readFileSync(path.join(executorHome, note), "utf8"),
+                        ),
+                      );
+                    }
+                  }),
+                exec: (argv) => {
+                  if (
+                    argv[0] !== "sh" ||
+                    argv[1] !== "-c" ||
+                    !(argv[2] ?? "").includes("mend:mounts")
+                  ) {
+                    return undefined;
+                  }
+                  noteRuns += 1;
+                  const run = spawnSync(argv[0], argv.slice(1), {
+                    cwd: executorHome,
+                    env: { ...process.env, HOME: executorHome },
+                    encoding: "utf8",
+                  });
+                  return { exitCode: run.status ?? 1, stdout: run.stdout, stderr: run.stderr };
+                },
+              },
+            }),
+          },
+        );
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    });
+  }
+});

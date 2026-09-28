@@ -12,6 +12,9 @@
 
 import { Schema } from "effect";
 
+/** `value` as one single-quoted `sh` word, whatever it holds. */
+export const shellQuote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`;
+
 /** Base64 characters per exec: a multiple of 4, so every chunk decodes alone, under ~96 KB. */
 export const WORKSPACE_EXEC_ARG_CHARS = 90_000;
 
