@@ -14107,7 +14107,8 @@ describe("SessionEngine a recovered executor's accepted seal is the session's wo
 
 /**
  * Review 2026-09-28 (5): evidence is per physical executor (cross-repo decision 14) — an answer a
- * joined session took from the executor it shares describes the same disk.
+ * joined session took from the executor it shares describes the same disk — and an unresolved
+ * create's ownership outlives a later attempt's refusal.
  */
 describe("SessionEngine fifth review (2026-09-28)", () => {
   /** A sealed executor A with a joined session B on it; B's settling harvest reads unsaved work. */
@@ -14338,6 +14339,66 @@ describe("SessionEngine fifth review (2026-09-28)", () => {
               flush: flushOf(answer),
             },
           }),
+        },
+      );
+    },
+  );
+
+  it(
+    "#13 a retry's 4xx says nothing of the earlier create it repeats: its key, lease and holds stay, and the original launch still heartbeats",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const createKeys: Array<string | undefined> = [];
+      let lose = true;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+            const original = world.executorCreates.get(session.id);
+            if (original === undefined) throw new Error("missing original reserved create");
+            const originalEpoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            const api = servedSocketApis.get(session.id)?.captureAs?.(original);
+            if (api === undefined) throw new Error("missing launch capture API");
+            expect((yield* api.planGet({ worktree_id: null, epoch: 0 })).epoch).toBe(originalEpoch);
+            // Lookup still sees nothing, but the original request may commit after it; a 404 from
+            // validation before the platform's idempotent replay cannot disprove that executor.
+            lose = false;
+            const refused = yield* engine.launch(session.id, ["codex"]).pipe(Effect.flip);
+            expect(refused._tag === "SealantPlatformError" && refused.status).toBe(404);
+            expect(createKeys).toEqual([original, original]);
+            expect(world.executorCreates.get(session.id)).toBe(original);
+            expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+            expect(memory.leases.get(session.worktreeId)?.epoch).toBe(originalEpoch);
+            expect(yield* engine.captureHolds(session.worktreeId)).not.toEqual([]);
+            yield* api.heartbeat({ worktree_id: session.worktreeId, epoch: originalEpoch });
+          }),
+        {
+          captured: memory,
+          sealantLayer: sealantLaunchLayer(
+            created,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            () =>
+              Effect.fail(
+                new SealantPlatformError({
+                  code: "WorkspaceNotFoundError",
+                  status: 404,
+                  message: "Unknown registry: prior",
+                  cause: null,
+                }),
+              ),
+            undefined,
+            undefined,
+            { createKeys, findByKey: () => ({ kind: "none" }), loseCreateAnswer: () => lose },
+          ),
         },
       );
     },

@@ -7557,6 +7557,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         let createKey: string | null = null;
         const releaseUnusedClaim = Effect.gen(function* () {
           if (capture === null || launchClaim === null || executorCreated) return;
+          // A create asked again under a key whose earlier attempt never answered holds that
+          // attempt's claim (review 2026-09-28 (5) #13): this attempt's failure says nothing of
+          // the earlier one, which may still commit. The claim stays until the key resolves —
+          // an executor found under it, or the platform's fence (`resolveExecutorCreate`).
+          if (
+            reusedCreateKey !== null &&
+            (yield* sessions.executorCreateOf(sessionId)) === reusedCreateKey
+          ) {
+            return;
+          }
           const lease = yield* capture.repo.leaseOf(session.worktreeId);
           if (lease?.executorId !== sessionId || lease.epoch !== launchClaim.epoch) return;
           yield* capture.repo.release(session.worktreeId, launchClaim.epoch);
@@ -7597,14 +7607,30 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               createKey === null || executorCreated
                 ? releaseUnusedClaim
                 : // The create was asked and did not answer with a workspace. A refusal (4xx)
-                  // made none; anything else may have made one Mend has not seen.
+                  // made none under THIS attempt; anything else may have made one Mend has not
+                  // seen. A key asked again after an earlier attempt that never answered stays
+                  // reserved whatever this attempt heard (review 2026-09-28 (5) #13): a
+                  // refusal — a validation Core runs before its idempotent replay, an access
+                  // check — disproves nothing of that earlier request, which may still commit.
+                  // Only an executor found under the key or the platform's fence releases it.
                   error._tag === "SealantPlatformError" &&
                     error.status !== null &&
                     error.status >= 400 &&
                     error.status < 500
-                  ? sessions
-                      .clearExecutorCreate(sessionId, createKey)
-                      .pipe(Effect.andThen(releaseUnusedClaim))
+                  ? createKey === reusedCreateKey
+                    ? Effect.logWarning(
+                        "session engine: capture mode · executor create · asked again and refused · the earlier attempt is still unresolved · the key stays reserved",
+                      ).pipe(
+                        Effect.annotateLogs({
+                          sessionId,
+                          key: createKey,
+                          status: error.status,
+                          error: error.message,
+                        }),
+                      )
+                    : sessions
+                        .clearExecutorCreate(sessionId, createKey)
+                        .pipe(Effect.andThen(releaseUnusedClaim))
                   : resolveExecutorCreate(sessionId, createKey).pipe(Effect.asVoid),
             ),
             Effect.ensuring(Effect.sync(() => creatingExecutors.delete(sessionId))),
