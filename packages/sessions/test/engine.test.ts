@@ -6611,6 +6611,71 @@ const routeReason = <A>(effect: Effect.Effect<A, { readonly reason: string }>) =
     Effect.catch((error) => Effect.succeed(error.reason)),
   );
 
+/**
+ * An in-memory pool with a working `create`: the reconcile warms real standbys here (their
+ * capture source lands in `created`), and a claim pops a ready entry whose fingerprint the
+ * engine computed from the same inputs.
+ */
+const memoryHotPool = () => {
+  const entries: Array<HotWorkspace> = [];
+  const update = (id: string, patch: Partial<HotWorkspace>) =>
+    Effect.sync(() => {
+      const index = entries.findIndex((entry) => entry.id === id);
+      const current = entries[index];
+      if (current !== undefined) {
+        entries[index] = new HotWorkspace({ ...current, ...patch, updatedAt: now() });
+      }
+    });
+  const layer = Layer.succeed(HotWorkspacesRepo, {
+    create: (input) =>
+      Effect.sync(() => {
+        const entry = new HotWorkspace({
+          ...input,
+          status: "warming",
+          error: null,
+          sealantWorkspaceId: null,
+          workspaceImage: null,
+          dotfiles: null,
+          environment: null,
+          referenceMounts: [],
+          extraMounts: [],
+          createdAt: now(),
+          updatedAt: now(),
+        });
+        entries.push(entry);
+        return entry;
+      }),
+    byId: (id) => Effect.sync(() => entries.find((entry) => entry.id === id) ?? null),
+    listForProject: (projectId) =>
+      Effect.sync(() => entries.filter((entry) => entry.projectId === projectId)),
+    listAll: () => Effect.sync(() => [...entries]),
+    setReady: (id, stamps) => update(id, { ...stamps, status: "ready", error: null }),
+    setBaseSha: (id, baseSha) => update(id, { baseSha }),
+    setFailed: (id, error) => update(id, { status: "failed", error }),
+    claim: (projectId, fingerprint, ownerUserId) =>
+      Effect.sync(() => {
+        const index = entries.findIndex(
+          (entry) =>
+            entry.projectId === projectId &&
+            entry.status === "ready" &&
+            entry.fingerprint === fingerprint &&
+            entry.ownerUserId === ownerUserId,
+        );
+        const entry = entries[index];
+        if (entry === undefined) return null;
+        const claimed = new HotWorkspace({ ...entry, status: "claimed", updatedAt: now() });
+        entries[index] = claimed;
+        return claimed;
+      }),
+    remove: (id) =>
+      Effect.sync(() => {
+        const index = entries.findIndex((entry) => entry.id === id);
+        if (index >= 0) entries.splice(index, 1);
+      }),
+  });
+  return { entries, layer };
+};
+
 describe("SessionEngine capture mode", () => {
   it("tells the daemon only what the deployment stated about its transport", async () => {
     // Without a statement the source names no transport: the daemon then requires verified
@@ -8190,71 +8255,6 @@ describe("SessionEngine capture mode", () => {
       },
     );
   });
-
-  /**
-   * An in-memory pool with a working `create`: the reconcile warms real standbys here (their
-   * capture source lands in `created`), and a claim pops a ready entry whose fingerprint the
-   * engine computed from the same inputs.
-   */
-  const memoryHotPool = () => {
-    const entries: Array<HotWorkspace> = [];
-    const update = (id: string, patch: Partial<HotWorkspace>) =>
-      Effect.sync(() => {
-        const index = entries.findIndex((entry) => entry.id === id);
-        const current = entries[index];
-        if (current !== undefined) {
-          entries[index] = new HotWorkspace({ ...current, ...patch, updatedAt: now() });
-        }
-      });
-    const layer = Layer.succeed(HotWorkspacesRepo, {
-      create: (input) =>
-        Effect.sync(() => {
-          const entry = new HotWorkspace({
-            ...input,
-            status: "warming",
-            error: null,
-            sealantWorkspaceId: null,
-            workspaceImage: null,
-            dotfiles: null,
-            environment: null,
-            referenceMounts: [],
-            extraMounts: [],
-            createdAt: now(),
-            updatedAt: now(),
-          });
-          entries.push(entry);
-          return entry;
-        }),
-      byId: (id) => Effect.sync(() => entries.find((entry) => entry.id === id) ?? null),
-      listForProject: (projectId) =>
-        Effect.sync(() => entries.filter((entry) => entry.projectId === projectId)),
-      listAll: () => Effect.sync(() => [...entries]),
-      setReady: (id, stamps) => update(id, { ...stamps, status: "ready", error: null }),
-      setBaseSha: (id, baseSha) => update(id, { baseSha }),
-      setFailed: (id, error) => update(id, { status: "failed", error }),
-      claim: (projectId, fingerprint, ownerUserId) =>
-        Effect.sync(() => {
-          const index = entries.findIndex(
-            (entry) =>
-              entry.projectId === projectId &&
-              entry.status === "ready" &&
-              entry.fingerprint === fingerprint &&
-              entry.ownerUserId === ownerUserId,
-          );
-          const entry = entries[index];
-          if (entry === undefined) return null;
-          const claimed = new HotWorkspace({ ...entry, status: "claimed", updatedAt: now() });
-          entries[index] = claimed;
-          return claimed;
-        }),
-      remove: (id) =>
-        Effect.sync(() => {
-          const index = entries.findIndex((entry) => entry.id === id);
-          if (index >= 0) entries.splice(index, 1);
-        }),
-    });
-    return { entries, layer };
-  };
 
   it("warms a standby executor with no worktree id; its plan is the project base under a placeholder and the standby's epoch, and nothing is leased", async () => {
     const created: Array<CreateOptions> = [];
@@ -16805,3 +16805,341 @@ it(
     );
   },
 );
+
+/** A dependency the setup's `npm ci` installs from a local tarball: no registry, no scripts. */
+const npmProject = () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "mend-r15-setup-"));
+  const seed = path.join(root, "seed");
+  const packageRoot = path.join(root, "package");
+  fs.mkdirSync(seed);
+  fs.mkdirSync(packageRoot);
+  fs.writeFileSync(
+    path.join(packageRoot, "package.json"),
+    JSON.stringify({ name: "review15-dep", version: "1.0.0", main: "index.js" }),
+  );
+  fs.writeFileSync(path.join(packageRoot, "index.js"), 'module.exports = "published baseline";\n');
+  execFileSync("npm", ["pack", "--pack-destination", seed, "--ignore-scripts"], {
+    cwd: packageRoot,
+    stdio: "pipe",
+  });
+  fs.writeFileSync(
+    path.join(seed, "package.json"),
+    JSON.stringify({
+      name: "review15-app",
+      version: "1.0.0",
+      dependencies: { "review15-dep": "file:review15-dep-1.0.0.tgz" },
+    }),
+  );
+  execFileSync("npm", ["install", "--ignore-scripts", "--offline", "--no-audit", "--no-fund"], {
+    cwd: seed,
+    stdio: "pipe",
+  });
+  return { root, seed };
+};
+const NPM_CI = "npm ci --ignore-scripts --offline --no-audit --no-fund";
+const DEP = "node_modules/review15-dep/index.js";
+const PATCH = 'module.exports = "my debugging fix, not yet upstream";\n';
+
+describe("custom-image setup commands run only on a worktree laid down fresh (review 2026-09-28 (15) #1)", () => {
+  /** The executor registers a turn capture: the worktree's head moves past capture 0. */
+  const registerTurnCapture = (
+    memory: MemoryCaptureStore,
+    tmp: string,
+    session: Session,
+    tree: string,
+  ) =>
+    Effect.gen(function* () {
+      const api = servedSocketApis.get(session.id)?.capture;
+      if (api === undefined) throw new Error("the session serves no capture api");
+      const epoch = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+      const chain = memory.chains.get(session.worktreeId);
+      const parent = chain?.headCapture ?? null;
+      const n = (chain?.headN ?? 0) + 1;
+      const snapshot = snapshotDirectory(tree, captureKeys(session.worktreeId, epoch), {
+        chunkSize: 64,
+      });
+      const built = buildManifest({
+        worktreeId: session.worktreeId,
+        n,
+        parent,
+        epoch,
+        seq: n * 10,
+        kind: "turn",
+        git: { packs: [], refs: {}, head: "refs/heads/main", fsck: "verified" },
+        workspace: { root: snapshot.root, packs: snapshot.packs },
+      });
+      yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]])).pipe(
+        Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
+      );
+      const registered = yield* api.register({
+        worktree_id: session.worktreeId,
+        epoch,
+        n,
+        parent,
+        capture_id: built.id,
+        manifest_key: built.key,
+        manifest: built.manifest,
+      });
+      expect(registered.head_n).toBe(n);
+      return n;
+    });
+
+  it(
+    "a cold resume restored from a saved capture runs no setup command: npm ci never overwrites the restored node_modules patch, the helper still installs, and the session line says why",
+    { timeout: 60_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const execCalls: ReadonlyArray<string>[] = [];
+      const memory = makeMemoryCaptureStore();
+      const { root, seed } = npmProject();
+      const saved = path.join(root, "saved");
+      let executorRoot = "";
+      let setups = 0;
+      const restoredReads: string[] = [];
+      try {
+        await withEngine(
+          (world, tmp) =>
+            Effect.gen(function* () {
+              const { engine, session } = yield* launchOnce(world, tmp);
+              yield* engine.launch(session.id, ["codex"]);
+              // A worktree's first launch lays it down fresh (capture 0): its setup runs.
+              expect(memory.chains.get(session.worktreeId)?.headN).toBe(0);
+              expect(setups).toBe(1);
+              expect(world.sessions.get(session.id)?.summary ?? "").not.toMatch(/setup skipped/);
+              // The user patches a dependency; the executor captures it (n = 1).
+              fs.writeFileSync(path.join(executorRoot, DEP), PATCH);
+              const n = yield* registerTurnCapture(memory, tmp, session, executorRoot);
+              fs.cpSync(executorRoot, saved, { recursive: true, preserveTimestamps: true });
+              yield* engine.stop(session.id);
+              yield* until(
+                () =>
+                  world.sessions.get(session.id)?.captureDrain === null &&
+                  world.sessions.get(session.id)?.status === "stopped",
+                "the saved stop",
+              );
+              const helperInstalls = execCalls.filter((argv) =>
+                (argv[2] ?? "").includes("/usr/local/bin/mend"),
+              ).length;
+
+              const resumed = yield* engine.resumeSession(session.id, "shell");
+              expect(created).toHaveLength(2);
+              // The executor restored the patch; no setup command ran over it.
+              expect(restoredReads.at(-1)).toBe(PATCH);
+              expect(fs.readFileSync(path.join(executorRoot, DEP), "utf8")).toBe(PATCH);
+              expect(setups).toBe(1);
+              // The helper and the git transport still install: they never touch the worktree.
+              expect(
+                execCalls.filter((argv) => (argv[2] ?? "").includes("/usr/local/bin/mend")),
+              ).toHaveLength(helperInstalls + 1);
+              expect(resumed.status).toBe("running");
+              expect(world.sessions.get(session.id)?.summary).toBe(
+                `setup skipped · restored from capture ${n}`,
+              );
+            }),
+          {
+            captured: memory,
+            workspaceImage: { ...CUSTOM_BASE, setupCommands: [NPM_CI] },
+            sealantLayer: lifecycleLayer(created, {
+              execCalls,
+              captureOps: {
+                stopAnswer: () => "stopped",
+                beforeCreate: () =>
+                  Effect.sync(() => {
+                    executorRoot = path.join(root, `executor-${created.length}`);
+                    // The first executor lays capture 0 down; the resume restores the capture.
+                    fs.cpSync(created.length === 1 ? seed : saved, executorRoot, {
+                      recursive: true,
+                      preserveTimestamps: true,
+                    });
+                    restoredReads.push(fs.readFileSync(path.join(executorRoot, DEP), "utf8"));
+                  }),
+                exec: (argv) => {
+                  if (argv[0] !== "sh" || argv[1] !== "-lc" || argv[2] !== NPM_CI) return undefined;
+                  setups += 1;
+                  const run = spawnSync("sh", ["-lc", NPM_CI], {
+                    cwd: executorRoot,
+                    encoding: "utf8",
+                  });
+                  return { exitCode: run.status ?? 1, stdout: run.stdout, stderr: run.stderr };
+                },
+              },
+            }),
+          },
+        );
+      } finally {
+        fs.rmSync(root, { recursive: true, force: true });
+      }
+    },
+  );
+
+  for (const head of ["capture 0", "a saved capture"] as const) {
+    it(`a standby claimed onto ${head} ${head === "capture 0" ? "runs its setup commands at claim, after the replan" : "runs no setup command after its replan, still installs the helper, and says why"}`, async () => {
+      const execCalls: ReadonlyArray<string>[] = [];
+      const memory = makeMemoryCaptureStore();
+      const pool = memoryHotPool();
+      const SETUP = "npm ci --offline";
+      /** Every exec, in order, with whether the replan had happened yet. */
+      const order: string[] = [];
+      let executor: SessionId | null = null;
+      const flush = () =>
+        Effect.succeed({
+          epoch: 2,
+          worktreeId: "",
+          pending: 0,
+          stagedBytes: 0,
+          uploadedObjects: 0,
+          uploadedBytes: 0,
+          registered: 0,
+          fenced: false,
+          paused: false,
+          ...readEverything,
+        } satisfies WorkspaceCaptureStatus);
+      const replan = (workspace: Workspace) =>
+        Effect.gen(function* () {
+          if (executor === null) throw new Error("no executor to replan");
+          order.push("replan");
+          const api = servedSocketApis.get(executor)?.capture;
+          if (api === undefined) throw new Error("the executor serves no capture api");
+          const plan = yield* api.planGet({ worktree_id: null, epoch: 0 }).pipe(
+            Effect.mapError(
+              (error) =>
+                new SealantPlatformError({
+                  code: "replan_refused",
+                  status: error.status,
+                  message: `${error.reason}: ${error.message}`,
+                  cause: error,
+                }),
+            ),
+          );
+          return {
+            worktreeId: plan.worktree_id,
+            epoch: plan.epoch,
+            ...(plan.head === null
+              ? {}
+              : { headN: plan.head.n, headCaptureId: plan.head.capture_id }),
+            filesWritten: 1,
+            bytesWritten: 14,
+            filesSkipped: 0,
+            bytesSkipped: 0,
+            removed: 0,
+            unchanged: workspace.id === "",
+          } satisfies WorkspaceCaptureReplanned;
+        });
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+            const engine = yield* SessionEngine;
+            yield* engine.reconcileHotSessions(project.id);
+            yield* until(() => pool.entries.some((entry) => entry.status === "ready"), "a standby");
+            const standby = pool.entries[0];
+            if (standby === undefined) throw new Error("no standby");
+            // Nothing executes in a capture-mode standby before its claim (e2e9 F-B).
+            expect(execCalls).toEqual([]);
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            // The session claimed the standby.
+            expect(session.id).toBe(standby.id);
+            executor = session.id;
+            let savedN: number | null = null;
+            if (head === "a saved capture") {
+              // The worktree's head is past capture 0 when the replan lays it down: capture 1,
+              // saved by an earlier executor under an earlier epoch.
+              const tree = path.join(tmp, "standby-saved");
+              fs.mkdirSync(path.join(tree, "tree"), { recursive: true });
+              fs.writeFileSync(path.join(tree, "tree", "edit.txt"), "saved work\n");
+              const cap0 = memory.chains.get(session.worktreeId)?.headCapture ?? null;
+              const snapshot = snapshotDirectory(tree, captureKeys(session.worktreeId, 1), {
+                chunkSize: 64,
+              });
+              const built = buildManifest({
+                worktreeId: session.worktreeId,
+                n: 1,
+                parent: cap0,
+                epoch: 1,
+                seq: 10,
+                kind: "final",
+                git: { packs: [], refs: {}, head: "refs/heads/main", fsck: "verified" },
+                workspace: { root: snapshot.root, packs: snapshot.packs },
+              });
+              yield* uploadObjects(new Map([...snapshot.objects, [built.key, built.bytes]])).pipe(
+                Effect.provide(BlobStoreFsLive(path.join(tmp, "blobs"))),
+              );
+              memory.captures.set(built.id, {
+                id: built.id,
+                worktreeId: session.worktreeId,
+                n: 1,
+                parent: cap0,
+                epoch: 1,
+                seq: 10n,
+                kind: "final",
+                manifestKey: built.key,
+                sections: built.manifest.sections,
+                gitFsck: "verified",
+                createdAt: now(),
+              });
+              memory.chains.set(session.worktreeId, {
+                ...(memory.chains.get(session.worktreeId) ?? { headEpoch: 1 }),
+                headCapture: built.id,
+                headN: 1,
+                headEpoch: 1,
+              });
+              savedN = 1;
+            }
+            yield* engine.launch(session.id, ["codex"]);
+            expect(order[0]).toBe("replan");
+            const setups = order.filter((entry) => entry === "setup");
+            const helper = order.indexOf("helper");
+            expect(helper).toBeGreaterThan(0);
+            const summary = world.sessions.get(session.id)?.summary ?? null;
+            if (savedN === null) {
+              expect(setups).toHaveLength(1);
+              expect(order.indexOf("setup")).toBeGreaterThan(0);
+              expect(order.indexOf("setup")).toBeLessThan(helper);
+              expect(summary ?? "").not.toMatch(/setup skipped/);
+            } else {
+              expect(setups).toEqual([]);
+              expect(summary).toBe(`setup skipped · restored from capture ${savedN}`);
+            }
+          }),
+        {
+          captured: memory,
+          workspaceImage: { ...CUSTOM_BASE, setupCommands: [SETUP] },
+          sealantLayer: sealantLaunchLayer(
+            [],
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            undefined,
+            execCalls,
+            undefined,
+            {
+              replan,
+              flush,
+              exec: (argv) => {
+                if (argv[0] === "sh" && argv[1] === "-lc" && argv[2] === SETUP) {
+                  order.push("setup");
+                } else if ((argv[2] ?? "").includes("/usr/local/bin/mend")) {
+                  order.push("helper");
+                }
+                return undefined;
+              },
+            },
+          ),
+          hotWorkspacesLayer: pool.layer,
+        },
+      );
+    });
+  }
+});

@@ -1168,3 +1168,22 @@ Mend-side details the decision record left open, decided in this ADR:
       `retained`, a drain still `draining`, `kept` or `stop-failed`, a `retained` record, or an SDK
       without the method stays kept. For Core: an executor that exits 0 after a complete FINAL is
       recorded `failed`; `stopped` would describe it.
+42. (2026-09-28) The fifteenth review's Mend item (#1).
+    - **Setup commands run only on a worktree laid down fresh (#1).** `prepareExecutor` ran the
+      custom image's `setupCommands` after every create, but sealantd materializes the saved
+      workspace before the create answers: a cold resume ran `npm ci` over a restored `node_modules`
+      and put a patched dependency file back to the published bytes. The owner's decision: setup
+      commands run only when the executor lays the worktree down from capture 0 (a worktree's first
+      launch, or a chain with no capture past 0). An executor that restores a saved capture (a
+      resume, a recovery, a relaunch, a new session in an existing worktree, a standby whose replan
+      planned a saved head) runs none of them; the capture already holds what setup produced. A cold
+      launch reads the head under its own lease claim, before the create, so nothing registers
+      between the read and the executor's plan (`restoredCaptureOf`); a claimed standby uses the
+      head its replan reports (`headN`), else the head read under the claim. The `mend` helper and
+      git transport install still runs: it writes `/usr/local/bin` and the system git config, never
+      the worktree. The session line says `setup skipped · restored from capture <n>` once at start
+      (beside `executor lost · …` when that is there; the next start clears it). Captures hold the
+      worktree only, so anything setup installed elsewhere is not restored; the docs send that to
+      Extra packages or the image. The co-located store is unchanged: setup runs on every launch
+      there. A worktree whose capture 0 was backfilled from an older directory (decision 8's attach)
+      still runs setup over it.

@@ -50,6 +50,14 @@ For trees in the older one-object-per-directory format (`MEND_CAPTURE_MANIFEST_F
 captured before dir packs), that read covers the top-level directory and the file contents, not
 every nested directory. The default format is read back in full.
 
+## Setup commands run on a worktree's first launch only
+
+A resume does not run a custom image's setup commands again: the saved capture it restores already
+holds what they produced. Run them yourself if a lockfile changed. The session says
+`setup skipped · restored from capture <n>` when it starts. Anything setup installed outside the
+worktree is not in the capture; put it in Extra packages or the image. See
+[When setup commands run](/guides/workspace-images/#when-setup-commands-run).
+
 ## A machine failure loses the last few seconds
 
 A Stop, a replacement or a resume keeps everything. So does an executor killed outright whose disk
