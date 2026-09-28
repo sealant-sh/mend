@@ -37,6 +37,7 @@ import {
   dispatchCaptureRoute,
   PRESIGN_TTL_SECONDS,
   resolveCaptureUploadPolicy,
+  type SessionCaptureApi,
 } from "../src/capture-channel.ts";
 import { CaptureRemotes, CaptureRemotesOff } from "../src/capture-remotes.ts";
 import { CaptureSourcesLive, CaptureSourcesOff } from "../src/capture-sources.ts";
@@ -60,6 +61,9 @@ const WORKTREE = WorktreeId.make("wt-cap-1");
 const ORIGIN = "git@example.invalid:acme/api.git";
 const PROJECT = ProjectId.make("proj-cap");
 const SESSION = SessionId.make("sess-cap-1");
+/** The launch the executor under test was created as, and another launch of the same session. */
+const LAUNCH = "launch:sess-cap-1:1:a";
+const OTHER_LAUNCH = "launch:sess-cap-1:2:b";
 
 const inertApi: Omit<SessionSocketApi, "capture"> = {
   recipes: () => Effect.succeed([]),
@@ -215,6 +219,7 @@ describe("capture channel routes", () => {
   );
   let address = "";
   let token = "";
+  let otherLaunchToken = "";
   let cap0 = { id: "", key: "", manifest: {} as CaptureManifest };
   const keys1 = captureKeys(WORKTREE, 1);
   let channel: CaptureChannel["Service"];
@@ -285,15 +290,20 @@ describe("capture channel routes", () => {
         const registryService = yield* SessionChannelRegistry;
         const tokensRepo = yield* SessionChannelTokensRepo;
         channel = yield* CaptureChannel;
-        token = yield* tokensRepo.issue(SESSION);
-        registryService.register(SESSION, {
-          ...inertApi,
-          capture: channel.apiFor({
+        token = yield* tokensRepo.issue(SESSION, LAUNCH);
+        otherLaunchToken = yield* tokensRepo.issue(SESSION, OTHER_LAUNCH);
+        const scopedTo = (launchId: string) =>
+          channel.apiFor({
             worktreeId: WORKTREE,
             projectId: PROJECT,
             executorId: SESSION,
+            launchId,
             footprintBytes: 1_000_000,
-          }),
+          });
+        registryService.register(SESSION, {
+          ...inertApi,
+          capture: scopedTo(SESSION),
+          captureAs: scopedTo,
         });
         const bogus = yield* Effect.promise(() =>
           post(address, "/lease.heartbeat", "not-the-token-at-all", { worktree_id: WORKTREE }),
@@ -301,7 +311,7 @@ describe("capture channel routes", () => {
         expect(bogus.status).toBe(401);
         // A colocated session (no capture api) answers 404 on the same routes.
         const other = SessionId.make("sess-colocated");
-        const otherToken = yield* tokensRepo.issue(other);
+        const otherToken = yield* tokensRepo.issue(other, other);
         registryService.register(other, { ...inertApi });
         const missing = yield* Effect.promise(() =>
           post(address, "/plan.get", otherToken, { epoch: 0 }),
@@ -315,6 +325,11 @@ describe("capture channel routes", () => {
     const first = await post(address, "/plan.get", token, { worktree_id: null, epoch: 0 });
     expect(first.status).toBe(200);
     expect(first.json["epoch"]).toBe(2);
+    // The executor is the launch the token was issued for (cross-repo decision 5): another
+    // launch's token of the same session is answered as that launch.
+    expect(first.json["executor"]).toBe(LAUNCH);
+    const other = await post(address, "/plan.get", otherLaunchToken, { epoch: 2 });
+    expect(other.json["executor"]).toBe(OTHER_LAUNCH);
     expect(first.json["worktree_id"]).toBe(WORKTREE);
     const head = first.json["head"] as Record<string, unknown>;
     expect(head["n"]).toBe(0);
@@ -898,7 +913,7 @@ describe("capture channel routes", () => {
     expect(refused?.status).toBe(429);
     expect(refused?.json["reason"]).toBe("quota-exceeded");
     expect(refused?.json["message"]).toBe(
-      "request quota: 16 upload.urls calls per hour per session",
+      "request quota: 16 upload.urls calls per hour per executor",
     );
     // A refused call is not counted, and stays refused: the window is calls, not attempts.
     const again = await post(address, "/upload.urls", token, {
@@ -907,6 +922,51 @@ describe("capture channel routes", () => {
       keys: [key(99)],
     });
     expect(again.status).toBe(429);
+  });
+
+  it("the request quota is per executor: a retry of keys already handed out costs nothing, another launch of the session has its own hour, and an executor being drained is never refused (e2e run 5)", async () => {
+    const keys3 = captureKeys(WORKTREE, 3);
+    const key = (index: number) => keys3.tree((1000 + index).toString(16).padStart(64, "0"));
+    const outcome = await run(
+      Effect.gen(function* () {
+        const apiAs = (launchId: string, unmetered = false) =>
+          channel.apiFor({
+            worktreeId: WORKTREE,
+            projectId: PROJECT,
+            executorId: SESSION,
+            launchId,
+            unmetered,
+            footprintBytes: 1_000_000,
+          });
+        const said = (api: SessionCaptureApi, keys: ReadonlyArray<string>) =>
+          api.uploadUrls({ worktree_id: WORKTREE, epoch: 3, keys }).pipe(
+            Effect.as("ok"),
+            Effect.catch((error) => Effect.succeed(error.reason)),
+          );
+        const first = apiAs("launch:quota:1");
+        const handed = yield* said(first, [key(1)]);
+        // The same key asked again and again (its PUT keeps failing): never counted.
+        const retries: Array<string> = [];
+        for (let index = 0; index < 40; index += 1) retries.push(yield* said(first, [key(1)]));
+        // New keys run this launch's hour out: 15 more, then refused.
+        const fresh: Array<string> = [];
+        for (let index = 0; index < 20; index += 1)
+          fresh.push(yield* said(first, [key(100 + index)]));
+        return {
+          handed,
+          retries,
+          fresh,
+          otherLaunch: yield* said(apiAs("launch:quota:2"), [key(300)]),
+          drained: yield* said(apiAs("launch:quota:1", true), [key(400)]),
+        };
+      }),
+    );
+    expect(outcome.handed).toBe("ok");
+    expect(outcome.retries.every((said) => said === "ok")).toBe(true);
+    expect(outcome.fresh.slice(0, 15).every((said) => said === "ok")).toBe(true);
+    expect(outcome.fresh.slice(15).every((said) => said === "quota-exceeded")).toBe(true);
+    expect(outcome.otherLaunch).toBe("ok");
+    expect(outcome.drained).toBe("ok");
   });
 
   it("the byte quota refuses an upload.urls batch before any URL is minted, prices a key once, and backstops a register with 409", async () => {

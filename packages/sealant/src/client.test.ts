@@ -8,6 +8,7 @@ import {
   runtimeDeadlineOf,
   runtimeResourceIdOf,
   workspaceByKeyOf,
+  fenceWorkspaceCreateOf,
   workspaceStopAnswerOf,
   workspaceStopStateOf,
 } from "./client.ts";
@@ -178,6 +179,19 @@ describe("runtimeResourceIdOf", () => {
   });
 });
 
+/** Core's `createState` answering `answer`. */
+const state = (answer: unknown) =>
+  Effect.runPromise(
+    workspaceByKeyOf(
+      { createState: async () => answer, findByIdempotencyKey: async () => null },
+      "k",
+    ),
+  );
+await expect(state({ idempotencyKey: "k", state: "found", workspaceId: "ws-3" })).resolves.toEqual({
+  kind: "found",
+  workspaceId: "ws-3",
+});
+
 describe("workspaceByKeyOf", () => {
   it("finds what a keyed create made, says when it made none, and says 0.37.2 cannot look", async () => {
     await expect(
@@ -190,6 +204,62 @@ describe("workspaceByKeyOf", () => {
     ).resolves.toEqual({ kind: "none" });
     await expect(
       Effect.runPromise(workspaceByKeyOf({ create: async () => ({}) }, "k")),
+    ).resolves.toEqual({ kind: "unsupported" });
+  });
+
+  it("reads Core's createState: found, cancelled, pending and none as nothing on record yet, anything else unknown", async () => {
+    await expect(state({ idempotencyKey: "k", state: "cancelled" })).resolves.toEqual({
+      kind: "cancelled",
+    });
+    await expect(state({ idempotencyKey: "k", state: "pending" })).resolves.toEqual({
+      kind: "none",
+    });
+    await expect(state({ idempotencyKey: "k", state: "none" })).resolves.toEqual({ kind: "none" });
+    await expect(state({ idempotencyKey: "k", state: "later" })).resolves.toMatchObject({
+      kind: "unknown",
+    });
+  });
+
+  it("reads an answer it does not recognise as unknown, never as none (review 3 #21)", async () => {
+    for (const answer of [{}, { workspace: "ws-9" }, "ws-9", 42, true]) {
+      const read = await Effect.runPromise(
+        workspaceByKeyOf({ findByIdempotencyKey: async () => answer }, "k"),
+      );
+      expect(read.kind, JSON.stringify(answer)).toBe("unknown");
+    }
+  });
+});
+
+/** Core's `cancelCreate` answering `answer`. */
+const fence = (answer: unknown) =>
+  Effect.runPromise(fenceWorkspaceCreateOf({ cancelCreate: async () => answer }, "k"));
+
+describe("fenceWorkspaceCreateOf", () => {
+  it("reads a cancelled key, the workspace a create already made, anything else as unknown, and an SDK that cannot fence", async () => {
+    await expect(fence({ cancelled: true })).resolves.toEqual({ kind: "cancelled" });
+    // Core's `WorkspaceCreateState` (review 3).
+    await expect(fence({ idempotencyKey: "k", state: "cancelled" })).resolves.toEqual({
+      kind: "cancelled",
+    });
+    await expect(
+      fence({ idempotencyKey: "k", state: "found", workspaceId: "ws-7", launchId: "k" }),
+    ).resolves.toEqual({ kind: "found", workspaceId: "ws-7" });
+    await expect(fence({ idempotencyKey: "k", state: "pending" })).resolves.toEqual({
+      kind: "open",
+      state: "pending",
+    });
+    await expect(fence({ idempotencyKey: "k", state: "gone-away" })).resolves.toMatchObject({
+      kind: "unknown",
+    });
+    await expect(fence({ workspaceId: "ws-9" })).resolves.toEqual({
+      kind: "found",
+      workspaceId: "ws-9",
+    });
+    await expect(fence({ id: "ws-8" })).resolves.toEqual({ kind: "found", workspaceId: "ws-8" });
+    await expect(fence(null)).resolves.toMatchObject({ kind: "unknown" });
+    await expect(fence({ cancelled: false })).resolves.toMatchObject({ kind: "unknown" });
+    await expect(
+      Effect.runPromise(fenceWorkspaceCreateOf({ findByIdempotencyKey: async () => null }, "k")),
     ).resolves.toEqual({ kind: "unsupported" });
   });
 });

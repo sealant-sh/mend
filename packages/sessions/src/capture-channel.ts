@@ -36,6 +36,10 @@ import {
   verifyWorktreeMeta,
   sectionHoldsRawNames,
   gitSectionHoldsRawNames,
+  metaNamespaceProblem,
+  gitSectionHoldsTrees,
+  worktreeTreeOf,
+  type WorktreeMetaDocument,
 } from "@mend/store";
 import { Duration, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -109,6 +113,10 @@ export type PlanGetRequest = typeof PlanGetRequest.Type;
  *   section's ref names, symbolic refs and targets, or `head`.
  * - `final_seal`: the manifest's `final_seal`, a completed final flush of the executor that wrote
  *   it.
+ * - `git_trees`: `sections.git.worktree_tree` / `index_tree` / `raw_tree` (sealantd review 3):
+ *   the trees in their own fields, `refs` the repository's refs whatever their names, and a raw
+ *   tree a restore writes back without conversion. An executor that reads the trees from the
+ *   pseudo-refs would restore neither the raw bytes nor a user ref under `refs/sealant/capture/`.
  */
 export const MANIFEST_FEATURES = [
   "worktree_meta",
@@ -116,6 +124,7 @@ export const MANIFEST_FEATURES = [
   "other_bulk",
   "raw_names",
   "final_seal",
+  "git_trees",
 ] as const;
 export type ManifestFeature = (typeof MANIFEST_FEATURES)[number];
 
@@ -146,6 +155,7 @@ export const missingManifestFeatures = (
           storedBulk.platform !== input.platform),
     );
     holds("final_seal", planned.final_seal !== undefined);
+    holds("git_trees", gitSectionHoldsTrees(planned.sections.git));
     if (!reads.has("raw_names")) {
       const bulk = planned.sections.bulk;
       const raw =
@@ -219,9 +229,10 @@ export interface PlanGetResponse {
    */
   readonly manifest_features: ReadonlyArray<ManifestFeature>;
   /**
-   * The executor the session token was issued for (`CaptureScope.executorId`): what a completed
-   * final flush's `final_seal.executor` must name for register to record the seal. sealantd seals
-   * only when it knows it (sealantd `registrar.rs` "`executor` on `plan.get`").
+   * The physical executor the session token was issued for — its launch identity
+   * (`CaptureScope.launchId`, cross-repo decision 5): what a completed final flush's
+   * `final_seal.executor` must name for register to record the seal. sealantd seals only when it
+   * knows it (sealantd `registrar.rs` "`executor` on `plan.get`").
    */
   readonly executor: string;
   /**
@@ -554,8 +565,20 @@ export const CaptureUploadPolicyLive: Layer.Layer<CaptureUploadPolicy> = Layer.e
 export interface CaptureScope {
   readonly worktreeId: WorktreeId;
   readonly projectId: ProjectId;
+  /**
+   * The executor is being drained, kept or recovered (the session has a drain under way): its
+   * `upload.urls` calls are not metered — it is saving what only it holds.
+   */
+  readonly unmetered?: boolean;
   /** Who a claim is recorded for — the session whose executor this is. */
   readonly executorId: string;
+  /**
+   * Which physical executor of that session is asking: its launch identity, the create's
+   * idempotency key its channel token was issued for (cross-repo decision 5). `plan.get` names
+   * it as the executor; a `final_seal` is recorded only when it names it. Absent: the session id,
+   * what an executor launched before launch identities was planned as.
+   */
+  readonly launchId?: string;
   /** The project's compressed footprint in bytes (its base git packs); 0 = unknown, floor applies. */
   readonly footprintBytes: number;
 }
@@ -578,6 +601,8 @@ export interface StandbyScope {
   readonly alias: string;
   readonly projectId: ProjectId;
   readonly executorId: string;
+  /** The standby executor's launch identity (`CaptureScope.launchId`). */
+  readonly launchId?: string;
   readonly epoch: number;
   /** The plan for the platform the executor names, when it names one. */
   readonly plan: (platform: string | undefined) => Effect.Effect<StandbyPlan, unknown>;
@@ -664,6 +689,9 @@ const VERIFIED_AT_REGISTER = new Set<CaptureManifest["kind"]>([
   "final",
 ]);
 
+/** How many keys of one launch `upload.urls` remembers as handed out (re-mints of them are free). */
+const MINTED_KEYS_REMEMBERED = 200_000;
+
 /** How many times a register reads the guards again after retention moved one under it. */
 const GUARD_ATTEMPTS = 3;
 
@@ -681,12 +709,6 @@ const sameTree = (a: ChunkedSection, b: ChunkedSection): boolean =>
   sectionFormatOf(a) === sectionFormatOf(b) &&
   sameKeys(a.packs, b.packs) &&
   sameKeys(dirPacksOf(a), dirPacksOf(b));
-
-/** The objects (and the format-1 `trees/` prefix) a chunked section names. */
-const objectsOfSection = (section: ChunkedSection): ReadonlyArray<string> => [
-  ...keysOfSections({ workspace: section }),
-  ...treePrefixesOfSections({ workspace: section }),
-];
 
 export const CaptureChannelLive: Layer.Layer<
   CaptureChannel,
@@ -755,8 +777,18 @@ export const CaptureChannelLive: Layer.Layer<
         Effect.map((found) => Option.getOrNull(found)),
       );
 
-    /** Per-session rolling counters; a Mend restart forgets them, which only ever relaxes. */
+    /**
+     * Per-executor (per launch) rolling counters of `upload.urls` calls that asked for a key the
+     * executor had not been handed before; a Mend restart forgets them, which only ever relaxes.
+     * Keyed by launch, never by session: one executor's failed uploads never refuse the next
+     * executor of the session (e2e run 5).
+     */
     const urlLog = new Map<string, Array<number>>();
+    /**
+     * The keys each launch was handed URLs for (bounded): a call that asks only for those again
+     * — an upload retried after its URLs lapsed or its PUT failed — costs no call.
+     */
+    const minted = new Map<string, Set<string>>();
     /**
      * The byte ledger, per session: object key → bytes priced for it, once. `upload.urls`
      * reserves a sized key at its declared size; `capture.register` prices every pack under the
@@ -827,7 +859,7 @@ export const CaptureChannelLive: Layer.Layer<
           get_urls: urls,
           manifest_format: answeredFormat(policy.manifestFormat, reads),
           manifest_features: MANIFEST_FEATURES,
-          executor: scope.executorId,
+          executor: scope.launchId ?? scope.executorId,
         } satisfies PlanGetResponse;
       });
       return {
@@ -842,6 +874,8 @@ export const CaptureChannelLive: Layer.Layer<
 
     const apiFor = (scope: CaptureScope): SessionCaptureApi => {
       const worktreeId = scope.worktreeId;
+      /** The physical executor asking (cross-repo decision 5). */
+      const launchId = scope.launchId ?? scope.executorId;
       /** The one prefix this executor may write under: its worktree's, at the caller's epoch. */
       const underOwnPrefix = (key: string, epoch: number) =>
         key.startsWith(`captures/${worktreeId}/${epoch}/`);
@@ -960,8 +994,11 @@ export const CaptureChannelLive: Layer.Layer<
                 gitFromCaptureId: row.id,
               }),
             );
+            // The head's seal says the head restores; this plan restores other git state, so
+            // it carries no seal (review 2026-09-28 (3) #18).
+            const { final_seal: _headSeal, ...unsealed } = stored;
             return {
-              ...stored,
+              ...unsealed,
               sections: { ...stored.sections, git: manifest.sections.git },
             } satisfies CaptureManifest;
           }
@@ -1057,7 +1094,7 @@ export const CaptureChannelLive: Layer.Layer<
             get_urls: yield* sourceUrls(beside),
             manifest_format: manifestFormat,
             manifest_features: MANIFEST_FEATURES,
-            executor: scope.executorId,
+            executor: launchId,
             ...(beside.length === 0 ? {} : { sources: beside }),
             ...(origin.length === 0 ? {} : { remotes: origin }),
           };
@@ -1084,25 +1121,43 @@ export const CaptureChannelLive: Layer.Layer<
           get_urls: urls,
           manifest_format: manifestFormat,
           manifest_features: MANIFEST_FEATURES,
-          executor: scope.executorId,
+          executor: launchId,
           ...(beside.length === 0 ? {} : { sources: beside }),
           ...(origin.length === 0 ? {} : { remotes: origin }),
         } satisfies PlanGetResponse;
       });
 
-      /** Count this call against the rolling hour; false = over quota (nothing minted, not counted). */
-      const reserveCall = (): boolean => {
+      /**
+       * Count this call against the executor's rolling hour; false = over quota (nothing minted,
+       * not counted). Free: a call that asks only for keys this launch was handed before (a retry
+       * of a failed upload), and every call of an executor that is being drained, kept or
+       * recovered (`CaptureScope.unmetered`) — refusing it could only lose what it is saving.
+       */
+      const reserveCall = (keys: ReadonlyArray<string>): boolean => {
+        if (scope.unmetered === true) return true;
+        const handed = minted.get(launchId);
+        if (keys.length > 0 && handed !== undefined && keys.every((key) => handed.has(key))) {
+          return true;
+        }
         const now = Date.now();
-        const window = (urlLog.get(scope.executorId) ?? []).filter(
-          (at) => now - at < 60 * 60 * 1000,
-        );
+        const window = (urlLog.get(launchId) ?? []).filter((at) => now - at < 60 * 60 * 1000);
         if (window.length >= policy.callsPerHour) {
-          urlLog.set(scope.executorId, window);
+          urlLog.set(launchId, window);
           return false;
         }
         window.push(now);
-        urlLog.set(scope.executorId, window);
+        urlLog.set(launchId, window);
         return true;
+      };
+
+      /** Remember the keys this launch was handed URLs for (bounded per launch). */
+      const noteMinted = (keys: Iterable<string>) => {
+        let handed = minted.get(launchId);
+        if (handed === undefined || handed.size > MINTED_KEYS_REMEMBERED) {
+          handed = new Set();
+          minted.set(launchId, handed);
+        }
+        for (const key of keys) handed.add(key);
       };
 
       const uploadUrls = Effect.fn("SessionCaptureApi.uploadUrls")(function* (
@@ -1118,11 +1173,11 @@ export const CaptureChannelLive: Layer.Layer<
             `${input.keys.length} keys in one call; the cap is ${policy.keysPerCall} per upload.urls call`,
           );
         }
-        if (!reserveCall()) {
+        if (!reserveCall(input.keys)) {
           return yield* new CaptureRouteError({
             status: 429,
             reason: "quota-exceeded",
-            message: `request quota: ${policy.callsPerHour} upload.urls calls per hour per session`,
+            message: `request quota: ${policy.callsPerHour} upload.urls calls per hour per executor`,
           });
         }
         // Only under the caller's own epoch prefix, and only a key that names one capture
@@ -1215,6 +1270,7 @@ export const CaptureChannelLive: Layer.Layer<
             part_urls: partUrls,
           };
         }
+        noteMinted(plans.map((plan) => plan.key));
         return { urls, multipart } satisfies UploadUrlsResponse;
       });
 
@@ -1556,14 +1612,17 @@ export const CaptureChannelLive: Layer.Layer<
         // `final_seal` (cross-repo decision 1): sealantd's word that this executor's final flush
         // completed. It is recorded with the CAS — so only on a capture that lands on a chain
         // registered up to it — and only when complete and naming the executor this token is
-        // scoped to and the epoch it registers under. Anything else registers the capture and
-        // seals nothing: the bytes are kept, and no completion is claimed on their behalf.
+        // scoped to and the epoch it registers under, and only once Mend observed every section
+        // restore: the chunked ones walked below, the git section verified, the worktree
+        // metadata checked against the tree it applies to (`sealed`, in the attempt). Anything
+        // else registers the capture and seals nothing: the bytes are kept, and no completion is
+        // claimed on their behalf.
         const seal = manifest.final_seal ?? null;
         const sealHolds =
           seal !== null &&
           seal.complete &&
           seal.epoch === input.epoch &&
-          seal.executor === scope.executorId;
+          seal.executor === launchId;
         if (seal !== null && !sealHolds) {
           yield* Effect.logWarning(
             "capture channel: a final seal that does not hold · registered without it",
@@ -1574,6 +1633,7 @@ export const CaptureChannelLive: Layer.Layer<
               captureId: input.capture_id,
               epoch: input.epoch,
               executorId: scope.executorId,
+              launchId,
               seal: JSON.stringify(seal),
             }),
           );
@@ -1596,32 +1656,25 @@ export const CaptureChannelLive: Layer.Layer<
               missing: ownerless,
             });
           }
-          const retiring = state.tombstones.filter((tombstone) => !tombstone.deleted);
-          if (retiring.length > 0) {
+          // A key retention condemned is never registered again, whatever became of its bytes
+          // since (cross-repo decision 6): a pass that checked, stalled and deleted after its
+          // claim lapsed can still remove the bytes at that key, so bytes uploaded there again
+          // are never a capture's. The executor uploads the content under a new key — a new
+          // generation (`captures/<worktree>/<epoch>/g<generation>/…`) — and registers that.
+          if (state.tombstones.length > 0) {
             return yield* new CaptureRouteError({
               status: 422,
               reason: "missing-objects",
-              message: `retention is removing ${retiring.length} object(s) the manifest names: no capture named them when it looked`,
-              missing: retiring.map((tombstone) => tombstone.key),
+              message: `retention condemned ${state.tombstones.length} object(s) the manifest names: a condemned key is never registered again — upload the content under a new key`,
+              missing: state.tombstones.map((tombstone) => tombstone.key),
             });
           }
-          // Condemned objects whose bytes retention removed: the capture may name them again
-          // only if they are in the bucket again (read after the tombstone was), and a tree
-          // below one is walked below whatever the parent held.
-          const revive = state.tombstones.map((tombstone) => tombstone.key);
-          const reviveSet = new Set(revive);
-          const toHead = [
-            ...packKeys,
-            ...revive
-              .filter((key) => isCaptureObjectKey(key) && !seen.has(key))
-              .map((key) => ({ key, cls: null, platform: null })),
-          ];
           const missing: Array<string> = [];
           const records: Array<PackRecord> = [];
           const sizes = new Map<string, number>();
           const priced = new Map(ledger);
           let newBytes = 0;
-          for (const { key, cls, platform } of toHead) {
+          for (const { key, cls, platform } of packKeys) {
             const head = yield* blobs
               .head(key)
               .pipe(Effect.catch(storeError("HEAD on a pack", key)));
@@ -1630,7 +1683,7 @@ export const CaptureChannelLive: Layer.Layer<
               continue;
             }
             sizes.set(key, head.size);
-            if (cls === null || key.endsWith(".idx")) continue;
+            if (key.endsWith(".idx")) continue;
             if (underOwnPrefix(key, input.epoch)) {
               const reserved = ledger.get(key);
               if (reserved !== undefined && reserved !== head.size) {
@@ -1664,16 +1717,15 @@ export const CaptureChannelLive: Layer.Layer<
             });
           }
           const already = yield* repo.captureById(input.capture_id);
+          let metaDocument: WorktreeMetaDocument | null = null;
           // Restorability before acknowledgement: every chunked section this capture brings —
-          // one the parent did not hold, or one naming an object it revives — must restore from
-          // what it names: its root and every dir object below it, every chunk in a listed pack,
-          // every hardlink's canonical member. A register acknowledges preservation; a capture
-          // Mend could not restore is refused, never registered.
+          // one the parent did not hold — must restore from what it names: its root and every
+          // dir object below it, every chunk in a listed pack, every hardlink's canonical member.
+          // A register acknowledges preservation; a capture Mend could not restore is refused,
+          // never registered.
           if (already === null) {
             for (const section of chunked) {
-              const carried = parentTrees.some((parent) => sameTree(parent, section));
-              const revived = objectsOfSection(section).some((key) => reviveSet.has(key));
-              if (carried && !revived) continue;
+              if (parentTrees.some((parent) => sameTree(parent, section))) continue;
               yield* verifySectionRestorable(section, { sizes }).pipe(
                 Effect.provideService(BlobStore, blobs),
                 Effect.catch(unrestorable(section)),
@@ -1682,7 +1734,7 @@ export const CaptureChannelLive: Layer.Layer<
             // The worktree metadata document is walked whatever the parent held: a restore
             // needs it whenever the manifest names it, and a parent's row does not say it held
             // this very document (review 2026-09-28 #17).
-            yield* verifyWorktreeMeta(manifest.sections.workspace, { sizes }).pipe(
+            metaDocument = yield* verifyWorktreeMeta(manifest.sections.workspace, { sizes }).pipe(
               Effect.provideService(BlobStore, blobs),
               Effect.catch(unrestorable(manifest.sections.workspace)),
             );
@@ -1720,9 +1772,51 @@ export const CaptureChannelLive: Layer.Layer<
               }),
             );
           }
+          // The worktree metadata document against the namespace it applies to (review
+          // 2026-09-28 (3) #20): sealantd applies it over the worktree tree the git class checked
+          // out, and fails the whole materialize on a file or a symlink it names that is not
+          // there. A capture with no worktree tree has nothing tracked; otherwise the tree's paths
+          // are listed from the packs the verification installed. A document that names what the
+          // tree does not hold is refused (422 `unrestorable`); one Mend could not list (git not
+          // verified, the runner unavailable) registers unchecked and seals nothing.
+          const metaNamespace = yield* Effect.gen(function* () {
+            if (metaDocument === null) return "verified" as const;
+            const tree = worktreeTreeOf(manifest.sections.git);
+            const tracked =
+              tree === undefined
+                ? new Map()
+                : verification?.outcome === "verified"
+                  ? yield* verifier.treePaths(scope.projectId, manifest, tree)
+                  : null;
+            if (tracked === null) return "unverified" as const;
+            const problem = metaNamespaceProblem(metaDocument, tracked);
+            if (problem !== null) {
+              return yield* new CaptureRouteError({
+                status: 422,
+                reason: "unrestorable",
+                message: `the worktree metadata would not apply over the worktree tree: ${problem}`,
+              });
+            }
+            return "verified" as const;
+          });
+          const sealed = sealHolds && gitFsck === "verified" && metaNamespace === "verified";
+          if (sealHolds && !sealed) {
+            yield* Effect.logWarning(
+              "capture channel: a final seal over sections not verified restorable · registered without it",
+            ).pipe(
+              Effect.annotateLogs({
+                worktreeId,
+                n: input.n,
+                captureId: input.capture_id,
+                epoch: input.epoch,
+                gitFsck,
+                worktreeMeta: metaNamespace,
+              }),
+            );
+          }
           const outcome = yield* repo
             .register({
-              ...(sealHolds ? { seal: { executorId: scope.executorId } } : {}),
+              ...(sealed ? { seal: { executorId: launchId, holder: scope.executorId } } : {}),
               worktreeId,
               id: input.capture_id,
               n: input.n,
@@ -1737,7 +1831,7 @@ export const CaptureChannelLive: Layer.Layer<
                 worktreeId: owner,
                 guard: state.guards.get(owner) ?? 0,
               })),
-              revive,
+              names: referenced,
             })
             .pipe(
               Effect.catch(

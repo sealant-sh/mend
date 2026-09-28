@@ -378,22 +378,27 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
           message: "session channel: missing or malformed credentials",
         };
       }
-      const sessionId =
+      // The token names one launch of one session (cross-repo decision 5): the capture routes it
+      // reaches are that executor's, whichever launch of the session is current.
+      const scope =
         credentials.sessionId === null
           ? await Effect.runPromise(tokens.resolve(credentials.token)).then((resolved) =>
-              resolved === null ? null : SessionId.make(resolved),
+              resolved === null
+                ? null
+                : { sessionId: SessionId.make(resolved.sessionId), launchId: resolved.launchId },
             )
-          : (await Effect.runPromise(tokens.verify(credentials.sessionId, credentials.token)))
-            ? credentials.sessionId
-            : null;
-      if (sessionId === null) {
+          : await Effect.runPromise(tokens.verify(credentials.sessionId, credentials.token)).then(
+              (launchId) =>
+                launchId === null ? null : { sessionId: credentials.sessionId, launchId },
+            );
+      if (scope === null || scope.sessionId === null) {
         return {
           ok: false,
           status: 401,
           message: "session channel: the session token was not accepted",
         };
       }
-      const api = registry.lookup(sessionId);
+      const api = registry.lookup(scope.sessionId);
       if (api === undefined) {
         return {
           ok: false,
@@ -401,7 +406,8 @@ export const SessionChannelNetworkHostLive: Layer.Layer<
           message: "session channel: this session is not live on this Mend instance",
         };
       }
-      return { ok: true, api };
+      const capture = api.captureAs?.(scope.launchId) ?? api.capture;
+      return { ok: true, api: capture === undefined ? api : { ...api, capture } };
     };
 
     const onRequest = (request: http.IncomingMessage, response: http.ServerResponse): void => {

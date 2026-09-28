@@ -310,13 +310,19 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
         yield* sessions.clearExecutorCreate(STOPPING, "launch:other");
         const kept = yield* sessions.executorCreateOf(STOPPING);
         yield* sessions.recordExecutorCreate(STOPPING, "launch:k2");
-        yield* sessions.recordAcceptedWorkspace(STOPPING, SealantWorkspaceId.make("ws-9"), t0);
+        yield* sessions.recordAcceptedWorkspace(
+          STOPPING,
+          SealantWorkspaceId.make("ws-9"),
+          t0,
+          "launch:k2",
+        );
         const answered = yield* sessions.executorCreateOf(STOPPING);
+        const launch = yield* sessions.executorLaunchOf(STOPPING);
         yield* sessions.recordExecutorResource(STOPPING, SealantWorkspaceId.make("ws-other"), "no");
         const notOther = yield* sessions.executorResourceOf(STOPPING);
         yield* sessions.recordExecutorResource(STOPPING, SealantWorkspaceId.make("ws-9"), "c0ffee");
         const resource = yield* sessions.executorResourceOf(STOPPING);
-        return { pending, listed, kept, answered, notOther, resource };
+        return { pending, listed, kept, answered, launch, notOther, resource };
       }),
     );
     expect(result.pending).toBe("launch:k1");
@@ -324,7 +330,12 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
     expect(result.kept).toBe("launch:k1");
     expect(result.answered).toBeNull();
     expect(result.notOther).toBeNull();
-    expect(result.resource).toEqual({ workspaceId: "ws-9", resourceId: "c0ffee" });
+    expect(result.launch).toEqual({ workspaceId: "ws-9", launchId: "launch:k2" });
+    expect(result.resource).toEqual({
+      workspaceId: "ws-9",
+      resourceId: "c0ffee",
+      launchId: "launch:k2",
+    });
   });
   it("keeps the executor's own word that its final flush completed, with its epoch (0079, 0081)", async () => {
     const t0 = new Date("2026-09-27T19:48:49.000Z");

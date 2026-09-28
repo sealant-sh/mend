@@ -98,8 +98,10 @@ export interface CaptureClassSnaps {
  * sealantd's reasons for an incomplete final flush. `not-final`: the executor did not run a final
  * flush (an older daemon answers every flush this way); `sealing`: everything registered but the
  * capture that seals the completed flush on the chain (`final_seal`; the flush returned at its
- * deadline first) — the final flush asked again stages it, so a drain keeps asking; the rest name
- * the step that failed.
+ * deadline first) — the final flush asked again stages it, so a drain keeps asking; `changed`:
+ * the flush completed but the disk changed after it (a change the watcher saw, or its overflow;
+ * cross-repo decision 7) — nothing is saved until a final flush asked again completes, so a drain
+ * keeps asking; the rest name the step that failed.
  */
 export const CAPTURE_INCOMPLETE_REASONS = [
   "not-final",
@@ -114,6 +116,8 @@ export const CAPTURE_INCOMPLETE_REASONS = [
   "ship-failed",
   "pending",
   "sealing",
+  "changed",
+  "unwatched",
   "internal",
 ] as const;
 
@@ -237,6 +241,30 @@ const smallRefused = (reading: CaptureReading): boolean => {
 };
 
 /**
+ * The answer does not say how the snapshots read: `unreadable` is absent. sealantd reports it on
+ * every flush and status (`Some(n)`, 0 included) since snapshot health; an older daemon, or an SDK
+ * facade that rebuilds the answer field by field (`@sealant/sdk` 0.37.2's `capture.flush()`),
+ * leaves it out — and leaves out every failure field with it. Nothing is assumed clean.
+ */
+export const CAPTURE_HEALTH_UNREPORTED = "snapshot health not reported";
+
+/**
+ * Why the registered head has not caught up with the executor's small class as of this answer
+ * (`captureCaughtUp`), in terse words; null when it has.
+ */
+export const captureBehindReason = (reading: CaptureReading): string | null => {
+  if (reading.fenced) return "fenced";
+  if (!captureHarvestReady(reading)) return "pending";
+  if (reading.paused) return "paused";
+  if (reading.repairing === true) return "repairing";
+  if (smallRefused(reading)) return "refused";
+  if (reading.unreadable === null) return CAPTURE_HEALTH_UNREPORTED;
+  if (Math.max(reading.unreadable, reading.unreadablePaths.length) > 0) return "unreadable";
+  if (smallSnapFailing(reading)) return "snapshot failed";
+  return null;
+};
+
+/**
  * Whether the registered head has caught up with the executor's small class as of this answer —
  * the barrier a landing takes before it publishes (`SessionEngine.landingCheckpoint`), and what
  * lets any checkpoint say `flushed`. Harvest-ready (`captureHarvestReady`), and the small snapshot
@@ -244,15 +272,12 @@ const smallRefused = (reading: CaptureReading): boolean => {
  * read (sealantd sums `unreadable` over both classes and names no class, so any unreadable path
  * holds it — a carried path would publish its last captured content, not the disk's), no small
  * refusal, no register being repaired and no paused shipping. An empty queue alone is not that:
- * a snap that fails or carries a path forward stages nothing new.
+ * a snap that fails or carries a path forward stages nothing new. An answer that does not report
+ * snapshot health at all (`CAPTURE_HEALTH_UNREPORTED`) has not caught up: absence is not a clean
+ * snapshot (cross-repo decision 9).
  */
-export const captureCaughtUp = (reading: CaptureReading): boolean => {
-  if (!captureHarvestReady(reading)) return false;
-  if (reading.paused || reading.repairing === true) return false;
-  if (smallRefused(reading)) return false;
-  if (Math.max(reading.unreadable ?? 0, reading.unreadablePaths.length) > 0) return false;
-  return !smallSnapFailing(reading);
-};
+export const captureCaughtUp = (reading: CaptureReading): boolean =>
+  captureBehindReason(reading) === null;
 
 /** Whether `next` is closer to saved than `previous`: fewer pending, fewer bytes, more shipped. */
 export const captureProgressed = (
@@ -364,6 +389,10 @@ export const captureIncompleteWords = (reason: string | null | undefined): strin
       return "upload failed";
     case "sealing":
       return "final seal not registered";
+    case "changed":
+      return "changed after the final flush";
+    case "unwatched":
+      return "a capture class is polled, currency not observed";
     case "internal":
       return "executor error";
     case CAPTURE_EXECUTOR_RETAINED:

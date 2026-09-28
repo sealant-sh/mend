@@ -21,8 +21,8 @@ import {
   pathsBeyondGit,
   type RunnerCache,
   Store,
-  WORKTREE_TREE_REF,
   worktreePathOf,
+  worktreeTreeOf,
 } from "@mend/store";
 import { Effect, Layer, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -33,8 +33,9 @@ import * as Context from "effect/Context";
  * `SessionRepository`:
  *
  * - co-located: today's `Store` bodies beside the files;
- * - captured: the runner's bare cache over the chain head's git class, where the worktree
- *   pseudo-ref (`refs/sealant/capture/worktree`) stands in for `add -A; write-tree` and every
+ * - captured: the runner's bare cache over the chain head's git class, where the worktree tree
+ *   (`worktree_tree`, or the `refs/sealant/capture/worktree` pseudo-ref of a capture from before
+ *   the `git_trees` feature) stands in for `add -A; write-tree` and every
  *   answer carries the stamp the review page renders — "observed at capture n · seq s".
  *
  * A stamp is never a verdict: it says which capture the bytes came from, and whether that
@@ -289,7 +290,8 @@ export const ensureCaptureCache = Effect.fn("ensureCaptureCache")(function* (
           : Effect.die(`capture reads: runner ensure: ${error._tag}`),
       ),
     );
-  const worktreeTree = manifest.sections.git.refs[WORKTREE_TREE_REF] ?? manifest.sections.git.head;
+  // `worktree_tree` (the `git_trees` feature), else the pseudo-ref of a capture from before it.
+  const worktreeTree = worktreeTreeOf(manifest.sections.git) ?? manifest.sections.git.head;
   return { cache, head, manifest, stamp: stampOf(head), worktreeTree } satisfies CaptureCache;
 });
 

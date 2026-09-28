@@ -102,6 +102,12 @@ export interface SessionSocketApi {
    * worktree. Absent when the deployment keeps the co-located store — the routes then 404.
    */
   readonly capture?: SessionCaptureApi | undefined;
+  /**
+   * The same routes for one physical executor of the session — the launch its channel token was
+   * issued for (cross-repo decision 5): `plan.get` names it as the executor, and a `final_seal`
+   * registers only when it names it. `capture` serves the session's current launch.
+   */
+  readonly captureAs?: ((launchId: string) => SessionCaptureApi) | undefined;
 }
 
 export class SessionSocketHost extends Context.Service<

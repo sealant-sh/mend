@@ -125,6 +125,11 @@ export interface CaptureCompletionAttestation {
   readonly captureN: number;
   readonly epoch: number;
   readonly executorId: string;
+  /**
+   * The launch the seal names (`final_seal.executor`, cross-repo decision 5): Core ignores an
+   * attestation whose launch is not the one the executor's create named (Core's next SDK).
+   */
+  readonly launchId?: string;
 }
 
 /**
@@ -288,22 +293,39 @@ const resourceIdIn = (runtime: unknown): string | null =>
   typeof runtime === "object" && runtime !== null ? textIn(runtime, "resourceId") : null;
 
 /**
+ * A runtime record's `resourceId`, when it is the executor `launchId` names: a record that names
+ * another launch (`runtime.launchId`, Core's next SDK) is another physical executor, and a record
+ * that names none (an SDK or a Core from before launch identities) is taken as it is.
+ */
+const resourceOfLaunch = (runtime: unknown, launchId: string | undefined): string | null => {
+  const resourceId = resourceIdIn(runtime);
+  if (resourceId === null || launchId === undefined) return resourceId;
+  const named =
+    typeof runtime === "object" && runtime !== null ? textIn(runtime, "launchId") : null;
+  return named === null || named === launchId ? resourceId : null;
+};
+
+/**
  * The executor's runtime identity (`resourceId`: the Docker container, the Pod, the MicroVM) on
  * Core's next SDK: from the handle's `launch.runtime` (what `create()` saw become ready, or a
- * replayed create's executor), else `workspace.runtime()` read now. Null on SDK 0.37.2, which has
- * neither, and while no runtime is launched.
+ * replayed create's executor), else `workspace.runtime()` read now. With `launchId`, only the
+ * runtime of that launch (review 2026-09-28 (3) #1): another launch's runtime reads null. Null on
+ * SDK 0.37.2, which has neither, and while no runtime is launched.
  */
 export const runtimeResourceIdOf = (
   workspace: object,
+  launchId?: string,
 ): Effect.Effect<string | null, SealantPlatformError> => {
   const launch: unknown = Reflect.get(workspace, "launch");
   const launched =
     typeof launch === "object" && launch !== null
-      ? resourceIdIn(Reflect.get(launch, "runtime"))
+      ? resourceOfLaunch(Reflect.get(launch, "runtime"), launchId)
       : null;
   if (launched !== null) return Effect.succeed(launched);
   if (!readsRuntime(workspace)) return Effect.succeed(null);
-  return wrap(() => workspace.runtime()).pipe(Effect.map(resourceIdIn));
+  return wrap(() => workspace.runtime()).pipe(
+    Effect.map((runtime) => resourceOfLaunch(runtime, launchId)),
+  );
 };
 
 /** Core's next SDK: `workspaces.findByIdempotencyKey(key)`. */
@@ -315,32 +337,140 @@ const looksUpByKey = (workspaces: object): workspaces is IdempotentLookup =>
   "findByIdempotencyKey" in workspaces && typeof workspaces.findByIdempotencyKey === "function";
 
 /**
- * What an idempotent create's key finds: the workspace it made (`found`), that none was made
- * (`none`), or that the SDK cannot say (`unsupported`: 0.37.2, which neither sends the key nor
- * looks it up).
+ * Core's next SDK (review 3): `workspaces.createState(key)` — `{ state: "pending" | "found" |
+ * "cancelled" | "none", workspaceId?, runId?, launchId? }`, what became of the create under the key.
+ */
+interface CreateStateLookup {
+  readonly createState: (key: string) => Promise<unknown>;
+}
+
+const readsCreateState = (workspaces: object): workspaces is CreateStateLookup =>
+  "createState" in workspaces && typeof workspaces.createState === "function";
+
+/**
+ * A `WorkspaceCreateState` read as `WorkspaceCreateFence`: `cancelled`, `found` with its
+ * workspace, `pending` / `none` as `open` (a point in time: the create may still arrive), anything
+ * else `unknown` — never `none`.
+ */
+const createStateOf = (answer: unknown): WorkspaceCreateFence => {
+  if (typeof answer !== "object" || answer === null) {
+    return { kind: "unknown", detail: `an answer Mend does not read: ${shapeOf(answer)}` };
+  }
+  const state = Reflect.get(answer, "state");
+  const workspaceId = textIn(answer, "workspaceId") ?? textIn(answer, "id");
+  if (state === "cancelled" || Reflect.get(answer, "cancelled") === true) {
+    return { kind: "cancelled" };
+  }
+  if ((state === "found" || state === undefined) && workspaceId !== null) {
+    return { kind: "found", workspaceId };
+  }
+  if (state === "pending" || state === "none") return { kind: "open", state };
+  return {
+    kind: "unknown",
+    detail: `a create state Mend does not read: ${typeof state === "string" ? state : shapeOf(answer)}`,
+  };
+};
+
+/**
+ * What an idempotent create's key finds: the workspace it made (`found`), that none is on record
+ * as of the lookup (`none` — a point in time, never proof: the create may still be on its way,
+ * review 2026-09-28 (3) #21), an answer Mend does not recognise (`unknown`), or that the SDK
+ * cannot say (`unsupported`: 0.37.2, which neither sends the key nor looks it up).
  */
 export type WorkspaceByKey =
   | { readonly kind: "found"; readonly workspaceId: string }
   | { readonly kind: "none" }
+  | { readonly kind: "cancelled" }
+  | { readonly kind: "unknown"; readonly detail: string }
   | { readonly kind: "unsupported" };
 
-/** `findByIdempotencyKey` on any SDK's `workspaces`, read as `WorkspaceByKey`. */
+/** An answer's shape, for a log line: never its contents. */
+const shapeOf = (value: unknown): string =>
+  typeof value === "object" && value !== null
+    ? `object with ${Object.keys(value).toSorted().join(",") || "no fields"}`
+    : typeof value;
+
+/**
+ * `findByIdempotencyKey` on any SDK's `workspaces`, read as `WorkspaceByKey`: null (or nothing)
+ * is `none`, a workspace with an id is `found`, anything else is `unknown`.
+ */
 export const workspaceByKeyOf = (
   workspaces: object,
   key: string,
 ): Effect.Effect<WorkspaceByKey, SealantPlatformError> => {
+  // `createState` says more (a cancelled key, a pending create) and says it of the key itself.
+  if (readsCreateState(workspaces)) {
+    return wrap(() => workspaces.createState(key)).pipe(
+      Effect.map((answer): WorkspaceByKey => {
+        const read = createStateOf(answer);
+        switch (read.kind) {
+          case "found":
+            return { kind: "found", workspaceId: read.workspaceId };
+          case "cancelled":
+            return { kind: "cancelled" };
+          case "open":
+            return { kind: "none" };
+          case "unknown":
+            return read;
+          case "unsupported":
+            return read;
+        }
+      }),
+    );
+  }
   if (!looksUpByKey(workspaces)) return Effect.succeed({ kind: "unsupported" });
   return wrap(() => workspaces.findByIdempotencyKey(key)).pipe(
     Effect.map((found): WorkspaceByKey => {
-      const id = typeof found === "object" && found !== null ? textIn(found, "id") : null;
-      return id === null ? { kind: "none" } : { kind: "found", workspaceId: id };
+      if (found === null || found === undefined) return { kind: "none" };
+      const id = typeof found === "object" ? textIn(found, "id") : null;
+      return id === null
+        ? { kind: "unknown", detail: `an answer that names no workspace: ${shapeOf(found)}` }
+        : { kind: "found", workspaceId: id };
     }),
   );
 };
 
-/** What makes a create idempotent: the key Mend persisted before it asked (`idempotencyKey`). */
+/**
+ * Core's create fence (review 3): `workspaces.cancelCreate(idempotencyKey)` durably cancels the
+ * key for the owner — a delayed original create under it is then refused (409
+ * `create-cancelled`) — or answers `found` with the workspace a create under it already made.
+ */
+interface CreateFence {
+  readonly cancelCreate: (key: string) => Promise<unknown>;
+}
+
+const fencesCreates = (workspaces: object): workspaces is CreateFence =>
+  "cancelCreate" in workspaces && typeof workspaces.cancelCreate === "function";
+
+/**
+ * What fencing a create's key established: nothing will be made under it (`cancelled`), the
+ * workspace one already made (`found`), a create still open under it (`open`: not a fence), an
+ * answer Mend does not recognise (`unknown`), or that the SDK cannot fence (`unsupported`: 0.37.2).
+ */
+export type WorkspaceCreateFence =
+  | { readonly kind: "cancelled" }
+  | { readonly kind: "found"; readonly workspaceId: string }
+  | { readonly kind: "open"; readonly state: "pending" | "none" }
+  | { readonly kind: "unknown"; readonly detail: string }
+  | { readonly kind: "unsupported" };
+
+/** `cancelCreate` on any SDK's `workspaces`, read as `WorkspaceCreateFence`. */
+export const fenceWorkspaceCreateOf = (
+  workspaces: object,
+  key: string,
+): Effect.Effect<WorkspaceCreateFence, SealantPlatformError> => {
+  if (!fencesCreates(workspaces)) return Effect.succeed({ kind: "unsupported" });
+  return wrap(() => workspaces.cancelCreate(key)).pipe(Effect.map(createStateOf));
+};
+
+/**
+ * What makes a create idempotent: the key Mend persisted before it asked (`idempotencyKey`), and
+ * the launch identity of the one executor it makes (`launchId`, cross-repo decision 5 — the same
+ * key), which Core records and reports as `runtime.launchId` (Core's next SDK).
+ */
 export interface WorkspaceCreateLaunch {
   readonly idempotencyKey: string;
+  readonly launchId?: string;
 }
 
 export interface SealantClientShape {
@@ -355,6 +485,13 @@ export interface SealantClientShape {
   ) => Effect.Effect<Workspace, SealantPlatformError>;
   /** The workspace a keyed create made (`workspaceByKeyOf`); `unsupported` on SDK 0.37.2. */
   readonly findWorkspaceByKey: (key: string) => Effect.Effect<WorkspaceByKey, SealantPlatformError>;
+  /**
+   * Fence a keyed create whose answer was lost (`fenceWorkspaceCreateOf`): after `cancelled`,
+   * nothing is ever made under the key. `unsupported` on every SDK so far.
+   */
+  readonly fenceWorkspaceCreate: (
+    key: string,
+  ) => Effect.Effect<WorkspaceCreateFence, SealantPlatformError>;
   readonly getWorkspace: (id: string) => Effect.Effect<Workspace, SealantPlatformError>;
   /** Runs outlive workspaces — records are replayable long after close-out. */
   readonly getRun: (runId: string) => Effect.Effect<Run, SealantPlatformError>;
@@ -416,6 +553,8 @@ export interface SealantClientShape {
    */
   readonly runtimeResourceId: (
     workspace: Workspace,
+    /** Only the runtime of this launch: another launch's reads null. */
+    launchId?: string,
   ) => Effect.Effect<string | null, SealantPlatformError>;
   /**
    * Capture-sourced workspaces (0.31.0, sealantd ADR-0015): ship and register what the executor
@@ -606,14 +745,27 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       options: CreateOptions,
       launch?: WorkspaceCreateLaunch,
     ) => {
-      // SDK 0.37.2 builds its request field by field and drops the key; Core's next SDK sends it.
-      const keyed: CreateOptions & { readonly idempotencyKey?: string } =
-        launch === undefined ? options : { ...options, idempotencyKey: launch.idempotencyKey };
+      // SDK 0.37.2 builds its request field by field and drops both; Core's next SDK sends them.
+      const keyed: CreateOptions & {
+        readonly idempotencyKey?: string;
+        readonly launchId?: string;
+      } =
+        launch === undefined
+          ? options
+          : {
+              ...options,
+              idempotencyKey: launch.idempotencyKey,
+              ...(launch.launchId === undefined ? {} : { launchId: launch.launchId }),
+            };
       return wrap(() => sealant.workspaces.create(keyed));
     });
 
     const findWorkspaceByKey = Effect.fn("SealantClient.findWorkspaceByKey")((key: string) =>
       workspaceByKeyOf(sealant.workspaces, key),
+    );
+
+    const fenceWorkspaceCreate = Effect.fn("SealantClient.fenceWorkspaceCreate")((key: string) =>
+      fenceWorkspaceCreateOf(sealant.workspaces, key),
     );
 
     const getWorkspace = Effect.fn("SealantClient.getWorkspace")((id: string) =>
@@ -677,8 +829,8 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
       runtimeDeadlineOf(workspace),
     );
 
-    const runtimeResourceId = Effect.fn("SealantClient.runtimeResourceId")((workspace: Workspace) =>
-      runtimeResourceIdOf(workspace),
+    const runtimeResourceId = Effect.fn("SealantClient.runtimeResourceId")(
+      (workspace: Workspace, launchId?: string) => runtimeResourceIdOf(workspace, launchId),
     );
 
     const captureReplan = Effect.fn("SealantClient.captureReplan")((workspace: Workspace) =>
@@ -906,6 +1058,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
     return {
       createWorkspace,
       findWorkspaceByKey,
+      fenceWorkspaceCreate,
       getWorkspace,
       getRun,
       runHarness,
@@ -1214,6 +1367,7 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
     return {
       createWorkspace: (options, launch) => via((c) => c.createWorkspace(options, launch)),
       findWorkspaceByKey: (key) => via((c) => c.findWorkspaceByKey(key)),
+      fenceWorkspaceCreate: (key) => via((c) => c.fenceWorkspaceCreate(key)),
       getWorkspace: (id) => via((c) => c.getWorkspace(id)),
       getRun: (runId) => via((c) => c.getRun(runId)),
       runHarness: (workspace, prompt, options) =>
@@ -1231,7 +1385,8 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
       captureFlush: (workspace, kind) => via((c) => c.captureFlush(workspace, kind)),
       captureStatus: (workspace) => via((c) => c.captureStatus(workspace)),
       runtimeDeadline: (workspace) => via((c) => c.runtimeDeadline(workspace)),
-      runtimeResourceId: (workspace) => via((c) => c.runtimeResourceId(workspace)),
+      runtimeResourceId: (workspace, launchId) =>
+        via((c) => c.runtimeResourceId(workspace, launchId)),
       captureReplan: (workspace) => via((c) => c.captureReplan(workspace)),
       expireWorkspace: (workspaceId, ttlSeconds) =>
         via((c) => c.expireWorkspace(workspaceId, ttlSeconds)),

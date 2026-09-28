@@ -424,8 +424,8 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
         const tombstonesAfterRace = (yield* repo.referenceState([worktreeId], [key])).tombstones;
 
         // 3. In order: a condemnation lands, a register that read before it misses, one that
-        //    reads after it sees the tombstone; once the bytes are gone, a register that saw
-        //    them again revives the key with its CAS.
+        //    reads after it sees the tombstone; once the bytes are gone, a register naming the
+        //    key still misses — a condemned key never comes back (cross-repo decision 6).
         const before = yield* guardOf;
         const condemned = yield* repo.condemn(worktreeId, before, [key], claimOf("order"));
         const staleRegister = yield* reasonOf(
@@ -438,7 +438,7 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
           repo.register({
             ...one,
             guards: [{ worktreeId, guard: gone.guards.get(worktreeId) ?? -1 }],
-            revive: [key],
+            names: [key],
           }),
         );
         const after = yield* repo.referenceState([worktreeId], [key]);
@@ -468,11 +468,11 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     expect(result.staleRegister).toBe("guard_moved");
     expect(result.seen).toEqual([{ key: expect.any(String), deleted: false }]);
     expect(result.gone).toEqual([{ key: expect.any(String), deleted: true }]);
-    expect(result.revived).toBe("ok");
-    expect(result.after).toEqual([]);
+    expect(result.revived).toBe("guard_moved");
+    expect(result.after).toEqual([{ key: expect.any(String), deleted: true }]);
   });
 
-  it("deletion claims (0080): a key comes back only once every pass that condemned it has finished, or its claim lapsed", async () => {
+  it("deletion claims (0080): a condemned key never comes back — not while a claim holds, not once every pass finished, not once a claim lapsed (review 3 #2)", async () => {
     const result = await run(
       Effect.gen(function* () {
         const repo = yield* CaptureStoreRepo;
@@ -493,7 +493,7 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
             repo.register({
               ...one,
               guards: [{ worktreeId, guard: state.guards.get(worktreeId) ?? -1 }],
-              revive: [key],
+              names: [key],
             }),
           );
         });
@@ -543,7 +543,36 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     expect(result.renewedAfterFinish).toBe(0);
     expect(result.renewedLapsed).toBe(0);
     expect(result.lapsed).toEqual([{ key: expect.any(String), deleted: true }]);
-    expect(result.revived).toBe("ok");
+    expect(result.revived).toBe("guard_moved");
+  });
+
+  it("seals (0083): a seal names the launch that sealed, recorded only while the lease names its session", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const worktreeId = yield* freshWorktree;
+        const { epoch } = yield* repo.claim(worktreeId, "session-1", 3600);
+        const zero = captureInput(worktreeId, 0, null, epoch);
+        // A launch of another session: the lease does not name it, nothing is sealed.
+        yield* repo.register({ ...zero, seal: { executorId: "launch-x", holder: "session-2" } });
+        const other = yield* repo.sealedCompletion(worktreeId, "launch-x", epoch);
+        const one = captureInput(worktreeId, 1, zero.id, epoch);
+        yield* repo.register({ ...one, seal: { executorId: "launch-1", holder: "session-1" } });
+        return {
+          other,
+          byLaunch: yield* repo.sealedCompletion(worktreeId, "launch-1", epoch),
+          bySession: yield* repo.sealedCompletion(worktreeId, "session-1", epoch),
+          oneId: one.id,
+        };
+      }),
+    );
+    expect(result.other).toBeNull();
+    expect(result.byLaunch).toMatchObject({
+      executorId: "launch-1",
+      captureId: result.oneId,
+      n: 1,
+    });
+    expect(result.bySession).toBeNull();
   });
 
   it("seals (0080): the register CAS records a seal only when it lands and the lease names its executor; the newest epoch reads first", async () => {
@@ -553,27 +582,27 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
         const worktreeId = yield* freshWorktree;
         const first = yield* repo.claim(worktreeId, "exec-a", 3600);
         const zero = captureInput(worktreeId, 0, null, first.epoch);
-        yield* repo.register({ ...zero, seal: { executorId: "exec-a" } });
+        yield* repo.register({ ...zero, seal: { executorId: "exec-a", holder: "exec-a" } });
         // A register whose CAS misses (a stale parent) seals nothing.
         const missed = yield* reasonOf(
           repo.register({
             ...captureInput(worktreeId, 1, "not-the-head", first.epoch),
-            seal: { executorId: "exec-a" },
+            seal: { executorId: "exec-a", holder: "exec-a" },
           }),
         );
         // A seal naming an executor the lease does not name lands the capture, not the seal.
         const one = captureInput(worktreeId, 1, zero.id, first.epoch);
-        yield* repo.register({ ...one, seal: { executorId: "exec-b" } });
+        yield* repo.register({ ...one, seal: { executorId: "exec-b", holder: "exec-b" } });
         const forB = yield* repo.sealedCompletion(worktreeId, "exec-b");
         // The same executor seals again later in the epoch: the newer capture stands.
         const two = captureInput(worktreeId, 2, one.id, first.epoch);
-        yield* repo.register({ ...two, seal: { executorId: "exec-a" } });
+        yield* repo.register({ ...two, seal: { executorId: "exec-a", holder: "exec-a" } });
         const inFirst = yield* repo.sealedCompletion(worktreeId, "exec-a", first.epoch);
         // A new epoch, the same executor: the newest epoch reads first; the old one still reads.
         yield* repo.release(worktreeId, first.epoch);
         const second = yield* repo.claim(worktreeId, "exec-a", 3600);
         const three = captureInput(worktreeId, 3, two.id, second.epoch);
-        yield* repo.register({ ...three, seal: { executorId: "exec-a" } });
+        yield* repo.register({ ...three, seal: { executorId: "exec-a", holder: "exec-a" } });
         const newest = yield* repo.sealedCompletion(worktreeId, "exec-a");
         const old = yield* repo.sealedCompletion(worktreeId, "exec-a", first.epoch);
         const none = yield* repo.sealedCompletion(worktreeId, "exec-a", second.epoch + 1);

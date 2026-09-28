@@ -861,12 +861,22 @@ export const deviceTokens = pgTable(
  * bearer token a workspace presents instead of opening `/run/mend/mend.sock`. No FK: hot-pool
  * ids are minted before their session row exists and become the session id at claim.
  */
-export const sessionChannelTokens = pgTable("session_channel_tokens", {
-  sessionId: text().primaryKey(),
-  tokenHash: text().notNull(),
-  createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
-  revokedAt: timestamp({ mode: "date", withTimezone: true }),
-});
+export const sessionChannelTokens = pgTable(
+  "session_channel_tokens",
+  {
+    // One row per token (0083): a session holds one per launch, never one overwriting another.
+    tokenHash: text().primaryKey(),
+    sessionId: text().notNull(),
+    // The physical executor the token was issued for: its create's idempotency key (0083).
+    launchId: text().notNull(),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    revokedAt: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (table) => [
+    index("session_channel_tokens_session_idx").on(table.sessionId),
+    index("session_channel_tokens_launch_idx").on(table.launchId),
+  ],
+);
 
 /**
  * One upgrade ticket (docs/adr/0004, "Upgrade tickets"): thirty seconds, one account, one target,
@@ -1210,6 +1220,9 @@ export const agentSessions = pgTable(
     executorResourceId: text(),
     // The idempotency key of an executor create not yet answered on the row (0082).
     executorCreateKey: text(),
+    // The current executor's launch identity — its create's idempotency key, what its channel
+    // token and its `final_seal.executor` name (0083).
+    executorLaunchId: text(),
     // When the current executor started: what the platform's cap counts from (0075).
     executorStartedAt: timestamp({ mode: "date", withTimezone: true }),
     // Removal asked while the workspace was up; the row goes once it has (0075).
@@ -1906,8 +1919,8 @@ export const worktreeChain = pgTable("worktree_chain", {
 
 /**
  * Objects retention condemned (key → owning worktree): `deletedAt` null while their bytes may
- * still be going, set once they are gone. A register naming a key here is refused until the
- * bytes are gone and it has seen them uploaded again.
+ * still be going, set once they are gone. Permanent: a register naming a key here is refused for
+ * good (cross-repo decision 6); the content comes back only under a new key.
  */
 export const captureTombstones = pgTable(
   "capture_tombstones",

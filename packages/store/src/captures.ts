@@ -54,8 +54,50 @@ export const GitSection = Schema.Struct({
    * too, by the sha it resolved to. Absent when there are none.
    */
   symrefs: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
+  /**
+   * The `git_trees` manifest feature (sealantd review 3): the working tree as `git add -A`
+   * stages it — what a review diffs. When present, `refs` is the repository's refs whatever
+   * their names (`refs/sealant/capture/*` included) and nothing in it is a tree of Mend's.
+   */
+  worktree_tree: Schema.optionalKey(Schema.String),
+  /** `git_trees`: the index as a tree, when it could be written as one. */
+  index_tree: Schema.optionalKey(Schema.String),
+  /**
+   * `git_trees`: the worktree tree with every regular file's blob holding the bytes on disk,
+   * before any clean filter, end-of-line or encoding conversion — what a restore checks out and
+   * writes back unsmudged.
+   */
+  raw_tree: Schema.optionalKey(Schema.String),
 });
 export type GitSection = typeof GitSection.Type;
+
+/** The section names its trees in their own fields (`git_trees`) rather than as pseudo-refs. */
+export const gitSectionHoldsTrees = (section: GitSection): boolean =>
+  section.worktree_tree !== undefined;
+
+/**
+ * The worktree tree: `worktree_tree`, else the `refs/sealant/capture/worktree` pseudo-ref of a
+ * section written before `git_trees`. Undefined when the section names none.
+ */
+export const worktreeTreeOf = (section: GitSection): string | undefined =>
+  gitSectionHoldsTrees(section) ? section.worktree_tree : section.refs[WORKTREE_TREE_REF];
+
+/** The index tree: `index_tree` in a `git_trees` section, else the index pseudo-ref. */
+export const indexTreeOf = (section: GitSection): string | undefined =>
+  gitSectionHoldsTrees(section) ? section.index_tree : section.refs[INDEX_TREE_REF];
+
+/** The tree a restore checks out: `raw_tree` when the section has one, else the worktree tree. */
+export const rawTreeOf = (section: GitSection): string | undefined =>
+  section.raw_tree ?? worktreeTreeOf(section);
+
+/**
+ * Every tree the section names beside its refs (`worktree_tree`, `index_tree`, `raw_tree`, or
+ * the two pseudo-refs of a section before `git_trees`): each is a pack closure tip.
+ */
+export const gitSectionTrees = (section: GitSection): ReadonlyArray<string> =>
+  [worktreeTreeOf(section), indexTreeOf(section), section.raw_tree].filter(
+    (tree): tree is string => tree !== undefined && tree !== "",
+  );
 
 /** Section format 1: one object per directory at `…/trees/<sha256>`, named by key. */
 export const FORMAT_DIR_OBJECTS = 1;
@@ -226,6 +268,10 @@ export type CaptureClass = "workspace" | "bulk";
  */
 export const WORKTREE_TREE_REF = "refs/sealant/capture/worktree";
 export const INDEX_TREE_REF = "refs/sealant/capture/index";
+/**
+ * Where the two pseudo-refs live in a section written before `git_trees`. Only the two exact
+ * names above were ever trees; in a `git_trees` section every name here is a user ref.
+ */
 export const PSEUDO_REF_PREFIX = "refs/sealant/capture/";
 
 /**
@@ -256,10 +302,13 @@ export const DirEntryKind = Schema.Literals(["file", "symlink", "dir", "hardlink
 export type DirEntryKind = typeof DirEntryKind.Type;
 
 /**
- * One entry of a directory listing. `mtime` is seconds since the epoch (fractional allowed);
- * an RFC 3339 string is accepted too — ADR-0015 fixes the field, not its unit, and both are
- * unambiguous to read. `chunks` for files, `target` for symlinks and hardlink groups (the
- * group's canonical path, relative to the class root), `child` for directories.
+ * One entry of a directory listing. `mtime` is nanoseconds since the epoch, an i64 (sealantd
+ * `tree.rs` `DirEntry.mtime`): decoded from a dir object's bytes it is a `bigint` holding the
+ * integer exactly as written (`decodeDirObject`) — a double cannot hold today's nanosecond
+ * counts — and written back the same digits (`encodeDirObject`). A `number` is nanoseconds too
+ * (an entry built in memory); an RFC 3339 string is accepted as a time. `chunks` for files,
+ * `target` for symlinks and hardlink groups (the group's canonical path, relative to the class
+ * root), `child` for directories.
  *
  * `name` and `target` are keys (sealantd `tree.rs`, "Names that are not UTF-8"): a name that is
  * not UTF-8, or holds a character of `U+10FF80..=U+10FFFF`, is escaped byte by byte into that
@@ -272,7 +321,7 @@ export const DirEntry = Schema.Struct({
   kind: DirEntryKind,
   mode: Schema.Int,
   size: Schema.Int,
-  mtime: Schema.Union([Schema.Number, Schema.String]),
+  mtime: Schema.Union([Schema.BigInt, Schema.Number, Schema.String]),
   chunks: Schema.optionalKey(Schema.Array(Schema.String)),
   target: Schema.optionalKey(Schema.String),
   child: Schema.optionalKey(Schema.String),
@@ -301,9 +350,25 @@ const DirObjectWire = Schema.Union([
   Schema.Array(DirEntry),
 ]);
 
-/** The bytes of a dir object as the daemon writes and reads them. */
+/** `JSON.rawJSON` (ES2025, Node 21+), which TypeScript's lib does not type yet. */
+interface JsonWithRawText {
+  readonly rawJSON: (text: string) => unknown;
+}
+const writesRawText = (json: JSON): json is JSON & JsonWithRawText =>
+  "rawJSON" in json && typeof Reflect.get(json, "rawJSON") === "function";
+
+/** `JSON.stringify`, with every `bigint` written as its digits (an i64 nanosecond mtime). */
+export const stringifyExact = (value: unknown): string => {
+  const json = JSON;
+  if (!writesRawText(json)) throw new Error("dir objects need JSON.rawJSON (Node 21 or later)");
+  return JSON.stringify(value, (_key: string, field: unknown) =>
+    typeof field === "bigint" ? json.rawJSON(field.toString()) : field,
+  );
+};
+
+/** The bytes of a dir object as the daemon writes and reads them; a `bigint` goes out as its digits. */
 export const encodeDirObject = (entries: DirObject): Uint8Array =>
-  new Uint8Array(Buffer.from(JSON.stringify({ entries }), "utf8"));
+  new Uint8Array(Buffer.from(stringifyExact({ entries }), "utf8"));
 
 // ─── Names that are not UTF-8 ───────────────────────────────────────────────
 
@@ -493,9 +558,18 @@ export const sha256Hex = (bytes: Uint8Array): string =>
 /** ADR-0015's capture id: the digest of the manifest's bytes as stored. */
 export const captureIdOf = (manifestBytes: Uint8Array): string => sha256Hex(manifestBytes);
 
-/** Key layout, fixed with ADR-0015; `<sha256>` is the lowercase hex digest of the object. */
-export const captureKeys = (worktreeId: string, epoch: number) => {
-  const base = `captures/${worktreeId}/${epoch}`;
+/**
+ * Key layout, fixed with ADR-0015; `<sha256>` is the lowercase hex digest of the object. A
+ * `generation` puts the objects under `captures/<worktree>/<epoch>/g<generation>/` (cross-repo
+ * decision 6): content retention condemned is uploaded again under a key no condemnation named, so
+ * a delete still in flight for the old key can only reach bytes no capture names. Both forms are
+ * read and registered alike; the epoch is always the segment after the worktree.
+ */
+export const captureKeys = (worktreeId: string, epoch: number, generation?: number) => {
+  const base =
+    generation === undefined
+      ? `captures/${worktreeId}/${epoch}`
+      : `captures/${worktreeId}/${epoch}/g${generation}`;
   return {
     pack: (sha: string) => `${base}/packs/${sha}`,
     packIdx: (sha: string) => `${base}/packs/${sha}.idx`,
@@ -570,7 +644,37 @@ const decodeJson =
     });
 
 export const decodeManifest = decodeJson(CaptureManifest, "manifest");
-const decodeDirObjectWire = decodeJson(DirObjectWire, "dir object");
+
+/**
+ * A dir object's JSON, with every integer `mtime` read from its source text as a `bigint`
+ * (`JSON.parse` source text access, Node 21+): nanoseconds since the epoch overflow a double's
+ * 53 bits, and a rounded mtime is a changed one.
+ */
+const parseDirObjectJson = (text: string): unknown =>
+  JSON.parse(text, (key: string, value: unknown, context?: { readonly source?: string }) =>
+    key === "mtime" &&
+    typeof value === "number" &&
+    context?.source !== undefined &&
+    /^-?\d+$/.test(context.source)
+      ? BigInt(context.source)
+      : value,
+  );
+
+const decodeDirObjectWire = (
+  key: string,
+  bytes: Uint8Array,
+): Effect.Effect<typeof DirObjectWire.Type, CaptureFormatError> =>
+  Effect.try({
+    try: () =>
+      Schema.decodeUnknownSync(DirObjectWire)(
+        parseDirObjectJson(Buffer.from(bytes).toString("utf8")),
+      ),
+    catch: (cause) =>
+      new CaptureFormatError({
+        key,
+        reason: `dir object: ${cause instanceof Error ? cause.message : String(cause)}`,
+      }),
+  });
 const isWrappedDirObject = (
   wire: typeof DirObjectWire.Type,
 ): wire is { readonly entries: DirObject } => !Array.isArray(wire);
@@ -959,8 +1063,24 @@ export interface MaterializeStats {
   readonly bytes: number;
 }
 
-const mtimeSeconds = (value: number | string): number =>
-  typeof value === "number" ? value : Date.parse(value) / 1000;
+const NS_PER_SECOND = 1_000_000_000n;
+
+/** An entry's mtime in nanoseconds since the epoch, exact (`DirEntry.mtime`). */
+export const mtimeNanos = (value: bigint | number | string): bigint => {
+  if (typeof value === "bigint") return value;
+  if (typeof value === "number") return Number.isFinite(value) ? BigInt(Math.trunc(value)) : 0n;
+  const ms = Date.parse(value);
+  return Number.isNaN(ms) ? 0n : BigInt(ms) * 1_000_000n;
+};
+
+/**
+ * Nanoseconds as the seconds `fs.utimesSync` takes. Node sets a time from a double of seconds,
+ * which holds today's times to about a quarter of a microsecond: this reader lays a class down
+ * for Mend to read, never to restore an executor's disk — sealantd's materializer is the restore
+ * path, and it sets every nanosecond.
+ */
+const secondsOf = (ns: bigint): number =>
+  Number(ns / NS_PER_SECOND) + Number(ns % NS_PER_SECOND) / 1e9;
 
 const isSafeName = (name: string) =>
   name !== "" && name !== "." && name !== ".." && !name.includes("/") && !name.includes("\0");
@@ -976,6 +1096,10 @@ const joinBytes = (dir: Buffer, name: Uint8Array): Buffer =>
  * mtimes are applied last so the writes beneath do not disturb them. Every path is bytes: a name
  * or a symlink's text that is not UTF-8 is written as the bytes `raw_name` / `raw_target` carry,
  * never as its escaped key.
+ *
+ * Not a restore path: an mtime lands to within a microsecond of the recorded nanoseconds (what
+ * Node's `utimes` can set, `secondsOf`), and no worktree metadata overlay or cross-class link is
+ * applied. Restoring an executor's disk is sealantd's materializer.
  */
 export const materialize = (
   manifest: CaptureManifest,
@@ -1027,7 +1151,7 @@ export const materialize = (
             reason: `${entry.name}: wrote ${written} bytes, entry says ${entry.size}`,
           });
         }
-        const mtime = mtimeSeconds(entry.mtime);
+        const mtime = secondsOf(mtimeNanos(entry.mtime));
         yield* io(at, () => fs.utimesSync(at, mtime, mtime));
         stats.files += 1;
         stats.bytes += written;
@@ -1083,7 +1207,7 @@ export const materialize = (
               stats.dirs += 1;
               yield* walk(child, at);
               yield* io(at, () => fs.chmodSync(at, mode));
-              dirTimes.push({ at, mtime: mtimeSeconds(entry.mtime) });
+              dirTimes.push({ at, mtime: secondsOf(mtimeNanos(entry.mtime)) });
               break;
             }
             case "file": {
@@ -1098,7 +1222,7 @@ export const materialize = (
                   reason: `${entry.name}: symlink without a well-formed target`,
                 });
               }
-              const mtime = mtimeSeconds(entry.mtime);
+              const mtime = secondsOf(mtimeNanos(entry.mtime));
               yield* io(at, () => {
                 fs.symlinkSync(target, at);
                 fs.lutimesSync(at, mtime, mtime);
@@ -1546,7 +1670,11 @@ export const listCaptureFiles = (
         }
       }
     }
-    return out.toSorted((a, b) => mtimeSeconds(b.entry.mtime) - mtimeSeconds(a.entry.mtime));
+    return out.toSorted((a, b) => {
+      const left = mtimeNanos(a.entry.mtime);
+      const right = mtimeNanos(b.entry.mtime);
+      return left === right ? 0 : right > left ? 1 : -1;
+    });
   });
 
 // ─── Restorability ──────────────────────────────────────────────────────────
@@ -1796,6 +1924,46 @@ const MetaDocument = Schema.Struct({
   ),
 });
 
+/** The worktree metadata document (sealantd `worktree_meta.rs` `MetaDocument`), decoded. */
+export type WorktreeMetaDocument = typeof MetaDocument.Type;
+
+/** What a path of the worktree tree is, from its git mode: a blob, a symlink, a tree, a gitlink. */
+export type WorktreeTreeKind = "file" | "symlink" | "dir" | "gitlink";
+
+/**
+ * Whether the worktree metadata document names only paths the restore will find as it says
+ * (review 2026-09-28 (3) #20). sealantd applies the document after the git class checked out the
+ * worktree tree (`worktree_meta.rs` `apply`): it creates a missing directory, but a file or a
+ * symlink the document names must already be there, of that kind, or the materialize fails. The
+ * document's scope is the worktree tree's own paths, so `tracked` — every path of that tree, hex
+ * of its bytes → its kind — is the namespace a file, a symlink (and so every hardlink member) must
+ * be found in; a directory the document names must not be a file or a link there. The reason, or
+ * null when the document applies.
+ */
+export const metaNamespaceProblem = (
+  document: WorktreeMetaDocument,
+  tracked: ReadonlyMap<string, WorktreeTreeKind>,
+): string | null => {
+  for (const entry of document.entries) {
+    const bytes = bytesOfPair(entry.path, entry.raw_path);
+    if (bytes === null) return `path ${JSON.stringify(entry.path)}`;
+    if (bytes.length === 0) continue;
+    const found = tracked.get(bytes.toString("hex"));
+    if (entry.kind === "dir") {
+      if (found !== undefined && found !== "dir") {
+        return `${JSON.stringify(entry.path)} is a directory in the document, a ${found} in the worktree tree`;
+      }
+      continue;
+    }
+    if (found !== entry.kind) {
+      return `${JSON.stringify(entry.path)} is a ${entry.kind} in the document, ${
+        found === undefined ? "absent from" : `a ${found} in`
+      } the worktree tree`;
+    }
+  }
+  return null;
+};
+
 /** `""` or a relative path of normal components (sealantd `worktree_meta.rs` `is_plain_relative`). */
 const isPlainRelative = (bytes: Buffer): boolean => {
   if (bytes.length === 0) return true;
@@ -1823,15 +1991,22 @@ const isPlainRelative = (bytes: Buffer): boolean => {
  * document, shared links from a file of the document to a plain relative member, cross-class
  * groups of two or more distinct plain members. The reason, or null when the document restores.
  */
-const metaDocumentProblem = (bytes: Uint8Array): string | null => {
-  let document: typeof MetaDocument.Type;
+const decodeMetaDocument = (
+  bytes: Uint8Array,
+): { readonly document: WorktreeMetaDocument } | { readonly problem: string } => {
+  let document: WorktreeMetaDocument;
   try {
     document = Schema.decodeUnknownSync(MetaDocument)(
       JSON.parse(Buffer.from(bytes).toString("utf8")),
     );
   } catch (cause) {
-    return cause instanceof Error ? cause.message : String(cause);
+    return { problem: cause instanceof Error ? cause.message : String(cause) };
   }
+  const problem = metaDocumentProblem(document);
+  return problem === null ? { document } : { problem };
+};
+
+const metaDocumentProblem = (document: WorktreeMetaDocument): string | null => {
   if (document.format < 1 || document.format > WORKTREE_META_FORMAT) {
     return `format ${document.format}; Mend reads up to ${WORKTREE_META_FORMAT}`;
   }
@@ -1881,14 +2056,16 @@ const metaDocumentProblem = (bytes: Uint8Array): string | null => {
  * materializer reads it: a format Mend reads, packs among the section's own, every chunk in one
  * of them, the chunks adding up to `size` bytes whose sha256 is `sha256`, and a document that
  * decodes under its own rules. Reads the listed packs' indexes and each chunk by ranged GET.
+ * Answers the document (null when the section has none), for the caller to check it against the
+ * worktree tree it applies to (`metaNamespaceProblem`).
  */
 export const verifyWorktreeMeta = (
   section: WorkspaceSection,
   options?: { readonly sizes?: ReadonlyMap<string, number> },
-): Effect.Effect<void, CaptureReadError, BlobStore> =>
+): Effect.Effect<WorktreeMetaDocument | null, CaptureReadError, BlobStore> =>
   Effect.gen(function* () {
     const meta = section.worktree_meta;
-    if (meta === undefined) return;
+    if (meta === undefined) return null;
     const key = `worktree_meta ${meta.sha256}`;
     const fail = (reason: string) => Effect.fail(new CaptureFormatError({ key, reason }));
     if (meta.format < 1 || meta.format > WORKTREE_META_FORMAT) {
@@ -1934,8 +2111,9 @@ export const verifyWorktreeMeta = (
     if (actual !== meta.sha256) {
       return yield* new CaptureIntegrityError({ key, expected: meta.sha256, actual });
     }
-    const problem = metaDocumentProblem(document);
-    if (problem !== null) return yield* fail(`document: ${problem}`);
+    const decoded = decodeMetaDocument(document);
+    if ("problem" in decoded) return yield* fail(`document: ${decoded.problem}`);
+    return decoded.document;
   });
 
 // ─── What a capture row names ───────────────────────────────────────────────

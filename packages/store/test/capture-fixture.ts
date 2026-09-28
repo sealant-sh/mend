@@ -13,6 +13,7 @@ import {
   captureIdOf,
   captureKeys,
   encodeDirObject,
+  stringifyExact,
   FORMAT_DIR_PACKS,
   sha256Hex,
   type WorkspaceSection,
@@ -169,7 +170,8 @@ export const snapshotDirectory = (
       const full = path.join(at, name);
       const relPath = rel === "" ? name : `${rel}/${name}`;
       const stat = fs.lstatSync(full);
-      const mtime = stat.mtimeMs / 1000;
+      // Nanoseconds since the epoch, exact, as sealantd writes them (`tree.rs` `DirEntry.mtime`).
+      const mtime = fs.lstatSync(full, { bigint: true }).mtimeNs;
       if (stat.isDirectory()) {
         const child = snapshotTree(full, relPath);
         entries.push({ name, kind: "dir", mode: stat.mode, size: 0, mtime, child });
@@ -207,7 +209,7 @@ export const snapshotDirectory = (
       dirObjects.set(digest, bytes);
       return digest;
     }
-    const json = new Uint8Array(Buffer.from(JSON.stringify(entries), "utf8"));
+    const json = new Uint8Array(Buffer.from(stringifyExact(entries), "utf8"));
     const key = keys.tree(sha256Hex(json));
     objects.set(key, json);
     return key;

@@ -96,12 +96,15 @@ type Built = ReturnType<typeof chainOf>["two"];
 const worldOf = (
   repoBase: Layer.Layer<CaptureStoreRepo>,
   hook: (inner: typeof CaptureStoreRepo.Service) => typeof CaptureStoreRepo.Service,
+  blobHook: (inner: typeof BlobStore.Service) => typeof BlobStore.Service = (inner) => inner,
 ) => {
   const repoLayer = Layer.effect(CaptureStoreRepo, Effect.map(CaptureStoreRepo, hook)).pipe(
     Layer.provide(repoBase),
   );
   const blobRoot = freshDir("blobs");
-  const blobs = BlobStoreFsLive(blobRoot);
+  const blobs = Layer.effect(BlobStore, Effect.map(BlobStore, blobHook)).pipe(
+    Layer.provide(BlobStoreFsLive(blobRoot)),
+  );
   const channel = CaptureChannelLive.pipe(
     Layer.provide(repoLayer),
     Layer.provide(blobs),
@@ -162,6 +165,30 @@ const readBack = (built: Built) =>
   );
 
 /**
+ * `text` as `saved.txt`, snapshotted under generation `generation` of `epoch`
+ * (`captures/<worktree>/<epoch>/g<generation>/`): what an executor uploads when register names a
+ * key as condemned — the same content, under a key no condemnation named (cross-repo decision 6).
+ */
+const generationOf = (wt: WorktreeId, epoch: number, generation: number, text: string) => {
+  const source = freshDir("generation");
+  fs.writeFileSync(path.join(source, "saved.txt"), text);
+  return snapshotDirectory(source, captureKeys(wt, epoch, generation), { format: 2 });
+};
+
+/** `built` again, naming `snapshot`'s workspace section, with its objects and its manifest. */
+const renamed = (built: Built, snapshot: ReturnType<typeof generationOf>) => {
+  const again = buildManifest({
+    worktreeId: WorktreeId.make(built.manifest.worktree_id),
+    epoch: built.manifest.epoch,
+    n: built.manifest.n,
+    parent: built.manifest.parent,
+    kind: built.manifest.kind,
+    workspace: sectionOf(snapshot),
+  });
+  return { built: again, objects: new Map([...snapshot.objects, [again.key, again.bytes]]) };
+};
+
+/**
  * The scenarios, parameterised over the pointer store: `setup` makes the worktree's rows and
  * claims its lease for 20 days; `retentionNow` is the pass's clock once the thinned capture is
  * past seven days and every pack past the grace; `age` moves the store's own clock there too
@@ -173,6 +200,8 @@ interface Store {
   readonly setup: (wt: WorktreeId) => Effect.Effect<void, never, CaptureStoreRepo>;
   readonly retentionNow: () => number;
   readonly age: () => void;
+  /** Every deletion claim lapses now, as a pass's does once it stalls past its life. */
+  readonly lapseClaims: () => Effect.Effect<void>;
 }
 
 const scenarios = (store: Store) => {
@@ -221,7 +250,7 @@ const scenarios = (store: Store) => {
     }
   });
 
-  it(`${store.label}: a register whose packs the pass condemns after it looked is refused, and lands once the bytes are uploaded again`, async () => {
+  it(`${store.label}: a register whose packs the pass condemns after it looked is refused, stays refused however the bytes come back, and lands under a new generation (review 3 #2)`, async () => {
     const wt = WorktreeId.make(`wt-race-b-${process.pid}-${Date.now()}`);
     const chain = chainOf(wt);
     let armed = false;
@@ -251,19 +280,25 @@ const scenarios = (store: Store) => {
         const refused = yield* outcome(register(chain.two));
         const head = (yield* (yield* CaptureStoreRepo).headOf(wt))?.head?.id;
         const gone = chain.old.packs.every((key) => !fs.existsSync(path.join(world.blobRoot, key)));
-        // The executor uploads the same objects again; the register sees them and lands.
+        // The same objects uploaded again at the same keys: a condemned key is never registered
+        // again, whatever became of its bytes.
         yield* uploadObjects(chain.old.objects);
-        const again = yield* outcome(register(chain.two));
-        const read = yield* readBack(chain.two);
-        // Revived: the next pass keeps them, the head names them.
+        const sameKeys = yield* outcome(register(chain.two));
+        // The executor uploads the content under a new generation; that lands and reads back.
+        const next = renamed(chain.two, generationOf(wt, 1, 1, `original work ${wt}`));
+        yield* uploadObjects(next.objects);
+        const again = yield* outcome(register(next.built));
+        const read = yield* readBack(next.built);
+        // The next pass keeps what the head names.
         yield* retention.run(store.retentionNow());
-        const nextPass = yield* readBack(chain.two);
-        return { refused, head, gone, again, read, nextPass };
+        const nextPass = yield* readBack(next.built);
+        return { refused, head, gone, sameKeys, again, read, nextPass };
       }).pipe(Effect.provide(world.layer)),
     );
     expect(result.gone).toBe(true);
     expect(result.refused).toBe("CaptureRouteError:missing-objects");
     expect(result.head).toBe(chain.one.id);
+    expect(result.sameKeys).toBe("CaptureRouteError:missing-objects");
     expect(result.again).toBe("ok");
     expect(result.read).toBe(`ok:original work ${wt}`);
     expect(result.nextPass).toBe(`ok:original work ${wt}`);
@@ -354,22 +389,127 @@ const scenarios = (store: Store) => {
         // Pass A resumes and deletes what it condemned.
         yield* retention.run(store.retentionNow());
         const headAfterA = (yield* repo.headOf(wt))?.head?.id;
-        // Pass A is done: the executor uploads again and the final lands, and reads back.
+        // Pass A is done: the same keys stay refused; the content under a new generation lands
+        // and reads back.
         yield* uploadObjects(old.objects);
-        const again = yield* outcome(register(two));
-        const read = yield* readBack(two);
+        const sameKeys = yield* outcome(register(two));
+        const next = renamed(two, generationOf(wt, 2, 1, `original work ${wt}`));
+        yield* uploadObjects(next.objects);
+        const again = yield* outcome(register(next.built));
+        const read = yield* readBack(next.built);
         yield* retention.run(store.retentionNow());
-        const nextPass = yield* readBack(two);
+        const nextPass = yield* readBack(next.built);
         const head = (yield* repo.headOf(wt))?.head?.id;
-        return { during, headAfterA, again, read, nextPass, head };
+        return { during, headAfterA, sameKeys, again, read, nextPass, head, nextId: next.built.id };
       }).pipe(Effect.provide(world.layer)),
     );
     expect(result.during).toBe("CaptureRouteError:missing-objects");
     expect(result.headAfterA).toBe(one.id);
+    expect(result.sameKeys).toBe("CaptureRouteError:missing-objects");
     expect(result.again).toBe("ok");
     expect(result.read).toBe(`ok:original work ${wt}`);
     expect(result.nextPass).toBe(`ok:original work ${wt}`);
-    expect(result.head).toBe(two.id);
+    expect(result.head).toBe(result.nextId);
+  });
+
+  it(`${store.label}: a delete that lands after its pass's claim lapsed reaches no registered capture (review 3 #2)`, async () => {
+    const wt = WorktreeId.make(`wt-race-d-${process.pid}-${Date.now()}`);
+    const source = freshDir("late-delete");
+    fs.writeFileSync(path.join(source, "saved.txt"), `old unique work ${wt}`);
+    const old = snapshotDirectory(source, captureKeys(wt, 1), { format: 2 });
+    fs.writeFileSync(path.join(source, "saved.txt"), `new work ${wt}`);
+    const fresh = snapshotDirectory(source, captureKeys(wt, 2), { format: 2 });
+    const zero = buildManifest({
+      worktreeId: wt,
+      epoch: 1,
+      n: 0,
+      parent: null,
+      kind: "auto",
+      workspace: sectionOf(old),
+    });
+    const one = buildManifest({
+      worktreeId: wt,
+      epoch: 2,
+      n: 1,
+      parent: zero.id,
+      kind: "auto",
+      workspace: sectionOf(fresh),
+    });
+    const two = buildManifest({
+      worktreeId: wt,
+      epoch: 2,
+      n: 2,
+      parent: one.id,
+      kind: "final",
+      workspace: sectionOf(old),
+    });
+    const victim = old.packs[0] ?? "";
+    let onRemove: Effect.Effect<unknown> = Effect.void;
+    const world = worldOf(
+      store.repo(),
+      (inner) => inner,
+      (inner) => ({
+        ...inner,
+        // Pass A renewed its claim and sent the delete; the request pauses before it takes
+        // effect (a worker pause, a slow store) for as long as `onRemove` runs.
+        remove: (key) =>
+          Effect.suspend(() => {
+            if (key !== victim) return inner.remove(key);
+            const run = onRemove;
+            onRemove = Effect.void;
+            return run.pipe(Effect.andThen(inner.remove(key)));
+          }),
+      }),
+    );
+    const result = await Effect.runPromise(
+      Effect.gen(function* () {
+        yield* uploadObjects(
+          new Map([
+            ...old.objects,
+            ...fresh.objects,
+            [zero.key, zero.bytes],
+            [one.key, one.bytes],
+            [two.key, two.bytes],
+          ]),
+        );
+        yield* store.setup(wt);
+        const repo = yield* CaptureStoreRepo;
+        const register = yield* registerWith(wt);
+        yield* register(zero);
+        yield* repo.release(wt, 1);
+        yield* repo.claim(wt, "executor", 20 * 86_400).pipe(Effect.orDie);
+        yield* register(one);
+        store.age();
+        const retention = yield* CaptureRetention;
+        const bucket = yield* BlobStore;
+        const next = renamed(two, generationOf(wt, 2, 1, `old unique work ${wt}`));
+        let sameKeys = "";
+        let generation = "";
+        let whilePaused = "";
+        onRemove = Effect.gen(function* () {
+          // Pass B deletes the same objects and settles their tombstones; A's claim lapses.
+          yield* retention.run(store.retentionNow());
+          yield* store.lapseClaims();
+          // The executor uploads the content again: at the old keys it is refused for good; under
+          // a new generation it lands.
+          yield* uploadObjects(old.objects);
+          sameKeys = yield* outcome(register(two));
+          yield* uploadObjects(next.objects);
+          generation = yield* outcome(register(next.built));
+          whilePaused = yield* readBack(next.built);
+        }).pipe(Effect.provideService(BlobStore, bucket), Effect.orDie);
+        // Pass A: its delete of the old key lands after all of that.
+        yield* retention.run(store.retentionNow());
+        const afterA = yield* readBack(next.built);
+        const head = (yield* repo.headOf(wt))?.head?.id;
+        return { sameKeys, generation, whilePaused, afterA, head, nextId: next.built.id };
+      }).pipe(Effect.provide(world.layer)),
+    );
+    expect(result.sameKeys).toBe("CaptureRouteError:missing-objects");
+    expect(result.generation).toBe("ok");
+    expect(result.whilePaused).toBe(`ok:old unique work ${wt}`);
+    expect(result.head).toBe(result.nextId);
+    expect(result.afterA).toBe(`ok:old unique work ${wt}`);
   });
 };
 
@@ -396,6 +536,10 @@ describe("retention racing a register (in memory)", () => {
     age: () => {
       time = 9 * DAY;
     },
+    lapseClaims: () =>
+      Effect.sync(() => {
+        time += 2 * 60 * 60 * 1000;
+      }),
   });
 });
 
@@ -538,5 +682,10 @@ describe.skipIf(!reachable)("retention racing a register (Postgres)", () => {
       }),
     retentionNow: () => Date.now() + 10 * DAY,
     age: () => undefined,
+    lapseClaims: () =>
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql`UPDATE capture_deletion_claims SET expires_at = now() - interval '1 second'`;
+      }).pipe(Effect.provide(pgLayer), Effect.scoped, Effect.orDie),
   });
 });

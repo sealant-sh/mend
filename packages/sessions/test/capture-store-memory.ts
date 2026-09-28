@@ -140,23 +140,17 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
           chain.headCapture === capture.parent &&
           leaseEpoch === capture.epoch &&
           guardsHold &&
-          (capture.revive ?? []).every((key) => !tombstones.has(key) || revivable(key))
+          (capture.names ?? []).every((key) => !tombstones.has(key))
         ) {
           chain.headN = capture.n;
           chain.headCapture = capture.id;
           chain.headEpoch = capture.epoch;
           chain.guard = (chain.guard ?? 0) + 1;
-          for (const key of capture.revive ?? []) {
-            if (revivable(key)) {
-              tombstones.delete(key);
-              claims.delete(key);
-            }
-          }
           const sealKey = `${capture.worktreeId}:${capture.epoch}`;
           const sealed = seals.get(sealKey);
           if (
             capture.seal !== undefined &&
-            lease?.executorId === capture.seal.executorId &&
+            lease?.executorId === capture.seal.holder &&
             (sealed === undefined || sealed.n < capture.n)
           ) {
             seals.set(sealKey, {
@@ -276,7 +270,12 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
           const id = digestOf(record.key);
           const known = packs.get(id);
           if (known?.state === "retired") {
-            packs.set(id, { ...known, state: "uploaded", updatedAt: new Date(clock.now()) });
+            packs.set(id, {
+              ...known,
+              key: record.key,
+              state: "uploaded",
+              updatedAt: new Date(clock.now()),
+            });
           }
           if (known !== undefined) continue;
           packs.set(id, {

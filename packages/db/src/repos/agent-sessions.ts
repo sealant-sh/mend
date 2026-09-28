@@ -324,6 +324,8 @@ export class SessionsRepo extends Context.Service<
       id: SessionId,
       workspaceId: SealantWorkspaceId,
       executorStartedAt: Date,
+      /** Its launch identity: the create's idempotency key (cross-repo decision 5). */
+      launchId: string,
     ) => Effect.Effect<void>;
     /**
      * The runtime identity of the executor in `workspaceId` (`details().runtime.resourceId`),
@@ -348,10 +350,23 @@ export class SessionsRepo extends Context.Service<
     readonly listExecutorCreates: () => Effect.Effect<
       ReadonlyArray<{ readonly sessionId: SessionId; readonly key: string }>
     >;
-    /** The session's current executor's runtime identity, with the workspace it belongs to. */
+    /**
+     * The session's current executor's runtime identity, with the workspace and the launch it
+     * belongs to.
+     */
     readonly executorResourceOf: (id: SessionId) => Effect.Effect<{
       readonly workspaceId: SealantWorkspaceId;
       readonly resourceId: string;
+      readonly launchId: string | null;
+    } | null>;
+    /**
+     * The session's current executor's launch identity, with its workspace (0083): what its
+     * token and its `final_seal.executor` name. Null while the row names no workspace or no
+     * launch was recorded for it.
+     */
+    readonly executorLaunchOf: (id: SessionId) => Effect.Effect<{
+      readonly workspaceId: SealantWorkspaceId;
+      readonly launchId: string;
     } | null>;
     /** Removal asked while the workspace was up; the sweep removes the row once it has gone. */
     readonly requestRemoval: (id: SessionId, at: Date) => Effect.Effect<void>;
@@ -394,7 +409,8 @@ type SessionBookkeepingColumns =
   | "captureSavedN"
   | "captureSavedEpoch"
   | "executorResourceId"
-  | "executorCreateKey";
+  | "executorCreateKey"
+  | "executorLaunchId";
 const sessionSeamIntact: ExactKeys<Omit<SessionRow, SessionBookkeepingColumns>, Session> = true;
 void sessionSeamIntact;
 
@@ -561,11 +577,16 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         sealantRunId: SealantRunId,
         workspaceId: SealantWorkspaceId,
       ) {
+        // The launch and runtime recorded for the executor stay only while the row still names
+        // its workspace: a session that joins another's executor names none of its own.
+        const sameExecutor = sql`${agentSessions.sealantWorkspaceId} IS NOT DISTINCT FROM ${workspaceId}`;
         yield* db
           .update(agentSessions)
           .set({
             sealantRunId,
             sealantWorkspaceId: workspaceId,
+            executorLaunchId: sql`CASE WHEN ${sameExecutor} THEN ${agentSessions.executorLaunchId} END`,
+            executorResourceId: sql`CASE WHEN ${sameExecutor} THEN ${agentSessions.executorResourceId} END`,
             workspaceExpiresAt: null,
             workspaceTtlRenewedAt: null,
             workspaceTtlRenewalFailedAt: null,
@@ -1250,6 +1271,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         id: SessionId,
         workspaceId: SealantWorkspaceId,
         executorStartedAt: Date,
+        launchId: string,
       ) {
         yield* db
           .update(agentSessions)
@@ -1258,6 +1280,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
             executorStartedAt,
             executorResourceId: null,
             executorCreateKey: null,
+            executorLaunchId: launchId,
             workspaceExpiresAt: null,
             workspaceTtlRenewedAt: null,
             workspaceTtlRenewalFailedAt: null,
@@ -1333,13 +1356,30 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .select({
             workspaceId: agentSessions.sealantWorkspaceId,
             resourceId: agentSessions.executorResourceId,
+            launchId: agentSessions.executorLaunchId,
           })
           .from(agentSessions)
           .where(eq(agentSessions.id, id))
           .limit(1)
           .pipe(Effect.orDie);
         if (row === undefined || row.workspaceId === null || row.resourceId === null) return null;
-        return { workspaceId: row.workspaceId, resourceId: row.resourceId };
+        return { workspaceId: row.workspaceId, resourceId: row.resourceId, launchId: row.launchId };
+      });
+
+      const executorLaunchOf = Effect.fn("SessionsRepo.executorLaunchOf")(function* (
+        id: SessionId,
+      ) {
+        const [row] = yield* db
+          .select({
+            workspaceId: agentSessions.sealantWorkspaceId,
+            launchId: agentSessions.executorLaunchId,
+          })
+          .from(agentSessions)
+          .where(eq(agentSessions.id, id))
+          .limit(1)
+          .pipe(Effect.orDie);
+        if (row === undefined || row.workspaceId === null || row.launchId === null) return null;
+        return { workspaceId: row.workspaceId, launchId: row.launchId };
       });
 
       const requestRemoval = Effect.fn("SessionsRepo.requestRemoval")(function* (
@@ -1423,6 +1463,7 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
         recordAcceptedWorkspace,
         recordExecutorResource,
         executorResourceOf,
+        executorLaunchOf,
         recordExecutorCreate,
         clearExecutorCreate,
         executorCreateOf,

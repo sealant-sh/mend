@@ -28,6 +28,32 @@ fn git(root: &Path, args: &[&[u8]]) {
     assert!(out.status.success(), "git: {}", String::from_utf8_lossy(&out.stderr));
 }
 
+/// Set `path`'s mtime (not following a symlink) to `ns` nanoseconds since the epoch.
+fn set_mtime(path: &Path, ns: i64) {
+    let stamp = format!("@{}.{:09}", ns / 1_000_000_000, ns % 1_000_000_000);
+    let out = Command::new("touch")
+        .args(["-h", "-m", "-d", &stamp])
+        .arg(path)
+        .output()
+        .unwrap();
+    assert!(out.status.success(), "touch: {}", String::from_utf8_lossy(&out.stderr));
+}
+
+/// Every path under `dir`, deepest first (a directory after what it holds), each on its own
+/// mtime: `base + i` nanoseconds, odd digits a double rounds away.
+fn stamp_mtimes(dir: &Path, base: i64) {
+    let mut paths: Vec<PathBuf> = walkdir::WalkDir::new(dir)
+        .min_depth(1)
+        .contents_first(true)
+        .into_iter()
+        .map(|entry| entry.unwrap().into_path())
+        .collect();
+    paths.push(dir.to_path_buf());
+    for (i, path) in paths.iter().enumerate() {
+        set_mtime(path, base + i64::try_from(i).unwrap() * 1_000_003);
+    }
+}
+
 fn at(root: &Path, rel: &[u8]) -> PathBuf {
     root.join(OsStr::from_bytes(rel))
 }
@@ -65,6 +91,9 @@ fn workspace(root: &Path) {
     fs::write(at(&nm, b"pkg-\xe9/index.js"), "module.exports = 1;\n").unwrap();
     fs::hard_link(at(&nm, b"pkg-\xe9/index.js"), at(&nm, b"copy-\xff.js")).unwrap();
     std::os::unix::fs::symlink(OsStr::from_bytes(b"pkg-\xe9"), at(&nm, b"link-\xe9")).unwrap();
+
+    stamp_mtimes(&ignored, 1_790_544_318_479_764_701);
+    stamp_mtimes(&nm, 1_790_544_318_479_864_703);
 }
 
 /// Every path under `dir` (relative to `base`), keyed by the hex of its bytes: kind, mode, and
@@ -76,14 +105,15 @@ fn listing(base: &Path, dir: &Path) -> serde_json::Value {
         let rel = hex::encode(entry.path().strip_prefix(base).unwrap().as_os_str().as_bytes());
         let meta = fs::symlink_metadata(entry.path()).unwrap();
         let mode = meta.permissions().mode() & 0o7777;
+        let mtime_ns = (meta.mtime() * 1_000_000_000 + meta.mtime_nsec()).to_string();
         let value = if meta.file_type().is_symlink() {
             let target = fs::read_link(entry.path()).unwrap();
-            serde_json::json!({ "kind": "symlink", "target": hex::encode(target.as_os_str().as_bytes()) })
+            serde_json::json!({ "kind": "symlink", "target": hex::encode(target.as_os_str().as_bytes()), "mtime_ns": mtime_ns })
         } else if meta.is_dir() {
-            serde_json::json!({ "kind": "dir", "mode": mode })
+            serde_json::json!({ "kind": "dir", "mode": mode, "mtime_ns": mtime_ns })
         } else {
             let bytes = fs::read(entry.path()).unwrap();
-            serde_json::json!({ "kind": "file", "mode": mode, "size": bytes.len(), "sha256": hex::encode(Sha256::digest(&bytes)), "nlink": meta.nlink() })
+            serde_json::json!({ "kind": "file", "mode": mode, "size": bytes.len(), "sha256": hex::encode(Sha256::digest(&bytes)), "nlink": meta.nlink(), "mtime_ns": mtime_ns })
         };
         out.insert(rel, value);
     }

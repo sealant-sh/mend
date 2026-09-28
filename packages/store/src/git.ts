@@ -76,6 +76,39 @@ export const git = (
     return Effect.sync(() => child.kill());
   });
 
+/**
+ * Run git with args in cwd; resolve with stdout as bytes, untouched — for output that names paths
+ * (`ls-tree -z`), which are bytes and need not be UTF-8.
+ */
+export const gitBytes = (
+  args: ReadonlyArray<string>,
+  cwd: string,
+): Effect.Effect<Buffer, GitError> =>
+  Effect.callback<Buffer, GitError>((resume) => {
+    const child = execFile(
+      "git",
+      [...args],
+      { cwd, maxBuffer: 256 * 1024 * 1024, env: gitProcessEnv(undefined), encoding: "buffer" },
+      (error, stdout, stderr) => {
+        if (error === null) {
+          resume(Effect.succeed(stdout));
+          return;
+        }
+        resume(
+          Effect.fail(
+            new GitError({
+              args: [...args],
+              cwd,
+              exitCode: typeof error.code === "number" ? error.code : null,
+              stderr: (stderr.length > 0 ? stderr.toString("utf8") : error.message).trim(),
+            }),
+          ),
+        );
+      },
+    );
+    return Effect.sync(() => child.kill());
+  });
+
 /** What one git call printed and how it exited, whatever the exit code. */
 export interface GitOutput {
   readonly exitCode: number;

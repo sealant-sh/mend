@@ -44,7 +44,8 @@ export const RETENTION_GRACE_MS = 30 * 60 * 1000;
 /**
  * How long a condemnation's claim lives unless renewed: far longer than any one delete may take,
  * so a pass that renewed it and then deletes still holds it when the delete lands. A crashed
- * pass's claim lapses after this, and its keys may come back.
+ * pass's claim lapses after this; its keys never come back (a tombstone is permanent), so a
+ * delete it still sends reaches only bytes no capture names.
  */
 export const DELETION_CLAIM_TTL_SECONDS = 60 * 60;
 /** A pass renews its claim at least this often while it deletes. */
@@ -244,17 +245,17 @@ export const CaptureRetentionLive: Layer.Layer<CaptureRetention, never, CaptureR
         //    (rows first, bytes second, so a crash between the two leaves a retired row and a
         //    stray object, never the reverse). A register that read the guard before this
         //    misses its CAS and reads again; one after it finds the tombstones and is refused
-        //    until the bytes are gone and it has seen them uploaded again. A chain that moved
+        //    for good — the content comes back only under a new key. A chain that moved
         //    keeps everything until the next pass. Objects of a worktree with no chain left
         //    need no tombstone: no register can name them (its guard is gone).
         //
         //    The condemnation holds a claim on every key it tombstones until this pass has
-        //    deleted them and settled the tombstones (`finishDeletion`): no register brings a
-        //    key back while the claim is live, whatever another pass did with the same keys in
-        //    between (review 2026-09-28 #1). The claim is renewed before the deletes and at
-        //    least every `CLAIM_RENEW_MS` while they run; once a renewal fails — the claim
-        //    lapsed, so a register may have brought a key back — this pass deletes nothing more
-        //    of that chain and leaves its tombstones undeleted for the next pass.
+        //    deleted them and settled the tombstones (`finishDeletion`). No register ever names a
+        //    condemned key again (review 2026-09-28 (3) #2): a delete that lands late reaches only
+        //    bytes no capture names, so the claim paces passes, it does not fence them. It is
+        //    renewed before the deletes and at least every `CLAIM_RENEW_MS` while they run; once a
+        //    renewal fails this pass deletes nothing more of that chain and leaves its tombstones
+        //    undeleted for the next pass.
         for (const [owner, plan] of doomed) {
           const guard = guards.get(owner);
           const token = crypto.randomUUID();
