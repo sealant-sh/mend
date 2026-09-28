@@ -50,6 +50,7 @@ const DRAINING = SessionId.make("s-draining");
 const REMOVING = SessionId.make("s-removing");
 const STOPPING = SessionId.make("s-stopping");
 const FAILING = SessionId.make("s-failing");
+const FENCED = SessionId.make("s-fenced");
 
 /** A reading with one capture pending, taken at `at`. */
 const observed = (at: Date) => ({
@@ -480,6 +481,126 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
     });
     expect(result.unstamped?.version).toBe(5);
   });
+
+  // Review 2026-09-28 (7) #3: the fence on an executor's evidence was the engine's memory, and an
+  // answer was published in three writes. The fence is a row, written before the ask; the answer
+  // — the session's reading and word, the executor's evidence — is published with the fence
+  // deleted in one transaction. A publication that fails leaves nothing of it, and its fence
+  // outlives the process that asked (each `run` below is a fresh repository over the database).
+  it("fences an executor's evidence durably and publishes an answer with its fence in one transaction (0088, review 2026-09-28 (7) #3)", async () => {
+    const at = new Date("2026-09-28T01:00:00.000Z");
+    const reading = (ticket: number, holder: string, worktreeId: WorktreeId) => ({
+      sessionId: FENCED,
+      workspaceId: "ws-fenced",
+      fence: { ticket, holder },
+      observation: observed(at),
+      position: stampAt(30, 5),
+      saved: null,
+      unsaved: {
+        workspaceId: "ws-fenced",
+        at,
+        words: "unreadable tree/late.txt",
+        position: stampAt(30, 5),
+      },
+      answer: {
+        worktreeId,
+        launchId: "launch-a",
+        unsaved: {
+          workspaceId: "ws-fenced",
+          at,
+          words: "unreadable tree/late.txt",
+          position: stampAt(30, 5),
+        },
+      },
+    });
+    // Engine A asks; nothing comes back: the fence goes.
+    const unanswered = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        yield* sessions.create({
+          id: FENCED,
+          projectId: PROJECT,
+          worktreeId: WORKTREE,
+          harness: "claude",
+          label: null,
+          worktree: "wt-1",
+          branch: "mend/wt-1",
+          baseSha: Sha.make("abc"),
+          baseRef: "main",
+          contextSnapshotId: null,
+          ownerUserId: "alice",
+          origin: "mend",
+        });
+        const ticket = yield* sessions.openEvidenceFence("ws-fenced", "engine-a");
+        const during = yield* sessions.evidenceFenced("ws-fenced");
+        yield* sessions.closeEvidenceFence(ticket, "unanswered");
+        return { during, after: yield* sessions.evidenceFenced("ws-fenced") };
+      }),
+    );
+    expect(unanswered).toEqual({ during: true, after: false });
+    // Engine A asks; the answer arrives and its publication fails (the executor's worktree is
+    // gone): nothing of it is written, and the fence stays, unpublished.
+    const failed = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const ticket = yield* sessions.openEvidenceFence("ws-fenced", "engine-a");
+        const exit = yield* Effect.exit(
+          sessions.publishExecutorReading(reading(ticket, "engine-a", WorktreeId.make("wt-gone"))),
+        );
+        yield* sessions.closeEvidenceFence(ticket, "unpublished");
+        return { failed: exit._tag === "Failure", ticket };
+      }),
+    );
+    expect(failed.failed).toBe(true);
+    // Engine B, after a restart: the fence is still there; the session holds nothing of the
+    // answer; the executor holds no evidence.
+    const restarted = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        return {
+          fenced: yield* sessions.evidenceFenced("ws-fenced"),
+          unsaved: yield* sessions.captureUnsavedOf(FENCED),
+          evidence: yield* sessions.executorEvidenceOf("ws-fenced"),
+        };
+      }),
+    );
+    expect(restarted).toEqual({ fenced: true, unsaved: null, evidence: null });
+    // Engine B asks while one of its own asks is still in flight; the later answer is published:
+    // the unpublished fence goes with it, its own in-flight one stays until it returns.
+    const published = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        const inFlight = yield* sessions.openEvidenceFence("ws-fenced", "engine-b");
+        const ticket = yield* sessions.openEvidenceFence("ws-fenced", "engine-b");
+        const version = yield* sessions.publishExecutorReading(
+          reading(ticket, "engine-b", WORKTREE),
+        );
+        const whileInFlight = yield* sessions.evidenceFenced("ws-fenced");
+        yield* sessions.closeEvidenceFence(inFlight, "unanswered");
+        return {
+          version,
+          whileInFlight,
+          fenced: yield* sessions.evidenceFenced("ws-fenced"),
+          unsaved: yield* sessions.captureUnsavedOf(FENCED),
+          position: yield* sessions.captureObservedPositionOf(FENCED),
+          evidence: yield* sessions.executorEvidenceOf("ws-fenced"),
+          session: yield* sessions.byId(FENCED),
+        };
+      }),
+    );
+    expect(published.version).toBe(1);
+    expect(published.whileInFlight).toBe(true);
+    expect(published.fenced).toBe(false);
+    expect(published.unsaved).toEqual({
+      workspaceId: "ws-fenced",
+      at,
+      words: "unreadable tree/late.txt",
+    });
+    expect(published.position).toEqual(stampAt(30, 5));
+    expect(published.evidence?.unsaved?.position).toEqual(stampAt(30, 5));
+    expect(published.session.capturePending).toBe(1);
+    expect(published.session.captureObservedAt).toEqual(at);
+  });
 });
 
 /** Where executor `launch-a` (epoch 2, boot `boot-a`) made an answer: sealantd's stamp. */
@@ -490,4 +611,85 @@ const stampAt = (observation: number, headN: number) => ({
   bootGeneration: 1,
   observation,
   headN,
+});
+
+// Review 2026-09-28 (7) #3, rows written before 0088: a session could hold an unsaved answer whose
+// executor-wide write failed. Migrating fences that executor until an answer asked after it is
+// published — the failure already stored on its session keeps any older save from reading saved.
+describe.skipIf(!reachable)("migration 0088 over rows written before it", () => {
+  const LEGACY_DB = `mend_capture_fence_migration_${process.pid}_${Date.now()}`;
+  const legacyUrl = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${LEGACY_DB}`;
+    return url.toString();
+  })();
+  const legacy = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(
+      effect.pipe(Effect.provide(PgClient.layer({ url: Redacted.make(legacyUrl) })), Effect.scoped),
+    );
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${LEGACY_DB}`);
+      }),
+    );
+  });
+
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${LEGACY_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("fences every executor whose session holds an unsaved answer later than its evidence keeps", async () => {
+    const fenced = await legacy(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const ordered = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
+        for (const [name, migration] of ordered) {
+          if (name.localeCompare("0088") >= 0) continue;
+          yield* migration;
+        }
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-legacy', 'web', '/store/p/repo.git', 'main',
+                  (SELECT id FROM organizations LIMIT 1))`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-legacy', 'p-legacy', 'wt', 'wt', 'mend/wt', 'abc')`;
+        // ws-partial: the session's unsaved answer never reached the executor's evidence.
+        // ws-published: it did. ws-older: the executor keeps a later one.
+        for (const [id, workspace, at] of [
+          ["s-partial", "ws-partial", "2026-09-28T00:02:00Z"],
+          ["s-published", "ws-published", "2026-09-28T00:02:00Z"],
+          ["s-older", "ws-older", "2026-09-28T00:01:00Z"],
+        ] as const) {
+          yield* sql`
+            INSERT INTO agent_sessions (id, project_id, worktree_id, harness, worktree, branch,
+                                        base_sha, base_ref, capture_unsaved_workspace_id,
+                                        capture_unsaved_at, capture_unsaved_detail)
+            VALUES (${id}, 'p-legacy', 'wt-legacy', 'claude', 'wt', 'mend/wt', 'abc', 'main',
+                    ${workspace}, ${at}, 'unreadable tree/x')`;
+        }
+        yield* sql`
+          INSERT INTO executor_capture_evidence (workspace_id, worktree_id, unsaved_at, unsaved_detail)
+          VALUES ('ws-published', 'wt-legacy', '2026-09-28T00:02:00Z', 'unreadable tree/x'),
+                 ('ws-older', 'wt-legacy', '2026-09-28T00:03:00Z', 'unreadable tree/y')`;
+        const [, fence] = ordered.find(([name]) => name.startsWith("0088")) ?? [];
+        if (fence === undefined) return yield* Effect.die("no 0088");
+        yield* fence;
+        return yield* sql<{ readonly workspace: string; readonly unpublished: boolean }>`
+          SELECT workspace_id AS workspace, unpublished
+            FROM executor_evidence_fences ORDER BY workspace_id`;
+      }),
+    );
+    expect(fenced.map((row) => ({ ...row }))).toEqual([
+      { workspace: "ws-partial", unpublished: true },
+    ]);
+  });
 });
