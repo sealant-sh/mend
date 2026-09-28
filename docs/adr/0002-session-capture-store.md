@@ -1199,3 +1199,19 @@ Mend-side details the decision record left open, decided in this ADR:
       stop settled a bare `stopped` (the owner's Stop wording), while sessions whose end Mend
       observed from outside read `stopped outside Mend · saved at … · capture n`. Such a stop now
       reads the same once saved. The owner's Stop is unchanged.
+43. (2026-09-28) The sixteenth review's Mend item (#1).
+    - **A manifest that was not read never triggers a dependency install (#1).**
+      `installDependenciesIfNeeded` read the head's manifest to learn whether this executor's
+      platform had a restored dependency tree, and turned any GET or decode error into "no tree":
+      one 503 on that read ran `npm ci` over a restored `node_modules` and replaced the user's patch
+      with the published bytes before the shell opened. A failed read is now unavailable. Mend logs
+      it, runs no installer, and the session line says
+      `dependency install skipped · capture <n> manifest unavailable` once at start (the next start
+      clears it, as with `setup skipped`). Only a manifest that was read and names no tree for this
+      platform, or a worktree with no head yet, runs the install. With the manifest read, the
+      install never runs over a restored tree of the same platform: sealantd restores the bulk
+      section the head holds for its platform and carries it forward as `bulk` into every capture it
+      registers afterwards (`continue_bulk`), so a head read after the restore still names it. What
+      the install can replace is a tree spliced in from the project's dependency cache, which is no
+      session's work. This is decision 42's rule applied to the automatic install: nothing Mend runs
+      before the harness rewrites restored work.
