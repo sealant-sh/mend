@@ -33,6 +33,7 @@ import {
   sectionFormatOf,
   type SectionFormat,
   treePrefixesOfSections,
+  verifyPackPayloads,
   verifySectionRestorable,
   verifyWorktreeMeta,
   sectionHoldsRawNames,
@@ -42,7 +43,7 @@ import {
   worktreeTreeOf,
   type WorktreeMetaDocument,
 } from "@mend/store";
-import { Duration, Effect, Layer, Option, Schema } from "effect";
+import { Duration, Effect, Layer, Option, Result, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { CaptureRemotes, type PlanRemote } from "./capture-remotes.ts";
@@ -1826,7 +1827,43 @@ export const CaptureChannelLive: Layer.Layer<
             }
             return "verified" as const;
           });
-          const sealed = sealHolds && gitFsck === "verified" && metaNamespace === "verified";
+          // A seal says every section restores (review 2026-09-28 (4) #13): the chunk bytes
+          // themselves, not only the indexes naming them — every chunk of every pack the chunked
+          // sections list decompresses and hashes to what it names. A pack that does not is
+          // kept (its bytes may still be salvaged) and registered; nothing is sealed on it.
+          const payloads = !sealHolds
+            ? null
+            : yield* verifyPackPayloads(chunked.flatMap((section) => section.packs)).pipe(
+                Effect.provideService(BlobStore, blobs),
+                Effect.result,
+              );
+          if (payloads !== null && Result.isFailure(payloads)) {
+            const error = payloads.failure;
+            yield* Effect.logWarning(
+              "capture channel: a final seal over a pack whose chunks do not read · registered without it",
+            ).pipe(
+              Effect.annotateLogs({
+                worktreeId,
+                n: input.n,
+                captureId: input.capture_id,
+                epoch: input.epoch,
+                error: error._tag,
+                detail:
+                  error._tag === "CaptureFormatError"
+                    ? `${error.key}: ${error.reason}`
+                    : error._tag === "CaptureIntegrityError"
+                      ? `${error.key} does not hash to ${error.expected}`
+                      : error._tag === "ChunkNotFoundError"
+                        ? error.hash
+                        : error._tag === "BlobNotFoundError"
+                          ? error.key
+                          : error.message,
+              }),
+            );
+          }
+          const payloadsRead = payloads !== null && Result.isSuccess(payloads);
+          const sealed =
+            sealHolds && gitFsck === "verified" && metaNamespace === "verified" && payloadsRead;
           if (sealHolds && !sealed) {
             yield* Effect.logWarning(
               "capture channel: a final seal over sections not verified restorable · registered without it",
@@ -1838,6 +1875,7 @@ export const CaptureChannelLive: Layer.Layer<
                 epoch: input.epoch,
                 gitFsck,
                 worktreeMeta: metaNamespace,
+                chunkPayloads: payloadsRead ? "read" : "not read",
               }),
             );
           }

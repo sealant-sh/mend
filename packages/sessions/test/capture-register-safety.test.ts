@@ -1289,3 +1289,88 @@ describe("a lease is held by a launch (review 2026-09-28 (4) #11, cross-repo dec
     expect(result.lease?.launchId).toBe("launch-new");
   });
 });
+
+describe("a seal rests on chunk bytes that read (review 2026-09-28 (4) #13)", () => {
+  const sealedRegister = (wt: WorktreeId, corrupt: boolean) =>
+    Effect.gen(function* () {
+      const body = utf8(`irreplaceable content ${corrupt ? "damaged" : "intact"}`);
+      const entry: DirEntry = {
+        name: "unique.txt",
+        kind: "file",
+        mode: 0o100644,
+        size: body.length,
+        mtime: 1,
+        chunks: [sha256Hex(body)],
+      };
+      const source = handWorkspace(wt, 1, [entry], [body]);
+      const packKey = source.workspace.packs[0] ?? "";
+      const packBytes = source.objects.get(packKey);
+      if (packBytes === undefined) throw new Error("no content pack");
+      const objects = new Map(source.objects);
+      let workspace = source.workspace;
+      if (corrupt) {
+        // The frame's first byte flipped, the index intact, the whole pack keyed by its new
+        // digest: content addressing alone holds.
+        const damaged = new Uint8Array(packBytes);
+        damaged[0] = (damaged[0] ?? 0) ^ 0xff;
+        const damagedKey = captureKeys(wt, 1).pack(sha256Hex(damaged));
+        objects.delete(packKey);
+        objects.set(damagedKey, damaged);
+        workspace = { ...source.workspace, packs: [damagedKey] };
+      }
+      const base = buildManifest({
+        worktreeId: wt,
+        epoch: 1,
+        n: 0,
+        parent: null,
+        kind: "final",
+        workspace,
+        bulk: { root: "", packs: [], platform: "linux-x86_64-glibc" },
+      });
+      const manifest = {
+        ...base.manifest,
+        final_seal: { complete: true, epoch: 1, executor: "executor" },
+      };
+      const bytes = utf8(JSON.stringify(manifest));
+      const id = sha256Hex(bytes);
+      const key = captureKeys(wt, 1).manifest(id);
+      const repo = yield* CaptureStoreRepo;
+      yield* repo.init(wt);
+      yield* repo.claim(wt, "executor");
+      const api = yield* apiOf(wt);
+      yield* uploadObjects(new Map([...objects, [key, bytes]]));
+      const registered = yield* outcome(
+        api.register({
+          worktree_id: wt,
+          epoch: 1,
+          n: 0,
+          parent: null,
+          capture_id: id,
+          manifest_key: key,
+          manifest,
+        }),
+      );
+      const seal = yield* repo.sealedCompletion(wt, "executor", 1);
+      const head = (yield* repo.headOf(wt))?.head ?? null;
+      return { registered, sealed: seal?.captureId === id, headId: head?.id ?? null, id };
+    });
+
+  it("a content-addressed pack whose compressed frame does not decode registers (kept for salvage) and seals nothing", async () => {
+    const world = worldOf(2, verifierObserving({}));
+    const result = await Effect.runPromise(
+      sealedRegister(WorktreeId.make("wt-bad-chunk"), true).pipe(Effect.provide(world.layer)),
+    );
+    expect(result.registered).toBe("ok");
+    expect(result.headId).toBe(result.id);
+    expect(result.sealed).toBe(false);
+  });
+
+  it("the same capture over intact bytes is sealed", async () => {
+    const world = worldOf(2, verifierObserving({}));
+    const result = await Effect.runPromise(
+      sealedRegister(WorktreeId.make("wt-good-chunk"), false).pipe(Effect.provide(world.layer)),
+    );
+    expect(result.registered).toBe("ok");
+    expect(result.sealed).toBe(true);
+  });
+});
