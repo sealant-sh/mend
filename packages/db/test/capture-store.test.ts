@@ -663,23 +663,123 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
         const { epoch } = yield* repo.claim(worktreeId, "session-1", 3600);
         const zero = captureInput(worktreeId, 0, null, epoch);
         yield* repo.register({ ...zero, seal: { executorId: "launch-1", holder: "session-1" } });
-        yield* repo.recordPutAuthority(worktreeId, epoch, new Date("2026-09-28T01:00:00.000Z"));
+        // Recorded only against the seal the caller checked its keys against (review 2026-09-28
+        // (9) #6).
+        const unchecked = yield* repo.recordPutAuthority(
+          worktreeId,
+          epoch,
+          new Date("2026-09-28T01:00:00.000Z"),
+        );
+        const uncheckedAuthority = yield* repo.putAuthorityUntil(worktreeId, epoch);
+        yield* repo.recordPutAuthority(
+          worktreeId,
+          epoch,
+          new Date("2026-09-28T01:00:00.000Z"),
+          zero.id,
+        );
         // Every URL expired before the read began: the mark is recorded.
         const readBegan = new Date("2026-09-28T01:10:00.000Z");
         const first = yield* repo.markSealReverified(worktreeId, epoch, zero.id, readBegan);
         const reverified = yield* repo.sealedCompletion(worktreeId, "launch-1", epoch);
         // A URL handed out while the next read-back ran: its authority outlives the read's start.
         const nextRead = new Date("2026-09-28T01:30:00.000Z");
-        yield* repo.recordPutAuthority(worktreeId, epoch, new Date("2026-09-28T01:50:00.000Z"));
+        yield* repo.recordPutAuthority(
+          worktreeId,
+          epoch,
+          new Date("2026-09-28T01:50:00.000Z"),
+          zero.id,
+        );
         const raced = yield* repo.markSealReverified(worktreeId, epoch, zero.id, nextRead);
         const after = yield* repo.sealedCompletion(worktreeId, "launch-1", epoch);
-        return { first, reverified, raced, after };
+        return { unchecked, uncheckedAuthority, first, reverified, raced, after };
       }),
     );
+    expect(result.unchecked).toEqual({ recorded: false, sealedCapture: expect.any(String) });
+    expect(result.uncheckedAuthority).toBeNull();
     expect(result.first).toBe(true);
     expect(result.reverified?.reverifiedAt?.toISOString()).toBe("2026-09-28T01:10:00.000Z");
     expect(result.raced).toBe(false);
     expect(result.after?.reverifiedAt?.toISOString()).toBe("2026-09-28T01:10:00.000Z");
+  });
+
+  // Review 2026-09-28 (9) #6 (the reviewer's pg_stat_activity-coordinated race, cross-repo
+  // decision 26): the mark checked the epoch's write authority inside the UPDATE of the seal row
+  // — a `NOT EXISTS` over the statement's snapshot, taken before it waited on that row. Authority
+  // committed while it waited was never seen, and the seal was marked with that URL live.
+  // Issuance and the mark now serialize on the epoch's authority row, locked before a fresh read,
+  // and issuance refuses a seal it has not checked.
+  it("review 9 #6 a seal's mark and write authority committed while it waits on the seal row never both stand", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const worktreeId = yield* freshWorktree;
+        const { epoch } = yield* repo.claim(worktreeId, "session-1", 3600);
+        const zero = captureInput(worktreeId, 0, null, epoch);
+        yield* repo.register({ ...zero, seal: { executorId: "launch-1", holder: "session-1" } });
+        const waiters = sql<{ readonly waiting: number }>`
+          SELECT count(*)::int AS waiting FROM pg_stat_activity
+           WHERE datname = current_database() AND wait_event_type = 'Lock'`.pipe(
+          Effect.map((rows) => rows[0]?.waiting ?? 0),
+        );
+        const locked = yield* Deferred.make<void>();
+        const unlock = yield* Deferred.make<void>();
+        // Another verification holds the seal row, changing nothing.
+        const holder = yield* Effect.forkChild(
+          sql.withTransaction(
+            Effect.gen(function* () {
+              yield* sql`
+                SELECT worktree_id FROM capture_seals
+                 WHERE worktree_id = ${worktreeId} FOR UPDATE`;
+              yield* Deferred.succeed(locked, undefined);
+              yield* Deferred.await(unlock);
+            }),
+          ),
+        );
+        yield* Deferred.await(locked);
+        const readBegan = new Date();
+        const marker = yield* Effect.forkChild(
+          repo.markSealReverified(worktreeId, epoch, zero.id, readBegan),
+        );
+        let markWaiting = false;
+        for (let i = 0; i < 200 && !markWaiting; i++) {
+          markWaiting = (yield* waiters) > 0;
+          if (!markWaiting) yield* Effect.sleep("20 millis");
+        }
+        // A URL of the epoch handed out while the mark waits: its authority outlives the read.
+        const issuer = yield* Effect.forkChild(
+          repo.recordPutAuthority(worktreeId, epoch, new Date(readBegan.getTime() + 20 * 60_000)),
+        );
+        for (let i = 0; i < 100; i++) {
+          if (issuer.pollUnsafe() !== undefined || (yield* waiters) > 1) break;
+          yield* Effect.sleep("20 millis");
+        }
+        yield* Deferred.succeed(unlock, undefined);
+        yield* Fiber.join(holder);
+        const marked = yield* Fiber.join(marker);
+        const issued = yield* Fiber.join(issuer);
+        return {
+          markWaiting,
+          marked,
+          issued,
+          sealed: zero.id,
+          seal: yield* repo.sealedCompletion(worktreeId, "launch-1", epoch),
+          authority: yield* repo.putAuthorityUntil(worktreeId, epoch),
+        };
+      }),
+    );
+    expect(result.markWaiting).toBe(true);
+    const reverifiedAt = result.seal?.reverifiedAt?.getTime() ?? null;
+    const authority = result.authority?.getTime() ?? null;
+    // Never both: a mark recorded and write authority recorded after the read it marks.
+    expect(
+      result.marked && reverifiedAt !== null && authority !== null && authority > reverifiedAt,
+    ).toBe(false);
+    // Here the mark went first: the issuer found the seal it had not checked, and recorded
+    // nothing — overwrite-capable authority is never issued for a sealed epoch unchecked.
+    expect(result.marked).toBe(true);
+    expect(result.issued).toEqual({ recorded: false, sealedCapture: result.sealed });
+    expect(result.authority).toBeNull();
   });
 
   it("launch-bound leases (0085): another launch of the holder never retakes, renews, registers under or seals a lease its launch does not hold (review 2026-09-28 (4) #11)", async () => {

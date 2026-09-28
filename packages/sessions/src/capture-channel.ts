@@ -5,6 +5,7 @@ import {
   CaptureStoreRepo,
   type CaptureRow,
   type PackRecord,
+  type PutAuthorityRecord,
   type WorktreeLease,
 } from "@mend/db";
 import { type ProjectId, WorktreeId } from "@mend/domain";
@@ -1421,7 +1422,7 @@ export const CaptureChannelLive: Layer.Layer<
             );
           }
         }
-        const plans: Array<{
+        let plans: Array<{
           readonly key: string;
           readonly parts: number;
           readonly size: number | null;
@@ -1461,12 +1462,51 @@ export const CaptureChannelLive: Layer.Layer<
         // bucket that ignores `If-None-Match` a URL handed out now could replace an object of
         // this epoch until it expires, and no seal of the epoch stands before then
         // (`CaptureSealsStoreLive`). The bucket judges expiry by its own clock: allowed a margin.
-        if (plans.length > 0) {
-          yield* repo.recordPutAuthority(
+        // Recording it is serialized with a seal's acceptance on the epoch's authority row
+        // (cross-repo decision 26, review 2026-09-28 (9) #6): once a seal of the epoch is
+        // recorded, no URL that could replace an object it names is ever handed out. Every
+        // object a seal names was stored when it registered, so each key about to get a URL is
+        // asked of the bucket again after the seal was seen: a stored one is answered `present`
+        // (a launch that reads it) or refused (any other), never handed a URL. Authority is then
+        // recorded only against the seal that check was made for — a newer seal is checked anew.
+        let checkedSeal: string | null = null;
+        let sealChecked = false;
+        while (plans.length > 0) {
+          const record: PutAuthorityRecord = yield* repo.recordPutAuthority(
             worktreeId,
             input.epoch,
             new Date(Date.now() + (PRESIGN_TTL_SECONDS + PUT_URL_CLOCK_MARGIN_SECONDS) * 1000),
+            checkedSeal,
           );
+          if (record.recorded) break;
+          sealChecked = true;
+          const again = yield* Effect.forEach(
+            plans,
+            (plan) =>
+              blobs.head(plan.key).pipe(
+                Effect.map((found) => [plan, found !== null] as const),
+                Effect.catch(storeError("asking the bucket for", plan.key)),
+              ),
+            { concurrency: PRESENT_HEADS_IN_FLIGHT },
+          );
+          const storedNow = again.filter(([, stored]) => stored).map(([plan]) => plan);
+          for (const plan of storedNow) {
+            yield* verifyStored(plan.key);
+            if (!answersPresent || storedLegacy.has(plan.key)) {
+              return yield* new CaptureRouteError({
+                status: 409,
+                reason: "exists",
+                message: `${plan.key} is stored and a final seal of epoch ${input.epoch} is recorded: no upload URL can be handed out for it`,
+                key: plan.key,
+              });
+            }
+            present.push(plan.key);
+            // Answered present, not uploaded: never priced for this call.
+            if (unpriced.has(plan.key)) ledger.delete(plan.key);
+          }
+          const answered = new Set(storedNow.map((plan) => plan.key));
+          plans = plans.filter((plan) => !answered.has(plan.key));
+          checkedSeal = record.sealedCapture;
         }
         const urls: Record<string, string> = {};
         const multipart: Record<string, MultipartPlan> = {};
@@ -1483,6 +1523,15 @@ export const CaptureChannelLive: Layer.Layer<
             if (answersPresent) {
               present.push(plan.key);
               continue;
+            }
+            // A seal of the epoch was seen: no URL that could replace a stored object.
+            if (sealChecked) {
+              return yield* new CaptureRouteError({
+                status: 409,
+                reason: "exists",
+                message: `${plan.key} is stored and a final seal of epoch ${input.epoch} is recorded: no upload URL can be handed out for it`,
+                key: plan.key,
+              });
             }
             storedLegacy.add(plan.key);
             urls[plan.key] = yield* blobs

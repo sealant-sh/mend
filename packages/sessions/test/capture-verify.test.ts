@@ -1975,18 +1975,36 @@ describeSeals(
       expect((await recorded(at))?.reverifiedAt?.getTime()).toBe(clock);
       expect((await seals(at))?.captureId).toBe(file.cap.id);
 
-      // Another URL handed out under the epoch (an older daemon re-asking for the stored pack is
-      // answered one, review 2026-09-28 (7) #7): withheld again until it expires. Through it the
-      // pack is replaced with bytes of the same length.
+      // An older daemon re-asking for the stored pack (answered a URL before a seal, review
+      // 2026-09-28 (7) #7): once a seal of the epoch is recorded, no URL that could replace what
+      // it names is handed out (cross-repo decision 26, review 2026-09-28 (9) #6). Refused, and
+      // the seal stands.
       const legacy = await run(
+        at.api
+          .uploadUrls({
+            worktree_id: at.worktreeId,
+            epoch: at.epoch,
+            keys: [file.key],
+            sizes: { [file.key]: file.bytes.length },
+          })
+          .pipe(Effect.flip),
+      );
+      expect(legacy.reason).toBe("exists");
+      expect(legacy.key).toBe(file.key);
+      expect((await seals(at))?.captureId).toBe(file.cap.id);
+      // A URL for an object the seal does not name is handed out: withheld again until it
+      // expires, then every object the seal names is read back. One of them is found replaced
+      // (out of band) with bytes of the same length.
+      const other = sealedFile(at, "other unsaved bytes\n");
+      const fresh = await run(
         at.api.uploadUrls({
           worktree_id: at.worktreeId,
           epoch: at.epoch,
-          keys: [file.key],
-          sizes: { [file.key]: file.bytes.length },
+          keys: [other.key],
+          sizes: { [other.key]: other.bytes.length },
         }),
       );
-      expect(typeof legacy.urls[file.key]).toBe("string");
+      expect(typeof fresh.urls[other.key]).toBe("string");
       expect(await seals(at)).toBeNull();
       const stored = path.join(world.blobRoot, file.key);
       const corrupted = Buffer.from(file.bytes);
@@ -2072,17 +2090,20 @@ describeSeals(
       await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
       expect(await standing(at)).toBeNull();
       await new Promise((resolve) => setTimeout(resolve, Math.max(0, expires - Date.now()) + 20));
+      // A URL for an object the seal does not name (one it names is never handed out once the
+      // seal is recorded, review 2026-09-28 (9) #6).
+      const other = sealedFile(at, "other saved bytes\n");
       let minted = false;
       authorityDuringReadBack = async () => {
         const answer = await run(
           at.api.uploadUrls({
             worktree_id: at.worktreeId,
             epoch: at.epoch,
-            keys: [file.key],
-            sizes: { [file.key]: file.bytes.length },
+            keys: [other.key],
+            sizes: { [other.key]: other.bytes.length },
           }),
         );
-        minted = typeof answer.urls[file.key] === "string";
+        minted = typeof answer.urls[other.key] === "string";
       };
       const accepted = await standing(at);
       expect(minted).toBe(true);
@@ -2258,6 +2279,88 @@ describeSeals(
   },
 );
 
+// Review 2026-09-28 (9) #6, cross-repo decision 26: once a seal of the epoch is recorded, no URL
+// that could replace an object it names is handed out — even for a key the bucket did not hold
+// when the call first asked (it was stored and sealed before the authority was recorded). Every
+// key about to get a URL is asked of the bucket again once a seal is seen: stored, it is answered
+// `present` (a launch that reads it) or refused (any other), and no authority is recorded.
+/** Keys whose next `head` answers absent: the bucket as a call saw it before the seal landed. */
+const headMisses = new Set<string>();
+/** The bucket's answer to `replaceableUntil` in the suite below (Garage: it ignores `If-None-Match`). */
+let replaceableBucket = 0;
+describeSeals(
+  "review 9 #6 no upload URL for an object a recorded seal names",
+  {
+    blobs: (root) =>
+      Layer.effect(
+        BlobStore,
+        Effect.map(BlobStore, (store) => ({
+          ...store,
+          replaceableUntil: () => Effect.sync(() => replaceableBucket),
+          head: (key: string) => (headMisses.delete(key) ? Effect.succeed(null) : store.head(key)),
+        })),
+      ).pipe(Layer.provide(BlobStoreFsLive(root))),
+  },
+  ({ world, run, claimed }) => {
+    it("a key stored and sealed after the call's first look is answered present or refused, never a URL", async () => {
+      replaceableBucket = Date.now() - 60_000;
+      const at = await claimed();
+      const file = sealedFile(at, "sealed unique bytes\n");
+      await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
+      const registered = await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
+      expect(registered.seal).toEqual({ state: "recorded" });
+      const authority = () => world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`);
+      const ask = () =>
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [file.key],
+          sizes: { [file.key]: file.bytes.length },
+        });
+      // A launch that does not read `present` (an older daemon): refused.
+      headMisses.add(file.key);
+      const refused = await run(ask().pipe(Effect.flip));
+      expect(refused.reason).toBe("exists");
+      expect(refused.key).toBe(file.key);
+      expect(authority()).toBeUndefined();
+      // A launch that reads `present`: answered present, no URL.
+      await run(
+        at.api.planGet({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          manifest_format: 2,
+          manifest_features: MANIFEST_FEATURES,
+          upload_answers: [UPLOAD_ANSWER_PRESENT],
+        }),
+      );
+      headMisses.add(file.key);
+      const answered = await run(ask());
+      expect(answered.urls).toEqual({});
+      expect(answered.present).toEqual([file.key]);
+      expect(authority()).toBeUndefined();
+      // The seal still stands: nothing could replace what it names.
+      const standing = await run(
+        Effect.flatMap(CaptureSeals, (service) =>
+          service.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
+        ).pipe(Effect.provide(CaptureSealsStoreLive)),
+      );
+      expect(standing?.captureId).toBe(file.cap.id);
+      // An object the seal does not name still gets a URL, its authority recorded.
+      const other = sealedFile(at, "later unsaved bytes\n");
+      const fresh = await run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [other.key],
+          sizes: { [other.key]: other.bytes.length },
+        }),
+      );
+      expect(typeof fresh.urls[other.key]).toBe("string");
+      expect(authority()?.getTime() ?? 0).toBeGreaterThan(Date.now());
+    });
+  },
+);
+
 // The reviewer's reproduction on a real bucket that ignores `If-None-Match` (Garage 2.4.1):
 // opt in with MEND_TEST_S3_URL (s3://bucket?endpoint=…&region=…) + AWS_ACCESS_KEY_ID /
 // AWS_SECRET_ACCESS_KEY, as the store's S3 contract does.
@@ -2347,6 +2450,47 @@ describeSeals(
       );
       expect(read._tag).toBe("Failure");
       expect(await seals()).toBeNull();
+    });
+
+    // Review 2026-09-28 (9) #6, cross-repo decision 26, on the real bucket: once the seal is
+    // recorded, an older daemon re-asking for a stored pack it names is refused — on Garage that
+    // URL would replace the sealed bytes — and one that reads `present` is answered present.
+    it("review 9 #6 a recorded seal's stored pack is never handed an upload URL", async () => {
+      const at = await claimed();
+      const file = sealedFile(at, "sealed bytes on a real bucket\n");
+      await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
+      const registered = await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
+      expect(["recorded", "withheld"]).toContain(registered.seal?.state);
+      const ask = () =>
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [file.key],
+          sizes: { [file.key]: file.bytes.length },
+        });
+      const plan = (answers: ReadonlyArray<string>) =>
+        run(
+          at.api.planGet({
+            worktree_id: at.worktreeId,
+            epoch: at.epoch,
+            manifest_format: 2,
+            manifest_features: MANIFEST_FEATURES,
+            upload_answers: [...answers],
+          }),
+        );
+      // An older daemon: its plan lists no `present`.
+      await plan([]);
+      const refused = await run(ask().pipe(Effect.flip));
+      expect(refused.reason).toBe("exists");
+      expect(refused.key).toBe(file.key);
+      await plan([UPLOAD_ANSWER_PRESENT]);
+      const answered = await run(ask());
+      expect(answered.urls).toEqual({});
+      expect(answered.present).toEqual([file.key]);
+      const read = await run(
+        readCaptureFileBytes(file.cap.manifest, "workspace", "tree/unique.txt"),
+      );
+      expect(Buffer.from(read).toString()).toBe("sealed bytes on a real bucket\n");
     });
   },
 );

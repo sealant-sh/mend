@@ -196,6 +196,14 @@ export interface WorktreeLease {
   readonly live: boolean;
 }
 
+/**
+ * What `recordPutAuthority` did: recorded the authority, or recorded nothing because a seal of the
+ * epoch is recorded that the caller did not check (`sealedCapture`, the capture it seals).
+ */
+export type PutAuthorityRecord =
+  | { readonly recorded: true }
+  | { readonly recorded: false; readonly sealedCapture: string };
+
 export interface ChainHead {
   readonly worktreeId: WorktreeId;
   readonly headN: number;
@@ -294,12 +302,19 @@ export class CaptureStoreRepo extends Context.Service<
     /**
      * Upload URLs under `worktreeId`'s `epoch` prefix can write until `expiresAt` (0089, review
      * 2026-09-28 (7) #8): kept as the latest such time. Recorded before the URL is handed out.
+     * Serialized with `markSealReverified` on the epoch's authority row (0091, cross-repo decision
+     * 26, review 2026-09-28 (9) #6): the row is locked first, and what is recorded in the epoch
+     * is read after the lock. A seal of the epoch that is recorded (and not void) names objects no
+     * overwrite-capable URL may reach: authority is recorded only when `checkedSeal` is that
+     * seal's capture — the caller found none of its keys among the objects it is handing URLs
+     * out for — else nothing is recorded and the seal is named, for the caller to check.
      */
     readonly recordPutAuthority: (
       worktreeId: WorktreeId,
       epoch: number,
       expiresAt: Date,
-    ) => Effect.Effect<void>;
+      checkedSeal?: string | null,
+    ) => Effect.Effect<PutAuthorityRecord>;
     /** The latest expiry of an upload URL handed out under that epoch's prefix, or null. */
     readonly putAuthorityUntil: (
       worktreeId: WorktreeId,
@@ -309,8 +324,10 @@ export class CaptureStoreRepo extends Context.Service<
      * Every object the seal's capture names read back as what its name says, starting at `at`:
      * recorded on the seal while it still names that capture — and only if no upload URL of its
      * epoch was handed out since `at` (review 2026-09-28 (8) #5): a compare-and-set against the
-     * epoch's recorded write authority, in one statement, so a URL handed out while the objects
-     * were being read back voids that read. True when it was recorded.
+     * epoch's recorded write authority, under the lock of the epoch's authority row taken before
+     * that authority is read (0091, cross-repo decision 26, review 2026-09-28 (9) #6), so a URL
+     * handed out while the objects were being read back — or while this waited — voids that read.
+     * True when it was recorded.
      */
     readonly markSealReverified: (
       worktreeId: WorktreeId,
@@ -747,25 +764,57 @@ export const CaptureStoreRepoLive: Layer.Layer<
           };
     });
 
+    /**
+     * The epoch's authority row, locked for the rest of the transaction, as it is now (0091): it
+     * is created with no authority when absent (a concurrent creator's insert is waited for), and
+     * read by a statement of its own after the lock — each statement reads what committed before
+     * it began, so nothing committed while this waited is missed.
+     */
+    const lockPutAuthority = (worktreeId: WorktreeId, epoch: number) =>
+      Effect.gen(function* () {
+        yield* sql`
+          INSERT INTO capture_put_authority (worktree_id, epoch, expires_at)
+          VALUES (${worktreeId}, ${epoch}, NULL)
+          ON CONFLICT (worktree_id, epoch) DO NOTHING`;
+        const [row] = yield* sql<{ readonly expiresAt: Date | null }>`
+          SELECT expires_at FROM capture_put_authority
+           WHERE worktree_id = ${worktreeId} AND epoch = ${epoch}
+           FOR UPDATE`;
+        return row?.expiresAt ?? null;
+      });
+
     const recordPutAuthority = Effect.fn("CaptureStoreRepo.recordPutAuthority")(function* (
       worktreeId: WorktreeId,
       epoch: number,
       expiresAt: Date,
+      checkedSeal?: string | null,
     ) {
-      yield* sql`
-        INSERT INTO capture_put_authority (worktree_id, epoch, expires_at)
-        VALUES (${worktreeId}, ${epoch}, ${expiresAt})
-        ON CONFLICT (worktree_id, epoch) DO UPDATE
-           SET expires_at = GREATEST(capture_put_authority.expires_at, EXCLUDED.expires_at)`.pipe(
-        Effect.orDie,
-      );
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            yield* lockPutAuthority(worktreeId, epoch);
+            // Read after the lock: a seal marked while this waited is seen.
+            const [seal] = yield* sql<{ readonly captureId: string }>`
+              SELECT capture_id FROM capture_seals
+               WHERE worktree_id = ${worktreeId} AND epoch = ${epoch} AND void_reason IS NULL`;
+            if (seal !== undefined && seal.captureId !== (checkedSeal ?? null)) {
+              return { recorded: false, sealedCapture: seal.captureId } as const;
+            }
+            yield* sql`
+              UPDATE capture_put_authority
+                 SET expires_at = GREATEST(COALESCE(expires_at, ${expiresAt}), ${expiresAt})
+               WHERE worktree_id = ${worktreeId} AND epoch = ${epoch}`;
+            return { recorded: true } as const;
+          }),
+        )
+        .pipe(Effect.orDie);
     });
 
     const putAuthorityUntil = Effect.fn("CaptureStoreRepo.putAuthorityUntil")(function* (
       worktreeId: WorktreeId,
       epoch: number,
     ) {
-      const [row] = yield* sql<{ readonly expiresAt: Date }>`
+      const [row] = yield* sql<{ readonly expiresAt: Date | null }>`
         SELECT expires_at FROM capture_put_authority
          WHERE worktree_id = ${worktreeId} AND epoch = ${epoch}`.pipe(Effect.orDie);
       return row?.expiresAt ?? null;
@@ -777,19 +826,26 @@ export const CaptureStoreRepoLive: Layer.Layer<
       captureId: string,
       at: Date,
     ) {
-      // One statement: an authority recorded before it (`recordPutAuthority` commits before the
-      // URL leaves Mend) expires after `at` and refuses the mark; a URL whose authority commits
-      // after it was handed out after every object had been read back.
-      const marked = yield* sql<{ readonly captureId: string }>`
-        UPDATE capture_seals
-           SET reverified_at = GREATEST(COALESCE(reverified_at, ${at}), ${at})
-         WHERE worktree_id = ${worktreeId} AND epoch = ${epoch} AND capture_id = ${captureId}
-           AND void_reason IS NULL
-           AND NOT EXISTS (
-             SELECT 1 FROM capture_put_authority
-              WHERE worktree_id = ${worktreeId} AND epoch = ${epoch} AND expires_at > ${at})
-        RETURNING capture_id`.pipe(Effect.orDie);
-      return marked.length > 0;
+      // The epoch's authority row first, then the authority as it is now: `recordPutAuthority`
+      // takes the same lock before it records, so authority is either committed before this
+      // reads it (and refuses the mark when it outlives `at`) or recorded after this commits —
+      // when it sees the seal and hands out no URL that could replace what the seal names.
+      const marked = yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            const authority = yield* lockPutAuthority(worktreeId, epoch);
+            if (authority !== null && authority.getTime() > at.getTime()) return false;
+            const rows = yield* sql<{ readonly captureId: string }>`
+              UPDATE capture_seals
+                 SET reverified_at = GREATEST(COALESCE(reverified_at, ${at}), ${at})
+               WHERE worktree_id = ${worktreeId} AND epoch = ${epoch}
+                 AND capture_id = ${captureId} AND void_reason IS NULL
+              RETURNING capture_id`;
+            return rows.length > 0;
+          }),
+        )
+        .pipe(Effect.orDie);
+      return marked;
     });
 
     const voidSeal = Effect.fn("CaptureStoreRepo.voidSeal")(function* (
