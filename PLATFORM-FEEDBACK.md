@@ -7,6 +7,33 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-27 · 0.37.2 · sealantd: say which manifest format it reads; re-upload what register says is missing
+
+Two wire points on the session channel (sealantd `crates/sealant-capture/src/registrar.rs`).
+
+- **The format the executor reads.**
+  - **Needed:** Mend must never hand a head holding a format-2 section (dir packs, sealantd PR #99)
+    to an executor that reads only format 1: the older reader takes the root digest for a key and
+    can rewrite the worktree's git state before it fails.
+  - **Today:** `plan.get` carries no reader capability. Mend now reads a request field
+    `manifest_format` (the highest section format the executor reads; absent = 1), refuses a plan
+    holding a section above it with 409 `manifest-format` before it claims the lease, and answers
+    `manifest_format` no higher than it. Until sealantd sends the field, every executor is treated
+    as a format-1 reader: it is told to write format 1, and a format-2 head is refused to it.
+  - **Suggested:** `PlanGetRequest.booting` sends `"manifest_format": MAX_SECTION_FORMAT` (PR #99
+    reads both formats). Mirror the refusal in the registrar test double.
+- **A register refused for missing objects.**
+  - **Needed:** a register Mend refuses with 422 `missing-objects` (or `unrestorable`) names objects
+    that are not in the bucket or a tree that does not restore. Mend refuses it rather than
+    acknowledge a capture it cannot restore, including when retention removed a pack no live capture
+    named and the executor's chunk index still pointed at it (review 2026-09-27 #4).
+  - **Today:** the shipper stops at the entry and retries the same register every pass, so the chain
+    stops advancing and a final flush never completes (`complete: false`, workspace kept — nothing
+    is lost, nothing more is saved).
+  - **Suggested:** on `missing-objects`, drop the chunk-index entries that point into the named
+    packs, upload those objects again (or re-snap the class and restage), and register again; on
+    `unrestorable`, re-snap the class. Report both in `capture.status`.
+
 ## 2026-09-27 · 0.37.2 · Nothing an executor holds may be lost to a stop
 
 Mend's rule (docs/adr/0002-session-capture-store.md, "Stop drains, then terminates"): no compute

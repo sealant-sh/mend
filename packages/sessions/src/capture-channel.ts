@@ -4,13 +4,16 @@ import {
   type CaptureRow,
   type PackRecord,
 } from "@mend/db";
-import type { ProjectId, WorktreeId } from "@mend/domain";
+import { type ProjectId, WorktreeId } from "@mend/domain";
 import {
   BlobStore,
   bulkSectionFor,
   type BulkSectionReady,
   type CaptureManifest,
+  captureKeyOwner,
+  type CaptureReadError,
   CaptureSections,
+  type ChunkedSection,
   changeSummaryKey,
   decodeChangeSummary,
   decodeManifest,
@@ -20,11 +23,14 @@ import {
   FORMAT_DIR_PACKS,
   isCaptureObjectKey,
   keysNeededBy,
+  keysOfSections,
   MAX_SECTION_FORMAT,
   packIdxKeyOf,
   sameBulkSection,
   sectionFormatOf,
   type SectionFormat,
+  treePrefixesOfSections,
+  verifySectionRestorable,
 } from "@mend/store";
 import { Duration, Effect, Layer, Option, Schema } from "effect";
 import * as Context from "effect/Context";
@@ -63,8 +69,46 @@ export const PlanGetRequest = Schema.Struct({
    * runs the install command instead. Absent = the whole head, unchanged (an older sealantd).
    */
   platform: Schema.optional(Schema.String),
+  /**
+   * The highest section format the executor READS (the request's half of `manifest_format`;
+   * a sealantd wire addition, `registrar.rs` "`manifest_format` on `plan.get`"). Absent = 1:
+   * an executor that predates dir packs, or one that does not say. Mend never hands a plan
+   * holding a section above it — `plan.get` answers 409 `manifest-format` before it claims the
+   * lease or presigns anything, because an older reader takes a format-2 root digest for a key
+   * and can rewrite the worktree's git state before it fails — and answers `manifest_format`
+   * no higher than it, so an executor never writes what it could not restore.
+   */
+  manifest_format: Schema.optional(Schema.Int),
 });
 export type PlanGetRequest = typeof PlanGetRequest.Type;
+
+/** What an executor says it reads: 1 unless it names a higher format (capped at what Mend reads). */
+export const readerFormatOf = (input: PlanGetRequest): SectionFormat =>
+  input.manifest_format !== undefined && input.manifest_format >= FORMAT_DIR_PACKS
+    ? MAX_SECTION_FORMAT
+    : FORMAT_DIR_OBJECTS;
+
+/** The format `plan.get` answers: the configured one, never above what the executor reads. */
+const answeredFormat = (configured: SectionFormat, reads: SectionFormat): SectionFormat =>
+  configured === FORMAT_DIR_PACKS && reads === FORMAT_DIR_PACKS
+    ? FORMAT_DIR_PACKS
+    : FORMAT_DIR_OBJECTS;
+
+/** The highest section format a plan's manifest asks its reader to read: its workspace and bulk. */
+export const planFormatOf = (manifest: CaptureManifest): SectionFormat => {
+  const bulk = manifest.sections.bulk;
+  return bulk !== "pending" && sectionFormatOf(bulk) === FORMAT_DIR_PACKS
+    ? FORMAT_DIR_PACKS
+    : sectionFormatOf(manifest.sections.workspace);
+};
+
+/** 409 `manifest-format`: the plan holds a section the executor did not say it reads. */
+const formatRefusal = (reads: SectionFormat, holds: SectionFormat) =>
+  new CaptureRouteError({
+    status: 409,
+    reason: "manifest-format",
+    message: `the head holds a format-${holds} section; this executor reads format ${reads} (plan.get manifest_format) — run a sealantd that reads format ${holds}`,
+  });
 
 export interface PlanGetResponse {
   readonly worktree_id: string;
@@ -170,6 +214,9 @@ export type HeartbeatRequest = typeof HeartbeatRequest.Type;
  * request quota (429: calls per hour, a retry later can pass); `byte-quota` is the byte quota
  * (413 on `upload.urls` before any URL is minted, 409 on `capture.register` as the backstop),
  * which no retry of the same bytes can pass — the body carries `limit`, `used` and `requested`.
+ * `unrestorable` (422 on `capture.register`): a section's tree would not restore from what the
+ * manifest names — nothing is registered. `manifest-format` (409 on `plan.get`): the head holds
+ * a section format the executor did not say it reads — refused before the claim.
  */
 export const CaptureRefusalReason = Schema.Literals([
   "stale-epoch",
@@ -185,6 +232,8 @@ export const CaptureRefusalReason = Schema.Literals([
   "byte-quota",
   "exists",
   "size-mismatch",
+  "unrestorable",
+  "manifest-format",
 ]);
 export type CaptureRefusalReason = typeof CaptureRefusalReason.Type;
 
@@ -517,6 +566,30 @@ const VERIFIED_AT_REGISTER = new Set<CaptureManifest["kind"]>([
   "final",
 ]);
 
+/** How many times a register reads the guards again after retention moved one under it. */
+const GUARD_ATTEMPTS = 3;
+
+/** Retention condemned something a register names between its read and its CAS: read again. */
+class GuardMovedError extends Schema.TaggedErrorClass<GuardMovedError>()("GuardMovedError", {}) {}
+
+const WorktreeIdOf = (id: string): WorktreeId => WorktreeId.make(id);
+
+const sameKeys = (x: ReadonlyArray<string>, y: ReadonlyArray<string>): boolean =>
+  x.length === y.length && x.every((key, at) => key === y[at]);
+
+/** Two chunked sections name the same tree from the same objects. */
+const sameTree = (a: ChunkedSection, b: ChunkedSection): boolean =>
+  a.root === b.root &&
+  sectionFormatOf(a) === sectionFormatOf(b) &&
+  sameKeys(a.packs, b.packs) &&
+  sameKeys(dirPacksOf(a), dirPacksOf(b));
+
+/** The objects (and the format-1 `trees/` prefix) a chunked section names. */
+const objectsOfSection = (section: ChunkedSection): ReadonlyArray<string> => [
+  ...keysOfSections({ workspace: section }),
+  ...treePrefixesOfSections({ workspace: section }),
+];
+
 export const CaptureChannelLive: Layer.Layer<
   CaptureChannel,
   never,
@@ -626,6 +699,9 @@ export const CaptureChannelLive: Layer.Layer<
         const plan = yield* scope
           .plan(input.platform)
           .pipe(Effect.catch(() => storeError("preparing the standby plan")({ _tag: "plan" })));
+        const reads = readerFormatOf(input);
+        const holds = planFormatOf(plan.manifest);
+        if (holds > reads) return yield* formatRefusal(reads, holds);
         const keys = yield* keysNeededBy(plan.manifest).pipe(
           Effect.provideService(BlobStore, blobs),
           Effect.catch(storeError("walking the standby plan", plan.manifestKey)),
@@ -646,7 +722,7 @@ export const CaptureChannelLive: Layer.Layer<
             manifest: plan.manifest,
           },
           get_urls: urls,
-          manifest_format: policy.manifestFormat,
+          manifest_format: answeredFormat(policy.manifestFormat, reads),
         } satisfies PlanGetResponse;
       });
       return {
@@ -793,8 +869,9 @@ export const CaptureChannelLive: Layer.Layer<
       const planGet = Effect.fn("SessionCaptureApi.planGet")(function* (input: PlanGetRequest) {
         yield* requireWorktree(input.worktree_id);
         const asked = input.epoch ?? 0;
+        const reads = readerFormatOf(input);
         const lease = yield* repo.leaseOf(worktreeId);
-        let epoch: number;
+        let held: number | null = null;
         if (lease !== null && lease.live && (asked === 0 || asked === lease.epoch)) {
           if (asked === 0 && lease.executorId !== scope.executorId) {
             // Another executor holds it: a second executor for a leased worktree is refused
@@ -806,7 +883,7 @@ export const CaptureChannelLive: Layer.Layer<
               live_epoch: lease.epoch,
             });
           }
-          epoch = lease.epoch;
+          held = lease.epoch;
         } else if (lease !== null && lease.live) {
           return yield* new CaptureRouteError({
             status: 409,
@@ -814,6 +891,29 @@ export const CaptureChannelLive: Layer.Layer<
             message: `epoch ${asked} is stale; the worktree is held under epoch ${lease.epoch}`,
             live_epoch: lease.epoch,
           });
+        }
+        // The plan's head, decided before the claim: an executor that does not read a section
+        // the plan holds is refused before it holds the lease, fences anyone, or is handed a
+        // manifest it would misread. Nothing can register between this read and the claim — a
+        // register needs the live lease the claim below is the only way to take.
+        const chain = yield* repo.headOf(worktreeId);
+        const head = chain?.head ?? null;
+        const manifest =
+          head === null
+            ? null
+            : planForPlatform(yield* planManifest(head, yield* readManifest(head)), input.platform);
+        if (manifest !== null) {
+          const holds = planFormatOf(manifest);
+          if (holds > reads) {
+            yield* Effect.logWarning(
+              "capture channel: plan refused · the head holds a section format this executor does not read",
+            ).pipe(Effect.annotateLogs({ worktreeId, reads, holds }));
+            return yield* formatRefusal(reads, holds);
+          }
+        }
+        let epoch: number;
+        if (held !== null) {
+          epoch = held;
         } else {
           // Not held: this plan is the claim (start, pickup, replacement — one path).
           const claimed = yield* repo.claim(worktreeId, scope.executorId).pipe(
@@ -832,21 +932,18 @@ export const CaptureChannelLive: Layer.Layer<
         // the worktree; an empty chain gets them too (the session still reads its folders).
         const beside = yield* sources.forProject(scope.projectId, worktreeId, epoch);
         const origin = yield* remotes.forProject(scope.projectId);
-        const chain = yield* repo.headOf(worktreeId);
-        const head = chain?.head ?? null;
-        if (head === null) {
+        const manifestFormat = answeredFormat(policy.manifestFormat, reads);
+        if (head === null || manifest === null) {
           return {
             worktree_id: worktreeId,
             epoch,
             head: null,
             get_urls: yield* sourceUrls(beside),
-            manifest_format: policy.manifestFormat,
+            manifest_format: manifestFormat,
             ...(beside.length === 0 ? {} : { sources: beside }),
             ...(origin.length === 0 ? {} : { remotes: origin }),
           };
         }
-        const stored = yield* readManifest(head);
-        const manifest = planForPlatform(yield* planManifest(head, stored), input.platform);
         const keys = yield* keysNeededBy(manifest).pipe(
           Effect.provideService(BlobStore, blobs),
           Effect.catch(storeError("walking the head capture", head.manifestKey)),
@@ -867,7 +964,7 @@ export const CaptureChannelLive: Layer.Layer<
             manifest,
           },
           get_urls: urls,
-          manifest_format: policy.manifestFormat,
+          manifest_format: manifestFormat,
           ...(beside.length === 0 ? {} : { sources: beside }),
           ...(origin.length === 0 ? {} : { remotes: origin }),
         } satisfies PlanGetResponse;
@@ -1116,6 +1213,53 @@ export const CaptureChannelLive: Layer.Layer<
           return [...(bulk === "pending" ? [] : [bulk]), ...Object.values(other_bulk ?? {})];
         });
 
+      /**
+       * Every chunked section the parent capture holds — its workspace, its bulk, every
+       * `other_bulk` entry — for the restorability check to skip what is carried unchanged.
+       */
+      const parentChunkedSections = (parent: string | null) =>
+        Effect.gen(function* () {
+          if (parent === null) return [];
+          const row = yield* repo.captureById(parent);
+          if (row === null || row.worktreeId !== worktreeId) return [];
+          const decoded = Schema.decodeUnknownOption(CaptureSections)(row.sections);
+          if (Option.isNone(decoded)) return [];
+          const { workspace, bulk, other_bulk } = decoded.value;
+          const trees: Array<ChunkedSection> = [workspace];
+          if (bulk !== "pending") trees.push(bulk);
+          trees.push(...Object.values(other_bulk ?? {}));
+          return trees;
+        });
+
+      /** A section's tree failed the restorability check: 422, and what was missing when known. */
+      const unrestorable =
+        (section: ChunkedSection) =>
+        (error: CaptureReadError): Effect.Effect<never, CaptureRouteError> =>
+          error._tag === "BlobStoreError"
+            ? storeError("checking a section restores", section.root)(error)
+            : error._tag === "BlobNotFoundError"
+              ? Effect.fail(
+                  new CaptureRouteError({
+                    status: 422,
+                    reason: "missing-objects",
+                    message: `an object the section rooted at ${section.root} needs is not in the bucket`,
+                    missing: [error.key],
+                  }),
+                )
+              : Effect.fail(
+                  new CaptureRouteError({
+                    status: 422,
+                    reason: "unrestorable",
+                    message: `the section rooted at ${section.root} would not restore: ${
+                      error._tag === "ChunkNotFoundError"
+                        ? `chunk ${error.hash} is in no listed pack`
+                        : error._tag === "CaptureIntegrityError"
+                          ? `${error.key} does not hash to ${error.expected}`
+                          : `${error.key}: ${error.reason}`
+                    }`,
+                  }),
+                );
+
       const register = Effect.fn("SessionCaptureApi.register")(function* (input: RegisterRequest) {
         yield* requireWorktree(input.worktree_id);
         const lease = yield* requireLease(input.epoch);
@@ -1265,97 +1409,201 @@ export const CaptureChannelLive: Layer.Layer<
           seen.add(key);
           return true;
         });
-        const missing: Array<string> = [];
-        const records: Array<PackRecord> = [];
-        const priced = new Map(ledger);
-        let newBytes = 0;
-        for (const { key, cls, platform } of packKeys) {
-          const head = yield* blobs.head(key).pipe(Effect.catch(storeError("HEAD on a pack", key)));
-          if (head === null) {
-            missing.push(key);
-            continue;
-          }
-          if (key.endsWith(".idx")) continue;
-          if (underOwnPrefix(key, input.epoch)) {
-            const reserved = ledger.get(key);
-            if (reserved !== undefined && reserved !== head.size) {
-              // Refuse without removing: an earlier register of this epoch may already
-              // reference the object, and the manifest never commits past this point.
-              return yield* new CaptureRouteError({
-                status: 409,
-                reason: "size-mismatch",
-                message: `${key} holds ${head.size} bytes, not the ${reserved} declared`,
-                key,
-              });
-            }
-            if (reserved === undefined) newBytes += head.size;
-            priced.set(key, head.size);
-          }
-          records.push({
-            key,
-            class: cls,
-            bytes: head.size,
-            worktreeId: underOwnWorktree(key) ? worktreeId : null,
-            epoch: underOwnPrefix(key, input.epoch) ? input.epoch : null,
-            platform,
-          });
-        }
-        if (missing.length > 0) {
-          return yield* new CaptureRouteError({
-            status: 422,
-            reason: "missing-objects",
-            message: `${missing.length} pack(s) the manifest names are not in the bucket`,
-            missing,
-          });
-        }
-        const already = yield* repo.captureById(input.capture_id);
-        // The backstop for bytes that landed unpriced (keys the daemon sent no size for): a
-        // 409 the executor's registrar reads as a refusal of THIS capture, not a transport
-        // failure to retry — the bytes are in the bucket and the same register can never pass.
-        // What landed is off-chain and retires with its epoch prefix (`capture-retention.ts`).
-        const used = sumOf(ledger);
-        if (already === null && sumOf(priced) > byteBudget) {
-          return yield* overByteQuota(409, used, newBytes);
-        }
-        // `git_fsck` records Mend's observation, never the executor's claim: the kinds a
-        // pickup or a review would restore are verified before the CAS (index-pack --verify
-        // and a connectivity walk on the runner); `auto` captures land `unverified` and are
-        // verified by the first plan that would restore them. A failed section is accepted
-        // and marked — the chain advances, the plan and the reads route around it.
-        const verification =
-          already !== null || !VERIFIED_AT_REGISTER.has(manifest.kind)
-            ? null
-            : yield* verifier.verify(scope.projectId, manifest);
-        const gitFsck = already?.gitFsck ?? verification?.outcome ?? "unverified";
-        if (verification !== null && verification.outcome !== "verified") {
-          yield* Effect.logWarning(
-            `capture channel: git section ${verification.outcome === "failed" ? "failed verification" : "not verified"} at register · observed`,
-          ).pipe(
-            Effect.annotateLogs({
-              worktreeId,
-              n: input.n,
-              captureId: input.capture_id,
-              kind: manifest.kind,
-              epoch: input.epoch,
-              claimed: manifest.sections.git.fsck,
-              detail: verification.detail,
-            }),
-          );
-        }
-        const outcome = yield* repo
-          .register({
+        // Every chunked section the parent holds: one this capture holds unchanged was checked
+        // restorable when the parent registered, and the parent — the head — keeps its objects
+        // alive; only what is new is walked.
+        const parentTrees = yield* parentChunkedSections(input.parent);
+        // Everything the capture names, carried sections included, and the chains those objects
+        // belong to: retention may condemn any of them (`capture-retention.ts`).
+        const referenced = [
+          ...new Set([
+            ...keysOfSections(manifest.sections),
+            ...treePrefixesOfSections(manifest.sections),
+          ]),
+        ];
+        const owners = [
+          ...new Set([
             worktreeId,
-            id: input.capture_id,
-            n: input.n,
-            parent: input.parent,
-            epoch: input.epoch,
-            seq: BigInt(manifest.seq),
-            kind: manifest.kind,
-            manifestKey: input.manifest_key,
-            sections: manifest.sections,
-            gitFsck,
-          })
-          .pipe(Effect.catch((error) => conflictToRoute(error).pipe(Effect.flatMap(Effect.fail))));
+            ...referenced.flatMap((key) => {
+              const owner = captureKeyOwner(key);
+              return owner === null ? [] : [WorktreeIdOf(owner)];
+            }),
+          ]),
+        ];
+
+        // One attempt: read the guards and the tombstones, check the bucket and the trees, then
+        // the CAS under those guards. A retention pass that condemned anything named here after
+        // the read makes the CAS miss (`guard_moved`), and the next attempt sees its tombstones.
+        const attempt = Effect.gen(function* () {
+          const state = yield* repo.referenceState(owners, referenced);
+          const ownerless = referenced.filter((key) => {
+            const owner = captureKeyOwner(key);
+            return owner !== null && !state.guards.has(WorktreeIdOf(owner));
+          });
+          if (ownerless.length > 0 || !state.guards.has(worktreeId)) {
+            return yield* new CaptureRouteError({
+              status: 422,
+              reason: "missing-objects",
+              message: `${ownerless.length} object(s) the manifest names belong to a worktree that is gone`,
+              missing: ownerless,
+            });
+          }
+          const retiring = state.tombstones.filter((tombstone) => !tombstone.deleted);
+          if (retiring.length > 0) {
+            return yield* new CaptureRouteError({
+              status: 422,
+              reason: "missing-objects",
+              message: `retention is removing ${retiring.length} object(s) the manifest names: no capture named them when it looked`,
+              missing: retiring.map((tombstone) => tombstone.key),
+            });
+          }
+          // Condemned objects whose bytes retention removed: the capture may name them again
+          // only if they are in the bucket again (read after the tombstone was), and a tree
+          // below one is walked below whatever the parent held.
+          const revive = state.tombstones.map((tombstone) => tombstone.key);
+          const reviveSet = new Set(revive);
+          const toHead = [
+            ...packKeys,
+            ...revive
+              .filter((key) => isCaptureObjectKey(key) && !seen.has(key))
+              .map((key) => ({ key, cls: null, platform: null })),
+          ];
+          const missing: Array<string> = [];
+          const records: Array<PackRecord> = [];
+          const sizes = new Map<string, number>();
+          const priced = new Map(ledger);
+          let newBytes = 0;
+          for (const { key, cls, platform } of toHead) {
+            const head = yield* blobs
+              .head(key)
+              .pipe(Effect.catch(storeError("HEAD on a pack", key)));
+            if (head === null) {
+              missing.push(key);
+              continue;
+            }
+            sizes.set(key, head.size);
+            if (cls === null || key.endsWith(".idx")) continue;
+            if (underOwnPrefix(key, input.epoch)) {
+              const reserved = ledger.get(key);
+              if (reserved !== undefined && reserved !== head.size) {
+                // Refuse without removing: an earlier register of this epoch may already
+                // reference the object, and the manifest never commits past this point.
+                return yield* new CaptureRouteError({
+                  status: 409,
+                  reason: "size-mismatch",
+                  message: `${key} holds ${head.size} bytes, not the ${reserved} declared`,
+                  key,
+                });
+              }
+              if (reserved === undefined) newBytes += head.size;
+              priced.set(key, head.size);
+            }
+            records.push({
+              key,
+              class: cls,
+              bytes: head.size,
+              worktreeId: underOwnWorktree(key) ? worktreeId : null,
+              epoch: underOwnPrefix(key, input.epoch) ? input.epoch : null,
+              platform,
+            });
+          }
+          if (missing.length > 0) {
+            return yield* new CaptureRouteError({
+              status: 422,
+              reason: "missing-objects",
+              message: `${missing.length} pack(s) the manifest names are not in the bucket`,
+              missing,
+            });
+          }
+          const already = yield* repo.captureById(input.capture_id);
+          // Restorability before acknowledgement: every chunked section this capture brings —
+          // one the parent did not hold, or one naming an object it revives — must restore from
+          // what it names: its root and every dir object below it, every chunk in a listed pack,
+          // every hardlink's canonical member. A register acknowledges preservation; a capture
+          // Mend could not restore is refused, never registered.
+          if (already === null) {
+            for (const section of chunked) {
+              const carried = parentTrees.some((parent) => sameTree(parent, section));
+              const revived = objectsOfSection(section).some((key) => reviveSet.has(key));
+              if (carried && !revived) continue;
+              yield* verifySectionRestorable(section, { sizes }).pipe(
+                Effect.provideService(BlobStore, blobs),
+                Effect.catch(unrestorable(section)),
+              );
+            }
+          }
+          // The backstop for bytes that landed unpriced (keys the daemon sent no size for): a
+          // 409 the executor's registrar reads as a refusal of THIS capture, not a transport
+          // failure to retry — the bytes are in the bucket and the same register can never
+          // pass. What landed is off-chain and retires with its epoch prefix.
+          const used = sumOf(ledger);
+          if (already === null && sumOf(priced) > byteBudget) {
+            return yield* overByteQuota(409, used, newBytes);
+          }
+          // `git_fsck` records Mend's observation, never the executor's claim: the kinds a
+          // pickup or a review would restore are verified before the CAS (index-pack --verify
+          // and a connectivity walk on the runner); `auto` captures land `unverified` and are
+          // verified by the first plan that would restore them. A failed section is accepted
+          // and marked — the chain advances, the plan and the reads route around it.
+          const verification =
+            already !== null || !VERIFIED_AT_REGISTER.has(manifest.kind)
+              ? null
+              : yield* verifier.verify(scope.projectId, manifest);
+          const gitFsck = already?.gitFsck ?? verification?.outcome ?? "unverified";
+          if (verification !== null && verification.outcome !== "verified") {
+            yield* Effect.logWarning(
+              `capture channel: git section ${verification.outcome === "failed" ? "failed verification" : "not verified"} at register · observed`,
+            ).pipe(
+              Effect.annotateLogs({
+                worktreeId,
+                n: input.n,
+                captureId: input.capture_id,
+                kind: manifest.kind,
+                epoch: input.epoch,
+                claimed: manifest.sections.git.fsck,
+                detail: verification.detail,
+              }),
+            );
+          }
+          const outcome = yield* repo
+            .register({
+              worktreeId,
+              id: input.capture_id,
+              n: input.n,
+              parent: input.parent,
+              epoch: input.epoch,
+              seq: BigInt(manifest.seq),
+              kind: manifest.kind,
+              manifestKey: input.manifest_key,
+              sections: manifest.sections,
+              gitFsck,
+              guards: owners.map((owner) => ({
+                worktreeId: owner,
+                guard: state.guards.get(owner) ?? 0,
+              })),
+              revive,
+            })
+            .pipe(
+              Effect.catch(
+                (error): Effect.Effect<never, CaptureRouteError | GuardMovedError> =>
+                  error.reason === "guard_moved"
+                    ? Effect.fail(new GuardMovedError())
+                    : conflictToRoute(error).pipe(Effect.flatMap(Effect.fail)),
+              ),
+            );
+          return { outcome, priced, records };
+        });
+        const { outcome, priced, records } = yield* attempt.pipe(
+          Effect.retry({
+            while: (error) => error._tag === "GuardMovedError",
+            times: GUARD_ATTEMPTS - 1,
+          }),
+          Effect.catchTag("GuardMovedError", () =>
+            Effect.die(
+              `capture channel: retention kept moving the chains this capture names (${GUARD_ATTEMPTS} attempts)`,
+            ),
+          ),
+        );
         if (!outcome.lostAck) {
           for (const [key, bytes] of priced) ledger.set(key, bytes);
           yield* repo.recordPacks(records);

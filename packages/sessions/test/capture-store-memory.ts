@@ -25,10 +25,20 @@ export interface MemoryCaptureStore {
     string,
     { executorId: string | null; epoch: number; expiresAt: number | null }
   >;
-  readonly chains: Map<string, { headCapture: string | null; headN: number; headEpoch: number }>;
+  readonly chains: Map<string, MemoryChain>;
   readonly captures: Map<string, CaptureRow>;
+  /** `capture_tombstones`: key → owning worktree and whether the bytes are gone. */
+  readonly tombstones: Map<string, { worktreeId: string; deleted: boolean }>;
   readonly packs: Map<string, PackRow>;
   readonly summaries: Map<string, CaptureSummaryRow>;
+}
+
+/** A chain row; `guard` absent reads 0 (tests that build chains by hand leave it out). */
+export interface MemoryChain {
+  headCapture: string | null;
+  headN: number;
+  headEpoch: number;
+  guard?: number;
 }
 
 const digestOf = (key: string) => key.slice(key.lastIndexOf("/") + 1).replace(/\.idx$/, "");
@@ -39,10 +49,8 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
     string,
     { executorId: string | null; epoch: number; expiresAt: number | null }
   >();
-  const chains = new Map<
-    string,
-    { headCapture: string | null; headN: number; headEpoch: number }
-  >();
+  const chains = new Map<string, MemoryChain>();
+  const tombstones = new Map<string, { worktreeId: string; deleted: boolean }>();
   const captures = new Map<string, CaptureRow>();
   const packs = new Map<string, PackRow>();
   const summaries = new Map<string, CaptureSummaryRow>();
@@ -67,7 +75,7 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
           leases.set(worktreeId, { executorId: null, epoch: 0, expiresAt: null });
         }
         if (!chains.has(worktreeId)) {
-          chains.set(worktreeId, { headCapture: null, headN: -1, headEpoch: 0 });
+          chains.set(worktreeId, { headCapture: null, headN: -1, headEpoch: 0, guard: 0 });
         }
       }),
     claim: (worktreeId, executorId, ttlSeconds = 30) =>
@@ -95,15 +103,31 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
         const chain = chains.get(capture.worktreeId);
         const lease = leases.get(capture.worktreeId);
         const leaseEpoch = lease !== undefined && live(lease) ? lease.epoch : null;
+        const guards = capture.guards ?? [];
+        const guardsHold = guards.every(
+          (entry) => (chains.get(entry.worktreeId)?.guard ?? Number.NaN) === entry.guard,
+        );
+        // The SQL bumps the foreign guards that still hold even when the CAS misses.
+        for (const entry of guards) {
+          const other = chains.get(entry.worktreeId);
+          if (entry.worktreeId !== capture.worktreeId && other !== undefined) {
+            if ((other.guard ?? 0) === entry.guard) other.guard = entry.guard + 1;
+          }
+        }
         if (
           chain !== undefined &&
           chain.headN === capture.n - 1 &&
           chain.headCapture === capture.parent &&
-          leaseEpoch === capture.epoch
+          leaseEpoch === capture.epoch &&
+          guardsHold
         ) {
           chain.headN = capture.n;
           chain.headCapture = capture.id;
           chain.headEpoch = capture.epoch;
+          chain.guard = (chain.guard ?? 0) + 1;
+          for (const key of capture.revive ?? []) {
+            if (tombstones.get(key)?.deleted === true) tombstones.delete(key);
+          }
           captures.set(capture.id, {
             id: capture.id,
             worktreeId: capture.worktreeId,
@@ -130,7 +154,9 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
             ? "stale_epoch"
             : chain === undefined || chain.headN !== capture.n - 1
               ? "head_moved"
-              : "wrong_parent";
+              : chain.headCapture !== capture.parent
+                ? "wrong_parent"
+                : "guard_moved";
         return Effect.fail(
           new CaptureConflictError({ worktreeId: capture.worktreeId, n: capture.n, reason }),
         );
@@ -195,7 +221,11 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
       Effect.sync(() => {
         for (const record of records) {
           const id = digestOf(record.key);
-          if (packs.has(id)) continue;
+          const known = packs.get(id);
+          if (known?.state === "retired") {
+            packs.set(id, { ...known, state: "uploaded", updatedAt: new Date(clock.now()) });
+          }
+          if (known !== undefined) continue;
           packs.set(id, {
             id,
             key: record.key,
@@ -217,8 +247,40 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
           worktreeId: worktreeId as WorktreeId,
           headCapture: chain.headCapture,
           headN: chain.headN,
+          guard: chain.guard ?? 0,
         })),
       ),
+    referenceState: (worktreeIds, keys) =>
+      Effect.sync(() => {
+        const guards = new Map<WorktreeId, number>();
+        for (const worktreeId of worktreeIds) {
+          const chain = chains.get(worktreeId);
+          if (chain !== undefined) guards.set(worktreeId, chain.guard ?? 0);
+        }
+        return {
+          guards,
+          tombstones: keys.flatMap((key) => {
+            const tombstone = tombstones.get(key);
+            return tombstone === undefined ? [] : [{ key, deleted: tombstone.deleted }];
+          }),
+        };
+      }),
+    condemn: (worktreeId, guard, keys) =>
+      Effect.sync(() => {
+        if (keys.length === 0) return true;
+        const chain = chains.get(worktreeId);
+        if (chain === undefined || (chain.guard ?? 0) !== guard) return false;
+        chain.guard = guard + 1;
+        for (const key of keys) tombstones.set(key, { worktreeId, deleted: false });
+        return true;
+      }),
+    markDeleted: (keys) =>
+      Effect.sync(() => {
+        for (const key of keys) {
+          const tombstone = tombstones.get(key);
+          if (tombstone !== undefined) tombstone.deleted = true;
+        }
+      }),
     deleteCaptures: (worktreeId, captureIds) =>
       Effect.sync(() => {
         const chain = chains.get(worktreeId);
@@ -246,5 +308,5 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
       }),
   });
 
-  return { layer, clock, leases, chains, captures, packs, summaries };
+  return { layer, clock, leases, chains, captures, packs, summaries, tombstones };
 };

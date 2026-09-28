@@ -6,12 +6,7 @@ import * as zlib from "node:zlib";
 
 import { Effect, Schema } from "effect";
 
-import {
-  type BlobNotFoundError,
-  BlobStore,
-  type BlobStoreError,
-  isValidBlobKey,
-} from "./blob-store.ts";
+import { BlobNotFoundError, BlobStore, type BlobStoreError, isValidBlobKey } from "./blob-store.ts";
 import { git, type GitError } from "./git.ts";
 
 /**
@@ -411,29 +406,39 @@ const PackIndex = Schema.Array(PackIndexEntry);
  * Parse the trailing index: `… | index JSON | u64 LE index length | "SLCP0001"`. Offsets are
  * checked against the pack's extent so a corrupt index cannot read past it.
  */
-export const readPackIndex = (
+const PACK_TRAILER_BYTES = 16;
+
+/**
+ * Where a pack's index lies, from its 16-byte trailer (`u64 LE index length | "SLCP0001"`) and
+ * the pack's size: `[indexStart, packSize - 16)`.
+ */
+const packIndexExtent = (
   key: string,
-  pack: Uint8Array,
-): Effect.Effect<ReadonlyArray<PackIndexEntry>, CaptureFormatError> =>
+  trailer: Buffer,
+  packSize: number,
+): Effect.Effect<number, CaptureFormatError> =>
   Effect.gen(function* () {
-    const buffer = Buffer.from(pack.buffer, pack.byteOffset, pack.byteLength);
-    if (buffer.length < 16) {
+    if (packSize < PACK_TRAILER_BYTES || trailer.length !== PACK_TRAILER_BYTES) {
       return yield* new CaptureFormatError({ key, reason: "pack shorter than its trailer" });
     }
-    const magic = buffer.subarray(buffer.length - 8);
-    if (!magic.equals(MAGIC_BYTES)) {
+    if (!trailer.subarray(8).equals(MAGIC_BYTES)) {
       return yield* new CaptureFormatError({ key, reason: "bad pack magic" });
     }
-    const indexLength = buffer.readBigUInt64LE(buffer.length - 16);
-    const dataEnd = BigInt(buffer.length - 16) - indexLength;
+    const dataEnd = BigInt(packSize - PACK_TRAILER_BYTES) - trailer.readBigUInt64LE(0);
     if (dataEnd < 0n) {
       return yield* new CaptureFormatError({ key, reason: "index length exceeds pack" });
     }
-    const indexStart = Number(dataEnd);
-    const entries = yield* decodeJson(PackIndex, "pack index")(
-      key,
-      buffer.subarray(indexStart, buffer.length - 16),
-    );
+    return Number(dataEnd);
+  });
+
+/** Decode the index bytes and check every entry lies inside the pack's data (`[0, indexStart)`). */
+const decodePackIndex = (
+  key: string,
+  index: Buffer,
+  indexStart: number,
+): Effect.Effect<ReadonlyArray<PackIndexEntry>, CaptureFormatError> =>
+  Effect.gen(function* () {
+    const entries = yield* decodeJson(PackIndex, "pack index")(key, index);
     for (const entry of entries) {
       if (entry.offset < 0 || entry.length < 0 || entry.offset + entry.length > indexStart) {
         return yield* new CaptureFormatError({
@@ -443,6 +448,62 @@ export const readPackIndex = (
       }
     }
     return entries;
+  });
+
+/**
+ * Parse the trailing index: `… | index JSON | u64 LE index length | "SLCP0001"`. Offsets are
+ * checked against the pack's extent so a corrupt index cannot read past it.
+ */
+export const readPackIndex = (
+  key: string,
+  pack: Uint8Array,
+): Effect.Effect<ReadonlyArray<PackIndexEntry>, CaptureFormatError> =>
+  Effect.gen(function* () {
+    const buffer = Buffer.from(pack.buffer, pack.byteOffset, pack.byteLength);
+    const trailer = buffer.subarray(Math.max(0, buffer.length - PACK_TRAILER_BYTES));
+    const indexStart = yield* packIndexExtent(key, trailer, buffer.length);
+    return yield* decodePackIndex(
+      key,
+      buffer.subarray(indexStart, buffer.length - PACK_TRAILER_BYTES),
+      indexStart,
+    );
+  });
+
+/** How much of a pack's end one ranged GET asks for: the trailer and, usually, the whole index. */
+const PACK_TAIL_BYTES = 256 * 1024;
+
+/**
+ * A pack's index without the pack: one ranged GET of its tail (a second when the index is
+ * larger than the tail). `size` is the pack's, as a HEAD reported it.
+ */
+export const readPackIndexRemote = (
+  key: string,
+  size: number,
+): Effect.Effect<ReadonlyArray<PackIndexEntry>, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    const store = yield* BlobStore;
+    const tailStart = Math.max(0, size - PACK_TAIL_BYTES);
+    const tail = Buffer.from(yield* store.getRange(key, tailStart, size - tailStart));
+    if (tail.length !== size - tailStart) {
+      return yield* new CaptureFormatError({
+        key,
+        reason: `pack is ${tailStart + tail.length} bytes, not the ${size} its HEAD reported`,
+      });
+    }
+    const indexStart = yield* packIndexExtent(
+      key,
+      tail.subarray(Math.max(0, tail.length - PACK_TRAILER_BYTES)),
+      size,
+    );
+    const indexLength = size - PACK_TRAILER_BYTES - indexStart;
+    const index =
+      indexStart >= tailStart
+        ? tail.subarray(indexStart - tailStart, tail.length - PACK_TRAILER_BYTES)
+        : Buffer.from(yield* store.getRange(key, indexStart, indexLength));
+    if (index.length !== indexLength) {
+      return yield* new CaptureFormatError({ key, reason: "pack index cut short" });
+    }
+    return yield* decodePackIndex(key, index, indexStart);
   });
 
 /** Decompress one chunk and verify its hash and size against the index entry. */
@@ -953,9 +1014,91 @@ export const statCaptureEntry = (
   });
 
 /**
+ * A class-root-relative path as its segments, or null when it could leave the root or names
+ * nothing: absolute, empty, or with an empty, `.` or `..` segment. A hardlink group's `target`
+ * is such a path (the group's canonical member, sealantd `tree.rs`).
+ */
+const captureSegments = (relPath: string): ReadonlyArray<string> | null => {
+  if (relPath === "" || relPath.startsWith("/")) return null;
+  const segments = relPath.split("/");
+  return segments.every(isSafeName) ? segments : null;
+};
+
+/** The entry at `segments` below the dir object `root` names, or null. Symlinks are never followed. */
+const entryAt = (
+  dirs: DirReader,
+  root: string,
+  segments: ReadonlyArray<string>,
+): Effect.Effect<DirEntry | null, CaptureReadError> =>
+  Effect.gen(function* () {
+    const name = segments.at(-1);
+    if (name === undefined) return null;
+    const parent = yield* walkToDir(dirs, root, segments.slice(0, -1).join("/"));
+    return parent?.find((entry) => entry.name === name) ?? null;
+  });
+
+/**
+ * The entry holding a file's bytes. A plain file holds its own. A hardlink group's member other
+ * than the canonical one holds none (sealantd writes its `target` and no `chunks`): its bytes are
+ * the canonical member's, found by path from the class root — a target that leaves the root,
+ * names no file, or loops back through the group is a malformed capture, never an empty file.
+ */
+export const resolveCaptureFileEntry = (
+  dirs: DirReader,
+  root: string,
+  relPath: string,
+  entry: DirEntry,
+): Effect.Effect<DirEntry, CaptureReadError> =>
+  Effect.gen(function* () {
+    let at = captureSegments(relPath)?.join("/") ?? relPath;
+    let current = entry;
+    const seen = new Set<string>([at]);
+    while (current.kind === "hardlink-group") {
+      const target = current.target;
+      if (target === undefined) {
+        return yield* new CaptureFormatError({
+          key: root,
+          reason: `${at}: hardlink without target`,
+        });
+      }
+      const segments = captureSegments(target);
+      if (segments === null) {
+        return yield* new CaptureFormatError({
+          key: root,
+          reason: `${at}: hardlink target escapes the class root: ${target}`,
+        });
+      }
+      const canonical = segments.join("/");
+      // The canonical member listed as part of its own group holds the bytes (`materialize`).
+      if (canonical === at) return current;
+      if (seen.has(canonical)) {
+        return yield* new CaptureFormatError({
+          key: root,
+          reason: `${at}: hardlink targets loop through ${canonical}`,
+        });
+      }
+      seen.add(canonical);
+      const next = yield* entryAt(dirs, root, segments);
+      if (next === null || (next.kind !== "file" && next.kind !== "hardlink-group")) {
+        return yield* new CaptureFormatError({
+          key: root,
+          reason: `${at}: hardlink canonical member missing: ${canonical}`,
+        });
+      }
+      at = canonical;
+      current = next;
+    }
+    if (current.kind !== "file") {
+      return yield* new CaptureFormatError({ key: root, reason: `${at}: not a file` });
+    }
+    return current;
+  });
+
+/**
  * Stream one file of a class chunk by chunk, each chunk sha256-verified as it is decoded — a
  * 76 MB transcript never sits in memory whole. Fails before the first read when the path names
- * nothing or a non-file.
+ * nothing or a non-file; a hardlink member streams its canonical member's bytes. The stream
+ * fails, rather than ending, when the bytes it read are not the size the entry advertises.
  */
 export const readCaptureFile = (
   manifest: CaptureManifest,
@@ -965,26 +1108,51 @@ export const readCaptureFile = (
   Effect.gen(function* () {
     const section = manifest.sections[cls];
     if (section === "pending") return yield* new CaptureSectionPendingError({ section: cls });
-    const entry = yield* statCaptureEntry(manifest, cls, relPath);
+    const notAFile = new CaptureFormatError({
+      key: section.root,
+      reason: `${relPath}: not a file in the ${cls} class`,
+    });
+    const segments = relPath.split("/").filter((part) => part !== "");
+    if (section.root === "" || segments.length === 0) return yield* notAFile;
+    const dirs = yield* makeDirReader(section);
+    const entry = yield* entryAt(dirs, section.root, segments);
     if (entry === null || (entry.kind !== "file" && entry.kind !== "hardlink-group")) {
+      return yield* notAFile;
+    }
+    const holder = yield* resolveCaptureFileEntry(dirs, section.root, segments.join("/"), entry);
+    const expected = entry.size;
+    if (holder.size !== expected) {
       return yield* new CaptureFormatError({
         key: section.root,
-        reason: `${relPath}: not a file in the ${cls} class`,
+        reason: `${relPath}: ${expected} bytes advertised, its canonical member holds ${holder.size}`,
       });
     }
     const source = yield* makeChunkSource(section.packs);
-    const chunks = [...(entry.chunks ?? [])];
+    const chunks = [...(holder.chunks ?? [])];
     let at = 0;
+    let read = 0;
     return new Readable({
       read() {
         const hash = chunks[at];
         if (hash === undefined) {
+          if (read !== expected) {
+            this.destroy(
+              new CaptureFormatError({
+                key: section.root,
+                reason: `${relPath}: read ${read} bytes, entry says ${expected}`,
+              }),
+            );
+            return;
+          }
           this.push(null);
           return;
         }
         at += 1;
         Effect.runPromise(source.chunk(hash)).then(
-          (bytes) => this.push(Buffer.from(bytes)),
+          (bytes) => {
+            read += bytes.byteLength;
+            return this.push(Buffer.from(bytes));
+          },
           (error: unknown) =>
             this.destroy(error instanceof Error ? error : new Error(String(error))),
         );
@@ -1003,10 +1171,13 @@ export const readCaptureFileBytes = (
       Effect.tryPromise({
         try: () => collectStream(stream),
         catch: (cause) =>
-          new CaptureFormatError({
-            key: relPath,
-            reason: cause instanceof Error ? cause.message : String(cause),
-          }),
+          cause instanceof CaptureFormatError
+            ? cause
+            : new CaptureFormatError({
+                key: relPath,
+                reason:
+                  cause instanceof Error && cause.message !== "" ? cause.message : String(cause),
+              }),
       }),
     ),
   );
@@ -1065,6 +1236,278 @@ export const listCaptureFiles = (
     }
     return out.toSorted((a, b) => mtimeSeconds(b.entry.mtime) - mtimeSeconds(a.entry.mtime));
   });
+
+// ─── Restorability ──────────────────────────────────────────────────────────
+
+/**
+ * Chunk sizes by hash, per pack key. A pack key is the sha256 of its bytes, so an entry never
+ * goes stale; the cache is bounded by entries and drops the least recently used pack first. A
+ * register whose section re-lists its parent's packs reads only the new packs' indexes.
+ */
+const PACK_INDEX_CACHE_ENTRIES = 1_000_000;
+const packIndexCache = new Map<string, ReadonlyMap<string, number>>();
+let packIndexCacheEntries = 0;
+
+const rememberPackIndex = (key: string, sizes: ReadonlyMap<string, number>) => {
+  if (sizes.size > PACK_INDEX_CACHE_ENTRIES) return;
+  const previous = packIndexCache.get(key);
+  if (previous !== undefined) {
+    packIndexCache.delete(key);
+    packIndexCacheEntries -= previous.size;
+  }
+  packIndexCache.set(key, sizes);
+  packIndexCacheEntries += sizes.size;
+  for (const [oldest, held] of packIndexCache) {
+    if (packIndexCacheEntries <= PACK_INDEX_CACHE_ENTRIES) break;
+    packIndexCache.delete(oldest);
+    packIndexCacheEntries -= held.size;
+  }
+};
+
+/** Chunk sizes by hash in one pack, from its index (ranged reads; cached by key). */
+const chunkSizesOf = (
+  key: string,
+  knownSize: number | undefined,
+): Effect.Effect<ReadonlyMap<string, number>, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    const cached = packIndexCache.get(key);
+    if (cached !== undefined) {
+      packIndexCache.delete(key);
+      packIndexCache.set(key, cached);
+      return cached;
+    }
+    const store = yield* BlobStore;
+    const size = knownSize ?? (yield* store.head(key))?.size;
+    if (size === undefined) return yield* new BlobNotFoundError({ key });
+    const entries = yield* readPackIndexRemote(key, size);
+    const sizes = new Map<string, number>();
+    for (const entry of entries) sizes.set(entry.hash, entry.size);
+    rememberPackIndex(key, sizes);
+    return sizes;
+  });
+
+/** What a restorability check walked. */
+export interface SectionCheck {
+  readonly dirs: number;
+  readonly files: number;
+  readonly chunks: number;
+  readonly hardlinks: number;
+}
+
+/** How many pack indexes are read at once. */
+const PACK_INDEX_READS_IN_FLIGHT = 8;
+
+/**
+ * Establish that a chunked section restores, without restoring it: the root and every dir object
+ * below it are where the section says (format 1: their keys; format 2: the dir packs it lists);
+ * every entry is well formed (a safe, unique name; a dir's child, a symlink's target); every
+ * chunk a file names is in a pack the section lists, and the chunk sizes the packs' indexes
+ * give add up to the file's size; every hardlink member's canonical path names a file inside the
+ * class, of the member's size. What the materializers need, checked before a register is
+ * acknowledged (`capture-channel.ts`), so a capture Mend accepted is one it can restore.
+ *
+ * Chunk bytes are not decompressed: the packs are content-addressed and verified whole on every
+ * restore; this check reads only their trailing indexes (cached by key), and the dir objects.
+ */
+export const verifySectionRestorable = (
+  section: ChunkedSection,
+  options?: {
+    /** Pack sizes a HEAD just reported (the caller's), so the check does not HEAD them again. */
+    readonly sizes?: ReadonlyMap<string, number>;
+  },
+): Effect.Effect<SectionCheck, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    const stats = { dirs: 0, files: 0, chunks: 0, hardlinks: 0 };
+    if (section.root === "") return stats;
+    const dirs = yield* makeDirReader(section);
+    const packs = [...new Set(section.packs)];
+    const indexes = yield* Effect.forEach(
+      packs,
+      (key) => chunkSizesOf(key, options?.sizes?.get(key)),
+      { concurrency: PACK_INDEX_READS_IN_FLIGHT },
+    );
+    const chunkSizes = new Map<string, number>();
+    for (const sizes of indexes) {
+      for (const [hash, size] of sizes) if (!chunkSizes.has(hash)) chunkSizes.set(hash, size);
+    }
+    const fail = (at: string, reason: string) =>
+      Effect.fail(new CaptureFormatError({ key: section.root, reason: `${at || "/"}: ${reason}` }));
+    const checkChunks = (entry: DirEntry, at: string) =>
+      Effect.gen(function* () {
+        let bytes = 0;
+        for (const hash of entry.chunks ?? []) {
+          const size = chunkSizes.get(hash);
+          if (size === undefined) {
+            return yield* fail(at, `chunk ${hash} is in no pack the section lists`);
+          }
+          bytes += size;
+          stats.chunks += 1;
+        }
+        if (bytes !== entry.size) {
+          return yield* fail(at, `its chunks hold ${bytes} bytes, the entry says ${entry.size}`);
+        }
+        stats.files += 1;
+      });
+    // Canonical path → the sizes its members advertise.
+    const hardlinkTargets = new Map<string, Set<number>>();
+    // A dir object reached twice (the same subtree at two paths) is checked once: its digest or
+    // key names its bytes, and every path inside it is relative to it.
+    const visited = new Set<string>();
+    const queue: Array<{ readonly ref: string; readonly at: string }> = [
+      { ref: section.root, at: "" },
+    ];
+    while (queue.length > 0) {
+      const next = queue.pop();
+      if (next === undefined) break;
+      if (visited.has(next.ref)) continue;
+      visited.add(next.ref);
+      stats.dirs += 1;
+      const entries = yield* dirs.read(next.ref);
+      const names = new Set<string>();
+      for (const entry of entries) {
+        const at = next.at === "" ? entry.name : `${next.at}/${entry.name}`;
+        if (!isSafeName(entry.name)) return yield* fail(next.at, `unsafe name "${entry.name}"`);
+        if (names.has(entry.name)) return yield* fail(at, "listed twice");
+        names.add(entry.name);
+        switch (entry.kind) {
+          case "dir": {
+            if (entry.child === undefined) return yield* fail(at, "dir without child");
+            queue.push({ ref: entry.child, at });
+            break;
+          }
+          case "symlink": {
+            if (entry.target === undefined) return yield* fail(at, "symlink without target");
+            break;
+          }
+          case "hardlink-group": {
+            const target = entry.target === undefined ? null : captureSegments(entry.target);
+            if (target === null) {
+              return yield* fail(at, `hardlink target escapes or is missing: ${entry.target}`);
+            }
+            const canonical = target.join("/");
+            const sizes = hardlinkTargets.get(canonical) ?? new Set<number>();
+            sizes.add(entry.size);
+            hardlinkTargets.set(canonical, sizes);
+            stats.hardlinks += 1;
+            // A member without chunks holds no bytes of its own; the canonical member does.
+            if (entry.chunks === undefined) break;
+            yield* checkChunks(entry, at);
+            break;
+          }
+          case "file": {
+            yield* checkChunks(entry, at);
+            break;
+          }
+        }
+      }
+    }
+
+    for (const [canonical, sizes] of hardlinkTargets) {
+      const segments = canonical.split("/");
+      const holder = yield* entryAt(dirs, section.root, segments);
+      if (
+        holder === null ||
+        !(
+          holder.kind === "file" ||
+          (holder.kind === "hardlink-group" &&
+            holder.chunks !== undefined &&
+            captureSegments(holder.target ?? "")?.join("/") === canonical)
+        )
+      ) {
+        return yield* fail(canonical, "a hardlink group's canonical member is not a file");
+      }
+      for (const size of sizes) {
+        if (size !== holder.size) {
+          return yield* fail(
+            canonical,
+            `a hardlink member advertises ${size} bytes, the canonical member holds ${holder.size}`,
+          );
+        }
+      }
+    }
+    return stats;
+  });
+
+// ─── What a capture row names ───────────────────────────────────────────────
+
+/**
+ * Read from a `captures` row's stored `sections` (JSON, decoded by nobody): what retention keeps
+ * alive and what a register must find un-condemned. Leniently: whatever a section lists is named,
+ * whatever its `format` says — keeping a listed object alive is never the loss.
+ */
+const stringsOf = (section: unknown, field: string): ReadonlyArray<string> => {
+  if (typeof section !== "object" || section === null) return [];
+  const value: unknown = Reflect.get(section, field);
+  return Array.isArray(value) ? value.filter((key): key is string => typeof key === "string") : [];
+};
+
+const rowPacksOf = (section: unknown): ReadonlyArray<string> => stringsOf(section, "packs");
+
+/**
+ * A chunked section's dir packs (format 2, sealantd PR #99). Read whatever the section lists,
+ * whatever its `format` says: keeping a listed object alive is never the loss.
+ */
+const rowDirPacksOf = (section: unknown): ReadonlyArray<string> => stringsOf(section, "dir_packs");
+
+/** A format-1 root is a key (`…/trees/<sha256>`); a format-2 root is a digest and names no object. */
+const rowTreeOf = (section: unknown): ReadonlyArray<string> => {
+  if (typeof section !== "object" || section === null) return [];
+  const root: unknown = Reflect.get(section, "root");
+  return typeof root === "string" && root.includes("/trees/") ? [root] : [];
+};
+
+/**
+ * The bulk sections captured on other platforms that a row carries (`other_bulk`, sealantd PR
+ * #101), whatever their keys say: each is another platform's dependency tree, restorable only
+ * while every object it names lives, however many captures ago it was built.
+ */
+const otherBulkOf = (sections: object): ReadonlyArray<unknown> => {
+  const other: unknown = Reflect.get(sections, "other_bulk");
+  if (typeof other !== "object" || other === null || Array.isArray(other)) return [];
+  const entries: ReadonlyArray<unknown> = Object.values(other);
+  return entries;
+};
+
+/** Every chunked section a row names: the workspace, the bulk section, every other platform's. */
+const chunkedSectionsOf = (sections: object): ReadonlyArray<unknown> => [
+  Reflect.get(sections, "workspace"),
+  Reflect.get(sections, "bulk"),
+  ...otherBulkOf(sections),
+];
+
+/** Every object key a capture row's sections name. */
+export const keysOfSections = (sections: unknown): ReadonlyArray<string> => {
+  if (typeof sections !== "object" || sections === null) return [];
+  return [
+    ...rowPacksOf(Reflect.get(sections, "git")).flatMap((key) => [key, packIdxKeyOf(key)]),
+    ...chunkedSectionsOf(sections).flatMap((section) => [
+      ...rowPacksOf(section),
+      ...rowTreeOf(section),
+      ...rowDirPacksOf(section),
+    ]),
+  ];
+};
+
+/**
+ * The `…/trees/` prefixes a row's format-1 roots live under. A format-1 root names its children
+ * by key, and sealantd writes every dir object of one tree under the prefix its root has (the
+ * epoch that built it), so a root that lives keeps every `trees/` object under its prefix alive
+ * — without reading one dir object. A section carried from an older epoch (a bulk section that
+ * rides along until the next bulk snap, or another platform's in `other_bulk`, which rides along
+ * for good) keeps its whole tree that way.
+ */
+export const treePrefixesOfSections = (sections: unknown): ReadonlyArray<string> => {
+  if (typeof sections !== "object" || sections === null) return [];
+  return chunkedSectionsOf(sections)
+    .flatMap(rowTreeOf)
+    .map((root) => root.slice(0, root.lastIndexOf("/trees/") + "/trees/".length));
+};
+
+/** The worktree a capture object key belongs to (`captures/<worktree>/…`), or null. */
+export const captureKeyOwner = (key: string): string | null => {
+  const match = /^captures\/([^/]+)\//.exec(key);
+  return match?.[1] ?? null;
+};
 
 // ─── Git packs ──────────────────────────────────────────────────────────────
 

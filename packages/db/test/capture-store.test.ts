@@ -1,6 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { ProjectId, Sha, WorktreeId } from "@mend/domain";
-import { Effect, Layer, Redacted } from "effect";
+import { Deferred, Effect, Fiber, Layer, Redacted } from "effect";
 import * as Str from "effect/String";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -95,6 +95,15 @@ const tagOf = <A, E extends { readonly _tag: string }, R>(effect: Effect.Effect<
   effect.pipe(
     Effect.map(() => "ok"),
     Effect.catch((error) => Effect.succeed(error._tag)),
+  );
+
+/** A conflict's reason, or "ok". */
+const reasonOf = <A>(
+  effect: Effect.Effect<A, { readonly _tag: string; readonly reason: string }>,
+) =>
+  effect.pipe(
+    Effect.map(() => "ok"),
+    Effect.catch((error) => Effect.succeed(error.reason)),
   );
 
 describe.skipIf(!reachable)("capture store (0053)", () => {
@@ -319,6 +328,160 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
       }),
     );
     expect(rows).toEqual([{ id: "b".repeat(64), bytes: 10, state: "uploaded" }]);
+  });
+
+  it("guard (0076): a register and a condemnation of the same chain never both land, whichever holds the row first", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const worktreeId = yield* freshWorktree;
+        const key = `captures/${worktreeId}/1/packs/${"c".repeat(64)}`;
+        const { epoch } = yield* repo.claim(worktreeId, "exec", 3600);
+        const guardOf = Effect.map(
+          repo.referenceState([worktreeId], [key]),
+          (state) => state.guards.get(worktreeId) ?? -1,
+        );
+        const zero = captureInput(worktreeId, 0, null, epoch);
+        yield* repo.register({ ...zero, guards: [{ worktreeId, guard: yield* guardOf }] });
+
+        /** Hold the chain row in an open transaction until released, as a statement in flight. */
+        const holdRow = (statement: Effect.Effect<unknown, unknown>) =>
+          Effect.gen(function* () {
+            const locked = yield* Deferred.make<void>();
+            const release = yield* Deferred.make<void>();
+            const holder = yield* Effect.forkChild(
+              sql.withTransaction(
+                statement.pipe(
+                  Effect.andThen(Deferred.succeed(locked, undefined)),
+                  Effect.andThen(Deferred.await(release)),
+                ),
+              ),
+            );
+            yield* Deferred.await(locked);
+            return Deferred.succeed(release, undefined).pipe(Effect.andThen(Fiber.join(holder)));
+          });
+
+        // 1. A condemnation holds the row (it bumped the guard, uncommitted); a register that
+        //    read the guard before it waits, then re-reads the row and misses.
+        const readBeforeCondemn = yield* guardOf;
+        const releaseCondemn = yield* holdRow(
+          sql`UPDATE worktree_chain SET guard = guard + 1 WHERE worktree_id = ${worktreeId}`,
+        );
+        const one = captureInput(worktreeId, 1, zero.id, epoch);
+        const blockedRegister = yield* Effect.forkChild(
+          reasonOf(repo.register({ ...one, guards: [{ worktreeId, guard: readBeforeCondemn }] })),
+        );
+        yield* Effect.sleep("300 millis");
+        const registerWaited = blockedRegister.pollUnsafe() === undefined;
+        yield* releaseCondemn;
+        const registerOutcome = yield* Fiber.join(blockedRegister);
+        const headAfterCondemn = (yield* repo.headOf(worktreeId))?.headN;
+
+        // 2. A register holds the row (it moved the head and bumped the guard, uncommitted); a
+        //    condemnation that read the guard before it waits, then re-reads the row and misses.
+        const readBeforeRegister = yield* guardOf;
+        const releaseRegister = yield* holdRow(
+          sql`UPDATE worktree_chain SET guard = guard + 1 WHERE worktree_id = ${worktreeId}`,
+        );
+        const blockedCondemn = yield* Effect.forkChild(
+          repo.condemn(worktreeId, readBeforeRegister, [key]),
+        );
+        yield* Effect.sleep("300 millis");
+        const condemnWaited = blockedCondemn.pollUnsafe() === undefined;
+        yield* releaseRegister;
+        const condemnOutcome = yield* Fiber.join(blockedCondemn);
+        const tombstonesAfterRace = (yield* repo.referenceState([worktreeId], [key])).tombstones;
+
+        // 3. In order: a condemnation lands, a register that read before it misses, one that
+        //    reads after it sees the tombstone; once the bytes are gone, a register that saw
+        //    them again revives the key with its CAS.
+        const before = yield* guardOf;
+        const condemned = yield* repo.condemn(worktreeId, before, [key]);
+        const staleRegister = yield* reasonOf(
+          repo.register({ ...one, guards: [{ worktreeId, guard: before }] }),
+        );
+        const seen = yield* repo.referenceState([worktreeId], [key]);
+        yield* repo.markDeleted([key]);
+        const gone = yield* repo.referenceState([worktreeId], [key]);
+        const revived = yield* reasonOf(
+          repo.register({
+            ...one,
+            guards: [{ worktreeId, guard: gone.guards.get(worktreeId) ?? -1 }],
+            revive: [key],
+          }),
+        );
+        const after = yield* repo.referenceState([worktreeId], [key]);
+        return {
+          registerWaited,
+          registerOutcome,
+          headAfterCondemn,
+          condemnWaited,
+          condemnOutcome,
+          tombstonesAfterRace,
+          condemned,
+          staleRegister,
+          seen: seen.tombstones,
+          gone: gone.tombstones,
+          revived,
+          after: after.tombstones,
+        };
+      }),
+    );
+    expect(result.registerWaited).toBe(true);
+    expect(result.registerOutcome).toBe("guard_moved");
+    expect(result.headAfterCondemn).toBe(0);
+    expect(result.condemnWaited).toBe(true);
+    expect(result.condemnOutcome).toBe(false);
+    expect(result.tombstonesAfterRace).toEqual([]);
+    expect(result.condemned).toBe(true);
+    expect(result.staleRegister).toBe("guard_moved");
+    expect(result.seen).toEqual([{ key: expect.any(String), deleted: false }]);
+    expect(result.gone).toEqual([{ key: expect.any(String), deleted: true }]);
+    expect(result.revived).toBe("ok");
+    expect(result.after).toEqual([]);
+  });
+
+  it("guard (0076): a register naming another chain's objects bumps that chain's guard, and misses if it moved", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const own = yield* freshWorktree;
+        const other = yield* freshWorktree;
+        const { epoch } = yield* repo.claim(own, "exec", 3600);
+        const state = yield* repo.referenceState([own, other], []);
+        const guards = [own, other].map((worktreeId) => ({
+          worktreeId,
+          guard: state.guards.get(worktreeId) ?? -1,
+        }));
+        // Retention condemns something of the other chain after the register read.
+        const condemned = yield* repo.condemn(other, state.guards.get(other) ?? -1, [
+          `captures/${other}/1/packs/${"d".repeat(64)}`,
+        ]);
+        const zero = captureInput(own, 0, null, epoch);
+        const missed = yield* repo.register({ ...zero, guards }).pipe(
+          Effect.map(() => "ok"),
+          Effect.catch((error) => Effect.succeed(error.reason)),
+        );
+        const fresh = yield* repo.referenceState([own, other], []);
+        const landed = yield* repo.register({
+          ...zero,
+          guards: [own, other].map((worktreeId) => ({
+            worktreeId,
+            guard: fresh.guards.get(worktreeId) ?? -1,
+          })),
+        });
+        const bumped = yield* repo.referenceState([own, other], []);
+        return { condemned, missed, landed, fresh, bumped };
+      }),
+    );
+    expect(result.condemned).toBe(true);
+    expect(result.missed).toBe("guard_moved");
+    expect(result.landed).toEqual({ lostAck: false });
+    const [own, other] = [...result.fresh.guards.keys()];
+    if (own === undefined || other === undefined) throw new Error("guards missing");
+    expect(result.bumped.guards.get(own)).toBe((result.fresh.guards.get(own) ?? 0) + 1);
+    expect(result.bumped.guards.get(other)).toBe((result.fresh.guards.get(other) ?? 0) + 1);
   });
 
   it("store refs move only by versioned compare-and-swap", async () => {

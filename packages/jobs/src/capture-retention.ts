@@ -1,7 +1,7 @@
 import type { CaptureRow, PackRow } from "@mend/db";
-import type { WorktreeId } from "@mend/domain";
+import { WorktreeId } from "@mend/domain";
 import { CaptureRuntime, PRESIGN_TTL_SECONDS } from "@mend/sessions";
-import { packIdxKeyOf } from "@mend/store";
+import { captureKeyOwner, keysOfSections, packIdxKeyOf, treePrefixesOfSections } from "@mend/store";
 import { Duration, Effect, Layer, Schedule } from "effect";
 import * as Context from "effect/Context";
 
@@ -21,6 +21,13 @@ import * as Context from "effect/Context";
  * - A row references what every one of its sections names, `other_bulk` included (sealantd PR
  *   #101): another platform's dependency tree is built under an epoch that is fenced as soon as
  *   the session moves, and is carried from capture to capture so that platform can restore it.
+ *
+ * - Nothing is deleted on a stale read. A chain's guard is read before its rows; what the pass
+ *   would delete is tombstoned in one statement that lands only while that guard still reads
+ *   so (`CaptureStoreRepo.condemn`), and only then retired and removed. A register that named
+ *   any of it in between bumped the guard, and the chain keeps everything until the next pass;
+ *   a register after it finds the tombstones and is refused (ADR-0002 decision 30). The grace
+ *   protects uploads in flight; it was never protection against a new reference.
  *
  * - An open multipart upload nobody completed (an executor died between its part PUTs and
  *   `upload.complete`, or under a fenced epoch, where no complete can ever pass the lease
@@ -81,73 +88,8 @@ export const thinningPlan = (
   return drop;
 };
 
-const stringsOf = (section: unknown, field: string): ReadonlyArray<string> => {
-  if (typeof section !== "object" || section === null) return [];
-  const value: unknown = Reflect.get(section, field);
-  return Array.isArray(value) ? value.filter((key): key is string => typeof key === "string") : [];
-};
-
-const packsOf = (section: unknown): ReadonlyArray<string> => stringsOf(section, "packs");
-
-/**
- * A chunked section's dir packs (format 2, sealantd PR #99). Read whatever the section lists,
- * whatever its `format` says: keeping a listed object alive is never the loss.
- */
-const dirPacksOf = (section: unknown): ReadonlyArray<string> => stringsOf(section, "dir_packs");
-
-/** A format-1 root is a key (`…/trees/<sha256>`); a format-2 root is a digest and names no object. */
-const treeOf = (section: unknown): ReadonlyArray<string> => {
-  if (typeof section !== "object" || section === null) return [];
-  const root: unknown = Reflect.get(section, "root");
-  return typeof root === "string" && root.includes("/trees/") ? [root] : [];
-};
-
-/**
- * The bulk sections captured on other platforms that a row carries (`other_bulk`, sealantd PR
- * #101), whatever their keys say: each is another platform's dependency tree, restorable only
- * while every object it names lives, however many captures ago it was built.
- */
-const otherBulkOf = (sections: object): ReadonlyArray<unknown> => {
-  const other: unknown = Reflect.get(sections, "other_bulk");
-  if (typeof other !== "object" || other === null || Array.isArray(other)) return [];
-  const entries: ReadonlyArray<unknown> = Object.values(other);
-  return entries;
-};
-
-/** Every chunked section a row names: the workspace, the bulk section, every other platform's. */
-const chunkedSectionsOf = (sections: object): ReadonlyArray<unknown> => [
-  Reflect.get(sections, "workspace"),
-  Reflect.get(sections, "bulk"),
-  ...otherBulkOf(sections),
-];
-
-/** Every object key a capture row's sections name. */
-export const keysOfSections = (sections: unknown): ReadonlyArray<string> => {
-  if (typeof sections !== "object" || sections === null) return [];
-  return [
-    ...packsOf(Reflect.get(sections, "git")).flatMap((key) => [key, packIdxKeyOf(key)]),
-    ...chunkedSectionsOf(sections).flatMap((section) => [
-      ...packsOf(section),
-      ...treeOf(section),
-      ...dirPacksOf(section),
-    ]),
-  ];
-};
-
-/**
- * The `…/trees/` prefixes a row's format-1 roots live under. A format-1 root names its children
- * by key, and sealantd writes every dir object of one tree under the prefix its root has (the
- * epoch that built it), so a root that lives keeps every `trees/` object under its prefix alive
- * — without reading one dir object. A section carried from an older epoch (a bulk section that
- * rides along until the next bulk snap, or another platform's in `other_bulk`, which rides along
- * for good) keeps its whole tree that way.
- */
-export const treePrefixesOfSections = (sections: unknown): ReadonlyArray<string> => {
-  if (typeof sections !== "object" || sections === null) return [];
-  return chunkedSectionsOf(sections)
-    .flatMap(treeOf)
-    .map((root) => root.slice(0, root.lastIndexOf("/trees/") + "/trees/".length));
-};
+/** What a row names (moved beside the capture format; register reads it too). */
+export { keysOfSections, treePrefixesOfSections };
 
 const treePrefixOf = (key: string): string | null => {
   const at = key.lastIndexOf("/trees/");
@@ -175,24 +117,31 @@ export const CaptureRetentionLive: Layer.Layer<CaptureRetention, never, CaptureR
         };
         if (!capture.enabled) return report;
         const { repo, blobs } = capture;
+        /** Remove one object; false (logged) when the store refused. */
         const remove = (key: string) =>
           blobs.remove(key).pipe(
             Effect.tap(() => Effect.sync(() => (report.objectsRemoved += 1))),
+            Effect.as(true),
             Effect.catch((error) =>
               Effect.logWarning("capture retention: object removal failed").pipe(
                 Effect.annotateLogs({ key, error: String(error) }),
+                Effect.as(false),
               ),
             ),
           );
 
         // 1. Thin every chain; the head and the kept kinds stay by rule, and the SQL refuses
-        //    the head regardless of what this pass computed.
+        //    the head regardless of what this pass computed. Each chain's guard is read before
+        //    its rows: a register that lands after that read bumps it, and step 4 then
+        //    condemns nothing of that chain this pass.
         const live = new Set<string>();
         const liveTreePrefixes = new Set<string>();
         const chains = yield* repo.listChains();
+        const guards = new Map<string, number>();
         const headsByWorktree = new Map<WorktreeId, CaptureRow | null>();
         for (const chain of chains) {
           report.chains += 1;
+          guards.set(chain.worktreeId, chain.guard);
           const rows = yield* repo.listChain(chain.worktreeId);
           const drop = thinningPlan(rows, chain.headCapture, now);
           if (drop.length > 0) {
@@ -216,31 +165,39 @@ export const CaptureRetentionLive: Layer.Layer<CaptureRetention, never, CaptureR
           );
         }
 
-        // 2. Retire packs no remaining row names, after the grace: rows first, bytes second,
-        //    so a crash between the two leaves a retired row and a stray object, never the
-        //    reverse.
+        // What each chain's pass would delete, by the chain its keys belong to. `keys` are the
+        // objects; `condemned` adds the `trees/` prefixes whose objects go (a register names a
+        // format-1 root, not the dir objects below it).
+        const doomed = new Map<
+          string,
+          { keys: Array<string>; condemned: Set<string>; retire: Array<PackRow> }
+        >();
+        const doomedOf = (owner: string) => {
+          const found = doomed.get(owner);
+          if (found !== undefined) return found;
+          const fresh = { keys: [], condemned: new Set<string>(), retire: [] };
+          doomed.set(owner, fresh);
+          return fresh;
+        };
+
+        // 2. Packs no remaining row names, after the grace.
         const packs = yield* repo.listPacks();
-        const retire: Array<PackRow> = [];
         for (const pack of packs) {
           if (pack.state === "retired") continue;
           if (!pack.key.startsWith("captures/")) continue;
           if (live.has(pack.key)) continue;
           if (now - pack.createdAt.getTime() < RETENTION_GRACE_MS) continue;
-          retire.push(pack);
-        }
-        if (retire.length > 0) {
-          yield* repo.setPackState(
-            retire.map((pack) => pack.id),
-            "retired",
-          );
-          report.packsRetired += retire.length;
-          for (const pack of retire) {
-            yield* remove(pack.key);
-            if (pack.class === "git") yield* remove(packIdxKeyOf(pack.key));
-          }
+          const owner = captureKeyOwner(pack.key);
+          if (owner === null) continue;
+          const plan = doomedOf(owner);
+          plan.retire.push(pack);
+          plan.keys.push(pack.key);
+          plan.condemned.add(pack.key);
+          // The index goes with its pack; the pack's tombstone stands for both.
+          if (pack.class === "git") plan.keys.push(packIdxKeyOf(pack.key));
         }
 
-        // 3. Sweep fenced epoch prefixes of everything off-chain, once the head has stood for
+        // 3. Fenced epoch prefixes, swept of everything off-chain once the head has stood for
         //    the grace period (every URL minted for the fenced epoch has lapsed by then).
         //    Recorded packs are step 2's: they retire through their row, never from a listing.
         const tracked = new Set<string>();
@@ -261,11 +218,57 @@ export const CaptureRetentionLive: Layer.Layer<CaptureRetention, never, CaptureR
             // A format-1 dir object below a live root: only the root is named by the row.
             const treePrefix = treePrefixOf(entry.key);
             if (treePrefix !== null && liveTreePrefixes.has(treePrefix)) continue;
-            yield* remove(entry.key);
+            const plan = doomedOf(worktreeId);
+            plan.keys.push(entry.key);
+            // A `.idx` goes with its pack: a register names the pack, never the index.
+            plan.condemned.add(entry.key.replace(/\.idx$/, ""));
+            if (treePrefix !== null) plan.condemned.add(treePrefix);
           }
         }
 
-        // 4. Abort orphaned multipart uploads: every one under a fenced epoch, and every one
+        // 4. Condemn, then delete: a chain's objects are tombstoned while its guard still reads
+        //    what step 1 read — no register named anything of it since — and only then retired
+        //    (rows first, bytes second, so a crash between the two leaves a retired row and a
+        //    stray object, never the reverse). A register that read the guard before this
+        //    misses its CAS and reads again; one after it finds the tombstones and is refused
+        //    until the bytes are gone and it has seen them uploaded again. A chain that moved
+        //    keeps everything until the next pass. Objects of a worktree with no chain left
+        //    need no tombstone: no register can name them (its guard is gone).
+        for (const [owner, plan] of doomed) {
+          const guard = guards.get(owner);
+          if (guard !== undefined) {
+            const condemned = yield* repo.condemn(WorktreeId.make(owner), guard, [
+              ...plan.condemned,
+            ]);
+            if (!condemned) {
+              yield* Effect.logInfo(
+                "capture retention: a register moved the chain during the pass · kept for the next",
+              ).pipe(Effect.annotateLogs({ worktreeId: owner }));
+              continue;
+            }
+          }
+          if (plan.retire.length > 0) {
+            yield* repo.setPackState(
+              plan.retire.map((pack) => pack.id),
+              "retired",
+            );
+            report.packsRetired += plan.retire.length;
+          }
+          const failed: Array<string> = [];
+          for (const key of plan.keys) {
+            const removed = yield* remove(key);
+            if (!removed) failed.push(key);
+          }
+          // A tombstone's bytes are gone once every object it stands for is: a pack with its
+          // index, a `trees/` prefix with every object below it that this pass deleted. One
+          // still there stays condemned; the next pass condemns and removes it again.
+          const settled = [...plan.condemned].filter(
+            (condemned) => !failed.some((key) => key === condemned || key.startsWith(condemned)),
+          );
+          if (guard !== undefined) yield* repo.markDeleted(settled);
+        }
+
+        // 5. Abort orphaned multipart uploads: every one under a fenced epoch, and every one
         //    older than the URL TTL plus the grace under the live epoch. An upload whose age
         //    the store does not report is left alone — nothing here judges by guesswork.
         for (const [worktreeId, head] of headsByWorktree) {

@@ -1873,7 +1873,31 @@ export const worktreeChain = pgTable("worktree_chain", {
   headCapture: text(),
   headN: integer().notNull().default(-1),
   headEpoch: bigint({ mode: "number" }).notNull().default(0),
+  /**
+   * Bumped by every register for each chain whose objects it names and by retention when it
+   * condemns this chain's objects; each writes only while it still reads what it read.
+   */
+  guard: bigint({ mode: "number" }).notNull().default(0),
 });
+
+/**
+ * Objects retention condemned (key → owning worktree): `deletedAt` null while their bytes may
+ * still be going, set once they are gone. A register naming a key here is refused until the
+ * bytes are gone and it has seen them uploaded again.
+ */
+export const captureTombstones = pgTable(
+  "capture_tombstones",
+  {
+    key: text().primaryKey(),
+    worktreeId: text()
+      .$type<WorktreeId>()
+      .notNull()
+      .references(() => worktrees.id, { onDelete: "cascade" }),
+    createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    deletedAt: timestamp({ mode: "date", withTimezone: true }),
+  },
+  (table) => [index("capture_tombstones_worktree_idx").on(table.worktreeId)],
+);
 
 /** One row per registered capture; `id` is the sha256 of the manifest bytes. */
 export const captures = pgTable(

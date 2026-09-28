@@ -98,6 +98,15 @@ export class BlobStore extends Context.Service<
       options?: { readonly ifAbsent?: boolean },
     ) => Effect.Effect<{ readonly written: boolean }, BlobStoreError>;
     readonly get: (key: string) => Effect.Effect<Uint8Array, BlobNotFoundError | BlobStoreError>;
+    /**
+     * `length` bytes of `key` from byte `start` (fewer when the object ends first): a pack's
+     * trailing index without the pack (`captures.ts` `readPackIndexRemote`).
+     */
+    readonly getRange: (
+      key: string,
+      start: number,
+      length: number,
+    ) => Effect.Effect<Uint8Array, BlobNotFoundError | BlobStoreError>;
     /** Stream a large object (a harness-home transcript) instead of buffering it. */
     readonly getStream: (
       key: string,
@@ -418,6 +427,37 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
     });
   });
 
+  const getRange = Effect.fn("BlobStore.getRange")(function* (
+    key: string,
+    start: number,
+    length: number,
+  ) {
+    yield* checkKey("getRange", key);
+    return yield* Effect.try({
+      try: () => {
+        const fd = fs.openSync(objectPath(key), "r");
+        try {
+          const size = fs.fstatSync(fd).size;
+          const from = Math.min(Math.max(0, start), size);
+          const out = Buffer.alloc(Math.max(0, Math.min(length, size - from)));
+          let at = 0;
+          while (at < out.length) {
+            const read = fs.readSync(fd, out, at, out.length - at, from + at);
+            if (read === 0) break;
+            at += read;
+          }
+          return new Uint8Array(out.buffer, out.byteOffset, at);
+        } finally {
+          fs.closeSync(fd);
+        }
+      },
+      catch: (cause) =>
+        isErrno(cause, "ENOENT")
+          ? new BlobNotFoundError({ key })
+          : new BlobStoreError({ operation: "getRange", key, cause }),
+    });
+  });
+
   const getStream = Effect.fn("BlobStore.getStream")(function* (key: string) {
     yield* checkKey("getStream", key);
     // Open first so a missing key fails here, not on the consumer's first read.
@@ -634,6 +674,7 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
   return {
     put,
     get,
+    getRange,
     getStream,
     head,
     list,
@@ -773,6 +814,39 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
     const body = response.Body;
     if (body === undefined) return new Uint8Array();
     return yield* call("get", key, () => body.transformToByteArray());
+  });
+
+  const getRange = Effect.fn("BlobStore.getRange")(function* (
+    key: string,
+    start: number,
+    length: number,
+  ) {
+    yield* checkKey("getRange", key);
+    if (length <= 0) return new Uint8Array();
+    const from = Math.max(0, start);
+    const refused = (cause: unknown): Effect.Effect<null, BlobNotFoundError | BlobStoreError> =>
+      isS3NotFound(cause)
+        ? Effect.fail(new BlobNotFoundError({ key }))
+        : // 416: the range starts past the end — nothing there, as the directory store answers.
+          s3Status(cause) === 416
+          ? Effect.succeed(null)
+          : Effect.fail(new BlobStoreError({ operation: "getRange", key, cause }));
+    const body = yield* Effect.tryPromise({
+      try: () =>
+        client.send(
+          new GetObjectCommand({
+            Bucket: bucket,
+            Key: key,
+            Range: `bytes=${from}-${from + length - 1}`,
+          }),
+        ),
+      catch: (cause) => cause,
+    }).pipe(
+      Effect.map((response) => response.Body ?? null),
+      Effect.catch(refused),
+    );
+    if (body === null) return new Uint8Array();
+    return yield* call("getRange", key, () => body.transformToByteArray());
   });
 
   const getStream = Effect.fn("BlobStore.getStream")(function* (key: string) {
@@ -1009,6 +1083,7 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
   return {
     put,
     get,
+    getRange,
     getStream,
     head,
     list,
