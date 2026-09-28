@@ -9271,6 +9271,93 @@ describe("SessionEngine capture mode", () => {
       );
     },
   );
+
+  /**
+   * e2e8 F7: a claimed standby whose replan failed, on which no writer was ever admitted. sealantd
+   * (b58bdeb) answers its FINAL at once `complete: true`, nothing pending, under the placeholder's
+   * worktree, epoch and launch (`standby:<id>`), then exits 76, and Core releases it as nothing to
+   * save. That answer never reads as the session's save (its epoch is not the session's lease), but
+   * the drain reads the workspace gone and the launch goes on cold at once: no ~12 minute wait for
+   * staging that never ships, and no `failed` line needing a discard.
+   */
+  it("a claimed standby whose replan failed and which held nothing ends at once, and the launch goes on cold", async () => {
+    const created: Array<CreateOptions> = [];
+    const memory = makeMemoryCaptureStore();
+    const pool = memoryHotPool();
+    let standbyFinal = false;
+    let standbyAlias = "";
+    let standbyEpoch = 0;
+    const flushKinds: Array<CaptureFlushKind> = [];
+    const stopOptions: Array<WorkspaceStopOptions | undefined> = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          world.projects.set(project.id, new Project({ ...project, hotSessions: 1 }));
+          const engine = yield* SessionEngine;
+          yield* engine.reconcileHotSessions(project.id);
+          yield* until(() => pool.entries.some((e) => e.status === "ready"), "standby");
+          const standby = pool.entries[0];
+          if (standby === undefined) throw new Error("no standby");
+          standbyAlias = `standby-${standby.id}`;
+          standbyEpoch = standby.createdAt.getTime();
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const startedAt = Date.now();
+          yield* engine.launch(session.id, ["codex"]);
+          expect(Date.now() - startedAt).toBeLessThan(10_000);
+          expect(standbyFinal).toBe(true);
+          expect(flushKinds).toContain("final");
+          const after = world.sessions.get(session.id);
+          expect(after?.status).toBe("running");
+          expect(after?.summary ?? null).toBeNull();
+          expect(after?.captureNotSavedAt ?? null).toBeNull();
+          // The standby's complete answer is under its placeholder, not the session's epoch: it
+          // is never attested as the session's save.
+          expect(stopOptions.every((options) => options?.completion === undefined)).toBe(true);
+          // One cold executor after the standby, under the session's own launch.
+          expect(created.length).toBeGreaterThanOrEqual(2);
+          expect(world.executorLaunches.get(session.id)?.launchId).not.toBe(
+            `standby:${standby.id}`,
+          );
+        }),
+      {
+        captured: memory,
+        hotWorkspacesLayer: pool.layer,
+        drainPolicy: { terminationWait: Duration.millis(50) },
+        sealantLayer: lifecycleLayer(created, {
+          captureOps: {
+            flushKinds,
+            stopOptions,
+            // Exit 76 after its FINAL, released by Core: the workspace reads stopped from then on.
+            status: () => (standbyFinal ? "stopped" : "ready"),
+            stopAnswer: () => "stopped",
+            resourceId: () => "standby-container",
+            flush: () =>
+              Effect.sync(() => {
+                standbyFinal = true;
+                return flushReport(0, 0, { worktreeId: standbyAlias, epoch: standbyEpoch });
+              }),
+            replan: () =>
+              Effect.fail(
+                new SealantPlatformError({
+                  code: "replan_refused",
+                  status: 503,
+                  message: "capture plan.get failed: transport: timeout",
+                  cause: null,
+                }),
+              ),
+          },
+        }),
+      },
+    );
+  }, 30_000);
 });
 
 /** A path on the fixture's git daemon, beside the adopted origin. */
