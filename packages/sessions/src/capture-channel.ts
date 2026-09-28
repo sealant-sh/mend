@@ -565,6 +565,11 @@ export const CaptureUploadPolicyLive: Layer.Layer<CaptureUploadPolicy> = Layer.e
 export interface CaptureScope {
   readonly worktreeId: WorktreeId;
   readonly projectId: ProjectId;
+  /**
+   * The executor is being drained, kept or recovered (the session has a drain under way): its
+   * `upload.urls` calls are not metered — it is saving what only it holds.
+   */
+  readonly unmetered?: boolean;
   /** Who a claim is recorded for — the session whose executor this is. */
   readonly executorId: string;
   /**
@@ -684,6 +689,9 @@ const VERIFIED_AT_REGISTER = new Set<CaptureManifest["kind"]>([
   "final",
 ]);
 
+/** How many keys of one launch `upload.urls` remembers as handed out (re-mints of them are free). */
+const MINTED_KEYS_REMEMBERED = 200_000;
+
 /** How many times a register reads the guards again after retention moved one under it. */
 const GUARD_ATTEMPTS = 3;
 
@@ -769,8 +777,18 @@ export const CaptureChannelLive: Layer.Layer<
         Effect.map((found) => Option.getOrNull(found)),
       );
 
-    /** Per-session rolling counters; a Mend restart forgets them, which only ever relaxes. */
+    /**
+     * Per-executor (per launch) rolling counters of `upload.urls` calls that asked for a key the
+     * executor had not been handed before; a Mend restart forgets them, which only ever relaxes.
+     * Keyed by launch, never by session: one executor's failed uploads never refuse the next
+     * executor of the session (e2e run 5).
+     */
     const urlLog = new Map<string, Array<number>>();
+    /**
+     * The keys each launch was handed URLs for (bounded): a call that asks only for those again
+     * — an upload retried after its URLs lapsed or its PUT failed — costs no call.
+     */
+    const minted = new Map<string, Set<string>>();
     /**
      * The byte ledger, per session: object key → bytes priced for it, once. `upload.urls`
      * reserves a sized key at its declared size; `capture.register` prices every pack under the
@@ -1109,19 +1127,37 @@ export const CaptureChannelLive: Layer.Layer<
         } satisfies PlanGetResponse;
       });
 
-      /** Count this call against the rolling hour; false = over quota (nothing minted, not counted). */
-      const reserveCall = (): boolean => {
+      /**
+       * Count this call against the executor's rolling hour; false = over quota (nothing minted,
+       * not counted). Free: a call that asks only for keys this launch was handed before (a retry
+       * of a failed upload), and every call of an executor that is being drained, kept or
+       * recovered (`CaptureScope.unmetered`) — refusing it could only lose what it is saving.
+       */
+      const reserveCall = (keys: ReadonlyArray<string>): boolean => {
+        if (scope.unmetered === true) return true;
+        const handed = minted.get(launchId);
+        if (keys.length > 0 && handed !== undefined && keys.every((key) => handed.has(key))) {
+          return true;
+        }
         const now = Date.now();
-        const window = (urlLog.get(scope.executorId) ?? []).filter(
-          (at) => now - at < 60 * 60 * 1000,
-        );
+        const window = (urlLog.get(launchId) ?? []).filter((at) => now - at < 60 * 60 * 1000);
         if (window.length >= policy.callsPerHour) {
-          urlLog.set(scope.executorId, window);
+          urlLog.set(launchId, window);
           return false;
         }
         window.push(now);
-        urlLog.set(scope.executorId, window);
+        urlLog.set(launchId, window);
         return true;
+      };
+
+      /** Remember the keys this launch was handed URLs for (bounded per launch). */
+      const noteMinted = (keys: Iterable<string>) => {
+        let handed = minted.get(launchId);
+        if (handed === undefined || handed.size > MINTED_KEYS_REMEMBERED) {
+          handed = new Set();
+          minted.set(launchId, handed);
+        }
+        for (const key of keys) handed.add(key);
       };
 
       const uploadUrls = Effect.fn("SessionCaptureApi.uploadUrls")(function* (
@@ -1137,11 +1173,11 @@ export const CaptureChannelLive: Layer.Layer<
             `${input.keys.length} keys in one call; the cap is ${policy.keysPerCall} per upload.urls call`,
           );
         }
-        if (!reserveCall()) {
+        if (!reserveCall(input.keys)) {
           return yield* new CaptureRouteError({
             status: 429,
             reason: "quota-exceeded",
-            message: `request quota: ${policy.callsPerHour} upload.urls calls per hour per session`,
+            message: `request quota: ${policy.callsPerHour} upload.urls calls per hour per executor`,
           });
         }
         // Only under the caller's own epoch prefix, and only a key that names one capture
@@ -1234,6 +1270,7 @@ export const CaptureChannelLive: Layer.Layer<
             part_urls: partUrls,
           };
         }
+        noteMinted(plans.map((plan) => plan.key));
         return { urls, multipart } satisfies UploadUrlsResponse;
       });
 

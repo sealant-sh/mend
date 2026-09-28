@@ -37,6 +37,7 @@ import {
   dispatchCaptureRoute,
   PRESIGN_TTL_SECONDS,
   resolveCaptureUploadPolicy,
+  type SessionCaptureApi,
 } from "../src/capture-channel.ts";
 import { CaptureRemotes, CaptureRemotesOff } from "../src/capture-remotes.ts";
 import { CaptureSourcesLive, CaptureSourcesOff } from "../src/capture-sources.ts";
@@ -912,7 +913,7 @@ describe("capture channel routes", () => {
     expect(refused?.status).toBe(429);
     expect(refused?.json["reason"]).toBe("quota-exceeded");
     expect(refused?.json["message"]).toBe(
-      "request quota: 16 upload.urls calls per hour per session",
+      "request quota: 16 upload.urls calls per hour per executor",
     );
     // A refused call is not counted, and stays refused: the window is calls, not attempts.
     const again = await post(address, "/upload.urls", token, {
@@ -921,6 +922,51 @@ describe("capture channel routes", () => {
       keys: [key(99)],
     });
     expect(again.status).toBe(429);
+  });
+
+  it("the request quota is per executor: a retry of keys already handed out costs nothing, another launch of the session has its own hour, and an executor being drained is never refused (e2e run 5)", async () => {
+    const keys3 = captureKeys(WORKTREE, 3);
+    const key = (index: number) => keys3.tree((1000 + index).toString(16).padStart(64, "0"));
+    const outcome = await run(
+      Effect.gen(function* () {
+        const apiAs = (launchId: string, unmetered = false) =>
+          channel.apiFor({
+            worktreeId: WORKTREE,
+            projectId: PROJECT,
+            executorId: SESSION,
+            launchId,
+            unmetered,
+            footprintBytes: 1_000_000,
+          });
+        const said = (api: SessionCaptureApi, keys: ReadonlyArray<string>) =>
+          api.uploadUrls({ worktree_id: WORKTREE, epoch: 3, keys }).pipe(
+            Effect.as("ok"),
+            Effect.catch((error) => Effect.succeed(error.reason)),
+          );
+        const first = apiAs("launch:quota:1");
+        const handed = yield* said(first, [key(1)]);
+        // The same key asked again and again (its PUT keeps failing): never counted.
+        const retries: Array<string> = [];
+        for (let index = 0; index < 40; index += 1) retries.push(yield* said(first, [key(1)]));
+        // New keys run this launch's hour out: 15 more, then refused.
+        const fresh: Array<string> = [];
+        for (let index = 0; index < 20; index += 1)
+          fresh.push(yield* said(first, [key(100 + index)]));
+        return {
+          handed,
+          retries,
+          fresh,
+          otherLaunch: yield* said(apiAs("launch:quota:2"), [key(300)]),
+          drained: yield* said(apiAs("launch:quota:1", true), [key(400)]),
+        };
+      }),
+    );
+    expect(outcome.handed).toBe("ok");
+    expect(outcome.retries.every((said) => said === "ok")).toBe(true);
+    expect(outcome.fresh.slice(0, 15).every((said) => said === "ok")).toBe(true);
+    expect(outcome.fresh.slice(15).every((said) => said === "quota-exceeded")).toBe(true);
+    expect(outcome.otherLaunch).toBe("ok");
+    expect(outcome.drained).toBe("ok");
   });
 
   it("the byte quota refuses an upload.urls batch before any URL is minted, prices a key once, and backstops a register with 409", async () => {

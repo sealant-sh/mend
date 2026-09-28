@@ -804,6 +804,18 @@ Mend-side details the decision record left open, decided in this ADR:
     - **Complete means current (decision 7).** sealantd answers `incomplete_reason: "changed"` once
       the disk changed after a final flush; it is not saved, and a drain asks the final flush again.
       A completed answer is never reused for another round: the drain asks again.
+    - **A kept executor is not dead (e2e run 5).** Capture mode reads any terminal status but
+      `stopped` (`failed`, `cancelled`) as kept: Core retains a capture executor that ended without
+      a completed final flush and may boot it again to save it. Its lease and its channel token
+      stay; the drain asks Core's stop what it is and reads
+      `not saved · executor kept for recovery`; the owner's discard is asked of Core. Only an end
+      Core confirms (`stopped`, or no such workspace) takes the executor's channel, revokes its
+      token and releases the lease — `docker kill` had lost the last edits and a 1 GiB file three
+      times of three when Mend read `failed` as dead and cut off Core's recovery boot. A runtime not
+      ready yet (a launch whose worker died after it started) is kept on the kept backoff, never
+      flushed every poll. An executor running a final flush Mend did not ask for (a `docker stop`)
+      stops the session: `stopping · saving`. `upload.urls` is metered per launch, re-mints of keys
+      already handed out are free, and an executor under a drain is not metered at all.
     - **mtimes are nanoseconds.** A dir entry's integer `mtime` is decoded exactly (a bigint from
       its source text) and written back digit for digit; Mend's TypeScript materializer is a reader,
       not a restore path, and lands times to the microsecond Node can set.

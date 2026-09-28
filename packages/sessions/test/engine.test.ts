@@ -47,6 +47,7 @@ import {
   type NewSession,
   type NewSessionProcess,
   type NewSessionRun,
+  SessionChannelTokensRepo,
   SessionChannelTokensRepoMemory,
   WorktreeNotFoundError,
 } from "@mend/db";
@@ -2268,6 +2269,27 @@ const testDrainPolicy = (overrides: Partial<CaptureDrainPolicyShape> = {}) =>
     ...overrides,
   });
 
+/** The in-memory channel tokens, with every issue and revocation written to `events`. */
+const recordingTokens = (events: Array<string>): Layer.Layer<SessionChannelTokensRepo> =>
+  Layer.effect(
+    SessionChannelTokensRepo,
+    Effect.map(SessionChannelTokensRepo, (inner) => ({
+      ...inner,
+      issue: (sessionId: string, launchId: string) =>
+        Effect.sync(() => events.push(`issue:${launchId}`)).pipe(
+          Effect.andThen(inner.issue(sessionId, launchId)),
+        ),
+      revoke: (sessionId: string) =>
+        Effect.sync(() => events.push(`revoke:${sessionId}`)).pipe(
+          Effect.andThen(inner.revoke(sessionId)),
+        ),
+      revokeLaunch: (launchId: string) =>
+        Effect.sync(() => events.push(`revokeLaunch:${launchId}`)).pipe(
+          Effect.andThen(inner.revokeLaunch(launchId)),
+        ),
+    })),
+  ).pipe(Layer.provide(SessionChannelTokensRepoMemory));
+
 const withEngine = <A, E>(
   work: (
     world: World,
@@ -2318,6 +2340,8 @@ const withEngine = <A, E>(
     readonly seals?: Layer.Layer<CaptureSeals>;
     /** Every log line the engine writes, in order, when a test reads them. */
     readonly logs?: Array<string>;
+    /** Every channel token issue and revocation (`issue:<launch>`, `revoke:<session>`, `revokeLaunch:<launch>`). */
+    readonly tokenEvents?: Array<string>;
   } = {},
 ): Promise<A> => {
   const tmp = options.fixture?.tmp ?? fs.mkdtempSync(path.join(os.tmpdir(), "mend-engine-test-"));
@@ -2393,7 +2417,11 @@ const withEngine = <A, E>(
     ),
     Layer.provide(serviceHostStubLayer),
     Layer.provide(sessionSocketStubLayer),
-    Layer.provide(SessionChannelTokensRepoMemory),
+    Layer.provide(
+      options.tokenEvents === undefined
+        ? SessionChannelTokensRepoMemory
+        : recordingTokens(options.tokenEvents),
+    ),
     Layer.provide(deploymentLayer),
     Layer.provide(captureRuntimeLayer),
     Layer.provide(
@@ -12566,6 +12594,202 @@ const lostAnswer = () =>
       cause: null,
     }),
   );
+
+describe("SessionEngine against the Docker e2e run 5 (2026-09-28)", () => {
+  it(
+    "an executor that ended on its runtime and that the platform keeps is not dead: its lease and its token stay, and it reads `not saved · executor kept for recovery`",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const tokenEvents: Array<string> = [];
+      const stops: Array<"drain" | "discard"> = [];
+      let killed = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            const launch = world.executorLaunches.get(session.id)?.launchId ?? "";
+            // `docker kill`: the container is gone, Core marks the workspace failed and keeps
+            // it for recovery; the heartbeat stops and the lease lapses.
+            killed = true;
+            const afterExpiry = Date.now() + 1_000_000;
+            memory.clock.now = () => afterExpiry;
+            yield* engine.reapCaptureLeases();
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept executor",
+            );
+            const kept = world.sessions.get(session.id);
+            expect(kept === undefined ? null : captureStatusLine(kept)).toBe(
+              "not saved · executor kept for recovery · exited before its final flush completed · 0 pending",
+            );
+            // Nothing released and nothing revoked: Core's recovery boot plans and ships with it.
+            expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+            expect(tokenEvents.filter((event) => event.startsWith("revoke"))).toEqual([]);
+            expect(tokenEvents).toContain(`issue:${launch}`);
+            expect(stops.length).toBeGreaterThan(0);
+            // Nothing else was started over it.
+            expect(created).toHaveLength(1);
+          }),
+        {
+          captured: memory,
+          tokenEvents,
+          drainPolicy: { terminationWait: Duration.millis(200) },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stops,
+              status: () => (killed ? "failed" : "ready"),
+              stopAnswer: () => "kept",
+              retained: () => ({
+                reason: "exited before its final flush completed",
+                recoverable: true,
+              }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "the owner's discard of a kept executor is asked of the platform, never read from its status",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const stops: Array<"drain" | "discard"> = [];
+      const tokenEvents: Array<string> = [];
+      let killed = false;
+      let discarding = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            killed = true;
+            const afterExpiry = Date.now() + 1_000_000;
+            memory.clock.now = () => afterExpiry;
+            yield* engine.reapCaptureLeases();
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept executor",
+            );
+            expect(tokenEvents.some((event) => event.startsWith("revoke"))).toBe(false);
+            discarding = true;
+            yield* engine.discardUnsavedAndStop(session.id, "owner@example.com");
+            expect(stops).toContain("discard");
+            expect(tokenEvents.some((event) => event.startsWith("revoke"))).toBe(true);
+          }),
+        {
+          captured: memory,
+          tokenEvents,
+          drainPolicy: { terminationWait: Duration.millis(200) },
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              stops,
+              status: (stopAsked) => (!killed ? "ready" : stopAsked ? "stopped" : "failed"),
+              stopAnswer: (discard) => (discard ? "stopped" : "kept"),
+              // Retained until the owner discards: then the platform ends it.
+              retained: () =>
+                discarding
+                  ? null
+                  : { reason: "exited before its final flush completed", recoverable: true },
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "a final flush the executor runs on its own (a `docker stop`) reads `stopping · saving`, not `running`",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      let ending = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            ending = true;
+            yield* engine.refreshCaptureStatus(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureDrain === "stop",
+              "the stop drain",
+            );
+            const stopping = world.sessions.get(session.id);
+            expect(stopping?.status).toBe("stopping");
+            expect(stopping === undefined ? null : captureStatusLine(stopping)).toMatch(/^saving/);
+          }),
+        {
+          captured: memory,
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              // The executor's own final flush is still running; nothing answers complete yet.
+              finalCompletion: "unreported",
+              flush: () =>
+                Effect.succeed({
+                  ...flushReport(1, 1),
+                  complete: false,
+                  incompleteReason: "in-progress",
+                }),
+              captureStatus: () =>
+                Effect.succeed(
+                  ending
+                    ? { ...flushReport(1, 1), complete: false, incompleteReason: "in-progress" }
+                    : flushReport(0, 1),
+                ),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "a runtime that is not ready (a launch whose worker died after it started) is kept and looked at on the kept backoff, never flushed every poll",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      const kinds: CaptureFlushKind[] = [];
+      let pending = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            pending = true;
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the kept drain",
+            );
+            yield* Effect.sleep(Duration.millis(200));
+            expect(kinds.filter((kind) => kind === "final")).toEqual([]);
+            const kept = world.sessions.get(session.id);
+            expect(kept === undefined ? null : captureStatusLine(kept)).toBe(
+              "not saved · executor not ready · running · 0 pending · workspace kept",
+            );
+            expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+          }),
+        {
+          captured: memory,
+          sealantLayer: lifecycleLayer(created, {
+            captureOps: {
+              flushKinds: kinds,
+              status: () => (pending ? "running" : "ready"),
+            },
+          }),
+        },
+      );
+    },
+  );
+});
 
 describe("SessionEngine idempotent executor creates (Core's next SDK, 2026-09-28)", () => {
   const layerWith = (

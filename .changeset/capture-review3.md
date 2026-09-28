@@ -27,3 +27,10 @@ A capture whose git section names its trees (`worktree_tree`, `index_tree`, `raw
 for an executor that reads the feature; every ref in it is the user's, `refs/sealant/capture/*`
 included. A final flush that answers `changed` (the disk changed after it) is not saved: the drain
 asks again, and never ends an executor on a completed answer it did not ask for in that round.
+
+An executor that ended on its runtime and that the platform keeps for recovery (`failed` in capture
+mode) is no longer read as dead: its lease and its channel token stay, the session reads
+`not saved · executor kept for recovery`, and only an end the platform confirms releases them. A
+`docker stop` that runs the executor's own final flush reads `stopping · saving`. A runtime that is
+not ready is kept on the kept backoff instead of being flushed every few seconds. The upload URL
+quota is per executor, free for keys already handed out, and never applied while a drain saves.

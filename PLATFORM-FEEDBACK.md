@@ -55,6 +55,15 @@ sealantd's `fix/capture-review3` carry the other halves; nothing here works arou
   section names `worktree_tree` / `index_tree` / `raw_tree` goes only to an executor that lists it,
   and every `refs` entry of such a section is a user ref. `incomplete_reason: "changed"` is not
   saved; a drain asks the final flush again.
+- **A kept executor, read without a stop.**
+  - **Needed:** whether Core keeps an ended capture executor for recovery (e2e run 5: Mend read
+    `failed` as dead, revoked the token and released the lease, and Core's recovery boot got
+    `plan.get: 401`).
+  - **Today:** capture mode reads every terminal status but `stopped` as kept, and learns what it is
+    only from `stop()`'s answer (`drain.retained`, or `stopped`); the SDK exposes `captureDrain` on
+    nothing else.
+  - **Suggested:** `workspace.captureDrain()` (the last `WorkspaceCaptureDrain`, `retained`
+    included) as a read, so a status poll can tell kept from ended without asking a stop.
 - **A seal rests on sections Mend observed restore.** Register records `final_seal` only when the
   git section verified (`index-pack --verify` and a connectivity walk on the runner) and the
   worktree metadata document names only paths the worktree tree holds as that kind; a plan that

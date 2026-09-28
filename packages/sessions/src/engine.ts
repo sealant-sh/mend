@@ -1595,6 +1595,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               projectId: session.projectId,
               executorId: sessionId,
               launchId: launch,
+              // Drained, kept or recovered: its uploads are what saves it (e2e run 5).
+              unmetered: session.captureDrain !== null,
               footprintBytes: yield* footprintFor(sessionId, session.projectId),
             });
             return yield* call(api);
@@ -1841,7 +1843,32 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           .getWorkspace(session.sealantWorkspaceId)
           .pipe(Effect.option, asSealantUser(session.ownerUserId));
         if (Option.isNone(workspace)) return;
-        yield* observeCaptureStatus(session, workspace.value);
+        const reading = yield* observeCaptureStatus(session, workspace.value);
+        // The executor runs a final flush Mend did not ask for (a `docker stop`, the platform
+        // saving ahead of its cap): it is ending, and that flush has already ended every process
+        // in it. The session stops as a stop would — its agent recorded ended, a stop drain
+        // following the executor to its end — and reads `stopping · saving` from now on (e2e
+        // run 5: it read `running` for the whole flush).
+        if (
+          reading !== null &&
+          reading.complete === false &&
+          reading.incompleteReason === "in-progress"
+        ) {
+          yield* Effect.logInfo(
+            "session engine: capture mode · the executor is running a final flush Mend did not ask for · stopping",
+          ).pipe(Effect.annotateLogs({ sessionId, workspaceId: session.sealantWorkspaceId }));
+          yield* Effect.forkIn(
+            stop(sessionId).pipe(
+              asSealantUser(session.ownerUserId),
+              Effect.catchCause((cause) =>
+                Effect.logWarning(
+                  "session engine: stop after the executor's final flush failed",
+                ).pipe(Effect.annotateLogs({ sessionId, cause: String(cause) })),
+              ),
+            ),
+            scope,
+          );
+        }
       });
 
       /** Asked by a client's view: the read runs in the engine's scope, and the caller goes on. */
@@ -1922,7 +1949,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         ) satisfies CaptureFlushObservation;
       });
 
-      /** What the platform says of one workspace, without running anything in it. */
+      /**
+       * What the platform says of one workspace, without running anything in it: `found` (live:
+       * queued · running · ready, with its status), `gone` (stopped, or no such workspace),
+       * `unknown` (no answer). Capture mode: any other terminal status (`failed`, `cancelled`) is
+       * `kept` — Core retains a capture executor that ended without a completed final flush
+       * (cross-repo decision 2), so its disk may hold work only it has, and Core may boot it again
+       * to save it. Only Core's stop answer tells a kept executor from an ended one (`runDrain`);
+       * until then its lease and its token stay (e2e run 5).
+       */
       const lookupWorkspace = (workspaceId: SealantWorkspaceId) =>
         sealant.getWorkspace(workspaceId).pipe(
           Effect.flatMap((workspace) =>
@@ -1932,8 +1967,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             }).pipe(
               Effect.map((status) =>
                 workspaceIsLive(status)
-                  ? ({ kind: "found", workspace } as const)
-                  : ({ kind: "gone", status } as const),
+                  ? ({ kind: "found", workspace, status } as const)
+                  : capture !== null && status !== "stopped"
+                    ? ({ kind: "kept", workspace, status } as const)
+                    : ({ kind: "gone", status } as const),
               ),
             ),
           ),
@@ -1963,6 +2000,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.flatMap((lookup) => {
             if (lookup.kind === "gone") return Effect.succeed("dead" as const);
             if (lookup.kind === "unknown") return Effect.succeed("unknown" as const);
+            // Ended on its runtime, kept by the platform for recovery: never dead to Mend.
+            if (lookup.kind === "kept") return Effect.succeed("kept" as const);
             return sealant.exec(lookup.workspace, ["true"]).pipe(
               Effect.map((result) => (result.exitCode === 0 ? "answering" : "unknown")),
               Effect.timeoutOption(Duration.seconds(30)),
@@ -2512,10 +2551,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         const confirmed = stopState === "stopped" || (yield* awaitTerminated(workspaceId));
         yield* processes.reapLiveForWorkspace(workspaceId);
-        yield* socketHost.stop(sessionId);
-        yield* revokeExecutorTokens(sessionId, workspaceId);
         const session = yield* sessions.byId(sessionId);
         if (confirmed) {
+          // Only an end the platform confirmed takes the executor's channel and its token: one
+          // it has not observed end may still ship, or be booted again to (e2e run 5).
+          yield* socketHost.stop(sessionId);
+          yield* revokeExecutorTokens(sessionId, workspaceId);
           yield* releaseLeaseOfWorkspace(session, workspaceId);
         } else {
           yield* Effect.logWarning(
@@ -2594,6 +2635,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * in the executor, so a drain that is not `force`d yields to anything in use BEFORE its first
        * flush, never after; a relaunch or a replacement is replacing this workspace on purpose.
        */
+      /**
+       * A drain round that keeps its executor, as the session reads it: not saved, why, and
+       * (`retained`, the default) that the platform keeps it for recovery.
+       */
+      const recordKept = Effect.fn("SessionEngine.recordKept")(function* (
+        sessionId: SessionId,
+        detail: string | null,
+        retained = true,
+      ) {
+        const current = yield* sessions.byId(sessionId);
+        yield* sessions.recordCaptureObservation(sessionId, {
+          pending: current.capturePending ?? 0,
+          pendingBytes: current.capturePendingBytes,
+          refused: current.captureRefused,
+          registeredAt: current.captureRegisteredAt,
+          observedAt: new Date(),
+          incompleteReason: retained ? CAPTURE_EXECUTOR_RETAINED : "in-progress",
+          incompleteDetail: detail,
+        });
+        yield* sessions.markCaptureNotSaved(sessionId, new Date());
+      });
+
       const runDrain = Effect.fn("SessionEngine.runDrain")(function* (
         sessionId: SessionId,
         workspaceId: SealantWorkspaceId,
@@ -2643,6 +2706,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 return "in-use" as const;
               }
             }
+          }
+          // Ended on its runtime and kept by the platform (e2e run 5): no daemon answers a final
+          // flush. Core's own stop says what it is — ended, or retained for recovery — and only
+          // an end it confirms releases the lease and the executor's token; kept, both stay for
+          // the recovery boot, and the drain reads `not saved · executor kept for recovery`.
+          if (lookup.kind === "kept") {
+            const terminated = yield* terminateWorkspace(sessionId, lookup.workspace);
+            if (terminated.ended) {
+              yield* endDrain(sessionId);
+              yield* removeIfRequested(sessionId);
+              return "gone" as const;
+            }
+            yield* recordKept(
+              sessionId,
+              terminated.retained?.reason ?? `the platform reports it ${lookup.status}`,
+            );
+            return "kept" as const;
+          }
+          // A runtime that is not ready yet (a launch still starting, or one whose worker died
+          // after it started — Core adopts it as retained once its launch lease lapses) has no
+          // daemon to flush: kept for now, looked at again on the kept drain's backoff, never
+          // asked every poll.
+          if (capture !== null && lookup.kind === "found" && lookup.status !== "ready") {
+            yield* recordKept(sessionId, `executor not ready · ${lookup.status}`, false);
+            return "kept" as const;
           }
           // Recorded before it is sent: from here on this executor is ending, whatever the
           // answer, and nothing is started in it again.
@@ -2697,17 +2785,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             if (terminated.retained !== null) {
               // Mend read it saved; the platform does not confirm it and keeps the executor for
               // recovery. That is its word to keep: the drain stays, kept, and asks again.
-              const current = yield* sessions.byId(sessionId);
-              yield* sessions.recordCaptureObservation(sessionId, {
-                pending: current.capturePending ?? 0,
-                pendingBytes: current.capturePendingBytes,
-                refused: current.captureRefused,
-                registeredAt: current.captureRegisteredAt,
-                observedAt: new Date(),
-                incompleteReason: CAPTURE_EXECUTOR_RETAINED,
-                incompleteDetail: terminated.retained.reason,
-              });
-              yield* sessions.markCaptureNotSaved(sessionId, new Date());
+              yield* recordKept(sessionId, terminated.retained.reason);
               return "kept" as const;
             }
             const ended = terminated.ended;
@@ -2862,8 +2940,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // The discard asks the platform for a stop that does not drain (an audited force stop
           // on its side): a plain stop would drain, and a queue that does not move keeps the
           // workspace forever.
+          // A kept executor (ended on its runtime, retained by the platform) is discarded by the
+          // platform too: only its word ends it, never Mend's reading of a status.
           const ended =
-            lookup.kind === "found"
+            lookup.kind === "found" || lookup.kind === "kept"
               ? (yield* terminateWorkspace(sessionId, lookup.workspace, { discardUnsaved: true }))
                   .ended
               : yield* tidyAfterGone(sessionId, workspaceId).pipe(Effect.as(true));
@@ -3565,6 +3645,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const state = yield* workspaceState(session.sealantWorkspaceId).pipe(
             asSealantUser(session.ownerUserId),
           );
+          if (state === "kept") {
+            // Ended on its runtime, kept by the platform for recovery (e2e run 5): not dead, not
+            // picked up. Its lease and its token stay; the stop drain asks Core what it is and
+            // reads `not saved · executor kept for recovery` until Core confirms an end.
+            yield* Effect.logWarning(
+              "session engine: capture mode · lease expired · the platform keeps the executor · nothing released",
+            ).pipe(Effect.annotateLogs({ sessionId: session.id, epoch: lease.epoch }));
+            yield* Effect.forkIn(
+              stopWorkspaceQuietly(session.id, { force: true, reason: "stop" }).pipe(
+                asSealantUser(session.ownerUserId),
+              ),
+              scope,
+            );
+            continue;
+          }
           if (state !== "dead") {
             yield* Effect.logInfo(
               state === "answering"
@@ -8313,6 +8408,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               status: 409,
               message:
                 "lease expired · the platform did not answer for the executor · nothing stopped · try again",
+              cause: null,
+            });
+          }
+          // Ended on its runtime and kept by the platform: its disk may hold work only it has,
+          // and the platform may boot it again to save it. Nothing new starts over it.
+          if (pickup === "kept") {
+            return yield* new SealantPlatformError({
+              code: "capture_not_saved",
+              status: 409,
+              message:
+                "not saved · executor kept for recovery · nothing started · resume again once it saves, or discard unsaved and stop",
               cause: null,
             });
           }
