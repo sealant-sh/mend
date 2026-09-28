@@ -112,8 +112,19 @@ export const PlanGetRequest = Schema.Struct({
    * say (an older daemon): the token alone decides.
    */
   launch: Schema.optional(Schema.String),
+  /**
+   * The `upload.urls` answer shapes the executor reads beyond `urls` and `multipart` (cross-repo
+   * decision 20, review 2026-09-28 (7) #7; sealantd round 7): `present` — a key the bucket holds
+   * is answered in `present`, with no URL. Absent (every older daemon, which requires a URL for
+   * every key it asks about and reads a 412 as uploaded): a stored key is answered with a
+   * write-once URL, as before, once its bytes are verified.
+   */
+  upload_answers: Schema.optional(Schema.Array(Schema.String)),
 });
 export type PlanGetRequest = typeof PlanGetRequest.Type;
+
+/** The `upload.urls` answer shape an executor lists in `plan.get`'s `upload_answers` to read it. */
+export const UPLOAD_ANSWER_PRESENT = "present";
 
 /**
  * 409 `launch-mismatch`: the request names a launch other than the one the token was issued
@@ -304,9 +315,11 @@ export interface MultipartPlan {
  * `upload.urls` response. `urls` is unchanged — one PUT URL per single-part key. A key taken
  * as multipart is present in `multipart` and absent from `urls`. A key the bucket already holds,
  * with the bytes its name says (`storedObjectProblem`), is answered in `present` and in neither
- * of the others: no upload URL is ever minted for an object that is there (cross-repo decision
- * 19, review 2026-09-28 (6) #9) — on a bucket that ignores `If-None-Match` it would replace a
- * verified object. The executor reads a `present` key as already uploaded. Omitted when empty.
+ * of the others (cross-repo decision 19, review 2026-09-28 (6) #9) — but only to a launch whose
+ * `plan.get` listed `present` in `upload_answers` (cross-repo decision 20, review 2026-09-28
+ * (7) #7): an older daemon requires a URL for every key, so it gets one write-once PUT URL for
+ * the stored key, as before, and reads the 412 of a bucket that honours `If-None-Match` as
+ * uploaded. The executor reads a `present` key as already uploaded. Omitted when empty.
  */
 export interface UploadUrlsResponse {
   readonly urls: Readonly<Record<string, string>>;
@@ -829,6 +842,17 @@ export const CaptureChannelLive: Layer.Layer<
      */
     const minted = new Map<string, Set<string>>();
     /**
+     * Whether each launch's latest `plan.get` listed `present` in `upload_answers` (cross-repo
+     * decision 20): only such a launch is answered `present`; any other — an older daemon, or a
+     * launch this process never saw plan (a Mend restart) — gets the legacy answer, a write-once
+     * URL for a stored key whose bytes were verified. Bound to the launch its token names.
+     */
+    const readsPresent = new Map<string, boolean>();
+    const noteUploadAnswers = (launch: string, input: PlanGetRequest) => {
+      if (readsPresent.size > MINTED_KEYS_REMEMBERED) readsPresent.clear();
+      readsPresent.set(launch, (input.upload_answers ?? []).includes(UPLOAD_ANSWER_PRESENT));
+    };
+    /**
      * The byte ledger, per session: object key → bytes priced for it, once. `upload.urls`
      * reserves a sized key at its declared size; `capture.register` prices every pack under the
      * caller's epoch at the size the bucket reports, replacing a reservation. A key never
@@ -866,6 +890,7 @@ export const CaptureChannelLive: Layer.Layer<
           });
         }
         yield* refuseOtherLaunch(input, scope.launchId ?? scope.executorId);
+        noteUploadAnswers(scope.launchId ?? scope.executorId, input);
         const plan = yield* scope
           .plan(input.platform)
           .pipe(Effect.catch(() => storeError("preparing the standby plan")({ _tag: "plan" })));
@@ -1076,6 +1101,7 @@ export const CaptureChannelLive: Layer.Layer<
       const planGet = Effect.fn("SessionCaptureApi.planGet")(function* (input: PlanGetRequest) {
         yield* requireWorktree(input.worktree_id);
         yield* refuseOtherLaunch(input, launchId);
+        noteUploadAnswers(launchId, input);
         const asked = input.epoch ?? 0;
         const reads = readerFormatOf(input);
         const lease = yield* repo.leaseOf(worktreeId);
@@ -1257,11 +1283,20 @@ export const CaptureChannelLive: Layer.Layer<
           const size = sizes[key];
           wanted.set(key, size === undefined || size < 0 ? null : size);
         }
-        // Write-once (cross-repo decision 19): a key the bucket already holds gets no URL. Its
-        // bytes are verified against its name first — an object that is there is accepted only
-        // as what the key says — and it is answered `present`, never priced again.
+        // Write-once (cross-repo decision 19): a key the bucket already holds is verified against
+        // its name first — an object that is there is accepted only as what the key says. Then,
+        // negotiated (cross-repo decision 20, review 2026-09-28 (7) #7): a launch whose
+        // `plan.get` listed `present` gets it answered `present`, no URL, never priced again; any
+        // other gets the legacy answer an older daemon needs to finish — a write-once URL
+        // (`If-None-Match: *`: a bucket that honours it answers 412, which such a daemon reads as
+        // uploaded). On a bucket that ignores `If-None-Match` (Garage) that URL could replace the
+        // verified bytes until it expires: its expiry is recorded, and no seal stands while it
+        // lives (`CaptureSealsStoreLive`, review 2026-09-28 (7) #8).
+        const answersPresent = readsPresent.get(launchId) === true;
         const present: Array<string> = [];
-        const presentOf = (key: string) =>
+        /** Stored keys answered with a legacy URL: verified, and never priced again. */
+        const storedLegacy = new Set<string>();
+        const verifyStored = (key: string) =>
           Effect.gen(function* () {
             const problem = yield* storedObjectProblem(key).pipe(
               Effect.provideService(BlobStore, blobs),
@@ -1276,7 +1311,6 @@ export const CaptureChannelLive: Layer.Layer<
                 key,
               });
             }
-            present.push(key);
           });
         const heads = yield* Effect.forEach(
           [...wanted.keys()],
@@ -1289,8 +1323,13 @@ export const CaptureChannelLive: Layer.Layer<
         );
         for (const [key, stored] of heads) {
           if (!stored) continue;
-          yield* presentOf(key);
-          wanted.delete(key);
+          yield* verifyStored(key);
+          if (answersPresent) {
+            present.push(key);
+            wanted.delete(key);
+          } else {
+            storedLegacy.add(key);
+          }
         }
         if (policy.requireSizes) {
           const unsized = [...wanted].find(([, size]) => size === null);
@@ -1306,7 +1345,9 @@ export const CaptureChannelLive: Layer.Layer<
           readonly size: number | null;
         }> = [];
         for (const [key, size] of wanted) {
-          if (size === null || size < policy.multipartThresholdBytes) {
+          // A stored key's legacy URL is one write-once PUT, whatever its size: there is nothing
+          // to assemble, and a bucket that honours the precondition refuses it outright.
+          if (size === null || size < policy.multipartThresholdBytes || storedLegacy.has(key)) {
             plans.push({ key, parts: 0, size });
             continue;
           }
@@ -1325,7 +1366,7 @@ export const CaptureChannelLive: Layer.Layer<
         // without a size is priced at register, when the bucket reports what landed.
         const unpriced = new Map<string, number>();
         for (const [key, size] of wanted) {
-          if (size === null || ledger.has(key)) continue;
+          if (size === null || ledger.has(key) || storedLegacy.has(key)) continue;
           unpriced.set(key, size);
         }
         const requested = sumOf(unpriced);
@@ -1344,8 +1385,16 @@ export const CaptureChannelLive: Layer.Layer<
                   .createMultipart(plan.key)
                   .pipe(Effect.catch(storeError("creating a multipart upload", plan.key)));
           if (created !== null && created.kind === "exists") {
-            // Stored since the HEAD above: verified and answered `present`, like any stored key.
-            yield* presentOf(plan.key);
+            // Stored since the HEAD above: verified, and answered like any stored key.
+            yield* verifyStored(plan.key);
+            if (answersPresent) {
+              present.push(plan.key);
+              continue;
+            }
+            storedLegacy.add(plan.key);
+            urls[plan.key] = yield* blobs
+              .presign(plan.key, "PUT", PRESIGN_TTL_SECONDS, plan.size ?? undefined)
+              .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
             continue;
           }
           if (created === null) {

@@ -26,7 +26,12 @@ import { Effect, Exit, Layer, Scope } from "effect";
 import type * as Context from "effect/Context";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { CaptureChannel, type SessionCaptureApi } from "../src/capture-channel.ts";
+import {
+  CaptureChannel,
+  MANIFEST_FEATURES,
+  type SessionCaptureApi,
+  UPLOAD_ANSWER_PRESENT,
+} from "../src/capture-channel.ts";
 import { SessionRepositoryCapturedLive } from "../src/session-repository-captured.ts";
 import { SessionRepository } from "../src/session-repository.ts";
 import { WorktreeReads, WorktreeReadsCapturedLive } from "../src/worktree-reads.ts";
@@ -707,6 +712,59 @@ describe("a seal rests only on sections Mend observed restore", () => {
     expect((await sealOf(at.worktreeId, at.epoch))?.captureId).toBe(ready.id);
   });
 
+  // Review 2026-09-28 (7) #7 (the reviewer's reproduction): `present` was answered to every
+  // executor, and a daemon from before it (sealantd f0bf279) ignores the field and fails `NoUrl`
+  // on every retry — a retained old disk whose upload landed but whose answer was lost could never
+  // finish. `present` is negotiated: only a launch whose `plan.get` listed it in `upload_answers`
+  // gets it; any other gets a write-once URL for the stored key, once its bytes are verified.
+  it("review 7 #7 a stored key is answered present only to a launch that said it reads it; an older daemon gets a write-once URL", async () => {
+    const at = await claimedWorktree();
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-present-negotiated-"));
+    fs.mkdirSync(path.join(dir, "tree"));
+    fs.writeFileSync(path.join(dir, "tree", "landed.txt"), "uploaded, answer lost\n");
+    const snapshot = snapshotDirectory(dir, captureKeys(at.worktreeId, at.epoch), { format: 2 });
+    fs.rmSync(dir, { recursive: true, force: true });
+    await run(uploadObjects(snapshot.objects));
+    const key = snapshot.packs[0] ?? "";
+    const size = snapshot.objects.get(key)?.length ?? 0;
+    const ask = () =>
+      run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [key],
+          sizes: { [key]: size },
+        }),
+      );
+    const plan = (uploadAnswers?: ReadonlyArray<string>) =>
+      run(
+        at.api.planGet({
+          epoch: at.epoch,
+          manifest_format: 2,
+          manifest_features: [...MANIFEST_FEATURES],
+          ...(uploadAnswers === undefined ? {} : { upload_answers: uploadAnswers }),
+        }),
+      );
+    // No plan seen by this process (a restart), then a plan without `upload_answers` (every
+    // daemon before it): a URL, as the older daemon requires — never `present`.
+    for (const before of [async () => undefined, async () => plan()]) {
+      await before();
+      const legacy = await ask();
+      expect(legacy.present ?? []).toEqual([]);
+      expect(typeof legacy.urls[key]).toBe("string");
+    }
+    // A plan that lists it: `present`, no URL.
+    await plan([UPLOAD_ANSWER_PRESENT]);
+    const negotiated = await ask();
+    expect(negotiated.present).toEqual([key]);
+    expect(negotiated.urls[key]).toBeUndefined();
+    expect(negotiated.multipart[key]).toBeUndefined();
+    // The same launch planning again without it (a daemon downgraded in place): the legacy
+    // answer again.
+    await plan([]);
+    expect(typeof (await ask()).urls[key]).toBe("string");
+  });
+
   // Review 2026-09-28 (6) #9, cross-repo decision 19 (the reviewer's reproduction): a sealed
   // pack's key was answered with another PUT URL, the bytes replaced at the same length through
   // it, and a second seal accepted on the warm cache though the saved file no longer read.
@@ -738,6 +796,15 @@ describe("a seal rests only on sections Mend observed restore", () => {
     expect((await sealOf(at.worktreeId, at.epoch))?.captureId).toBe(cap1.id);
     const key = snapshot.packs[0] ?? "";
     const original = snapshot.objects.get(key) ?? new Uint8Array();
+    // An executor that reads `present` (review 2026-09-28 (7) #7: negotiated in `plan.get`).
+    await run(
+      at.api.planGet({
+        epoch: at.epoch,
+        manifest_format: 2,
+        manifest_features: [...MANIFEST_FEATURES],
+        upload_answers: [UPLOAD_ANSWER_PRESENT],
+      }),
+    );
     const answer = await run(
       at.api.uploadUrls({
         worktree_id: at.worktreeId,
