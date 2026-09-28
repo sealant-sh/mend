@@ -16,6 +16,7 @@ import {
   captureUnsavedWordsOf,
   captureSnapDetailOf,
   captureStatusLine,
+  type CapturePosition,
   type CaptureReading,
   executorCapDue,
   captureOrderOf,
@@ -25,6 +26,8 @@ import {
   planExecutorCap,
   restatedSummary,
   executorSavedWords,
+  CAPTURE_UNSAVED_ANSWERS_KEPT,
+  withUnsavedAnswer,
 } from "../src/workbench/capture-drain.ts";
 
 const reading = (patch: Partial<CaptureReading> = {}): CaptureReading => ({
@@ -796,11 +799,11 @@ describe("executorEndOf after a completed final flush (e2e run 4, 2026-09-27)", 
       head: { kind: "final", n: 8, registeredAt: at("19:48:48"), bulkPending: false },
       executorStartedAt: started,
       reading: { pending: 0, pendingBytes: 0, observedAt: at("19:49:30") },
-      unsaved: { at: at("19:49:20"), words: "unreadable tree/after-seal.txt" },
+      unsaved: [{ at: at("19:49:20"), words: "unreadable tree/after-seal.txt" }],
     } as const;
     const madeAfter = {
       ...afterSave,
-      unsaved: { ...afterSave.unsaved, position: position(60, 8) },
+      unsaved: [{ ...afterSave.unsaved[0], position: position(60, 8) }],
     } as const;
     expect(
       endWords({ ...madeAfter, finalSaved: { at: at("19:48:49"), n: 8, position: sealAt(8) } }),
@@ -829,7 +832,7 @@ describe("executorEndOf after a completed final flush (e2e run 4, 2026-09-27)", 
     expect(
       endWords({
         ...afterSave,
-        unsaved: { ...afterSave.unsaved, position: position(40, 8) },
+        unsaved: [{ ...afterSave.unsaved[0], position: position(40, 8) }],
         finalSaved: { at: at("19:49:25"), n: 9, position: position(50, 9) },
       }),
     ).toBe("stopped outside Mend · saved at 19:49:25 UTC · capture 9");
@@ -854,7 +857,9 @@ describe("executorEndOf after a completed final flush (e2e run 4, 2026-09-27)", 
       expect(
         executorEndOf({
           ...sealedEnd,
-          unsaved: { at: at("19:49:20"), words: "unreadable tree/after-seal.txt", position: after },
+          unsaved: [
+            { at: at("19:49:20"), words: "unreadable tree/after-seal.txt", position: after },
+          ],
         }).kind,
       ).toBe("lost");
     }
@@ -871,7 +876,7 @@ describe("executorEndOf after a completed final flush (e2e run 4, 2026-09-27)", 
       expect(
         executorEndOf({
           ...sealedEnd,
-          unsaved: { at: at("19:49:20"), words: "incomplete · changed", position: unordered },
+          unsaved: [{ at: at("19:49:20"), words: "incomplete · changed", position: unordered }],
         }).kind,
       ).toBe("unconfirmed");
     }
@@ -883,7 +888,7 @@ describe("executorEndOf after a completed final flush (e2e run 4, 2026-09-27)", 
       expect(
         executorEndOf({
           ...sealedEnd,
-          unsaved: { at: at("19:51:00"), words: "3 pending", position: before },
+          unsaved: [{ at: at("19:51:00"), words: "3 pending", position: before }],
         }).kind,
       ).toBe("saved");
     }
@@ -1054,5 +1059,106 @@ describe("captureOrderOf (cross-repo decision 17, sealantd's rule)", () => {
       "incomparable",
     );
     expect(captureOrderOf(null, position(4, 3))).toBe("incomparable");
+  });
+});
+
+type CapturePositionLike = CapturePosition | null;
+/** An unsaved answer's words at a position, as `withUnsavedAnswer` keeps it. */
+const unsavedAnswer = (words: string, where: CapturePositionLike) => ({ words, position: where });
+
+// Review 2026-09-28 (9) #4, cross-repo decision 25: an executor's evidence kept one unsaved
+// answer, and any answer nothing ordered against it replaced it — a recovery boot's failure was
+// erased by a delayed older answer, and the old seal stood again. Every answer no kept one was
+// made after is kept; a save stands only over all of them.
+describe("withUnsavedAnswer (cross-repo decision 25)", () => {
+  const at = endAt;
+  const started = new Date("2026-09-27T19:47:45.000Z");
+  const recoveryFailure = unsavedAnswer("unreadable tree/recovery-work.txt", {
+    ...position(1, 8),
+    bootId: "boot-b",
+    bootGeneration: 0,
+  });
+
+  it("keeps every answer nothing kept was made after, and only a later answer of the same order removes one", () => {
+    // The reviewer's order: boot B's failure, then boot A's delayed answer made before its seal.
+    const kept = withUnsavedAnswer(
+      withUnsavedAnswer([], recoveryFailure),
+      unsavedAnswer("1 pending", position(40, 7)),
+    );
+    expect(kept.map((one) => one.words)).toEqual([
+      "unreadable tree/recovery-work.txt",
+      "1 pending",
+    ]);
+    // An answer boot A made after its 40 replaces that one; B's stays.
+    const later = withUnsavedAnswer(kept, unsavedAnswer("2 pending", position(45, 7)));
+    expect(later.map((one) => one.words)).toEqual([
+      "unreadable tree/recovery-work.txt",
+      "2 pending",
+    ]);
+    // One made before a kept one adds nothing; the same answer again replaces its copy.
+    expect(withUnsavedAnswer(later, unsavedAnswer("0 pending", position(41, 7)))).toBe(later);
+    expect(
+      withUnsavedAnswer(later, unsavedAnswer("2 pending again", position(45, 7))).map(
+        (one) => one.words,
+      ),
+    ).toEqual(["unreadable tree/recovery-work.txt", "2 pending again"]);
+    // A recovery boot of the same disk with a persisted generation is after both of boot A's —
+    // but still ordered against nothing of boot B's generation 0.
+    const recovered = withUnsavedAnswer(
+      later,
+      unsavedAnswer("changed", {
+        ...position(2, 8),
+        bootId: "boot-c",
+        bootGeneration: 2,
+      }),
+    );
+    expect(recovered.map((one) => one.words)).toEqual([
+      "unreadable tree/recovery-work.txt",
+      "changed",
+    ]);
+    // Answers nothing can be ordered against: one stands for all of them, the latest received.
+    const unstamped = withUnsavedAnswer(
+      withUnsavedAnswer(recovered, unsavedAnswer("unstamped 1", null)),
+      unsavedAnswer("unstamped 2", { ...position(3, 8), observation: null }),
+    );
+    expect(unstamped.map((one) => one.words)).toEqual([
+      "unreadable tree/recovery-work.txt",
+      "changed",
+      "unstamped 2",
+    ]);
+  });
+
+  it("folds past its cap into one answer no save covers", () => {
+    let kept: ReadonlyArray<{ readonly words: string; readonly position: CapturePositionLike }> =
+      [];
+    for (let boot = 0; boot <= CAPTURE_UNSAVED_ANSWERS_KEPT; boot += 1) {
+      kept = withUnsavedAnswer(
+        kept,
+        unsavedAnswer(`boot ${boot}`, {
+          ...position(1, 8),
+          bootId: `boot-${boot}`,
+          bootGeneration: 0,
+        }),
+      );
+    }
+    expect(kept).toHaveLength(1);
+    expect(kept[0]?.position).toBeNull();
+    expect(kept[0]?.words).toContain(`${CAPTURE_UNSAVED_ANSWERS_KEPT + 1} unsaved answers`);
+  });
+
+  it("an executor end reads saved only when a save covers every kept answer", () => {
+    const sealedEnd = {
+      head: { kind: "final", n: 8, registeredAt: at("19:48:48"), bulkPending: false },
+      executorStartedAt: started,
+      reading: { pending: 0, pendingBytes: 0, observedAt: at("19:49:30") },
+      sealed: { at: at("19:48:49"), n: 8, position: sealAt(8) },
+    } as const;
+    const unsaved = withUnsavedAnswer(
+      withUnsavedAnswer([], { at: at("19:49:10"), ...recoveryFailure }),
+      { at: at("19:49:20"), ...unsavedAnswer("1 pending", position(40, 7)) },
+    );
+    // The seal covers boot A's answer, not boot B's: completion unknown, never saved.
+    expect(executorEndOf({ ...sealedEnd, unsaved }).kind).toBe("unconfirmed");
+    expect(executorEndOf({ ...sealedEnd, unsaved: unsaved.slice(1) }).kind).toBe("saved");
   });
 });

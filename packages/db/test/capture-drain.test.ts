@@ -1,5 +1,6 @@
 import { PgClient } from "@effect/sql-pg";
 import { ProjectId, SealantWorkspaceId, SessionId, Sha, WorktreeId } from "@mend/domain";
+import { executorEndOf } from "@mend/domain/workbench";
 import { Effect, Layer, Redacted } from "effect";
 import { SqlClient } from "effect/unstable/sql";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -447,8 +448,8 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
         // The sessions that asked go; what the executor said stays with its worktree.
         yield* sql`DELETE FROM agent_sessions WHERE id = ${FAILING}`;
         const afterRemoval = yield* sessions.executorEvidenceOf("ws-shared");
-        // An answer nothing orders against the kept one (no stamp) replaces it: the executor's
-        // evidence then orders against nothing, and no save stands over it.
+        // An answer nothing orders against the kept one (no stamp) is kept beside it: no save
+        // stands over it.
         yield* sessions.recordExecutorEvidence("ws-shared", {
           worktreeId: WORKTREE,
           launchId: null,
@@ -464,21 +465,33 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
       workspaceId: "ws-shared",
       launchId: "launch-a",
       saved: { workspaceId: "ws-shared", at: sealed, n: 4, epoch: 2, position: stampAt(10, 4) },
-      unsaved: {
+      unsaved: [
+        {
+          workspaceId: "ws-shared",
+          at: later,
+          words: "unreadable tree/after.txt",
+          position: stampAt(20, 4),
+        },
+      ],
+      version: 4,
+    });
+    expect(result.afterRemoval).toEqual(result.kept);
+    // Kept beside the stamped answer, never over it (cross-repo decision 25): nothing orders the
+    // two, and no save stands over the unstamped one.
+    expect(result.unstamped?.unsaved).toEqual([
+      {
         workspaceId: "ws-shared",
         at: later,
         words: "unreadable tree/after.txt",
         position: stampAt(20, 4),
       },
-      version: 4,
-    });
-    expect(result.afterRemoval).toEqual(result.kept);
-    expect(result.unstamped?.unsaved).toEqual({
-      workspaceId: "ws-shared",
-      at: sealed,
-      words: "incomplete · changed",
-      position: null,
-    });
+      {
+        workspaceId: "ws-shared",
+        at: sealed,
+        words: "incomplete · changed",
+        position: null,
+      },
+    ]);
     expect(result.unstamped?.version).toBe(5);
   });
 
@@ -597,9 +610,76 @@ describe.skipIf(!reachable)("a session's capture drain, in Postgres", () => {
       words: "unreadable tree/late.txt",
     });
     expect(published.position).toEqual(stampAt(30, 5));
-    expect(published.evidence?.unsaved?.position).toEqual(stampAt(30, 5));
+    expect(published.evidence?.unsaved.map((answer) => answer.position)).toEqual([stampAt(30, 5)]);
     expect(published.session.capturePending).toBe(1);
     expect(published.session.captureObservedAt).toEqual(at);
+  });
+
+  // Review 2026-09-28 (9) #4 (the reviewer's sequence, cross-repo decision 25): the evidence kept
+  // one unsaved answer, and an answer nothing ordered against it replaced it. A recovery boot's
+  // failure (generation 0: incomparable with everything) was erased by a delayed answer of the
+  // sealed boot made before its seal, and the seal read saved again. Every answer no kept one
+  // was made after is kept; a save stands only over all of them.
+  it("review 9 #4 a delayed older answer never erases a recovery boot's failure nothing orders against it: the save stays revoked", async () => {
+    const workspaceId = "ws-r9-incomparable";
+    const sealedAt = new Date("2026-09-28T00:01:00Z");
+    const at = new Date("2026-09-28T00:05:00Z");
+    const result = await run(
+      Effect.gen(function* () {
+        const sessions = yield* SessionsRepo;
+        // Boot A seals at observation 100 (its completed final flush).
+        yield* sessions.recordExecutorEvidence(workspaceId, {
+          worktreeId: WORKTREE,
+          launchId: "launch-a",
+          saved: { workspaceId, at: sealedAt, n: 4, epoch: 2, position: stampAt(100, 4) },
+        });
+        // Recovery boot B, generation 0 (its count could not be persisted): a failed snapshot.
+        yield* sessions.recordExecutorEvidence(workspaceId, {
+          worktreeId: WORKTREE,
+          launchId: "launch-a",
+          unsaved: {
+            workspaceId,
+            at,
+            words: "unreadable tree/recovery-work.txt",
+            position: { ...stampAt(1, 4), bootId: "boot-b", bootGeneration: 0 },
+          },
+        });
+        const blocked = yield* sessions.executorEvidenceOf(workspaceId);
+        // A delayed answer boot A made before its seal.
+        yield* sessions.recordExecutorEvidence(workspaceId, {
+          worktreeId: WORKTREE,
+          launchId: "launch-a",
+          unsaved: { workspaceId, at, words: "1 pending", position: stampAt(90, 3) },
+        });
+        const after = yield* sessions.executorEvidenceOf(workspaceId);
+        // A later answer of boot A still made before its seal adds nothing: boot A's 90 is kept
+        // until an answer of that boot made after it replaces it.
+        yield* sessions.recordExecutorEvidence(workspaceId, {
+          worktreeId: WORKTREE,
+          launchId: "launch-a",
+          unsaved: { workspaceId, at, words: "2 pending", position: stampAt(95, 3) },
+        });
+        const replaced = yield* sessions.executorEvidenceOf(workspaceId);
+        return { blocked, after, replaced };
+      }),
+    );
+    const ending = (evidence: typeof result.after) =>
+      executorEndOf({
+        head: { kind: "final", n: 4, registeredAt: sealedAt, bulkPending: false },
+        executorStartedAt: null,
+        reading: { pending: null, pendingBytes: null, observedAt: null },
+        finalSaved: evidence?.saved ?? null,
+        unsaved: evidence?.unsaved ?? null,
+        settled: true,
+      });
+    expect(ending(result.blocked).kind).toBe("unconfirmed");
+    // Boot B's failure is still kept beside the delayed answer: the seal does not stand.
+    expect(JSON.stringify(result.after?.unsaved)).toContain("boot-b");
+    expect(ending(result.after).kind).toBe("unconfirmed");
+    expect(JSON.stringify(result.replaced?.unsaved)).toContain("boot-b");
+    expect(JSON.stringify(result.replaced?.unsaved)).toContain("2 pending");
+    expect(JSON.stringify(result.replaced?.unsaved)).not.toContain("1 pending");
+    expect(ending(result.replaced).kind).toBe("unconfirmed");
   });
 });
 
@@ -690,6 +770,101 @@ describe.skipIf(!reachable)("migration 0088 over rows written before it", () => 
     );
     expect(fenced.map((row) => ({ ...row }))).toEqual([
       { workspace: "ws-partial", unpublished: true },
+    ]);
+  });
+});
+
+// Review 2026-09-28 (9) #4, rows written before 0090: an executor's evidence kept one unsaved
+// answer in `unsaved_*`. Migrating starts its kept answers from that one.
+describe.skipIf(!reachable)("migration 0090 over rows written before it", () => {
+  const LEGACY_DB = `mend_capture_unsaved_answers_${process.pid}_${Date.now()}`;
+  const legacyUrl = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${LEGACY_DB}`;
+    return url.toString();
+  })();
+  const legacyLayer = SessionsRepoLive.pipe(
+    Layer.provideMerge(
+      MendDBLive.pipe(Layer.provideMerge(PgClient.layer({ url: Redacted.make(legacyUrl) }))),
+    ),
+  );
+  const legacy = <A, E>(effect: Effect.Effect<A, E, SessionsRepo | SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(legacyLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${LEGACY_DB}`);
+      }),
+    );
+  });
+
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${LEGACY_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("keeps the one unsaved answer an executor's evidence held as its first kept answer", async () => {
+    const result = await legacy(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const sessions = yield* SessionsRepo;
+        const ordered = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
+        for (const [name, migration] of ordered) {
+          if (name.localeCompare("0090") >= 0) continue;
+          yield* migration;
+        }
+        yield* sql`
+          INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+          VALUES ('p-legacy', 'web', '/store/p/repo.git', 'main',
+                  (SELECT id FROM organizations LIMIT 1))`;
+        yield* sql`
+          INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+          VALUES ('wt-legacy', 'p-legacy', 'wt', 'wt', 'mend/wt', 'abc')`;
+        yield* sql`
+          INSERT INTO executor_capture_evidence (workspace_id, worktree_id, unsaved_at,
+                                                 unsaved_detail, unsaved_position, version)
+          VALUES ('ws-unsaved', 'wt-legacy', '2026-09-28T00:02:00Z', 'unreadable tree/x',
+                  ${JSON.stringify(stampAt(7, 3))}::jsonb, 3),
+                 ('ws-clean', 'wt-legacy', NULL, NULL, NULL, 1)`;
+        const [, migration] = ordered.find(([name]) => name.startsWith("0090")) ?? [];
+        if (migration === undefined) return yield* Effect.die("no 0090");
+        yield* migration;
+        const unsaved = yield* sessions.executorEvidenceOf("ws-unsaved");
+        const clean = yield* sessions.executorEvidenceOf("ws-clean");
+        // A later answer nothing orders against it joins it; it is not replaced.
+        yield* sessions.recordExecutorEvidence("ws-unsaved", {
+          worktreeId: WorktreeId.make("wt-legacy"),
+          launchId: null,
+          unsaved: {
+            workspaceId: "ws-unsaved",
+            at: new Date("2026-09-28T00:03:00Z"),
+            words: "incomplete · changed",
+            position: { ...stampAt(1, 3), bootId: "boot-b", bootGeneration: 0 },
+          },
+        });
+        const joined = yield* sessions.executorEvidenceOf("ws-unsaved");
+        return { unsaved, clean, joined };
+      }),
+    );
+    expect(result.unsaved?.unsaved).toEqual([
+      {
+        workspaceId: "ws-unsaved",
+        at: new Date("2026-09-28T00:02:00Z"),
+        words: "unreadable tree/x",
+        position: stampAt(7, 3),
+      },
+    ]);
+    expect(result.unsaved?.version).toBe(3);
+    expect(result.clean?.unsaved).toEqual([]);
+    expect(result.joined?.unsaved.map((answer) => answer.words)).toEqual([
+      "unreadable tree/x",
+      "incomplete · changed",
     ]);
   });
 });

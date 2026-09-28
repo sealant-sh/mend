@@ -2329,7 +2329,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const evidence = yield* sessions.executorEvidenceOf(workspaceId);
         return {
           saved: evidence?.saved ?? null,
-          unsaved: evidence?.unsaved ?? null,
+          unsaved: evidence?.unsaved ?? [],
           version: evidence?.version ?? 0,
         };
       });
@@ -2405,11 +2405,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           );
           return null;
         }
-        const { unsaved } = yield* executorAnswersOf(session, workspaceId);
+        const { unsaved: answers } = yield* executorAnswersOf(session, workspaceId);
         // Ordered by the executor, never by the store's clock against a worker's (cross-repo
-        // decision 17, review 2026-09-28 (6) #6): the seal stands only over an unsaved answer
-        // made strictly before it; one after it, at its head, or one nothing orders revokes it.
-        if (unsaved !== null && !saveCoversUnsaved(record.position, unsaved.position)) {
+        // decision 17, review 2026-09-28 (6) #6): the seal stands only over unsaved answers made
+        // strictly before it; one after it, at its head, or one nothing orders revokes it — any
+        // one the executor's evidence keeps (decision 25, review 2026-09-28 (9) #4).
+        const unsaved = answers.find(
+          (answer) => !saveCoversUnsaved(record.position, answer.position),
+        );
+        if (unsaved !== undefined) {
           yield* Effect.logWarning(
             "session engine: capture mode · sealed, but the executor answered unsaved work the seal does not cover · the seal no longer stands",
           ).pipe(
@@ -5759,7 +5763,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // joined session's later unsaved answer revokes the holder's save as much as its own.
         const answers =
           workspaceId === null
-            ? { saved: null, unsaved: null, version: 0 }
+            ? { saved: null, unsaved: [], version: 0 }
             : yield* executorAnswersOf(session, workspaceId);
         // An answer asked and not yet published may revoke any save: until it is, none stands
         // and none is refuted — completion unknown (cross-repo decision 18, review 2026-09-28
@@ -5817,12 +5821,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   n: sealRecord.seal.n,
                   position: sealRecord.position,
                 },
-          // This executor's latest answer that said it held unsaved work: a save it was not made
-          // before does not stand (review 2026-09-28 (4) #9, (6) #6).
-          unsaved:
-            unsaved === null || workspaceId === null || unsaved.workspaceId !== workspaceId
-              ? null
-              : { at: unsaved.at, words: unsaved.words, position: unsaved.position ?? null },
+          // Every answer of this executor that said it held unsaved work and no other was made
+          // after: a save stands only over all of them (review 2026-09-28 (4) #9, (6) #6, (9) #4).
+          unsaved: unsaved
+            .filter((answer) => workspaceId !== null && answer.workspaceId === workspaceId)
+            .map((answer) => ({
+              at: answer.at,
+              words: answer.words,
+              position: answer.position ?? null,
+            })),
           settled,
         });
         const outcome: SessionOutcome = end.kind === "saved" ? "stopped" : "failed";
