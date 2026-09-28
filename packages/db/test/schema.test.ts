@@ -207,6 +207,7 @@ describe("Mend Drizzle schema", () => {
       "capture_unsaved_workspace_id",
       "capture_unsaved_at",
       "capture_unsaved_detail",
+      "capture_observed_position",
       "executor_resource_id",
       "executor_create_key",
       "executor_launch_id",
