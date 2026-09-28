@@ -1064,7 +1064,7 @@ describe("capture channel routes", () => {
     expect(over.status).toBe(413);
     expect(over.json).toEqual({
       reason: "byte-quota",
-      message: "byte quota: 4096 bytes per session (3000 priced, 2000 more asked)",
+      message: "byte quota: 4096 bytes per executor launch (3000 priced, 2000 more asked)",
       limit: 4_096,
       used: 3_000,
       requested: 2_000,
@@ -1154,7 +1154,7 @@ describe("capture channel routes", () => {
     expect(refused.status).toBe(409);
     expect(refused.json).toEqual({
       reason: "byte-quota",
-      message: `byte quota: 4096 bytes per session (0 priced, ${packBytes} more asked)`,
+      message: `byte quota: 4096 bytes per executor launch (0 priced, ${packBytes} more asked)`,
       limit: 4_096,
       used: 0,
       requested: packBytes,

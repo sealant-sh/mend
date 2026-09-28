@@ -509,8 +509,9 @@ export const PUT_URL_CLOCK_MARGIN_SECONDS = 5 * 60;
 export const UPLOAD_CALLS_PER_HOUR = 600;
 export const UPLOAD_KEYS_PER_CALL = 1_000;
 /**
- * Byte quota: `max(floor, 4× the project's compressed footprint)` per session, priced once per
- * object key. `upload.urls` is the enforcement point — a batch whose declared sizes would take
+ * Byte quota: `max(floor, 4× the project's compressed footprint)` per executor launch, priced
+ * once per object key. It bounds new work only: nothing a draining, kept or recovering executor
+ * ships, and no `final` capture's register, is refused for it (cross-repo decision 30). `upload.urls` is the enforcement point — a batch whose declared sizes would take
  * the session over is refused with 413 `byte-quota` before any URL is minted, so refused bytes
  * never land; `capture.register` is the backstop for what did land (keys the daemon sends no
  * size for), refusing with 409 `byte-quota`. A key is priced when first reserved or first
@@ -522,6 +523,8 @@ export const UPLOAD_KEYS_PER_CALL = 1_000;
  */
 export const BYTE_QUOTA_MULTIPLIER = 4;
 export const BYTE_QUOTA_FLOOR = 8 * 1024 * 1024 * 1024;
+/** Byte ledgers kept in memory, one per launch, the least recently asked about dropped first. */
+export const LEDGERS_KEPT = 512;
 /** Heartbeat expiry the executor is told (ADR-0002: heartbeat every 10 s against 30 s). */
 export const LEASE_EXPIRES_IN_SECS = 30;
 /**
@@ -669,7 +672,9 @@ export interface CaptureScope {
   readonly projectId: ProjectId;
   /**
    * The executor is being drained, kept or recovered (the session has a drain under way): its
-   * `upload.urls` calls are not metered — it is saving what only it holds.
+   * `upload.urls` calls are not metered, and neither `upload.urls` nor `capture.register`
+   * refuses its bytes for the byte quota — it is saving what only it holds (cross-repo decision
+   * 30).
    */
   readonly unmetered?: boolean;
   /** Who a claim is recorded for — the session whose executor this is. */
@@ -903,17 +908,29 @@ export const CaptureChannelLive: Layer.Layer<
       readsPresent.set(launch, (input.upload_answers ?? []).includes(UPLOAD_ANSWER_PRESENT));
     };
     /**
-     * The byte ledger, per session: object key → bytes priced for it, once. `upload.urls`
+     * The byte ledger, per physical launch: object key → bytes priced for it, once. `upload.urls`
      * reserves a sized key at its declared size; `capture.register` prices every pack under the
      * caller's epoch at the size the bucket reports, replacing a reservation. A key never
-     * counts twice, whatever the manifests that list it.
+     * counts twice, whatever the manifests that list it. A new launch — a new executor, under a
+     * fresh epoch — starts a ledger of its own (review 2026-09-28 (10) #6): the budget bounds
+     * the new work one executor admits, never what a session wrote across every executor it ever
+     * had. Reservations that mint nothing are refunded. The ledgers of the launches least
+     * recently asked about are dropped past `LEDGERS_KEPT`.
      */
     const ledgers = new Map<string, Map<string, number>>();
-    const ledgerOf = (executorId: string): Map<string, number> => {
-      const found = ledgers.get(executorId);
-      if (found !== undefined) return found;
+    const ledgerOf = (launch: string): Map<string, number> => {
+      const found = ledgers.get(launch);
+      if (found !== undefined) {
+        ledgers.delete(launch);
+        ledgers.set(launch, found);
+        return found;
+      }
       const fresh = new Map<string, number>();
-      ledgers.set(executorId, fresh);
+      ledgers.set(launch, fresh);
+      for (const oldest of ledgers.keys()) {
+        if (ledgers.size <= LEDGERS_KEPT) break;
+        ledgers.delete(oldest);
+      }
       return fresh;
     };
 
@@ -999,12 +1016,20 @@ export const CaptureChannelLive: Layer.Layer<
         policy.byteQuotaFloorBytes,
         BYTE_QUOTA_MULTIPLIER * Math.max(0, scope.footprintBytes),
       );
-      const ledger = ledgerOf(scope.executorId);
+      const ledger = ledgerOf(launchId);
+      /**
+       * Preserving what an executor already holds is never refused for budget (cross-repo
+       * decision 30, review 2026-09-28 (10) #6): while its session drains, keeps or recovers it
+       * (`CaptureScope.unmetered`) — the FINAL, and a recovery boot's shipping — the byte quota
+       * prices what it saves and refuses none of it. So does the register of a `final` capture:
+       * the bytes are in the bucket, and the capture is what saves them.
+       */
+      const preserving = scope.unmetered === true;
       const overByteQuota = (status: 409 | 413, used: number, requested: number) =>
         new CaptureRouteError({
           status,
           reason: "byte-quota",
-          message: `byte quota: ${byteBudget} bytes per session (${used} priced, ${requested} more asked)`,
+          message: `byte quota: ${byteBudget} bytes per executor launch (${used} priced, ${requested} more asked)`,
           limit: byteBudget,
           used,
           requested,
@@ -1460,7 +1485,19 @@ export const CaptureChannelLive: Layer.Layer<
         const requested = sumOf(unpriced);
         const used = sumOf(ledger);
         if (requested > 0 && used + requested > byteBudget) {
-          return yield* overByteQuota(413, used, requested);
+          if (!preserving) return yield* overByteQuota(413, used, requested);
+          yield* Effect.logInfo(
+            "capture channel: over the byte quota while preserving what the executor holds · not refused",
+          ).pipe(
+            Effect.annotateLogs({
+              worktreeId,
+              epoch: input.epoch,
+              launchId,
+              limit: byteBudget,
+              used,
+              requested,
+            }),
+          );
         }
         for (const [key, size] of unpriced) ledger.set(key, size);
         // Write authority is recorded before it leaves Mend (review 2026-09-28 (7) #8): on a
@@ -2076,7 +2113,23 @@ export const CaptureChannelLive: Layer.Layer<
           // pass. What landed is off-chain and retires with its epoch prefix.
           const used = sumOf(ledger);
           if (already === null && sumOf(priced) > byteBudget) {
-            return yield* overByteQuota(409, used, newBytes);
+            if (!preserving && manifest.kind !== "final") {
+              return yield* overByteQuota(409, used, newBytes);
+            }
+            yield* Effect.logInfo(
+              "capture channel: register over the byte quota while preserving what the executor holds · not refused",
+            ).pipe(
+              Effect.annotateLogs({
+                worktreeId,
+                n: input.n,
+                epoch: input.epoch,
+                kind: manifest.kind,
+                launchId,
+                limit: byteBudget,
+                used,
+                requested: newBytes,
+              }),
+            );
           }
           // `git_fsck` records Mend's observation, never the executor's claim: the kinds a
           // pickup or a review would restore are verified before the CAS (index-pack --verify
