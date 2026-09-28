@@ -20,6 +20,10 @@ organization, or its owner:
   project chose otherwise (see [Folders](/organizations/folders/));
 - your skill library and the project's, delivered to the harness at launch (see
   [Skills](/guides/skills/));
+- a note in each harness's own memory file (`~/.claude/CLAUDE.md`, `~/.codex/AGENTS.md`) that names
+  what is mounted and how to run Services. Mend rewrites only its own block, from the
+  `<!-- mend:workspace-note:begin … -->` line to the `<!-- mend:workspace-note:end -->` line, at
+  every launch and resume. What you or the agent write before or after it stays;
 - project configuration variables and secrets;
 - personal provider accounts and dotfiles;
 - the previous process record and provider state when a session resumes.

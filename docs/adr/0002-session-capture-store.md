@@ -1215,3 +1215,51 @@ Mend-side details the decision record left open, decided in this ADR:
       the install can replace is a tree spliced in from the project's dependency cache, which is no
       session's work. This is decision 42's rule applied to the automatic install: nothing Mend runs
       before the harness rewrites restored work.
+44. (2026-09-28) The seventeenth review's Mend item (#1) and the sweep of what a launch writes into
+    the harness home.
+    - **Mend's note is a bounded block (#1).** `appendWorkspaceNote` cut `~/.claude/CLAUDE.md` and
+      `~/.codex/AGENTS.md` at the first `<!-- mend:mounts -->` line and wrote its note after it, so
+      anything the user or the agent wrote below the note was gone at the next resume, after the
+      capture had restored it. The note now sits between a `<!-- mend:workspace-note:begin … -->`
+      line and a `<!-- mend:workspace-note:end -->` line, and a launch replaces only that block
+      (`workspace-note.ts`). Neither marker contains the old one, so a Mend rolled back to the
+      open-ended note finds nothing to cut and appends. A file holding the old note is migrated only
+      when every line from the marker to the note's end is exactly what one of Mend's generators
+      wrote since 2026-08-01 (the fixed lines are frozen in `LEGACY_NOTE`; the mounts are bullets of
+      one absolute path with a known suffix). That span becomes the block and what follows it stays.
+      When the old note differs by a single line, none of it is removed: the block is appended and
+      the old note stays. The docs' Known issues page says to delete it by hand. Absent is the only
+      read failure that creates the file. Any other read error, bytes that are not UTF-8, a dangling
+      symlink, or markers that do not form exactly one block leave the file untouched and log a
+      warning with the reason. A file that already says it all is not written. A write goes to a
+      temporary file beside the target and is renamed over it, keeping the mode. A symlink's target
+      is written; a file with several hard links is written in place. A separate Mend-owned file
+      referenced from the user's was not simpler: Claude Code has `@` imports, but Mend could not
+      rely on an include for Codex's `AGENTS.md`.
+    - **Every other write a launch makes, checked (sweep).** Harness-home relocation (`cp -an` keeps
+      the restored side and drops only what the image, the injection, dotfiles or a native import
+      put in `$HOME` this boot, all of which that boot regenerates); the helper, the git transport
+      and the git author (Mend-owned paths under `/run/mend` and `/usr/local/bin`, and Mend's keys
+      in system git config, below the user's and the repository's own); the default shell profile
+      (written only where nothing exists, `set -C`); pasted images (fresh names); native imports
+      (fresh session ids); the co-located archive restore (only when no live state); setup commands
+      and the dependency install (decisions 42 and 43); plan remotes (sealantd adds them only to a
+      repository with no saved `.git/config`). None rewrites user content. Three did, and are fixed:
+      - **The claude onboarding seed** read `~/.claude.json` and `~/.claude/settings.json` and
+        treated a file it could not parse as empty, so a hand-edited `settings.json` with a trailing
+        comma lost its hooks and permissions to three keys at the next launch. It now merges only
+        into a JSON object it read, leaves anything else (unreadable, not an object, a dangling
+        symlink) as it is, writes nothing when the keys are already there, and writes the credential
+        with `wx` only (`harness-seeds.ts`).
+      - **The codex trust seed** appended its table to `config.toml` with no leading newline, so a
+        last line without one ran into `[projects…]` and the file stopped parsing. The table now
+        starts on its own line.
+      - **Skills delivery** ran `rm -rf` over every bundle directory before rewriting it and over
+        every retired one, so a skill the agent edited in the session, or a directory of its own
+        that a library skill came to share a name with, was gone at the next launch. Mend now
+        records a digest of each bundle it wrote (`.mend-managed-skills-digests.json`, beside the
+        manifest, which a Mend that predates it still reads). A directory goes only when its tree is
+        exactly Mend's last delivery or the one about to be written. Anything else is moved whole to
+        `.mend/skills-kept/<stamp>/` in the harness home and logged. One program
+        (`SKILLS_VACATE_PROGRAM`) does this in both stores, and a directory it could not clear is
+        never written into.
