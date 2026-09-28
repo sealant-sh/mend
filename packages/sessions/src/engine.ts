@@ -513,6 +513,14 @@ const LAUNCH_SUMMARY_PREFIX = "launch ";
  */
 const SETUP_SKIPPED_PREFIX = "setup skipped";
 const setupSkippedWords = (n: number) => `${SETUP_SKIPPED_PREFIX} · restored from capture ${n}`;
+/**
+ * No dependency install ran: the head's manifest could not be read, so nothing says this
+ * executor's platform lacks a restored tree (review 2026-09-28 (16) #1). A read that observed
+ * nothing is not evidence that nothing was restored.
+ */
+const DEPENDENCY_INSTALL_SKIPPED_PREFIX = "dependency install skipped";
+const dependencyInstallSkippedWords = (n: number) =>
+  `${DEPENDENCY_INSTALL_SKIPPED_PREFIX} · capture ${n} manifest unavailable`;
 
 const STALE_ON_START_PREFIXES = [
   LAUNCH_SUMMARY_PREFIX,
@@ -520,6 +528,7 @@ const STALE_ON_START_PREFIXES = [
   "saved at ",
   "executor not answering",
   SETUP_SKIPPED_PREFIX,
+  DEPENDENCY_INSTALL_SKIPPED_PREFIX,
 ] as const;
 
 /** A create Core fenced before it made anything, found with no launch asking again. */
@@ -1560,10 +1569,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
        * this executor's platform with one exec; when the head has no tree for it, run the
        * project's install command (the setting, else the lockfile's) in the workspace before the
        * harness starts. Lines, never verdicts: a failing install is the agent's to see next.
+       *
+       * Only a manifest that was read can say the platform has no tree (review 2026-09-28 (16)
+       * #1). A failed or undecodable read runs no installer: the executor may have restored a
+       * tree for this platform, with the user's edits in it, and `npm ci` would replace them.
+       * The words for the session line are returned. With the manifest read, the install runs
+       * only on a fresh worktree (no head) or when no tree for this platform was restored:
+       * sealantd carries the restored `bulk` forward into every capture it registers after the
+       * restore, so a later head still names it.
        */
       const installDependenciesIfNeeded = Effect.fn("SessionEngine.installDependenciesIfNeeded")(
         function* (session: Session, project: Project, workspace: Workspace) {
-          if (capture === null) return;
+          if (capture === null) return null;
           const probe = yield* sealant.exec(workspace, ["sh", "-c", PLATFORM_PROBE_SCRIPT]);
           const platform = platformKeyOf(probe.stdout);
           if (platform === null) {
@@ -1572,17 +1589,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ).pipe(
               Effect.annotateLogs({ sessionId: session.id, probe: probe.stdout.slice(0, 80) }),
             );
-            return;
+            return null;
           }
           const head = (yield* capture.repo.headOf(session.worktreeId))?.head ?? null;
-          const sections =
+          const read =
             head === null
               ? null
               : yield* capture.blobs.get(head.manifestKey).pipe(
                   Effect.flatMap((bytes) => decodeManifest(head.manifestKey, bytes)),
                   Effect.map((manifest) => manifest.sections),
-                  Effect.catch(() => Effect.succeed(null)),
+                  Effect.result,
                 );
+          if (head !== null && read !== null && Result.isFailure(read)) {
+            yield* Effect.logWarning(
+              "session engine: dependency install skipped · manifest unavailable",
+            ).pipe(
+              Effect.annotateLogs({
+                sessionId: session.id,
+                platform,
+                captureN: head.n,
+                error: String(read.failure),
+              }),
+            );
+            return dependencyInstallSkippedWords(head.n);
+          }
+          const sections = read === null || Result.isFailure(read) ? null : read.success;
           // What `plan.get` answered this executor: the head's tree for its platform, the head's
           // `bulk` or one its `other_bulk` carries (sealantd PR #101), else nothing to restore.
           const bulk = sections === null ? "pending" : bulkSectionFor(sections, platform);
@@ -1592,7 +1623,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ).pipe(
               Effect.annotateLogs({ sessionId: session.id, platform, captureN: head?.n ?? null }),
             );
-            return;
+            return null;
           }
           const command =
             project.installCommand ??
@@ -1605,7 +1636,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             yield* Effect.logInfo(
               "session engine: dependency install skipped · no install command",
             ).pipe(Effect.annotateLogs({ sessionId: session.id, platform }));
-            return;
+            return null;
           }
           yield* Effect.logInfo("session engine: dependency install · running").pipe(
             Effect.annotateLogs({
@@ -1628,6 +1659,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               stderr: result.exitCode === 0 ? "" : result.stderr.slice(-400),
             }),
           );
+          return null;
         },
       );
 
@@ -8741,11 +8773,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
 
         // Capture mode: the dependency tree for THIS executor's platform, before the harness.
+        // Said on the session line once the launch starts, like `setupSkippedFrom`.
+        let dependencyInstallSkipped: string | null = null;
         if (capture !== null) {
-          yield* installDependenciesIfNeeded(session, project, workspace).pipe(
+          dependencyInstallSkipped = yield* installDependenciesIfNeeded(
+            session,
+            project,
+            workspace,
+          ).pipe(
             Effect.catch((error) =>
               Effect.logWarning("session engine: dependency install did not run").pipe(
                 Effect.annotateLogs({ sessionId, error: String(error) }),
+                Effect.as(null),
               ),
             ),
           );
@@ -8863,7 +8902,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // and the row reads "running" forever — unstoppable and undeletable.
         yield* sessions.reopen(sessionId, "running");
         yield* clearStaleStartSummary(sessionId);
-        if (setupSkippedFrom !== null) yield* noteSetupSkipped(sessionId, setupSkippedFrom);
+        if (setupSkippedFrom !== null) {
+          yield* noteLaunchWords(sessionId, setupSkippedWords(setupSkippedFrom));
+        }
+        if (dependencyInstallSkipped !== null) {
+          yield* noteLaunchWords(sessionId, dependencyInstallSkipped);
+        }
         yield* forkSupervision(sessionId, sealantRunId);
 
         // The agent process ends on its own; the fold over every process decides the session.
@@ -9173,17 +9217,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       });
 
       /**
-       * Said once, as the launch starts (review 2026-09-28 (15) #1): this executor ran none of the
-       * custom image's setup commands because it laid the worktree down from saved capture `n`.
-       * Beside what the summary already says (`executor lost · …` stays); the next start clears
-       * it (`STALE_ON_START_PREFIXES`).
+       * Said once, as the launch starts: what this executor did not run before the harness — the
+       * custom image's setup commands, because it laid the worktree down from a saved capture
+       * (review 2026-09-28 (15) #1), or the dependency install, because the head's manifest was
+       * unavailable ((16) #1). Beside what the summary already says (`executor lost · …` stays);
+       * the next start clears it (`STALE_ON_START_PREFIXES`).
        */
-      const noteSetupSkipped = Effect.fn("SessionEngine.noteSetupSkipped")(function* (
+      const noteLaunchWords = Effect.fn("SessionEngine.noteLaunchWords")(function* (
         sessionId: SessionId,
-        n: number,
+        words: string,
       ) {
         const current = yield* sessions.byId(sessionId);
-        const words = setupSkippedWords(n);
         yield* sessions.setSummary(
           sessionId,
           current.summary === null ? words : `${current.summary} · ${words}`,
