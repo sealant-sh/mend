@@ -883,7 +883,8 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
     );
 
     const captureFlush = Effect.fn("SealantClient.captureFlush")(
-      (workspace: Workspace, kind: CaptureFlushKind) => wrap(() => workspace.capture.flush({ kind })),
+      (workspace: Workspace, kind: CaptureFlushKind) =>
+        wrap(() => workspace.capture.flush({ kind })),
     );
 
     const captureStatus = Effect.fn("SealantClient.captureStatus")((workspace: Workspace) =>

@@ -192,6 +192,7 @@ import type {
   Run,
   SessionOptions,
   Workspace,
+  WorkspaceCaptureDrain,
   WorkspaceCaptureReplanned,
   WorkspaceCaptureStatus,
   WorkspaceStatus,
@@ -216,6 +217,25 @@ import { memoryStoreRefs } from "./capture-world.ts";
 
 /** What a daemon that reports snapshot health says when every path read (sealantd `Some(0)`). */
 const readEverything: object = { unreadable: 0, carried: 0 };
+
+/**
+ * A daemon's capture answer with every field SDK 0.38.0 requires: an empty queue the registrar
+ * refused nothing of, every path read, and whatever `fields` says over it.
+ */
+const captureAnswer = (fields: Partial<WorkspaceCaptureStatus> = {}): WorkspaceCaptureStatus => ({
+  epoch: 0,
+  worktreeId: "",
+  pending: 0,
+  stagedBytes: 0,
+  uploadedObjects: 0,
+  uploadedBytes: 0,
+  registered: 0,
+  fenced: false,
+  paused: false,
+  refused: [],
+  ...readEverything,
+  ...fields,
+});
 
 /** Every platform method dies — these tests exercise the platform-free paths. */
 const sealantDeadLayer = Layer.succeed(SealantClient, {
@@ -407,10 +427,10 @@ const sealantLaunchLayer = (
     /** What the platform reports of the workspace, given whether a stop was asked of it. */
     readonly status?: (stopAsked: boolean) => WorkspaceStatus | undefined;
     /**
-     * `workspace.captureDrain()` (Core's next SDK): what Core last observed of the drain. Absent,
-     * the workspace has no such method, as on SDK 0.37.2.
+     * `workspace.captureDrain()` (SDK 0.38.0): what Core last observed of the drain. Absent, Core
+     * recorded none (the engine reads that as it read a 0.37.2 handle without the method: kept).
      */
-    readonly captureDrain?: () => unknown;
+    readonly captureDrain?: () => WorkspaceCaptureDrain | null;
     /**
      * Stands in for a command inside the executor: an answer here wins over the defaults below
      * (undefined falls through), so a test can put files where only the workspace has them.
@@ -449,6 +469,14 @@ const sealantLaunchLayer = (
     id: "workspace-1",
     name: "test workspace",
     status: async () => captureOps?.status?.(terminated) ?? (terminated ? "stopped" : "ready"),
+    // The engine reads the deadline, the executor and the drain through the fake client below.
+    runtimeDeadline: async () => null,
+    runtime: async () => null,
+    launch: undefined,
+    recover: async () => {
+      throw new Error("not in test");
+    },
+    captureDrain: async () => captureOps?.captureDrain?.() ?? null,
     ready: async function () {
       return this;
     },
@@ -461,6 +489,9 @@ const sealantLaunchLayer = (
     bind: async () => [],
     capture: {
       flush: async () => {
+        throw new Error("not in test");
+      },
+      status: async () => {
         throw new Error("not in test");
       },
       replan: async () => {
@@ -479,16 +510,13 @@ const sealantLaunchLayer = (
     forward: async () => {
       throw new Error("not in test");
     },
-    stop: async () => undefined,
+    // The engine stops through `stopWorkspace` below; the handle's own stop is not in test.
+    stop: async () => ({ state: "stopped" }),
     restart: async function () {
       return this;
     },
     expire: async () => undefined,
   };
-  const readDrain = captureOps?.captureDrain;
-  if (readDrain !== undefined) {
-    Object.assign(workspace, { captureDrain: async () => readDrain() });
-  }
   return Layer.succeed(SealantClient, {
     createWorkspace: (options, launch) =>
       Effect.suspend(() => {
@@ -604,20 +632,7 @@ const sealantLaunchLayer = (
         captureOps?.flushed?.push(`flush:${target.id}`);
         captureOps?.flushKinds?.push(kind);
         const answer: WorkspaceCaptureStatus =
-          captureOps?.flush !== undefined
-            ? yield* captureOps.flush(target)
-            : {
-                epoch: 0,
-                worktreeId: "",
-                pending: 0,
-                stagedBytes: 0,
-                uploadedObjects: 0,
-                uploadedBytes: 0,
-                registered: 0,
-                fenced: false,
-                paused: false,
-                ...readEverything,
-              };
+          captureOps?.flush !== undefined ? yield* captureOps.flush(target) : captureAnswer();
         if (kind !== "final" || captureOps?.finalCompletion === "unreported") return answer;
         return { ...answer, ...finalCompletionOf(answer) };
       }),
@@ -6580,18 +6595,12 @@ const verifyDeferredFinalHarvest = async (pathKind: "stop" | "handoff" | "sweep"
                 yield* finalCapture;
                 shipped = true;
               }
-              return {
+              return captureAnswer({
                 epoch: 2,
-                worktreeId: "",
-                pending: 0,
-                stagedBytes: 0,
                 uploadedObjects: shipped ? 1 : 0,
                 uploadedBytes: shipped ? 1 : 0,
                 registered: shipped ? 1 : 0,
-                fenced: false,
-                paused: false,
-                ...readEverything,
-              } satisfies WorkspaceCaptureStatus;
+              });
             });
           },
         },
@@ -6953,6 +6962,7 @@ describe("SessionEngine capture mode", () => {
                     registered: shipped ? 1 : 0,
                     fenced: false,
                     paused: false,
+                    refused: [],
                   } satisfies WorkspaceCaptureStatus;
                 }),
             },
@@ -7563,20 +7573,7 @@ describe("SessionEngine capture mode", () => {
                 flush: () => {
                   flushes += 1;
                   if (flushes === 1) {
-                    return earlierFinal.pipe(
-                      Effect.as({
-                        epoch: 2,
-                        worktreeId: "",
-                        pending: 0,
-                        stagedBytes: 0,
-                        uploadedObjects: 0,
-                        uploadedBytes: 0,
-                        registered: 1,
-                        fenced: false,
-                        paused: false,
-                        ...readEverything,
-                      }),
-                    );
+                    return earlierFinal.pipe(Effect.as(captureAnswer({ epoch: 2, registered: 1 })));
                   }
                   return Effect.fail(
                     new SealantPlatformError({
@@ -9083,19 +9080,7 @@ describe("SessionEngine capture mode", () => {
     /** How many execs had reached the standby when its replan was asked. */
     const execsAtReplan: Array<number> = [];
     let executor: SessionId | null = null;
-    const flush = () =>
-      Effect.succeed({
-        epoch: 2,
-        worktreeId: "",
-        pending: 0,
-        stagedBytes: 0,
-        uploadedObjects: 0,
-        uploadedBytes: 0,
-        registered: 0,
-        fenced: false,
-        paused: false,
-        ...readEverything,
-      } satisfies WorkspaceCaptureStatus);
+    const flush = () => Effect.succeed(captureAnswer({ epoch: 2 }));
     const replan = (_workspace: Workspace) =>
       Effect.gen(function* () {
         execsAtReplan.push(execCalls.length);
@@ -9186,19 +9171,7 @@ describe("SessionEngine capture mode", () => {
     const replans: Array<{ readonly workspaceId: string; readonly executorId: SessionId }> = [];
     /** The executor's flush leaves captures pending (a stalled daemon). */
     let partialFlush = false;
-    const flush = () =>
-      Effect.succeed({
-        epoch: 2,
-        worktreeId: "",
-        pending: partialFlush ? 3 : 0,
-        stagedBytes: 0,
-        uploadedObjects: 0,
-        uploadedBytes: 0,
-        registered: 0,
-        fenced: false,
-        paused: false,
-        ...readEverything,
-      } satisfies WorkspaceCaptureStatus);
+    const flush = () => Effect.succeed(captureAnswer({ epoch: 2, pending: partialFlush ? 3 : 0 }));
     const answered: Array<{
       readonly worktreeId: string;
       readonly epoch: number;
@@ -9532,21 +9505,7 @@ describe("SessionEngine capture mode", () => {
             undefined,
             {
               flushed,
-              flush: () =>
-                onFlush.pipe(
-                  Effect.map(() => ({
-                    epoch: 0,
-                    worktreeId: "",
-                    pending: 0,
-                    stagedBytes: 0,
-                    uploadedObjects: 0,
-                    uploadedBytes: 0,
-                    registered: 1,
-                    fenced: false,
-                    paused: false,
-                    ...readEverything,
-                  })),
-                ),
+              flush: () => onFlush.pipe(Effect.map(() => captureAnswer({ registered: 1 }))),
             },
           ),
         },
@@ -9761,7 +9720,7 @@ const stampedAnswers = (
                 bootId: "stand-in-boot",
                 bootGeneration: 1,
                 observation,
-                headN: answer.headN ?? null,
+                ...(answer.headN === undefined ? {} : { headN: answer.headN }),
               },
             };
           }),
@@ -9774,19 +9733,15 @@ const flushReport = (
   pending: number,
   shipped: number,
   extra: Partial<WorkspaceCaptureStatus> = {},
-): WorkspaceCaptureStatus => ({
-  epoch: 2,
-  worktreeId: "",
-  pending,
-  stagedBytes: 0,
-  uploadedObjects: shipped,
-  uploadedBytes: shipped * 1000,
-  registered: shipped,
-  fenced: false,
-  paused: false,
-  ...readEverything,
-  ...extra,
-});
+): WorkspaceCaptureStatus =>
+  captureAnswer({
+    epoch: 2,
+    pending,
+    uploadedObjects: shipped,
+    uploadedBytes: shipped * 1000,
+    registered: shipped,
+    ...extra,
+  });
 
 const leaseHeld = (memory: MemoryCaptureStore, worktreeId: string, sessionId: string) => {
   const lease = memory.leases.get(worktreeId);
@@ -12548,7 +12503,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
    * `stopped` — and Mend read every non-live status but `stopped` as kept, so the session read
    * `stopping` for good. `drain`: what Core's `captureDrain()` answers once the executor ended.
    */
-  const dockerStopReportedFailed = async (drain: unknown) => {
+  const dockerStopReportedFailed = async (drain: WorkspaceCaptureDrain) => {
     const created: Array<CreateOptions> = [];
     const ptyStates = new Map<string, InteractiveSessionStatus>();
     const memory = makeMemoryCaptureStore();
@@ -12943,7 +12898,9 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
           sealantLayer: lifecycleLayer(created, {
             captureOps: {
               finalCompletion: "unreported",
-              // Exactly the fields `@sealant/sdk` 0.37.2's `capture.flush()` rebuilds.
+              // Exactly the fields `@sealant/sdk` 0.37.2's `capture.flush()` rebuilt, plus the
+              // `refused` 0.38.0 requires: no snapshot health, as an older facade or control plane
+              // still answers.
               flush: () =>
                 Effect.succeed({
                   epoch: 2,
@@ -12955,6 +12912,7 @@ describe("SessionEngine lifecycle, second review (2026-09-28)", () => {
                   registered: 1,
                   fenced: false,
                   paused: false,
+                  refused: [],
                 }),
             },
           }),
@@ -14269,7 +14227,6 @@ describe("SessionEngine received evidence beats stored evidence (review 2026-09-
                   incompleteReason: "snapshot-failed",
                   unreadable: 1,
                   unreadablePaths: ["tree/after-seal.txt"],
-                  lastSnapError: null,
                 }),
             },
           }),
@@ -16793,18 +16750,7 @@ it(
               answering && argv[0] === "true" ? { exitCode: 0, stdout: "", stderr: "" } : undefined,
             flush: () =>
               answering
-                ? Effect.succeed({
-                    epoch: 0,
-                    worktreeId: "",
-                    pending: 0,
-                    stagedBytes: 0,
-                    uploadedObjects: 0,
-                    uploadedBytes: 0,
-                    registered: 0,
-                    fenced: false,
-                    paused: false,
-                    ...readEverything,
-                  })
+                ? Effect.succeed(captureAnswer())
                 : Effect.fail(
                     new SealantPlatformError({
                       code: "connection_closed",
@@ -16995,19 +16941,7 @@ describe("custom-image setup commands run only on a worktree laid down fresh (re
       /** Every exec, in order, with whether the replan had happened yet. */
       const order: string[] = [];
       let executor: SessionId | null = null;
-      const flush = () =>
-        Effect.succeed({
-          epoch: 2,
-          worktreeId: "",
-          pending: 0,
-          stagedBytes: 0,
-          uploadedObjects: 0,
-          uploadedBytes: 0,
-          registered: 0,
-          fenced: false,
-          paused: false,
-          ...readEverything,
-        } satisfies WorkspaceCaptureStatus);
+      const flush = () => Effect.succeed(captureAnswer({ epoch: 2 }));
       const replan = (workspace: Workspace) =>
         Effect.gen(function* () {
           if (executor === null) throw new Error("no executor to replan");
