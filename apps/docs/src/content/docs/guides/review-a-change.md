@@ -105,8 +105,11 @@ thread's end-of-session reply. `Read this change` only runs when someone asks fo
 
 ### Whose account pays
 
-Passes over a change run on the connected Claude or Codex subscription of the owner of the change's
-session, never the operator's. Mend ships no model keys. See
+A pass runs on the connected Claude or Codex subscription of the person who asked for it, never
+another member's and never the operator's. A pass review prep queues when a session settles runs on
+that session's owner's; the tour a landing asks for runs on the lander's. If you ask while the same
+pass is already queued or running for the change, your request joins it and spends nothing. Without
+a connected account of your own, the pass fails and says so. Mend ships no model keys. See
 [provider accounts](/guides/provider-accounts/). Every exchange and tool call is recorded on the
 server.
 

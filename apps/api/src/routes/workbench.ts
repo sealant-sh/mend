@@ -3506,7 +3506,8 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
         yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         // One pass at a time per change (`reviewPassKey`: a request while one is queued or
         // running is absorbed); a finished pass can be re-requested and reads the newer state.
-        yield* queueReviewPass("read", params.id).pipe(Effect.orDie);
+        // It runs on the asker's own login, never the change owner's (ADR 0008).
+        yield* queueReviewPass("read", params.id, (yield* CurrentUser).user.id).pipe(Effect.orDie);
         return { queued: true };
       }),
     )
@@ -3525,7 +3526,7 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
         const changes = yield* WorktreeChangesRepo;
         yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         // The same key review prep and landing use: one tour per change in flight.
-        yield* queueReviewPass("tour", params.id).pipe(Effect.orDie);
+        yield* queueReviewPass("tour", params.id, (yield* CurrentUser).user.id).pipe(Effect.orDie);
         return { queued: true };
       }),
     )
@@ -3535,7 +3536,9 @@ export const SessionChangesGroupLive = HttpApiBuilder.group(MendApi, "sessionCha
         const changes = yield* WorktreeChangesRepo;
         yield* changes.byId(params.id).pipe(Effect.mapError(() => new NotFound({ id: params.id })));
         // One pass at a time per change; a finished pass can be re-requested.
-        yield* queueReviewPass("suggest", params.id).pipe(Effect.orDie);
+        yield* queueReviewPass("suggest", params.id, (yield* CurrentUser).user.id).pipe(
+          Effect.orDie,
+        );
         return { queued: true };
       }),
     )

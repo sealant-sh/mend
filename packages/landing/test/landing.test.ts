@@ -225,7 +225,7 @@ const harness = (script: Script = {}, options: WorldOptions = {}) => {
         return script.observed ?? PR;
       }),
   });
-  const tourRequests: Array<{ readonly changeId: string }> = [];
+  const tourRequests: Array<{ readonly changeId: string; readonly requestedBy: string }> = [];
   const tours = Layer.succeed(TourRequests, {
     request: (request) =>
       Effect.sync(() => {
@@ -315,7 +315,7 @@ describe("Landing.land", () => {
       const report = yield* (yield* Landing).land(input());
       expect(report.pullRequest._tag).toBe("opened");
       expect(h.published[0]?.section).toContain("- `src/login.ts` · +12 −3");
-      expect(h.tourRequests).toEqual([{ changeId: h.world.change.id }]);
+      expect(h.tourRequests).toEqual([{ changeId: h.world.change.id, requestedBy: OWNER }]);
     }).pipe(Effect.provide(h.layer));
   });
 

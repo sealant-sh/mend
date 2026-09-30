@@ -16,7 +16,6 @@ import {
   ChangePassesRepoLive,
   ProjectsRepo,
   SessionsRepo,
-  WorktreeChangesRepo,
   SealantIdentityStoreLive,
   SettingsRepo,
   ChangesRepoLive,
@@ -204,6 +203,7 @@ import { OwnerLandingLive } from "./owner-landing.ts";
 import { PullRequestAdoptionLive } from "./pull-request-adoption.ts";
 import { RegistrationPolicyLive } from "./registration-policy.ts";
 import { boundedWebRequest } from "./request-budgets.ts";
+import { type ReviewPassJob, runReviewPass } from "./review-pass-worker.ts";
 import { MendApiLive } from "./routes/api-live.ts";
 import { EventsRoutes } from "./routes/events.ts";
 import { GhLive } from "./routes/github.ts";
@@ -433,11 +433,9 @@ const InferenceWorkersLive = Layer.effectDiscard(
     const tourComposer = yield* TourComposer;
     const suggester = yield* ChangeSuggester;
     const passes = yield* ChangePassesRepo;
-    const sessionChanges = yield* WorktreeChangesRepo;
     const sessionsForJobs = yield* SessionsRepo;
-    // Inference runs on the SESSION OWNER's connected subscription (plan §9.3, docs/SEALANT-
-    // IDENTITY.md): a pass over someone's change is paid for by their account, never the
-    // operator's.
+    // Session naming runs on the SESSION OWNER's connected subscription (plan §9.3, docs/SEALANT-
+    // IDENTITY.md): it is their session's name, never the operator's spend.
     const asSessionOwner =
       (sessionId: SessionId) =>
       <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
@@ -447,40 +445,17 @@ const InferenceWorkersLive = Layer.effectDiscard(
             self.pipe(asSealantUser(Option.isSome(session) ? session.value.ownerUserId : null)),
           ),
         );
-    const asChangeOwner =
-      (changeId: ChangeId) =>
-      <A, E, R>(self: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
-        sessionChanges.byId(changeId).pipe(
-          Effect.option,
-          Effect.flatMap((change) =>
-            Option.isSome(change) && change.value.sessionId !== null
-              ? asSessionOwner(change.value.sessionId)(self)
-              : self,
-          ),
-        );
-    // Every change pass records its outcome — running, completed with a
-    // count, or failed with the error's own words — so the review page can
-    // state what ran instead of leaving "drafted nothing" and "never ran"
-    // looking identical. Failures still propagate into pg-boss retry.
+    // A pass runs on the login of whoever asked for it (ADR 0008), never the change owner's.
     const recorded = (
       kind: "tour" | "read" | "suggest",
-      changeId: ChangeId,
+      job: ReviewPassJob,
       pass: Effect.Effect<unknown, InferenceError>,
-    ) =>
-      passes.begin(changeId, kind).pipe(
-        Effect.andThen(pass),
-        Effect.tap((findings) =>
-          passes.complete(changeId, kind, typeof findings === "number" ? findings : null),
-        ),
-        Effect.tapError((error) => passes.fail(changeId, kind, error.message)),
-      );
+    ) => runReviewPass(kind, job, pass).pipe(Effect.provideService(ChangePassesRepo, passes));
     yield* jobs.work(
       "read-change",
       (payload) =>
         decodeReadChangeJob(payload).pipe(
-          Effect.flatMap((job) =>
-            asChangeOwner(job.changeId)(recorded("read", job.changeId, reader.read(job))),
-          ),
+          Effect.flatMap((job) => recorded("read", job, reader.read(job))),
           Effect.orDie,
         ),
       REVIEW_PASS_WORK,
@@ -510,9 +485,9 @@ const InferenceWorkersLive = Layer.effectDiscard(
       (payload) =>
         decodeComposeTourJob(payload).pipe(
           Effect.flatMap((job) =>
-            asChangeOwner(job.changeId)(
-              recorded("tour", job.changeId, tourComposer.compose(job)),
-            ).pipe(Effect.andThen(describeAfterTour(job.changeId))),
+            recorded("tour", job, tourComposer.compose(job)).pipe(
+              Effect.andThen(describeAfterTour(job.changeId)),
+            ),
           ),
           Effect.orDie,
         ),
@@ -522,9 +497,7 @@ const InferenceWorkersLive = Layer.effectDiscard(
       "suggest-change",
       (payload) =>
         decodeSuggestChangeJob(payload).pipe(
-          Effect.flatMap((job) =>
-            asChangeOwner(job.changeId)(recorded("suggest", job.changeId, suggester.suggest(job))),
-          ),
+          Effect.flatMap((job) => recorded("suggest", job, suggester.suggest(job))),
           Effect.orDie,
         ),
       REVIEW_PASS_WORK,

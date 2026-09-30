@@ -165,7 +165,9 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
 
     /**
      * The request's intent: what an option or Slack's thread reading already recorded, else one
-     * small call as the owner, recorded on the turn. Unreadable reads as not read.
+     * small call on the login of whoever sent the turn, recorded on the turn (docs/adr/0008,
+     * "Whose login pays"). A turn with no recorded sender is read on no one's login and reads as
+     * not read, as does anything else unreadable.
      */
     const intentOf = (session: Session, turn: AgentTurn, turns: ReadonlyArray<AgentTurn>) =>
       Effect.gen(function* () {
@@ -182,7 +184,7 @@ export const makeAutomaticLanding = (options: AutomaticLandingOptions = {}) =>
         const reading = yield* reader
           .read({ request: requestOfTurn(turn.input), context: earlier })
           .pipe(
-            asSealantUser(session.ownerUserId),
+            asSealantUser(turn.author),
             Effect.map((intent): RequestIntentReading => ({ intent, source: "read" })),
             Effect.catch((error) =>
               Effect.logInfo("automatic landing: the request's intent was not read").pipe(

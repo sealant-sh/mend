@@ -33,19 +33,22 @@ const request = (fails: boolean) => {
   );
   return Effect.runPromise(
     Effect.gen(function* () {
-      yield* (yield* TourRequests).request({ changeId: ChangeId.make("change-1") });
+      yield* (yield* TourRequests).request({
+        changeId: ChangeId.make("change-1"),
+        requestedBy: "user-lander",
+      });
       return { enqueued, passes };
     }).pipe(Effect.provide(layer)),
   );
 };
 
 describe("TourRequestsLive", () => {
-  it("queues the compose-tour pass under the key review prep and the review page use", async () => {
+  it("queues the compose-tour pass on the lander's login, under the key review prep and the review page use", async () => {
     const { enqueued, passes } = await request(false);
     expect(enqueued).toEqual([
       {
         name: "compose-tour",
-        payload: { changeId: "change-1" },
+        payload: { changeId: "change-1", requestedBy: "user-lander" },
         idempotencyKey: "compose-tour:change-1",
       },
     ]);

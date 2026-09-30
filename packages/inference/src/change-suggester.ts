@@ -13,6 +13,12 @@ import { makeTool } from "./toolset.ts";
 /** The `suggest-change` job's payload — at settle when automation says so, or on demand. */
 export class SuggestChangeJob extends Schema.Class<SuggestChangeJob>("SuggestChangeJob")({
   changeId: ChangeId,
+  /**
+   * The Mend user whose login pays for the pass (docs/adr/0008-one-refresher-for-provider-logins.md,
+   * "Whose login pays"): whoever asked, or the owner of the session whose settle queued it. Absent
+   * only on a job queued before the field existed, which the worker refuses to run.
+   */
+  requestedBy: Schema.optional(Schema.String),
 }) {}
 
 /** The pass refuses to become a firehose: past this, only the reviewer asks for more. */
