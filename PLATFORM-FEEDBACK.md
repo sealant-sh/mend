@@ -7,6 +7,21 @@ around by importing internals.
 Format: date · SDK version · what Mend needed · what exists today · suggested surface. Entries stay
 after they ship, marked **Shipped**, so the dogfood trail stays readable.
 
+## 2026-09-30 · 0.38.0 · A launch cannot say whether the platform is building its image
+
+- **Needed:** after a workspace image recipe changes, the first launch per project and harness waits
+  ~8 min for the MicroVM image build. Mend wants the session line to say so
+  (`starting · building the workspace image …`) and `booting` once the executor launches.
+- **Today:** the SDK reports the workspace `queued`/`running` for both the build job and the runtime
+  launch (Core's `resolveWorkspaceStatus` folds `latestJob.status === "running"` into `running`),
+  and `workspace.runtime()` is `null` until a runtime exists. Mend creates with `wait: false`,
+  watches `runtime()` while `ready()` waits, and says "building" once the platform has reported no
+  executor for 20 s after the create was accepted. That is an inference, not an observation. A
+  cached image with a slow queue would read the same.
+- **Suggested:** expose the build job on the workspace
+  (`details().build: { status: "queued" | "running" | "succeeded" | "failed", cached: boolean, startedAt }`)
+  or as a `status.building` event on `events()`, so Mend can say what Core observed.
+
 ## 2026-09-28 · 0.37.2 · e2e8: a capture step past its bound (`overdue`)
 
 - **Needed:** in e2e8 a capture deadlocked on a `git cat-file --batch-check` pipe for 17 minutes

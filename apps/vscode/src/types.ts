@@ -41,6 +41,8 @@ export interface Session {
   readonly status: SessionStatus;
   /** The session's current workspace — the SSH-reachable environment its worktree is mounted in. */
   readonly sealantWorkspaceId: string | null;
+  /** What the session line says after its status (`building the workspace image …`); older servers omit it. */
+  readonly summary: string | null;
   readonly createdAt: string;
 }
 

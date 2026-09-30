@@ -98,6 +98,22 @@ export interface CaptureDrainPolicyShape {
   readonly statusInterval: Duration.Duration;
   /** The least time between two status reads a client's view asks for, per session. */
   readonly statusMinInterval: Duration.Duration;
+  /**
+   * How long a launch waits for the worktree's previous executor to end (saving, unreachable or
+   * lapsed) before it is refused. A save takes 10–60 s on S3 and ~10–20 min on Garage.
+   * MEND_LAUNCH_LEASE_WAIT_SECONDS.
+   */
+  readonly leaseWait: Duration.Duration;
+  /** Between two looks at the previous executor while a launch waits for it. */
+  readonly leaseWaitInterval: Duration.Duration;
+  /**
+   * How long a create may go with no executor on the platform before the session line says the
+   * workspace image is being built (SDK 0.38.0 reports no build state; Core builds or finds the
+   * image before it launches a runtime).
+   */
+  readonly imageBuildAfter: Duration.Duration;
+  /** Between two looks at a create's executor while it gets ready. */
+  readonly createPhaseInterval: Duration.Duration;
 }
 
 export class CaptureDrainPolicy extends Context.Service<
@@ -117,6 +133,10 @@ const DEFAULT_DRAIN_POLICY: CaptureDrainPolicyShape = {
   keptRetryMax: Duration.minutes(5),
   statusInterval: Duration.seconds(45),
   statusMinInterval: Duration.seconds(10),
+  leaseWait: Duration.minutes(30),
+  leaseWaitInterval: Duration.seconds(5),
+  imageBuildAfter: Duration.seconds(20),
+  createPhaseInterval: Duration.seconds(5),
 };
 
 /** The defaults, with nothing read from the environment. */
@@ -143,8 +163,12 @@ export const CaptureDrainPolicyLive: Layer.Layer<CaptureDrainPolicy, Config.Conf
       const statusSeconds = yield* Config.int("MEND_CAPTURE_STATUS_SECONDS").pipe(
         Config.withDefault(Duration.toSeconds(DEFAULT_DRAIN_POLICY.statusInterval)),
       );
+      const leaseWaitSeconds = yield* Config.int("MEND_LAUNCH_LEASE_WAIT_SECONDS").pipe(
+        Config.withDefault(Duration.toSeconds(DEFAULT_DRAIN_POLICY.leaseWait)),
+      );
       return {
         ...DEFAULT_DRAIN_POLICY,
+        leaseWait: Duration.seconds(Math.max(0, leaseWaitSeconds)),
         statusInterval: Duration.seconds(Math.max(5, statusSeconds)),
         stallSeconds: Math.max(1, stallSeconds),
         executorMaxSeconds: Option.getOrNull(executorMaxSeconds),

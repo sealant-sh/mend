@@ -140,6 +140,9 @@ import {
   makeDotfilesClonerLayer,
   HARNESS_HOME_MOUNT_PATH,
   HarnessStateNotFoundError,
+  LAUNCH_BOOTING,
+  LAUNCH_BUILDING_IMAGE,
+  LAUNCH_WAITING_SAVING,
   LegacyBenchReadOnlyError,
   ProtocolHost,
   ServiceHost,
@@ -195,6 +198,7 @@ import type {
   WorkspaceCaptureDrain,
   WorkspaceCaptureReplanned,
   WorkspaceCaptureStatus,
+  WorkspaceRuntimeInfo,
   WorkspaceStatus,
 } from "@sealant/sdk";
 import {
@@ -1853,7 +1857,16 @@ const sessionsLayer = (world: World) => {
       Effect.sync(() => update(id, { extraMounts: mounts })),
     setProviderSessionId: (id, providerSessionId) =>
       Effect.sync(() => update(id, { providerSessionId })),
-    setStatus: (id, status) => Effect.sync(() => update(id, { status })),
+    // As SessionsRepo: the first `running` stamps `started_at`, whichever verb writes it.
+    setStatus: (id, status) =>
+      Effect.sync(() =>
+        update(id, {
+          status,
+          ...(status === "running"
+            ? { startedAt: world.sessions.get(id)?.startedAt ?? now() }
+            : {}),
+        }),
+      ),
     nativeIngestCursor: () => Effect.succeed(null),
     setNativeIngestCursor: () => Effect.void,
     saveLastSeenSequence: (id, sequence) =>
@@ -1870,6 +1883,9 @@ const sessionsLayer = (world: World) => {
       Effect.sync(() =>
         update(id, {
           status,
+          ...(status === "running"
+            ? { startedAt: world.sessions.get(id)?.startedAt ?? now() }
+            : {}),
           settledAt: null,
           idleStoppedAt: null,
           captureDiscardedAt: null,
@@ -2452,6 +2468,11 @@ const testDrainPolicy = (overrides: Partial<CaptureDrainPolicyShape> = {}) =>
     keptRetryMax: Duration.minutes(5),
     statusInterval: Duration.seconds(45),
     statusMinInterval: Duration.seconds(10),
+    // A launch waits this long for a worktree's previous executor before it is refused.
+    leaseWait: Duration.millis(300),
+    leaseWaitInterval: Duration.millis(10),
+    imageBuildAfter: Duration.millis(40),
+    createPhaseInterval: Duration.millis(10),
     ...overrides,
   });
 
@@ -3244,12 +3265,13 @@ describe("SessionEngine", () => {
     );
   });
 
-  it("settles a protocol launch interrupted during workspace provisioning", async () => {
+  it("a caller that goes away mid-launch leaves the launch running: the agent starts and the session reads running", async () => {
+    // Alpha 2026-09-30 (cc05cb8a, 48763b65): a client that gave up on the launch request
+    // interrupted the launch wherever it stood — a running agent whose session read `starting`
+    // with `started_at` null for good. The caller's interruption now ends only its own wait.
     const created: CreateOptions[] = [];
-    let notifyStarted: (() => void) | undefined;
-    const started = new Promise<void>((resolve) => {
-      notifyStarted = resolve;
-    });
+    const createAsked = await Effect.runPromise(Deferred.make<void>());
+    const createAnswered = await Effect.runPromise(Deferred.make<void>());
     await withEngine(
       (world, tmp) =>
         Effect.gen(function* () {
@@ -3263,29 +3285,112 @@ describe("SessionEngine", () => {
             ownerUserId: "user-fixture",
             base: null,
           });
-          const launch = yield* engine
-            .launchProtocol(session.id, { mode: "protocol", permissionMode: "bypass" }, "user-1")
-            .pipe(Effect.forkChild);
-          yield* Effect.promise(() => started);
-          yield* Fiber.interrupt(launch);
+          const caller = yield* engine.launch(session.id, ["codex"]).pipe(Effect.forkChild);
+          yield* Deferred.await(createAsked);
+          yield* Fiber.interrupt(caller);
+          expect(world.sessions.get(session.id)?.status).toBe("starting");
 
-          const interrupted = world.sessions.get(session.id);
-          expect(interrupted?.status).toBe("failed");
-          expect(interrupted?.summary).toContain("interrupted");
+          yield* Deferred.succeed(createAnswered, undefined);
+          yield* until(
+            () => world.sessions.get(session.id)?.status === "running",
+            "the launch the caller left to reach running",
+          );
+          const running = world.sessions.get(session.id);
+          expect(running?.startedAt).not.toBeNull();
+          expect(running?.sealantRunId).not.toBeNull();
+          expect(
+            [...world.processes.values()].some(
+              (process) => process.sessionId === session.id && process.kind === "agent-pty",
+            ),
+          ).toBe(true);
         }),
       {
-        sealantLayer: sealantLaunchLayer(
-          created,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          undefined,
-          () => Effect.sync(() => notifyStarted?.()).pipe(Effect.andThen(Effect.never)),
-        ),
+        sealantLayer: lifecycleLayer(created, {
+          captureOps: {
+            beforeCreate: () =>
+              Deferred.succeed(createAsked, undefined).pipe(
+                Effect.andThen(Deferred.await(createAnswered)),
+              ),
+          },
+        }),
       },
+    );
+  });
+
+  it("a cold launch says where it stands while the platform builds the image and boots the executor, and answers once it runs", async () => {
+    // Alpha 2026-09-30: the first launch after an image recipe change waited ~8 min for the
+    // MicroVM image build and the session line said nothing but `starting`.
+    const created: CreateOptions[] = [];
+    const answered = await Effect.runPromise(Deferred.make<void>());
+    let executorUp = false;
+    const executor: WorkspaceRuntimeInfo = {
+      kind: "microvm",
+      resourceId: "microvm-1",
+      reference: "microvm-1",
+      status: "pending",
+      deadline: null,
+    };
+    const watchedCreates = Layer.effect(
+      SealantClient,
+      Effect.gen(function* () {
+        const client = yield* SealantClient;
+        return {
+          ...client,
+          // The create is accepted, then gets ready only once the test says: the watch runs
+          // beside it with the handle, as `SealantClient.createWorkspace` runs it.
+          createWorkspace: (options, launch, watch) =>
+            client.createWorkspace(options, launch).pipe(
+              Effect.tap((workspace) =>
+                Effect.gen(function* () {
+                  if (watch === undefined) return;
+                  const watcher = yield* Effect.forkChild(
+                    watch({ ...workspace, runtime: async () => (executorUp ? executor : null) }),
+                  );
+                  yield* Deferred.await(answered);
+                  yield* Fiber.interrupt(watcher);
+                }),
+              ),
+            ),
+        };
+      }),
+    ).pipe(Layer.provide(lifecycleLayer(created)));
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const launching = yield* engine
+            .launch(session.id, ["codex"])
+            .pipe(Effect.forkChild({ startImmediately: true }));
+          yield* until(
+            () => world.sessions.get(session.id)?.summary === LAUNCH_BOOTING,
+            "booting, as the create is accepted",
+          );
+          // No executor on the platform past `imageBuildAfter`: the image is being built.
+          yield* until(
+            () => world.sessions.get(session.id)?.summary === LAUNCH_BUILDING_IMAGE,
+            "the image build line",
+          );
+          expect(world.sessions.get(session.id)?.status).toBe("starting");
+          executorUp = true;
+          yield* until(
+            () => world.sessions.get(session.id)?.summary === LAUNCH_BOOTING,
+            "booting, once the executor exists",
+          );
+          yield* Deferred.succeed(answered, undefined);
+          const launched = yield* Fiber.join(launching);
+          expect(launched.status).toBe("running");
+          expect(world.sessions.get(session.id)?.summary ?? null).toBeNull();
+        }),
+      { sealantLayer: watchedCreates },
     );
   });
 
@@ -10971,6 +11076,8 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
             expect(refused._tag === "SealantPlatformError" && refused.message).toContain(
               "saving before it ends",
             );
+            // Refused only once the wait's bound (300 ms here, 30 min live) has passed.
+            expect(world.sessions.get(second.id)?.status).toBe("failed");
             // Nothing was started in the ending executor, and no second executor was made.
             expect(spawned).toHaveLength(spawnedBefore);
             expect(created).toHaveLength(1);
@@ -10979,6 +11086,126 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
           captured: memory,
           sealantLayer: lifecycleLayer(created, {
             spawned,
+            captureOps: { finalCompletion: "unreported" },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "a launch behind an executor that is saving waits for its end, says so, and then starts cold (alpha 2026-09-30)",
+    { timeout: 20_000 },
+    async () => {
+      // Alpha: b729dd35 was started 15 s after cc05cb8a exited in the same worktree and failed at
+      // once, `worktree leased · … saving before it ends · start again once it has`; the save
+      // finished 15 s later. The launch now waits for that end and goes on by itself.
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      let firstEnded = false;
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the first executor, saving",
+            );
+            const second = yield* engine.provisionSessionIn(session.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: "user-fixture",
+            });
+            const launching = yield* engine
+              .launch(second.id, ["claude"])
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            yield* until(
+              () => world.sessions.get(second.id)?.summary === LAUNCH_WAITING_SAVING,
+              "the waiting line",
+            );
+            yield* Effect.sleep(Duration.millis(100));
+            // Waiting, not refused, and nothing else started over the saving executor.
+            expect(world.sessions.get(second.id)?.status).toBe("starting");
+            expect(world.sessions.get(second.id)?.settledAt).toBeNull();
+            expect(created).toHaveLength(1);
+            expect(memory.leases.get(session.worktreeId)?.executorId).toBe(session.id);
+
+            // The first executor ends: the platform reports it gone and its lease lapses.
+            const epochBefore = memory.leases.get(session.worktreeId)?.epoch ?? 0;
+            const realNow = memory.clock.now;
+            memory.clock.now = () => realNow() + 10 * 60 * 1000;
+            firstEnded = true;
+            const launched = yield* Fiber.join(launching).pipe(
+              Effect.ensuring(Effect.sync(() => (memory.clock.now = realNow))),
+            );
+            expect(launched.status).toBe("running");
+            expect(created).toHaveLength(2);
+            expect(memory.leases.get(session.worktreeId)?.executorId).toBe(second.id);
+            expect(memory.leases.get(session.worktreeId)?.epoch).toBe(epochBefore + 1);
+            // The waiting words end with the wait.
+            expect(world.sessions.get(second.id)?.summary ?? null).toBeNull();
+          }),
+        {
+          captured: memory,
+          drainPolicy: { leaseWait: Duration.seconds(15) },
+          sealantLayer: lifecycleLayer(created, {
+            dead: () => firstEnded,
+            captureOps: {
+              finalCompletion: "unreported",
+              // The fake has one workspace: the second executor is alive once it is created.
+              beforeCreate: () =>
+                Effect.sync(() => {
+                  if (created.length > 1) firstEnded = false;
+                }),
+            },
+          }),
+        },
+      );
+    },
+  );
+
+  it(
+    "a launch waiting for the worktree's previous executor launches nothing once its owner stops it",
+    { timeout: 20_000 },
+    async () => {
+      const created: Array<CreateOptions> = [];
+      const memory = makeMemoryCaptureStore();
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const { engine, session } = yield* launchOnce(world, tmp);
+            yield* engine.launch(session.id, ["codex"]);
+            yield* engine.stop(session.id);
+            yield* until(
+              () => world.sessions.get(session.id)?.captureNotSavedAt != null,
+              "the first executor, saving",
+            );
+            const second = yield* engine.provisionSessionIn(session.worktreeId, {
+              harness: "claude",
+              label: null,
+              ownerUserId: "user-fixture",
+            });
+            const launching = yield* engine
+              .launch(second.id, ["claude"])
+              .pipe(Effect.forkChild({ startImmediately: true }));
+            yield* until(
+              () => world.sessions.get(second.id)?.summary === LAUNCH_WAITING_SAVING,
+              "the waiting line",
+            );
+            yield* engine.stop(second.id);
+            const refused = yield* Fiber.join(launching).pipe(Effect.flip);
+            expect(refused._tag === "SealantPlatformError" && refused.code).toBe(
+              "launch_cancelled",
+            );
+            expect(world.sessions.get(second.id)?.status).toBe("stopped");
+            expect(created).toHaveLength(1);
+          }),
+        {
+          captured: memory,
+          drainPolicy: { leaseWait: Duration.seconds(15) },
+          sealantLayer: lifecycleLayer(created, {
             captureOps: { finalCompletion: "unreported" },
           }),
         },

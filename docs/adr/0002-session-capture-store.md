@@ -73,9 +73,10 @@ So the **lease and the capture chain are keyed per worktree**. One executor hold
 time. A join, a sibling shell, an editor takeover and a phone pickup all run as another process
 inside the lease holder's executor; a request that would need a second executor for a leased
 worktree is refused with a stable code (`worktree_leased`, 409). ADR-0015's "one executor per
-session" is amended to say worktree. Accepted relaxation for later, if refusing hurts: a second
-session on a busy worktree may get its own executor holding a read-only copy that cannot capture;
-only the lease holder writes. It changes nothing in storage.
+session" is amended to say worktree. Amended 2026-09-30: a launch waits before it is refused (see "A
+launch waits for the worktree's previous executor" below). Accepted relaxation for later, if
+refusing hurts: a second session on a busy worktree may get its own executor holding a read-only
+copy that cannot capture; only the lease holder writes. It changes nothing in storage.
 
 ### Postgres schema
 
@@ -334,6 +335,37 @@ killed, so a 30 s Mend outage costs nothing. The lease fences the store, not the
 own `git push` or `gh pr create` with a connected-account token is not fenced by a Postgres row.
 Stated, not hidden.
 
+### A launch waits for the worktree's previous executor (amended 2026-09-30)
+
+On alpha a session started 15 s after another in its worktree ended was refused at once
+(`worktree leased · … saving before it ends · start again once it has`); the save finished 15 s
+later. A save takes 10–60 s on S3 and about 10–20 minutes on Garage, so every quick restart hit
+this. A launch now waits instead. While the lease holder is `ending` (it is saving before it ends),
+`unreachable` or `lapsed`, the launch looks at it again every 5 s. The session meanwhile reads
+`starting · waiting · the previous session in this worktree is saving` (or `… is not answering`,
+`… has not confirmed its end`). The launch goes on only on what a retry by hand would go on: the
+lease `free`, released once the holder's end was confirmed as above, or `held` by a reachable
+executor it joins. Nothing is stopped and nothing is taken for ended. Past the bound (30 min,
+`MEND_LAUNCH_LEASE_WAIT_SECONDS`) the launch is refused with `worktree_leased` as before, the
+message ending `· waited N min`. An owner's stop while it waits launches nothing
+(`launch_cancelled`).
+
+### A launch answers promptly (amended 2026-09-30)
+
+A launch used to hold its HTTP request for its whole course, an image build included (~8 min after a
+recipe change). Clients gave up (the CLI at ~5 min, with a false "cannot reach the Mend server"),
+and a client that went away interrupted the launch wherever it stood: after the agent started and
+before its process row and `running` were written, so a running agent's session read `starting` with
+`started_at` null for good. Now every launch verb runs in the engine's lifetime, not the caller's.
+`POST /sessions/:id/launch` answers within 30 s: with the launched session, or with the session as
+it stands (`starting`). Its summary then says where the launch is:
+`waiting · the previous session in this worktree is saving`,
+`building the workspace image (first launch after an update, ~8 min)`, or `booting`. The launch goes
+on to `running`, or settles `failed` with the reason. The account's launch slot is held until the
+launch ends, not until the answer. Mend infers "building" from what the platform reports: no
+executor 20 s after the create was accepted. SDK 0.38.0 reports no build state (PLATFORM-FEEDBACK.md
+2026-09-30).
+
 ### Stop drains, then terminates
 
 Amended 2026-09-27. Nothing an executor holds is lost to a stop Mend asks for: no compute holding a
@@ -579,7 +611,9 @@ Mend-side details the decision record left open, decided in this ADR:
 6. Lease and chain rows are created with the worktree row and capture 0, in one transaction.
 7. Lease release is `expires_at = now()` under the holder's epoch; `NULL` means never claimed.
 8. Heartbeat every 10 s against the 30 s expiry; the reaper ticks every 10 s.
-9. A second executor for a leased worktree is refused with `worktree_leased` (409).
+9. A second executor for a leased worktree is refused with `worktree_leased` (409), once a launch
+   has waited up to `MEND_LAUNCH_LEASE_WAIT_SECONDS` (default 30 min) for the holder to end
+   (2026-09-30).
 10. `DeploymentConfig` gains `sessionStore: colocated | captured` (`MEND_SESSION_STORE`), orthogonal
     to `mode`; `captured` requires the network session endpoint.
 11. Bucket configuration: `MEND_BLOB_STORE` (`dir://` or `s3://`) plus `MEND_BLOB_STORE_PUBLIC_URL`

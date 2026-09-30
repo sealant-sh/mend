@@ -12,7 +12,7 @@ import {
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import { SessionEngine } from "@mend/sessions";
-import { Effect, Layer } from "effect";
+import { Duration, Effect, Fiber, Layer, Option } from "effect";
 import * as Context from "effect/Context";
 
 import { ProjectAccess } from "./access.ts";
@@ -34,6 +34,24 @@ export interface CreateSessionInput {
    * `--no-land`, or a Slack request's `autopr=`. Absent or null follows the project.
    */
   readonly autoLand?: boolean | null;
+}
+
+/**
+ * How long `POST /sessions/:id/launch` waits for the launch before it answers with the session as
+ * it stands (docs/adr/0002, "A launch answers promptly"). A launch that has not reached its agent
+ * by then goes on in the background: the session reads `starting`, its summary says where the
+ * launch stands (`waiting · the previous session in this worktree is saving`, `building the
+ * workspace image …`, `booting`), and it moves to `running` or settles `failed` with the reason.
+ */
+export const LAUNCH_ANSWER_WINDOW = Duration.seconds(30);
+
+/** How a caller of `launchAs` waits. */
+export interface LaunchAnswer {
+  /**
+   * Answer with the session as it stands once this has passed; the launch goes on. Absent: wait
+   * for the launch to end, whatever it takes (Slack, which reports through its own messages).
+   */
+  readonly within?: Duration.Duration;
 }
 
 /** Provision, then launch: what Slack asks for in one step. */
@@ -67,6 +85,7 @@ export class SessionStart extends Context.Service<
       userId: string,
       session: Session,
       input: LaunchRequest,
+      answer?: LaunchAnswer,
     ) => Effect.Effect<Session, StartError>;
     /** Project access, the session budget, provision, the launch slot, launch, the auto-namer. */
     readonly startAs: (
@@ -149,10 +168,37 @@ export const makeSessionStart = Effect.gen(function* () {
       );
   });
 
+  /**
+   * A launch that failed after its caller was answered, and left the session reading `starting`
+   * with nothing asked of the platform (no workspace, no run, no create on record): the session
+   * says why, instead of `starting` for good. Anything that did reach the platform is the engine's
+   * to settle (its own failure paths, the reaper for a create whose answer was lost).
+   */
+  const settleUnlaunched = Effect.fn("SessionStart.settleUnlaunched")(function* (
+    session: Session,
+    message: string,
+  ) {
+    const current = yield* sessions
+      .byId(session.id)
+      .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+    if (
+      current === null ||
+      current.status !== "starting" ||
+      current.settledAt !== null ||
+      current.sealantWorkspaceId !== null ||
+      current.sealantRunId !== null ||
+      (yield* sessions.executorCreateOf(session.id)) !== null
+    ) {
+      return;
+    }
+    yield* sessions.settle(session.id, "failed", `launch failed: ${message}`);
+  });
+
   const launchAs = Effect.fn("SessionStart.launchAs")(function* (
     userId: string,
     session: Session,
     input: LaunchRequest,
+    answer: LaunchAnswer = {},
   ) {
     if (input.mode === "protocol" && input.argv !== undefined) {
       return yield* new StoreFailure({
@@ -219,8 +265,10 @@ export const makeSessionStart = Effect.gen(function* () {
           )
         : engine.launch(session.id, argv);
     // A launch holds a platform workspace build for minutes. One account starts a bounded
-    // number at once; a launch already under way is never touched.
-    const launched = yield* budgets.withLaunchSlot(
+    // number at once; a launch already under way is never touched. The slot is held for the
+    // launch's whole course, in the background too: it is taken and given back inside the
+    // detached fiber, never by the caller's answer.
+    const running = budgets.withLaunchSlot(
       userId,
       launch.pipe(
         Effect.tap(() => (inlineNamePrompt === null ? queueAutoName : Effect.void)),
@@ -252,12 +300,34 @@ export const makeSessionStart = Effect.gen(function* () {
           DotfilesResolveError: (error) =>
             Effect.fail(new StoreFailure({ message: error.message })),
         }),
+        Effect.tapError((error) =>
+          error._tag === "StoreFailure"
+            ? settleUnlaunched(session, error.message).pipe(Effect.ignore)
+            : Effect.void,
+        ),
       ),
     );
-    if (launched === null) {
+    // Detached from the caller: a client that goes away, or an answer given before the launch
+    // ended, never cuts the launch short.
+    const fiber = yield* engine.detach(running);
+    const answered =
+      answer.within === undefined
+        ? Option.some(yield* Fiber.join(fiber))
+        : yield* Fiber.join(fiber).pipe(Effect.timeoutOption(answer.within));
+    if (Option.isNone(answered)) {
+      // Still under way: the session as it stands, which says where the launch is.
+      return yield* sessions
+        .byId(session.id)
+        .pipe(
+          Effect.catchTag("SessionNotFoundError", () =>
+            Effect.fail(new NotFound({ id: session.id })),
+          ),
+        );
+    }
+    if (answered.value === null) {
       return yield* budgetExceeded("accountLaunchesInFlight", budgets.limits);
     }
-    return launched;
+    return answered.value;
   });
 
   const startAs = Effect.fn("SessionStart.startAs")(function* (

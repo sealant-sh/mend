@@ -39,7 +39,7 @@ import {
   SealantApiClient,
   sealantApiClientLayer,
 } from "@sealant/sdk/effect";
-import { Clock, type Config, Effect, Layer, Option, Redacted, Scope, Stream } from "effect";
+import { Clock, type Config, Effect, Fiber, Layer, Option, Redacted, Scope, Stream } from "effect";
 import * as Context from "effect/Context";
 
 import { ConnectedAccount, type ConnectAccountInput } from "./accounts.ts";
@@ -549,6 +549,12 @@ export interface SealantClientShape {
   readonly createWorkspace: (
     options: CreateOptions,
     launch?: WorkspaceCreateLaunch,
+    /**
+     * Runs beside the wait for the workspace to be ready, given its handle as soon as the control
+     * plane accepted the create, and is interrupted once it is ready or the create fails: what
+     * lets a launch say whether the platform is still building the image or booting the executor.
+     */
+    watch?: (workspace: Workspace) => Effect.Effect<void>,
   ) => Effect.Effect<Workspace, SealantPlatformError>;
   /** The workspace a keyed create made (`workspaceByKeyOf`); `unsupported` on SDK 0.37.2. */
   readonly findWorkspaceByKey: (key: string) => Effect.Effect<WorkspaceByKey, SealantPlatformError>;
@@ -811,6 +817,7 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
     const createWorkspace = Effect.fn("SealantClient.createWorkspace")((
       options: CreateOptions,
       launch?: WorkspaceCreateLaunch,
+      watch?: (workspace: Workspace) => Effect.Effect<void>,
     ) => {
       // SDK 0.37.2 builds its request field by field and drops both; Core's next SDK sends them.
       const keyed: CreateOptions & {
@@ -824,7 +831,20 @@ const makeUserClient = (env: SealantEnvShape, ownerUserIdInput: string) =>
               idempotencyKey: launch.idempotencyKey,
               ...(launch.launchId === undefined ? {} : { launchId: launch.launchId }),
             };
-      return wrap(() => sealant.workspaces.create(keyed));
+      if (watch === undefined) return wrap(() => sealant.workspaces.create(keyed));
+      // The SDK's own `create` is exactly this: the create, then `ready()` on the handle it made
+      // (whose readiness timeout still stops an abandoned launch). Split only so the handle can be
+      // watched while it gets ready.
+      return wrap(() => sealant.workspaces.create({ ...keyed, wait: false })).pipe(
+        Effect.flatMap((workspace) =>
+          Effect.gen(function* () {
+            const watcher = yield* Effect.forkChild(watch(workspace));
+            return yield* wrap(() => workspace.ready()).pipe(
+              Effect.ensuring(Fiber.interrupt(watcher)),
+            );
+          }),
+        ),
+      );
     });
 
     const findWorkspaceByKey = Effect.fn("SealantClient.findWorkspaceByKey")((key: string) =>
@@ -1431,7 +1451,8 @@ export const SealantClientLive: Layer.Layer<SealantClient, never, SealantClients
     ): Stream.Stream<A, SealantPlatformError> => Stream.unwrap(Effect.map(current, call));
 
     return {
-      createWorkspace: (options, launch) => via((c) => c.createWorkspace(options, launch)),
+      createWorkspace: (options, launch, watch) =>
+        via((c) => c.createWorkspace(options, launch, watch)),
       findWorkspaceByKey: (key) => via((c) => c.findWorkspaceByKey(key)),
       fenceWorkspaceCreate: (key) => via((c) => c.fenceWorkspaceCreate(key)),
       getWorkspace: (id) => via((c) => c.getWorkspace(id)),

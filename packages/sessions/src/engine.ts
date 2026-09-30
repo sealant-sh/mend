@@ -172,6 +172,7 @@ import {
   Duration,
   Effect,
   Exit,
+  Fiber,
   Layer,
   Option,
   Result,
@@ -574,6 +575,28 @@ const STALE_ON_START_PREFIXES = [
   DEPENDENCY_INSTALL_SKIPPED_PREFIX,
 ] as const;
 
+/**
+ * What a launch says on the session line while it is under way and before its agent runs: it waits
+ * for the worktree's previous executor to end, or the platform builds and boots the workspace.
+ * Always the last words of the summary, replaced as the launch moves on and taken off once the
+ * agent runs (`clearStaleStartSummary`); a failure's own words replace them.
+ */
+export const LAUNCH_WAITING_PREFIX = "waiting · the previous session in this worktree";
+export const LAUNCH_WAITING_SAVING = `${LAUNCH_WAITING_PREFIX} is saving`;
+export const LAUNCH_BOOTING = "booting";
+export const LAUNCH_BUILDING_IMAGE =
+  "building the workspace image (first launch after an update, ~8 min)";
+const LAUNCH_PHASE_PREFIXES = [LAUNCH_WAITING_PREFIX, LAUNCH_BOOTING, LAUNCH_BUILDING_IMAGE];
+/** A summary without the launch phase words at its end; null when they were all it said. */
+export const withoutLaunchPhase = (summary: string | null): string | null => {
+  if (summary === null) return null;
+  for (const prefix of LAUNCH_PHASE_PREFIXES) {
+    if (summary.startsWith(prefix)) return null;
+    const at = summary.indexOf(` · ${prefix}`);
+    if (at >= 0) return summary.slice(0, at);
+  }
+  return summary;
+};
 /** A create Core fenced before it made anything, found with no launch asking again. */
 const LAUNCH_CANCELLED_SUMMARY = "launch cancelled · nothing was created";
 /**
@@ -1000,9 +1023,17 @@ export class SessionEngine extends Context.Service<
       workspaceId: SealantWorkspaceId,
     ) => Effect.Effect<void, SessionNotFoundError>;
     /**
+     * Run `effect` for as long as the engine runs, not as long as its caller: a caller that goes
+     * away (a client that disconnected, an answer window that passed) leaves it running, and the
+     * engine's shutdown interrupts it. The fiber is returned to join or to leave.
+     */
+    readonly detach: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<Fiber.Fiber<A, E>>;
+    /**
      * The supervised launch (SDK 0.7.0): a workspace mounting the session's
      * worktree, an interactive PTY session running `argv` inside it, and
-     * supervision attached — the record begins here.
+     * supervision attached — the record begins here. Every launch verb runs detached from its
+     * caller (`detach`): a caller that goes away mid-launch never cuts it between the agent's
+     * start and its process row (alpha 2026-09-30: a session whose agent ran read `starting`).
      */
     readonly launch: (
       sessionId: SessionId,
@@ -2835,6 +2866,84 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           expiresAt: lease.expiresAt?.toISOString() ?? "never",
         };
       });
+
+      /** Launches waiting on a worktree's previous executor (`awaitWorktreeHolder`). */
+      const waitingLaunches = new Set<SessionId>();
+      /** Of those, the ones their owner stopped meanwhile: they launch nothing. */
+      const stoppedWhileWaiting = new Set<SessionId>();
+
+      /** The session line while a launch waits on the holder (`LAUNCH_WAITING_PREFIX`). */
+      const leaseWaitWords = (holder: { readonly kind: "ending" | "unreachable" | "lapsed" }) =>
+        holder.kind === "ending"
+          ? LAUNCH_WAITING_SAVING
+          : holder.kind === "unreachable"
+            ? `${LAUNCH_WAITING_PREFIX} is not answering`
+            : `${LAUNCH_WAITING_PREFIX} has not confirmed its end`;
+
+      /**
+       * One executor per worktree, waited for rather than refused (alpha 2026-09-30: a session
+       * started 15 s after another in its worktree ended failed `worktree leased · … saving`, and
+       * the save finished 15 s later). While the holder is `ending` (saving before it ends),
+       * `unreachable` or `lapsed`, the launch looks again every `leaseWaitInterval` and the session
+       * reads `starting · waiting · the previous session in this worktree is saving`. It goes on
+       * only on what a retry by hand would have gone on: the lease `free` — released after the
+       * holder's end was confirmed (ADR-0002 "Replacement and pickup") — or `held` by a reachable
+       * executor it joins. Nothing is stopped and nothing is assumed to have ended. Past
+       * `leaseWait` the last reading is answered, and the caller refuses it as before.
+       */
+      const awaitWorktreeHolder = Effect.fn("SessionEngine.awaitWorktreeHolder")(
+        function* (session: Session) {
+          const deadline = Date.now() + Duration.toMillis(drainPolicy.leaseWait);
+          let said: string | null = null;
+          while (true) {
+            const holder = yield* leaseHolderWorkspace(session);
+            if (stoppedWhileWaiting.has(session.id)) {
+              return yield* new SealantPlatformError({
+                code: "launch_cancelled",
+                status: 409,
+                message:
+                  "stopped while waiting for the previous session in this worktree · nothing launched",
+                cause: null,
+              });
+            }
+            if (holder.kind === "free" || holder.kind === "held" || Date.now() >= deadline) {
+              if (said !== null) {
+                yield* Effect.logInfo(
+                  `session engine: capture mode · launch waited for the worktree · ${holder.kind}`,
+                ).pipe(Effect.annotateLogs({ sessionId: session.id }));
+              }
+              return holder;
+            }
+            const words = leaseWaitWords(holder);
+            if (words !== said) {
+              yield* Effect.logInfo(
+                "session engine: capture mode · the worktree's previous executor has not ended · the launch waits",
+              ).pipe(
+                Effect.annotateLogs({
+                  sessionId: session.id,
+                  holderSessionId: holder.sessionId,
+                  holder: holder.kind,
+                }),
+              );
+              yield* sayLaunchPhase(session.id, words);
+              said = words;
+            }
+            yield* Effect.sleep(drainPolicy.leaseWaitInterval);
+          }
+        },
+        (effect, session) =>
+          Effect.suspend(() => {
+            waitingLaunches.add(session.id);
+            return effect;
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                waitingLaunches.delete(session.id);
+                stoppedWhileWaiting.delete(session.id);
+              }),
+            ),
+          ),
+      );
 
       /**
        * Pickup, first half: the session reads live but its worktree lease is not. Only a
@@ -7004,6 +7113,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          * its `plan.get` names it; no other executor ever shares it.
          */
         readonly launchId: string;
+        /**
+         * Watches the create while it gets ready (`SealantClient.createWorkspace`): a launch says
+         * on the session line whether the platform builds the image or boots the executor.
+         */
+        readonly watchCreate?: (workspace: Workspace) => Effect.Effect<void>;
       }) {
         const { project, sessionId, socketDir, shape, ownerUserId } = input;
         // What the project inherits: its organization's defaults over the instance's.
@@ -7318,6 +7432,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 input.createKey === undefined
                   ? undefined
                   : { idempotencyKey: input.createKey.key, launchId: input.launchId },
+                input.watchCreate,
               ),
             ),
           );
@@ -8218,7 +8333,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // executor; a launch that would need a second executor for a leased worktree is refused
         // with `worktree_leased`.
         if (capture !== null && adopted === null) {
-          const holder = yield* leaseHolderWorkspace(session);
+          const waitStartedAt = Date.now();
+          const holder = yield* awaitWorktreeHolder(session);
           if (holder.kind === "held") {
             yield* Effect.logInfo("session engine: capture mode · joining the lease holder").pipe(
               Effect.annotateLogs({ sessionId, holderSessionId: holder.sessionId }),
@@ -8254,10 +8370,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 : holder.kind === "ending"
                   ? `worktree leased · session ${holder.sessionId}'s executor is saving before it ends · start again once it has`
                   : `worktree leased · session ${holder.sessionId}'s lease lapsed under epoch ${holder.epoch} · its executor ${holder.state === "answering" ? "still answers" : "was not answered for"} · nothing stopped · it may hold work not yet saved`;
+            const waitedMinutes = Math.round((Date.now() - waitStartedAt) / 60_000);
             const error = new SealantPlatformError({
               code: "worktree_leased",
               status: 409,
-              message,
+              message: waitedMinutes >= 1 ? `${message} · waited ${waitedMinutes} min` : message,
               cause: null,
             });
             yield* sessions.settle(sessionId, "failed", error.message).pipe(Effect.ignore);
@@ -8431,6 +8548,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             onCreated: (workspace) => acceptExecutor(workspace, key),
             abandon: abandonExecutor,
             launchId: key,
+            watchCreate: watchLaunchPhase(sessionId),
             ...(capture === null
               ? {}
               : {
@@ -8869,8 +8987,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
         yield* sessions.setExecutorStartedAt(sessionId, executorStartedAt);
         yield* sessions.setSealantSessionId(sessionId, pty.id);
-        // The runtime is launched by now, where it may not have been at the create.
-        yield* noteExecutorResource(sessionId, workspace);
         // The skeleton is consumed: the session row now owns the workspace,
         // worktree, and socket, and the pool entry has nothing left to say.
         if (adopted !== null) {
@@ -8941,7 +9057,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             );
         }
-        yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);
+        // The agent runs and its process row exists: the session reads `running` now, before any
+        // bookkeeping that asks the platform something (its resource id, its TTL), so a slow or
+        // unanswered call there never leaves a running agent reading `starting` (alpha
+        // 2026-09-30, cc05cb8a and 48763b65).
+        //
         // Always reopen, not only for follow-ups: a plain launch on a row that
         // already settled (a failed first attempt retried) must clear
         // settled_at, or the first-settle-wins guard ignores this run's exit
@@ -8958,6 +9078,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
 
         // The agent process ends on its own; the fold over every process decides the session.
         yield* Effect.forkIn(watchProcess(agentProcess), scope);
+        // The runtime is launched by now, where it may not have been at the create.
+        yield* noteExecutorResource(sessionId, workspace);
+        yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);
         if (protocolStart !== null) {
           const openingInput = protocolStart.prompt?.trim() ?? "";
           if (openingInput !== "") {
@@ -9253,14 +9376,72 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
       ) {
         const reopened = yield* sessions.byId(sessionId);
-        const priorSummary = reopened.summary;
+        // What the launch said while it was under way (`sayLaunchPhase`) ends with it.
+        const priorSummary = withoutLaunchPhase(reopened.summary);
         if (
           priorSummary !== null &&
           STALE_ON_START_PREFIXES.some((prefix) => priorSummary.startsWith(prefix))
         ) {
           yield* sessions.setSummary(sessionId, null);
+        } else if (priorSummary !== reopened.summary) {
+          yield* sessions.setSummary(sessionId, priorSummary);
         }
       });
+
+      /**
+       * Where a launch stands, on the session line of a session that has not started yet: waiting
+       * for the worktree's previous executor, building the workspace image, booting. Replaces what
+       * the launch said last; whatever else the summary says stays in front of it. A session that
+       * reads anything but `starting` (a resume of a settled one, a stop that landed meanwhile)
+       * keeps its own words.
+       */
+      const sayLaunchPhase = Effect.fn("SessionEngine.sayLaunchPhase")(function* (
+        sessionId: SessionId,
+        words: string,
+      ) {
+        const current = yield* sessions
+          .byId(sessionId)
+          .pipe(Effect.catchTag("SessionNotFoundError", () => Effect.succeed(null)));
+        if (current === null || current.status !== "starting" || current.settledAt !== null) {
+          return;
+        }
+        const before = withoutLaunchPhase(current.summary);
+        const next = before === null ? words : `${before} · ${words}`;
+        if (next !== current.summary) yield* sessions.setSummary(sessionId, next);
+      });
+
+      /**
+       * While a cold create gets ready: `booting` at once, and `building the workspace image …`
+       * once the platform has reported no executor for `imageBuildAfter` (Core launches the runtime
+       * only after it has built or found the image); `booting` again once an executor exists.
+       * Best-effort: a look that fails says nothing new, and the create never waits on it.
+       */
+      const watchLaunchPhase =
+        (sessionId: SessionId) =>
+        (workspace: Workspace): Effect.Effect<void> =>
+          Effect.gen(function* () {
+            const since = Date.now();
+            yield* sayLaunchPhase(sessionId, LAUNCH_BOOTING);
+            while (true) {
+              yield* Effect.sleep(drainPolicy.createPhaseInterval);
+              const runtime = yield* Effect.tryPromise(() => workspace.runtime()).pipe(
+                Effect.option,
+              );
+              if (Option.isNone(runtime)) continue;
+              const building =
+                runtime.value === null &&
+                Date.now() - since >= Duration.toMillis(drainPolicy.imageBuildAfter);
+              yield* sayLaunchPhase(sessionId, building ? LAUNCH_BUILDING_IMAGE : LAUNCH_BOOTING);
+            }
+          }).pipe(
+            Effect.catchCause((cause) =>
+              Cause.hasInterruptsOnly(cause)
+                ? Effect.void
+                : Effect.logWarning("session engine: launch phase watch ended").pipe(
+                    Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+                  ),
+            ),
+          );
 
       /**
        * Said once, as the launch starts: what this executor did not run before the harness — the
@@ -9434,14 +9615,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 ),
               );
           }
-          yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);
-          // See launchInternal: reopen unconditionally so a retried row settles again.
+          // See launchInternal: reopen unconditionally so a retried row settles again, and before
+          // the TTL renewal asks the platform anything.
           yield* sessions.reopen(sessionId, "running");
           // The retained executor answered and started this process: what an earlier look at it
           // concluded (`executor not answering · …`) no longer holds (review 2026-09-28 (12) #5).
           yield* clearStaleStartSummary(sessionId);
           yield* forkSupervision(sessionId, sealantRunId);
           yield* Effect.forkIn(watchProcess(agentProcess), scope);
+          yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);
           if (protocolStart !== null) {
             const openingInput = protocolStart.prompt?.trim() ?? "";
             if (openingInput !== "") {
@@ -9783,6 +9965,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         summary: string | null = null,
       ) {
         const session = yield* sessions.byId(sessionId);
+        // A launch still waiting for the worktree's previous executor launches nothing now.
+        if (waitingLaunches.has(sessionId)) stoppedWhileWaiting.add(sessionId);
         const rows = yield* processes.listForSession(sessionId);
         const activeRun = yield* sessionRuns.activeForSession(sessionId);
         // Capture mode: when nothing but what this stop ends holds the workspace, the stop is a
@@ -12017,6 +12201,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const launch = (sessionId: SessionId, argv: ReadonlyArray<string>) =>
         launchInternal(sessionId, argv, null);
 
+      /** Fibers in the engine's lifetime (`SessionEngine.detach`); they inherit the principal. */
+      const detach = <A, E>(effect: Effect.Effect<A, E>) => Effect.forkIn(effect, scope);
+      /**
+       * A launch verb, run detached and joined: the caller waits for it as before, but a caller
+       * interrupted meanwhile (an HTTP client that gave up, a phone app sent to the background)
+       * interrupts only its wait. Before, it cut the launch wherever it stood — after the agent
+       * started and before its process row and `running` were written (alpha 2026-09-30).
+       */
+      const detached = <A, E>(effect: Effect.Effect<A, E>) =>
+        detach(effect).pipe(Effect.flatMap(Fiber.join));
+
       // Every public verb about a session runs AS ITS OWNER (docs/SEALANT-IDENTITY.md): the
       // platform resources belong to the owner's Sealant user, whoever is at the keyboard.
       // Fibers forked underneath inherit the principal.
@@ -12035,15 +12230,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           }).pipe(asSealantUser(input.ownerUserId)),
         attachRun: (sessionId, sealantRunId, workspaceId) =>
           owned(sessionId)(attachRun(sessionId, sealantRunId, workspaceId)),
-        launch: (sessionId, argv) => owned(sessionId)(launch(sessionId, argv)),
+        detach,
+        launch: (sessionId, argv) => detached(owned(sessionId)(launch(sessionId, argv))),
         launchProtocol: (sessionId, ...rest) =>
-          owned(sessionId)(launchProtocol(sessionId, ...rest)),
+          detached(owned(sessionId)(launchProtocol(sessionId, ...rest))),
         submitTurn: (sessionId, input, author) =>
           owned(sessionId)(submitTurn(sessionId, input, author)),
         interruptTurn,
         respondRequest,
         launchFollowUp: (sessionId, instruction, launchCorrelationId, author) =>
-          owned(sessionId)(launchFollowUp(sessionId, instruction, launchCorrelationId, author)),
+          detached(
+            owned(sessionId)(launchFollowUp(sessionId, instruction, launchCorrelationId, author)),
+          ),
         reconcileHotSessions: requestHotReconcile,
         checkpointNow: (sessionId, trigger) => owned(sessionId)(checkpointNow(sessionId, trigger)),
         landingCheckpoint: (sessionId, trigger) =>
@@ -12063,9 +12261,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         storePastedImage: (sessionId, bytes) =>
           owned(sessionId)(storePastedImage(sessionId, bytes)),
         resumeSession: (sessionId, harness, fresh) =>
-          owned(sessionId)(resumeSession(sessionId, harness, fresh)),
+          detached(owned(sessionId)(resumeSession(sessionId, harness, fresh))),
         handoff: (sessionId, to, start, author) =>
-          owned(sessionId)(handoff(sessionId, to, start, author)),
+          detached(owned(sessionId)(handoff(sessionId, to, start, author))),
         observeExternalAgents,
         reapCaptureLeases: captureReaper,
         discardUnsavedAndStop: (sessionId, discardedBy) =>

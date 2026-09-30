@@ -179,7 +179,7 @@ import {
   unresolvedPackagesMessage,
 } from "../services/workspace-environment.ts";
 import { budgetExceeded } from "../session-budgets.ts";
-import { makeSessionStart } from "../session-start.ts";
+import { LAUNCH_ANSWER_WINDOW, makeSessionStart } from "../session-start.ts";
 import { SessionSteering } from "../session-steering.ts";
 import { TenancyConfig } from "../tenancy.ts";
 import { classifyGhError, Gh, parseGithubRepo } from "./github.ts";
@@ -3020,7 +3020,10 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const session = yield* steering.session(params.id);
         const caller = yield* CurrentUser;
         const start = yield* makeSessionStart;
-        return yield* start.launchAs(caller.user.id, session, payload);
+        // Answers within the window; a longer launch goes on and the session says where it is.
+        return yield* start.launchAs(caller.user.id, session, payload, {
+          within: LAUNCH_ANSWER_WINDOW,
+        });
       }),
     )
     .handle("followUpPending", ({ params }) =>

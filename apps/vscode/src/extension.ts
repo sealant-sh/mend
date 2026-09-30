@@ -612,12 +612,14 @@ class MendCommands {
     try {
       const session = await vscode.window.withProgress(
         { location: vscode.ProgressLocation.Notification, title: `Starting ${harness}…` },
-        async () => {
+        async (progress) => {
           const created = await this.createSessionSafely(project, harness, join);
-          await this.client.launchSession(
+          const launched = await this.client.launchSession(
             created.id,
             prompt.trim() === "" ? {} : { prompt: prompt.trim() },
           );
+          // The server answers a long launch before it ends; follow it until the agent runs.
+          await this.client.untilStarted(launched, (line) => progress.report({ message: line }));
           return created;
         },
       );
@@ -745,7 +747,7 @@ class MendCommands {
           location: vscode.ProgressLocation.Notification,
           title: `Starting ${harness.description}…`,
         },
-        async () => {
+        async (progress) => {
           const created = await this.client.createSession(
             project.id,
             harness.id,
@@ -759,7 +761,9 @@ class MendCommands {
             ...(effort.effort === null ? {} : { effort: effort.effort }),
             ...(permissions.permission === "ask" ? { permissionMode: "ask" } : {}),
           };
-          await this.client.launchSession(created.id, start);
+          const launched = await this.client.launchSession(created.id, start);
+          // The server answers a long launch before it ends; follow it until the agent runs.
+          await this.client.untilStarted(launched, (line) => progress.report({ message: line }));
           return created;
         },
       );
