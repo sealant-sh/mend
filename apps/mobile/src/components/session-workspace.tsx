@@ -5,7 +5,7 @@
 // opens a shell until a person asks for one.
 
 import { useRouter } from "expo-router";
-import { Inbox, X } from "lucide-react-native";
+import { Columns2, Inbox, Rows2, X } from "lucide-react-native";
 import { useState, type ReactNode } from "react";
 import { Alert, Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
@@ -13,7 +13,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EvButton } from "@/components/button";
 import { DiffPane } from "@/components/diff-pane";
-import { Pane, PaneDivider } from "@/components/pane";
+import { Pane } from "@/components/pane";
+import { ResizableSplit } from "@/components/resizable-split";
 import { SessionPane, type Companion } from "@/components/session-pane";
 import { TerminalPane } from "@/components/terminal-pane";
 import { MonoText, UiText } from "@/components/typography";
@@ -311,40 +312,44 @@ export function SessionWorkspace({
           open: companion,
           toggle: (next) => setCompanion((current) => (current === next ? null : next)),
         }}
-        trailing={
-          <EvButton
-            size="sm"
-            variant="outline"
-            label="Split"
-            onPress={() => router.push({ pathname: "/split", params: { ids: sessionId } })}
-          />
-        }
+        extraActions={[
+          {
+            key: "split",
+            label: "Split with another session",
+            icon: landscape ? Columns2 : Rows2,
+            onPress: () => router.push({ pathname: "/split", params: { ids: sessionId } }),
+          },
+        ]}
       />
     </Pane>
   );
 
+  // Open flat, the rail and the conversation end at the crease; drag the divider for more.
+  const main = (
+    <View style={{ flex: 1, flexDirection: "row" }}>
+      {landscape ? <SessionRail currentId={sessionId} companion={companion} /> : null}
+      <View style={{ flex: 1 }}>{conversation}</View>
+    </View>
+  );
   return (
     <KeyboardAvoidingView
       behavior="padding"
-      style={{
-        flex: 1,
-        paddingTop: insets.top,
-        backgroundColor: colors.bg,
-        flexDirection: landscape ? "row" : "column",
-      }}
+      style={{ flex: 1, paddingTop: insets.top, backgroundColor: colors.bg }}
     >
-      {/* Open flat, the rail and the conversation end at the crease. */}
-      <View style={{ flex: 1, flexDirection: "row" }}>
-        {landscape ? <SessionRail currentId={sessionId} companion={companion} /> : null}
-        <View style={{ flex: 1 }}>{conversation}</View>
-      </View>
-      {side === null ? null : (
-        <>
-          <PaneDivider vertical={landscape} />
-          <View style={{ flex: 1, backgroundColor: colors.panel }}>
-            <Pane atBottom>{side}</Pane>
-          </View>
-        </>
+      {side === null ? (
+        main
+      ) : (
+        <ResizableSplit
+          key={posture}
+          sideBySide={landscape}
+          label="Divider between the conversation and the other side"
+          first={main}
+          second={
+            <View style={{ flex: 1, backgroundColor: colors.panel }}>
+              <Pane atBottom>{side}</Pane>
+            </View>
+          }
+        />
       )}
     </KeyboardAvoidingView>
   );

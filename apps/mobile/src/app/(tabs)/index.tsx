@@ -1,10 +1,12 @@
 // Now — a sparse attention inbox (plan §6.1), fed by the LIVE workbench API:
 // what is waiting for me, what runs, what recently settled. Not a kanban.
-// Unfolded, the inbox shares the screen with the session it has open: beside
-// it open flat, above it upright. Expand gives that session the whole screen
-// (its rail, the diff, a shell); Split puts a second session beside it.
+// Unfolded, Preview shows the session a row points at beside the inbox (open
+// flat, where it starts on) or below it (upright, where the inbox starts
+// alone). Expand gives that session the whole screen (its rail, the diff, a
+// shell); Split puts a second session beside it.
 
 import { useFocusEffect, useRouter } from "expo-router";
+import { Columns2, Maximize2, Rows2 } from "lucide-react-native";
 import { useCallback, useState, type ReactNode } from "react";
 import { ScrollView, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
@@ -12,9 +14,10 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EvButton } from "@/components/button";
 import { ClearSettledButton } from "@/components/clear-settled";
-import { Pane, PaneDivider } from "@/components/pane";
+import { Pane } from "@/components/pane";
 import { Panel } from "@/components/panel";
 import { RenameSessionModal, type RenameTarget } from "@/components/rename-session";
+import { ResizableSplit } from "@/components/resizable-split";
 import { Screen, ScreenHeader } from "@/components/screen";
 import { SessionPane } from "@/components/session-pane";
 import { SessionRow } from "@/components/session-row";
@@ -57,6 +60,9 @@ export default function NowScreen() {
   const { colors } = useEvidenceTheme();
   const posture = usePosture();
   const [picked, setPicked] = useState<string | null>(null);
+  // Null until the person chooses: open flat previews, upright lists.
+  const [previewChoice, setPreviewChoice] = useState<boolean | null>(null);
+  const preview = posture !== "compact" && (previewChoice ?? posture === "landscape");
   const config = useConfig();
   const all = useAllSessions();
   const { remove, removeSettled } = useSessionActions();
@@ -77,19 +83,18 @@ export default function NowScreen() {
     { label: "Recently settled", items: settled.slice(0, 8) },
   ];
   const listed = groups.flatMap(({ items }) => items.map(({ dto }) => dto.id));
-  // Unfolded, one session is always open beside the inbox: the one picked, or the first listed.
-  const selectedId =
-    posture === "compact"
-      ? null
-      : picked !== null && listed.includes(picked)
-        ? picked
-        : (listed[0] ?? null);
+  // While previewing, one session is always open beside the inbox: the one picked, or the first.
+  const selectedId = !preview
+    ? null
+    : picked !== null && listed.includes(picked)
+      ? picked
+      : (listed[0] ?? null);
   useFocusEffect(
     useCallback(() => (selectedId === null ? undefined : watchSession(selectedId)), [selectedId]),
   );
 
   const openSession = (id: string) => {
-    if (posture === "compact") {
+    if (!preview) {
       router.push({ pathname: "/session/[id]", params: { id } });
       return;
     }
@@ -132,6 +137,18 @@ export default function NowScreen() {
       <ScreenHeader
         eyebrow="mend"
         title="Now"
+        {...(posture === "compact"
+          ? {}
+          : {
+              action: (
+                <EvButton
+                  size="sm"
+                  variant="outline"
+                  label={preview ? "Hide preview" : "Preview"}
+                  onPress={() => setPreviewChoice(!preview)}
+                />
+              ),
+            })}
         meta={
           all.isError
             ? "sessions could not be read"
@@ -189,67 +206,66 @@ export default function NowScreen() {
     </>
   );
 
-  if (posture === "compact") return <Screen topInset>{inbox}</Screen>;
+  if (!preview) return <Screen topInset>{inbox}</Screen>;
 
   const landscape = posture === "landscape";
+  const pane =
+    selectedId === null ? (
+      <MonoText tone="faint" style={{ padding: 20 }}>
+        no sessions yet · start one from a project
+      </MonoText>
+    ) : (
+      // The tab bar holds the bottom edge.
+      <Pane atBottom={false}>
+        <SessionPane
+          key={selectedId}
+          sessionId={selectedId}
+          topInset={false}
+          pinnedActions={[
+            {
+              key: "expand",
+              label: "Open this session on its own",
+              icon: Maximize2,
+              onPress: () => router.push({ pathname: "/session/[id]", params: { id: selectedId } }),
+            },
+          ]}
+          extraActions={[
+            {
+              key: "split",
+              label: "Split with another session",
+              icon: landscape ? Columns2 : Rows2,
+              onPress: () => router.push({ pathname: "/split", params: { ids: selectedId } }),
+            },
+          ]}
+        />
+      </Pane>
+    );
   return (
     <KeyboardAvoidingView
       behavior="padding"
       automaticOffset
-      style={{
-        flex: 1,
-        paddingTop: insets.top,
-        backgroundColor: colors.bg,
-        flexDirection: landscape ? "row" : "column",
-      }}
+      style={{ flex: 1, paddingTop: insets.top, backgroundColor: colors.bg }}
     >
-      <ScrollView
-        style={{ flex: 1 }}
-        keyboardShouldPersistTaps="handled"
-        contentContainerStyle={{
-          paddingTop: spacing.md,
-          paddingHorizontal: 20,
-          paddingBottom: spacing.xl,
-          gap: spacing.lg,
-        }}
-      >
-        {inbox}
-      </ScrollView>
-      <PaneDivider vertical={landscape} />
-      <View style={{ flex: 1 }}>
-        {selectedId === null ? (
-          <MonoText tone="faint" style={{ padding: 20 }}>
-            no sessions yet · start one from a project
-          </MonoText>
-        ) : (
-          // The tab bar holds the bottom edge.
-          <Pane atBottom={false}>
-            <SessionPane
-              key={selectedId}
-              sessionId={selectedId}
-              topInset={false}
-              trailing={
-                <>
-                  <EvButton
-                    size="sm"
-                    variant="outline"
-                    label="Expand"
-                    onPress={() =>
-                      router.push({ pathname: "/session/[id]", params: { id: selectedId } })
-                    }
-                  />
-                  <EvButton
-                    size="sm"
-                    variant="outline"
-                    label="Split"
-                    onPress={() => router.push({ pathname: "/split", params: { ids: selectedId } })}
-                  />
-                </>
-              }
-            />
-          </Pane>
-        )}
-      </View>
+      <ResizableSplit
+        key={posture}
+        sideBySide={landscape}
+        label="Divider between the inbox and the session"
+        first={
+          <ScrollView
+            style={{ flex: 1 }}
+            keyboardShouldPersistTaps="handled"
+            contentContainerStyle={{
+              paddingTop: spacing.md,
+              paddingHorizontal: 20,
+              paddingBottom: spacing.xl,
+              gap: spacing.lg,
+            }}
+          >
+            {inbox}
+          </ScrollView>
+        }
+        second={pane}
+      />
     </KeyboardAvoidingView>
   );
 }

@@ -5,13 +5,14 @@
 
 import { Stack, useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import { Maximize2, X } from "lucide-react-native";
-import { useCallback, useRef, useState, type ReactNode } from "react";
-import { PanResponder, Pressable, ScrollView, StyleSheet, View } from "react-native";
+import { useCallback, useState, type ReactNode } from "react";
+import { Pressable, ScrollView, StyleSheet, View } from "react-native";
 import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { Pane } from "@/components/pane";
 import { Panel } from "@/components/panel";
+import { ResizableSplit } from "@/components/resizable-split";
 import { SessionPane } from "@/components/session-pane";
 import { SessionRow } from "@/components/session-row";
 import { MonoText, UiText } from "@/components/typography";
@@ -20,10 +21,6 @@ import { watchSession } from "@/data/notification-presence";
 import { SPLIT_MAX, splitIdsOf, splitParam, withoutSession, withSession } from "@/data/split";
 import { usePosture } from "@/data/use-posture";
 import { radius, useEvidenceTheme } from "@/theme/evidence";
-
-/** How far the divider moves: neither side narrower than a quarter. */
-const RATIO_MIN = 0.25;
-const RATIO_MAX = 0.75;
 
 function IconButton({
   label,
@@ -108,37 +105,6 @@ export default function SplitScreen() {
 
   const setIds = (next: ReadonlyArray<string>) => router.setParams({ ids: splitParam(next) });
 
-  // The divider: a drag moves the first side's share of the container, from where it started.
-  // Open flat and upright keep their own share; turning the phone does not carry one to the other.
-  const [ratios, setRatios] = useState({ landscape: 0.5, upright: 0.5 });
-  const ratio = landscape ? ratios.landscape : ratios.upright;
-  const ratiosRef = useRef(ratios);
-  const dragStart = useRef(0.5);
-  const extent = useRef(1);
-  const horizontal = useRef(landscape);
-  const divider = useRef(
-    PanResponder.create({
-      onStartShouldSetPanResponder: () => true,
-      onMoveShouldSetPanResponder: () => true,
-      onPanResponderGrant: () => {
-        dragStart.current = horizontal.current
-          ? ratiosRef.current.landscape
-          : ratiosRef.current.upright;
-      },
-      onPanResponderMove: (_event, gesture) => {
-        const moved = horizontal.current ? gesture.dx : gesture.dy;
-        const next = Math.min(
-          RATIO_MAX,
-          Math.max(RATIO_MIN, dragStart.current + moved / Math.max(1, extent.current)),
-        );
-        ratiosRef.current = horizontal.current
-          ? { ...ratiosRef.current, landscape: next }
-          : { ...ratiosRef.current, upright: next };
-        setRatios(ratiosRef.current);
-      },
-    }),
-  ).current;
-
   const slots: Array<string | null> =
     sessionIds.length < SPLIT_MAX ? [...sessionIds, null] : sessionIds;
   // Folded there is room for one side: the focused one, or the empty side's list.
@@ -162,27 +128,44 @@ export default function SplitScreen() {
           key={id}
           sessionId={id}
           topInset={false}
-          tile
-          trailing={
-            <>
-              <IconButton
-                label="Open this session on its own"
-                onPress={() => router.push({ pathname: "/session/[id]", params: { id } })}
-              >
-                <Maximize2 size={15} color={colors.ink2} strokeWidth={2} />
-              </IconButton>
-              <IconButton
-                label="Take this session out of the split"
-                onPress={() => setIds(withoutSession(sessionIds, id))}
-              >
-                <X size={16} color={colors.ink2} strokeWidth={2} />
-              </IconButton>
-            </>
-          }
+          direct={2}
+          pinnedActions={[
+            {
+              key: "expand",
+              label: "Open this session on its own",
+              icon: Maximize2,
+              onPress: () => router.push({ pathname: "/session/[id]", params: { id } }),
+            },
+            {
+              key: "remove",
+              label: "Take this session out of the split",
+              icon: X,
+              onPress: () => setIds(withoutSession(sessionIds, id)),
+            },
+          ]}
         />
       </Pane>
     );
   };
+
+  // The side last touched wears the accent edge and counts as on screen for notifications.
+  const frame = (id: string | null, atBottom: boolean) => (
+    <View
+      key={id ?? "empty"}
+      onTouchStart={() => {
+        if (id !== null) setTouched(id);
+      }}
+      style={{
+        flex: 1,
+        borderWidth: 1.5,
+        borderColor:
+          id !== null && id === focused && shownSlots.length > 1 ? colors.accent : "transparent",
+        backgroundColor: id === null ? colors.bg : colors.panel,
+      }}
+    >
+      {tile(id, atBottom)}
+    </View>
+  );
 
   return (
     <>
@@ -235,65 +218,17 @@ export default function SplitScreen() {
             <X size={16} color={colors.ink2} strokeWidth={2} />
           </IconButton>
         </View>
-        <View
-          style={{ flex: 1, flexDirection: landscape ? "row" : "column" }}
-          onLayout={(event) => {
-            const { width, height } = event.nativeEvent.layout;
-            horizontal.current = landscape;
-            extent.current = landscape ? width : height;
-          }}
-        >
-          {shownSlots.map((id, index) => {
-            const last = index === shownSlots.length - 1;
-            const share = shownSlots.length === 1 ? 1 : index === 0 ? ratio : 1 - ratio;
-            return (
-              <View
-                key={id ?? "empty"}
-                style={{ flex: share, flexDirection: landscape ? "row" : "column" }}
-              >
-                <View
-                  onTouchStart={() => {
-                    if (id !== null) setTouched(id);
-                  }}
-                  style={{
-                    flex: 1,
-                    borderWidth: 1.5,
-                    borderColor:
-                      id !== null && id === focused && shownSlots.length > 1
-                        ? colors.accent
-                        : "transparent",
-                    backgroundColor: id === null ? colors.bg : colors.panel,
-                  }}
-                >
-                  {tile(id, landscape || last)}
-                </View>
-                {last ? null : (
-                  <View
-                    {...divider.panHandlers}
-                    accessibilityRole="adjustable"
-                    accessibilityLabel="Divider between the two sessions"
-                    style={{
-                      width: landscape ? 14 : undefined,
-                      height: landscape ? undefined : 14,
-                      alignItems: "center",
-                      justifyContent: "center",
-                      backgroundColor: colors.sunken,
-                    }}
-                  >
-                    <View
-                      style={{
-                        width: landscape ? 3 : 36,
-                        height: landscape ? 36 : 3,
-                        borderRadius: 2,
-                        backgroundColor: colors.rule,
-                      }}
-                    />
-                  </View>
-                )}
-              </View>
-            );
-          })}
-        </View>
+        {shownSlots.length === 1 ? (
+          frame(shownSlots[0] ?? null, true)
+        ) : (
+          <ResizableSplit
+            key={posture}
+            sideBySide={landscape}
+            label="Divider between the two sessions"
+            first={frame(shownSlots[0] ?? null, landscape)}
+            second={frame(shownSlots[1] ?? null, true)}
+          />
+        )}
       </KeyboardAvoidingView>
     </>
   );

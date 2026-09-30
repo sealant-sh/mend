@@ -24,8 +24,8 @@ import { useSafeAreaInsets } from "react-native-safe-area-context";
 import { EvButton } from "@/components/button";
 import { BodyPanel, SliceStatus } from "@/components/change-body";
 import { BASE_LINE_H, CodeChunk, parseFiles, TOTAL_BUDGET, type DiffRow } from "@/components/diff";
-import { PaneDivider } from "@/components/pane";
 import { Panel, PanelRow } from "@/components/panel";
+import { ResizableSplit } from "@/components/resizable-split";
 import { CommentCard } from "@/components/review-comment";
 import { ScreenHeader, SectionLabel } from "@/components/screen";
 import { BodyText, MonoText, UiText, useTextScale } from "@/components/typography";
@@ -1060,57 +1060,66 @@ export default function ReviewScreen() {
             {changeLevelBlock}
           </ScrollView>
         ) : (
-          // Unfolded: the change on one side of the crease, the review on the other — reading a
-          // file never scrolls the comments away.
-          <KeyboardAvoidingView
-            behavior="padding"
-            style={{
-              flex: 1,
-              paddingTop: insets.top,
-              flexDirection: posture === "landscape" ? "row" : "column",
-            }}
-          >
-            <ScrollView
-              ref={scrollRef}
-              style={{ flex: 1 }}
-              keyboardShouldPersistTaps="handled"
-              refreshControl={refreshControl}
-              contentContainerStyle={{
-                paddingTop: spacing.md,
-                paddingHorizontal: 20,
-                paddingBottom: spacing.xl2 + (posture === "landscape" ? insets.bottom : 0),
-                gap: spacing.lg,
-              }}
-            >
-              {headerBlock}
-              {filesBlock}
-            </ScrollView>
-            <PaneDivider vertical={posture === "landscape"} />
-            <ScrollView
-              style={{ flex: 1 }}
-              keyboardShouldPersistTaps="handled"
-              contentContainerStyle={{
-                paddingTop: spacing.md,
-                paddingHorizontal: 20,
-                paddingBottom: spacing.xl2 + insets.bottom + tourRoom,
-                gap: spacing.lg,
-              }}
-            >
-              {actionsBlock}
-              {openLineComments.length === 0 ? null : (
-                <>
-                  <SectionLabel>your line comments · {openLineComments.length} open</SectionLabel>
-                  <Panel>
-                    {openLineComments.map((comment, index) => (
-                      <PanelRow key={comment.id} first={index === 0}>
-                        <CommentCard comment={comment} showAnchor writtenOn={writtenOn(comment)} />
-                      </PanelRow>
-                    ))}
-                  </Panel>
-                </>
-              )}
-              {changeLevelBlock}
-            </ScrollView>
+          // Unfolded: the diff leads and the review sits beside or below it, a quarter of the
+          // room to start; drag the divider for more. Reading a file never scrolls the comments
+          // away.
+          <KeyboardAvoidingView behavior="padding" style={{ flex: 1, paddingTop: insets.top }}>
+            <ResizableSplit
+              key={posture}
+              sideBySide={posture === "landscape"}
+              initialShare={0.72}
+              label="Divider between the diff and the review"
+              first={
+                <ScrollView
+                  ref={scrollRef}
+                  style={{ flex: 1 }}
+                  keyboardShouldPersistTaps="handled"
+                  refreshControl={refreshControl}
+                  contentContainerStyle={{
+                    paddingTop: spacing.md,
+                    paddingHorizontal: 20,
+                    paddingBottom: spacing.xl2 + (posture === "landscape" ? insets.bottom : 0),
+                    gap: spacing.lg,
+                  }}
+                >
+                  {headerBlock}
+                  {filesBlock}
+                </ScrollView>
+              }
+              second={
+                <ScrollView
+                  style={{ flex: 1 }}
+                  keyboardShouldPersistTaps="handled"
+                  contentContainerStyle={{
+                    paddingTop: spacing.md,
+                    paddingHorizontal: 20,
+                    paddingBottom: spacing.xl2 + insets.bottom + tourRoom,
+                    gap: spacing.lg,
+                  }}
+                >
+                  {actionsBlock}
+                  {openLineComments.length === 0 ? null : (
+                    <>
+                      <SectionLabel>
+                        your line comments · {openLineComments.length} open
+                      </SectionLabel>
+                      <Panel>
+                        {openLineComments.map((comment, index) => (
+                          <PanelRow key={comment.id} first={index === 0}>
+                            <CommentCard
+                              comment={comment}
+                              showAnchor
+                              writtenOn={writtenOn(comment)}
+                            />
+                          </PanelRow>
+                        ))}
+                      </Panel>
+                    </>
+                  )}
+                  {changeLevelBlock}
+                </ScrollView>
+              }
+            />
           </KeyboardAvoidingView>
         )}
 

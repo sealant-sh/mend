@@ -4,15 +4,24 @@
 // TTY composer.
 
 import { useRouter } from "expo-router";
-import { useState, type ReactNode } from "react";
-import { StyleSheet, View } from "react-native";
+import {
+  ClipboardCheck,
+  CircleStop,
+  FileDiff,
+  Play,
+  Send,
+  SquareTerminal,
+} from "lucide-react-native";
+import { useState } from "react";
+import { View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EvButton } from "@/components/button";
 import { ProtocolConversation } from "@/components/protocol-conversation";
 import { PtyConversation } from "@/components/pty-conversation";
+import { SessionHeader, type HeaderAction } from "@/components/session-header";
 import { StatusWord } from "@/components/status";
-import { DisplayTitle, MonoText, UiText } from "@/components/typography";
+import { MonoText } from "@/components/typography";
 import { findLastMatching } from "@/data/collections";
 import {
   agentIsActive,
@@ -23,7 +32,7 @@ import {
   useSession,
   useSessionActions,
 } from "@/data/live";
-import { spacing, useEvidenceTheme } from "@/theme/evidence";
+import { usePosture } from "@/data/use-posture";
 
 /** What a wide layout shows beside the conversation. */
 export type Companion = "terminal" | "diff";
@@ -37,25 +46,28 @@ export function SessionPane({
   sessionId,
   mode,
   topInset,
-  tile = false,
   companion,
-  trailing,
+  extraActions = [],
+  pinnedActions = [],
+  direct,
 }: {
   readonly sessionId: string;
   /** `protocol` when the caller knows the session speaks the protocol before its detail loads. */
   readonly mode?: string;
   /** The pane reaches the top edge: leave the status bar's room. */
   readonly topInset: boolean;
-  /** A tile of a split: a one-line header and only the tile's own actions. */
-  readonly tile?: boolean;
   /** Diff and Shell open beside the conversation instead of on their own screens. */
   readonly companion?: CompanionControl;
-  /** Buttons after the session's own. */
-  readonly trailing?: ReactNode;
+  /** The caller's actions, after the session's own (Expand, Split). */
+  readonly extraActions?: ReadonlyArray<HeaderAction>;
+  /** Always shown at the end of the row (a split tile's expand and close). */
+  readonly pinnedActions?: ReadonlyArray<HeaderAction>;
+  /** How many actions show as buttons before the rest go under "more". */
+  readonly direct?: number;
 }) {
   const router = useRouter();
-  const { colors } = useEvidenceTheme();
   const insets = useSafeAreaInsets();
+  const posture = usePosture();
   const detail = useSession(sessionId);
   const session = detail.data?.session;
   const change = detail.data?.change ?? null;
@@ -169,142 +181,112 @@ export function SessionPane({
     );
   }
 
-  if (tile) {
-    return (
-      <View style={{ flex: 1 }}>
-        <View
-          style={{
-            flexDirection: "row",
-            alignItems: "center",
-            gap: 8,
-            paddingTop: (topInset ? insets.top : 0) + 10,
-            paddingBottom: 10,
-            paddingHorizontal: 14,
-            borderBottomWidth: StyleSheet.hairlineWidth,
-            borderBottomColor: colors.softRule,
-          }}
-        >
-          <View style={{ flex: 1, gap: 3 }}>
-            <UiText weight="semibold" size={14.5} numberOfLines={1}>
-              {session?.label ?? session?.harness ?? "…"}
-            </UiText>
-            {session === undefined ? null : (
+  const actions: Array<HeaderAction> = [];
+  if (session !== undefined && steer && !agentActive) {
+    if (followUp !== null && canDeliverFollowUp(followUp)) {
+      actions.push({
+        key: "deliver",
+        label: deliverFollowUp.isPending ? "Delivering the follow-up…" : "Deliver follow-up",
+        icon: Send,
+        tone: "accent",
+        disabled: deliverFollowUp.isPending,
+        onPress: () => deliverFollowUp.mutate(followUp),
+      });
+    }
+    actions.push({
+      key: "resume",
+      label: resume.isPending ? "Resuming…" : "Resume",
+      icon: Play,
+      tone: "accent",
+      disabled: resume.isPending,
+      onPress: () => resume.mutate({ sessionId: session.id, harness: null }),
+    });
+  }
+  if (change !== null) {
+    actions.push({
+      key: "review",
+      label: "Review the change",
+      icon: ClipboardCheck,
+      onPress: () => router.push({ pathname: "/review/[id]", params: { id: change.id } }),
+    });
+    actions.push({
+      key: "diff",
+      label: companion?.open === "diff" ? "Hide the diff" : "Diff",
+      icon: FileDiff,
+      active: companion?.open === "diff",
+      onPress: () => openDiff(change.id),
+    });
+  }
+  if (steer && canOpenShell) {
+    actions.push({
+      key: "shell",
+      label: companion?.open === "terminal" ? "Hide the shell" : "Shell",
+      icon: SquareTerminal,
+      active: companion?.open === "terminal",
+      disabled: openShell.isPending,
+      onPress: openTerminal,
+    });
+  }
+  actions.push(...extraActions);
+  if (session !== undefined && agentActive && canStop) {
+    actions.push({
+      key: "stop",
+      label: stop.isPending ? "Stopping…" : "Stop session",
+      icon: CircleStop,
+      tone: "danger",
+      disabled: stop.isPending,
+      onPress: () => stop.mutate(session.id),
+    });
+  }
+
+  const worktree =
+    session === undefined
+      ? null
+      : session.branch.replace(/^mend\/session\//, "session ").replace(/^mend\/(wt\/)?/, "");
+
+  return (
+    <View style={{ flex: 1 }}>
+      <SessionHeader
+        title={session?.label ?? session?.harness ?? "…"}
+        subtitle={
+          session === undefined ? null : (
+            <View style={{ flexDirection: "row", alignItems: "center", overflow: "hidden" }}>
               <StatusWord
                 tone={toneOf(session.status)}
                 word={`${session.harness} · ${statusLineOf(session)}`}
                 size={10.5}
               />
-            )}
-          </View>
-          {trailing}
-        </View>
-        {conversation}
-      </View>
-    );
-  }
-
-  return (
-    <View style={{ flex: 1 }}>
-      <View
-        style={{
-          paddingTop: (topInset ? insets.top : 0) + 4,
-          paddingHorizontal: 16,
-          paddingBottom: spacing.xs,
-          gap: 8,
-        }}
-      >
-        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
-          <DisplayTitle style={{ fontSize: 18, lineHeight: 23, letterSpacing: -0.3 }}>
-            {session?.harness ?? "…"}
-          </DisplayTitle>
-          <View style={{ flex: 1 }} />
-          {session !== undefined && (
-            <StatusWord tone={toneOf(session.status)} word={statusLineOf(session)} />
+              <MonoText tone="faint" size={10.5} numberOfLines={1} style={{ flexShrink: 1 }}>
+                {" "}
+                · {worktree}
+              </MonoText>
+            </View>
+          )
+        }
+        actions={actions}
+        pinned={pinnedActions}
+        direct={direct ?? (posture === "compact" ? 3 : 4)}
+        topInset={topInset ? insets.top : 0}
+      />
+      {steer && !(detail.isError && session !== undefined) && shellError === null ? null : (
+        <View style={{ paddingHorizontal: 16, paddingVertical: 6, gap: 4 }}>
+          {steer ? null : (
+            <MonoText tone="faint" size={11} numberOfLines={2}>
+              only the owner steers this session · you can read it and review the change
+            </MonoText>
+          )}
+          {detail.isError && session !== undefined ? (
+            <MonoText tone="warning" size={11} numberOfLines={2}>
+              last refresh failed · {detail.error.message}
+            </MonoText>
+          ) : null}
+          {shellError === null ? null : (
+            <MonoText tone="danger" size={11} numberOfLines={2}>
+              {shellError}
+            </MonoText>
           )}
         </View>
-        {session !== undefined && (
-          <MonoText tone="faint" size={10.5} numberOfLines={1}>
-            worktree{" "}
-            {session.branch.replace(/^mend\/session\//, "session ").replace(/^mend\/(wt\/)?/, "")} ·
-            base {session.baseRef ?? session.baseSha.slice(0, 12)}
-          </MonoText>
-        )}
-        {session !== undefined && (
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-            {change !== null && (
-              <EvButton
-                size="sm"
-                label="Review"
-                onPress={() => router.push({ pathname: "/review/[id]", params: { id: change.id } })}
-              />
-            )}
-            {change !== null && (
-              <EvButton
-                size="sm"
-                variant="outline"
-                label={companion?.open === "diff" ? "Hide diff" : "Diff"}
-                onPress={() => openDiff(change.id)}
-              />
-            )}
-            {steer && !agentActive && followUp !== null && canDeliverFollowUp(followUp) && (
-              <EvButton
-                size="sm"
-                label={deliverFollowUp.isPending ? "delivering…" : "Deliver follow-up"}
-                disabled={deliverFollowUp.isPending}
-                onPress={() => deliverFollowUp.mutate(followUp)}
-              />
-            )}
-            {steer && !agentActive && (
-              <EvButton
-                size="sm"
-                variant={change === null && followUp === null ? "primary" : "outline"}
-                label={resume.isPending ? "resuming…" : "Resume"}
-                onPress={() => resume.mutate({ sessionId: session.id, harness: null })}
-              />
-            )}
-            {steer && canOpenShell && (
-              <EvButton
-                size="sm"
-                variant="outline"
-                label={
-                  companion?.open === "terminal"
-                    ? "Hide shell"
-                    : openShell.isPending
-                      ? "opening…"
-                      : "Shell"
-                }
-                disabled={openShell.isPending}
-                onPress={openTerminal}
-              />
-            )}
-            {trailing}
-            <View style={{ flex: 1 }} />
-            {agentActive && canStop && (
-              <EvButton
-                size="sm"
-                variant="ghost"
-                label={stop.isPending ? "…" : "Stop session"}
-                onPress={() => stop.mutate(session.id)}
-              />
-            )}
-          </View>
-        )}
-        {steer ? null : (
-          <MonoText tone="faint" size={11} numberOfLines={2}>
-            only the owner steers this session · you can read it and review the change
-          </MonoText>
-        )}
-        {detail.isError && session !== undefined ? (
-          <MonoText tone="warning" size={11} numberOfLines={2}>
-            last refresh failed · {detail.error.message}
-          </MonoText>
-        ) : null}
-        {shellError === null ? null : (
-          <MonoText tone="danger" size={11} numberOfLines={2}>
-            {shellError}
-          </MonoText>
-        )}
-      </View>
+      )}
       {conversation}
     </View>
   );

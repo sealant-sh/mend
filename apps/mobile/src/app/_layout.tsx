@@ -13,6 +13,7 @@ import { useFonts } from "expo-font";
 import { DarkTheme, DefaultTheme, Stack, ThemeProvider, useRouter } from "expo-router";
 import * as SplashScreen from "expo-splash-screen";
 import { StatusBar } from "expo-status-bar";
+import * as SystemUI from "expo-system-ui";
 import { useEffect } from "react";
 import { AppState } from "react-native";
 import { GestureHandlerRootView } from "react-native-gesture-handler";
@@ -44,6 +45,11 @@ export default function RootLayout() {
       }),
     [],
   );
+  // The window behind the app shows wherever a screen does not paint — under the gesture bar on
+  // Android, it read as a black strip. Keep it the app's own ground, in both schemes.
+  useEffect(() => {
+    void SystemUI.setBackgroundColorAsync(colors.bg);
+  }, [colors.bg]);
   const [fontsLoaded] = useFonts({
     Inter_400Regular,
     Inter_500Medium,
