@@ -1,0 +1,27 @@
+# Opt-in overlay for the AWS instance (deploy/aws): the server's and the edge's logs go to
+# CloudWatch Logs, so a restart or a roll no longer erases them. Docker's own `json-file` log lives
+# inside the container's directory and goes with the container.
+#
+#   docker compose -f compose.aws.yaml -f compose.edge.yaml -f compose.logs.aws.yaml up -d
+#
+# The awslogs driver writes with the instance role, which OpenTofu grants on this one group
+# (deploy/aws/tofu/instance.tf, `container-logs`); the group and its 14-day retention are made
+# there too. Docker keeps a local copy as well, so `docker logs` still reads them.
+#
+# Non-blocking: a slow or unreachable CloudWatch drops log lines from an 8 MB buffer rather than
+# stalling the process that writes them. Measured on alpha (2026-09-30): the server writes about
+# 7-8 MB an hour while sessions run, mostly one line per HTTP response.
+x-cloudwatch-logs: &cloudwatch-logs
+  driver: awslogs
+  options:
+    awslogs-region: ${AWS_REGION:?set AWS_REGION in .env}
+    awslogs-group: ${MEND_LOG_GROUP:-/mend/mend-capture-poc/containers}
+    tag: "{{.Name}}"
+    mode: non-blocking
+    max-buffer-size: 8m
+
+services:
+  mend:
+    logging: *cloudwatch-logs
+  edge:
+    logging: *cloudwatch-logs

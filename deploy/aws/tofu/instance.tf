@@ -108,6 +108,32 @@ resource "aws_iam_role_policy" "instance_microvm_lifecycle" {
   policy = data.aws_iam_policy_document.sealant_worker.json
 }
 
+# The server's and the edge's container logs (deploy/docker/compose.logs.aws.yaml): kept across
+# restarts and rolls, which the containers' own logs are not.
+resource "aws_cloudwatch_log_group" "instance_containers" {
+  count             = local.instance_count
+  name              = "/mend/${local.name}/containers"
+  retention_in_days = 14
+}
+
+data "aws_iam_policy_document" "instance_container_logs" {
+  count = local.instance_count
+  statement {
+    actions = ["logs:CreateLogStream", "logs:PutLogEvents", "logs:DescribeLogStreams"]
+    resources = [
+      aws_cloudwatch_log_group.instance_containers[0].arn,
+      "${aws_cloudwatch_log_group.instance_containers[0].arn}:*",
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "instance_container_logs" {
+  count  = local.instance_count
+  name   = "container-logs"
+  role   = aws_iam_role.instance[0].id
+  policy = data.aws_iam_policy_document.instance_container_logs[0].json
+}
+
 resource "aws_iam_instance_profile" "instance" {
   count = local.instance_count
   name  = "${local.name}-instance"
