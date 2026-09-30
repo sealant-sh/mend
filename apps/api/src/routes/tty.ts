@@ -9,7 +9,7 @@ import {
 import { SessionId, SessionProcessId, type SealantWorkspaceId } from "@mend/domain";
 import { currentAgentProcess } from "@mend/domain/workbench";
 import { asSealantUser, SealantClient } from "@mend/sealant";
-import { Effect, Option } from "effect";
+import { Duration, Effect, Option } from "effect";
 import { HttpRouter, HttpServerResponse } from "effect/unstable/http";
 import { Socket } from "effect/unstable/socket";
 
@@ -18,6 +18,9 @@ import { ConnectionRegistry, guardSocket } from "../connections.ts";
 import { SessionSteering } from "../session-steering.ts";
 import { connectionRefusal, makeFrameGuard } from "../socket-budgets.ts";
 import { isUpgradeCaller, resolveUpgradeCaller, UrlBearers } from "./upgrade-tickets.ts";
+
+/** How long the platform may take to hand over a terminal before the upgrade is answered without one. */
+export const TTY_ATTACH_BOUND = Duration.seconds(20);
 
 /**
  * The terminal proxy (plan §8.1.F) as a DATA PLANE: one WebSocket per attach.
@@ -183,22 +186,46 @@ export const TtyRoutes = HttpRouter.use((router) =>
         const { sealantWorkspaceId, sealantSessionId, ownerUserId, sessionId } = target;
         const from = BigInt(url.searchParams.get("from") ?? "0");
 
+        // An attachment the platform hands over after the bound below has nobody to pump it.
+        let closeLate: (() => void) | null = null;
         const resolved = yield* Effect.gen(function* () {
           const workspace = yield* sealant.getWorkspace(sealantWorkspaceId);
           const pty = yield* sealant.getSession(workspace, sealantSessionId);
+          const attaching = pty.attach({ from });
+          closeLate = () =>
+            void attaching.then(
+              (late) => late.close(),
+              () => undefined,
+            );
           // A settled session has no PTY to attach — that is a state, not a crash.
           const attachment = yield* Effect.tryPromise({
-            try: () => pty.attach({ from }),
+            try: () => attaching,
             catch: () => new Error(`the session has no live PTY (it may have settled)`),
           });
-          return { ok: true as const, attachment };
+          return { ok: true as const, status: 200, attachment };
         }).pipe(
           asSealantUser(ownerUserId),
           Effect.catch((error) =>
-            Effect.succeed({ ok: false as const, message: String(error.message) }),
+            Effect.succeed({ ok: false as const, status: 502, message: String(error.message) }),
           ),
+          // Bounded, so the upgrade is answered before a client gives up on it (the CLI waits
+          // 30 s): a platform slow to attach reads as that, and the session keeps running.
+          Effect.timeoutOrElse({
+            duration: TTY_ATTACH_BOUND,
+            orElse: () =>
+              Effect.sync(() => {
+                closeLate?.();
+                return {
+                  ok: false as const,
+                  status: 504,
+                  message: `the platform did not attach the terminal within ${Duration.toSeconds(TTY_ATTACH_BOUND)} s · the session keeps running · attach again`,
+                };
+              }),
+          }),
         );
-        if (!resolved.ok) return HttpServerResponse.text(resolved.message, { status: 502 });
+        if (!resolved.ok) {
+          return HttpServerResponse.text(resolved.message, { status: resolved.status });
+        }
         const attachment = resolved.attachment;
 
         // The pump, scope-bound to this handler fiber: the client closing the
