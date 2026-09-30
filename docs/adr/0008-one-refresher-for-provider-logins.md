@@ -103,13 +103,21 @@ login for anyone who accepts the race, as it does for Claude.
 
 ### Whose login pays
 
-A connected login belongs to one Mend account and is used only for that account's own sessions and
-for the review passes over changes it owns. No other account can read it, and no request from
-another account selects it. Two paths spend it on another person's action, both deliberate:
+A connected login belongs to one Mend account and is spent only on that account's own sessions and
+on the inference its own requests cause. No other account can read it, and no request from another
+account selects it.
 
-- **Shared control** ([ADR 0003](0003-organizations-and-tenancy.md)): the session's owner lets other
-  members steer it, and it keeps running on the owner's subscription.
-- **Review passes** (tour, read, suggest) run on the change owner's account, whoever asks for them.
+- **Review passes** (tour, read, suggest) run on the login of whoever asked. A pass review prep
+  queues when a session settles runs on that session's owner's; the tour a landing asks for runs on
+  the lander's. The job carries who asked, and a job that does not say runs on no one's. A request
+  that joins a pass already queued or running for the change spends nothing.
+- **Mend's other reads** (a session's name, a Slack thread's project, a request's intent) run on the
+  session owner's, the person who mentioned `@mend`, and the turn's sender respectively. A turn with
+  no recorded sender is read on no one's login.
+- **Shared control** ([ADR 0003](0003-organizations-and-tenancy.md)) is the one path that spends a
+  login on another person's action: the session's owner lets other members steer it, and the
+  session's harness keeps running on the owner's subscription. The owner turns it on, and the
+  setting says so where they do.
 
 ## Consequences
 

@@ -38,11 +38,12 @@ The server stores the login encrypted (AES-256-GCM) in its database.
 Your login belongs to your Mend account and is used for your work:
 
 - **Your sessions.** A session runs on the logins of the person who started it.
-- **Review passes over your changes.** A tour, "Read this change" or "Suggest fixes" runs on the
-  change owner's login, whoever asks for it.
+- **Your requests to Mend.** A tour, "Read this change" or "Suggest fixes" runs on the login of the
+  person who asked for it, whoever owns the change. The passes Mend queues when your session
+  settles, and the tour a landing of yours asks for, run on yours.
 
 Nobody else can read your credential, see its value, or choose it for their own sessions. Mend never
-uses one person's login for another person's session.
+spends one person's login on another person's session or request.
 
 One setting spends your subscription on someone else's action, and only when you turn it on:
 **shared control** lets other members of your organization steer a session you own. The session

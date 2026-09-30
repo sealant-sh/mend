@@ -135,8 +135,9 @@ When you turn on shared control for a session, others who can see the project st
 provider logins and Git access; every act is recorded with who did it. Read
 [Organizations](/organizations/overview/).
 
-Mend's own reads of a change (a tour, "Read this change", "Suggest fixes") run on the change owner's
-Claude account, or Codex when there is no Claude account, whoever asks for them.
+Mend's own reads of a change (a tour, "Read this change", "Suggest fixes") run on the Claude account
+of the person who asked for them, or their Codex account when they have no Claude account, never on
+the change owner's.
 
 A running workspace gets each refreshed copy of your login as it is made, without a restart. A
 reconnect applies to new sessions at once; a session already running picks the new login up at its
