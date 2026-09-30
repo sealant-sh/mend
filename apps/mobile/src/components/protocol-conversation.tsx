@@ -23,8 +23,7 @@ import {
 } from "@mend/agent-conversation";
 import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, TextInput, View } from "react-native";
-import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
-import { useSafeAreaInsets } from "react-native-safe-area-context";
+import { useKeyboardState } from "react-native-keyboard-controller";
 
 import { EvButton } from "@/components/button";
 import {
@@ -35,6 +34,7 @@ import {
   TurnImages,
 } from "@/components/composer";
 import { MendMarkdown } from "@/components/markdown";
+import { ComposerDock, usePaneEdges } from "@/components/pane";
 import { MonoText, UiText } from "@/components/typography";
 import {
   useAgentConversation,
@@ -391,7 +391,7 @@ export function ProtocolConversation({
   readonly summary: string | null;
 }) {
   const { colors } = useEvidenceTheme();
-  const insets = useSafeAreaInsets();
+  const pane = usePaneEdges();
   const conversation = useAgentConversation(sessionId, true, active);
   const { respond, interrupt } = useAgentConversationActions(sessionId);
   const sender = useTurnSender(sessionId);
@@ -420,9 +420,11 @@ export function ProtocolConversation({
   const sendOnItsWay = hasUnrecordedSend(entries, sender.pending);
   const activity = conversationActivity(data) ?? (sendOnItsWay ? "working" : null);
   const readiness = composerReadiness({ draft, attachments: images.attachments, starting });
-  const bottomPad =
-    (keyboard.isVisible ? keyboard.height : insets.bottom) +
-    (active ? composerHeight + spacing.xs : spacing.md);
+  // A sticky composer floats over the list's end; in a pane it sits below it.
+  const bottomPad = pane.sticky
+    ? (keyboard.isVisible ? keyboard.height : pane.bottom) +
+      (active ? composerHeight + spacing.xs : spacing.md)
+    : spacing.md;
   const onRespond = useCallback(
     (requestId: string, response: AgentRequestResponse) => {
       respond.mutate({ requestId, response });
@@ -552,10 +554,7 @@ export function ProtocolConversation({
         }
       />
       {active && (
-        <KeyboardStickyView
-          style={{ position: "absolute", bottom: 0, left: 0, right: 0 }}
-          offset={{ closed: 0, opened: 0 }}
-        >
+        <ComposerDock>
           {actionError instanceof Error ? (
             <View
               style={{ alignItems: "center", paddingVertical: 4, backgroundColor: colors.sunken }}
@@ -586,7 +585,7 @@ export function ProtocolConversation({
               paddingLeft: 4,
               paddingRight: 10,
               paddingTop: 8,
-              paddingBottom: keyboard.isVisible ? 8 : insets.bottom + 4,
+              paddingBottom: keyboard.isVisible ? 8 : pane.bottom + 4,
               backgroundColor: colors.panel,
               borderTopWidth: StyleSheet.hairlineWidth,
               borderTopColor: colors.softRule,
@@ -620,7 +619,7 @@ export function ProtocolConversation({
             )}
             <EvButton label="Send" onPress={send} disabled={!readiness.canSend} />
           </View>
-        </KeyboardStickyView>
+        </ComposerDock>
       )}
     </View>
   );

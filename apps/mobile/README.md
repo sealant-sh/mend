@@ -49,6 +49,27 @@ Evidence Review, same family as web (`DESIGN.md` at the repo root). Tokens come 
 `src/app/_layout.tsx` (Inter, Space Grotesk, JetBrains Mono via Expo Google Fonts). Light and dark
 are the same structure; scheme comes from `useEvidenceTheme()` in `src/theme/evidence.ts`.
 
+## Unfolded layouts
+
+The layout follows the window, not the device (`src/data/posture.ts`): under 600 dp on the short
+side is `compact` (phones, a foldable's cover screen) and keeps the phone layouts. Wider windows
+split at the middle, where a foldable creases: side by side open flat (`landscape`), one above the
+other turned upright (`upright`). Tablets get the same layouts.
+
+- Now: the inbox beside (or above) the session it has open. Expand gives that session the screen;
+  Split puts a second session next to it.
+- Session: open flat, a rail of the sessions waiting on you and the live ones, the conversation, and
+  — from Diff or Shell in its header — the diff or a shell on the other side. Upright, the diff or
+  shell sits below; with neither, the conversation has the whole screen. A shell opens only when
+  asked.
+- Split (`/split?ids=a,b`): two sessions, each with its own composer; drag the divider.
+- Review: the diff on one side, the review (actions, open line comments, change-level comments) on
+  the other.
+
+Panes use `Pane` from `src/components/pane.tsx`: composers sit in the pane's flow, and the layout's
+`KeyboardAvoidingView` shrinks every pane at once instead of each composer riding the keyboard. The
+Fold 8 AVD (2448 × 1848, hinge at 1224) shows both postures; rotate it to switch.
+
 ## Data
 
 The app talks to a Mend server over its HTTP API. `src/data/live.ts` holds the server URL and a

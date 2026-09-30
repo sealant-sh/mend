@@ -18,11 +18,13 @@ import {
   TextInput,
   View,
 } from "react-native";
+import { KeyboardAvoidingView } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EvButton } from "@/components/button";
 import { BodyPanel, SliceStatus } from "@/components/change-body";
 import { BASE_LINE_H, CodeChunk, parseFiles, TOTAL_BUDGET, type DiffRow } from "@/components/diff";
+import { PaneDivider } from "@/components/pane";
 import { Panel, PanelRow } from "@/components/panel";
 import { CommentCard } from "@/components/review-comment";
 import { ScreenHeader, SectionLabel } from "@/components/screen";
@@ -50,6 +52,7 @@ import {
   type SliceCommentTarget,
 } from "@/data/review";
 import { advanceFailure, changeBody } from "@/data/review-state";
+import { usePosture } from "@/data/use-posture";
 import { sha256Hex } from "@/lib/sha256";
 import { radius, spacing, useEvidenceTheme } from "@/theme/evidence";
 
@@ -527,6 +530,7 @@ export default function ReviewScreen() {
   const changeId = id ?? null;
   const { colors } = useEvidenceTheme();
   const insets = useSafeAreaInsets();
+  const posture = usePosture();
   const textScale = useTextScale();
   const lineH = Math.round(BASE_LINE_H * textScale);
 
@@ -704,334 +708,411 @@ export default function ReviewScreen() {
 
   if (changeId === null) return null;
 
+  const refreshControl = (
+    <RefreshControl
+      refreshing={pinned.refreshing}
+      // Reopen the review at the change's current state.
+      onRefresh={pinned.refresh}
+    />
+  );
+  const headerBlock = (
+    <>
+      <ScreenHeader
+        eyebrow="review"
+        title={
+          change === null ? "The change" : change.branch.replace(/^mend\/session\//, "session ")
+        }
+        meta={
+          review === null
+            ? body.kind === "failed"
+              ? "not opened"
+              : "opening the review…"
+            : `checkpoint ${review.checkpointA.ordinal} → ${review.checkpointB.ordinal} · ${stats.length} file${stats.length === 1 ? "" : "s"} · +${additions} −${deletions} · ${openUnsent.length} open comment${openUnsent.length === 1 ? "" : "s"}`
+        }
+      />
+      <SliceStatus
+        review={review}
+        advancing={pinned.advancing}
+        heldFor={pinned.heldFor?.ordinal ?? null}
+        failure={failure}
+        onRetry={retry}
+      />
+    </>
+  );
+  const actionsBlock = (
+    <>
+      <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
+        <EvButton
+          size="sm"
+          variant="outline"
+          label={
+            suggestPass?.status === "running"
+              ? "Running…"
+              : suggestPass?.status === "queued"
+                ? "Queued"
+                : "Suggest fixes"
+          }
+          disabled={
+            stats.length === 0 ||
+            suggestPass?.status === "running" ||
+            suggestPass?.status === "queued" ||
+            (queuePass.isPending && queuePass.variables === "suggest")
+          }
+          onPress={() => queuePass.mutate("suggest")}
+        />
+        <EvButton
+          size="sm"
+          variant="outline"
+          label={
+            readPass?.status === "running"
+              ? "Running…"
+              : readPass?.status === "queued"
+                ? "Queued"
+                : "Read this change"
+          }
+          disabled={
+            readPass?.status === "running" ||
+            readPass?.status === "queued" ||
+            (queuePass.isPending && queuePass.variables === "read")
+          }
+          onPress={() => queuePass.mutate("read")}
+        />
+        <EvButton
+          size="sm"
+          label="Send review"
+          disabled={openUnsent.length === 0}
+          onPress={() => setSendOpen(true)}
+        />
+      </View>
+
+      {queuePass.isError && (
+        <MonoText size={10.5} tone="danger">
+          {queuePass.error instanceof Error
+            ? queuePass.error.message
+            : "the pass could not be queued"}
+        </MonoText>
+      )}
+
+      {outcomeLines.length > 0 && (
+        <View style={{ gap: 2 }}>
+          {outcomeLines.map((pass) => (
+            <PassOutcomeLine key={pass.kind} pass={pass} />
+          ))}
+        </View>
+      )}
+
+      {followUp !== null && (
+        <Panel>
+          <PanelRow first>
+            <View style={{ gap: 8 }}>
+              <MonoText size={10.5} tone="label">
+                follow-up · {followUp.status.replaceAll("_", " ")}
+              </MonoText>
+              <UiText size={13} tone="ink2" numberOfLines={3} style={{ lineHeight: 18 }}>
+                {followUp.instruction}
+              </UiText>
+              {followUp.deliveryError === null ? null : (
+                <MonoText size={10.5} tone="danger">
+                  {followUp.deliveryError}
+                </MonoText>
+              )}
+              {deliverFollowUp.isError ? (
+                <MonoText size={10.5} tone="danger">
+                  {deliverFollowUp.error.message}
+                </MonoText>
+              ) : null}
+              {session !== undefined && !sessionActive && canDeliverFollowUp(followUp) ? (
+                <View style={{ flexDirection: "row" }}>
+                  <EvButton
+                    size="sm"
+                    variant="outline"
+                    disabled={deliverFollowUp.isPending}
+                    label={
+                      deliverFollowUp.isPending
+                        ? "delivering…"
+                        : followUp.status === "delivery_failed"
+                          ? "Retry delivery"
+                          : "Deliver & relaunch"
+                    }
+                    onPress={() => deliverFollowUp.mutate(followUp)}
+                  />
+                </View>
+              ) : (
+                <MonoText size={10.5} tone="faint">
+                  {sessionActive
+                    ? "the session is live — deliver after it stops"
+                    : "deliver with mend continue from a terminal"}
+                </MonoText>
+              )}
+            </View>
+          </PanelRow>
+        </Panel>
+      )}
+
+      <DescriptionCard
+        tour={tour}
+        pass={tourPass}
+        stale={stale}
+        inFlight={composing}
+        canCompose={stats.length > 0}
+        onCompose={() => queuePass.mutate("tour")}
+        onStartTour={() => goToStop(0)}
+      />
+    </>
+  );
+  const filesBlock = (
+    <>
+      {body.kind === "files" ? null : <BodyPanel body={body} onRetry={retry} />}
+
+      {files.map((file) => {
+        const fileComments = comments.filter((comment) => comment.file === file.path);
+        const byLine = new Map<number, Array<ReviewCommentDto>>();
+        for (const comment of fileComments) {
+          if (comment.line === null || !writtenHere(comment)) continue;
+          const existing = byLine.get(comment.line);
+          if (existing === undefined) byLine.set(comment.line, [comment]);
+          else existing.push(comment);
+        }
+        const renderedLines = new Set(
+          file.rows.flatMap((row) => (row.newLine === null ? [] : [row.newLine])),
+        );
+        const leftover = fileComments.filter(
+          (comment) =>
+            comment.line === null || !writtenHere(comment) || !renderedLines.has(comment.line),
+        );
+        const collapsedHere = isCollapsed(file.path);
+        const stat = stats.find((candidate) => candidate.path === file.path);
+        const highlight =
+          activeStop !== null && activeStop.file === file.path && activeStop.line !== null
+            ? { start: activeStop.line, end: activeStop.endLine ?? activeStop.line }
+            : null;
+
+        const blocks: Array<ReactNode> = [];
+        if (!collapsedHere) {
+          let chunk: Array<DiffRow> = [];
+          let key = 0;
+          const flush = () => {
+            if (chunk.length === 0) return;
+            blocks.push(
+              <CodeChunk
+                key={`chunk-${key}`}
+                rows={chunk}
+                lineH={lineH}
+                highlight={highlight}
+                onPressLine={(line) => setComposerAnchor(anchorFor(file.path, line))}
+              />,
+            );
+            key += 1;
+            chunk = [];
+          };
+          for (const row of file.rows) {
+            chunk.push(row);
+            if (row.newLine === null) continue;
+            const lineComments = byLine.get(row.newLine);
+            const composerHere =
+              composerAnchor !== null &&
+              (composerAnchor.target.newPath ?? composerAnchor.target.oldPath) === file.path &&
+              composerAnchor.target.startLine === row.newLine;
+            if (lineComments === undefined && !composerHere) continue;
+            flush();
+            for (const comment of lineComments ?? []) {
+              blocks.push(
+                <PanelRow key={comment.id}>
+                  <CommentCard comment={comment} />
+                </PanelRow>,
+              );
+            }
+            if (composerHere && composerAnchor !== null) {
+              blocks.push(
+                <PanelRow key={`composer-${row.newLine}`}>
+                  <CommentComposer
+                    changeId={changeId}
+                    sliceId={composerAnchor.sliceId}
+                    target={composerAnchor.target}
+                    placeholder="Comment on this line…"
+                    autoFocus
+                    onDone={() => setComposerAnchor(null)}
+                  />
+                </PanelRow>,
+              );
+            }
+          }
+          flush();
+          if (file.hidden > 0) {
+            blocks.push(
+              <PanelRow key="hidden">
+                <MonoText size={10.5} tone="faint">
+                  {file.hidden} more line{file.hidden === 1 ? "" : "s"} not shown
+                </MonoText>
+              </PanelRow>,
+            );
+          }
+          for (const comment of leftover) {
+            blocks.push(
+              <PanelRow key={comment.id}>
+                <CommentCard comment={comment} showAnchor writtenOn={writtenOn(comment)} />
+              </PanelRow>,
+            );
+          }
+        }
+
+        return (
+          <View
+            key={file.path}
+            onLayout={(event) => fileTops.current.set(file.path, event.nativeEvent.layout.y)}
+          >
+            <Panel>
+              <Pressable
+                onPress={() =>
+                  setCollapsedOverride((previous) => ({
+                    ...previous,
+                    [file.path]: !collapsedHere,
+                  }))
+                }
+                style={{
+                  flexDirection: "row",
+                  alignItems: "center",
+                  gap: 8,
+                  backgroundColor: colors.sunken,
+                  paddingHorizontal: 12,
+                  paddingVertical: 8,
+                }}
+              >
+                <UiText weight="medium" size={12} numberOfLines={1} style={{ flex: 1 }}>
+                  {file.path}
+                </UiText>
+                <MonoText size={10.5} tone="faint">
+                  +{stat?.additions ?? 0} −{stat?.deletions ?? 0}
+                  {fileComments.length > 0
+                    ? ` · ${fileComments.length} comment${fileComments.length === 1 ? "" : "s"}`
+                    : ""}{" "}
+                  {collapsedHere ? "▸" : "▾"}
+                </MonoText>
+              </Pressable>
+              {!collapsedHere && <View style={{ paddingVertical: 6 }}>{blocks}</View>}
+            </Panel>
+          </View>
+        );
+      })}
+
+      {elsewhere.length > 0 && (
+        <>
+          <SectionLabel>comments on files outside this slice</SectionLabel>
+          <Panel>
+            {elsewhere.map((comment, index) => (
+              <PanelRow key={comment.id} first={index === 0}>
+                <CommentCard comment={comment} showAnchor writtenOn={writtenOn(comment)} />
+              </PanelRow>
+            ))}
+          </Panel>
+        </>
+      )}
+    </>
+  );
+  const changeLevelBlock = (
+    <>
+      <SectionLabel>change-level comments</SectionLabel>
+      <Panel>
+        {changeLevel.map((comment, index) => (
+          <PanelRow key={comment.id} first={index === 0}>
+            <CommentCard comment={comment} />
+          </PanelRow>
+        ))}
+        {slice !== null && (
+          <PanelRow first={changeLevel.length === 0}>
+            <CommentComposer
+              changeId={changeId}
+              sliceId={slice.id}
+              target={CHANGE_LEVEL_TARGET}
+              placeholder="Comment on the change as a whole…"
+              draft={{ value: changeDraft, set: setChangeDraft }}
+            />
+          </PanelRow>
+        )}
+      </Panel>
+    </>
+  );
+  const tourRoom = tourIndex !== null ? 220 : 0;
+  // Unfolded, the review side gathers the open line comments the diff side scatters.
+  const openLineComments = openUnsent.filter((comment) => comment.file !== null);
+
   return (
     <>
       <Stack.Screen options={{ headerShown: false }} />
       <View style={{ flex: 1, backgroundColor: colors.bg }}>
-        <ScrollView
-          ref={scrollRef}
-          style={{ flex: 1 }}
-          keyboardShouldPersistTaps="handled"
-          automaticallyAdjustKeyboardInsets
-          refreshControl={
-            <RefreshControl
-              refreshing={pinned.refreshing}
-              // Reopen the review at the change's current state.
-              onRefresh={pinned.refresh}
-            />
-          }
-          contentContainerStyle={{
-            paddingTop: insets.top + spacing.md,
-            paddingHorizontal: 20,
-            paddingBottom: spacing.xl2 + insets.bottom + (tourIndex !== null ? 220 : 0),
-            gap: spacing.lg,
-          }}
-        >
-          <ScreenHeader
-            eyebrow="review"
-            title={
-              change === null ? "The change" : change.branch.replace(/^mend\/session\//, "session ")
-            }
-            meta={
-              review === null
-                ? body.kind === "failed"
-                  ? "not opened"
-                  : "opening the review…"
-                : `checkpoint ${review.checkpointA.ordinal} → ${review.checkpointB.ordinal} · ${stats.length} file${stats.length === 1 ? "" : "s"} · +${additions} −${deletions} · ${openUnsent.length} open comment${openUnsent.length === 1 ? "" : "s"}`
-            }
-          />
-          <SliceStatus
-            review={review}
-            advancing={pinned.advancing}
-            heldFor={pinned.heldFor?.ordinal ?? null}
-            failure={failure}
-            onRetry={retry}
-          />
-
-          <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8 }}>
-            <EvButton
-              size="sm"
-              variant="outline"
-              label={
-                suggestPass?.status === "running"
-                  ? "Running…"
-                  : suggestPass?.status === "queued"
-                    ? "Queued"
-                    : "Suggest fixes"
-              }
-              disabled={
-                stats.length === 0 ||
-                suggestPass?.status === "running" ||
-                suggestPass?.status === "queued" ||
-                (queuePass.isPending && queuePass.variables === "suggest")
-              }
-              onPress={() => queuePass.mutate("suggest")}
-            />
-            <EvButton
-              size="sm"
-              variant="outline"
-              label={
-                readPass?.status === "running"
-                  ? "Running…"
-                  : readPass?.status === "queued"
-                    ? "Queued"
-                    : "Read this change"
-              }
-              disabled={
-                readPass?.status === "running" ||
-                readPass?.status === "queued" ||
-                (queuePass.isPending && queuePass.variables === "read")
-              }
-              onPress={() => queuePass.mutate("read")}
-            />
-            <EvButton
-              size="sm"
-              label="Send review"
-              disabled={openUnsent.length === 0}
-              onPress={() => setSendOpen(true)}
-            />
-          </View>
-
-          {queuePass.isError && (
-            <MonoText size={10.5} tone="danger">
-              {queuePass.error instanceof Error
-                ? queuePass.error.message
-                : "the pass could not be queued"}
-            </MonoText>
-          )}
-
-          {outcomeLines.length > 0 && (
-            <View style={{ gap: 2 }}>
-              {outcomeLines.map((pass) => (
-                <PassOutcomeLine key={pass.kind} pass={pass} />
-              ))}
-            </View>
-          )}
-
-          {followUp !== null && (
-            <Panel>
-              <PanelRow first>
-                <View style={{ gap: 8 }}>
-                  <MonoText size={10.5} tone="label">
-                    follow-up · {followUp.status.replaceAll("_", " ")}
-                  </MonoText>
-                  <UiText size={13} tone="ink2" numberOfLines={3} style={{ lineHeight: 18 }}>
-                    {followUp.instruction}
-                  </UiText>
-                  {followUp.deliveryError === null ? null : (
-                    <MonoText size={10.5} tone="danger">
-                      {followUp.deliveryError}
-                    </MonoText>
-                  )}
-                  {deliverFollowUp.isError ? (
-                    <MonoText size={10.5} tone="danger">
-                      {deliverFollowUp.error.message}
-                    </MonoText>
-                  ) : null}
-                  {session !== undefined && !sessionActive && canDeliverFollowUp(followUp) ? (
-                    <View style={{ flexDirection: "row" }}>
-                      <EvButton
-                        size="sm"
-                        variant="outline"
-                        disabled={deliverFollowUp.isPending}
-                        label={
-                          deliverFollowUp.isPending
-                            ? "delivering…"
-                            : followUp.status === "delivery_failed"
-                              ? "Retry delivery"
-                              : "Deliver & relaunch"
-                        }
-                        onPress={() => deliverFollowUp.mutate(followUp)}
-                      />
-                    </View>
-                  ) : (
-                    <MonoText size={10.5} tone="faint">
-                      {sessionActive
-                        ? "the session is live — deliver after it stops"
-                        : "deliver with mend continue from a terminal"}
-                    </MonoText>
-                  )}
-                </View>
-              </PanelRow>
-            </Panel>
-          )}
-
-          <DescriptionCard
-            tour={tour}
-            pass={tourPass}
-            stale={stale}
-            inFlight={composing}
-            canCompose={stats.length > 0}
-            onCompose={() => queuePass.mutate("tour")}
-            onStartTour={() => goToStop(0)}
-          />
-
-          {body.kind === "files" ? null : <BodyPanel body={body} onRetry={retry} />}
-
-          {files.map((file) => {
-            const fileComments = comments.filter((comment) => comment.file === file.path);
-            const byLine = new Map<number, Array<ReviewCommentDto>>();
-            for (const comment of fileComments) {
-              if (comment.line === null || !writtenHere(comment)) continue;
-              const existing = byLine.get(comment.line);
-              if (existing === undefined) byLine.set(comment.line, [comment]);
-              else existing.push(comment);
-            }
-            const renderedLines = new Set(
-              file.rows.flatMap((row) => (row.newLine === null ? [] : [row.newLine])),
-            );
-            const leftover = fileComments.filter(
-              (comment) =>
-                comment.line === null || !writtenHere(comment) || !renderedLines.has(comment.line),
-            );
-            const collapsedHere = isCollapsed(file.path);
-            const stat = stats.find((candidate) => candidate.path === file.path);
-            const highlight =
-              activeStop !== null && activeStop.file === file.path && activeStop.line !== null
-                ? { start: activeStop.line, end: activeStop.endLine ?? activeStop.line }
-                : null;
-
-            const blocks: Array<ReactNode> = [];
-            if (!collapsedHere) {
-              let chunk: Array<DiffRow> = [];
-              let key = 0;
-              const flush = () => {
-                if (chunk.length === 0) return;
-                blocks.push(
-                  <CodeChunk
-                    key={`chunk-${key}`}
-                    rows={chunk}
-                    lineH={lineH}
-                    highlight={highlight}
-                    onPressLine={(line) => setComposerAnchor(anchorFor(file.path, line))}
-                  />,
-                );
-                key += 1;
-                chunk = [];
-              };
-              for (const row of file.rows) {
-                chunk.push(row);
-                if (row.newLine === null) continue;
-                const lineComments = byLine.get(row.newLine);
-                const composerHere =
-                  composerAnchor !== null &&
-                  (composerAnchor.target.newPath ?? composerAnchor.target.oldPath) === file.path &&
-                  composerAnchor.target.startLine === row.newLine;
-                if (lineComments === undefined && !composerHere) continue;
-                flush();
-                for (const comment of lineComments ?? []) {
-                  blocks.push(
-                    <PanelRow key={comment.id}>
-                      <CommentCard comment={comment} />
-                    </PanelRow>,
-                  );
-                }
-                if (composerHere && composerAnchor !== null) {
-                  blocks.push(
-                    <PanelRow key={`composer-${row.newLine}`}>
-                      <CommentComposer
-                        changeId={changeId}
-                        sliceId={composerAnchor.sliceId}
-                        target={composerAnchor.target}
-                        placeholder="Comment on this line…"
-                        autoFocus
-                        onDone={() => setComposerAnchor(null)}
-                      />
-                    </PanelRow>,
-                  );
-                }
-              }
-              flush();
-              if (file.hidden > 0) {
-                blocks.push(
-                  <PanelRow key="hidden">
-                    <MonoText size={10.5} tone="faint">
-                      {file.hidden} more line{file.hidden === 1 ? "" : "s"} not shown
-                    </MonoText>
-                  </PanelRow>,
-                );
-              }
-              for (const comment of leftover) {
-                blocks.push(
-                  <PanelRow key={comment.id}>
-                    <CommentCard comment={comment} showAnchor writtenOn={writtenOn(comment)} />
-                  </PanelRow>,
-                );
-              }
-            }
-
-            return (
-              <View
-                key={file.path}
-                onLayout={(event) => fileTops.current.set(file.path, event.nativeEvent.layout.y)}
-              >
-                <Panel>
-                  <Pressable
-                    onPress={() =>
-                      setCollapsedOverride((previous) => ({
-                        ...previous,
-                        [file.path]: !collapsedHere,
-                      }))
-                    }
-                    style={{
-                      flexDirection: "row",
-                      alignItems: "center",
-                      gap: 8,
-                      backgroundColor: colors.sunken,
-                      paddingHorizontal: 12,
-                      paddingVertical: 8,
-                    }}
-                  >
-                    <UiText weight="medium" size={12} numberOfLines={1} style={{ flex: 1 }}>
-                      {file.path}
-                    </UiText>
-                    <MonoText size={10.5} tone="faint">
-                      +{stat?.additions ?? 0} −{stat?.deletions ?? 0}
-                      {fileComments.length > 0
-                        ? ` · ${fileComments.length} comment${fileComments.length === 1 ? "" : "s"}`
-                        : ""}{" "}
-                      {collapsedHere ? "▸" : "▾"}
-                    </MonoText>
-                  </Pressable>
-                  {!collapsedHere && <View style={{ paddingVertical: 6 }}>{blocks}</View>}
-                </Panel>
-              </View>
-            );
-          })}
-
-          {elsewhere.length > 0 && (
-            <>
-              <SectionLabel>comments on files outside this slice</SectionLabel>
-              <Panel>
-                {elsewhere.map((comment, index) => (
-                  <PanelRow key={comment.id} first={index === 0}>
-                    <CommentCard comment={comment} showAnchor writtenOn={writtenOn(comment)} />
-                  </PanelRow>
-                ))}
-              </Panel>
-            </>
-          )}
-
-          <SectionLabel>change-level comments</SectionLabel>
-          <Panel>
-            {changeLevel.map((comment, index) => (
-              <PanelRow key={comment.id} first={index === 0}>
-                <CommentCard comment={comment} />
-              </PanelRow>
-            ))}
-            {slice !== null && (
-              <PanelRow first={changeLevel.length === 0}>
-                <CommentComposer
-                  changeId={changeId}
-                  sliceId={slice.id}
-                  target={CHANGE_LEVEL_TARGET}
-                  placeholder="Comment on the change as a whole…"
-                  draft={{ value: changeDraft, set: setChangeDraft }}
-                />
-              </PanelRow>
-            )}
-          </Panel>
-        </ScrollView>
+        {posture === "compact" ? (
+          <ScrollView
+            ref={scrollRef}
+            style={{ flex: 1 }}
+            keyboardShouldPersistTaps="handled"
+            automaticallyAdjustKeyboardInsets
+            refreshControl={refreshControl}
+            contentContainerStyle={{
+              paddingTop: insets.top + spacing.md,
+              paddingHorizontal: 20,
+              paddingBottom: spacing.xl2 + insets.bottom + tourRoom,
+              gap: spacing.lg,
+            }}
+          >
+            {headerBlock}
+            {actionsBlock}
+            {filesBlock}
+            {changeLevelBlock}
+          </ScrollView>
+        ) : (
+          // Unfolded: the change on one side of the crease, the review on the other — reading a
+          // file never scrolls the comments away.
+          <KeyboardAvoidingView
+            behavior="padding"
+            style={{
+              flex: 1,
+              paddingTop: insets.top,
+              flexDirection: posture === "landscape" ? "row" : "column",
+            }}
+          >
+            <ScrollView
+              ref={scrollRef}
+              style={{ flex: 1 }}
+              keyboardShouldPersistTaps="handled"
+              refreshControl={refreshControl}
+              contentContainerStyle={{
+                paddingTop: spacing.md,
+                paddingHorizontal: 20,
+                paddingBottom: spacing.xl2 + (posture === "landscape" ? insets.bottom : 0),
+                gap: spacing.lg,
+              }}
+            >
+              {headerBlock}
+              {filesBlock}
+            </ScrollView>
+            <PaneDivider vertical={posture === "landscape"} />
+            <ScrollView
+              style={{ flex: 1 }}
+              keyboardShouldPersistTaps="handled"
+              contentContainerStyle={{
+                paddingTop: spacing.md,
+                paddingHorizontal: 20,
+                paddingBottom: spacing.xl2 + insets.bottom + tourRoom,
+                gap: spacing.lg,
+              }}
+            >
+              {actionsBlock}
+              {openLineComments.length === 0 ? null : (
+                <>
+                  <SectionLabel>your line comments · {openLineComments.length} open</SectionLabel>
+                  <Panel>
+                    {openLineComments.map((comment, index) => (
+                      <PanelRow key={comment.id} first={index === 0}>
+                        <CommentCard comment={comment} showAnchor writtenOn={writtenOn(comment)} />
+                      </PanelRow>
+                    ))}
+                  </Panel>
+                </>
+              )}
+              {changeLevelBlock}
+            </ScrollView>
+          </KeyboardAvoidingView>
+        )}
 
         {tour !== null && tourIndex !== null && (
           <TourDock
