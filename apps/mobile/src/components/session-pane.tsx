@@ -181,6 +181,14 @@ export function SessionPane({
     );
   }
 
+  // A resume that failed or was refused says why, where Resume was tapped; the session line
+  // alone read `stopped` again with no reason (alpha 2026-09-30).
+  const resumeError =
+    resume.error === null
+      ? null
+      : resume.error instanceof Error
+        ? resume.error.message
+        : String(resume.error);
   const actions: Array<HeaderAction> = [];
   if (session !== undefined && steer && !agentActive) {
     if (followUp !== null && canDeliverFollowUp(followUp)) {
@@ -268,7 +276,10 @@ export function SessionPane({
         direct={direct ?? (posture === "compact" ? 3 : 4)}
         topInset={topInset ? insets.top : 0}
       />
-      {steer && !(detail.isError && session !== undefined) && shellError === null ? null : (
+      {steer &&
+      !(detail.isError && session !== undefined) &&
+      shellError === null &&
+      resumeError === null ? null : (
         <View style={{ paddingHorizontal: 16, paddingVertical: 6, gap: 4 }}>
           {steer ? null : (
             <MonoText tone="faint" size={11} numberOfLines={2}>
@@ -283,6 +294,11 @@ export function SessionPane({
           {shellError === null ? null : (
             <MonoText tone="danger" size={11} numberOfLines={2}>
               {shellError}
+            </MonoText>
+          )}
+          {resumeError === null ? null : (
+            <MonoText tone="danger" size={11} numberOfLines={3}>
+              resume · {resumeError}
             </MonoText>
           )}
         </View>
