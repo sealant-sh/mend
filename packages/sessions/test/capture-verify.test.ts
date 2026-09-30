@@ -387,6 +387,25 @@ const sealing = (worktreeId: string, epoch: number, built: ReturnType<typeof bui
   return { manifest, bytes, id, key: captureKeys(worktreeId, epoch).manifest(id) };
 };
 
+/** The next sealing FINAL of `built`'s chain: the same sections, one capture later. */
+const nextSealing = (
+  at: { readonly worktreeId: string; readonly epoch: number },
+  built: {
+    readonly id: string;
+    readonly manifest: ReturnType<typeof buildManifest>["manifest"];
+  },
+) => {
+  const manifest = {
+    ...built.manifest,
+    n: built.manifest.n + 1,
+    parent: built.id,
+    seq: built.manifest.seq + 1,
+  };
+  const bytes = new Uint8Array(Buffer.from(JSON.stringify(manifest)));
+  const id = sha256Hex(bytes);
+  return { manifest, bytes, id, key: captureKeys(at.worktreeId, at.epoch).manifest(id) };
+};
+
 const registerOn =
   (worktreeId: string, epoch: number, api: SessionCaptureApi) =>
   (built: {
@@ -3625,6 +3644,7 @@ describeSeals(
       return {
         built,
         bulkPacks: bulk.packs,
+        bulkDirPacks: bulk.dirPacks,
         objects: new Map([
           ...edited.objects,
           ...bulk.objects,
@@ -3658,6 +3678,49 @@ describeSeals(
       expect(reads.of).toBe(capture.bulkPacks.length);
       // No extent is read twice either.
       expect(Math.max(0, ...bucketReads.ranged.values())).toBe(1);
+    });
+
+    /** Every GET, whole or ranged, of any of `keys`. */
+    const readsOf = (keys: ReadonlyArray<string>) => {
+      let total = 0;
+      for (const [key, count] of bucketReads.whole) if (keys.includes(key)) total += count;
+      for (const [extent, count] of bucketReads.ranged) {
+        if (keys.includes(extent.slice(0, extent.indexOf(" ")))) total += count;
+      }
+      return total;
+    };
+
+    it("alpha 0.34.2: on a store that refuses overwrites a later seal reads none of what an earlier one proved; on one that does not it reads it all again", async () => {
+      passBucketReplaceable = () => 0;
+      const at = await claimed();
+      const capture = sharedLinksCapture(at, "proven");
+      const packs = [...capture.bulkPacks, ...capture.bulkDirPacks];
+      await run(uploadObjects(capture.objects));
+      resetReads();
+      const first = await run(registerOn(at.worktreeId, at.epoch, at.api)(capture.built));
+      expect(first.seal).toEqual({ state: "recorded" });
+      // The first seal reads every pack: nothing was proven before it.
+      const firstReads = readsOf(packs);
+      expect(firstReads).toBeGreaterThanOrEqual(packs.length);
+      // The executor's next FINAL over the same sections (a later Stop): every object it names
+      // was read and hashed by the seal before, and the bucket refuses to replace any of them.
+      const second = nextSealing(at, capture.built);
+      await run(uploadObjects(new Map([[second.key, second.bytes]])));
+      resetReads();
+      const again = await run(registerOn(at.worktreeId, at.epoch, at.api)(second));
+      expect(again.seal).toEqual({ state: "recorded" });
+      // Before: every chunk a shared link's digest needs was read again (12 ranged GETs).
+      expect(readsOf(packs)).toBe(0);
+      expect(bucketReads.gets).toBeLessThan(firstReads);
+      // A bucket that does not refuse overwrites, inside a URL's window: nothing proven before
+      // stands, and the next seal reads every pack again — each whole at most once.
+      passBucketReplaceable = () => Date.now() + 3_600_000;
+      const third = nextSealing(at, second);
+      await run(uploadObjects(new Map([[third.key, third.bytes]])));
+      resetReads();
+      const windowed = await run(registerOn(at.worktreeId, at.epoch, at.api)(third));
+      expect(windowed.seal).toEqual({ state: "withheld", reason: "write-authority" });
+      for (const key of packs) expect(bucketReads.whole.get(key)).toBe(1);
     });
 
     it("a retry of a register still running joins it, an abandoned attempt included: one verification", async () => {
