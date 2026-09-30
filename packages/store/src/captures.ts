@@ -467,6 +467,10 @@ const utf8SequenceAt = (bytes: Uint8Array, at: number): number => {
 
 /** The key of a byte string: sealantd `key_of`. */
 export const keyOfBytes = (bytes: Uint8Array): string => {
+  // Most names are UTF-8 without a character of the escape range: they are their own key. Bytes
+  // that round-trip through the decoder are well-formed UTF-8 by the same rules as below.
+  const text = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString("utf8");
+  if (!isEscapedKey(text) && Buffer.from(text, "utf8").equals(bytes)) return text;
   let out = "";
   let at = 0;
   while (at < bytes.length) {
@@ -490,6 +494,9 @@ export const keyOfBytes = (bytes: Uint8Array): string => {
 
 /** The bytes a key stands for: sealantd `bytes_of`, the inverse of `keyOfBytes`. */
 export const bytesOfKey = (key: string): Buffer => {
+  // A key without a character of the escape range is its own UTF-8 (a lone surrogate encodes
+  // as U+FFFD either way).
+  if (!isEscapedKey(key)) return Buffer.from(key, "utf8");
   const out: Array<number> = [];
   for (const char of key) {
     const point = char.codePointAt(0) ?? 0;
@@ -679,14 +686,68 @@ const OBJECT_KEY_TAIL =
 export const isCaptureObjectKey = (key: string): boolean =>
   isValidBlobKey(key) && OBJECT_KEY_TAIL.test(key);
 
-const verifyDigest = (key: string, bytes: Uint8Array) => {
-  const expected = digestOfKey(key);
-  if (expected === null) return Effect.void;
-  const actual = sha256Hex(bytes);
-  return actual === expected
-    ? Effect.void
-    : Effect.fail(new CaptureIntegrityError({ key, expected, actual }));
+// ─── Sharing the thread ─────────────────────────────────────────────────────
+
+/**
+ * How long verification holds the event loop before it lets other work run (alpha, Mend 0.34.2:
+ * a seal over a 1.57 GB capture held the API's thread for 10+ minutes and every other request
+ * waited 6–10 of them). Hashing, decompressing and decoding stored bytes all run on the one
+ * thread that serves every request, so each such loop calls `cooperate` between steps.
+ */
+const COOPERATE_SLICE_MS = 8;
+
+/**
+ * When the current stretch of `cooperate` calls began holding the thread: set by the first call
+ * of a stretch, cleared by a `setImmediate` that runs only once the thread is given up — by a
+ * yield, or by the work ending or awaiting I/O.
+ */
+let stretchStartedAt: number | null = null;
+const endStretch = () => {
+  stretchStartedAt = null;
 };
+
+/**
+ * Yield to the event loop — timers, sockets, every other fiber — once the thread has been held
+ * `COOPERATE_SLICE_MS` since this stretch of work began; otherwise nothing, so work that ends
+ * sooner runs as it always did. `Effect.yieldNow` reschedules the fiber through the scheduler's
+ * `setImmediate`, after pending I/O callbacks run.
+ */
+export const cooperate: Effect.Effect<void> = Effect.suspend(() => {
+  const now = performance.now();
+  if (stretchStartedAt === null) {
+    stretchStartedAt = now;
+    setImmediate(endStretch);
+    return Effect.void;
+  }
+  return now - stretchStartedAt < COOPERATE_SLICE_MS ? Effect.void : Effect.yieldNow;
+});
+
+/** How many bytes one hash step takes before `cooperate` (a 64 MiB pack is 16 steps). */
+const HASH_SLICE_BYTES = 4 * 1024 * 1024;
+
+/**
+ * The hex digest of `bytes` under `algorithm`, hashed a slice at a time with `cooperate`
+ * between slices: a whole-pack hash never holds the thread for the whole pack.
+ */
+const digestSliced = (algorithm: "sha1" | "sha256", bytes: Uint8Array): Effect.Effect<string> =>
+  Effect.gen(function* () {
+    const hash = crypto.createHash(algorithm);
+    for (let at = 0; at < bytes.byteLength; at += HASH_SLICE_BYTES) {
+      hash.update(bytes.subarray(at, Math.min(bytes.byteLength, at + HASH_SLICE_BYTES)));
+      yield* cooperate;
+    }
+    return hash.digest("hex");
+  });
+
+const verifyDigest = (key: string, bytes: Uint8Array) =>
+  Effect.gen(function* () {
+    const expected = digestOfKey(key);
+    if (expected === null) return;
+    const actual = yield* digestSliced("sha256", bytes);
+    if (actual !== expected) {
+      return yield* new CaptureIntegrityError({ key, expected, actual });
+    }
+  });
 
 /**
  * A check of stored bytes the Mend host could not finish — the copy broke, the disk filled, git
@@ -730,6 +791,50 @@ const GIT_PACK_TRAILER = 20;
  */
 export const storedObjectProblem = (
   key: string,
+  options?: {
+    /**
+     * Answer from a standing proof this process already took of the key's bytes (`proofStands`:
+     * on a store that refuses overwrites, any; otherwise one taken once no upload URL could
+     * replace them) instead of reading them again. Off by default: a seal's read-back
+     * (`storedCaptureProblem`) reads every key, whatever was proven before.
+     */
+    readonly reuseProofs?: boolean;
+  },
+): Effect.Effect<string | null, BlobNotFoundError | BlobStoreError, BlobStore> =>
+  Effect.gen(function* () {
+    const store = yield* BlobStore;
+    if (options?.reuseProofs === true) {
+      const provenAt = contentVerified.get(proofKey(store, key));
+      if (provenAt !== undefined && (yield* proofStands(store, key, provenAt))) return null;
+    }
+    const atMs = Date.now();
+    const problem = yield* readStoredObjectProblem(key);
+    if (problem === null) rememberContentVerified(store, key, atMs);
+    return problem;
+  });
+
+/**
+ * Keys whose stored bytes this process read whole and found to be what their name says
+ * (`storedObjectProblem`, and every whole read verified against its key: a pack's payloads, a
+ * dir pack, a chunk source's pack), by store and key, with when the read began. What
+ * `storedObjectProblem` answers from when asked to reuse proofs. Bounded, the oldest dropped
+ * first.
+ */
+const CONTENT_VERIFIED_KEYS = 200_000;
+const contentVerified = new Map<string, number>();
+
+const rememberContentVerified = (store: typeof BlobStore.Service, key: string, atMs: number) => {
+  const cacheKey = proofKey(store, key);
+  contentVerified.delete(cacheKey);
+  contentVerified.set(cacheKey, atMs);
+  for (const oldest of contentVerified.keys()) {
+    if (contentVerified.size <= CONTENT_VERIFIED_KEYS) break;
+    contentVerified.delete(oldest);
+  }
+};
+
+const readStoredObjectProblem = (
+  key: string,
 ): Effect.Effect<string | null, BlobNotFoundError | BlobStoreError, BlobStore> =>
   Effect.gen(function* () {
     const store = yield* BlobStore;
@@ -738,7 +843,7 @@ export const storedObjectProblem = (
       if (bytes.byteLength < GIT_IDX_TRAILER) return `${key} is too short to be a pack index`;
       const body = bytes.subarray(0, bytes.byteLength - 20);
       const own = Buffer.from(bytes.subarray(bytes.byteLength - 20)).toString("hex");
-      if (crypto.createHash("sha1").update(body).digest("hex") !== own) {
+      if ((yield* digestSliced("sha1", body)) !== own) {
         return `${key} does not checksum to its own trailer`;
       }
       const packKey = key.slice(0, -".idx".length);
@@ -941,13 +1046,18 @@ export const readPackIndexRemote = (
     return yield* decodePackIndex(key, index, indexStart);
   });
 
-/** Decompress one chunk and verify its hash and size against the index entry. */
+/**
+ * Decompress one chunk and verify its hash and size against the index entry. A chunk is at most
+ * 4 MiB (sealantd `MAX_CHUNK_SIZE`); every caller walks many of them, so each first lets other
+ * work run once the thread has been held long enough (`cooperate`).
+ */
 export const readChunk = (
   key: string,
   pack: Uint8Array,
   entry: PackIndexEntry,
 ): Effect.Effect<Uint8Array, CaptureFormatError | CaptureIntegrityError> =>
   Effect.gen(function* () {
+    yield* cooperate;
     const compressed = pack.subarray(entry.offset, entry.offset + entry.length);
     const bytes = yield* Effect.try({
       try: () =>
@@ -1002,8 +1112,10 @@ export const makeChunkSource = (
 
     const fetchPack = (key: string) =>
       Effect.gen(function* () {
+        const atMs = Date.now();
         const bytes = yield* store.get(key);
         yield* verifyDigest(key, bytes);
+        rememberContentVerified(store, key, atMs);
         resident.delete(key);
         resident.set(key, bytes);
         while (resident.size > maxResident) {
@@ -1208,11 +1320,15 @@ const openDirPack = (key: string): Effect.Effect<OpenedPack, CaptureReadError, B
     const atMs = Date.now();
     const bytes = yield* store.get(key);
     yield* verifyDigest(key, bytes);
+    rememberContentVerified(store, key, atMs);
     const entries = yield* readPackIndex(key, bytes);
     const opened = { bytes, entries, atMs };
     rememberDirPack(cacheKey, opened);
     return opened;
   });
+
+/** How many decoded dir entries one format-2 reader keeps (`makeDirReader`). */
+const DECODED_DIR_ENTRIES = 2_000_000;
 
 /** How many dir packs are fetched at once (sealantd's materializer fetches eight at a time). */
 const DIR_PACK_GETS_IN_FLIGHT = 8;
@@ -1242,15 +1358,26 @@ export const makeDirReader = (
       concurrency: DIR_PACK_GETS_IN_FLIGHT,
     });
     const where = new Map<string, { readonly key: string; readonly entry: PackIndexEntry }>();
-    packKeys.forEach((key, at) => {
+    for (const [at, key] of packKeys.entries()) {
       for (const entry of opened[at]?.entries ?? []) {
         // First listing wins; a dir object in two packs carries the same bytes by definition.
         if (!where.has(entry.hash)) where.set(entry.hash, { key, entry });
       }
-    });
+      yield* cooperate;
+    }
     const bytesOf = new Map(packKeys.map((key, at) => [key, opened[at]?.bytes] as const));
+    // Decoded dir objects by digest (alpha, Mend 0.34.2): every lookup by path walks from the
+    // root, and a seal's link checks look up thousands of members, so without it each lookup
+    // decompressed, hashed and decoded every dir on its path again — a `node_modules/.pnpm` of
+    // a thousand entries once per member. The bytes are the dir packs this reader already holds,
+    // verified against the digest the first time; the same digest decodes the same.
+    const decoded = new Map<string, DirObject>();
+    let decodedEntries = 0;
     const read = (digest: string) =>
       Effect.gen(function* () {
+        yield* cooperate;
+        const known = decoded.get(digest);
+        if (known !== undefined) return known;
         if (!HEX64.test(digest)) {
           return yield* new CaptureFormatError({
             key: digest,
@@ -1267,7 +1394,12 @@ export const makeDirReader = (
         }
         // `readChunk` verifies the bytes against the entry's hash, which is the digest asked.
         const bytes = yield* readChunk(location.key, pack, location.entry);
-        return yield* decodeDirObject(digest, bytes);
+        const entries = yield* decodeDirObject(digest, bytes);
+        if (decodedEntries + entries.length <= DECODED_DIR_ENTRIES) {
+          decoded.set(digest, entries);
+          decodedEntries += entries.length;
+        }
+        return entries;
       });
     return { read };
   });
@@ -2086,6 +2218,7 @@ export const verifyPackPayloads = (
       const atMs = Date.now();
       const bytes = yield* store.get(key);
       yield* verifyDigest(key, bytes);
+      rememberContentVerified(store, key, atMs);
       const entries = yield* readPackIndex(key, bytes);
       for (const entry of entries) {
         yield* readChunk(key, bytes, entry);
@@ -2146,6 +2279,7 @@ export const verifySectionRestorable = (
       for (const [hash, entry] of entries) {
         if (!chunkSizes.has(hash)) chunkSizes.set(hash, entry.size);
       }
+      yield* cooperate;
     }
     const fail = (at: string, reason: string) =>
       Effect.fail(new CaptureFormatError({ key: section.root, reason: `${at || "/"}: ${reason}` }));
@@ -2179,6 +2313,7 @@ export const verifySectionRestorable = (
       if (visited.has(next.ref)) continue;
       visited.add(next.ref);
       stats.dirs += 1;
+      yield* cooperate;
       const entries = yield* dirs.read(next.ref);
       const names = new Set<string>();
       for (const entry of entries) {
@@ -2716,12 +2851,13 @@ const sectionChunkLocations = (
       concurrency: PACK_INDEX_READS_IN_FLIGHT,
     });
     const where = new Map<string, { readonly pack: string; readonly entry: PackIndexEntry }>();
-    packs.forEach((pack, at) => {
+    for (const [at, pack] of packs.entries()) {
       for (const [hash, entry] of indexes[at] ?? []) {
         // First listing wins; a chunk in two packs carries the same bytes by definition.
         if (!where.has(hash)) where.set(hash, { pack, entry });
       }
-    });
+      yield* cooperate;
+    }
     pass?.locations.set(id, where);
     return where;
   });
@@ -2783,6 +2919,44 @@ const memberDigest = (
     }
     return hash.digest("hex");
   });
+
+/**
+ * Member digests an earlier pass took (`digestOf`), by store, the packs the member's chunks were
+ * read from, how the digest was taken and the chunks it hashes, with when the reads began. A
+ * digest is a proof about those packs' bytes like any other (review 2026-09-28 (6) #9): it
+ * stands only while `proofStands` for every one of them. On a store that refuses overwrites a
+ * seal then reads no chunk a member's digest needs again (alpha, Mend 0.34.2); on one that does
+ * not, the proof is void while an upload URL could replace a pack, and the digest is taken
+ * again. Bounded, the oldest dropped first.
+ */
+const MEMBER_DIGESTS_KEPT = 200_000;
+const memberDigestProofs = new Map<string, { readonly digest: string; readonly atMs: number }>();
+
+const rememberMemberDigest = (
+  proofId: string,
+  proof: { readonly digest: string; readonly atMs: number },
+) => {
+  memberDigestProofs.delete(proofId);
+  memberDigestProofs.set(proofId, proof);
+  for (const oldest of memberDigestProofs.keys()) {
+    if (memberDigestProofs.size <= MEMBER_DIGESTS_KEPT) break;
+    memberDigestProofs.delete(oldest);
+  }
+};
+
+/** The packs holding `chunks`, in the order first read, each once; null when one is in none. */
+const packsHolding = (
+  where: ReadonlyMap<string, { readonly pack: string; readonly entry: PackIndexEntry }>,
+  chunks: ReadonlyArray<string>,
+): ReadonlyArray<string> | null => {
+  const packs = new Set<string>();
+  for (const chunk of chunks) {
+    const location = where.get(chunk);
+    if (location === undefined) return null;
+    packs.add(location.pack);
+  }
+  return [...packs];
+};
 
 /**
  * The files a manifest's chunked classes carry, as a restore lays them down: `fileOf` finds a
@@ -2893,10 +3067,30 @@ const makeClassMembers = (manifest: CaptureManifest) => {
         // Two members with one chunk list hold one set of bytes: hashed once per pass.
         const memo = `${as}\u0000${member.size}\u0000${member.chunks}`;
         if (pass.digests.has(memo)) return pass.digests.get(memo) ?? null;
+        // Hashed in an earlier pass from the very packs this section reads them from, and those
+        // reads still stand (`proofStands`: on a store that refuses overwrites, always).
+        const store = yield* BlobStore;
+        const where = yield* sectionChunkLocations(section).pipe(Effect.orElseSucceed(() => null));
+        const packs = where === null ? null : packsHolding(where, member.chunkList);
+        const proofId = packs === null ? null : `${proofKey(store, packs.join(","))}\u0000${memo}`;
+        const proven = proofId === null ? undefined : memberDigestProofs.get(proofId);
+        if (proven !== undefined && packs !== null) {
+          const stands = yield* Effect.forEach(packs, (key) =>
+            proofStands(store, key, proven.atMs),
+          );
+          if (stands.every(Boolean)) {
+            pass.digests.set(memo, proven.digest);
+            return proven.digest;
+          }
+        }
+        const atMs = Date.now();
         const digest = yield* memberDigest(section, member, as).pipe(
           Effect.orElseSucceed(() => null),
         );
         pass.digests.set(memo, digest);
+        if (digest !== null && proofId !== null) {
+          rememberMemberDigest(proofId, { digest, atMs });
+        }
         return digest;
       }),
     );
@@ -3133,7 +3327,7 @@ export const verifyWorktreeMeta = (
       parts.push(yield* readChunk(location.pack, compressed, { ...location.entry, offset: 0 }));
     }
     const document = Buffer.concat(parts);
-    const actual = sha256Hex(document);
+    const actual = yield* digestSliced("sha256", document);
     if (actual !== meta.sha256) {
       return yield* new CaptureIntegrityError({ key, expected: meta.sha256, actual });
     }
