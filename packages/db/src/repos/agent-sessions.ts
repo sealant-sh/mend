@@ -1192,6 +1192,12 @@ export const SessionsRepoLive: Layer.Layer<SessionsRepo, never, MendDB | PgClien
           .update(agentSessions)
           .set({
             status,
+            // Running from here: the first start is stamped once, as `setStatus` does. Every launch
+            // reaches `running` through here, so without it a running session read `started_at`
+            // null for its whole life (alpha 2026-09-30, cc05cb8a).
+            ...(status === "running"
+              ? { startedAt: sql`COALESCE(${agentSessions.startedAt}, now())` }
+              : {}),
             settledAt: null,
             idleStoppedAt: null,
             // Running again: a discard of an earlier executor's work is history (the audit log).

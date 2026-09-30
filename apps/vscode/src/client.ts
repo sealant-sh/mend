@@ -67,6 +67,7 @@ const parseSession = (value: unknown): Session => {
     // Tolerant: an older server may omit the field; editor open can resume to obtain an id.
     sealantWorkspaceId:
       typeof value["sealantWorkspaceId"] === "string" ? value["sealantWorkspaceId"] : null,
+    summary: typeof value["summary"] === "string" ? value["summary"] : null,
     createdAt: stringField(value, "createdAt"),
   };
 };
@@ -233,6 +234,35 @@ export class MendClient {
     return parseSession(
       await this.post(`/sessions/${encodeURIComponent(sessionId)}/launch`, start),
     );
+  }
+
+  /**
+   * Follow a launch the server answered while it was still under way (`starting`: it waits for the
+   * worktree's previous session to save, builds the workspace image, boots): each new session
+   * line goes to `onLine` until the session runs. A launch that settles instead fails with its
+   * own words.
+   */
+  async untilStarted(
+    session: Session,
+    onLine: (line: string) => void,
+    options: { readonly intervalMs?: number; readonly limitMs?: number } = {},
+  ): Promise<Session> {
+    const intervalMs = options.intervalMs ?? 3000;
+    const deadline = Date.now() + (options.limitMs ?? 40 * 60 * 1000);
+    let current = session;
+    let said: string | null = null;
+    while (current.status === "starting") {
+      const line = current.summary === null ? "starting" : `starting · ${current.summary}`;
+      if (line !== said) onLine(line);
+      said = line;
+      if (Date.now() >= deadline) throw new Error(`the session is still ${line}`);
+      await new Promise((resolve) => setTimeout(resolve, intervalMs));
+      current = (await this.sessionDetail(current.id)).session;
+    }
+    if (current.status === "failed" || current.status === "stopped") {
+      throw new Error(current.summary === null ? `the session ${current.status}` : current.summary);
+    }
+    return current;
   }
 
   async stopSession(sessionId: string): Promise<Session> {

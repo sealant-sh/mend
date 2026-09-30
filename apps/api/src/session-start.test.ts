@@ -20,7 +20,7 @@ import {
 } from "@mend/domain/workbench";
 import { JobRunner } from "@mend/jobs";
 import { SessionEngine } from "@mend/sessions";
-import { Deferred, Effect, Fiber, Layer } from "effect";
+import { Deferred, Duration, Effect, Fiber, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
 import { makeProject, makeSession } from "../test/support/tenancy-harness.ts";
@@ -132,8 +132,16 @@ const startWorld = (
             note(`sessions.countUnsettledForOrganization:${organizationId}`).pipe(
               Effect.as(options.live ?? 0),
             ),
+          // The session as it stands while its launch goes on.
+          byId: (id) =>
+            note(`sessions.byId:${id}`).pipe(
+              Effect.as(
+                new Session({ ...provisioned("alice"), status: "starting", summary: "booting" }),
+              ),
+            ),
         }),
         Layer.mock(SessionEngine, {
+          detach: (effect) => Effect.forkDetach(effect),
           provision: (input) =>
             note(
               `engine.provision:${input.projectId}:${input.ownerUserId}:${input.origin}${input.autoLand === null || input.autoLand === undefined ? "" : `:land=${input.autoLand}`}`,
@@ -277,6 +285,53 @@ describe("SessionStart.startAs", () => {
     });
     expect(world.effects.filter((entry) => entry.startsWith("engine.launchProtocol"))).toEqual([
       `engine.launchProtocol:${SESSION}:alice:first`,
+    ]);
+  });
+
+  it("answers a launch that outlasts the answer window with the session as it stands, and the launch goes on holding its slot", async () => {
+    // Alpha 2026-09-30: a launch held its request for the whole ~8 min image build and the CLI
+    // gave up at ~5 min with a false `cannot reach the Mend server`.
+    const gate = Effect.runSync(Deferred.make<void>());
+    const world = startWorld({ limits: { accountLaunchesInFlight: 1 }, launchGate: gate });
+    const answers = await Effect.runPromise(
+      Effect.gen(function* () {
+        const start = yield* SessionStart;
+        const session = provisioned("alice");
+        const first = yield* start.launchAs(
+          "alice",
+          session,
+          new LaunchRequest({ mode: "protocol", prompt: "first" }),
+          { within: Duration.millis(20) },
+        );
+        // The first launch still holds the account's one slot after its caller was answered.
+        const second = yield* start
+          .launchAs("alice", session, new LaunchRequest({ mode: "protocol", prompt: "second" }), {
+            within: Duration.millis(20),
+          })
+          .pipe(Effect.result);
+        yield* Deferred.succeed(gate, undefined);
+        // Once the first launch has ended, its slot is free again.
+        while (!world.effects.includes("jobs.enqueue:name-session:0")) yield* Effect.yieldNow;
+        yield* Effect.sleep(Duration.millis(5));
+        const third = yield* start
+          .launchAs("alice", session, new LaunchRequest({ mode: "protocol", prompt: "third" }), {
+            within: Duration.seconds(5),
+          })
+          .pipe(Effect.result);
+        return { first, second, third };
+      }).pipe(Effect.provide(world.layer)),
+    );
+
+    expect(answers.first.status).toBe("starting");
+    expect(answers.first.summary).toBe("booting");
+    expect(answers.second._tag === "Failure" ? answers.second.failure : null).toMatchObject({
+      _tag: "BudgetExceeded",
+      budget: "accountLaunchesInFlight",
+    });
+    expect(answers.third._tag).toBe("Success");
+    expect(launched(world)).toEqual([
+      `engine.launchProtocol:${SESSION}:alice:first`,
+      `engine.launchProtocol:${SESSION}:alice:third`,
     ]);
   });
 
