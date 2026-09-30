@@ -158,6 +158,7 @@ const processesLayer = Layer.succeed(SessionProcessesRepo, {
   setStatus: () => Effect.void,
   setLabel: () => Effect.void,
   setProviderSessionId: () => Effect.void,
+  markFirstOutput: () => Effect.succeed(false),
   setHostPort: () => Effect.void,
   setSealantSessionId: () => Effect.void,
   markExited: () => Effect.die("not in test"),

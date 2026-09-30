@@ -109,6 +109,7 @@ import {
   captureDiscardAuditData,
   captureStatusLine,
   executorEndOf,
+  withoutAgentStarting,
 } from "@mend/domain/workbench";
 import {
   type CaptureFlushKind,
@@ -194,6 +195,7 @@ import type {
   InteractiveSessionStatus,
   Run,
   SessionOptions,
+  TimelineEntry,
   Workspace,
   WorkspaceCaptureDrain,
   WorkspaceCaptureReplanned,
@@ -444,6 +446,23 @@ const sealantLaunchLayer = (
     ) =>
       | { readonly exitCode: number; readonly stdout: string; readonly stderr: string }
       | undefined;
+    /**
+     * A command inside the executor as an effect, asked before `exec`: one that never answers, or
+     * fails the way the platform does. Undefined falls through.
+     */
+    readonly execEffect?: (
+      argv: ReadonlyArray<string>,
+    ) =>
+      | Effect.Effect<
+          { readonly exitCode: number; readonly stdout: string; readonly stderr: string },
+          SealantPlatformError
+        >
+      | undefined;
+    /**
+     * The run's record as supervision streams it. Absent, supervision never gets the run (its
+     * lookup never answers), as in every world that does not ask for it.
+     */
+    readonly record?: () => Stream.Stream<TimelineEntry, SealantPlatformError>;
   },
 ) => {
   let nextPty = 0;
@@ -587,7 +606,7 @@ const sealantLaunchLayer = (
               }),
             )
           : Effect.succeed(workspace),
-    getRun: () => Effect.never,
+    getRun: () => (captureOps?.record === undefined ? Effect.never : Effect.succeed(fakeExecRun)),
     sessionOutput: () => Effect.die("not in test"),
     recordCommands: () => Effect.die("not in test"),
     recordScrollback: () => Effect.die("not in test"),
@@ -661,6 +680,10 @@ const sealantLaunchLayer = (
     exec: (_workspace, argv) =>
       Effect.suspend(() => {
         execCalls?.push(argv);
+        const effect = captureOps?.execEffect?.(argv);
+        if (effect !== undefined) {
+          return effect.pipe(Effect.map((answer) => ({ ...answer, run: fakeExecRun })));
+        }
         const answered = captureOps?.exec?.(argv);
         if (answered !== undefined) return Effect.succeed({ ...answered, run: fakeExecRun });
         const script = argv[0] === "sh" && argv[1] === "-c" ? argv[2] : undefined;
@@ -712,7 +735,7 @@ const sealantLaunchLayer = (
       }),
     diffCommits: () => Effect.die("not in test"),
     inferenceRespond: () => Effect.die("not in test"),
-    recordStream: () => Stream.fromEffect(Effect.never),
+    recordStream: () => captureOps?.record?.() ?? Stream.fromEffect(Effect.never),
     recordTimeline: () => Stream.fromEffect(Effect.never),
     runChanges: () => Effect.die("not in test"),
     connectionCheck: () => Effect.die("not in test"),
@@ -1101,6 +1124,14 @@ const makeWorld = (): World => ({
   executorCreates: new Map(),
 });
 
+/**
+ * A session line as it reads once its agent has drawn: these worlds' records carry no output, so a
+ * launched agent's starting words (`agentStartingWords`) stay on the line until something replaces
+ * it; assertions about the rest of the line read it without them.
+ */
+const drawnLine = (summary: string | null | undefined): string | null =>
+  withoutAgentStarting(summary ?? null);
+
 const sessionProcessesLayer = (world: World) => {
   const endLive = (
     process: SessionProcess,
@@ -1196,6 +1227,16 @@ const sessionProcessesLayer = (world: World) => {
             new SessionProcess({ ...process, providerSessionId, updatedAt: now() }),
           );
         }
+      }),
+    markFirstOutput: (id, at) =>
+      Effect.sync(() => {
+        const process = world.processes.get(id);
+        if (process === undefined || process.firstOutputAt !== null) return false;
+        world.processes.set(
+          id,
+          new SessionProcess({ ...process, firstOutputAt: at, updatedAt: now() }),
+        );
+        return true;
       }),
     setHostPort: (id, hostPort) =>
       Effect.sync(() => {
@@ -2473,6 +2514,7 @@ const testDrainPolicy = (overrides: Partial<CaptureDrainPolicyShape> = {}) =>
     leaseWaitInterval: Duration.millis(10),
     imageBuildAfter: Duration.millis(40),
     createPhaseInterval: Duration.millis(10),
+    harnessWarmupTimeout: Duration.seconds(60),
     ...overrides,
   });
 
@@ -3388,7 +3430,9 @@ describe("SessionEngine", () => {
           yield* Deferred.succeed(answered, undefined);
           const launched = yield* Fiber.join(launching);
           expect(launched.status).toBe("running");
-          expect(world.sessions.get(session.id)?.summary ?? null).toBeNull();
+          expect(world.sessions.get(session.id)?.summary ?? null).toBe(
+            "codex is starting on the new machine",
+          );
         }),
       { sealantLayer: watchedCreates },
     );
@@ -8219,7 +8263,7 @@ describe("SessionEngine capture mode", () => {
       Effect.gen(function* () {
         const engine = yield* SessionEngine;
         yield* engine.resumeSession(session.id, null);
-        expect(world.sessions.get(session.id)?.summary).toBe(lost);
+        expect(drawnLine(world.sessions.get(session.id)?.summary)).toBe(lost);
         const epoch = 0;
         const api = servedSocketApis.get(session.id)?.capture;
         if (api === undefined) throw new Error("the picked-up session serves no capture api");
@@ -8232,24 +8276,26 @@ describe("SessionEngine capture mode", () => {
         const waiting = yield* Effect.flip(api.planGet({ worktree_id: session.worktreeId, epoch }));
         expect(waiting.reason).toBe("worktree-leased");
         // Before: the waiting words alone — `executor lost · …` gone for good.
-        expect(world.sessions.get(session.id)?.summary).toBe(
+        expect(drawnLine(world.sessions.get(session.id)?.summary)).toBe(
           `${lost} · ${planWaitingWords(head.manifest.n)}`,
         );
         // Git rejects the head's content: the launch is blocked, and the session says so.
         answers.set(headKey, { outcome: "failed", detail: "fatal: bad tree object" });
         const blocked = yield* Effect.flip(api.planGet({ worktree_id: session.worktreeId, epoch }));
         expect([blocked.status, blocked.reason]).toEqual([422, "unrestorable"]);
-        expect(world.sessions.get(session.id)?.summary).toBe(
+        expect(drawnLine(world.sessions.get(session.id)?.summary)).toBe(
           `${lost} · ${planBlockedWords(head.manifest.n)}`,
         );
         // The check passes: the plan goes ahead with the head, and the loss report is back as it was.
         answers.delete(headKey);
         const plan = yield* api.planGet({ worktree_id: session.worktreeId, epoch });
         expect(plan.head?.capture_id).toBe(head.id);
-        expect(world.sessions.get(session.id)?.summary).toBe(lost);
+        expect(drawnLine(world.sessions.get(session.id)?.summary)).toBe(lost);
         // Its first heartbeat is the observation that ends it.
         yield* api.heartbeat({ worktree_id: session.worktreeId, epoch: plan.epoch });
-        expect(world.sessions.get(session.id)?.summary).toBe("picked up · executor replaced");
+        expect(drawnLine(world.sessions.get(session.id)?.summary)).toBe(
+          "picked up · executor replaced",
+        );
       }),
     );
   });
@@ -9243,6 +9289,10 @@ describe("SessionEngine capture mode", () => {
           // After the replan: the helper and git transport, and the note, as a cold launch has.
           expect(execCalls.some((argv) => argv.join(" ").includes("core.sshCommand"))).toBe(true);
           expect(execCalls.length).toBeGreaterThan(1);
+          // The harness warm-up is one of them: warmed at its claim, for the harness it starts.
+          const warmups = () => execCalls.filter(isWarmup).map((argv) => argv.at(-1));
+          yield* until(() => warmups().length > 0, "the claimed standby's warm-up");
+          expect(warmups()).toEqual(["codex"]);
         }),
       {
         captured: memory,
@@ -9662,7 +9712,7 @@ describe("SessionEngine capture mode", () => {
           expect(flushKinds).toContain("final");
           const after = world.sessions.get(session.id);
           expect(after?.status).toBe("running");
-          expect(after?.summary ?? null).toBeNull();
+          expect(drawnLine(after?.summary)).toBeNull();
           expect(after?.captureNotSavedAt ?? null).toBeNull();
           // The standby's complete answer is under its placeholder, not the session's epoch: it
           // is never attested as the session's save.
@@ -11145,7 +11195,7 @@ describe("SessionEngine lifecycle safety (review 2026-09-27)", () => {
             expect(memory.leases.get(session.worktreeId)?.executorId).toBe(second.id);
             expect(memory.leases.get(session.worktreeId)?.epoch).toBe(epochBefore + 1);
             // The waiting words end with the wait.
-            expect(world.sessions.get(second.id)?.summary ?? null).toBeNull();
+            expect(drawnLine(world.sessions.get(second.id)?.summary)).toBeNull();
           }),
         {
           captured: memory,
@@ -14902,7 +14952,7 @@ describe("SessionEngine status words from the latest observation (e2e run 6 #7)"
             yield* engine.launch(session.id, ["codex"]);
             const after = world.sessions.get(session.id);
             expect(after?.status).toBe("running");
-            expect(after?.summary).toBeNull();
+            expect(drawnLine(after?.summary)).toBeNull();
           }),
         { sealantLayer: sealantLaunchLayer(created) },
       );
@@ -16905,7 +16955,7 @@ it.each([
         yield* engine.launch(session.id, ["codex"]);
         const after = world.sessions.get(session.id);
         expect(after?.status).toBe("running");
-        expect(after?.summary).toBeNull();
+        expect(drawnLine(after?.summary)).toBeNull();
       }),
     { sealantLayer: sealantLaunchLayer(created) },
   );
@@ -17273,7 +17323,7 @@ describe("custom-image setup commands run only on a worktree laid down fresh (re
             const setups = order.filter((entry) => entry === "setup");
             const helper = order.indexOf("helper");
             expect(helper).toBeGreaterThan(0);
-            const summary = world.sessions.get(session.id)?.summary ?? null;
+            const summary = drawnLine(world.sessions.get(session.id)?.summary);
             if (savedN === null) {
               expect(setups).toHaveLength(1);
               expect(order.indexOf("setup")).toBeGreaterThan(0);
@@ -18278,4 +18328,272 @@ describe("review 19 #2: a lost create's executor reads ended only once its end i
       },
     );
   }
+});
+
+/** A launch's harness warm-up (`harnessWarmupArgv`), told apart by its throwaway HOME. */
+const isWarmup = (argv: ReadonlyArray<string>) =>
+  argv[0] === "sh" && argv[1] === "-c" && (argv[2] ?? "").includes('HOME="$d"');
+
+const outputEntry = (sequence: bigint, occurredAt: string, byteCount: string): TimelineEntry => ({
+  kind: "ioChunk",
+  sequence,
+  occurredAt,
+  summary: "pty-out",
+  data: { stream: 1, byteCount, streamOffset: "0" },
+});
+
+/**
+ * An agent's first screen on a fresh executor (alpha 2026-09-30, fda7180d): the machine is ready
+ * in seconds, and the harness then reads node and its own files from a lazily fetched disk for the
+ * first time. The launch reads them once in the background while the rest of its setup runs, and
+ * the session line says the agent is starting until its record carries output.
+ */
+describe("an agent's first screen (alpha 2026-09-30)", () => {
+  it("a launch warms the harness's files in the background: asked before the agent starts, never waited for", async () => {
+    const created: Array<CreateOptions> = [];
+    const events: string[] = [];
+    const execCalls: ReadonlyArray<string>[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const launched = yield* engine.launch(session.id, ["claude"]);
+
+          // The warm-up never answered, and the agent started anyway.
+          expect(launched.status).toBe("running");
+          expect(events.indexOf("warm-up asked")).toBeGreaterThanOrEqual(0);
+          expect(events.indexOf("warm-up asked")).toBeLessThan(events.indexOf("agent opened"));
+          expect(events).not.toContain("warm-up answered");
+          const warmups = execCalls.filter(isWarmup);
+          expect(warmups).toHaveLength(1);
+          // Read-only toward the user's: from `/`, with a throwaway HOME, for this harness.
+          const [, , script, , harness] = warmups[0] ?? [];
+          expect(harness).toBe("claude");
+          expect(script).toContain("cd / ||");
+          expect(script).toContain('HOME="$d"');
+          expect(script).toContain('rm -rf "$d"');
+        }),
+      {
+        sealantLayer: lifecycleLayer(created, {
+          execCalls,
+          captureOps: {
+            execEffect: (argv) =>
+              isWarmup(argv)
+                ? Effect.sync(() => events.push("warm-up asked")).pipe(
+                    Effect.andThen(Effect.never),
+                    Effect.tap(() => Effect.sync(() => events.push("warm-up answered"))),
+                  )
+                : undefined,
+            beforeOpen: () => {
+              events.push("agent opened");
+            },
+          },
+        }),
+      },
+    );
+  });
+
+  it("a warm-up that fails, or runs past its bound, changes nothing about the launch", async () => {
+    for (const answer of ["fails", "hangs"] as const) {
+      const created: Array<CreateOptions> = [];
+      const logs: string[] = [];
+      const interrupted: string[] = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            const launched = yield* engine.launch(session.id, ["codex"]);
+            expect(launched.status).toBe("running");
+            yield* until(
+              () => logs.some((line) => line.includes("harness warm-up · not finished")),
+              `the ${answer} warm-up to end`,
+            );
+            const after = world.sessions.get(session.id);
+            expect(after?.status).toBe("running");
+            expect(after?.settledAt ?? null).toBeNull();
+            expect(after?.summary).toBe("codex is starting on the new machine");
+            // A warm-up past its bound is abandoned, not left running.
+            if (answer === "hangs") expect(interrupted).toEqual(["warm-up"]);
+          }),
+        {
+          logs,
+          drainPolicy: { harnessWarmupTimeout: Duration.millis(50) },
+          sealantLayer: lifecycleLayer(created, {
+            execCalls: [],
+            captureOps: {
+              execEffect: (argv) =>
+                !isWarmup(argv)
+                  ? undefined
+                  : answer === "fails"
+                    ? Effect.fail(
+                        new SealantPlatformError({
+                          code: "exec_failed",
+                          status: 502,
+                          message: "the executor did not run the command",
+                          cause: null,
+                        }),
+                      )
+                    : Effect.never.pipe(
+                        Effect.onInterrupt(() => Effect.sync(() => interrupted.push("warm-up"))),
+                      ),
+            },
+          }),
+        },
+      );
+    }
+  });
+
+  it("a shell or a command of the owner's own warms nothing and never reads as starting", async () => {
+    const created: Array<CreateOptions> = [];
+    const execCalls: ReadonlyArray<string>[] = [];
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "run",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const launched = yield* engine.launch(session.id, ["make", "test"]);
+          expect(launched.status).toBe("running");
+          expect(execCalls.filter(isWarmup)).toEqual([]);
+          expect(world.sessions.get(session.id)?.summary ?? null).toBeNull();
+        }),
+      { sealantLayer: lifecycleLayer(created, { execCalls }) },
+    );
+  });
+
+  it("the agent reads as starting until its record carries output, then its row says when it drew and the words go", async () => {
+    const created: Array<CreateOptions> = [];
+    const drew = "2026-09-30T17:15:41.000Z";
+    const drawn = await Effect.runPromise(Deferred.make<void>());
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["claude"]);
+          const agent = () =>
+            [...world.processes.values()].find(
+              (process) => process.sessionId === session.id && process.kind === "agent-pty",
+            );
+          // Before any output: starting, and the row says nothing drew.
+          expect(world.sessions.get(session.id)?.summary).toBe(
+            "claude is starting on the new machine",
+          );
+          expect(agent()?.firstOutputAt ?? null).toBeNull();
+
+          yield* Deferred.succeed(drawn, undefined);
+          yield* until(() => agent()?.firstOutputAt != null, "the first output to be stamped");
+          expect(agent()?.firstOutputAt?.toISOString()).toBe(drew);
+          yield* until(
+            () => (world.sessions.get(session.id)?.summary ?? null) === null,
+            "the starting words to go",
+          );
+          expect(world.sessions.get(session.id)?.status).toBe("running");
+        }),
+      {
+        sealantLayer: lifecycleLayer(created, {
+          captureOps: {
+            // The record opens with a heartbeat and an empty chunk; the first bytes come later.
+            record: () =>
+              Stream.make(outputEntry(1n, "2026-09-30T17:14:56.000Z", "0")).pipe(
+                Stream.concat(
+                  Stream.fromEffect(Deferred.await(drawn)).pipe(
+                    Stream.map(() => outputEntry(2n, drew, "312")),
+                  ),
+                ),
+                Stream.concat(Stream.fromEffect(Effect.never)),
+              ),
+          },
+        }),
+      },
+    );
+  });
+
+  it("an agent that ends before it draws takes its starting words with it", async () => {
+    const created: Array<CreateOptions> = [];
+    const ptyStates = new Map<string, InteractiveSessionStatus>();
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["claude"]);
+          yield* engine.openShell(session.id);
+          expect(world.sessions.get(session.id)?.summary).toBe(
+            "claude is starting on the new machine",
+          );
+          const agent = [...world.processes.values()].find(
+            (process) => process.sessionId === session.id && process.kind === "agent-pty",
+          );
+          if (agent?.sealantSessionId == null) throw new Error("no agent PTY");
+          ptyStates.set(agent.sealantSessionId, {
+            status: "exited",
+            exitCode: 1,
+            outputHighWater: 0n,
+          });
+          yield* until(
+            () => world.processes.get(agent.id)?.exitedAt != null,
+            "the agent's end to be observed",
+          );
+          // A shell still holds the workspace, so nothing settled over the line: the words went
+          // with the agent.
+          yield* until(
+            () => !(world.sessions.get(session.id)?.summary ?? "").includes("claude is starting"),
+            "the starting words to go with the agent",
+          );
+        }),
+      {
+        sealantLayer: sealantLaunchLayer(
+          created,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          ptyStates,
+        ),
+      },
+    );
+  });
 });

@@ -160,6 +160,7 @@ describe("Project detail worktree groups", () => {
       protocol: "tcp",
       hostPort: null,
       createdAt: new Date("2026-09-01T00:00:00Z"),
+      firstOutputAt: null,
       exitedAt: new Date("2026-09-01T01:00:00Z"),
       updatedAt: new Date("2026-09-01T01:00:00Z"),
     };

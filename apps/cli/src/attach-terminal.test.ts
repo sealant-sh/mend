@@ -65,10 +65,34 @@ const clientTextFrames = (bytes: Buffer): ReadonlyArray<string> => {
   return texts;
 };
 
+/** A server's binary frame (unmasked): PTY bytes as the tty socket carries them. */
+const serverBinaryFrame = (payload: Buffer): Buffer => {
+  if (payload.length >= 126) throw new Error("test frames stay short");
+  return Buffer.concat([Buffer.from([0x82, payload.length]), payload]);
+};
+
+/** The session's detail: its agent started 23 s ago and was the first process on its executor. */
+const detailOf = (startedAgo: number) => {
+  const agent = {
+    id: "agent-1",
+    kind: "agent-pty",
+    status: "running",
+    exitCode: null,
+    exitedAt: null,
+    harness: "claude",
+    sealantSessionId: "pty-1",
+    sealantWorkspaceId: "ws-1",
+    createdAt: new Date(Date.now() - startedAgo).toISOString(),
+    firstOutputAt: null,
+  };
+  return { session, currentAgent: agent, processes: [agent] };
+};
+
 const startFake = async (mode: "stall-ticket" | "open") => {
   let clientBytes = Buffer.alloc(0);
   const server = createServer((request, response) => {
     if (request.url === "/api/sessions") json(response, [session]);
+    else if (request.url === `/api/sessions/${session.id}`) json(response, detailOf(23_000));
     else if (request.url === "/api/upgrade-tickets" && mode === "open") {
       json(response, { ticket: "ticket-1" });
     } else if (request.url === "/api/upgrade-tickets") {
@@ -90,6 +114,10 @@ const startFake = async (mode: "stall-ticket" | "open") => {
   return {
     url: `http://127.0.0.1:${address.port}`,
     frames: () => clientTextFrames(clientBytes),
+    /** Send PTY bytes to every attached terminal. */
+    output: (text: string) => {
+      for (const socket of sockets) socket.write(serverBinaryFrame(Buffer.from(text)));
+    },
     close: async () => {
       for (const socket of sockets) socket.destroy();
       server.closeAllConnections();
@@ -162,6 +190,48 @@ describe.skipIf(!hasScript)("mend attach in a terminal", () => {
         { t: "resize", cols: 100, rows: 29 },
         { t: "resize", cols: 100, rows: 30 },
       ]);
+      cli.write("\x1d");
+      expect(await cli.exited).toBe(0);
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  }, 30_000);
+
+  it("says the agent is starting until its first bytes, then erases the line before them (alpha 2026-09-30)", async () => {
+    const fake = await startFake("open");
+    const cli = attachInTerminal(fake.url);
+    try {
+      // Attached (the size went up) and the agent has drawn nothing: the line says so.
+      await waitFor(() => fake.frames().length >= 2);
+      await waitFor(() => cli.output().includes("claude is starting on the new machine · 2"));
+      expect(cli.output()).toContain("Ctrl+] detaches");
+      fake.output("AGENT-FIRST-SCREEN");
+      await waitFor(() => cli.output().includes("AGENT-FIRST-SCREEN"));
+      const output = cli.output();
+      // Erased, then the agent's bytes, untouched; the line is never drawn again.
+      expect(output).toContain("\r\x1b[2KAGENT-FIRST-SCREEN");
+      await new Promise<void>((resolve) => setTimeout(resolve, 1_500));
+      expect(cli.output().slice(cli.output().indexOf("AGENT-FIRST-SCREEN"))).not.toContain(
+        "is starting",
+      );
+      cli.write("\x1d");
+      expect(await cli.exited).toBe(0);
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  }, 30_000);
+
+  it("a reattach to an agent that already drew gets its screen and never the starting line", async () => {
+    const fake = await startFake("open");
+    const cli = attachInTerminal(fake.url);
+    try {
+      await waitFor(() => fake.frames().length >= 1);
+      fake.output("REPLAYED-SCREEN");
+      await waitFor(() => cli.output().includes("REPLAYED-SCREEN"));
+      await new Promise<void>((resolve) => setTimeout(resolve, 1_500));
+      expect(cli.output()).not.toContain("is starting");
       cli.write("\x1d");
       expect(await cli.exited).toBe(0);
     } finally {

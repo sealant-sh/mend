@@ -439,6 +439,7 @@ const testLayer = (world: TestWorld) => {
     setStatus: () => Effect.die("not in test"),
     setLabel: () => Effect.die("not in test"),
     setProviderSessionId: () => Effect.die("not in test"),
+    markFirstOutput: () => Effect.die("not in test"),
     setHostPort: () => Effect.die("not in test"),
     setSealantSessionId: () => Effect.die("not in test"),
     markExited: () => Effect.die("not in test"),

@@ -1,4 +1,4 @@
-import { pullRequestBase } from "@mend/domain/workbench";
+import { agentStartingFacts, pullRequestBase } from "@mend/domain/workbench";
 import { Button } from "@mend/ui/components/ui/button";
 import { cn } from "@mend/ui/lib/utils";
 import { useMutation, useQuery } from "@tanstack/react-query";
@@ -556,6 +556,12 @@ export function TerminalPane({
             }
             sessionId={tab.sessionId}
             from={isSessionTab ? from : "0"}
+            {...(isSessionTab && session !== null
+              ? {
+                  startingLabel: session.harness,
+                  starting: agentStartingFacts(currentAgent, detail.data?.processes, Date.now()),
+                }
+              : {})}
             probe={probeTab(tab, session?.projectId ?? null)}
             focus
             focusRequest={terminalFocusRequest}
