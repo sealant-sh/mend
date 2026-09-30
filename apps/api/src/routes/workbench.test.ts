@@ -279,7 +279,7 @@ const unusedProjectRouteLayers: Layer.Layer<UnusedProjectRouteServices> = Layer.
   Layer.mock(UserGitAccessRepo, {}),
   Layer.mock(MendKeys, {}),
   Layer.mock(ServiceForwardsRepo, {}),
-  Layer.mock(SessionEngine, {}),
+  Layer.mock(SessionEngine, { launchUnderWay: () => false }),
   Layer.mock(HotWorkspacesRepo, {}),
   Layer.mock(SealantClient, {}),
   Layer.mock(JobRunner, {}),

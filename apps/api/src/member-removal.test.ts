@@ -111,6 +111,7 @@ const removalWorld = (options: { readonly lastOwner?: boolean } = {}) => {
             note(`slackLinks.unlink:${teamId}:${slackUserId}`).pipe(Effect.as(null)),
         }),
         Layer.mock(SessionEngine, {
+          launchUnderWay: () => false,
           stop: (sessionId) => note(`engine.stop:${sessionId}`),
           reconcileHotSessions: (projectId) =>
             note(`engine.reconcileHotSessions:${projectId}`).pipe(

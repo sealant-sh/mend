@@ -226,6 +226,7 @@ const dependencies = Layer.mergeAll(
       }),
   }),
   Layer.mock(SessionEngine, {
+    launchUnderWay: () => false,
     reconcileHotSessions: (projectId) => Effect.sync(() => void reconciled.push(projectId)),
   }),
   Layer.mock(SettingsRepo, { get: () => Effect.succeed(instanceSettings) }),

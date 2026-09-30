@@ -203,6 +203,7 @@ const world = (options: WorldOptions = {}) => {
       record: (event) => Effect.sync(() => void state.control.push(event)),
     }),
     Layer.mock(SessionEngine, {
+      launchUnderWay: () => false,
       readCaptures: () =>
         Effect.sync(() => {
           const answer = options.captures?.[state.captureReads] ?? options.captures?.at(-1) ?? null;

@@ -105,6 +105,7 @@ describe("landing a co-located session", () => {
       Effect.gen(function* () {
         const git = yield* Store;
         return Layer.mock(SessionEngine, {
+          launchUnderWay: () => false,
           checkpointNow: (_sessionId, trigger) =>
             Effect.gen(function* () {
               ordinal += 1;

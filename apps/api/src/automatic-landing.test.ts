@@ -363,6 +363,7 @@ const layer = Layer.mergeAll(
       }),
   }),
   Layer.mock(SessionEngine, {
+    launchUnderWay: () => false,
     flushCaptures: () =>
       Effect.sync(() => {
         world.flushAsks += 1;

@@ -273,7 +273,12 @@ export const createTenancyApi = async (
       ),
       Layer.succeed(CaptureRuntime, { enabled: false }),
       recording(FollowUpDelivery, "followUpDelivery", {}, calls),
-      recording(SessionEngine, "engine", options.implement?.engine ?? {}, calls),
+      recording(
+        SessionEngine,
+        "engine",
+        { launchUnderWay: () => false, ...options.implement?.engine },
+        calls,
+      ),
       recording(WorktreeReads, "reads", options.implement?.reads ?? {}, calls),
       recording(AgentBridge, "agentBridge", { socketPath: () => "/unused/agent.sock" }, calls),
       options.dotfiles === undefined

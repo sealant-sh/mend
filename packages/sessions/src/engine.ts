@@ -230,6 +230,7 @@ import {
   standbyEpochOf,
   standbyWorktreeAlias,
 } from "./hot-pool.ts";
+import { makeLaunchGate } from "./launch-gate.ts";
 import { backfillFromNative, cursorAtEndOf } from "./native-backfill.ts";
 import {
   convertNativeSession,
@@ -1031,6 +1032,12 @@ export class SessionEngine extends Context.Service<
      * engine's shutdown interrupts it. The fiber is returned to join or to leave.
      */
     readonly detach: <A, E>(effect: Effect.Effect<A, E>) => Effect.Effect<Fiber.Fiber<A, E>>;
+    /**
+     * Whether a launch verb (launch, resume, handoff, follow-up) is under way for the session in
+     * this process. A resumed session keeps its settled row until its agent runs; the API reads
+     * it as `starting` meanwhile, and a second launch verb is refused (`session_starting`).
+     */
+    readonly launchUnderWay: (sessionId: SessionId) => boolean;
     /**
      * The supervised launch (SDK 0.7.0): a workspace mounting the session's
      * worktree, an interactive PTY session running `argv` inside it, and
@@ -12332,6 +12339,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const detached = <A, E>(effect: Effect.Effect<A, E>) =>
         detach(effect).pipe(Effect.flatMap(Fiber.join));
 
+      const launchGate = makeLaunchGate();
+      const oneLaunch = launchGate.run;
+
       // Every public verb about a session runs AS ITS OWNER (docs/SEALANT-IDENTITY.md): the
       // platform resources belong to the owner's Sealant user, whoever is at the keyboard.
       // Fibers forked underneath inherit the principal.
@@ -12351,16 +12361,22 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         attachRun: (sessionId, sealantRunId, workspaceId) =>
           owned(sessionId)(attachRun(sessionId, sealantRunId, workspaceId)),
         detach,
-        launch: (sessionId, argv) => detached(owned(sessionId)(launch(sessionId, argv))),
+        launchUnderWay: launchGate.underWay,
+        launch: (sessionId, argv) =>
+          detached(owned(sessionId)(oneLaunch(sessionId)(launch(sessionId, argv)))),
         launchProtocol: (sessionId, ...rest) =>
-          detached(owned(sessionId)(launchProtocol(sessionId, ...rest))),
+          detached(owned(sessionId)(oneLaunch(sessionId)(launchProtocol(sessionId, ...rest)))),
         submitTurn: (sessionId, input, author) =>
           owned(sessionId)(submitTurn(sessionId, input, author)),
         interruptTurn,
         respondRequest,
         launchFollowUp: (sessionId, instruction, launchCorrelationId, author) =>
           detached(
-            owned(sessionId)(launchFollowUp(sessionId, instruction, launchCorrelationId, author)),
+            owned(sessionId)(
+              oneLaunch(sessionId)(
+                launchFollowUp(sessionId, instruction, launchCorrelationId, author),
+              ),
+            ),
           ),
         reconcileHotSessions: requestHotReconcile,
         checkpointNow: (sessionId, trigger) => owned(sessionId)(checkpointNow(sessionId, trigger)),
@@ -12381,9 +12397,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         storePastedImage: (sessionId, bytes) =>
           owned(sessionId)(storePastedImage(sessionId, bytes)),
         resumeSession: (sessionId, harness, fresh) =>
-          detached(owned(sessionId)(resumeSession(sessionId, harness, fresh))),
+          detached(
+            owned(sessionId)(oneLaunch(sessionId)(resumeSession(sessionId, harness, fresh))),
+          ),
         handoff: (sessionId, to, start, author) =>
-          detached(owned(sessionId)(handoff(sessionId, to, start, author))),
+          detached(owned(sessionId)(oneLaunch(sessionId)(handoff(sessionId, to, start, author)))),
         observeExternalAgents,
         reapCaptureLeases: captureReaper,
         discardUnsavedAndStop: (sessionId, discardedBy) =>

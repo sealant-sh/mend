@@ -31,6 +31,7 @@ describe("a capture-backed landing's checkpoint", () => {
     const world = makeWorld();
     const asked: string[] = [];
     const engine = Layer.mock(SessionEngine, {
+      launchUnderWay: () => false,
       // The old path: a checkpoint of whatever head is registered, caught up or not.
       checkpointNow: (_sessionId, trigger) =>
         Effect.sync(() => {

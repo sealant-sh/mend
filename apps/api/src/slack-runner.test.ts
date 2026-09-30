@@ -657,6 +657,7 @@ const world = (options: WorldOptions = {}) => {
         note(`controls.record:${event.sessionId}:${event.kind}:${event.actorUserId}`),
     }),
     Layer.mock(SessionEngine, {
+      launchUnderWay: () => false,
       stop: (sessionId) =>
         note(`engine.stop:${sessionId}`).pipe(
           Effect.andThen(

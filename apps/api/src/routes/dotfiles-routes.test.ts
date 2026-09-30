@@ -157,7 +157,7 @@ const putRepository = async (
     }),
     Layer.mock(ProjectAccess, { isOperator: () => Effect.succeed(true) }),
     Layer.mock(ProjectsRepo, { listAll: () => Effect.succeed([]) }),
-    Layer.mock(SessionEngine, {}),
+    Layer.mock(SessionEngine, { launchUnderWay: () => false }),
   );
   const apiLayer = HttpApiBuilder.layer(DotfilesApi).pipe(
     Layer.provide(DotfilesGroupLive),
