@@ -29,10 +29,10 @@ export const companionOf = (param: string | undefined): Companion | null =>
 /** The sessions worth a tap, as two-letter buttons with their status dot. */
 function SessionRail({
   currentId,
-  companion,
+  onSwitch,
 }: {
   readonly currentId: string;
-  readonly companion: Companion | null;
+  readonly onSwitch: (sessionId: string) => void;
 }) {
   const router = useRouter();
   const { colors } = useEvidenceTheme();
@@ -84,11 +84,7 @@ function SessionRail({
               accessibilityLabel={session.label ?? session.harness}
               accessibilityState={{ selected: current }}
               onPress={() => {
-                if (current) return;
-                router.replace({
-                  pathname: "/session/[id]",
-                  params: { id: session.id, ...(companion === null ? {} : { pane: companion }) },
-                });
+                if (!current) onSwitch(session.id);
               }}
               style={{ alignItems: "center", gap: 5 }}
             >
@@ -287,7 +283,7 @@ export function SessionWorkspace({
 
   let side: ReactNode = null;
   if (companion === "terminal") {
-    side = <ShellCompanion sessionId={sessionId} onClose={close} />;
+    side = <ShellCompanion key={sessionId} sessionId={sessionId} onClose={close} />;
   } else if (companion === "diff") {
     side = (
       <CompanionFrame title="diff · the whole change" onClose={close}>
@@ -305,6 +301,7 @@ export function SessionWorkspace({
   const conversation = (
     <Pane atBottom={landscape || side === null}>
       <SessionPane
+        key={sessionId}
         sessionId={sessionId}
         {...(mode === undefined ? {} : { mode })}
         topInset={false}
@@ -327,7 +324,14 @@ export function SessionWorkspace({
   // Open flat, the rail and the conversation end at the crease; drag the divider for more.
   const main = (
     <View style={{ flex: 1, flexDirection: "row" }}>
-      {landscape ? <SessionRail currentId={sessionId} companion={companion} /> : null}
+      {landscape ? (
+        <SessionRail
+          currentId={sessionId}
+          // The same screen shows the other session: the rail and the other side stay put, only
+          // the conversation (and what the other side shows) changes. A new screen would slide in.
+          onSwitch={(id) => router.setParams({ id })}
+        />
+      ) : null}
       <View style={{ flex: 1 }}>{conversation}</View>
     </View>
   );
