@@ -46,6 +46,7 @@ import {
   usageOf,
 } from "./help.ts";
 import { type Download, landCommand, pullCommand } from "./landing.ts";
+import { followStart, startingLineOf, type StartOutcome } from "./launch-follow.ts";
 import { loginCommand } from "./login.ts";
 import {
   folderCommand,
@@ -55,6 +56,7 @@ import {
   sessionShareCommand,
 } from "./organization.ts";
 import { type ApiCall, pairCommand, qrCommand } from "./pair.ts";
+import { MendRequestError, noAnswerError, spoken } from "./server-request.ts";
 import { runServerProcess } from "./server-runtime.ts";
 import { nodeServerRuntime, readServerInstallationFacts, serverCommand } from "./server-setup.ts";
 import {
@@ -94,6 +96,7 @@ import {
   captureLineOf,
   type SessionCaptureLike,
 } from "./shared.ts";
+import { type AttachOutcome } from "./shared.ts";
 import { DEFAULT_SKILLS_DIR, scanSkillLibrary } from "./skills.ts";
 import { sshCommand } from "./ssh-setup.ts";
 import {
@@ -291,9 +294,11 @@ const herdrAgentOf = (harness: string): HerdrAgent | null => {
   return null;
 };
 
+const noHerdrHint = (): void => undefined;
+
 const hintHerdrAttachment = (harness: string): (() => void) => {
   const agent = herdrAgentOf(harness);
-  if (process.env["HERDR_ENV"] !== "1" || agent === null) return () => undefined;
+  if (process.env["HERDR_ENV"] !== "1" || agent === null) return noHerdrHint;
 
   // Herdr deliberately reads HERDR_AGENT from any member of the foreground
   // process group. A pipe-tethered child carries the hint while Mend owns the
@@ -331,6 +336,8 @@ const request = async <T>(
   const headers: Record<string, string> = { "content-type": "application/json" };
   if (config.token !== null) headers["authorization"] = `Bearer ${config.token}`;
   let response: Response;
+  const started = Date.now();
+  const call = `${method} ${route}`;
   try {
     response = await fetch(`${config.url}/api${route}`, {
       method,
@@ -338,26 +345,35 @@ const request = async <T>(
       // Spread, not `body: null` — fresh oxlint rejects a body key on GETs.
       ...(body === undefined ? {} : { body: JSON.stringify(body) }),
     });
-  } catch {
-    throw new Error(`cannot reach the Mend server at ${config.url} — is it running?`);
+  } catch (error) {
+    // Only a connection that never opened is "cannot reach"; a request the server is still
+    // working on (a first launch building an image) or one an edge cut says so instead.
+    throw noAnswerError(error, config.url, call, Date.now() - started);
   }
   if (response.status === 401) {
-    throw new Error(
+    throw new MendRequestError(
+      "http",
       config.token === null
         ? `not signed in to ${config.url} — run: mend login`
         : `unauthorized at ${config.url} — the saved token was rejected; run: mend login`,
+      401,
     );
   }
-  const text = await response.text();
+  let text: string;
+  try {
+    text = await response.text();
+  } catch (error) {
+    throw noAnswerError(error, config.url, call, Date.now() - started);
+  }
   if (!response.ok) {
-    let message = `${method} ${route} → ${response.status}`;
+    let message = `${call} → ${response.status}`;
     try {
       const parsed = JSON.parse(text) as { readonly message?: string };
       message = parsed.message ?? message;
     } catch {
       // not JSON — keep the status line
     }
-    throw new Error(message);
+    throw new MendRequestError("http", message, response.status);
   }
   try {
     return JSON.parse(text) as T;
@@ -391,10 +407,11 @@ const download =
     const headers: Record<string, string> = {};
     if (config.token !== null) headers["authorization"] = `Bearer ${config.token}`;
     let response: Response;
+    const started = Date.now();
     try {
       response = await fetch(`${config.url}/api${route}`, { headers });
-    } catch {
-      return fail(`cannot reach the Mend server at ${config.url} — is it running?`);
+    } catch (error) {
+      return fail(noAnswerError(error, config.url, `GET ${route}`, Date.now() - started).message);
     }
     if (response.status === 401) {
       return fail(
@@ -414,7 +431,7 @@ const download =
  */
 let warnedLegacyBearer = false;
 const mintTicket =
-  (config: CliConfig): MintTicket =>
+  (config: CliConfig, signal?: AbortSignal): MintTicket =>
   async (target, params) => {
     const headers: Record<string, string> = { "content-type": "application/json" };
     if (config.token !== null) headers["authorization"] = `Bearer ${config.token}`;
@@ -422,6 +439,7 @@ const mintTicket =
       method: "POST",
       headers,
       body: JSON.stringify({ target, ...params }),
+      ...(signal === undefined ? {} : { signal }),
     });
     if (response.status === 404) {
       if (await mintRefusedInTransit(config.url)) throw new Error(MINT_REFUSED_IN_TRANSIT);
@@ -446,13 +464,14 @@ const socketUrl = (
   target: UpgradeTarget,
   params: UpgradeParams,
   extra?: Readonly<Record<string, string>>,
+  signal?: AbortSignal,
 ): Promise<URL> =>
   upgradeUrl({
     serverUrl: parseMendUrl(config.url).toString(),
     target,
     params,
     ...(extra === undefined ? {} : { extra }),
-    mint: mintTicket(config),
+    mint: mintTicket(config, signal),
     legacyToken: config.token,
   });
 
@@ -463,23 +482,103 @@ const boundApi =
     api<T>(config, method, route, body);
 
 /** A live elapsed-time spinner around a slow await — provisioning is not a hang. */
-const withSpinner = async <T>(label: string, work: Promise<T>): Promise<T> => {
+const withSpinner = async <T>(label: string | (() => string), work: Promise<T>): Promise<T> => {
   if (process.stdout.isTTY !== true) return work;
   const frames = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
   const started = Date.now();
   let frame = 0;
   const timer = setInterval(() => {
     const seconds = Math.round((Date.now() - started) / 1000);
-    process.stdout.write(`\r  ${frames[frame % frames.length]} ${label} ${dim(`${seconds}s`)} `);
+    const text = typeof label === "string" ? label : label();
+    // Clear first: a status line that got shorter must not leave the old one's tail behind.
+    process.stdout.write(
+      `\r\x1b[2K  ${frames[frame % frames.length]} ${text} ${dim(`${seconds}s`)} `,
+    );
     frame += 1;
   }, 120);
   try {
     return await work;
   } finally {
     clearInterval(timer);
-    process.stdout.write("\r[2K");
+    process.stdout.write("\r\x1b[2K");
   }
 };
+
+/**
+ * Start a session's agent (a launch, a resume, a handoff) and follow the session until the agent
+ * runs (launch-follow.ts). The spinner carries the server's own words for what it is doing
+ * (`starting · building the workspace image`), and a start call that times out or is cut by an
+ * edge keeps following instead of calling the server unreachable. Null `start` follows a session
+ * something else started.
+ */
+const followStarting = async (
+  config: CliConfig,
+  sessionId: string,
+  label: string,
+  start: Promise<SessionDto> | null,
+): Promise<StartOutcome<SessionDto>> => {
+  let line = label;
+  // The poll timers go when the follow ends: a pending one would hold the process open.
+  const timers = new Set<ReturnType<typeof setTimeout>>();
+  const sleep = (ms: number) =>
+    new Promise<void>((resolve) => {
+      const timer = setTimeout(() => {
+        timers.delete(timer);
+        resolve();
+      }, ms);
+      timers.add(timer);
+    });
+  try {
+    return await withSpinner(
+      () => line,
+      followStart<SessionDto>({
+        start,
+        read: () => request<SessionDetailLiteDto>(config, "GET", `/sessions/${sessionId}`),
+        onLine: (next) => {
+          // A bare `starting` says less than the label already on screen.
+          line = next === "starting" ? label : next;
+          if (process.stdout.isTTY !== true) say(dim(`  ${next}`));
+        },
+        sleep,
+        now: Date.now,
+      }),
+    );
+  } finally {
+    for (const timer of timers) clearTimeout(timer);
+  }
+};
+
+/** A followed start's end for one-shot commands: the running session, or a line and exit 1. */
+const startedOrExit = (
+  config: CliConfig,
+  sessionId: string,
+  outcome: StartOutcome<SessionDto>,
+): SessionDto => {
+  const id8 = sessionId.slice(0, 8);
+  switch (outcome.kind) {
+    case "live":
+      return outcome.session;
+    case "refused":
+      return fail(outcome.message);
+    case "settled":
+      return fail(
+        `session ${id8} · ${startingLineOf(outcome.session)} before its agent ran · ${config.url}/sessions/${sessionId}`,
+      );
+    case "unreachable":
+      return fail(
+        `${outcome.message} · the session may still be starting · follow it: mend attach ${id8}`,
+      );
+  }
+};
+
+/** Start and follow, for one-shot commands. */
+const startAndFollow = async (
+  config: CliConfig,
+  sessionId: string,
+  label: string,
+  start: Promise<SessionDto> | null,
+): Promise<SessionDto> =>
+  startedOrExit(config, sessionId, await followStarting(config, sessionId, label, start));
 
 // ─── adopt ──────────────────────────────────────────────────────────────────
 
@@ -752,9 +851,11 @@ const launch = async (config: CliConfig, harness: string, args: ReadonlyArray<st
         ...(parsed.fast ? { speed: "fast" } : {}),
       }
     : { argv };
-  await withSpinner(
+  await startAndFollow(
+    config,
+    session.id,
     "provisioning workspace — a first launch builds the harness image (can take minutes)…",
-    api<SessionDto>(config, "POST", `/sessions/${session.id}/launch`, launchBody),
+    request<SessionDto>(config, "POST", `/sessions/${session.id}/launch`, launchBody),
   );
   if (lifecycle === "detach") {
     say(`${green("✓ recording")} · running detached`);
@@ -786,17 +887,59 @@ const autoLandLine = (override: boolean | null, project: ProjectDto): string | n
 // ─── the terminal bridge: raw stdin/stdout against the platform PTY ─────────
 
 /**
- * Every way an attach can come back, told apart because the caller's answer
- * differs: `ended` is the server's end frame (the session settled); `dropped`
- * is a close without one (network, server restart — the session may still
- * run); `interrupted` is this CLI being told to die (SIGHUP/SIGINT/SIGTERM).
+ * How long an attach waits for the server to open the terminal: the ticket, then the upgrade,
+ * which the server answers only once the platform attached the PTY.
  */
-type AttachOutcome = "detached" | "ended" | "dropped" | "interrupted" | "unavailable";
+const ATTACH_CONNECT_TIMEOUT_MS = (() => {
+  const configured = Number(process.env["MEND_ATTACH_TIMEOUT_MS"]);
+  return Number.isFinite(configured) && configured > 0 ? configured : 30_000;
+})();
+
+/** What an attach says while the server has not opened the terminal yet, once a second. */
+const connectingLine = (sessionId: string, elapsedMs: number): string =>
+  `\r\x1b[2K  connecting to ${sessionId.slice(0, 8)} · ${Math.round(elapsedMs / 1000)}s · ${detachKeyEnabled ? "Ctrl+] or " : ""}Ctrl+C cancels`;
+
+/**
+ * Put this terminal in raw mode for an attach, before anything waits on the server: a terminal
+ * left cooked echoes every key locally and sends nothing until Enter. When it cannot be done the
+ * attach still runs, and says why on stderr instead of echoing silently.
+ */
+const takeTerminal = (): { readonly raw: boolean } => {
+  if (process.stdin.isTTY !== true) {
+    console.error(
+      "mend: stdin is not a terminal, so it cannot be put in raw mode — keys reach the session a line at a time and echo here",
+    );
+    return { raw: false };
+  }
+  try {
+    process.stdin.setRawMode(true);
+  } catch (error) {
+    console.error(
+      `mend: could not put this terminal in raw mode (${error instanceof Error ? error.message : String(error)}) — keys reach the session a line at a time and echo here`,
+    );
+    return { raw: false };
+  }
+  if (!process.stdin.isRaw) {
+    console.error(
+      "mend: this terminal did not accept raw mode — keys reach the session a line at a time and echo here",
+    );
+    return { raw: false };
+  }
+  return { raw: true };
+};
+
+/**
+ * The terminal's size as the PTY should read it. A pty whose size was never set reads 0×0.
+ */
+const terminalSize = (): { readonly cols: number; readonly rows: number } => ({
+  cols: process.stdout.columns || 80,
+  rows: process.stdout.rows || 24,
+});
 
 /**
  * Attach this terminal to the session's PTY through the Mend server over ONE
  * WebSocket: binary frames are PTY bytes both ways, text frames carry control
- * JSON (resize up, end down). Auth happens once at connect (?token=); after
+ * JSON (resize up, end down). Auth happens once at connect (?ticket=); after
  * that a keystroke is a frame on an open socket — nothing else on the path.
  * Ctrl+] detaches — the session keeps running and can be reattached from
  * anywhere. Resolves when the session settles or the user detaches; the
@@ -804,6 +947,12 @@ type AttachOutcome = "detached" | "ended" | "dropped" | "interrupted" | "unavail
  * resumes). With `handleSignals`, a terminal-window close (SIGHUP) or kill
  * resolves `interrupted` through the same restore path instead of leaving
  * raw mode pushed — the handler never exits the process itself.
+ *
+ * The terminal goes raw FIRST, then the ticket and the upgrade are asked for,
+ * each bounded: a slow server shows `connecting · 12s` and can be cancelled,
+ * never a cooked terminal that echoes keys and waits forever. Once open, the
+ * size goes up twice (one row short, then the real one) so a full-screen agent
+ * that only repaints on SIGWINCH redraws at once.
  */
 const attachTty = async (
   config: CliConfig,
@@ -813,62 +962,37 @@ const attachTty = async (
   processId?: string,
   options?: { readonly readOnly?: boolean; readonly handleSignals?: boolean },
 ): Promise<AttachOutcome> => {
-  // Process addressing reaches any PTY in the workspace (a shell); the
-  // session form remains the agent's PTY.
-  let url: URL;
-  try {
-    url = await socketUrl(
-      config,
-      "tty",
-      processId === undefined ? { session: sessionId } : { process: processId },
-      { from: from.toString() },
-    );
-  } catch {
-    return "unavailable";
-  }
+  const interactive = options?.readOnly !== true;
+  const rawModeEnabled = interactive ? takeTerminal().raw : false;
+  const connecting = new AbortController();
+  let abortReason: "detached" | "interrupted" | "no-answer" | null = null;
+  const abort = (reason: "detached" | "interrupted" | "no-answer") => {
+    abortReason ??= reason;
+    connecting.abort();
+  };
 
-  const ws = new WebSocket(url);
-  ws.binaryType = "arraybuffer";
-  try {
-    await new Promise<void>((resolve, reject) => {
-      ws.addEventListener("open", () => resolve(), { once: true });
-      ws.addEventListener("error", () => reject(new Error("could not connect")), { once: true });
-    });
-  } catch {
-    return "unavailable";
-  }
-  const stopHerdrHint = hintHerdrAttachment(harness);
+  let ws: WebSocket | null = null;
+  let detached = false;
+  let sawEnd = false;
+  let interrupted = false;
   let finishAttachment: (() => void) | undefined;
   const finished = new Promise<void>((resolve) => {
     finishAttachment = resolve;
   });
-  const onClose = () => finishAttachment?.();
-  if (ws.readyState === WebSocket.CLOSED) finishAttachment?.();
-  else ws.addEventListener("close", onClose, { once: true });
-  const sendResize = () => {
-    if (ws.readyState !== WebSocket.OPEN) return;
-    ws.send(
-      JSON.stringify({
-        t: "resize",
-        cols: process.stdout.columns ?? 80,
-        rows: process.stdout.rows ?? 24,
-      }),
-    );
-  };
-  const onWinch = () => sendResize();
-  const rawTty = process.stdin.isTTY === true;
-  let rawModeEnabled = false;
-  let detached = false;
-  let sawEnd = false;
-  let interrupted = false;
   const onSignal = () => {
     // Resolve the attach instead of exiting: the shared `finally` restores raw
     // mode and closes the socket, then the caller decides what the signal means.
     interrupted = true;
-    ws.close();
+    abort("interrupted");
+    ws?.close();
     finishAttachment?.();
   };
   const signals = ["SIGHUP", "SIGINT", "SIGTERM"] as const;
+  const sendResize = (size = terminalSize()) => {
+    if (ws === null || ws.readyState !== WebSocket.OPEN) return;
+    ws.send(JSON.stringify({ t: "resize", cols: size.cols, rows: size.rows }));
+  };
+  const onWinch = () => sendResize();
   let bracketedPaste = false;
   const onTtyFrame = (event: MessageEvent) => {
     if (typeof event.data !== "string") {
@@ -886,19 +1010,32 @@ const attachTty = async (
       // of holding the user's terminal for the later close handshake and Mend's
       // settle/checkpoint/harvest work.
       sawEnd = true;
-      ws.close();
+      ws?.close();
       finishAttachment?.();
     } catch {
       // Unknown text control frame — ignore.
     }
   };
+  const forward = (bytes: Buffer) => {
+    if (ws !== null && ws.readyState === WebSocket.OPEN) ws.send(new Uint8Array(bytes).buffer);
+  };
   const onKeys = (data: Buffer) => {
+    if (ws === null) {
+      // Still connecting: nothing reads keys yet. Ctrl+] detaches and Ctrl+C interrupts, as they
+      // would once attached; any other key is dropped rather than typed blind into an agent that
+      // has not drawn yet.
+      if (detachKeyEnabled && isDetachChunk(data)) abort("detached");
+      else if (data.includes(0x03)) abort("interrupted");
+      return;
+    }
     if (detachKeyEnabled && isDetachChunk(data)) {
       // Ctrl+] — detach, leave the session running. Matched in both its
       // encodings: the inner TUI may have switched the user's terminal onto
-      // the kitty keyboard protocol, where the key arrives as CSI-u.
+      // the kitty keyboard protocol, where the key arrives as CSI-u. The
+      // terminal comes back now, not after the server's close handshake.
       detached = true;
       ws.close();
+      finishAttachment?.();
       return;
     }
     if (ws.readyState !== WebSocket.OPEN) return;
@@ -912,9 +1049,6 @@ const attachTty = async (
     }
     // Copy into a plain ArrayBuffer (WebSocket.send rejects pooled Buffer views).
     ws.send(new Uint8Array(data).buffer);
-  };
-  const forward = (bytes: Buffer) => {
-    if (ws.readyState === WebSocket.OPEN) ws.send(new Uint8Array(bytes).buffer);
   };
   const pasteClipboardImage = async (keystroke: Buffer): Promise<void> => {
     const image = await readClipboardImage();
@@ -935,31 +1069,90 @@ const attachTty = async (
       process.stdout.write("\x07");
     }
   };
+
+  /** The ticket, then the upgrade — both abandoned on cancel, a signal or the timeout. */
+  const connect = async (): Promise<WebSocket | "unavailable" | "aborted"> => {
+    // Process addressing reaches any PTY in the workspace (a shell); the
+    // session form remains the agent's PTY.
+    let url: URL;
+    try {
+      url = await socketUrl(
+        config,
+        "tty",
+        processId === undefined ? { session: sessionId } : { process: processId },
+        { from: from.toString() },
+        connecting.signal,
+      );
+    } catch {
+      return connecting.signal.aborted ? "aborted" : "unavailable";
+    }
+    if (connecting.signal.aborted) return "aborted";
+    const socket = new WebSocket(url);
+    socket.binaryType = "arraybuffer";
+    const opened = await new Promise<boolean>((resolve) => {
+      const onAbort = () => resolve(false);
+      connecting.signal.addEventListener("abort", onAbort, { once: true });
+      const settle = (value: boolean) => {
+        connecting.signal.removeEventListener("abort", onAbort);
+        resolve(value);
+      };
+      socket.addEventListener("open", () => settle(true), { once: true });
+      socket.addEventListener("error", () => settle(false), { once: true });
+    });
+    if (opened && !connecting.signal.aborted) return socket;
+    socket.close();
+    return connecting.signal.aborted ? "aborted" : "unavailable";
+  };
+
+  const started = Date.now();
+  let connectingShown = false;
+  const connectingTimer = setInterval(() => {
+    if (process.stdout.isTTY !== true) return;
+    connectingShown = true;
+    process.stdout.write(connectingLine(sessionId, Date.now() - started));
+  }, 1000);
+  const deadline = setTimeout(() => abort("no-answer"), ATTACH_CONNECT_TIMEOUT_MS);
+  const stopConnecting = () => {
+    // One clear for both (Node's clearTimeout clears an interval too).
+    for (const timer of [connectingTimer, deadline]) clearTimeout(timer);
+    if (connectingShown) process.stdout.write("\r\x1b[2K");
+    connectingShown = false;
+  };
+  let stopHerdrHint = noHerdrHint;
   try {
-    sendResize();
-    process.stdout.on("resize", onWinch);
     if (options?.handleSignals === true) for (const signal of signals) process.on(signal, onSignal);
     // Read-only (logs): never forward stdin — Ctrl+C exits the CLI, the
     // socket drops, and the process inside keeps running untouched.
-    if (options?.readOnly !== true) {
-      if (rawTty) {
-        process.stdin.setRawMode(true);
-        rawModeEnabled = true;
-      }
-      process.stdin.resume();
+    if (interactive) {
       process.stdin.on("data", onKeys);
+      process.stdin.resume();
     }
+    const connected = await connect();
+    stopConnecting();
+    if (connected === "unavailable") return "unavailable";
+    if (connected === "aborted") return abortReason ?? "interrupted";
+    ws = connected;
+    stopHerdrHint = hintHerdrAttachment(harness);
+    const onClose = () => finishAttachment?.();
+    if (ws.readyState === WebSocket.CLOSED) finishAttachment?.();
+    else ws.addEventListener("close", onClose, { once: true });
     ws.addEventListener("message", onTtyFrame);
+    // One row short, then the real size: the PTY sees a size change either way, so the agent
+    // gets SIGWINCH and repaints now instead of on the first key.
+    const size = terminalSize();
+    if (size.rows > 1) sendResize({ cols: size.cols, rows: size.rows - 1 });
+    setTimeout(() => sendResize(), 80);
+    process.stdout.on("resize", onWinch);
     await finished;
     return detached ? "detached" : interrupted ? "interrupted" : sawEnd ? "ended" : "dropped";
   } finally {
+    stopConnecting();
     for (const signal of signals) process.off(signal, onSignal);
     process.stdin.off("data", onKeys);
     process.stdout.off("resize", onWinch);
-    ws.removeEventListener("message", onTtyFrame);
-    ws.removeEventListener("close", onClose);
+    ws?.removeEventListener("message", onTtyFrame);
     if (rawModeEnabled) process.stdin.setRawMode(false);
-    if (options?.readOnly !== true && process.stdout.isTTY === true) {
+    if (interactive && ws !== null && process.stdout.isTTY === true) {
       // The inner TUI's terminal modes leaked onto OUR terminal through the
       // byte bridge — kitty keyboard protocol, bracketed paste, mouse
       // reporting, alternate screen, hidden cursor. The TUI keeps running
@@ -975,7 +1168,8 @@ const attachTty = async (
       );
     }
     process.stdin.pause();
-    if (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING) ws.close();
+    if (ws !== null && (ws.readyState === WebSocket.OPEN || ws.readyState === WebSocket.CONNECTING))
+      ws.close();
     stopHerdrHint();
   }
 };
@@ -1018,6 +1212,10 @@ const stopAndExit = async (config: CliConfig, sessionId: string): Promise<never>
   process.exit(1);
 };
 
+/** What a terminal the server never opened reads as — the session itself is untouched. */
+const noAnswerLine = (config: CliConfig, id8: string): string =>
+  `${amber("no answer")} — ${config.url} did not open the terminal within ${spoken(ATTACH_CONNECT_TIMEOUT_MS)}; the session keeps running · try again: mend attach ${id8} · check the server: mend doctor`;
+
 /**
  * How every one-shot command handles an attach outcome: detach says so and
  * always leaves the session running; a signal or a dropped socket answers to
@@ -1032,6 +1230,12 @@ const finishAttach = async (
   const id8 = sessionId.slice(0, 8);
   if (outcome === "unavailable") {
     return fail(`tty attach unavailable: could not connect to ${config.url}`);
+  }
+  if (outcome === "no-answer") {
+    say("");
+    say(noAnswerLine(config, id8));
+    if (mode === "foreground") return stopAndExit(config, sessionId);
+    process.exit(1);
   }
   if (outcome === "detached") {
     say("");
@@ -1119,6 +1323,10 @@ const attachPicked = async (
   say(
     `${green("✓")} attaching to ${sessionDisplayName(session)} · ${session.harness} ${dim(session.id.slice(0, 8))}${detachHint()}`,
   );
+  // A session still starting has no terminal yet: follow it until its agent runs, then attach.
+  if (session.status === "starting") {
+    await startAndFollow(config, session.id, "starting — attaching once the agent runs…", null);
+  }
   await tunnels?.start(session.id);
   say("");
   const outcome = await attachWithTunnels(tunnels, () =>
@@ -1136,9 +1344,11 @@ const attachPicked = async (
       agentIsLive(detail.session, detail.currentAgent)
     ) {
       say(`${amber("taking over")} from the protocol session`);
-      await withSpinner(
+      await startAndFollow(
+        config,
+        session.id,
         "reopening as a terminal — same conversation…",
-        api<SessionDto>(config, "POST", `/sessions/${session.id}/handoff`, { to: "pty" }),
+        request<SessionDto>(config, "POST", `/sessions/${session.id}/handoff`, { to: "pty" }),
       );
       say("");
       await attachOrExit(config, session.id, session.harness, "background", tunnels);
@@ -1349,6 +1559,10 @@ const shellCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
     return fail(`tty attach unavailable: could not connect to ${config.url}`);
   }
   say("");
+  if (outcome === "no-answer") {
+    say(noAnswerLine(config, session.id.slice(0, 8)));
+    process.exit(1);
+  }
   if (outcome === "detached" || outcome === "interrupted" || outcome === "dropped") {
     say(`${amber("detached")} — the shell keeps running and holds the workspace open`);
     process.exit(0);
@@ -3273,9 +3487,11 @@ const supervisedRun = async (
   session: SessionDto,
   argv: ReadonlyArray<string>,
 ) => {
-  const launched = await withSpinner(
+  const launched = await startAndFollow(
+    config,
+    session.id,
     "provisioning workspace — a first launch builds the harness image (can take minutes)…",
-    api<SessionDto>(config, "POST", `/sessions/${session.id}/launch`, { argv }),
+    request<SessionDto>(config, "POST", `/sessions/${session.id}/launch`, { argv }),
   );
   say(
     `${green("✓ recording")} · run ${dim(launched.id.slice(0, 8))} · workspace mounts the worktree`,
@@ -3492,13 +3708,17 @@ const resumeCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
     detail.annotations.find((annotation) => annotation.sessionId === match.id)?.currentAgent ??
     null;
   const protocolPrior = priorAgent?.kind === "agent-protocol" && withHarness === null;
-  await withSpinner(
+  await startAndFollow(
+    config,
+    match.id,
     protocolPrior
       ? "reopening as a terminal — same conversation…"
       : "resuming — a fresh workspace restores the saved session state…",
     protocolPrior
-      ? api<SessionDto>(config, "POST", `/sessions/${match.id}/handoff`, { to: "pty" })
-      : api<SessionDto>(config, "POST", `/sessions/${match.id}/resume`, { harness: withHarness }),
+      ? request<SessionDto>(config, "POST", `/sessions/${match.id}/handoff`, { to: "pty" })
+      : request<SessionDto>(config, "POST", `/sessions/${match.id}/resume`, {
+          harness: withHarness,
+        }),
   );
   say(`${green("✓ recording")} · same worktree, conversation restored${detachHint()}`);
   say("");
@@ -3515,17 +3735,19 @@ const resumeCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
  * --harness narrows the choice.
  */
 const resumeForRejoin = async (config: CliConfig, sessionId: string, label: string) => {
-  try {
-    await withSpinner(
-      label,
-      request<SessionDto>(config, "POST", `/sessions/${sessionId}/resume`, { harness: null }),
-    );
-    return true;
-  } catch (error) {
+  const outcome = await followStarting(
+    config,
+    sessionId,
+    label,
+    request<SessionDto>(config, "POST", `/sessions/${sessionId}/resume`, { harness: null }),
+  );
+  if (outcome.kind === "refused") {
+    // Refused because it is live already (another terminal resumed it): attach to that.
     const refreshed = await api<SessionDetailLiteDto>(config, "GET", `/sessions/${sessionId}`);
     if (agentIsLive(refreshed.session, refreshed.currentAgent)) return false;
-    return fail(error instanceof Error ? error.message : String(error));
   }
+  startedOrExit(config, sessionId, outcome);
+  return true;
 };
 
 const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
@@ -3578,11 +3800,13 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
     // A protocol agent (a phone pickup) has no PTY to attach. Hand the session
     // off to a terminal: the TUI resumes the same provider conversation, with
     // the phone-authored turns in its scrollback.
-    await withSpinner(
+    await startAndFollow(
+      config,
+      session.id,
       alreadyLive
         ? "taking over from the protocol session — same conversation…"
         : "reopening as a terminal — same conversation…",
-      api<SessionDto>(config, "POST", `/sessions/${session.id}/handoff`, { to: "pty" }),
+      request<SessionDto>(config, "POST", `/sessions/${session.id}/handoff`, { to: "pty" }),
     );
     restored = true;
   } else if (!alreadyLive) {

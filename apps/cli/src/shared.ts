@@ -243,6 +243,23 @@ export const sessionDisplayName = (session: {
   return session.label ?? `session ${session.id.slice(0, 8)}`;
 };
 
+/**
+ * Every way an attach can come back, told apart because the caller's answer
+ * differs: `ended` is the server's end frame (the session settled); `dropped`
+ * is a close without one (network, server restart — the session may still
+ * run); `interrupted` is this CLI being told to die (SIGHUP/SIGINT/SIGTERM),
+ * or Ctrl+C before the terminal connected (Ctrl+] then is `detached`);
+ * `unavailable` is a terminal the server refused to open; `no-answer` is a
+ * server that did not open it in time.
+ */
+export type AttachOutcome =
+  | "detached"
+  | "ended"
+  | "dropped"
+  | "interrupted"
+  | "unavailable"
+  | "no-answer";
+
 export const LIVE_STATUSES: ReadonlySet<string> = new Set([
   "starting",
   "running",
