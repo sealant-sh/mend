@@ -1,7 +1,12 @@
 import { type CaptureScopeRef, CaptureStoreRepo, type SealedCompletion } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
-import { BlobStore, keysOfSections, storedCaptureProblem } from "@mend/store";
-import { Effect, Layer } from "effect";
+import {
+  BlobStore,
+  CaptureCheckUnfinishedError,
+  keysOfSections,
+  storedCaptureProblem,
+} from "@mend/store";
+import { Duration, Effect, Layer, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
 import { makeSingleFlight } from "./single-flight.ts";
@@ -88,6 +93,25 @@ const epochsWords = (seal: SealedCompletion, scopes: ReadonlyArray<CaptureScopeR
   return words.length === 1 ? `epoch ${words[0]}` : `epochs ${words.join(", ")}`;
 };
 
+/**
+ * One seal verification at a time in this process (alpha, Mend 0.34.2): a seal's checks
+ * (`capture-channel.ts`, `sealJobFor`) and a seal's read-back (`sealStandingOf`) each read,
+ * decompress and hash a whole capture on the thread that serves every request. Two at once only
+ * share that thread's time, and both finish later; one waiting here is still `withheld`
+ * (`verifying`) to the executor that asks, exactly as a slow one is, and runs once the permit is
+ * free.
+ */
+export const sealVerifications: Semaphore.Semaphore = Semaphore.makeUnsafe(1);
+
+/**
+ * How long one seal verification may hold `sealVerifications`. The store client sets no request
+ * timeout, so one read that never answers would otherwise keep every other seal in this process
+ * waiting. Past it the verification concludes nothing (`unavailable`, or `withheld` for a
+ * read-back) and is asked again; a 1.57 GB capture reads in a few minutes.
+ */
+export const SEAL_VERIFICATION_LIMIT = Duration.minutes(30);
+export const SEAL_VERIFICATION_LIMIT_WORDS = "30 minutes";
+
 /** Seal read-backs in flight (`sealStandingOf`), by store, seal and the authority it waited out. */
 const readBacks = makeSingleFlight<SealStanding, never>();
 
@@ -160,6 +184,17 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
   const readBack = Effect.gen(function* () {
     const problem = yield* storedCaptureProblem(row.manifestKey).pipe(
       Effect.provideService(BlobStore, blobs),
+      Effect.timeoutOrElse({
+        duration: SEAL_VERIFICATION_LIMIT,
+        orElse: () =>
+          Effect.fail(
+            new CaptureCheckUnfinishedError({
+              key: row.manifestKey,
+              reason: `the read-back did not finish within ${SEAL_VERIFICATION_LIMIT_WORDS}`,
+            }),
+          ),
+      }),
+      sealVerifications.withPermit,
       Effect.result,
     );
     if (problem._tag === "Failure") {

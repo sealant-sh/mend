@@ -56,7 +56,12 @@ import { Cause, Deferred, Duration, Effect, Exit, Layer, Option, Result, Schema 
 import * as Context from "effect/Context";
 
 import { CaptureRemotes, type PlanRemote } from "./capture-remotes.ts";
-import { sealStandingOf } from "./capture-seals.ts";
+import {
+  SEAL_VERIFICATION_LIMIT,
+  SEAL_VERIFICATION_LIMIT_WORDS,
+  sealStandingOf,
+  sealVerifications,
+} from "./capture-seals.ts";
 import { CaptureSources, type PlanSource } from "./capture-sources.ts";
 import { CaptureGitVerifier, type GitVerification } from "./capture-verify.ts";
 import { makeSingleFlight } from "./single-flight.ts";
@@ -1203,8 +1208,22 @@ export const CaptureChannelLive: Layer.Layer<
           if (sealJobs.size <= SEAL_VERDICTS_KEPT) break;
           sealJobs.delete(oldest);
         }
+        // One seal verification at a time in this process (`sealVerifications`): a job waiting
+        // for the permit is `verifying` to every ask, as a running one is. One that holds it past
+        // `SEAL_VERIFICATION_LIMIT` concludes nothing and is dropped, asked again later.
         yield* Effect.forkDetach(
           checks.pipe(
+            Effect.timeoutOrElse({
+              duration: SEAL_VERIFICATION_LIMIT,
+              orElse: () =>
+                Effect.succeed<SealVerdict>({
+                  problems: [],
+                  unavailable: [
+                    `the seal checks did not finish within ${SEAL_VERIFICATION_LIMIT_WORDS}`,
+                  ],
+                }),
+            }),
+            sealVerifications.withPermit,
             Effect.onExit((exit) =>
               Effect.gen(function* () {
                 const verdict: SealVerdict = Exit.isSuccess(exit)
@@ -1849,7 +1868,9 @@ export const CaptureChannelLive: Layer.Layer<
         const storedLegacy = new Set<string>();
         const verifyStored = (key: string) =>
           Effect.gen(function* () {
-            const problem = yield* storedObjectProblem(key).pipe(
+            // A key this process already read whole and found what its name says, while that
+            // proof stands (`proofStands`), is not read again.
+            const problem = yield* storedObjectProblem(key, { reuseProofs: true }).pipe(
               Effect.provideService(BlobStore, blobs),
               Effect.catchTag("BlobNotFoundError", () => Effect.succeed(null)),
               Effect.catch(storeError("reading an object already stored", key)),

@@ -1331,3 +1331,48 @@ Mend-side details the decision record left open, decided in this ADR:
       outcome is gone. `.mend/skills-kept` grows by one directory for each skill a library replaces
       or drops. Nothing prunes it, because pruning would delete what Mend cannot prove is its own.
       The skills guide says to clear it by hand.
+
+47. (2026-09-30) A seal's verification shares the Mend host's thread (alpha, Mend 0.34.2).
+    - **What happened.** A session with a 1.57 GB capture (a pnpm `node_modules`, ~21,000 dir
+      objects) was stopped. Its final FINAL registered with `final_seal`, `capture.register`
+      answered `seal: withheld (verifying)` past its budget, and the seal's checks went on in the
+      API process. It sat at 100% CPU for over ten minutes, and login, `/projects`, attach and Slack
+      each took 6–10 minutes. The cost was not the payload read. Every member a link names
+      (`crossLinksProblem`, `linkTopologyProblem`, `inodeMetadataProblem`,
+      `restoreNamespaceProblem`) is looked up from its class root, and each lookup decompressed,
+      hashed and decoded every dir object on its path again. A `.pnpm` of a thousand entries was
+      decoded once per member. All of that ran in Effect batches of 2,048 operations that gave the
+      event loop no turn between them, and whole packs were hashed in one call. A synthetic tree of
+      5,000 packages (5,000 cross-class links, one 64 MiB pack) took 55.5 s. HTTP requests to the
+      same process waited up to 277 ms each, and the event loop was held up to 166 ms at a time.
+    - **Each dir object is decoded once per reader.** A format-2 reader keeps what it decoded, by
+      digest, up to 2,000,000 entries. The bytes are the dir packs it already holds, verified
+      against the digest on first read. The same checks take 0.73 s.
+    - **Verification yields the thread.** `cooperate` yields to the event loop (`Effect.yieldNow`,
+      the scheduler's `setImmediate`) once a stretch of work has held the thread for 8 ms. A stretch
+      ends when the thread is given up (a `setImmediate` marks it), so work that ends sooner is
+      scheduled exactly as before. Every chunk decompressed (`readChunk`), every dir read, every dir
+      walked by `verifySectionRestorable`, every pack index merged and every 4 MiB of a whole-object
+      hash (`digestSliced`) calls it. Over the same tree, requests are answered within 27 ms and the
+      event loop is never held more than 25 ms (`capture-verify-shares-thread.test.ts`). The key
+      codec's common case (a UTF-8 name without an escape-range character) no longer encodes
+      character by character; the output is the same.
+    - **One seal verification at a time.** A seal's checks (`sealJobFor`) and a seal's read-back
+      (`sealStandingOf`) take one process-wide permit (`sealVerifications`). A seal waiting for it
+      reads `withheld` (`verifying`) to the executor, as a slow one does. The store client sets no
+      request timeout, so a read that never answers would hold the permit for good. A verification
+      that holds it for 30 minutes (`SEAL_VERIFICATION_LIMIT`) is interrupted and concludes nothing:
+      checks end `unavailable` and are dropped, a read-back ends `withheld` (`verifying`), and the
+      next ask verifies again.
+    - **Proofs a later seal reuses.** A member digest is a proof about the packs its chunks were
+      read from, kept across passes (`memberDigestProofs`) and standing only while `proofStands` for
+      every one of them. A key read whole and found to be what its name says (`contentVerified`)
+      answers `upload.urls`'s check of a stored key while its proof stands. On a bucket that refuses
+      overwrites, a second seal over the same sections read 12 ranged GETs of already-proven packs
+      and now reads none of them. On one that does not, nothing proven before stands while an upload
+      URL could replace the bytes, and every pack is read again. The seal's read-back
+      (`storedCaptureProblem`) still reads every key its capture names, whatever was proven before
+      (decisions 35 and 37). The first seal over a pack still reads, decompresses and hashes all of
+      it, because nothing proves its chunks decode until then. A register takes no payload proof,
+      and the proofs live only in this process, so the first seal after a Mend restart reads its
+      capture again.
