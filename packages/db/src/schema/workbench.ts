@@ -1364,6 +1364,8 @@ export const sessionProcesses = pgTable(
     protocol: text().$type<"tcp" | "udp">().notNull().default("tcp"),
     hostPort: integer(),
     createdAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    /** When the process's record first carried output; null until then (0095). */
+    firstOutputAt: timestamp({ mode: "date", withTimezone: true }),
     exitedAt: timestamp({ mode: "date", withTimezone: true }),
     updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
   },

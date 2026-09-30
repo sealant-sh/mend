@@ -84,6 +84,11 @@ export class SessionProcessesRepo extends Context.Service<
       id: SessionProcessId,
       providerSessionId: string,
     ) => Effect.Effect<void>;
+    /**
+     * Stamp when the process's record first carried output. Only the first stamp takes: true when
+     * this call made it, false when the row already had one or is gone.
+     */
+    readonly markFirstOutput: (id: SessionProcessId, at: Date) => Effect.Effect<boolean>;
     /** Record the bound host port once the listener exists (Services only). */
     readonly setHostPort: (id: SessionProcessId, hostPort: number) => Effect.Effect<void>;
     /** Point a LIVE row at a fresh platform PTY + run (Service restart keeps identity + URL). */
@@ -290,6 +295,22 @@ export const SessionProcessesRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
+    const markFirstOutput = Effect.fn("SessionProcessesRepo.markFirstOutput")(function* (
+      id: SessionProcessId,
+      at: Date,
+    ) {
+      const rows = yield* db
+        .update(sessionProcesses)
+        .set({ firstOutputAt: at, updatedAt: new Date() })
+        .where(and(eq(sessionProcesses.id, id), isNull(sessionProcesses.firstOutputAt)))
+        .returning({ sessionId: sessionProcesses.sessionId })
+        .pipe(Effect.orDie);
+      const first = rows[0];
+      if (first === undefined) return false;
+      yield* notify(first.sessionId);
+      return true;
+    });
+
     const setHostPort = Effect.fn("SessionProcessesRepo.setHostPort")(function* (
       id: SessionProcessId,
       hostPort: number,
@@ -367,6 +388,7 @@ export const SessionProcessesRepoLive: Layer.Layer<
       setStatus,
       setLabel,
       setProviderSessionId,
+      markFirstOutput,
       setHostPort,
       setSealantSessionId,
       markExited,

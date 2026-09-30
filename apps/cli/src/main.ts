@@ -7,6 +7,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import {
+  agentStartingFacts,
+  type AgentStartingProcess,
   claudeGrantFacts,
   narrowCredential,
   repositoryCloneUrlIssue,
@@ -14,6 +16,7 @@ import {
 } from "@mend/domain/workbench";
 
 import { type AgentShareHandle, shareAgent, startAgentShare } from "./agent-share.ts";
+import { type FirstOutputGate, firstOutputGate, startingLabelOf } from "./attach-starting.ts";
 import {
   claudeCli,
   claudeGrantDir,
@@ -227,7 +230,9 @@ interface SessionAnnotationDto {
 /** The slice of /sessions/:id the CLI reads: the row plus the agent process it currently means. */
 interface SessionDetailLiteDto {
   readonly session: SessionDto;
-  readonly currentAgent: AgentProcessLike | null;
+  readonly currentAgent: (AgentProcessLike & AgentStartingProcess) | null;
+  /** Every process the session has held, oldest first; read for the starting line's facts. */
+  readonly processes?: ReadonlyArray<AgentStartingProcess>;
   /** Services that keep the workspace up; absent on older servers. */
   readonly liveServices?: number;
 }
@@ -994,9 +999,13 @@ const attachTty = async (
   };
   const onWinch = () => sendResize();
   let bracketedPaste = false;
+  // Until the agent's first bytes: say it is starting instead of a blank screen (`firstOutputGate`).
+  let starting: FirstOutputGate | null = null;
   const onTtyFrame = (event: MessageEvent) => {
     if (typeof event.data !== "string") {
       const bytes = Buffer.from(event.data);
+      if (bytes.length === 0) return;
+      starting?.pass();
       bracketedPaste = trackBracketedPaste(bytes, bracketedPaste);
       process.stdout.write(bytes);
       return;
@@ -1132,6 +1141,22 @@ const attachTty = async (
     if (connected === "unavailable") return "unavailable";
     if (connected === "aborted") return abortReason ?? "interrupted";
     ws = connected;
+    // The agent's own terminal, interactive, on a terminal that shows it: an agent that has not
+    // drawn yet reads as starting, with the facts from its detail once they answer.
+    if (interactive && processId === undefined && process.stdout.isTTY === true) {
+      const gate = firstOutputGate({
+        label: startingLabelOf(harness),
+        write: (text) => process.stdout.write(text),
+        now: Date.now,
+        cancelHint: detachKeyEnabled ? "Ctrl+] detaches" : "",
+      });
+      starting = gate;
+      void request<SessionDetailLiteDto>(config, "GET", `/sessions/${sessionId}`).then(
+        (detail) =>
+          gate.update(agentStartingFacts(detail.currentAgent, detail.processes, Date.now())),
+        () => undefined,
+      );
+    }
     stopHerdrHint = hintHerdrAttachment(harness);
     const onClose = () => finishAttachment?.();
     if (ws.readyState === WebSocket.CLOSED) finishAttachment?.();
@@ -1147,6 +1172,7 @@ const attachTty = async (
     return detached ? "detached" : interrupted ? "interrupted" : sawEnd ? "ended" : "dropped";
   } finally {
     stopConnecting();
+    starting?.stop();
     for (const signal of signals) process.off(signal, onSignal);
     process.stdin.off("data", onKeys);
     process.stdout.off("resize", onWinch);

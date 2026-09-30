@@ -2683,6 +2683,16 @@ const captureGitFsckRecheckMigration = Effect.gen(function* () {
   yield* sql`UPDATE captures SET git_fsck = 'unverified' WHERE git_fsck = 'failed'`;
 });
 
+/**
+ * When a process's record first carried output (`SessionProcess.firstOutputAt`): an agent that has
+ * drawn nothing yet reads as starting on its machine, not as a blank screen. Rows from before it
+ * was observed stay null.
+ */
+const processFirstOutputMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`ALTER TABLE session_processes ADD COLUMN IF NOT EXISTS first_output_at timestamptz`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2778,4 +2788,5 @@ export const migrations = {
   "0092_capture_seal_scopes": captureSealScopesMigration,
   "0093_capture_overdue": captureOverdueMigration,
   "0094_capture_git_fsck_recheck": captureGitFsckRecheckMigration,
+  "0095_process_first_output": processFirstOutputMigration,
 };

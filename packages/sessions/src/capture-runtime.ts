@@ -15,6 +15,7 @@ import type { WorkspaceCaptureStatus } from "@sealant/sdk";
 import { Config, Duration, Effect, Layer, Option } from "effect";
 import * as Context from "effect/Context";
 
+import { HARNESS_WARMUP_TIMEOUT } from "./agent-start.ts";
 import { CaptureChannel } from "./capture-channel.ts";
 
 /**
@@ -114,6 +115,8 @@ export interface CaptureDrainPolicyShape {
   readonly imageBuildAfter: Duration.Duration;
   /** Between two looks at a create's executor while it gets ready. */
   readonly createPhaseInterval: Duration.Duration;
+  /** How long a launch's harness warm-up may run before it is abandoned (`harnessWarmupArgv`). */
+  readonly harnessWarmupTimeout: Duration.Duration;
 }
 
 export class CaptureDrainPolicy extends Context.Service<
@@ -137,6 +140,7 @@ const DEFAULT_DRAIN_POLICY: CaptureDrainPolicyShape = {
   leaseWaitInterval: Duration.seconds(5),
   imageBuildAfter: Duration.seconds(20),
   createPhaseInterval: Duration.seconds(5),
+  harnessWarmupTimeout: HARNESS_WARMUP_TIMEOUT,
 };
 
 /** The defaults, with nothing read from the environment. */

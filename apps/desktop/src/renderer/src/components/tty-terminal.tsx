@@ -1,3 +1,4 @@
+import { type AgentStartingFacts, agentStartingLine } from "@mend/domain/workbench";
 import { useEffect, useRef, useState } from "react";
 
 import { pasteSessionImage } from "#/lib/api";
@@ -36,6 +37,11 @@ export type WireState = "connecting" | "live" | "reconnecting" | "settled" | "re
 
 const LADDER_MS = [3_000, 4_000, 8_000, 16_000] as const;
 const STABLE_AFTER_MS = 30_000;
+/**
+ * How long an open terminal may show nothing before it says the agent is starting: a replay of an
+ * agent that already drew arrives well inside it, so a reattach never flashes the line.
+ */
+const STARTING_GRACE_MS = 400;
 
 // The terminal motif — dark in both themes (styles.css): the record is the
 // same bytes day or night. Cobalt cursor; ANSI palette is ghostty's default.
@@ -80,6 +86,8 @@ export function TtyTerminal({
   focusRequest = 0,
   probe,
   onState,
+  startingLabel,
+  starting,
 }: {
   readonly target: TtyTarget;
   /**
@@ -98,12 +106,24 @@ export function TtyTerminal({
    */
   readonly probe?: () => Promise<PtyLiveness>;
   readonly onState?: (state: WireState) => void;
+  /**
+   * The agent's own terminal: who the line in the corner says is starting while it has drawn
+   * nothing yet (`agentStartingLine`). On a fresh executor its first screen can take most of a
+   * minute, and a blank terminal reads as broken. Omitted (a shell), nothing is said.
+   */
+  readonly startingLabel?: string;
+  /** When the agent started and on what machine; the line counts from the socket's open without it. */
+  readonly starting?: AgentStartingFacts;
 }) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const surfaceRef = useRef<GhosttyTerminalSurface | null>(null);
   const font = useTerminalFont();
   const [state, setState] = useState<WireState>("connecting");
   const [image, setImage] = useState<ImageState>(null);
+  // While the agent has drawn nothing since the socket opened: since when, and the line's clock.
+  const [waitingSince, setWaitingSince] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
+  const watchesStart = startingLabel !== undefined && from === "0";
   const onStateRef = useRef(onState);
   onStateRef.current = onState;
   const probeRef = useRef(probe);
@@ -137,6 +157,12 @@ export function TtyTerminal({
     let connectedAt: number | null = null;
     let settled = false;
     let disposed = false;
+    let drawn = false;
+    const ticker = watchesStart
+      ? window.setInterval(() => {
+          if (!drawn) setNow(Date.now());
+        }, 500)
+      : null;
     // One attach attempt at a time. Each connect takes the next generation; a ticket mint or a
     // liveness probe that answers after a newer attempt began (a window focus skips the ladder)
     // changes nothing, so two sockets never race for the same PTY.
@@ -205,6 +231,11 @@ export function TtyTerminal({
         connectedAt = Date.now();
         // The server replays from `from` — the screen is replaced, not appended.
         surface.resetAndWrite("");
+        drawn = false;
+        if (watchesStart) {
+          setWaitingSince(Date.now());
+          setNow(Date.now());
+        }
         report("live");
         sendResize(surface.cols, surface.rows);
       });
@@ -226,7 +257,13 @@ export function TtyTerminal({
           }
           return;
         }
-        if (event.data instanceof ArrayBuffer) surface.write(new Uint8Array(event.data));
+        if (!(event.data instanceof ArrayBuffer)) return;
+        const bytes = new Uint8Array(event.data);
+        if (bytes.length > 0 && !drawn) {
+          drawn = true;
+          setWaitingSince(null);
+        }
+        surface.write(bytes);
       });
       socket.addEventListener("close", () => {
         if (disposed || socket !== ws) return;
@@ -329,6 +366,7 @@ export function TtyTerminal({
       disposed = true;
       window.removeEventListener("focus", onFocus);
       if (timer !== null) window.clearTimeout(timer);
+      if (ticker !== null) window.clearInterval(ticker);
       ws?.close();
       surface?.dispose();
       if (surfaceRef.current === surface) surfaceRef.current = null;
@@ -337,11 +375,25 @@ export function TtyTerminal({
       host.replaceChildren();
     };
     // `focus` only matters at mount; re-running for it would reset the screen.
-  }, [target.kind, target.id, sessionId, from]);
+  }, [target.kind, target.id, sessionId, from, watchesStart]);
+
+  const facts: AgentStartingFacts = starting ?? { startedAt: null, freshMachine: false };
+  const startingLine =
+    startingLabel !== undefined &&
+    state === "live" &&
+    waitingSince !== null &&
+    now - waitingSince >= STARTING_GRACE_MS
+      ? agentStartingLine(startingLabel, facts, now - (facts.startedAt ?? waitingSince))
+      : null;
 
   return (
     <div className="relative h-full w-full bg-term">
       <div ref={hostRef} className="tty-host" />
+      {startingLine !== null && (
+        <p className="pointer-events-none absolute right-3 bottom-2 font-mono text-[11.5px] text-term-faint">
+          {startingLine}
+        </p>
+      )}
       {state !== "live" && (
         <p className="pointer-events-none absolute right-3 bottom-2 font-mono text-[11.5px] text-term-faint">
           {state === "connecting" && "connecting…"}

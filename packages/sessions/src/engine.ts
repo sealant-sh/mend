@@ -69,6 +69,8 @@ import type {
 } from "@mend/domain/workbench";
 import {
   agentPushedBranches,
+  agentStartingWords,
+  withoutAgentStarting,
   gitRemoteLocation,
   isSameGitRemote,
   type ProjectLink,
@@ -183,6 +185,7 @@ import {
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
+import { harnessWarmupArgv, isOutputEntry } from "./agent-start.ts";
 import {
   type CapturePlanNotice,
   type CaptureRouteError,
@@ -4996,9 +4999,17 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionRun: SessionRun,
         sdkRun: SdkRun,
       ) {
+        // The first output the record carries is when the agent drew its first screen: its
+        // process row says so and the session line stops saying it is starting. Stamped before
+        // the cursor moves past it, so a restart that resumes after it has nothing to miss.
+        let firstOutputSeen = false;
         yield* sealant.recordStream(sdkRun, { from: sessionRun.lastSeenSequence }).pipe(
           Stream.tap((entry) =>
             Effect.gen(function* () {
+              if (!firstOutputSeen && isOutputEntry(entry)) {
+                firstOutputSeen = true;
+                yield* noteFirstOutput(session.id, sessionRun.sealantRunId, entry.occurredAt);
+              }
               yield* sessionRuns.saveLastSeenSequence(sessionRun.sealantRunId, entry.sequence);
               // Denormalized latest-run progress for existing list/UI contracts only. Supervision
               // never reads this session-level mirror.
@@ -5047,6 +5058,31 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         yield* refreshChangeHead(current).pipe(Effect.ignore);
         yield* sweepWorkspace(session.id);
       });
+
+      /**
+       * The agent process of this run drew its first output at `occurredAt`: stamp its row once,
+       * and take the starting words off the session line (`agentStartingWords`). Best-effort: a
+       * failed write leaves the words for the next start or the process's end to clear.
+       */
+      const noteFirstOutput = (
+        sessionId: SessionId,
+        sealantRunId: SealantRunId,
+        occurredAt: string,
+      ): Effect.Effect<void> =>
+        Effect.gen(function* () {
+          const agentProcess = yield* agentProcessForRun(sessionId, sealantRunId);
+          if (agentProcess === null || agentProcess.firstOutputAt !== null) return;
+          const observed = new Date(occurredAt);
+          const at = Number.isNaN(observed.getTime()) ? new Date() : observed;
+          const stamped = yield* processes.markFirstOutput(agentProcess.id, at);
+          if (stamped) yield* clearAgentStartingWords(sessionId);
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("session engine: first output not recorded").pipe(
+              Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+            ),
+          ),
+        );
 
       /** The agent process whose record is this run, if the launch recorded one. */
       const agentProcessForRun = Effect.fn("SessionEngine.agentProcessForRun")(function* (
@@ -6504,6 +6540,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (current === null || current.exitedAt !== null) return false;
         endingAgentProcesses.add(agentProcess.id);
         const sessionId = agentProcess.sessionId;
+        // An agent that ended before it drew is not starting any more.
+        if (current.firstOutputAt === null) {
+          yield* clearAgentStartingWords(sessionId).pipe(Effect.ignore);
+        }
         // The harness is gone and its executor does not answer: the row says so at once, and a
         // session with nothing else live reads `stopping` while Mend finds out how the executor
         // ended — never `running` for a harness that is not there.
@@ -6963,6 +7003,49 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
 
       /**
+       * Read the harness's files on a fresh executor once, in the background, while the rest of
+       * the launch's setup runs (`harnessWarmupArgv`): its image disk is fetched lazily, and an
+       * agent that reads node and its own files for the first time takes most of a minute to draw
+       * (alpha 2026-09-30, fda7180d). Forked and bounded (`harnessWarmupTimeout`): it never
+       * holds the launch up, and nothing it answers, or fails to, changes the launch. It writes
+       * nothing that is the user's: it runs from `/` with a throwaway HOME.
+       *
+       * Runs only once the executor may admit writers (`prepareExecutor`): an exec on an
+       * unclaimed capture-mode standby clears sealantd's unclaimed marker (e2e9 F-B), so a
+       * standby is warmed at its claim, never before.
+       */
+      const forkHarnessWarmup = (
+        sessionId: SessionId,
+        workspace: Workspace,
+        harness: string,
+      ): Effect.Effect<void> => {
+        const argv = harnessWarmupArgv(harness);
+        if (argv === null) return Effect.void;
+        return Effect.gen(function* () {
+          const started = Date.now();
+          const result = yield* sealant
+            .exec(workspace, argv)
+            .pipe(Effect.timeout(drainPolicy.harnessWarmupTimeout));
+          yield* Effect.logInfo("session engine: harness warm-up · read · observed").pipe(
+            Effect.annotateLogs({
+              sessionId,
+              harness,
+              exitCode: result.exitCode,
+              elapsedMs: Date.now() - started,
+            }),
+          );
+        }).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logInfo("session engine: harness warm-up · not finished").pipe(
+              Effect.annotateLogs({ sessionId, harness, cause: Cause.pretty(cause) }),
+            ),
+          ),
+          Effect.forkIn(scope),
+          Effect.asVoid,
+        );
+      };
+
+      /**
        * What runs in an executor before anything else, once it may admit writers: the custom
        * image's setup commands (a failing one fails the launch), then the `mend` helper and git's
        * ssh transport shim. A cold launch runs it right after the create; a capture-mode standby
@@ -6989,8 +7072,16 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         readonly restoredFrom: number | null;
         readonly onFailure: (message: string) => Effect.Effect<void>;
         readonly abandon?: (workspace: Workspace, message: string) => Effect.Effect<void>;
+        /**
+         * The harness this executor is about to start: its files are read once in the background
+         * while the setup runs (`forkHarnessWarmup`). Absent for a standby, which serves any.
+         */
+        readonly warmHarness?: string;
       }) {
         const { sessionId, workspace, workspaceImage } = input;
+        if (input.warmHarness !== undefined) {
+          yield* forkHarnessWarmup(sessionId, workspace, input.warmHarness);
+        }
         let setupSkippedFrom: number | null = null;
         if (
           workspaceImage.mode === "custom" &&
@@ -7093,6 +7184,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
          * runs at claim instead, after the replan).
          */
         readonly deferPreparation?: boolean;
+        /** The harness the launch starts: warmed while the setup runs (`forkHarnessWarmup`). */
+        readonly warmHarness?: string;
         /**
          * The saved capture this executor lays the worktree down from (`restoredCaptureOf`), read
          * before the create; null or absent when it is laid down fresh.
@@ -7503,6 +7596,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                 restoredFrom: input.restoredFrom ?? null,
                 onFailure: input.onFailure,
                 ...(input.abandon === undefined ? {} : { abandon: input.abandon }),
+                ...(input.warmHarness === undefined ? {} : { warmHarness: input.warmHarness }),
               });
         return {
           workspace,
@@ -8549,6 +8643,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             abandon: abandonExecutor,
             launchId: key,
             watchCreate: watchLaunchPhase(sessionId),
+            warmHarness: session.harness,
             ...(capture === null
               ? {}
               : {
@@ -8684,6 +8779,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
                   .settle(sessionId, "failed", `launch failed: ${message}`)
                   .pipe(Effect.ignore),
               abandon: abandonExecutor,
+              warmHarness: session.harness,
             });
           }
         }
@@ -9074,6 +9170,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         if (dependencyInstallSkipped !== null) {
           yield* noteLaunchWords(sessionId, dependencyInstallSkipped);
         }
+        // Until its record carries output, the agent reads as starting on its new machine, not
+        // as a blank screen; supervision takes the words off at its first output
+        // (`noteFirstOutput`). A protocol agent draws nothing until asked: it never says so.
+        const startingWords =
+          protocolStart === null && !interactiveShell
+            ? agentStartingWords(session.harness, true)
+            : null;
+        if (startingWords !== null) yield* noteLaunchWords(sessionId, startingWords);
         yield* forkSupervision(sessionId, sealantRunId);
 
         // The agent process ends on its own; the fold over every process decides the session.
@@ -9376,8 +9480,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         sessionId: SessionId,
       ) {
         const reopened = yield* sessions.byId(sessionId);
-        // What the launch said while it was under way (`sayLaunchPhase`) ends with it.
-        const priorSummary = withoutLaunchPhase(reopened.summary);
+        // What the launch said while it was under way (`sayLaunchPhase`) ends with it, and so do
+        // the starting words of an agent that ended before it drew (`agentStartingWords`).
+        const priorSummary = withoutLaunchPhase(withoutAgentStarting(reopened.summary));
         if (
           priorSummary !== null &&
           STALE_ON_START_PREFIXES.some((prefix) => priorSummary.startsWith(prefix))
@@ -9386,6 +9491,15 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         } else if (priorSummary !== reopened.summary) {
           yield* sessions.setSummary(sessionId, priorSummary);
         }
+      });
+
+      /** The agent drew, or ended: the session line stops saying it is starting. */
+      const clearAgentStartingWords = Effect.fn("SessionEngine.clearAgentStartingWords")(function* (
+        sessionId: SessionId,
+      ) {
+        const current = yield* sessions.byId(sessionId);
+        const next = withoutAgentStarting(current.summary);
+        if (next !== current.summary) yield* sessions.setSummary(sessionId, next);
       });
 
       /**
@@ -9621,6 +9735,12 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           // The retained executor answered and started this process: what an earlier look at it
           // concluded (`executor not answering · …`) no longer holds (review 2026-09-28 (12) #5).
           yield* clearStaleStartSummary(sessionId);
+          // As at a cold launch, on the machine that is already up (`agentStartingWords`).
+          const startingWords =
+            protocolStart === null && !interactiveShell
+              ? agentStartingWords(session.harness, false)
+              : null;
+          if (startingWords !== null) yield* noteLaunchWords(sessionId, startingWords);
           yield* forkSupervision(sessionId, sealantRunId);
           yield* Effect.forkIn(watchProcess(agentProcess), scope);
           yield* renewWorkspaceLease(sessionId, agentProcess.sealantWorkspaceId);

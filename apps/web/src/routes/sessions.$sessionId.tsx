@@ -1,3 +1,4 @@
+import { agentStartingFacts } from "@mend/domain/workbench";
 import { useQuery, useQueryClient, useSuspenseQuery } from "@tanstack/react-query";
 import { createFileRoute, Link, useNavigate } from "@tanstack/react-router";
 import { useState } from "react";
@@ -106,9 +107,8 @@ function SessionPage() {
   const { sessionId } = Route.useParams();
   const trpc = useTRPC();
   const queryClient = useQueryClient();
-  const { session, checkpoints, change, currentAgent, control, liveServices } = useSuspenseQuery(
-    trpc.sessions.detail.queryOptions({ id: sessionId }),
-  ).data;
+  const { session, checkpoints, change, currentAgent, processes, control, liveServices } =
+    useSuspenseQuery(trpc.sessions.detail.queryOptions({ id: sessionId })).data;
   // Steering is the owner's unless they share control (docs/adr/0003); the API says what this
   // viewer may do, and the roster names whose credentials the session runs on.
   const viewer = useViewer();
@@ -432,6 +432,8 @@ function SessionPage() {
                   <SessionTerminal
                     key={`${agentPty}:${dark ? "dark" : "light"}`}
                     sessionId={session.id}
+                    startingLabel={session.harness}
+                    starting={agentStartingFacts(currentAgent, processes, Date.now())}
                   />
                 </div>
               </>

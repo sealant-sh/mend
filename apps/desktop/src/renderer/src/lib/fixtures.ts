@@ -131,6 +131,7 @@ export const processFixture = (patch: Partial<SessionProcessDto> = {}): SessionP
   protocol: "tcp",
   hostPort: null,
   createdAt: AT,
+  firstOutputAt: null,
   exitedAt: null,
   updatedAt: AT,
   ...patch,

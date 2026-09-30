@@ -1,4 +1,4 @@
-import { Schema } from "effect";
+import { Effect, Schema } from "effect";
 
 import {
   SealantRunId,
@@ -128,6 +128,15 @@ export class SessionProcess extends Schema.Class<SessionProcess>("SessionProcess
   /** Services: the host port Mend binds on its private interfaces. */
   hostPort: Schema.NullOr(Schema.Int),
   createdAt: Timestamp,
+  /**
+   * When the process's record first carried output: the first screen an agent drew. Null while
+   * it has drawn nothing, for a process with no run of ours, and on rows from before it was
+   * observed. Older servers omit it.
+   */
+  firstOutputAt: Schema.NullOr(Timestamp).pipe(
+    Schema.withDecodingDefaultKey(Effect.succeed(null)),
+    Schema.withConstructorDefault(Effect.succeed(null)),
+  ),
   exitedAt: Schema.NullOr(Timestamp),
   updatedAt: Timestamp,
 }) {}

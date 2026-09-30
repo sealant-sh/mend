@@ -21,6 +21,7 @@
  * barrel when `issue.ts` and friends go (docs/archive/M0-INVENTORY.md).
  */
 export * from "./audit.ts";
+export * from "./agent-start.ts";
 export * from "./agent-protocol.ts";
 export * from "./capture-drain.ts";
 export * from "./change.ts";

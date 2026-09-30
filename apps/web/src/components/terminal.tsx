@@ -1,3 +1,4 @@
+import { type AgentStartingFacts, agentStartingLine } from "@mend/domain/workbench";
 import { FitAddon, init as initGhostty, Terminal } from "ghostty-web";
 import { useEffect, useRef, useState } from "react";
 
@@ -126,6 +127,12 @@ export const makeEmbedExchange = (
   };
 };
 
+/**
+ * How long an open terminal may show nothing before it says the agent is starting: a replay of an
+ * agent that already drew arrives well inside it, so a reattach never flashes the line.
+ */
+const STARTING_GRACE_MS = 400;
+
 /** Resolve a CSS custom property so xterm's JS theme follows the app theme. */
 const cssVar = (name: string, fallback: string): string => {
   const value = getComputedStyle(document.documentElement).getPropertyValue(name).trim();
@@ -137,6 +144,8 @@ export function SessionTerminal({
   processId,
   embedTicket,
   token,
+  startingLabel = "the agent",
+  starting,
 }: {
   readonly sessionId: string;
   /** A supporting shell process. Omitted for the session's agent PTY. */
@@ -149,9 +158,21 @@ export function SessionTerminal({
   readonly embedTicket?: string;
   /** A bearer in the URL, from an app build older than tickets. Read only when there is no ticket. */
   readonly token?: string;
+  /**
+   * Who the line under the terminal says is starting while the agent has drawn nothing yet
+   * (`agentStartingLine`): on a fresh executor its first screen can take most of a minute, and a
+   * blank terminal reads as broken. The replay starts at the first byte, so no bytes is nothing
+   * drawn.
+   */
+  readonly startingLabel?: string;
+  /** When the agent started and on what machine; the line counts from the socket's open without it. */
+  readonly starting?: AgentStartingFacts;
 }) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const [state, setState] = useState<WireState>("connecting");
+  // The agent's terminal while it has drawn nothing: since when, and the clock the line reads.
+  const [waitingSince, setWaitingSince] = useState<number | null>(null);
+  const [now, setNow] = useState(() => Date.now());
   const [image, setImage] = useState<ImageState>(null);
 
   useEffect(() => {
@@ -188,6 +209,14 @@ export function SessionTerminal({
 
       let ws: WebSocket | null = null;
       let timer: number | null = null;
+      let drawn = false;
+      // Only the agent's own terminal says it is starting; a shell draws its prompt at once.
+      const ticker =
+        processId === undefined
+          ? window.setInterval(() => {
+              if (!drawn) setNow(Date.now());
+            }, 500)
+          : null;
       let attempt = 0;
       let connectedAt: number | null = null;
       let settled = false;
@@ -262,6 +291,11 @@ export function SessionTerminal({
           connectedAt = Date.now();
           // The server replays from 0 — the screen is replaced, not appended.
           term.reset();
+          drawn = false;
+          if (processId === undefined) {
+            setWaitingSince(Date.now());
+            setNow(Date.now());
+          }
           setState("live");
           sendResize();
           term.focus();
@@ -280,7 +314,13 @@ export function SessionTerminal({
             }
             return;
           }
-          term.write(new Uint8Array(event.data as ArrayBuffer));
+          if (!(event.data instanceof ArrayBuffer)) return;
+          const bytes = new Uint8Array(event.data);
+          if (bytes.length > 0 && !drawn) {
+            drawn = true;
+            setWaitingSince(null);
+          }
+          term.write(bytes);
         });
         socket.addEventListener("close", () => {
           if (disposed || socket !== ws) return;
@@ -370,6 +410,7 @@ export function SessionTerminal({
         element.removeEventListener("drop", onDrop);
         window.removeEventListener("focus", onFocus);
         if (timer !== null) window.clearTimeout(timer);
+        if (ticker !== null) window.clearInterval(ticker);
         observer.disconnect();
         onData.dispose();
         onResize.dispose();
@@ -384,9 +425,20 @@ export function SessionTerminal({
     };
   }, [sessionId, processId, embedTicket, token]);
 
+  const facts: AgentStartingFacts = starting ?? { startedAt: null, freshMachine: false };
+  const startingLine =
+    state === "live" && waitingSince !== null && now - waitingSince >= STARTING_GRACE_MS
+      ? agentStartingLine(startingLabel, facts, now - (facts.startedAt ?? waitingSince))
+      : null;
+
   return (
     <div>
       <div ref={containerRef} className="h-[480px] w-full px-3 py-2" />
+      {startingLine !== null && (
+        <p className="border-t border-rule-faint px-4 py-2 font-mono text-[11.5px] text-faint">
+          {startingLine}
+        </p>
+      )}
       {state !== "live" && (
         <p className="border-t border-rule-faint px-4 py-2 font-mono text-[11.5px] text-faint">
           {state === "connecting" && "connecting…"}
