@@ -1,5 +1,45 @@
 # @sealant/mend
 
+## 0.34.4
+
+### Patch Changes
+
+- c38952f: `mend attach`, the dashboard's `a`, and every command that attaches put the terminal in
+  raw mode before they wait on the server. A slow server no longer leaves the terminal cooked,
+  echoing every key locally under `attached · …`: the attach says `connecting to <id> · 12s`, Ctrl+]
+  or Ctrl+C gives the terminal back, and after 30 seconds without an open terminal it says so and
+  that the session keeps running. On connect the size goes up twice, one row short and then the real
+  one, so Claude and other full-screen agents repaint at once instead of on the first key. When raw
+  mode cannot be set, the attach says why.
+
+  A long launch (a first launch building a workspace image for minutes) no longer ends in
+  `cannot reach the Mend server`. `mend claude`, `mend codex`, `mend run`, `mend resume` and
+  `mend rejoin` follow the session until its agent runs, showing the server's own words for what it
+  is doing (`starting · building the workspace image`), whether the server answers the launch early
+  or holds it, and whether that request times out or an edge cuts it. `cannot reach` is said only
+  when no connection opened. `mend attach` on a session still starting follows it, then attaches.
+  The dashboard keeps a launch whose request got no answer as a starting row.
+
+- 448e0d3: `POST /sessions/:id/launch` answers within 30 seconds. A launch that takes longer keeps
+  going in the background: the session reads `starting` and its line says where it is
+  (`waiting · the previous session in this worktree is saving`,
+  `building the workspace image (first launch after an update, ~8 min)`, `booting`). It then moves
+  to `running` or settles `failed` with the reason. The VS Code extension follows the session line
+  until the agent runs.
+- 448e0d3: A session whose agent is running reads `running`, with its start time stamped. A client
+  that gave up on a launch request (or a phone app sent to the background) no longer cuts the launch
+  between the agent's start and its process row, and a session's `started_at` is no longer left
+  empty.
+- 448e0d3: A session started in a worktree whose previous session is still saving now waits for that
+  save instead of failing with `worktree leased · … saving before it ends`. It reads
+  `starting · waiting · the previous session in this worktree is saving`, then starts once the
+  previous executor's end is confirmed. It is refused only after 30 minutes
+  (`MEND_LAUNCH_LEASE_WAIT_SECONDS`), and a stop while it waits launches nothing.
+- 448e0d3: Opening a session's terminal now gets an answer within 20 seconds. If the platform is
+  slow to hand over the terminal, the attach is refused with
+  `the platform did not attach the terminal within 20 s · the session keeps running · attach again`,
+  before the CLI gives up on the connection.
+
 ## 0.34.3
 
 ### Patch Changes
