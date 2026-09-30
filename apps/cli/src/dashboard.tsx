@@ -71,6 +71,7 @@ import {
 } from "./dashboard-preview.ts";
 import { reviewTargetForSession } from "./review-workflow.ts";
 import { ReviewScreen } from "./review.tsx";
+import { mayStillBeWorking } from "./server-request.ts";
 import type { OpenTunnel, ServiceTunnels } from "./service-tunnels.ts";
 import {
   captureLineOf,
@@ -82,6 +83,7 @@ import {
   normalizeProjectName,
   pendingId,
 } from "./shared.ts";
+import type { AttachOutcome } from "./shared.ts";
 import { SnakeBoard, SnakeHeading, SnakeRows, useSnake } from "./snake.tsx";
 import { openUrl } from "./terminal.ts";
 import {
@@ -176,7 +178,7 @@ export interface DashboardContext {
     sessionId: string,
     harness: string,
     processId?: string,
-  ) => Promise<"detached" | "ended" | "dropped" | "interrupted" | "unavailable">;
+  ) => Promise<AttachOutcome>;
   /** The ssh-agent share running alongside; null when off or no agent. */
   readonly agentShare: AgentShareHandle | null;
   /**
@@ -604,6 +606,29 @@ const errorText = (error: unknown): string =>
   error instanceof Error ? error.message : String(error);
 
 /**
+ * A start call (launch, resume) that got no answer has not failed: a first launch builds a
+ * workspace image for minutes, and a timeout or an edge cutting the request says nothing about
+ * the session. It answers as the session still starting; the event stream moves the row on.
+ */
+const startedOrStarting = async (
+  start: Promise<SessionDto>,
+  starting: SessionDto,
+): Promise<SessionDto> => {
+  try {
+    return await start;
+  } catch (error) {
+    if (mayStillBeWorking(error)) return { ...starting, status: "starting" };
+    throw error;
+  }
+};
+
+/** What the status line says once a start call returned: started, or still starting. */
+const startedLine = (session: SessionDto): string =>
+  session.status === "starting"
+    ? `still starting · ${sessionDisplayName(session)} — a attaches once the row reads running`
+    : `started · ${sessionDisplayName(session)} — a attaches`;
+
+/**
  * Keep a selection inside its scrollbox. The viewport is passed in rather than
  * read off the renderable: a section that just opened or resized has not laid
  * itself out yet, and the layout already knows exactly how many rows it gave.
@@ -892,10 +917,12 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       .filter((tunnel) => tunnel.service.sessionId === session.id)
       .map((tunnel) => `● ${tunnel.line} · tunnel\n`)
       .join("");
+    // "attaching", not "attached": the terminal is not ours until the server opens it, and the
+    // attach itself says `connecting · 12s` while it waits.
     process.stdout.write(
-      `\nattached · ${session.harness} · ${short} · detach: Ctrl+]\n${tunneled}\n`,
+      `\nattaching · ${session.harness} · ${short} · detach: Ctrl+]\n${tunneled}\n`,
     );
-    let outcome: "detached" | "ended" | "dropped" | "interrupted" | "unavailable";
+    let outcome: AttachOutcome;
     try {
       outcome = await ctx.attachTty(session.id, session.harness);
       if (outcome === "unavailable") {
@@ -939,11 +966,13 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     say(
       outcome === "unavailable"
         ? "attach unavailable — could not connect"
-        : outcome === "detached" || outcome === "interrupted"
-          ? `detached — ${short} keeps running`
-          : outcome === "dropped"
-            ? `disconnected · ${short} — refreshing session status`
-            : `terminal ended · ${short} — refreshing session status`,
+        : outcome === "no-answer"
+          ? `no answer — the server did not open ${short}'s terminal; it keeps running · a tries again`
+          : outcome === "detached" || outcome === "interrupted"
+            ? `detached — ${short} keeps running`
+            : outcome === "dropped"
+              ? `disconnected · ${short} — refreshing session status`
+              : `terminal ended · ${short} — refreshing session status`,
     );
     refetch();
   };
@@ -979,8 +1008,10 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         name: vars.name,
         base: vars.base,
       });
-      await ctx.api<SessionDto>("POST", `/sessions/${session.id}/launch`, { argv });
-      return session;
+      return startedOrStarting(
+        ctx.api<SessionDto>("POST", `/sessions/${session.id}/launch`, { argv }),
+        session,
+      );
     },
     onMutate: async (vars) => {
       await queryClient.cancelQueries({ queryKey: WORKBENCH_KEY });
@@ -1016,7 +1047,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       );
       setSessionKey((current) => (current === vars.pendingKey ? session.id : current));
       setBusy(null);
-      say(`started · ${sessionDisplayName(session)} — a attaches`);
+      say(startedLine(session));
     },
     onSettled: (_data, _error, vars) => {
       gate.release(vars.gateKey);
@@ -1031,9 +1062,12 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       readonly harness: string | null;
       readonly gateKey: string;
     }) =>
-      ctx.api<SessionDto>("POST", `/sessions/${vars.session.id}/resume`, {
-        harness: vars.harness,
-      }),
+      startedOrStarting(
+        ctx.api<SessionDto>("POST", `/sessions/${vars.session.id}/resume`, {
+          harness: vars.harness,
+        }),
+        vars.session,
+      ),
     onMutate: async (vars) => {
       await queryClient.cancelQueries({ queryKey: WORKBENCH_KEY });
       patchWorkbench((current) =>
@@ -1057,7 +1091,11 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         replaceSession(current, vars.projectId, vars.session.id, resumed),
       );
       setBusy(null);
-      say(`resumed · ${sessionDisplayName(resumed)} — a attaches`);
+      say(
+        resumed.status === "starting"
+          ? `still resuming · ${sessionDisplayName(resumed)} — a attaches once the row reads running`
+          : `resumed · ${sessionDisplayName(resumed)} — a attaches`,
+      );
     },
     onSettled: (_data, _error, vars) => {
       gate.release(vars.gateKey);
@@ -1192,8 +1230,10 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         harness: vars.harness,
         label: null,
       });
-      await ctx.api<SessionDto>("POST", `/sessions/${session.id}/launch`, { argv });
-      return session;
+      return startedOrStarting(
+        ctx.api<SessionDto>("POST", `/sessions/${session.id}/launch`, { argv }),
+        session,
+      );
     },
     onMutate: async (vars) => {
       await queryClient.cancelQueries({ queryKey: WORKBENCH_KEY });
@@ -1226,7 +1266,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       );
       setSessionKey((current) => (current === vars.pendingKey ? session.id : current));
       setBusy(null);
-      say(`started · ${sessionDisplayName(session)} — a attaches`);
+      say(startedLine(session));
     },
     onSettled: (_data, _error, vars) => {
       gate.release(vars.gateKey);

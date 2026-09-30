@@ -384,6 +384,57 @@ describe("Mend CLI session lifecycle", () => {
   });
 });
 
+describe("a long launch", () => {
+  it("follows the session when the launch request is cut, and never says the server cannot be reached", async () => {
+    let reads = 0;
+    const agent = {
+      status: "running",
+      exitCode: null,
+      exitedAt: null,
+      harness: "codex",
+      sealantSessionId: "pty-1",
+      kind: "agent-pty",
+    };
+    const fake = await startFakeMend((request, response) => {
+      const route = `${request.method ?? "GET"} ${request.url ?? ""}`;
+      if (route === "GET /api/projects") json(response, [project]);
+      else if (route === `POST /api/projects/${project.id}/sessions`) {
+        json(response, { ...session, status: "starting" });
+      } else if (route === `POST /api/sessions/${session.id}/launch`) {
+        // An edge (or fetch's own five-minute limit) gives up on the long request while Mend
+        // keeps building the workspace image.
+        setTimeout(() => request.socket.destroy(), 100);
+      } else if (route === `GET /api/sessions/${session.id}`) {
+        reads += 1;
+        json(
+          response,
+          reads < 3
+            ? {
+                session: {
+                  ...session,
+                  status: "starting",
+                  summary: "building the workspace image",
+                },
+                currentAgent: null,
+              }
+            : { session, currentAgent: agent },
+        );
+      } else response.writeHead(404).end();
+    }, "end");
+    const cli = startCli(fake.url, ["codex", "--project", project.name]);
+
+    try {
+      await Promise.race([fake.endFrameSent, cli.exited]);
+      await expectFastExit(cli.exited, () => cli.stdout() + cli.stderr());
+      expect(cli.stderr()).not.toContain("cannot reach");
+      expect(cli.stdout()).toContain("starting · building the workspace image");
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  }, 30_000);
+});
+
 /** A request's JSON body, for a fake route that asserts what the CLI sent. */
 const bodyOf = async (request: IncomingMessage): Promise<unknown> => {
   const chunks: Array<Buffer> = [];
