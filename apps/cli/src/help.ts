@@ -96,19 +96,20 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     summary: "send this machine's provider credential to the platform",
     synopsis: ["<claude|codex|github> [--use-my-login] [--from-stdin] [--remove]"],
     description: [
-      "Sessions run on the platform, so the platform needs your provider login. This reads the file the provider's own CLI wrote when you logged in (codex) or asks gh for its token (github) and stores it under your own user. Nothing is shared with other users.",
-      "Claude is different: Mend gets a login of its own. Claude rotates its refresh token, so two copies of one login fight and the one that refreshes second is signed out, and Mend refreshes on a schedule. So this logs in once against a directory Mend keeps, and your own Claude login stays as it is. Run it again whenever Mend says the grant expired.",
+      "Sessions run on the platform, so the platform needs your provider login. It is stored under your own user and used only for your work. Nothing is shared with other users.",
+      "Claude and Codex get a login of Mend's own. Both rotate their refresh token, so two copies of one login fight and the one that refreshes second is signed out, and Mend's server refreshes on a schedule. So this logs in through the provider's own flow and your own login stays as it is: Claude against a directory Mend keeps, Codex with a device code, sent and not kept here. Run it again whenever Mend says a login needs reconnecting. GitHub sends gh's token.",
     ],
     options: [
       {
         flag: "--use-my-login",
-        text: "claude: send the login this machine already uses; both sides then share one grant",
+        text: "claude, codex: send the login this machine already uses; both sides then share it",
       },
       { flag: "--from-stdin", text: "paste a credential instead of reading the provider's file" },
       { flag: "--remove", text: "disconnect the provider" },
     ],
     examples: [
       { command: "mend connect claude", text: "a Claude login of Mend's own, through the browser" },
+      { command: "mend connect codex", text: "a Codex login of Mend's own, with a device code" },
       { command: "mend connect github --remove", text: "" },
     ],
     see: ["accounts"],

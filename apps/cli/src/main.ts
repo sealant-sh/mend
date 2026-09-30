@@ -26,6 +26,7 @@ import {
   runClaudeLogin,
 } from "./claude-grant.ts";
 import { readClipboardImage } from "./clipboard.ts";
+import { codexCli, codexGrant, personalCodexHome } from "./codex-grant.ts";
 import { bundleCollectors, pathOf } from "./doctor-bundle-collectors.ts";
 import { doctorBundleCommand } from "./doctor-bundle.ts";
 import { doctorCommand, formatCheck, onPath, runChecks } from "./doctor.ts";
@@ -2375,7 +2376,11 @@ const accountLine = (account: ConnectedAccountDto): string => {
   const identity = pick("login") ?? pick("email") ?? pick("accountEmail") ?? pick("accountId");
   const suffix = pick("tokenSuffix");
   const facts = [
-    account.status === "active" ? "connected" : account.status,
+    account.status === "active"
+      ? "connected"
+      : account.status === "invalid"
+        ? "reconnect needed · the provider refused the login"
+        : account.status,
     identity,
     suffix === null ? null : `…${suffix}`,
     `since ${account.connectedAt.slice(0, 10)}`,
@@ -2596,6 +2601,16 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
   if (flags.includes("--from-stdin")) {
     secret = fs.readFileSync(0, "utf8").trim();
     if (secret === "") return fail("nothing on stdin");
+  } else if (provider === "codex" && !flags.includes("--use-my-login")) {
+    // A login of Mend's own, sent and not kept: the server is its only refresher
+    // (docs/adr/0008-one-refresher-for-provider-logins.md).
+    const grant = codexGrant({
+      cli: codexCli(),
+      personalAuthJson: readIfExists(path.join(personalCodexHome(), "auth.json")),
+      say,
+    });
+    if (grant.kind === "failed") return fail(grant.reason);
+    secret = grant.secret;
   } else if (provider === "claude" && !flags.includes("--use-my-login")) {
     // A grant of Mend's own, so Mend's scheduled refresh never rotates the token this machine's
     // Claude is holding (docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md).
@@ -2612,10 +2627,10 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
             : "`claude auth login` first, or: mend connect claude --from-stdin";
       return fail(`${provider}: no credential on this machine — ${where}`);
     }
-    if (provider === "claude") {
+    if (provider === "claude" || provider === "codex") {
       say(
         dim(
-          "  --use-my-login: Mend and this machine will share one grant, and whichever refreshes second is signed out",
+          "  --use-my-login: Mend and this machine will share one login, and whichever refreshes second is signed out",
         ),
       );
     }

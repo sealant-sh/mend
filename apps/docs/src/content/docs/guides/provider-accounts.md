@@ -9,9 +9,10 @@ Signing in to Mend and connecting a provider are separate steps. `mend login` au
 to your Mend server. `mend connect` attaches Claude, Codex, or GitHub to your own platform identity.
 
 Each Mend user connects their own provider accounts. A session launches with the accounts of the
-user who started it. For Codex and GitHub, the CLI reads the credential on the current machine and
-sends it to the connected-account API without keeping a copy. For Claude, the CLI by default keeps a
-Claude login of Mend's own on this machine and sends that.
+user who started it. For Claude and Codex, the CLI signs the provider in again, as a login of Mend's
+own, so your own Claude Code and Codex logins are never shared with Mend. For GitHub, it sends
+`gh`'s token. [How Mend handles your logins](../../concepts/provider-logins/) explains what is kept,
+who uses it, and how it stays fresh.
 
 ## See what is connected
 
@@ -24,19 +25,28 @@ not credential values.
 
 ## Connect Codex
 
-Sign in with the Codex CLI on the machine where you run `mend`:
+You need the Codex CLI installed on the machine where you run `mend`:
 
 ```sh
-codex login
 mend connect codex
 ```
 
-By default, Mend reads `auth.json` from `$CODEX_HOME` or `~/.codex/auth.json`.
+The CLI runs `codex login --device-auth` in a throwaway directory: open the link it prints, enter
+the code, and approve. That login is sent to your Mend server and deleted here, so the laptop keeps
+no copy of it and your own `~/.codex` login is untouched. Run the command again whenever Mend says
+Codex needs reconnecting.
 
-To provide the file yourself:
+To send the login this machine already uses instead (`$CODEX_HOME` or `~/.codex/auth.json`):
 
 ```sh
-mend connect codex --from-stdin < ~/.codex/auth.json
+mend connect codex --use-my-login
+```
+
+The laptop and Mend then hold one login between them, and whichever refreshes second is signed out.
+To provide a file yourself:
+
+```sh
+mend connect codex --from-stdin < auth.json
 ```
 
 ## Connect Claude
@@ -125,10 +135,12 @@ When you turn on shared control for a session, others who can see the project st
 provider logins and Git access; every act is recorded with who did it. Read
 [Organizations](/organizations/overview/).
 
-The Claude account is also what Mend's own reads of a change run on.
+Mend's own reads of a change (a tour, "Read this change", "Suggest fixes") run on the change owner's
+Claude account, or Codex when there is no Claude account, whoever asks for them.
 
-A live workspace keeps the credentials it started with. Reconnect or remove an account before the
-next workspace launch when you need the change to apply to new work.
+A running workspace gets each refreshed copy of your login as it is made, without a restart. A
+reconnect applies to new sessions at once; a session already running picks the new login up at its
+next scheduled refresh, so restart it if it is failing on the old one.
 
 ## When an account is missing
 

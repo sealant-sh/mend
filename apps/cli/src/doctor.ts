@@ -317,7 +317,11 @@ export const runChecks = async (
         : {
             label: provider,
             state: "todo",
-            detail: account.status,
+            // A refused refresh ends the login (docs/adr/0008): say what happened, not the enum.
+            detail:
+              account.status === "invalid"
+                ? "reconnect needed · the provider refused the login"
+                : account.status,
             fix: `mend connect ${provider}`,
           },
     );
