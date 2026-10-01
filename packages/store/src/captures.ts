@@ -652,6 +652,13 @@ export const digestOfKey = (key: string): string | null => {
   return HEX64.test(last) ? last : null;
 };
 
+/**
+ * The SHA-256 of the bytes a key names, when its name says it: a pack, tree or manifest key ends
+ * in it. A pack index names its pack's digest, not its own: null.
+ */
+export const contentDigestOfKey = (key: string): string | null =>
+  key.endsWith(".idx") ? null : digestOfKey(key);
+
 /** Git pack keys travel as `packs/<sha>` with the index at `packs/<sha>.idx`. */
 export const packIdxKeyOf = (packKey: string): string => `${packKey}.idx`;
 

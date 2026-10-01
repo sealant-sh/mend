@@ -10,16 +10,20 @@ sidebar:
 Each entry says what happens, where, and what Mend does meanwhile. None of them deletes work on its
 own: where Mend cannot confirm a save, it keeps the executor.
 
-## A Stop on Garage waits about 10 minutes for its seal
+## A Stop on Garage can wait for its seal
 
 Applies to buckets that ignore conditional writes (`If-None-Match`). Garage, the bucket
 `mend server setup` installs, is one.
 
-On such a bucket, an upload link Mend handed out can still replace an object until it expires. Mend
-does not accept a final save (its seal) until every upload link of that session's executor has
-expired, plus a 5-minute margin for the bucket's clock. A Stop that uploaded a few megabytes waits
-about 10.5 minutes. A Stop right after a large upload waits up to 20 minutes. In the first 15
-minutes after Mend restarts, every seal waits until those 15 minutes are over.
+On such a bucket an upload link Mend handed out could replace an object until it expires, so Mend
+does not accept a final save (its seal) while one could. An executor whose sealantd binds each
+upload link to the bytes it was minted for has none of those links: Garage refuses any other bytes
+through them, and a Stop seals as soon as its save is verified. The wait remains:
+
+- for an executor whose sealantd predates bound links, until its links expire plus a 5-minute margin
+  for the bucket's clock: about 10.5 minutes after a small Stop, up to 20 after a large one;
+- for a seal that carries what such an executor saved, until that executor's links have expired;
+- for 15 minutes after Mend restarts.
 
 Meanwhile the session stays `stopping` and says `final seal not confirmed`, and the executor keeps
 running. Nothing is lost: the session finishes stopping once the seal stands.

@@ -1410,3 +1410,34 @@ Mend-side details the decision record left open, decided in this ADR:
       it, because nothing proves its chunks decode until then. A register takes no payload proof,
       and the proofs live only in this process, so the first seal after a Mend restart reads its
       capture again.
+48. (2026-10-02) Upload URLs bound to their bytes: a Stop on Garage seals without the wait.
+    - **What waited.** A bucket that ignores `If-None-Match` (Garage) cannot refuse to replace an
+      object, so a seal waited until every upload URL of its epochs had expired, plus the 5-minute
+      clock margin (decisions 26 and 31): about 10.5 minutes after a small Stop, up to 20 after a
+      large one. Garage still ignores `If-None-Match` (v2.4.1; no release adds it).
+    - **What Garage does check.** A PUT whose URL signs `x-amz-checksum-sha256` is refused unless
+      its body hashes to that value (`InvalidDigest`); without the header it is refused as unsigned,
+      with another value as a bad signature (measured on v2.4.1, 2026-10-02). Every capture key but
+      a pack index ends in the SHA-256 of its bytes. A URL with that SHA-256 signed in therefore
+      writes those bytes or nothing. It cannot replace an object with other bytes, so it is no write
+      authority.
+    - **Negotiated.** An executor that lists `sha256` in `plan.get`'s `upload_answers` (sealantd,
+      "Bytes-bound PUT URLs") sends `x-amz-checksum-sha256` on every PUT whose URL signs it. It also
+      declares, in `upload.urls`, the SHA-256 of each pack index. On a store that measures as
+      checking the checksum (`BlobStore.bindsBytes`: it replaces objects, and refuses a mismatched
+      checksum on a probe key), every single-PUT URL is then bound: to the digest the key names, or
+      to the index's declared one. Every URL of an index is bound to the same one: a second,
+      different digest is refused 409. A declared digest a key's name contradicts is refused 400.
+    - **No authority for bound URLs or parts.** A call whose single PUTs are all bound records no
+      write authority. Its multipart part URLs record none either. A completed upload refuses its
+      parts (`NoSuchUpload`, measured), and completes of one key run one at a time behind the HEAD
+      that discards an upload of a stored key. A bound URL is not counted by `replaceableUntil`. A
+      call with any unbound single PUT records authority as before: an older daemon, a store that
+      does not check checksums, or an index declared nothing about.
+    - **The seal.** A seal over epochs that never recorded write authority, once this process's
+      startup window has passed, stands as registered: no wait, no read-back. Nothing could have
+      replaced what it names since its objects were verified at register. Epochs with recorded
+      authority are unchanged: the wait, then the read-back.
+    - **What remains.** The 15 minutes after a Mend restart (a URL minted by a process before this
+      one is only bounded by time). A seal that carries packs from an epoch of an older daemon still
+      waits that epoch's recorded authority out and reads back.

@@ -47,6 +47,7 @@ import {
   type SessionCaptureApi,
   UNEXPLAINED_CHECKS_BOUND,
   UPLOAD_ANSWER_PRESENT,
+  UPLOAD_ANSWER_SHA256,
 } from "../src/capture-channel.ts";
 import {
   CaptureSeals,
@@ -3003,6 +3004,140 @@ describeSeals(
       );
       expect(typeof fresh.urls[other.key]).toBe("string");
       expect(authority()?.getTime() ?? 0).toBeGreaterThan(Date.now());
+    });
+  },
+);
+
+// Garage self-host, 2026-10-02: a Stop's seal waited 10.5 minutes for the upload URLs of its
+// epoch to expire. An executor that sends `x-amz-checksum-sha256` (`UPLOAD_ANSWER_SHA256`) gets URLs
+// bound to their bytes on a store that checks them (`bindsBytes`): none of them can replace an
+// object, so none is recorded as write authority, and the seal stands as soon as it registers.
+const presigned: Array<{ readonly key: string; readonly sha256: string | undefined }> = [];
+describeSeals(
+  "bytes-bound upload URLs: no write authority, no wait",
+  {
+    blobs: (root) =>
+      Layer.effect(
+        BlobStore,
+        Effect.map(BlobStore, (store) => ({
+          ...store,
+          // Garage: it replaces objects, but checks a signed checksum. This process's own window
+          // (a URL minted before it started) is past.
+          replaceableUntil: () => Effect.sync(() => Date.now() - 60_000),
+          bindsBytes: Effect.succeed(true),
+          presign: (
+            key: string,
+            method: "GET" | "PUT",
+            ttl: number,
+            length?: number,
+            sha256?: string,
+          ) =>
+            Effect.sync(() => {
+              if (method === "PUT") presigned.push({ key, sha256 });
+            }).pipe(Effect.andThen(store.presign(key, method, ttl, length, sha256))),
+        })),
+      ).pipe(Layer.provide(BlobStoreFsLive(root))),
+  },
+  ({ world, run, claimed }) => {
+    const plan = (at: Awaited<ReturnType<typeof claimed>>, answers: ReadonlyArray<string>) =>
+      run(
+        at.api.planGet({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          manifest_format: 2,
+          manifest_features: MANIFEST_FEATURES,
+          upload_answers: [...answers],
+        }),
+      );
+    const authority = (at: { readonly worktreeId: WorktreeId; readonly epoch: number }) =>
+      world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`);
+    const sealOf = (at: { readonly worktreeId: WorktreeId; readonly epoch: number }) =>
+      run(
+        Effect.flatMap(CaptureSeals, (service) =>
+          service.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
+        ).pipe(Effect.provide(CaptureSealsStoreLive)),
+      );
+
+    it("binds every URL to its bytes, records no authority, and the seal stands as it registers", async () => {
+      presigned.length = 0;
+      const at = await claimed();
+      await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const file = sealedFile(at, "bound unique bytes\n");
+      const index = `${file.key}.idx`;
+      const indexDigest = "c".repeat(64);
+      const minted = await run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [file.key, index],
+          sizes: { [file.key]: file.bytes.length, [index]: 12 },
+          sha256: { [index]: indexDigest },
+        }),
+      );
+      expect(Object.keys(minted.urls).toSorted()).toEqual([file.key, index].toSorted());
+      // The pack is bound to the SHA-256 its name says; the index to the one declared.
+      expect(presigned).toEqual([
+        { key: file.key, sha256: file.key.slice(file.key.lastIndexOf("/") + 1) },
+        { key: index, sha256: indexDigest },
+      ]);
+      expect(authority(at)).toBeUndefined();
+      await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
+      const registered = await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
+      expect(registered.seal).toEqual({ state: "recorded" });
+      // Nothing could replace what it names: it stands now, not 10.5 minutes from now.
+      expect((await sealOf(at))?.captureId).toBe(file.cap.id);
+    });
+
+    it("keeps an index's URLs to one SHA-256, and refuses a declared SHA-256 its name contradicts", async () => {
+      const at = await claimed();
+      await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const file = sealedFile(at, "bound index bytes\n");
+      const index = `${file.key}.idx`;
+      const ask = (sha256: Record<string, string>, key = index) =>
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [key],
+          sizes: { [key]: 12 },
+          sha256,
+        });
+      await run(ask({ [index]: "a".repeat(64) }));
+      await run(ask({ [index]: "a".repeat(64) }));
+      const other = await run(ask({ [index]: "b".repeat(64) }).pipe(Effect.flip));
+      expect(other.status).toBe(409);
+      const contradicted = await run(
+        ask({ [file.key]: "d".repeat(64) }, file.key).pipe(Effect.flip),
+      );
+      expect(contradicted.status).toBe(400);
+      expect(authority(at)).toBeUndefined();
+    });
+
+    it("records authority as before for an executor that sends no checksum, and for an index it declares nothing about", async () => {
+      const older = await claimed();
+      await plan(older, [UPLOAD_ANSWER_PRESENT]);
+      const file = sealedFile(older, "unbound unique bytes\n");
+      await run(
+        older.api.uploadUrls({
+          worktree_id: older.worktreeId,
+          epoch: older.epoch,
+          keys: [file.key],
+          sizes: { [file.key]: file.bytes.length },
+        }),
+      );
+      expect(authority(older)?.getTime() ?? 0).toBeGreaterThan(Date.now());
+
+      const undeclared = await claimed();
+      await plan(undeclared, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const index = `${sealedFile(undeclared, "an index nobody hashed\n").key}.idx`;
+      await run(
+        undeclared.api.uploadUrls({
+          worktree_id: undeclared.worktreeId,
+          epoch: undeclared.epoch,
+          keys: [index],
+          sizes: { [index]: 12 },
+        }),
+      );
+      expect(authority(undeclared)?.getTime() ?? 0).toBeGreaterThan(Date.now());
     });
   },
 );

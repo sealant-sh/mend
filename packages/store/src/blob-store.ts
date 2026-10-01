@@ -19,7 +19,7 @@ import {
   UploadPartCommand,
 } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
-import { Effect, Layer, Schema } from "effect";
+import { Effect, Layer, Schema, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
 import { mendHome } from "./paths.ts";
@@ -102,6 +102,15 @@ export class BlobStore extends Context.Service<
      */
     readonly replaceableUntil: (key: string) => Effect.Effect<number>;
     /**
+     * Whether a PUT URL can be bound to its bytes, and needs to be: the store cannot refuse to
+     * replace an object (`replaceableUntil` is not 0 for what it hands out), but it does check a
+     * body against a signed `x-amz-checksum-sha256` and refuses other bytes (Garage, measured
+     * v2.4.1, 2026-10-02). A URL presigned with `sha256` on such a store can only ever write the
+     * bytes it was minted for, so it gives no authority to replace anything, and is not counted
+     * by `replaceableUntil`. Measured once, on a probe key of its own, as the overwrite is.
+     */
+    readonly bindsBytes: Effect.Effect<boolean>;
+    /**
      * Write `key`. With `ifAbsent`, an existing object is left alone and `written` is false —
      * atomic on the directory store and on S3 backends that honour `If-None-Match: *`; on a
      * backend without conditional writes (Garage) it is head-then-put, which is safe only
@@ -146,6 +155,12 @@ export class BlobStore extends Context.Service<
        * `content-length`), so the bucket refuses any other size; the directory store cannot bind.
        */
       contentLength?: number,
+      /**
+       * A PUT's bytes' SHA-256 (hex), on a store that `bindsBytes`: signed into the URL as
+       * `x-amz-checksum-sha256`, which the upload must send and the store checks. Such a URL is
+       * not counted by `replaceableUntil`.
+       */
+      sha256?: string,
     ) => Effect.Effect<string, BlobStoreError>;
     /** Server-side copy — promotion into `projects/<project>/…` never round-trips bytes. */
     readonly copy: (
@@ -707,6 +722,8 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
     identity: `dir:${path.resolve(root)}`,
     // Every object is published by a link that refuses an existing name, read-only.
     replaceableUntil: () => Effect.succeed(0),
+    // Nothing to bind: an object is never replaced here.
+    bindsBytes: Effect.succeed(false),
     put,
     get,
     getRange,
@@ -760,9 +777,20 @@ const bodyOf = (body: Uint8Array | BlobBody) =>
 /** Signing `content-length` makes a presigned upload good for exactly the declared size. */
 const signedLength = (): Set<string> => new Set(["content-length"]);
 
-/** A PUT URL's signed headers: always `if-none-match`, and `content-length` when declared. */
-const signedPutHeaders = (bound: boolean): Set<string> =>
-  new Set(bound ? ["if-none-match", "content-length"] : ["if-none-match"]);
+/**
+ * A PUT URL's signed headers: always `if-none-match`, `content-length` when declared, and
+ * `x-amz-checksum-sha256` when the URL is bound to its bytes.
+ */
+const signedPutHeaders = (bound: boolean, checksum: boolean): Set<string> =>
+  new Set([
+    "if-none-match",
+    ...(bound ? ["content-length"] : []),
+    ...(checksum ? ["x-amz-checksum-sha256"] : []),
+  ]);
+
+/** A hex SHA-256 as the base64 `x-amz-checksum-sha256` carries; null when it is not one. */
+const checksumOfHex = (hex: string): string | null =>
+  /^[0-9a-f]{64}$/.test(hex) ? Buffer.from(hex, "hex").toString("base64") : null;
 
 /** PUT URLs minted within this long are remembered by key (`replaceableUntil`). */
 const MINTED_KEYS_REMEMBERED = 200_000;
@@ -837,8 +865,53 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
     refuses = answered.value;
     return refuses;
   });
+  // ── Bytes-bound URLs (`bindsBytes`) ──
+  // On a bucket that replaces objects, whether it refuses a body that does not match a signed
+  // `x-amz-checksum-sha256`: Garage does (`InvalidDigest`), as S3 does (`BadDigest`). Asked once,
+  // on a probe key of its own, with a checksum of other bytes; remembered once answered.
+  let binds: boolean | null = null;
+  const probeBindsBytes = Effect.gen(function* () {
+    if (binds !== null) return binds;
+    if (yield* probeRefusesOverwrite) {
+      binds = false;
+      return false;
+    }
+    const probe = `mend-probes/bound/${crypto.randomUUID()}`;
+    const other = crypto.createHash("sha256").update("not these bytes").digest("base64");
+    const answered = yield* Effect.tryPromise({
+      try: () =>
+        client.send(
+          new PutObjectCommand({
+            Bucket: bucket,
+            Key: probe,
+            Body: "these bytes",
+            ContentLength: "these bytes".length,
+            ChecksumSHA256: other,
+          }),
+        ),
+      catch: (cause) => cause,
+    }).pipe(
+      // Taken: the store does not check the checksum, so a URL cannot be bound here.
+      Effect.as(false),
+      Effect.catch((cause) =>
+        s3Status(cause) === 400 ? Effect.succeed(true) : Effect.fail(cause),
+      ),
+      Effect.ensuring(
+        Effect.tryPromise(() =>
+          client.send(new DeleteObjectCommand({ Bucket: bucket, Key: probe })),
+        ).pipe(Effect.ignore),
+      ),
+      Effect.option,
+    );
+    if (answered._tag === "None") return false;
+    binds = answered.value;
+    return binds;
+  });
+
   // Key → until when a PUT URL minted for it lives.
   const minted = new Map<string, number>();
+  // Key → the lock its multipart completes take, and how many wait on it (`completeOnce`).
+  const completing = new Map<string, { readonly lock: Semaphore.Semaphore; users: number }>();
   const noteMinted = (key: string, untilMs: number) => {
     if (minted.size >= MINTED_KEYS_REMEMBERED) {
       const now = Date.now();
@@ -1003,6 +1076,7 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
     method: PresignMethod,
     ttlSeconds: number,
     contentLength?: number,
+    sha256?: string,
   ) {
     yield* checkKey("presign", key);
     if (method === "GET") {
@@ -1016,7 +1090,19 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
     // the upload must send it (sealantd always has) and a bucket that honours it answers an
     // existing key with 412 instead of replacing the bytes. A declared size is signed too.
     const bound = contentLength !== undefined;
+    // Bound to its bytes only where the store checks them (`bindsBytes`): anywhere else the
+    // checksum would be a header the store ignores, and the URL as free as any other.
+    const checksum =
+      sha256 === undefined || !(yield* probeBindsBytes) ? null : checksumOfHex(sha256);
+    if (sha256 !== undefined && checksum === null && (yield* probeBindsBytes)) {
+      return yield* new BlobStoreError({
+        operation: "presign",
+        key,
+        cause: new Error("sha256 must be 64 lowercase hex characters"),
+      });
+    }
     const expiresIn = Math.min(Math.max(1, ttlSeconds), PUT_URL_TTL_MAX_SECONDS);
+    const signed = signedPutHeaders(bound, checksum !== null);
     const url = yield* call("presign", key, () =>
       getSignedUrl(
         publicClient,
@@ -1025,11 +1111,14 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
           Key: key,
           IfNoneMatch: "*",
           ...(bound ? { ContentLength: contentLength } : {}),
+          ...(checksum === null ? {} : { ChecksumSHA256: checksum }),
         }),
-        { expiresIn, signableHeaders: signedPutHeaders(bound) },
+        // A signed header stays a header (the upload sends it), never a query parameter.
+        { expiresIn, signableHeaders: signed, unhoistableHeaders: signed },
       ),
     );
-    noteMinted(key, Date.now() + expiresIn * 1000);
+    // A URL bound to its bytes can only write those bytes again: no authority to replace.
+    if (checksum === null) noteMinted(key, Date.now() + expiresIn * 1000);
     return url;
   });
 
@@ -1138,11 +1227,46 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
     yield* checkUploadId("completeMultipart", key, uploadId);
     const ordered = yield* orderedParts("completeMultipart", key, parts);
     // A bucket that ignores `If-None-Match: *` (Garage) would assemble over existing bytes: there
-    // the HEAD is the write-once check, and an existing key discards the upload.
-    if (!(yield* probeRefusesOverwrite) && (yield* head(key)) !== null) {
-      yield* abortMultipart(key, uploadId).pipe(Effect.ignore);
-      return { written: false };
+    // the HEAD is the write-once check, and an existing key discards the upload. Completes of one
+    // key run one at a time in this process, so two uploads of a key cannot both pass the HEAD
+    // and the later replace the earlier: part URLs then give no authority to replace a stored
+    // object (a completed upload's parts are refused, `NoSuchUpload`, measured on Garage v2.4.1).
+    if (!(yield* probeRefusesOverwrite)) {
+      return yield* completeOnce(key, uploadId, ordered);
     }
+    return yield* completeConditional(key, uploadId, ordered);
+  });
+
+  const completeOnce = (
+    key: string,
+    uploadId: string,
+    ordered: ReadonlyArray<MultipartPart>,
+  ): Effect.Effect<{ readonly written: boolean }, BlobStoreError> => {
+    const entry = completing.get(key) ?? { lock: Semaphore.makeUnsafe(1), users: 0 };
+    entry.users += 1;
+    completing.set(key, entry);
+    return Effect.gen(function* () {
+      if ((yield* head(key)) !== null) {
+        yield* abortMultipart(key, uploadId).pipe(Effect.ignore);
+        return { written: false };
+      }
+      return yield* completeConditional(key, uploadId, ordered);
+    }).pipe(
+      entry.lock.withPermit,
+      Effect.ensuring(
+        Effect.sync(() => {
+          entry.users -= 1;
+          if (entry.users === 0 && completing.get(key) === entry) completing.delete(key);
+        }),
+      ),
+    );
+  };
+
+  const completeConditional = Effect.fn("BlobStore.completeConditional")(function* (
+    key: string,
+    uploadId: string,
+    ordered: ReadonlyArray<MultipartPart>,
+  ) {
     const outcome = yield* Effect.tryPromise({
       try: () =>
         client.send(
@@ -1204,6 +1328,7 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
   return {
     identity: `s3:${options.endpoint ?? "aws"}/${bucket}`,
     replaceableUntil,
+    bindsBytes: probeBindsBytes,
     put,
     get,
     getRange,

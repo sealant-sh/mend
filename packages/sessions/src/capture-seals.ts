@@ -131,6 +131,10 @@ const readBacks = makeSingleFlight<SealStanding, never>();
  *   the objects were being read back voids the read, and the seal stays withheld. Any other
  *   bytes → void, for good;
  * - a store that could not be read concludes nothing: withheld, asked again on the next read.
+ *
+ * Under epochs that never recorded write authority — every URL bound to its bytes, which a store
+ * that `bindsBytes` checks — there is nothing that could have replaced the objects once this
+ * process's own window (`replaceableUntil`) is past: the seal stands as recorded.
  */
 export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function* (
   seal: SealedCompletion,
@@ -167,6 +171,12 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
   const recorded = yield* repo.putAuthorityUntilOver(scopes);
   const until = Math.max(storeUntil, recorded?.getTime() ?? 0);
   const at = now();
+  // No write authority was ever recorded under any of those epochs: every URL handed out under
+  // them was bound to its bytes (`BlobStore.bindsBytes`) or a part URL, none of which can
+  // replace a stored object, and this process minted none that could still. The objects are
+  // what they were verified to be when they registered: nothing to wait for, nothing to read
+  // back (Garage self-host, e2e 2026-10-02: a Stop's seal waited 10.5 minutes for this).
+  if (recorded === null && at >= storeUntil) return { state: "standing" } satisfies SealStanding;
   if (at < until) {
     const words = `an upload URL of ${epochsWords(seal, scopes)} could replace what it names until ${new Date(until).toISOString()}`;
     yield* Effect.logInfo(

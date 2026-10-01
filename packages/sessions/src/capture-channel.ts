@@ -25,6 +25,7 @@ import {
   dirPacksOf,
   FORMAT_DIR_OBJECTS,
   FORMAT_DIR_PACKS,
+  contentDigestOfKey,
   isCaptureObjectKey,
   keysNeededBy,
   keysOfSections,
@@ -136,6 +137,14 @@ export type PlanGetRequest = typeof PlanGetRequest.Type;
 
 /** The `upload.urls` answer shape an executor lists in `plan.get`'s `upload_answers` to read it. */
 export const UPLOAD_ANSWER_PRESENT = "present";
+
+/**
+ * The executor sends `x-amz-checksum-sha256` on a PUT whose URL signs it, and declares in
+ * `upload.urls` the SHA-256 of each key whose name does not say it (sealantd `registrar.rs`,
+ * "Bytes-bound PUT URLs"). On a store that `bindsBytes` (Garage) its URLs are bound to their
+ * bytes, and hold no authority to replace an object: no seal waits for them.
+ */
+export const UPLOAD_ANSWER_SHA256 = "sha256";
 
 /**
  * 409 `launch-mismatch`: the request names a launch other than the one the token was issued
@@ -340,6 +349,11 @@ export const UploadUrlsRequest = Schema.Struct({
   sizes: Schema.optional(Schema.Record(Schema.String, Schema.Int)),
   /** `final` once the executor began a final flush (`isFinalFlush`). */
   flush: Schema.optional(Schema.String),
+  /**
+   * The SHA-256 (hex) of keys whose name does not say it — a pack index (`UPLOAD_ANSWER_SHA256`).
+   * Every other capture key ends in it.
+   */
+  sha256: Schema.optional(Schema.Record(Schema.String, Schema.String)),
 });
 export type UploadUrlsRequest = typeof UploadUrlsRequest.Type;
 
@@ -1129,10 +1143,20 @@ export const CaptureChannelLive: Layer.Layer<
      * URL for a stored key whose bytes were verified. Bound to the launch its token names.
      */
     const readsPresent = new Map<string, boolean>();
+    /** Whether each launch's latest `plan.get` listed `sha256` (`UPLOAD_ANSWER_SHA256`). */
+    const sendsSha256 = new Map<string, boolean>();
     const noteUploadAnswers = (launch: string, input: PlanGetRequest) => {
       if (readsPresent.size > MINTED_KEYS_REMEMBERED) readsPresent.clear();
+      if (sendsSha256.size > MINTED_KEYS_REMEMBERED) sendsSha256.clear();
       readsPresent.set(launch, (input.upload_answers ?? []).includes(UPLOAD_ANSWER_PRESENT));
+      sendsSha256.set(launch, (input.upload_answers ?? []).includes(UPLOAD_ANSWER_SHA256));
     };
+    /**
+     * The SHA-256 the first bound URL of a key whose name does not say it (a pack index) was
+     * minted for: every later one must be the same, so all of a key's live URLs write the same
+     * bytes (bounded; forgotten with the rest at a restart, whose startup window covers it).
+     */
+    const boundDigests = new Map<string, string>();
     /**
      * The byte ledger, per physical launch: object key → bytes priced for it, once. `upload.urls`
      * reserves a sized key at its declared size; `capture.register` prices every pack under the
@@ -1863,6 +1887,11 @@ export const CaptureChannelLive: Layer.Layer<
         // verified bytes until it expires: its expiry is recorded, and no seal stands while it
         // lives (`CaptureSealsStoreLive`, review 2026-09-28 (7) #8).
         const answersPresent = readsPresent.get(launchId) === true;
+        // Bytes-bound URLs (`UPLOAD_ANSWER_SHA256`): an executor that sends the checksum, on a
+        // store that checks it but cannot refuse an overwrite. Such a URL writes the bytes it was
+        // minted for or nothing, so it carries no authority to replace an object.
+        const bindable =
+          answersPresent && sendsSha256.get(launchId) === true && (yield* blobs.bindsBytes);
         const present: Array<string> = [];
         /** Stored keys answered with a legacy URL: verified, and never priced again. */
         const storedLegacy = new Set<string>();
@@ -1931,6 +1960,45 @@ export const CaptureChannelLive: Layer.Layer<
           }
           plans.push({ key, parts, size });
         }
+        // What each single PUT is bound to: the SHA-256 its name says (a pack, tree or manifest),
+        // or, for a pack index, the one the executor declared — the same for every URL of the key.
+        const declared = input.sha256 ?? {};
+        const boundTo = new Map<string, string>();
+        if (bindable) {
+          for (const plan of plans) {
+            if (plan.parts > 0) continue;
+            const named = contentDigestOfKey(plan.key);
+            const said = declared[plan.key];
+            if (said !== undefined && !/^[0-9a-f]{64}$/.test(said)) {
+              return yield* bad(`${plan.key}: sha256 must be 64 lowercase hex characters`);
+            }
+            if (named !== null) {
+              if (said !== undefined && said !== named) {
+                return yield* bad(
+                  `${plan.key}: its name says sha256 ${named}, the request ${said}`,
+                );
+              }
+              boundTo.set(plan.key, named);
+              continue;
+            }
+            if (said === undefined) continue;
+            const first = boundDigests.get(plan.key);
+            if (first !== undefined && first !== said) {
+              return yield* new CaptureRouteError({
+                status: 409,
+                reason: "exists",
+                message: `${plan.key} was handed a URL for other bytes (sha256 ${first}); it is bound to those`,
+                key: plan.key,
+              });
+            }
+            boundTo.set(plan.key, said);
+          }
+        }
+        // Every URL of the call bound to its bytes, or a part URL (a completed upload refuses its
+        // parts, and completes are write-once per key): the call carries no write authority. A
+        // call that is not bindable at all (an older daemon, another store) records it as ever.
+        const unbound =
+          !bindable || plans.some((plan) => plan.parts === 0 && !boundTo.has(plan.key));
         // The byte quota, enforced here: every sized key not yet priced is charged at its
         // declared size, and a batch that would take the session over is refused whole — no
         // URL minted, no upload opened, so the refused bytes never reach the bucket. A key
@@ -1988,6 +2056,8 @@ export const CaptureChannelLive: Layer.Layer<
             : plans.reduce((total, plan) => total + (plan.size ?? 0), 0),
         );
         while (plans.length > 0) {
+          // A call with nothing unbound records nothing: no URL of it can replace an object.
+          if (!unbound) break;
           recordedAt = Date.now();
           const record: PutAuthorityRecord = yield* repo.recordPutAuthority(
             worktreeId,
@@ -2065,10 +2135,16 @@ export const CaptureChannelLive: Layer.Layer<
           }
           if (created === null) {
             // Below the threshold: one PUT URL, write-once (`If-None-Match: *` signed in). A
-            // declared size is signed into the URL: the bucket takes those bytes or none.
+            // declared size is signed into the URL: the bucket takes those bytes or none. Bound
+            // to its bytes where it can be (`boundTo`): the bucket takes exactly those or none.
+            const digest = boundTo.get(plan.key);
             urls[plan.key] = yield* blobs
-              .presign(plan.key, "PUT", ttlSeconds, plan.size ?? undefined)
+              .presign(plan.key, "PUT", ttlSeconds, plan.size ?? undefined, digest)
               .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
+            if (digest !== undefined && contentDigestOfKey(plan.key) === null) {
+              if (boundDigests.size > MINTED_KEYS_REMEMBERED) boundDigests.clear();
+              boundDigests.set(plan.key, digest);
+            }
             continue;
           }
           const partUrls: Array<string> = [];
@@ -2096,6 +2172,7 @@ export const CaptureChannelLive: Layer.Layer<
         // so none of them leaves Mend — the executor asks again (review 2026-09-28 (10) #5).
         if (
           plans.length > 0 &&
+          unbound &&
           Date.now() - recordedAt > (PUT_URL_CLOCK_MARGIN_SECONDS * 1000) / 2
         ) {
           for (const key of unpriced.keys()) ledger.delete(key);
