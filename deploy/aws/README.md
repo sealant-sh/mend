@@ -65,8 +65,8 @@ SSM Session Manager, and Mend's own port stays on loopback.
    `scripts/bootstrap-databases.py` does for the cluster. To reuse databases that have run, empty
    them as each application's own role: drop the schemas it made (`pgboss`, `drizzle`) and every
    object it owns in `public`. `DROP OWNED` also revokes the role's grants, so do not use it.
-3. Put `compose.aws.yaml`, `compose.edge.yaml`, `Caddyfile` and a `.env` from
-   [`aws.env.example`](../docker/aws.env.example) in `/opt/mend`, mode 600, owned by root. The
+3. Put `compose.aws.yaml`, `compose.edge.yaml`, `compose.logs.aws.yaml`, `Caddyfile` and a `.env`
+   from [`aws.env.example`](../docker/aws.env.example) in `/opt/mend`, mode 600, owned by root. The
    `.env` holds the only secrets; nothing secret is in OpenTofu state or user data. Do not send it
    with `aws ssm send-command`: a command's input and output are kept in the account's SSM history.
    Forward the instance's sshd over Session Manager and copy the files through that. Nothing is
@@ -84,9 +84,11 @@ SSM Session Manager, and Mend's own port stays on loopback.
    `"registration":"closed"`). The extra origin in step 4 is what lets sign-up accept the tunnel.
    Session Manager closes a forward that sits idle, so start it when you are ready to register.
 6. Remove `MEND_ALLOWED_ORIGINS`, set `MEND_TENANCY=multi` and `MEND_EXPOSURE=public`, and bring
-   everything up: `docker compose -f compose.aws.yaml -f compose.edge.yaml up -d`. Read
-   `mend operator gate` and `mend operator exposure`, or the `tenancy` and `exposure` lines Mend
-   logs at start.
+   everything up:
+   `docker compose -f compose.aws.yaml -f compose.edge.yaml -f compose.logs.aws.yaml up -d` (the
+   last file sends the server's and the edge's logs to CloudWatch, `/mend/<name>/containers`, so a
+   restart or a roll keeps them). Read `mend operator gate` and `mend operator exposure`, or the
+   `tenancy` and `exposure` lines Mend logs at start.
 7. From outside the VPC: TLS and the redirect on the public name, a sign-up without an invitation
    (refused), which ports answer at the public address (80, 443 and 2222, and nothing else), and a
    connection to PlanetScale's public endpoint with an application role (refused). Only then name
