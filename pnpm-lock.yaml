@@ -46,11 +46,11 @@ catalogs:
       specifier: ^1.2.12
       version: 1.3.1
     '@sealant/api-contracts':
-      specifier: 0.38.0
-      version: 0.38.0
+      specifier: 0.38.1
+      version: 0.38.1
     '@sealant/sdk':
-      specifier: 0.38.0
-      version: 0.38.0
+      specifier: 0.38.1
+      version: 0.38.1
     '@slack/socket-mode':
       specifier: ^3.0.1
       version: 3.0.1
@@ -988,7 +988,7 @@ importers:
     dependencies:
       '@sealant/api-contracts':
         specifier: 'catalog:'
-        version: 0.38.0(effect@4.0.0-beta.93)
+        version: 0.38.1(effect@4.0.0-beta.93)
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
@@ -1031,7 +1031,7 @@ importers:
         version: link:../store
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: 0.38.0(effect@4.0.0-beta.93)
+        version: 0.38.1(effect@4.0.0-beta.93)
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
@@ -1080,7 +1080,7 @@ importers:
         version: link:../store
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: 0.38.0(effect@4.0.0-beta.93)
+        version: 0.38.1(effect@4.0.0-beta.93)
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
@@ -1123,7 +1123,7 @@ importers:
         version: link:../store
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: 0.38.0(effect@4.0.0-beta.93)
+        version: 0.38.1(effect@4.0.0-beta.93)
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
@@ -1173,7 +1173,7 @@ importers:
         version: link:../domain
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: 0.38.0(effect@4.0.0-beta.93)
+        version: 0.38.1(effect@4.0.0-beta.93)
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
@@ -1213,7 +1213,7 @@ importers:
         version: link:../store
       '@sealant/sdk':
         specifier: 'catalog:'
-        version: 0.38.0(effect@4.0.0-beta.93)
+        version: 0.38.1(effect@4.0.0-beta.93)
       effect:
         specifier: 'catalog:'
         version: 4.0.0-beta.93
@@ -4781,14 +4781,14 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@sealant/api-contracts@0.38.0':
-    resolution: {integrity: sha512-r0xdyG+ZRdWEtbRiSDHeuVV0PuflvsQSHIYekLl73D3pgadlyLXJtWpzTpE97f3zbhCXMKUTjx6LCAbfRj60tg==}
+  '@sealant/api-contracts@0.38.1':
+    resolution: {integrity: sha512-iGRlyXGOaCmjAFO8pHzGNiSpLuGPPr9xblf7skDsK34fjIMdM1huic+6Nd8oIofP0qJmVXhEgxjpilQDniMrWw==}
     engines: {node: '>=20'}
     peerDependencies:
       effect: '>=4.0.0-beta.85 <5'
 
-  '@sealant/sdk@0.38.0':
-    resolution: {integrity: sha512-YsMkRSGxz0aHGAXBzF8i/Qu0VUJNnSTpccox8ImvHLGizeg8KJRXKz6Urfsi6rOviKYlZYOK/CjPVsPphF4J3A==}
+  '@sealant/sdk@0.38.1':
+    resolution: {integrity: sha512-1RzKa/e9QuSu6ju98OSqu1p9DcxWpTPKiefSpUNzKGcoxf9PkEds/IiGUIVJCuyMfIY4ccjwC5E5Apml+kteoA==}
     engines: {node: '>=20'}
     peerDependencies:
       effect: '>=4.0.0-beta.85 <5'
@@ -15481,13 +15481,13 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.62.2':
     optional: true
 
-  '@sealant/api-contracts@0.38.0(effect@4.0.0-beta.93)':
+  '@sealant/api-contracts@0.38.1(effect@4.0.0-beta.93)':
     dependencies:
       effect: 4.0.0-beta.93
 
-  '@sealant/sdk@0.38.0(effect@4.0.0-beta.93)':
+  '@sealant/sdk@0.38.1(effect@4.0.0-beta.93)':
     dependencies:
-      '@sealant/api-contracts': 0.38.0(effect@4.0.0-beta.93)
+      '@sealant/api-contracts': 0.38.1(effect@4.0.0-beta.93)
       effect: 4.0.0-beta.93
 
   '@secretlint/config-creator@10.2.2':
