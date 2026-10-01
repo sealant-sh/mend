@@ -137,7 +137,10 @@ jobs:
       matrix:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 30
+    # Usually ~18 min; v0.35.0's amd64 run took 27.6 (its Ubuntu dotfiles scenario 760 s against
+    # 67 s on arm64), 2.4 min inside the old 30. A cold workspace image build on a slow mirror is
+    # not a failed release.
+    timeout-minutes: 45
     permissions:
       contents: read
       packages: read
