@@ -13,7 +13,7 @@ import {
   SquareTerminal,
 } from "lucide-react-native";
 import { useState } from "react";
-import { View } from "react-native";
+import { Alert, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EvButton } from "@/components/button";
@@ -243,7 +243,21 @@ export function SessionPane({
       icon: CircleStop,
       tone: "danger",
       disabled: stop.isPending,
-      onPress: () => stop.mutate(session.id),
+      // Never a button, and never without asking: it ends the agent (alpha 2026-10-01).
+      menuOnly: true,
+      onPress: () =>
+        Alert.alert(
+          "Stop this session?",
+          "The agent ends, and Mend saves the session's work before its machine stops.",
+          [
+            { text: "Cancel", style: "cancel" },
+            {
+              text: "Stop session",
+              style: "destructive",
+              onPress: () => stop.mutate(session.id),
+            },
+          ],
+        ),
     });
   }
 
