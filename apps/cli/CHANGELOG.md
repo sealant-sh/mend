@@ -1,5 +1,43 @@
 # @sealant/mend
 
+## 0.35.0
+
+### Minor Changes
+
+- 5203afa: Phone notifications no longer repeat a Slack thread. A session started from Slack pushes
+  only what its thread does not already say: a failure (the thread marks it with an edit and ❌,
+  which Slack does not notify), a question or approval in a channel thread whose project is private
+  (that thread gets no replies), and everything once the organization's Slack app is removed. A
+  finished turn, a completed session, and a question or approval the thread posts do not push. Each
+  person now chooses what reaches their phones, in the phone's Settings → Notifications: turn
+  finished, needs your input and failed (on by default), and sessions started from Slack (off by
+  default). `GET` and `PUT /api/me/notifications` carry the setting; migration 0096 stores it, and
+  an account with none saved hears the defaults. The idle stop and a person's own stop never push,
+  even while the idle stop is on its way. On the phone, a push about the session on screen, its
+  conversation or its terminal, stays silent.
+
+### Patch Changes
+
+- 642baee: `mend connect codex` gives Mend a Codex login of its own: it runs
+  `codex login --device-auth` in a throwaway directory, sends that login and deletes it, instead of
+  sending this machine's `~/.codex/auth.json`, whose refreshes the laptop would race.
+  `--use-my-login` still sends the shared one. `mend accounts` and `mend doctor` say
+  `reconnect needed · the provider refused the login` for an account the platform could not refresh.
+  ADR 0008 and a new page, "How Mend handles your logins", describe the platform as the only
+  refresher of a login and every other copy as one that cannot rotate.
+- 6f46cd3: A tour, "Read this change" or "Suggest fixes" runs on the login of the person who asked
+  for it, no longer on the change owner's. Passes review prep queues run on the login of the session
+  that settled, and the tour a landing asks for on the lander's. A pass queued before this release
+  says `the pass was queued before Mend recorded who asked for it · ask for it again`. Automatic
+  landing reads a request's intent on the login of the turn's sender, and on no one's when the turn
+  records none.
+- 361d6a6: A session launches once at a time. A resume keeps the session's row settled until its
+  agent runs, so a second resume sent meanwhile (a phone still offering Resume) drained the first
+  one's new machine and started another; on alpha three taps started three machines and the session
+  ended `failed`. The second resume, launch, handoff or follow-up is now refused with
+  `starting · a launch of this session is already under way · nothing new started`, and the session
+  reads `starting` everywhere while its launch is under way.
+
 ## 0.34.5
 
 ### Patch Changes
