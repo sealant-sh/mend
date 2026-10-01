@@ -169,6 +169,8 @@ export const createTenancyApi = async (
       readonly gitOps?: Layer.PartialEffectful<SessionGitOpsRepo["Service"]>;
       readonly reads?: Layer.PartialEffectful<WorktreeReads["Service"]>;
       readonly engine?: Layer.PartialEffectful<SessionEngine["Service"]>;
+      readonly jobs?: Layer.PartialEffectful<JobRunner["Service"]>;
+      readonly changePasses?: Layer.PartialEffectful<ChangePassesRepo["Service"]>;
     };
   } = {},
 ): Promise<TenancyApi> => {
@@ -207,7 +209,7 @@ export const createTenancyApi = async (
       ),
       recording(BriefCommentsRepo, "briefComments", {}, calls),
       recording(BriefsRepo, "briefs", {}, calls),
-      recording(ChangePassesRepo, "changePasses", {}, calls),
+      recording(ChangePassesRepo, "changePasses", options.implement?.changePasses ?? {}, calls),
       recording(ChangesRepo, "legacyChanges", {}, calls),
       recording(ChangeLandingsRepo, "landings", options.implement?.landings ?? {}, calls),
       recording(Landing, "landing", options.implement?.landing ?? {}, calls),
@@ -256,7 +258,7 @@ export const createTenancyApi = async (
       recording(UserGitAccessRepo, "gitAccess", {}, calls),
       recording(UserGitAuthorRepo, "gitAuthor", {}, calls),
       recording(UsersRepo, "users", {}, calls),
-      recording(JobRunner, "jobs", {}, calls),
+      recording(JobRunner, "jobs", options.implement?.jobs ?? {}, calls),
       recording(SealantClient, "sealant", {}, calls),
       recording(
         SealantClients,

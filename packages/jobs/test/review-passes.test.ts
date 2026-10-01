@@ -19,9 +19,9 @@ const queueWith = (answer: string | null) => {
       queue: (_changeId, kind) => Effect.sync(() => void rows.push(`queued:${kind}`)),
     }),
   );
-  return Effect.runPromise(queueReviewPass("tour", CHANGE).pipe(Effect.provide(layer))).then(
-    (queued) => ({ queued, sent, rows }),
-  );
+  return Effect.runPromise(
+    queueReviewPass("tour", CHANGE, "user-asker").pipe(Effect.provide(layer)),
+  ).then((queued) => ({ queued, sent, rows }));
 };
 
 describe("queueReviewPass", () => {
@@ -31,14 +31,14 @@ describe("queueReviewPass", () => {
     expect(reviewPassKey("read", CHANGE)).toBe("read-change:change-1");
   });
 
-  it("marks the pass queued, then enqueues its job", async () => {
+  it("marks the pass queued, then enqueues its job on the asker's login", async () => {
     const { queued, sent, rows } = await queueWith("job-1");
     expect(queued).toBe(true);
     expect(rows).toEqual(["queued:tour"]);
     expect(sent).toEqual([
       {
         name: "compose-tour",
-        payload: { changeId: CHANGE },
+        payload: { changeId: CHANGE, requestedBy: "user-asker" },
         idempotencyKey: "compose-tour:change-1",
       },
     ]);

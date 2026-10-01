@@ -16,8 +16,8 @@ export const TourRequestsLive: Layer.Layer<TourRequests, never, JobRunner | Chan
     Effect.gen(function* () {
       const context = yield* Effect.context<JobRunner | ChangePassesRepo>();
       return {
-        request: ({ changeId }) =>
-          queueReviewPass("tour", changeId).pipe(
+        request: ({ changeId, requestedBy }) =>
+          queueReviewPass("tour", changeId, requestedBy).pipe(
             Effect.provide(context),
             Effect.asVoid,
             Effect.catchCause((cause) =>

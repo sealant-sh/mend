@@ -14,6 +14,12 @@ import { makeSessionChangePass } from "./session-tools.ts";
 /** The `compose-tour` job's payload — on-demand from the review page. */
 export class ComposeTourJob extends Schema.Class<ComposeTourJob>("ComposeTourJob")({
   changeId: ChangeId,
+  /**
+   * The Mend user whose login pays for the pass (docs/adr/0008-one-refresher-for-provider-logins.md,
+   * "Whose login pays"): whoever asked, or the owner of the session whose settle queued it. Absent
+   * only on a job queued before the field existed, which the worker refuses to run.
+   */
+  requestedBy: Schema.optional(Schema.String),
 }) {}
 
 /**

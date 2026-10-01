@@ -13,6 +13,12 @@ import { makeTool } from "./toolset.ts";
 /** The `read-change` job's payload — on-demand from the review page (§7.3). */
 export class ReadChangeJob extends Schema.Class<ReadChangeJob>("ReadChangeJob")({
   changeId: ChangeId,
+  /**
+   * The Mend user whose login pays for the pass (docs/adr/0008-one-refresher-for-provider-logins.md,
+   * "Whose login pays"): whoever asked, or the owner of the session whose settle queued it. Absent
+   * only on a job queued before the field existed, which the worker refuses to run.
+   */
+  requestedBy: Schema.optional(Schema.String),
 }) {}
 
 /**

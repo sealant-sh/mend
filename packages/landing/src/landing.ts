@@ -190,7 +190,11 @@ export class LandingGit extends Context.Service<
 export class TourRequests extends Context.Service<
   TourRequests,
   {
-    readonly request: (input: { readonly changeId: ChangeId }) => Effect.Effect<void>;
+    /** `requestedBy` is the lander, whose login pays for the tour. */
+    readonly request: (input: {
+      readonly changeId: ChangeId;
+      readonly requestedBy: string;
+    }) => Effect.Effect<void>;
   }
 >()("@mend/landing/TourRequests") {}
 
@@ -674,7 +678,7 @@ export const LandingLive: Layer.Layer<
       // No tour yet: the pull request opened with the file list, and gains the tour when it
       // completes (`LandingDescriptions`).
       if (tour === null) {
-        yield* tourRequests.request({ changeId: change.id });
+        yield* tourRequests.request({ changeId: change.id, requestedBy: owner });
       }
       return yield* finish(
         checkpoint,

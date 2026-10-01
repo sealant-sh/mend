@@ -208,8 +208,17 @@ export const ReviewPrepLive: Layer.Layer<
       // One key per change and pass (`reviewPassKey`), shared with the review page: a pass
       // already queued or running for this change absorbs this request (it reads the change as
       // it is when it runs), and a tour whose diff is unchanged is not composed again.
-      if (autoTour) yield* queueReviewPass("tour", change.id);
-      if (autoSuggest) yield* queueReviewPass("suggest", change.id);
+      // On the login of the session that settled: a teammate's session in this worktree pays for
+      // its own passes, never the change owner's. A session with no owner spends no one's.
+      const paidBy = session.ownerUserId;
+      if (paidBy === null) {
+        yield* Effect.logInfo("review prep: the session has no owner · no passes queued").pipe(
+          Effect.annotateLogs({ sessionId, changeId: change.id }),
+        );
+        return;
+      }
+      if (autoTour) yield* queueReviewPass("tour", change.id, paidBy);
+      if (autoSuggest) yield* queueReviewPass("suggest", change.id, paidBy);
       yield* Effect.annotateLogs(Effect.logInfo("review prep queued"), {
         sessionId,
         changeId: change.id,
