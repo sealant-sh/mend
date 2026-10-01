@@ -1,4 +1,5 @@
 import { LegendList } from "@legendapp/list/react-native";
+import type { LegendListRef } from "@legendapp/list/react-native";
 import {
   answersComplete,
   buildAgentConversation,
@@ -14,50 +15,104 @@ import {
   requestName,
   requestOutcome,
   toggleChoice,
-  type AgentConversationEntry,
   type AgentItemDto,
   type AgentRequestDto,
   type AgentRequestResponse,
-  type AgentTurnDto,
   type AnswerChoices,
   type WrittenAnswers,
 } from "@mend/agent-conversation";
-import { useCallback, useMemo, useState } from "react";
+import { memo, useCallback, useMemo, useRef, useState } from "react";
 import { Pressable, StyleSheet, TextInput, View } from "react-native";
 import { KeyboardStickyView, useKeyboardState } from "react-native-keyboard-controller";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { EvButton } from "@/components/button";
+import {
+  AttachButton,
+  AttachmentStrip,
+  ComposerField,
+  ComposerTextInput,
+  TurnImages,
+} from "@/components/composer";
 import { MendMarkdown } from "@/components/markdown";
 import { MonoText, UiText } from "@/components/typography";
-import { useAgentConversation, useAgentConversationActions } from "@/data/agent-conversation";
+import {
+  useAgentConversation,
+  useAgentConversationActions,
+  useTurnSender,
+} from "@/data/agent-conversation";
+import { findLastMatching } from "@/data/collections";
+import { composerReadiness, readinessHint, storedImages, type Attachment } from "@/data/composer";
+import { useComposerAttachments } from "@/data/image-attach";
+import {
+  hasUnrecordedSend,
+  reconcileConversation,
+  type ConversationRow as Row,
+  type TurnView,
+} from "@/data/pending-turns";
 import { radius, spacing, useEvidenceTheme } from "@/theme/evidence";
 
-function TurnRow({ turn }: { readonly turn: AgentTurnDto }) {
+/**
+ * One message from a person. A send from this phone shows at once, faded while it goes up, and
+ * stays where it is — marked, with Retry and Edit — when the machine refused it.
+ */
+const TurnRow = memo(function TurnRow({
+  view,
+  onRetry,
+  onEdit,
+}: {
+  readonly view: TurnView;
+  readonly onRetry: (clientId: string) => void;
+  readonly onEdit: (clientId: string) => void;
+}) {
   const { colors } = useEvidenceTheme();
+  const { clientId } = view;
   return (
-    <View
-      style={{
-        alignSelf: "flex-end",
-        maxWidth: "85%",
-        backgroundColor: colors.wash,
-        borderRadius: radius.xl,
-        borderBottomRightRadius: 6,
-        paddingHorizontal: 14,
-        paddingVertical: 10,
-      }}
-    >
-      <UiText size={15} style={{ lineHeight: 21 }}>
-        {turn.input}
-      </UiText>
-      {turn.error === null ? null : (
-        <MonoText tone="danger" size={10.5} style={{ paddingTop: 4 }}>
-          {turn.error}
+    <View style={{ alignSelf: "flex-end", maxWidth: "85%", alignItems: "flex-end", gap: 4 }}>
+      <View
+        style={{
+          backgroundColor: colors.wash,
+          borderRadius: radius.xl,
+          borderBottomRightRadius: 6,
+          borderLeftWidth: view.delivery === "failed" ? 2 : 0,
+          borderLeftColor: view.delivery === "failed" ? colors.red : "transparent",
+          paddingHorizontal: 14,
+          paddingVertical: 10,
+          gap: 8,
+          opacity: view.delivery === "sending" ? 0.6 : 1,
+        }}
+      >
+        <TurnImages images={view.images} />
+        {view.text === "" ? null : (
+          <UiText size={15} style={{ lineHeight: 21 }}>
+            {view.text}
+          </UiText>
+        )}
+        {view.delivery !== "failed" && view.error !== null ? (
+          <MonoText tone="danger" size={10.5}>
+            {view.error}
+          </MonoText>
+        ) : null}
+      </View>
+      {view.delivery === "sending" ? (
+        <MonoText tone="faint" size={10.5}>
+          sending…
         </MonoText>
-      )}
+      ) : null}
+      {view.delivery === "failed" && clientId !== null ? (
+        <View style={{ alignItems: "flex-end", gap: 2 }}>
+          <MonoText tone="danger" size={10.5} numberOfLines={3}>
+            not sent · {view.error ?? "the machine did not answer"}
+          </MonoText>
+          <View style={{ flexDirection: "row", gap: 4 }}>
+            <EvButton size="sm" variant="ghost" label="Edit" onPress={() => onEdit(clientId)} />
+            <EvButton size="sm" variant="outline" label="Retry" onPress={() => onRetry(clientId)} />
+          </View>
+        </View>
+      ) : null}
     </View>
   );
-}
+});
 
 function ItemRow({ item }: { readonly item: AgentItemDto }) {
   const { colors } = useEvidenceTheme();
@@ -304,14 +359,18 @@ function ConversationRow({
   entry,
   responding,
   onRespond,
+  onRetry,
+  onEdit,
 }: {
-  readonly entry: AgentConversationEntry;
+  readonly entry: Row;
   readonly responding: boolean;
   readonly onRespond: (requestId: string, response: AgentRequestResponse) => void;
+  readonly onRetry: (clientId: string) => void;
+  readonly onEdit: (clientId: string) => void;
 }) {
   switch (entry.kind) {
     case "turn":
-      return <TurnRow turn={entry.turn} />;
+      return <TurnRow view={entry.view} onRetry={onRetry} onEdit={onEdit} />;
     case "item":
       return <ItemRow item={entry.item} />;
     case "request":
@@ -334,19 +393,33 @@ export function ProtocolConversation({
   const { colors } = useEvidenceTheme();
   const insets = useSafeAreaInsets();
   const conversation = useAgentConversation(sessionId, true, active);
-  const { submit, respond, interrupt } = useAgentConversationActions(sessionId);
+  const { respond, interrupt } = useAgentConversationActions(sessionId);
+  const sender = useTurnSender(sessionId);
+  const images = useComposerAttachments(sessionId);
+  const listRef = useRef<LegendListRef>(null);
   const [draft, setDraft] = useState("");
   const [composerHeight, setComposerHeight] = useState(64);
+  // Stop was pressed while the message it would stop was still on its way.
+  const [stopWaiting, setStopWaiting] = useState(false);
   const keyboard = useKeyboardState((state) => ({
     height: state.height,
     isVisible: state.isVisible,
   }));
+  const data = conversation.data ?? EMPTY_CONVERSATION;
   const entries = useMemo(
     () => buildAgentConversation(conversation.data ?? EMPTY_CONVERSATION),
     [conversation.data],
   );
-  const openTurn = openTurnOf(conversation.data?.turns ?? []);
-  const activity = conversationActivity(conversation.data ?? EMPTY_CONVERSATION);
+  const rows = useMemo(
+    () => reconcileConversation(entries, sender.pending),
+    [entries, sender.pending],
+  );
+  const openTurn = openTurnOf(data.turns);
+  // A send the conversation has not read back yet already has the agent busy: the working line
+  // and Stop show from the tap, not from the next poll.
+  const sendOnItsWay = hasUnrecordedSend(entries, sender.pending);
+  const activity = conversationActivity(data) ?? (sendOnItsWay ? "working" : null);
+  const readiness = composerReadiness({ draft, attachments: images.attachments, starting });
   const bottomPad =
     (keyboard.isVisible ? keyboard.height : insets.bottom) +
     (active ? composerHeight + spacing.xs : spacing.md);
@@ -356,16 +429,62 @@ export function ProtocolConversation({
     },
     [respond],
   );
+
   const send = () => {
-    const text = draft.trim();
-    if (text === "") {
+    if (!readiness.canSend) return;
+    sender.send(draft, storedImages(images.attachments));
+    setDraft("");
+    images.clear();
+    // Following the end already keeps a reader who is there; one who scrolled back and sends
+    // wants to see what they sent.
+    requestAnimationFrame(() => void listRef.current?.scrollToEnd({ animated: true }));
+  };
+
+  const stop = () => {
+    if (openTurn !== undefined) {
+      interrupt.mutate(openTurn.id);
       return;
     }
-    submit.mutate(text, {
-      onSuccess: () => setDraft((current) => (current.trim() === text ? "" : current)),
-    });
+    const recorded = new Set(data.turns.map((turn) => turn.id));
+    const latest = findLastMatching(
+      sender.pending,
+      (turn) =>
+        turn.status === "sending" ||
+        (turn.status === "sent" && turn.turnId !== null && !recorded.has(turn.turnId)),
+    );
+    if (latest === undefined) return;
+    if (latest.turnId !== null) {
+      interrupt.mutate(latest.turnId);
+      return;
+    }
+    setStopWaiting(true);
+    const stopWhenRecorded = async () => {
+      const turnId = await sender.turnIdOf(latest.clientId);
+      setStopWaiting(false);
+      if (turnId !== null) interrupt.mutate(turnId);
+    };
+    void stopWhenRecorded();
   };
-  const actionError = submit.error ?? respond.error ?? interrupt.error;
+
+  const onRetry = (clientId: string) => sender.retry(clientId);
+  const onEdit = (clientId: string) => {
+    const failed = sender.pending.find((turn) => turn.clientId === clientId);
+    if (failed === undefined) return;
+    setDraft((current) => (current.trim() === "" ? failed.text : `${failed.text}\n${current}`));
+    images.restore(
+      failed.images.map(
+        (image, index): Attachment => ({
+          id: `${clientId}:${index}`,
+          uri: image.uri,
+          name: image.name,
+          phase: { kind: "stored", path: image.path, bytes: 0 },
+        }),
+      ),
+    );
+    sender.discard(clientId);
+  };
+
+  const actionError = respond.error ?? interrupt.error;
   let emptyMessage: string | null = summary ?? "no conversation recorded";
   if (conversation.isLoading) {
     emptyMessage = "reading the conversation…";
@@ -377,23 +496,31 @@ export function ProtocolConversation({
     emptyMessage = null;
   }
   // One line, one truth: the same phase the header's status word shows.
-  let composerHint: string | null = null;
+  let composerHint: string | null = readinessHint(readiness, images.attachments.length);
   if (active && starting) {
     composerHint = "starting up — the conversation opens when the agent is ready…";
-  } else if (active && entries.length === 0 && !conversation.isLoading) {
+  } else if (composerHint === null && active && rows.length === 0 && !conversation.isLoading) {
     composerHint = "ready for your first message";
   }
+  const canStop = openTurn !== undefined || sendOnItsWay;
 
   return (
     <View style={{ flex: 1 }}>
       <LegendList
-        data={entries}
+        ref={listRef}
+        data={rows}
         keyExtractor={(entry) => entry.key}
         getItemType={(entry) =>
           entry.kind === "item" ? `${entry.kind}:${entry.item.kind}` : entry.kind
         }
         renderItem={({ item }) => (
-          <ConversationRow entry={item} responding={respond.isPending} onRespond={onRespond} />
+          <ConversationRow
+            entry={item}
+            responding={respond.isPending}
+            onRespond={onRespond}
+            onRetry={onRetry}
+            onEdit={onEdit}
+          />
         )}
         estimatedItemSize={76}
         drawDistance={500}
@@ -442,7 +569,10 @@ export function ProtocolConversation({
             <View
               style={{ alignItems: "center", paddingVertical: 4, backgroundColor: colors.sunken }}
             >
-              <MonoText tone="faint" size={11}>
+              <MonoText
+                tone={!readiness.canSend && readiness.reason === "failed" ? "danger" : "faint"}
+                size={11}
+              >
                 {composerHint}
               </MonoText>
             </View>
@@ -452,8 +582,9 @@ export function ProtocolConversation({
             style={{
               flexDirection: "row",
               alignItems: "flex-end",
-              gap: 8,
-              paddingHorizontal: 10,
+              gap: 6,
+              paddingLeft: 4,
+              paddingRight: 10,
               paddingTop: 8,
               paddingBottom: keyboard.isVisible ? 8 : insets.bottom + 4,
               backgroundColor: colors.panel,
@@ -461,39 +592,33 @@ export function ProtocolConversation({
               borderTopColor: colors.softRule,
             }}
           >
-            <TextInput
-              value={draft}
-              onChangeText={setDraft}
-              placeholder="Message the session…"
-              placeholderTextColor={colors.faint}
-              multiline
-              style={{
-                flex: 1,
-                minHeight: 40,
-                maxHeight: 120,
-                backgroundColor: colors.bg,
-                borderWidth: StyleSheet.hairlineWidth,
-                borderColor: colors.rule,
-                borderRadius: radius.lg,
-                paddingHorizontal: 13,
-                paddingVertical: 9,
-                color: colors.ink,
-                fontSize: 15,
-              }}
+            <AttachButton
+              room={images.room}
+              held={images.attachments.length}
+              disabled={starting}
+              onChosen={images.attach}
             />
-            {openTurn !== undefined && (
+            <ComposerField>
+              <AttachmentStrip
+                attachments={images.attachments}
+                onRemove={images.remove}
+                onRetry={images.retry}
+              />
+              <ComposerTextInput
+                value={draft}
+                onChangeText={setDraft}
+                placeholder="Message the session…"
+              />
+            </ComposerField>
+            {canStop && (
               <EvButton
                 variant="ghost"
-                label={interrupt.isPending ? "…" : "Stop"}
-                disabled={interrupt.isPending}
-                onPress={() => interrupt.mutate(openTurn.id)}
+                label={interrupt.isPending || stopWaiting ? "…" : "Stop"}
+                disabled={interrupt.isPending || stopWaiting}
+                onPress={stop}
               />
             )}
-            <EvButton
-              label={submit.isPending ? "Sending…" : "Send"}
-              onPress={send}
-              disabled={submit.isPending || draft.trim() === ""}
-            />
+            <EvButton label="Send" onPress={send} disabled={!readiness.canSend} />
           </View>
         </KeyboardStickyView>
       )}

@@ -12,8 +12,11 @@ import {
   type AgentTurnDto,
 } from "@mend/agent-conversation";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useReducer, useRef } from "react";
 
 import { ApiError, api } from "@/data/live";
+import { pendingTurnsReducer, type LocalImage, type PendingTurn } from "@/data/pending-turns";
+import { composeTurnInput } from "@/data/turn-input";
 
 const malformed = (subject: string): ApiError =>
   new ApiError(`The server returned malformed ${subject} data.`, 0);
@@ -168,9 +171,11 @@ const loadAgentItems = (sessionId: string, initialAfter: number) =>
     throw error instanceof AgentItemCursorStalled ? malformed("agent item cursor") : error;
   });
 
+const conversationKey = (sessionId: string) => ["session", sessionId, "conversation"] as const;
+
 export const useAgentConversation = (sessionId: string, enabled: boolean, live: boolean) => {
   const queryClient = useQueryClient();
-  const queryKey = ["session", sessionId, "conversation"] as const;
+  const queryKey = conversationKey(sessionId);
   return useQuery({
     queryKey,
     enabled,
@@ -199,10 +204,6 @@ export const useAgentConversationActions = (sessionId: string) => {
       queryClient.invalidateQueries({ queryKey: ["session", sessionId] }),
       queryClient.invalidateQueries({ queryKey: ["session", sessionId, "conversation"] }),
     ]);
-  const submit = useMutation({
-    mutationFn: (input: string) => api<unknown>("POST", `/sessions/${sessionId}/turns`, { input }),
-    onSettled: invalidate,
-  });
   const respond = useMutation({
     mutationFn: (input: { readonly requestId: string; readonly response: AgentRequestResponse }) =>
       api<unknown>("POST", `/requests/${input.requestId}/respond`, input.response),
@@ -214,5 +215,100 @@ export const useAgentConversationActions = (sessionId: string) => {
     mutationFn: (turnId: string) => api<unknown>("POST", `/turns/${turnId}/interrupt`, {}),
     onSettled: invalidate,
   });
-  return { submit, respond, interrupt };
+  return { respond, interrupt };
+};
+
+const errorText = (error: unknown): string => {
+  // The turn route's 409 (`ProtocolSessionNotLive`) carries no words of its own; `api` falls back
+  // to the status line, which says nothing to a person.
+  if (error instanceof ApiError && error.status === 409 && error.message.startsWith("POST ")) {
+    return "the agent is not running · resume the session, then retry";
+  }
+  return error instanceof Error && error.message !== ""
+    ? error.message
+    : "the message was not sent";
+};
+
+export interface TurnSender {
+  /** This phone's sends the conversation may not show yet (pending-turns.ts). */
+  readonly pending: ReadonlyArray<PendingTurn>;
+  /** Shows the message at once and sends it after any earlier send. Returns its client id. */
+  readonly send: (text: string, images: ReadonlyArray<LocalImage>) => string;
+  readonly retry: (clientId: string) => void;
+  readonly discard: (clientId: string) => void;
+  /** The recorded turn a send became, once the server answers; null when it refused. */
+  readonly turnIdOf: (clientId: string) => Promise<string | null>;
+}
+
+/**
+ * Sends turns optimistically. Sends go one after another, so the server records them in the
+ * order they were made. The server's answer is written into the cached conversation straight
+ * away — the Stop button and the "working" line need not wait for the next poll — and the
+ * pending turn is matched to it by the turn id, never by its text.
+ */
+export const useTurnSender = (sessionId: string): TurnSender => {
+  const queryClient = useQueryClient();
+  const [pending, dispatch] = useReducer(pendingTurnsReducer, []);
+  const queue = useRef<Promise<unknown>>(Promise.resolve());
+  const outcomes = useRef(new Map<string, Promise<string | null>>());
+  const inputs = useRef(new Map<string, string>());
+  // A send on its way, so a second tap on Retry cannot send the same message twice.
+  const inFlight = useRef(new Set<string>());
+  const seq = useRef(0);
+
+  const deliver = (clientId: string, input: string) => {
+    inFlight.current.add(clientId);
+    const outcome = queue.current.then(async (): Promise<string | null> => {
+      const key = conversationKey(sessionId);
+      // A poll already in flight would land without this turn and overwrite what is written
+      // below; the pending row covers the gap either way, but there is no need to race it.
+      await queryClient.cancelQueries({ queryKey: key });
+      try {
+        const turn = parseTurn(
+          await api<unknown>("POST", `/sessions/${sessionId}/turns`, { input }),
+        );
+        queryClient.setQueryData<AgentConversationDto>(key, (current) =>
+          current === undefined || current.turns.some((existing) => existing.id === turn.id)
+            ? current
+            : { ...current, turns: [...current.turns, turn] },
+        );
+        dispatch({ type: "delivered", clientId, turnId: turn.id });
+        return turn.id;
+      } catch (error) {
+        dispatch({ type: "failed", clientId, error: errorText(error) });
+        return null;
+      } finally {
+        inFlight.current.delete(clientId);
+        void queryClient.invalidateQueries({ queryKey: ["session", sessionId] });
+      }
+    });
+    queue.current = outcome;
+    outcomes.current.set(clientId, outcome);
+  };
+
+  return {
+    pending,
+    send: (text, images) => {
+      seq.current += 1;
+      const clientId = `${Date.now().toString(36)}-${seq.current}`;
+      const message = text.trim();
+      const input = composeTurnInput(message, images);
+      inputs.current.set(clientId, input);
+      dispatch({ type: "queued", clientId, text: message, input, images });
+      deliver(clientId, input);
+      return clientId;
+    },
+    retry: (clientId) => {
+      const input = inputs.current.get(clientId);
+      if (input === undefined || inFlight.current.has(clientId)) return;
+      dispatch({ type: "retried", clientId });
+      deliver(clientId, input);
+    },
+    discard: (clientId) => {
+      inputs.current.delete(clientId);
+      outcomes.current.delete(clientId);
+      dispatch({ type: "discarded", clientId });
+    },
+    turnIdOf: (clientId) => outcomes.current.get(clientId) ?? Promise.resolve(null),
+  };
 };

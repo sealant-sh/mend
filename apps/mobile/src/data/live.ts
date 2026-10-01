@@ -320,6 +320,119 @@ export interface PastedImageDto {
 export const pasteSessionImage = (sessionId: string, contentsBase64: string) =>
   api<PastedImageDto>("POST", `/sessions/${sessionId}/images`, { contentsBase64 });
 
+const parsePastedImage = (raw: string): PastedImageDto | null => {
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      "path" in value &&
+      "mediaType" in value &&
+      "bytes" in value &&
+      typeof value.path === "string" &&
+      typeof value.mediaType === "string" &&
+      typeof value.bytes === "number"
+    ) {
+      return { path: value.path, mediaType: value.mediaType, bytes: value.bytes };
+    }
+  } catch {
+    // Not JSON: refused below.
+  }
+  return null;
+};
+
+const refusalMessage = (raw: string, fallback: string): string => {
+  try {
+    const value: unknown = JSON.parse(raw);
+    if (
+      typeof value === "object" &&
+      value !== null &&
+      "message" in value &&
+      typeof value.message === "string" &&
+      value.message !== ""
+    ) {
+      return value.message;
+    }
+  } catch {
+    // Not JSON — the fallback stands.
+  }
+  return fallback;
+};
+
+/** An upload in flight: its answer, and a way to call it off. */
+export interface ImageUpload {
+  readonly result: Promise<PastedImageDto>;
+  readonly abort: () => void;
+}
+
+/**
+ * The same route as `pasteSessionImage`, over XMLHttpRequest so the composer can show how much
+ * has gone up — fetch reports no upload progress. `onProgress` gets the fraction sent, 0 to 1.
+ */
+export const uploadSessionImage = (
+  sessionId: string,
+  contentsBase64: string,
+  onProgress: (sent: number) => void,
+): ImageUpload => {
+  const request = new XMLHttpRequest();
+  let aborted = false;
+  const result = loadConfig().then(
+    (config) =>
+      new Promise<PastedImageDto>((resolve, reject) => {
+        if (config.url === "") {
+          reject(new ApiError("Set the server URL in Settings first.", 0));
+          return;
+        }
+        if (aborted) {
+          reject(new ApiError("The upload was cancelled.", 0));
+          return;
+        }
+        const route = `/sessions/${sessionId}/images`;
+        request.open("POST", `${config.url}/api${route}`);
+        request.setRequestHeader("content-type", "application/json");
+        request.setRequestHeader("authorization", `Bearer ${config.token}`);
+        request.timeout = 120_000;
+        request.upload.addEventListener("progress", (event) => {
+          if (event.lengthComputable && event.total > 0) onProgress(event.loaded / event.total);
+        });
+        request.addEventListener("load", () => {
+          if (request.status >= 200 && request.status < 300) {
+            const stored = parsePastedImage(request.responseText);
+            if (stored === null) {
+              reject(new ApiError("The server returned malformed image data.", request.status));
+            } else {
+              resolve(stored);
+            }
+            return;
+          }
+          // A 409 here is "no live workspace" (capture mode stores into the running one).
+          const fallback =
+            request.status === 409
+              ? "The session has no live workspace to hold the image. Resume it, then retry."
+              : `POST ${route} → ${request.status}`;
+          reject(new ApiError(refusalMessage(request.responseText, fallback), request.status));
+        });
+        request.addEventListener("error", () =>
+          reject(new ApiError("The image did not reach the machine.", 0)),
+        );
+        request.addEventListener("timeout", () =>
+          reject(new ApiError("The machine did not answer the upload in time.", 0)),
+        );
+        request.addEventListener("abort", () =>
+          reject(new ApiError("The upload was cancelled.", 0)),
+        );
+        request.send(JSON.stringify({ contentsBase64 }));
+      }),
+  );
+  return {
+    result,
+    abort: () => {
+      aborted = true;
+      request.abort();
+    },
+  };
+};
+
 export const ACTIVE = new Set(["starting", "running", "waiting", "idle"]);
 
 export const agentIsActive = (
