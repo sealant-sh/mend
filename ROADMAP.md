@@ -43,6 +43,11 @@ is used there full time, to find bugs by using it while it is built.
    Ceph clusters stop; their definitions stay in the repository (deployment options are product).
    The box's Minecraft servers are the owner's call.
 
+5. **Models, on the phone first.** The phone needs a working model choice now, and models in general
+   need UX work. Start with an audit across the phone, the web app, the CLI and the desktop: what
+   each offers, the picker, effort, per-harness defaults, and whether a session says which model it
+   runs on. Then one model picker, the same on every client.
+
 ### Should
 
 - See and delete what the agent remembers, in the web app and on the phone.
@@ -82,7 +87,6 @@ cache, idle defaults, and the gateway on a private instance.
 
 ## Not scheduled
 
-- **Models on mobile.**
 - **Isolated sessions on our own hardware** (one small VM per session) before people outside the
   team use the box. Docker sessions run privileged, so a shared box is for trusted users only.
 - **Flaky tests:** Mend `doctor.test` (spawns the CLI, `docker info` on CI), the `engine.test`
