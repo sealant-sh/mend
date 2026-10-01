@@ -71,10 +71,11 @@ mend connect claude
 ```
 
 Claude is different. `mend connect claude` opens a browser login for a Claude login of Mend's own,
-kept in a directory Mend holds, so your own Claude login on the laptop stays as it is. It uses the
-Claude CLI on that machine. Claude rotates its refresh token, so two copies of one login sign each
-other out; `--use-my-login` sends the login this machine already uses instead, and both sides then
-share one grant. Run `mend connect claude` again when Mend says the grant expired.
+sent to the server and not kept on the laptop, so your own Claude login there stays as it is. It
+uses the Claude CLI on that machine. Claude rotates its refresh token, so two copies of one login
+sign each other out; `--use-my-login` sends the login this machine already uses instead, and both
+sides then share one grant. Run `mend connect claude` again when Mend says the login needs
+reconnecting.
 
 You do not need to log provider CLIs in on the VPS itself. See
 [Connect provider accounts](/guides/provider-accounts/).

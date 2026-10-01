@@ -51,9 +51,9 @@ whose check could not run says `not checked`.
 
 ### The Claude grant line
 
-`mend connect claude` gives Mend a Claude login of its own, kept in a directory Mend owns, so your
-own Claude login is not signed out when Mend refreshes. The `grant` line reads that copy on this
-machine:
+`mend connect claude` gives Mend a Claude login of its own and keeps no copy of it on this machine
+(the `claude` line above says whether the server's login works). An older `mend` kept one in
+`~/.config/mend/claude-grant`, and while that copy is still there the `grant` line reads it:
 
 | Line                                           | Meaning                                               |
 | ---------------------------------------------- | ----------------------------------------------------- |
@@ -62,13 +62,8 @@ machine:
 | `✗ grant signed out → mend connect claude`     | The grant holds no refresh token.                     |
 | `✗ grant unreadable → mend connect claude`     | The stored grant could not be parsed.                 |
 
-The line is missing when you connected with `--use-my-login` or `--from-stdin`: Mend then keeps no
-grant of its own. It reads the machine that connected the grant, because the platform does not yet
-report a grant's freshness over the API. The web app says nothing about it, and a launch does not
-refuse a session whose grant has expired.
-
-Running `mend connect claude` again with an expired or signed-out grant prints
-`Mend's Claude grant is expired <date>; logging in again` (or `signed out`) and logs in once more.
+The line is missing once no copy is kept. Running `mend connect claude` logs in afresh, sends the
+new login and removes the old copy.
 
 ## Collect a debug bundle
 

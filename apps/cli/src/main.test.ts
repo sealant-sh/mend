@@ -1351,9 +1351,12 @@ esac
       expect(sent.secret).toContain("sk-ant-ort01-mends");
       expect(sent.secret).not.toContain("sk-ant-ort01-mine");
       expect(sent.secret).not.toContain("figma-refresh");
-      // The grant landed in Mend's own directory, leaving the machine's Claude untouched.
-      const grantFile = path.join(home, "config", "mend", "claude-grant", ".credentials.json");
-      expect(fs.existsSync(grantFile)).toBe(true);
+      // Nothing of the login stays here (ADR 0008): no kept grant, no throwaway directory left.
+      const mendDir = path.join(home, "config", "mend");
+      expect(fs.existsSync(path.join(mendDir, "claude-grant"))).toBe(false);
+      expect(fs.readdirSync(mendDir).filter((name) => name.startsWith("claude-login-"))).toEqual(
+        [],
+      );
       expect(fs.readFileSync(path.join(personal, ".credentials.json"), "utf8")).toContain(
         "sk-ant-ort01-mine",
       );
@@ -1367,19 +1370,19 @@ esac
   });
 
   /** Two copies of one grant race on refresh, so Mend refuses rather than connect the same one. */
-  it("refuses a grant that is the one this machine already holds", async () => {
+  it("refuses a login that is the one this machine already holds", async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-grant-same-"));
     const personal = path.join(home, "personal-claude");
-    const grant = path.join(home, "config", "mend", "claude-grant");
-    for (const dir of [personal, grant]) fs.mkdirSync(dir, { recursive: true });
+    fs.mkdirSync(personal, { recursive: true });
     const shared = JSON.stringify({ claudeAiOauth: { refreshToken: "sk-ant-ort01-shared" } });
     fs.writeFileSync(path.join(personal, ".credentials.json"), shared);
-    fs.writeFileSync(path.join(grant, ".credentials.json"), shared);
+    // A Claude that ignored the isolation and logged the same account in.
     const bin = path.join(home, "claude");
     fs.writeFileSync(
       bin,
       `#!/bin/sh
 case "$2" in
+  login) mkdir -p "$CLAUDE_CONFIG_DIR"; printf '%s' '${shared}' > "$CLAUDE_CONFIG_DIR/.credentials.json" ;;
   status) printf '{"loggedIn":true,"authMethod":"claude.ai","configDirectory":"%s"}' "$CLAUDE_CONFIG_DIR" ;;
 esac
 `,
@@ -1394,5 +1397,85 @@ esac
     expect(exit.code).toBe(1);
     expect(cli.stderr()).toContain("same grant this machine's Claude holds");
     fs.rmSync(home, { recursive: true, force: true });
+  });
+
+  /**
+   * Alpha 2026-10-01: a reconnect re-sent the grant an older CLI kept, whose refresh token the
+   * server had spent days before, and replaced a login with a dead one. A reconnect logs in anew.
+   */
+  it("logs in anew even when an older mend kept a grant, sends the new one, and removes the old", async () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-grant-fresh-"));
+    const personal = path.join(home, "personal-claude");
+    fs.mkdirSync(personal, { recursive: true });
+    const kept = path.join(home, "config", "mend", "claude-grant");
+    fs.mkdirSync(kept, { recursive: true });
+    fs.writeFileSync(
+      path.join(kept, ".credentials.json"),
+      JSON.stringify({ claudeAiOauth: { refreshToken: "sk-ant-ort01-spent" } }),
+    );
+    const logins = path.join(home, "logins");
+    const bin = path.join(home, "claude");
+    fs.writeFileSync(
+      bin,
+      `#!/bin/sh
+case "$2" in
+  login)
+    echo x >> '${logins}'
+    mkdir -p "$CLAUDE_CONFIG_DIR"
+    printf '%s' '{"claudeAiOauth":{"refreshToken":"sk-ant-ort01-fresh"}}' > "$CLAUDE_CONFIG_DIR/.credentials.json"
+    ;;
+  status)
+    if [ -f "$CLAUDE_CONFIG_DIR/.credentials.json" ]; then
+      printf '{"loggedIn":true,"authMethod":"claude.ai","configDirectory":"%s"}' "$CLAUDE_CONFIG_DIR"
+    else
+      printf '{"loggedIn":false,"authMethod":"none","configDirectory":"%s"}' "$CLAUDE_CONFIG_DIR"
+    fi
+    ;;
+esac
+`,
+      { mode: 0o755 },
+    );
+    let body = "";
+    const fake = await startFakeMend((request, response) => {
+      if (request.url === "/api/me/sealant/accounts" && request.method === "POST") {
+        request.on("data", (chunk: Buffer) => {
+          body += chunk.toString();
+        });
+        request.on("end", () =>
+          json(response, {
+            id: "account-1",
+            provider: "claude",
+            name: "default",
+            kind: "credentials-json",
+            status: "active",
+            metadata: {},
+            connectedAt: "2026-09-18T00:00:00.000Z",
+            lastUsedAt: null,
+          }),
+        );
+        return;
+      }
+      response.statusCode = 404;
+      response.end();
+    });
+    try {
+      const cli = startCli(fake.url, ["connect", "claude"], {
+        XDG_CONFIG_HOME: path.join(home, "config"),
+        CLAUDE_CONFIG_DIR: personal,
+        MEND_CLAUDE_BIN: bin,
+      });
+      const exit = await cli.exited;
+      expect(exit.code, cli.stderr()).toBe(0);
+      await waitFor(() => body !== "");
+      const sent = JSON.parse(body) as { readonly secret: string };
+      expect(sent.secret).toContain("sk-ant-ort01-fresh");
+      expect(sent.secret).not.toContain("sk-ant-ort01-spent");
+      expect(fs.readFileSync(logins, "utf8").trim().split("\n")).toHaveLength(1);
+      expect(fs.existsSync(kept)).toBe(false);
+      expect(cli.stdout() + cli.stderr()).toContain("removed the copy an older mend kept");
+    } finally {
+      await fake.close();
+      fs.rmSync(home, { recursive: true, force: true });
+    }
   });
 });

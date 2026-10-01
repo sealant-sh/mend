@@ -3,6 +3,8 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
+import { throwawayLoginDir } from "./login-dir.ts";
+
 /**
  * A Codex login of Mend's own (docs/adr/0008-one-refresher-for-provider-logins.md), the Codex half of
  * ADR 0005's grant: `codex login --device-auth` in a throwaway CODEX_HOME, sent to the server and
@@ -75,9 +77,13 @@ export const codexGrant = (input: {
   readonly cli: CodexCli;
   readonly personalAuthJson: string | null;
   readonly say: (line: string) => void;
+  /**
+   * Where the throwaway home is made: Mend's own config directory, not the system temp directory,
+   * where Codex refuses to create its helper binaries and says so on every login.
+   */
+  readonly parent: string;
 }): CodexGrantResult => {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-codex-grant-"));
-  fs.chmodSync(home, 0o700);
+  const home = throwawayLoginDir(input.parent, "codex-login-");
   try {
     input.say("  Mend needs its own Codex login; it is sent to your server and not kept here");
     input.say("  your own Codex login stays as it is");
