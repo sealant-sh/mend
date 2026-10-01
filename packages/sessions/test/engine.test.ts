@@ -388,6 +388,8 @@ const sealantLaunchLayer = (
     readonly beforeCreate?: (options: CreateOptions) => Effect.Effect<void>;
     /** A faithful process hook: the harness writes through HOME after relocation. */
     readonly beforeOpen?: (argv: ReadonlyArray<string>) => void;
+    /** Holds the agent's open on the platform until it completes (a slow PTY start). */
+    readonly aroundOpen?: () => Effect.Effect<void>;
     /**
      * `workspaces.findByIdempotencyKey` (Core's next SDK); absent answers `unsupported`, as the
      * 0.37.2 seam does.
@@ -624,12 +626,16 @@ const sealantLaunchLayer = (
               cause: null,
             }),
           )
-        : Effect.sync(() => {
-            captureOps?.beforeOpen?.(argv);
-            spawned?.push(argv);
-            if (options !== undefined) openedOptions?.push(options);
-            return openPty(options?.mode ?? "pty");
-          }),
+        : (captureOps?.aroundOpen?.() ?? Effect.void).pipe(
+            Effect.andThen(
+              Effect.sync(() => {
+                captureOps?.beforeOpen?.(argv);
+                spawned?.push(argv);
+                if (options !== undefined) openedOptions?.push(options);
+                return openPty(options?.mode ?? "pty");
+              }),
+            ),
+          ),
     forward: () => Effect.die("not in test"),
     stopWorkspace: (target, options) =>
       Effect.sync(() => {
@@ -3352,6 +3358,157 @@ describe("SessionEngine", () => {
             beforeCreate: () =>
               Deferred.succeed(createAsked, undefined).pipe(
                 Effect.andThen(Deferred.await(createAnswered)),
+              ),
+          },
+        }),
+      },
+    );
+  });
+
+  it("a stop while the launch still sets up its machine: the agent never starts and the session reads stopped", async () => {
+    // Alpha 2026-10-01 (3c4e991b): a stop during a launch found no agent to end, and the launch
+    // went on and started one. Now the launch looks for the stop just before the agent starts.
+    const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const createAsked = await Effect.runPromise(Deferred.make<void>());
+    const createAnswered = await Effect.runPromise(Deferred.make<void>());
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const launching = yield* engine.launch(session.id, ["codex"]).pipe(Effect.forkChild);
+          yield* Deferred.await(createAsked);
+
+          yield* engine.stop(session.id);
+          yield* Deferred.succeed(createAnswered, undefined);
+          const launched = yield* Fiber.await(launching);
+
+          expect(Exit.isFailure(launched)).toBe(true);
+          expect(JSON.stringify(launched)).toContain("stopped while starting");
+          expect(spawned).toEqual([]);
+          expect(world.sessions.get(session.id)?.status).toBe("stopped");
+          expect(
+            [...world.processes.values()].filter(
+              (process) => process.sessionId === session.id && process.exitedAt === null,
+            ),
+          ).toEqual([]);
+        }),
+      {
+        sealantLayer: lifecycleLayer(created, {
+          spawned,
+          captureOps: {
+            beforeCreate: () =>
+              Deferred.succeed(createAsked, undefined).pipe(
+                Effect.andThen(Deferred.await(createAnswered)),
+              ),
+          },
+        }),
+      },
+    );
+  });
+
+  it("a stop after the launch's last look, before the agent's row: the launch ends and so does the agent", async () => {
+    // The alpha case itself: the stop landed while the platform was opening the agent, two
+    // seconds before its process row. The launch's agent reopened the stopped session as
+    // `running` and nothing ended it. The launch now stops the session again as it ends.
+    const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const openAsked = await Effect.runPromise(Deferred.make<void>());
+    const openAnswered = await Effect.runPromise(Deferred.make<void>());
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const launching = yield* engine.launch(session.id, ["codex"]).pipe(Effect.forkChild);
+          yield* Deferred.await(openAsked);
+
+          yield* engine.stop(session.id);
+          yield* Deferred.succeed(openAnswered, undefined);
+          yield* Fiber.await(launching);
+
+          expect(spawned).toHaveLength(1);
+          const agents = [...world.processes.values()].filter(
+            (process) => process.sessionId === session.id && process.kind === "agent-pty",
+          );
+          expect(agents).toHaveLength(1);
+          expect(agents[0]?.exitedAt).not.toBeNull();
+          expect(world.sessions.get(session.id)?.status).toBe("stopped");
+        }),
+      {
+        sealantLayer: lifecycleLayer(created, {
+          spawned,
+          captureOps: {
+            aroundOpen: () =>
+              Deferred.succeed(openAsked, undefined).pipe(
+                Effect.andThen(Deferred.await(openAnswered)),
+              ),
+          },
+        }),
+      },
+    );
+  });
+
+  it("the same in capture mode: the stop drains the executor and the agent the launch started ends with it", async () => {
+    const created: CreateOptions[] = [];
+    const spawned: ReadonlyArray<string>[] = [];
+    const openAsked = await Effect.runPromise(Deferred.make<void>());
+    const openAnswered = await Effect.runPromise(Deferred.make<void>());
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "codex",
+            label: null,
+            name: null,
+            ownerUserId: "user-fixture",
+            base: null,
+          });
+          const launching = yield* engine.launch(session.id, ["codex"]).pipe(Effect.forkChild);
+          yield* Deferred.await(openAsked);
+
+          yield* engine.stop(session.id);
+          yield* Deferred.succeed(openAnswered, undefined);
+          yield* Fiber.await(launching);
+          yield* until(
+            () => world.sessions.get(session.id)?.status === "stopped",
+            "the stopped launch to settle stopped",
+          );
+
+          const agents = [...world.processes.values()].filter(
+            (process) => process.sessionId === session.id && process.kind === "agent-pty",
+          );
+          expect(spawned).toHaveLength(1);
+          expect(agents.every((agent) => agent.exitedAt !== null)).toBe(true);
+        }),
+      {
+        captured: makeMemoryCaptureStore(),
+        sealantLayer: lifecycleLayer(created, {
+          spawned,
+          captureOps: {
+            aroundOpen: () =>
+              Deferred.succeed(openAsked, undefined).pipe(
+                Effect.andThen(Deferred.await(openAnswered)),
               ),
           },
         }),
