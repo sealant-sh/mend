@@ -1,5 +1,8 @@
 # Current scope
 
+> Superseded 2026-10-01 by [`ROADMAP.md`](../ROADMAP.md), which says what each release contains.
+> What follows is the list as it stood on 2026-09-26.
+
 Written 2026-09-20, ticked 2026-09-26. A working list across `sealant-sh/mend`, `sealant-sh/sealant`
 (Core) and `sealant-sh/sealantd`. Update it as items land; delete it when it is empty.
 
