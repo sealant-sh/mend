@@ -61,6 +61,7 @@ export default defineConfig({
             { label: "Git access", slug: "guides/git-access" },
             { label: "Development services", slug: "guides/services" },
             { label: "Skills", slug: "guides/skills" },
+            { label: "Your pi setup", slug: "guides/pi" },
           ],
         },
         {

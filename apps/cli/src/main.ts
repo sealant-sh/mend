@@ -13,6 +13,7 @@ import {
   narrowCredential,
   repositoryCloneUrlIssue,
   sameGrant,
+  validatePiProfile,
 } from "@mend/domain/workbench";
 
 import { type AgentShareHandle, shareAgent, startAgentShare } from "./agent-share.ts";
@@ -63,6 +64,7 @@ import {
   sessionShareCommand,
 } from "./organization.ts";
 import { type ApiCall, pairCommand, qrCommand } from "./pair.ts";
+import { piAgentDir, piProfileLines, scanPiProfile } from "./pi-profile.ts";
 import { MendRequestError, noAnswerError, spoken } from "./server-request.ts";
 import { runServerProcess } from "./server-runtime.ts";
 import { nodeServerRuntime, readServerInstallationFacts, serverCommand } from "./server-setup.ts";
@@ -2582,8 +2584,49 @@ const claudeGrant = async (): Promise<string | null> => {
  * narrowed to its `claudeAiOauth` grant first, so the MCP refresh tokens in the same file stay
  * here (ADR 0005). Mend forwards it once and stores nothing.
  */
+interface PiProfileDto {
+  readonly fileCount: number;
+  readonly bytes: number;
+  readonly revision: number;
+  readonly updatedAt: string;
+}
+
+/**
+ * `mend connect pi`: this machine's pi setup, as the profile every pi session of yours receives
+ * (pi-profile.ts). Not a login: pi runs on the ChatGPT login `mend connect codex` makes.
+ */
+const connectPi = async (config: CliConfig, flags: ReadonlyArray<string>) => {
+  if (flags.includes("--remove")) {
+    const removed = await api<{ readonly removed: boolean }>(config, "DELETE", "/me/pi-profile");
+    process.stdout.write(removed.removed ? "pi: profile removed\n" : "pi: no profile saved\n");
+    return;
+  }
+  const scan = scanPiProfile(takeFlagValue(flags, "--dir") ?? piAgentDir());
+  if ("error" in scan) return fail(scan.error);
+  for (const line of piProfileLines(scan)) say(line);
+  const issue = validatePiProfile(scan.files);
+  if (issue !== null) return fail(`pi: ${issue}`);
+  if (flags.includes("--dry-run")) {
+    say(dim("  --dry-run: nothing sent"));
+    return;
+  }
+  const saved = await withSpinner(
+    "saving the pi profile",
+    api<{ readonly profile: PiProfileDto; readonly changed: boolean }>(
+      config,
+      "PUT",
+      "/me/pi-profile",
+      { files: scan.files },
+    ),
+  );
+  process.stdout.write(
+    `pi       profile ${saved.changed ? "saved" : "unchanged"} · revision ${saved.profile.revision} · new pi sessions receive it\n`,
+  );
+};
+
 const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const [providerArg, ...flags] = args;
+  if (providerArg === "pi") return connectPi(config, flags);
   if (!isProvider(providerArg)) {
     return fail(usageOf("connect"));
   }
@@ -3443,7 +3486,7 @@ _mend() {
     'skills:skill libraries — list, push'
     'accounts:your connected accounts on the platform'
     'pair:pair a phone or a second machine' 'doctor:read-only checklist of this setup'
-    'connect:send this machine'"'"'s claude/codex/github credential to the platform'
+    'connect:send this machine'"'"'s claude/codex/github credential, or your pi setup'
     'continue:resume with the pending follow-up' 'resume:rejoin a settled session'
     'rejoin:attach if live, otherwise resume'
     'land:push a session change to origin and open its pull request'

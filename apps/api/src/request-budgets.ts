@@ -18,6 +18,7 @@ const isLoopbackSocket = (address: string): boolean => {
 const UPLOAD_ROUTES: ReadonlyArray<readonly [string, RegExp]> = [
   ["POST", /^\/api\/sessions\/[^/]+\/images$/],
   ["POST", /^\/api\/skills\/sync$/],
+  ["PUT", /^\/api\/me\/pi-profile$/],
   ["POST", /^\/api\/organization\/folders\/[^/]+\/files$/],
   ["POST", /^\/api\/dotfiles\/snapshot$/],
   ["PUT", /^\/api\/projects\/[^/]+\/workspace-image$/],

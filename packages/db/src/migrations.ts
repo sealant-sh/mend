@@ -2711,6 +2711,23 @@ const notificationSettingsMigration = Effect.gen(function* () {
     )`;
 });
 
+/**
+ * Each person's pi setup (`mend connect pi`): one row per account, removed with the account. The
+ * files are jsonb like skills'; the launch path reads them whole.
+ */
+const userPiProfilesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE user_pi_profiles (
+      user_id text PRIMARY KEY REFERENCES "user" (id) ON DELETE CASCADE,
+      files jsonb NOT NULL,
+      digest text NOT NULL,
+      bytes integer NOT NULL,
+      revision integer NOT NULL DEFAULT 1,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2808,4 +2825,5 @@ export const migrations = {
   "0094_capture_git_fsck_recheck": captureGitFsckRecheckMigration,
   "0095_process_first_output": processFirstOutputMigration,
   "0096_notification_settings": notificationSettingsMigration,
+  "0097_user_pi_profiles": userPiProfilesMigration,
 };

@@ -8,6 +8,7 @@ import { githubGroup } from "./github.ts";
 import { landingsGroup } from "./landing.ts";
 import { operatorGroup } from "./operator.ts";
 import { invitationsGroup, organizationGroup } from "./organization.ts";
+import { piProfileGroup } from "./pi-profile.ts";
 import {
   projectClusterBindingsGroup,
   projectEnvironmentGroup,
@@ -51,6 +52,7 @@ export const MendApi = HttpApi.make("mend")
   .add(settingsGroup)
   .add(dotfilesGroup)
   .add(skillsGroup)
+  .add(piProfileGroup)
   .add(issuesGroup)
   .add(briefsGroup)
   .add(runsGroup)

@@ -33,6 +33,7 @@ import {
   SessionProcessesRepo,
   SessionRunsRepo,
   SessionsRepo,
+  PiProfilesRepo,
   SettingsRepo,
   SkillsRepo,
   UserDotfilesRepo,
@@ -245,6 +246,13 @@ import {
   type PlacedPastedImage,
   storePastedImage as storePastedImageOnHost,
 } from "./pasted-images.ts";
+import {
+  materializePiProfile,
+  piProfileFilesToWrite,
+  piProfileKeptDir,
+  planPiProfile,
+  vacatePiProfileExec,
+} from "./pi-profile.ts";
 import {
   ProtocolHost,
   type ProtocolHostHooks,
@@ -460,6 +468,27 @@ const withHarnessBootstrap = (
   harness: string,
   argv: ReadonlyArray<string>,
 ): ReadonlyArray<string> => withHarnessSetup(harness, withPermissionDefaults(harness, argv));
+
+/** A pi profile directory kept aside, or one that could not be cleared, is said once. */
+const logPiProfileVacated = (sessionId: SessionId, outcomes: ReadonlyArray<SkillsVacateOutcome>) =>
+  Effect.forEach(
+    outcomes,
+    (outcome) => {
+      switch (outcome.outcome) {
+        case "kept":
+          return Effect.logInfo(
+            "session engine: pi profile · the directory held something else and was kept aside",
+          ).pipe(Effect.annotateLogs({ sessionId, dir: outcome.dir, keptAt: outcome.detail }));
+        case "error":
+          return Effect.logWarning(
+            "session engine: pi profile · the directory could not be cleared",
+          ).pipe(Effect.annotateLogs({ sessionId, dir: outcome.dir, code: outcome.detail }));
+        default:
+          return Effect.void;
+      }
+    },
+    { discard: true },
+  );
 
 /** A skill directory kept aside, or one that could not be cleared, is said once. */
 const logSkillsVacated = (sessionId: SessionId, outcomes: ReadonlyArray<SkillsVacateOutcome>) =>
@@ -1445,6 +1474,7 @@ type SessionEngineRequirements =
   | DotfilesStore
   | DotfilesCloner
   | SkillsRepo
+  | PiProfilesRepo
   | SessionRunsRepo
   | SessionProcessesRepo
   | ServicesRepo
@@ -4814,6 +4844,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const dotfilesStore = yield* DotfilesStore;
       const dotfilesCloner = yield* DotfilesCloner;
       const skillsRepo = yield* SkillsRepo;
+      const piProfiles = yield* PiProfilesRepo;
       const sessionRuns = yield* SessionRunsRepo;
       const processes = yield* SessionProcessesRepo;
       const services = yield* ServicesRepo;
@@ -8288,6 +8319,50 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         },
       );
 
+      /**
+       * The owner's pi profile (`pi-profile.ts`), into a pi session's harness home, after the
+       * relocation so it lands where pi reads: beside the mounted harness home in the co-located
+       * store, through exec in capture mode. Best-effort like skills: pi starts without it.
+       */
+      const deliverPiProfile = Effect.fn("SessionEngine.deliverPiProfile")(function* (
+        session: Session,
+        project: Project,
+        workspace: Workspace,
+      ) {
+        if (session.harness !== "pi" || session.ownerUserId === null) return;
+        const saved = yield* piProfiles.forUser(session.ownerUserId);
+        if (saved === null) return;
+        const plan = planPiProfile({ digest: saved.profile.digest, files: saved.files });
+        if (capture === null) {
+          const outcomes = yield* materializePiProfile(
+            harnessHomePathOf(project.storePath, session.id),
+            plan,
+          );
+          yield* logPiProfileVacated(session.id, outcomes);
+          return;
+        }
+        const home = HARNESS_HOME_MOUNT_PATH;
+        const prepared = yield* sealant.exec(
+          workspace,
+          vacatePiProfileExec(home, piProfileKeptDir(), plan),
+        );
+        const vacated = parseSkillsVacateOutcomes(prepared.stdout);
+        yield* logPiProfileVacated(session.id, vacated);
+        if (prepared.exitCode !== 0) {
+          return yield* new WorkspaceFileError({
+            path: home,
+            message: `exit ${prepared.exitCode}: ${prepared.stderr.trim()}`,
+          });
+        }
+        yield* writeWorkspaceFiles(
+          workspace,
+          piProfileFilesToWrite(plan, vacated).map((file) => ({
+            path: path.posix.join(home, file.path),
+            bytes: file.bytes,
+          })),
+        );
+      });
+
       const storePastedImage = Effect.fn("SessionEngine.storePastedImage")(function* (
         sessionId: SessionId,
         bytes: Uint8Array,
@@ -9077,6 +9152,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
         }
+        yield* deliverPiProfile(session, project, workspace).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: the pi profile was not delivered").pipe(
+              Effect.annotateLogs({ sessionId, message: error.message }),
+            ),
+          ),
+        );
         // State restore can rewrite $HOME, while a hot claim can freshen mend.toml after prewarm.
         // Rewrite the managed note after both paths so it reflects the claimed worktree now. It
         // is written through exec in either store, so a captured executor's agent reads the same

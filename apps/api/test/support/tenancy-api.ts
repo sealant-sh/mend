@@ -13,6 +13,7 @@ import {
   IssuesRepo,
   NotificationSettingsRepo,
   OrganizationSettingsRepo,
+  PiProfilesRepo,
   ProjectClusterBindingsRepo,
   ProjectEnvironmentRepo,
   ProjectLinksRepo,
@@ -172,6 +173,7 @@ export const createTenancyApi = async (
       readonly engine?: Layer.PartialEffectful<SessionEngine["Service"]>;
       readonly jobs?: Layer.PartialEffectful<JobRunner["Service"]>;
       readonly changePasses?: Layer.PartialEffectful<ChangePassesRepo["Service"]>;
+      readonly piProfiles?: Layer.PartialEffectful<PiProfilesRepo["Service"]>;
     };
   } = {},
 ): Promise<TenancyApi> => {
@@ -307,6 +309,7 @@ export const createTenancyApi = async (
         calls,
       ),
       recording(HostEnvironment, "hostEnvironment", {}, calls),
+      recording(PiProfilesRepo, "piProfiles", options.implement?.piProfiles ?? {}, calls),
       Layer.succeed(NetworkConfig, network),
       Layer.succeed(DeploymentConfig, {
         mode: "local",

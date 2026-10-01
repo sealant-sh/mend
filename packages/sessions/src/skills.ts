@@ -168,6 +168,11 @@ export interface SkillsVacate {
    * files are exactly this tree is left untouched and its files are not written again.
    */
   readonly delivering: string | null;
+  /**
+   * Directory names the digest does not read, at any depth: what the session builds inside a
+   * delivered tree (a pi profile's `node_modules`). Skills name none.
+   */
+  readonly skip?: ReadonlyArray<string>;
 }
 
 /**
@@ -235,8 +240,8 @@ export const planSkills = (
 /**
  * Clears the plan's directories under a harness home (`node -e`, argv: home, the kept directory
  * relative to it, the `vacate` list as JSON). Prints one `skill <outcome> <dir>[ <detail>]` line
- * per directory: `absent`; `unchanged` (its files are exactly `delivering`; nothing was touched
- * and nothing is written into it); `kept` (moved whole to the detail path; nothing is ever
+ * per directory: `absent`; `unchanged` (its files are exactly `delivering`, leaving out any
+ * directory named in its `skip`; nothing was touched and nothing is written into it); `kept` (moved whole to the detail path; nothing is ever
  * deleted); `error` (the detail is the code). Exits 1 after any `error`,
  * and the caller then writes nothing: a directory that could not be cleared is never written into.
  */
@@ -244,14 +249,14 @@ export const SKILLS_VACATE_PROGRAM = [
   `const fs=require("fs"),path=require("path"),crypto=require("crypto");`,
   `const [home,kept,list]=process.argv.slice(1);const items=JSON.parse(list);`,
   `const sha=b=>crypto.createHash("sha256").update(b).digest("hex");`,
-  `function tree(dir){const out=[];const walk=(abs,rel)=>{for(const e of fs.readdirSync(abs,{withFileTypes:true})){`,
+  `function tree(dir,skip){const out=[];const walk=(abs,rel)=>{for(const e of fs.readdirSync(abs,{withFileTypes:true})){`,
   `const a=path.join(abs,e.name),r=rel===""?e.name:rel+"/"+e.name;`,
-  `if(e.isDirectory())walk(a,r);else if(e.isFile())out.push([r,sha(fs.readFileSync(a))]);else throw new Error("special")}};`,
+  `if(e.isDirectory()){if(!skip.includes(e.name))walk(a,r)}else if(e.isFile())out.push([r,sha(fs.readFileSync(a))]);else throw new Error("special")}};`,
   `walk(dir,"");out.sort((x,y)=>x[0]<y[0]?-1:x[0]>y[0]?1:0);return sha(out.map(([r,h])=>r+"\\u0000"+h+"\\n").join(""))}`,
   `function say(o,d,x){process.stdout.write("skill "+o+" "+d+(x?" "+x:"")+"\\n")}`,
   `let failed=false;for(const it of items){const abs=path.join(home,it.dir);let st;`,
   `try{st=fs.lstatSync(abs)}catch(e){if(e.code==="ENOENT"){say("absent",it.dir);continue}say("error",it.dir,e.code);failed=true;continue}`,
-  `let digest=null;if(st.isDirectory()){try{digest=tree(abs)}catch{digest=null}}`,
+  `let digest=null;if(st.isDirectory()){try{digest=tree(abs,it.skip||[])}catch{digest=null}}`,
   `if(digest!==null&&it.delivering!==null&&digest===it.delivering){say("unchanged",it.dir);continue}`,
   `try{const rel=path.join(kept,it.dir),to=path.join(home,rel);fs.mkdirSync(path.dirname(to),{recursive:true});fs.renameSync(abs,to);say("kept",it.dir,rel)}`,
   `catch(e){say("error",it.dir,e.code||"error");failed=true}}`,
