@@ -23,7 +23,9 @@ through them, and a Stop seals as soon as its save is verified. The wait remains
 - for an executor whose sealantd predates bound links, until its links expire plus a 5-minute margin
   for the bucket's clock: about 10.5 minutes after a small Stop, up to 20 after a large one;
 - for a seal that carries what such an executor saved, until that executor's links have expired;
-- for 15 minutes after Mend restarts.
+- for a Stop that uploaded an object of 16 MB or more, which goes up in parts, or a new commit's
+  pack index in the first 20 minutes after Mend started: those links are not bound;
+- for 20 minutes after Mend restarts.
 
 Meanwhile the session stays `stopping` and says `final seal not confirmed`, and the executor keeps
 running. Nothing is lost: the session finishes stopping once the seal stands.

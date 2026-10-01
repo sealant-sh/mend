@@ -439,6 +439,15 @@ export class CaptureStoreRepo extends Context.Service<
       scopes: ReadonlyArray<CaptureScopeRef>,
     ) => Effect.Effect<Date | null>;
     /**
+     * How many of `scopes` (distinct) Mend can still speak for (decision 48): its authority row
+     * is there, or its worktree is. An epoch's row is made before any upload URL leaves Mend
+     * under it, so in a worktree that is there an absent row means no URL ever did. A row goes
+     * only with its worktree (`ON DELETE CASCADE`): then nothing is known about that epoch.
+     */
+    readonly putAuthorityKnownOver: (
+      scopes: ReadonlyArray<CaptureScopeRef>,
+    ) => Effect.Effect<number>;
+    /**
      * Every object the seal's capture names read back as what its name says, starting at `at`:
      * recorded on the seal while it still names that capture — and only if no upload URL of any
      * epoch its objects live under (`scopes`, 0092, cross-repo decision 31) was handed out since
@@ -1069,6 +1078,21 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return row?.expiresAt ?? null;
     });
 
+    const putAuthorityKnownOver = Effect.fn("CaptureStoreRepo.putAuthorityKnownOver")(function* (
+      scopes: ReadonlyArray<CaptureScopeRef>,
+    ) {
+      if (scopes.length === 0) return 0;
+      const [row] = yield* sql<{ readonly known: number | string }>`
+        SELECT count(*) AS known
+          FROM (SELECT DISTINCT "worktreeId", epoch
+                  FROM jsonb_to_recordset(${JSON.stringify(scopes)}::jsonb)
+                       AS s("worktreeId" text, epoch bigint)) s
+         WHERE EXISTS (SELECT 1 FROM capture_put_authority a
+                        WHERE a.worktree_id = s."worktreeId" AND a.epoch = s.epoch)
+            OR EXISTS (SELECT 1 FROM worktrees w WHERE w.id = s."worktreeId")`.pipe(Effect.orDie);
+      return Number(row?.known ?? 0);
+    });
+
     const markSealReverified = Effect.fn("CaptureStoreRepo.markSealReverified")(function* (
       worktreeId: WorktreeId,
       epoch: number,
@@ -1345,6 +1369,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       recordPutAuthority,
       putAuthorityUntil,
       putAuthorityUntilOver,
+      putAuthorityKnownOver,
       markSealReverified,
       voidSeal,
       listChain,

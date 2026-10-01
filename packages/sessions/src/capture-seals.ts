@@ -112,6 +112,12 @@ export const sealVerifications: Semaphore.Semaphore = Semaphore.makeUnsafe(1);
 export const SEAL_VERIFICATION_LIMIT = Duration.minutes(30);
 export const SEAL_VERIFICATION_LIMIT_WORDS = "30 minutes";
 
+/**
+ * The bucket-clock margin past this process's own window (`replaceableUntil` counts a URL minted
+ * before this process started by its longest life alone): `PUT_URL_CLOCK_MARGIN_SECONDS`.
+ */
+const STARTUP_CLOCK_MARGIN_MS = 5 * 60 * 1000;
+
 /** Seal read-backs in flight (`sealStandingOf`), by store, seal and the authority it waited out. */
 const readBacks = makeSingleFlight<SealStanding, never>();
 
@@ -132,9 +138,12 @@ const readBacks = makeSingleFlight<SealStanding, never>();
  *   bytes → void, for good;
  * - a store that could not be read concludes nothing: withheld, asked again on the next read.
  *
- * Under epochs that never recorded write authority — every URL bound to its bytes, which a store
- * that `bindsBytes` checks — there is nothing that could have replaced the objects once this
- * process's own window (`replaceableUntil`) is past: the seal stands as recorded.
+ * Under epochs that hold no write authority — no expiry recorded, and Mend still speaks for each
+ * (its row or its worktree is there): every URL handed out under them was bound to its bytes,
+ * which a store that `bindsBytes` checks — nothing could have replaced the objects once this
+ * process's own window (`replaceableUntil`, plus the clock margin) is past: the seal stands as
+ * recorded. An epoch whose row went with its worktree says nothing: the wait and the read-back,
+ * as before.
  */
 export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function* (
   seal: SealedCompletion,
@@ -176,7 +185,14 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
   // replace a stored object, and this process minted none that could still. The objects are
   // what they were verified to be when they registered: nothing to wait for, nothing to read
   // back (Garage self-host, e2e 2026-10-02: a Stop's seal waited 10.5 minutes for this).
-  if (recorded === null && at >= storeUntil) return { state: "standing" } satisfies SealStanding;
+  if (recorded === null && at >= storeUntil + STARTUP_CLOCK_MARGIN_MS) {
+    // Mend still speaks for every epoch it lives under (`putAuthorityKnownOver`): one whose row
+    // went with its worktree says nothing, and the seal waits and reads back as before.
+    const distinct = new Set(scopes.map((scope) => `${scope.worktreeId}:${scope.epoch}`)).size;
+    if ((yield* repo.putAuthorityKnownOver(scopes)) === distinct) {
+      return { state: "standing" } satisfies SealStanding;
+    }
+  }
   if (at < until) {
     const words = `an upload URL of ${epochsWords(seal, scopes)} could replace what it names until ${new Date(until).toISOString()}`;
     yield* Effect.logInfo(

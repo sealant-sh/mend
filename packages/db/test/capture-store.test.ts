@@ -936,6 +936,38 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     expect(result.checked).toEqual({ recorded: true });
   });
 
+  it("decision 48: Mend speaks for an epoch whose row or worktree is there, and for none of a deleted worktree", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const sql = yield* SqlClient.SqlClient;
+        const here = yield* freshWorktree;
+        const gone = yield* freshWorktree;
+        // An epoch with a row, one without (no URL ever left Mend under it), and the same pair
+        // in a worktree that is then deleted: its rows go with it.
+        yield* repo.recordPutAuthority(here, 1, new Date(Date.now() + 60_000));
+        yield* repo.recordPutAuthority(gone, 1, new Date(Date.now() + 60_000));
+        const scopes = [
+          { worktreeId: here, epoch: 1 },
+          { worktreeId: here, epoch: 2 },
+          { worktreeId: here, epoch: 2 },
+        ];
+        const before = yield* repo.putAuthorityKnownOver([
+          ...scopes,
+          { worktreeId: gone, epoch: 1 },
+        ]);
+        yield* sql`DELETE FROM worktrees WHERE id = ${gone}`;
+        const after = yield* repo.putAuthorityKnownOver([
+          ...scopes,
+          { worktreeId: gone, epoch: 1 },
+        ]);
+        return { before, after, none: yield* repo.putAuthorityKnownOver([]) };
+      }),
+    );
+    // Distinct scopes: here:1, here:2, gone:1.
+    expect(result).toEqual({ before: 3, after: 2, none: 0 });
+  });
+
   it("launch-bound leases (0085): another launch of the holder never retakes, renews, registers under or seals a lease its launch does not hold (review 2026-09-28 (4) #11)", async () => {
     const result = await run(
       Effect.gen(function* () {

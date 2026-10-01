@@ -666,6 +666,15 @@ export const putUrlTtlSeconds = (bytes: number | null): number =>
         PRESIGN_TTL_SECONDS,
         PUT_URL_TTL_MIN_SECONDS + Math.ceil(Math.max(0, bytes) / PUT_URL_ASSUMED_BYTES_PER_SECOND),
       );
+/** The longest a bound URL could be used, by the bucket's clock: its longest life plus the margin. */
+const BOUND_URL_LIFETIME_MS = (PRESIGN_TTL_SECONDS + PUT_URL_CLOCK_MARGIN_SECONDS) * 1000;
+
+/**
+ * How long after this process started it binds no pack index (`boundDigests`): until every URL a
+ * process before it could have handed out is dead by the bucket's clock.
+ */
+export const BOUND_INDEX_TRUSTED_AFTER_MS = BOUND_URL_LIFETIME_MS;
+
 /**
  * Request quota: `upload.urls` CALLS per session per rolling hour, and keys per call. Calls are
  * what cost the registrar (a presign is a local signature; the bucket is never asked); keys are
@@ -756,6 +765,11 @@ export class CaptureUploadPolicy extends Context.Service<
      * never switched off — captures already written in either format keep restoring.
      */
     readonly manifestFormat: SectionFormat;
+    /**
+     * How long after this process started it binds no pack index (`BOUND_INDEX_TRUSTED_AFTER_MS`
+     * when absent): a test that starts its world fresh sets 0.
+     */
+    readonly boundIndexTrustedAfterMs?: number;
   }
 >()("@mend/sessions/CaptureUploadPolicy") {}
 
@@ -1152,11 +1166,18 @@ export const CaptureChannelLive: Layer.Layer<
       sendsSha256.set(launch, (input.upload_answers ?? []).includes(UPLOAD_ANSWER_SHA256));
     };
     /**
-     * The SHA-256 the first bound URL of a key whose name does not say it (a pack index) was
-     * minted for: every later one must be the same, so all of a key's live URLs write the same
-     * bytes (bounded; forgotten with the rest at a restart, whose startup window covers it).
+     * The SHA-256 every bound URL of a key whose name does not say it (a pack index) was minted
+     * for, and until when one of them could be used: every URL of the key while one lives must
+     * name the same digest, so all of them write the same bytes. Reserved in the same
+     * synchronous step that checks it (two calls cannot both pass the check); an entry goes only
+     * once every URL it covers is dead, and a full map binds no more pack indexes (they record
+     * authority, as an unbound URL does). Mend serves the channel from one process (the engine
+     * holds live state; Helm pins one replica), so this map sees every URL handed out — except
+     * those of a process before this one: until they are all dead (`BOUND_INDEX_TRUSTED_AFTER_MS`
+     * after this process started) no pack index is bound.
      */
-    const boundDigests = new Map<string, string>();
+    const boundDigests = new Map<string, { readonly sha256: string; readonly until: number }>();
+    const channelStartedAt = Date.now();
     /**
      * The byte ledger, per physical launch: object key → bytes priced for it, once. `upload.urls`
      * reserves a sized key at its declared size; `capture.register` prices every pack under the
@@ -1982,23 +2003,35 @@ export const CaptureChannelLive: Layer.Layer<
               continue;
             }
             if (said === undefined) continue;
+            const now = Date.now();
+            // URLs a process before this one handed out could still be live: not bound yet.
+            const trustedAfter = policy.boundIndexTrustedAfterMs ?? BOUND_INDEX_TRUSTED_AFTER_MS;
+            if (now < channelStartedAt + trustedAfter) continue;
             const first = boundDigests.get(plan.key);
-            if (first !== undefined && first !== said) {
+            if (first !== undefined && first.until > now && first.sha256 !== said) {
               return yield* new CaptureRouteError({
                 status: 409,
                 reason: "exists",
-                message: `${plan.key} was handed a URL for other bytes (sha256 ${first}); it is bound to those`,
+                message: `${plan.key} was handed a URL for other bytes (sha256 ${first.sha256}); it is bound to those`,
                 key: plan.key,
               });
             }
+            if (first === undefined && boundDigests.size >= MINTED_KEYS_REMEMBERED) {
+              for (const [key, entry] of boundDigests)
+                if (entry.until <= now) boundDigests.delete(key);
+              // Still full: this index records authority, as an unbound URL does.
+              if (boundDigests.size >= MINTED_KEYS_REMEMBERED) continue;
+            }
+            // Reserved here, in the step that checked it: no other call passes the check for
+            // other bytes while one of these URLs could live.
+            boundDigests.set(plan.key, { sha256: said, until: now + BOUND_URL_LIFETIME_MS });
             boundTo.set(plan.key, said);
           }
         }
-        // Every URL of the call bound to its bytes, or a part URL (a completed upload refuses its
-        // parts, and completes are write-once per key): the call carries no write authority. A
-        // call that is not bindable at all (an older daemon, another store) records it as ever.
-        const unbound =
-          !bindable || plans.some((plan) => plan.parts === 0 && !boundTo.has(plan.key));
+        // Every URL of the call bound to its bytes: the call carries no write authority. A part
+        // URL is not bound (a part's bytes are not the object's), so a call with one records it,
+        // as a call that is not bindable at all (an older daemon, another store) always does.
+        const unbound = !bindable || plans.some((plan) => plan.parts > 0 || !boundTo.has(plan.key));
         // The byte quota, enforced here: every sized key not yet priced is charged at its
         // declared size, and a batch that would take the session over is refused whole — no
         // URL minted, no upload opened, so the refused bytes never reach the bucket. A key
@@ -2137,14 +2170,9 @@ export const CaptureChannelLive: Layer.Layer<
             // Below the threshold: one PUT URL, write-once (`If-None-Match: *` signed in). A
             // declared size is signed into the URL: the bucket takes those bytes or none. Bound
             // to its bytes where it can be (`boundTo`): the bucket takes exactly those or none.
-            const digest = boundTo.get(plan.key);
             urls[plan.key] = yield* blobs
-              .presign(plan.key, "PUT", ttlSeconds, plan.size ?? undefined, digest)
+              .presign(plan.key, "PUT", ttlSeconds, plan.size ?? undefined, boundTo.get(plan.key))
               .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
-            if (digest !== undefined && contentDigestOfKey(plan.key) === null) {
-              if (boundDigests.size > MINTED_KEYS_REMEMBERED) boundDigests.clear();
-              boundDigests.set(plan.key, digest);
-            }
             continue;
           }
           const partUrls: Array<string> = [];

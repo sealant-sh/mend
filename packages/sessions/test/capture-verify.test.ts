@@ -48,6 +48,7 @@ import {
   UNEXPLAINED_CHECKS_BOUND,
   UPLOAD_ANSWER_PRESENT,
   UPLOAD_ANSWER_SHA256,
+  type CaptureUploadPolicy,
 } from "../src/capture-channel.ts";
 import {
   CaptureSeals,
@@ -2384,11 +2385,18 @@ interface SealHarness {
 
 const describeSeals = (
   title: string,
-  options: { readonly blobs?: (root: string) => Layer.Layer<BlobStore>; readonly skip?: boolean },
+  options: {
+    readonly blobs?: (root: string) => Layer.Layer<BlobStore>;
+    readonly skip?: boolean;
+    readonly policy?: Partial<CaptureUploadPolicy["Service"]>;
+  },
   body: (harness: SealHarness) => void,
 ) =>
   describe.skipIf(options.skip === true)(title, () => {
-    const world = makeCaptureWorld(options.blobs === undefined ? {} : { blobs: options.blobs });
+    const world = makeCaptureWorld({
+      ...(options.blobs === undefined ? {} : { blobs: options.blobs }),
+      ...(options.policy === undefined ? {} : { policy: options.policy }),
+    });
     const layer = Layer.mergeAll(
       SessionRepositoryCapturedLive.pipe(Layer.provide(world.layer)),
       world.layer,
@@ -3016,14 +3024,16 @@ const presigned: Array<{ readonly key: string; readonly sha256: string | undefin
 describeSeals(
   "bytes-bound upload URLs: no write authority, no wait",
   {
+    // A world started this instant: no process before it handed out URLs.
+    policy: { boundIndexTrustedAfterMs: 0 },
     blobs: (root) =>
       Layer.effect(
         BlobStore,
         Effect.map(BlobStore, (store) => ({
           ...store,
           // Garage: it replaces objects, but checks a signed checksum. This process's own window
-          // (a URL minted before it started) is past.
-          replaceableUntil: () => Effect.sync(() => Date.now() - 60_000),
+          // (a URL minted before it started), and the clock margin past it, are over.
+          replaceableUntil: () => Effect.sync(() => Date.now() - 10 * 60_000),
           bindsBytes: Effect.succeed(true),
           presign: (
             key: string,
@@ -3057,6 +3067,12 @@ describeSeals(
           service.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
         ).pipe(Effect.provide(CaptureSealsStoreLive)),
       );
+    const recordedSeal = (at: { readonly worktreeId: WorktreeId; readonly epoch: number }) =>
+      run(
+        Effect.flatMap(CaptureStoreRepo, (repo) =>
+          repo.sealedCompletion(at.worktreeId, "executor-1", at.epoch),
+        ),
+      );
 
     it("binds every URL to its bytes, records no authority, and the seal stands as it registers", async () => {
       presigned.length = 0;
@@ -3084,8 +3100,10 @@ describeSeals(
       await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
       const registered = await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
       expect(registered.seal).toEqual({ state: "recorded" });
-      // Nothing could replace what it names: it stands now, not 10.5 minutes from now.
+      // Nothing could replace what it names: it stands now, not 10.5 minutes from now, and
+      // nothing was read back for it.
       expect((await sealOf(at))?.captureId).toBe(file.cap.id);
+      expect((await recordedSeal(at))?.reverifiedAt ?? null).toBeNull();
     });
 
     it("keeps an index's URLs to one SHA-256, and refuses a declared SHA-256 its name contradicts", async () => {
@@ -3110,6 +3128,66 @@ describeSeals(
       );
       expect(contradicted.status).toBe(400);
       expect(authority(at)).toBeUndefined();
+    });
+
+    it("review: two calls at once cannot bind one index to two digests", async () => {
+      const at = await claimed();
+      await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const index = `${sealedFile(at, "raced index bytes\n").key}.idx`;
+      const ask = (digest: string) =>
+        at.api
+          .uploadUrls({
+            worktree_id: at.worktreeId,
+            epoch: at.epoch,
+            keys: [index],
+            sizes: { [index]: 12 },
+            sha256: { [index]: digest },
+          })
+          .pipe(Effect.result);
+      const both = await run(
+        Effect.all([ask("e".repeat(64)), ask("f".repeat(64))], { concurrency: "unbounded" }),
+      );
+      expect(both.filter((one) => one._tag === "Success")).toHaveLength(1);
+      const refused = both.find((one) => one._tag === "Failure");
+      expect(refused?._tag === "Failure" ? refused.failure.status : null).toBe(409);
+    });
+
+    it("review: a call with a part URL records authority, as part bytes are not bound", async () => {
+      const at = await claimed();
+      await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const big = captureKeys(at.worktreeId, at.epoch).pack("9".repeat(64));
+      const minted = await run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [big],
+          sizes: { [big]: 40 * 1024 * 1024 },
+        }),
+      );
+      expect(Object.keys(minted.multipart)).toEqual([big]);
+      expect(authority(at)?.getTime() ?? 0).toBeGreaterThan(Date.now());
+    });
+
+    it("review: a seal whose epoch's row is gone is read back, never taken as holding no authority", async () => {
+      const at = await claimed();
+      await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const file = sealedFile(at, "a row that went away\n");
+      await run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [file.key],
+          sizes: { [file.key]: file.bytes.length },
+        }),
+      );
+      await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
+      const registered = await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
+      expect(registered.seal).toEqual({ state: "recorded" });
+      // The epoch's row goes with its worktree: the seal is read back as before the change — it
+      // stands re-verified — never taken as standing over an epoch known to hold nothing.
+      world.memory.deletedWorktrees.add(at.worktreeId);
+      expect((await sealOf(at))?.captureId).toBe(file.cap.id);
+      expect((await recordedSeal(at))?.reverifiedAt).toBeInstanceOf(Date);
     });
 
     it("records authority as before for an executor that sends no checksum, and for an index it declares nothing about", async () => {
@@ -3138,6 +3216,48 @@ describeSeals(
         }),
       );
       expect(authority(undeclared)?.getTime() ?? 0).toBeGreaterThan(Date.now());
+    });
+  },
+);
+
+describeSeals(
+  "bytes-bound upload URLs, a process just started",
+  {
+    blobs: (root) =>
+      Layer.effect(
+        BlobStore,
+        Effect.map(BlobStore, (store) => ({
+          ...store,
+          replaceableUntil: () => Effect.sync(() => Date.now() - 60_000),
+          bindsBytes: Effect.succeed(true),
+        })),
+      ).pipe(Layer.provide(BlobStoreFsLive(root))),
+  },
+  ({ world, run, claimed }) => {
+    it("review: binds no pack index until a process before it could have none live, and records its authority", async () => {
+      const at = await claimed();
+      await run(
+        at.api.planGet({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          manifest_format: 2,
+          manifest_features: MANIFEST_FEATURES,
+          upload_answers: [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256],
+        }),
+      );
+      const index = `${sealedFile(at, "an index too early\n").key}.idx`;
+      await run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [index],
+          sizes: { [index]: 12 },
+          sha256: { [index]: "a".repeat(64) },
+        }),
+      );
+      expect(
+        world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`)?.getTime() ?? 0,
+      ).toBeGreaterThan(Date.now());
     });
   },
 );

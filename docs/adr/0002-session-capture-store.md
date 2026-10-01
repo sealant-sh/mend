@@ -1425,19 +1425,26 @@ Mend-side details the decision record left open, decided in this ADR:
       "Bytes-bound PUT URLs") sends `x-amz-checksum-sha256` on every PUT whose URL signs it. It also
       declares, in `upload.urls`, the SHA-256 of each pack index. On a store that measures as
       checking the checksum (`BlobStore.bindsBytes`: it replaces objects, and refuses a mismatched
-      checksum on a probe key), every single-PUT URL is then bound: to the digest the key names, or
-      to the index's declared one. Every URL of an index is bound to the same one: a second,
-      different digest is refused 409. A declared digest a key's name contradicts is refused 400.
-    - **No authority for bound URLs or parts.** A call whose single PUTs are all bound records no
-      write authority. Its multipart part URLs record none either. A completed upload refuses its
-      parts (`NoSuchUpload`, measured), and completes of one key run one at a time behind the HEAD
-      that discards an upload of a stored key. A bound URL is not counted by `replaceableUntil`. A
-      call with any unbound single PUT records authority as before: an older daemon, a store that
-      does not check checksums, or an index declared nothing about.
-    - **The seal.** A seal over epochs that never recorded write authority, once this process's
-      startup window has passed, stands as registered: no wait, no read-back. Nothing could have
-      replaced what it names since its objects were verified at register. Epochs with recorded
-      authority are unchanged: the wait, then the read-back.
-    - **What remains.** The 15 minutes after a Mend restart (a URL minted by a process before this
-      one is only bounded by time). A seal that carries packs from an epoch of an older daemon still
-      waits that epoch's recorded authority out and reads back.
+      checksum on a probe key), single-PUT URLs are bound: to the digest the key names, or to the
+      index's declared one. A declared digest a key's name contradicts is refused 400.
+    - **A pack index is bound to one digest.** While any bound URL of an index could live, every URL
+      of it names the same digest, and a call that declares another is refused 409. The check and
+      the reservation are one synchronous step, so two concurrent calls cannot both pass (review
+      2026-10-02 #1). An entry goes only once every URL it covers is dead. A full map binds no more
+      indexes (they record authority), and is never cleared wholesale (#2). Mend serves the channel
+      from one process, so the map sees every URL it handed out — except a process before it. For
+      the first 20 minutes of a process (the longest URL plus the margin), no index is bound (#3).
+    - **What carries no authority.** A call whose single PUTs are all bound records no write
+      authority, and a bound URL is not counted by `replaceableUntil`. A call with any part URL
+      records it as before: part bytes are not bound (#4). So does a call with any unbound single
+      PUT: an older daemon, a store that does not check checksums, an index declared nothing about,
+      or an index too early in a process.
+    - **The seal.** A seal stands as registered, with no wait and no read-back, when three hold. No
+      expiry is recorded over its epochs. Mend still speaks for each epoch: its authority row or its
+      worktree is there (#5). A row is made before any URL leaves Mend under its epoch, and goes
+      only with its worktree. And this process's startup window plus the clock margin has passed.
+      Nothing could have replaced what it names since its objects were verified at register.
+      Otherwise, as before: the wait, then the read-back.
+    - **What remains.** The first 20 minutes after a Mend restart; a Stop that uploaded through part
+      URLs (an object of 16 MiB or more) or a pack index early in a process; an executor of an older
+      daemon, and a seal that carries what one saved.
