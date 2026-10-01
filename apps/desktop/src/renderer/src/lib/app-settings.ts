@@ -1,7 +1,7 @@
 import { useSyncExternalStore } from "react";
 
 /** Harness choices offered first by the desktop launcher. */
-export const HARNESSES = ["claude", "codex", "opencode"] as const;
+export const HARNESSES = ["claude", "codex", "opencode", "pi"] as const;
 export type Harness = (typeof HARNESSES)[number];
 
 /** Desktop preferences that do not belong to a project or session. */

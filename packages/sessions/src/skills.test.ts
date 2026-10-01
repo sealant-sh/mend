@@ -202,11 +202,13 @@ describe("a delivery never deletes what Mend did not deliver", () => {
       ".claude/skills/review/notes.md": "why",
       ".claude/skills/plain/SKILL.md": "p1",
       ".codex/skills/plain/SKILL.md": "p1",
+      ".pi/agent/skills/plain/SKILL.md": "p1",
     });
     expect(outcomes.filter((outcome) => outcome.outcome === "kept").map((o) => o.dir)).toEqual([
       ".claude/skills/review",
       ".claude/skills/plain",
       ".codex/skills/plain",
+      ".pi/agent/skills/plain",
     ]);
     expect(fs.readFileSync(skill(home, ".claude/skills", "review"), "utf8")).toBe("v1");
     expect(fs.existsSync(skill(home, ".claude/skills", "review", "notes.md"))).toBe(false);
@@ -220,6 +222,8 @@ describe("a delivery never deletes what Mend did not deliver", () => {
       [".claude/skills/review", "unchanged"],
       [".codex/skills/plain", "kept"],
       [".codex/skills/review", "unchanged"],
+      [".pi/agent/skills/plain", "kept"],
+      [".pi/agent/skills/review", "unchanged"],
     ]);
     expect(fs.readdirSync(keptRoot(home))).toHaveLength(2);
   });
@@ -253,6 +257,8 @@ describe("a delivery never deletes what Mend did not deliver", () => {
       ".codex/skills/old/SKILL.md": "o",
       ".claude/skills/edited/SKILL.md": "e and more",
       ".codex/skills/edited/SKILL.md": "e",
+      ".pi/agent/skills/old/SKILL.md": "o",
+      ".pi/agent/skills/edited/SKILL.md": "e",
     });
   });
 
@@ -318,11 +324,12 @@ describe("a delivery never deletes what Mend did not deliver", () => {
     }
     fs.writeFileSync(skill(home, ".codex/skills", "review"), "v1 edited");
     const plan = planSkills(
-      { ".claude/skills": ["review"], ".codex/skills": ["review"] },
+      { ".claude/skills": ["review"], ".codex/skills": ["review"], ".pi/agent/skills": ["review"] },
       [bundle("review", [{ path: "SKILL.md", contents: "v2" }])],
       {
         ".claude/skills": { review: skillTreeDigest(files) },
         ".codex/skills": { review: skillTreeDigest(files) },
+        ".pi/agent/skills": { review: skillTreeDigest(files) },
       },
     );
     if (plan === null) throw new Error("no plan");
@@ -340,6 +347,11 @@ describe("a delivery never deletes what Mend did not deliver", () => {
         outcome: "kept",
         dir: ".codex/skills/review",
         detail: `${SKILLS_KEPT_DIR}/stamp/.codex/skills/review`,
+      },
+      {
+        outcome: "kept",
+        dir: ".pi/agent/skills/review",
+        detail: `${SKILLS_KEPT_DIR}/stamp/.pi/agent/skills/review`,
       },
     ]);
     expect(fs.existsSync(path.join(home, ".claude/skills/review"))).toBe(false);
@@ -401,7 +413,7 @@ describe("a delivery keeps what the user set on a skill's files", () => {
     expect(before).toMatchObject({ mode: 0o755, empty: true, linked: true });
     expect(
       outcomes.filter((outcome) => outcome.dir.endsWith("build-helper")).map((o) => o.outcome),
-    ).toEqual(["unchanged", "unchanged"]);
+    ).toEqual(["unchanged", "unchanged", "unchanged"]);
     expect(fs.existsSync(keptRoot(home))).toBe(false);
   });
 
@@ -451,6 +463,7 @@ describe("a delivery keeps what the user set on a skill's files", () => {
       ).toEqual([
         [".claude/skills/build-helper", "kept"],
         [".codex/skills/build-helper", "kept"],
+        [".pi/agent/skills/build-helper", "kept"],
       ]);
     }
   });
@@ -464,11 +477,12 @@ describe("a delivery keeps what the user set on a skill's files", () => {
     }
     fs.chmodSync(skill(home, ".claude/skills", "review"), 0o600);
     const plan = planSkills(
-      { ".claude/skills": ["review"], ".codex/skills": ["review"] },
+      { ".claude/skills": ["review"], ".codex/skills": ["review"], ".pi/agent/skills": ["review"] },
       [bundle("review", files), bundle("other", [{ path: "SKILL.md", contents: "o" }])],
       {
         ".claude/skills": { review: skillTreeDigest(files) },
         ".codex/skills": { review: skillTreeDigest(files) },
+        ".pi/agent/skills": { review: skillTreeDigest(files) },
       },
     );
     if (plan === null) throw new Error("no plan");
@@ -481,11 +495,14 @@ describe("a delivery keeps what the user set on a skill's files", () => {
       "absent",
       "unchanged",
       "absent",
+      "unchanged",
+      "absent",
     ]);
     expect(fs.statSync(skill(home, ".claude/skills", "review")).mode & 0o777).toBe(0o600);
     expect(skillFilesToWrite(plan, outcomes).map((file) => file.path)).toEqual([
       ".claude/skills/other/SKILL.md",
       ".codex/skills/other/SKILL.md",
+      ".pi/agent/skills/other/SKILL.md",
     ]);
   });
 });
@@ -522,6 +539,7 @@ describe("a replaced or retired skill is never deleted", () => {
     expect(outcomes.map((outcome) => [outcome.dir, outcome.outcome])).toEqual([
       [".claude/skills/build-helper", "kept"],
       [".codex/skills/build-helper", "kept"],
+      [".pi/agent/skills/build-helper", "kept"],
     ]);
     const [stamp = ""] = fs.readdirSync(keptRoot(home));
     const kept = path.join(keptRoot(home), stamp, ".claude/skills/build-helper/SKILL.md");

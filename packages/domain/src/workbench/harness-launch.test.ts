@@ -67,11 +67,38 @@ describe("composeLaunchArgv", () => {
     ]);
   });
 
-  it("routes an opencode prompt through run and ignores knobs it lacks", () => {
-    expect(composeLaunchArgv("opencode", { prompt: "add tests", model: "x" })).toEqual([
+  it("opens opencode's TUI on the prompt (`run` is one-shot), with its model", () => {
+    expect(
+      composeLaunchArgv("opencode", { prompt: "add tests", model: "openai/gpt-6.1-sol" }),
+    ).toEqual(["opencode", "--model", "openai/gpt-6.1-sol", "--prompt", "add tests"]);
+    // `ask` names opencode's permission itself, which keeps the engine's `allow` default off.
+    expect(composeLaunchArgv("opencode", { permissionMode: "ask" })).toEqual([
+      "env",
+      'OPENCODE_PERMISSION={"*":"ask"}',
       "opencode",
-      "run",
-      "add tests",
+    ]);
+  });
+
+  it("composes pi with its model, its thinking level, and the prompt last", () => {
+    expect(
+      composeLaunchArgv("pi", {
+        prompt: "fix the flaky test",
+        model: "openai-codex/gpt-6.1-sol",
+        effort: "high",
+      }),
+    ).toEqual([
+      "pi",
+      "--model",
+      "openai-codex/gpt-6.1-sol",
+      "--thinking",
+      "high",
+      "fix the flaky test",
+    ]);
+    // pi stops at `max`; it asks nothing per tool call, so `ask` changes nothing.
+    expect(composeLaunchArgv("pi", { effort: "ultra", permissionMode: "ask" })).toEqual([
+      "pi",
+      "--thinking",
+      "max",
     ]);
   });
 

@@ -68,8 +68,15 @@ export const LEGACY_NOTE = {
     "^Declared Services \\(mend\\.toml(?: \\+ project)?\\): [^\\n]* — start one with `mend service run <name>`\\.\\n\\n",
 } as const;
 
-/** The harness memory files the note goes into, relative to `$HOME`. */
-export const WORKSPACE_NOTE_FILES = [".claude/CLAUDE.md", ".codex/AGENTS.md"] as const;
+/**
+ * The harness memory files the note goes into, relative to `$HOME`. opencode needs none of its
+ * own: without `~/.config/opencode/AGENTS.md` it reads Claude Code's `~/.claude/CLAUDE.md`.
+ */
+export const WORKSPACE_NOTE_FILES = [
+  ".claude/CLAUDE.md",
+  ".codex/AGENTS.md",
+  ".pi/agent/AGENTS.md",
+] as const;
 
 /** The whole block for `body`: begin line, body, end line, each line ending in a newline. */
 export const workspaceNoteBlock = (body: string): string =>
@@ -145,7 +152,7 @@ export const WORKSPACE_NOTE_PROGRAM = [
 export const workspaceNoteExec = (body: string): ReadonlyArray<string> => [
   "sh",
   "-c",
-  `mkdir -p "$HOME/.claude" "$HOME/.codex"; ` +
+  `mkdir -p "$HOME/.claude" "$HOME/.codex" "$HOME/.pi/agent"; ` +
     `node -e ${shellQuote(WORKSPACE_NOTE_PROGRAM)} "$1" ` +
     WORKSPACE_NOTE_FILES.map((file) => `"$HOME/${file}"`).join(" "),
   "mend-note",

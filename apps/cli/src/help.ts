@@ -140,14 +140,14 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   },
   {
     name: "codex",
-    aliases: ["claude", "opencode"],
+    aliases: ["claude", "opencode", "pi"],
     section: "start",
-    summary: "launch codex, claude, or opencode in a recorded worktree",
+    summary: "launch codex, claude, opencode or pi in a recorded worktree",
     synopsis: [
       '["prompt"] [--name <worktree>] [--worktree <existing>] [--model <id>] [--effort <level>] [--base <ref>] [--ask] [--fast] [--detach|-d] [--foreground] [--no-tunnel] [--land|--no-land] [--project <p>]',
     ],
     description: [
-      "mend codex, mend claude, and mend opencode are the same command with a different harness. The session runs in a workspace on the platform, in its own git worktree, and everything it does is recorded. This terminal attaches to it.",
+      "mend codex, mend claude, mend opencode and mend pi are the same command with a different harness. The session runs in a workspace on the platform, in its own git worktree, and everything it does is recorded. This terminal attaches to it.",
       "The worktree's name is asked first. --name skips the ask; an existing name joins that worktree as a new session. --worktree joins only and fails if the name is unknown. A quoted prompt becomes the first message.",
       "Detach with Ctrl+] and the session keeps running. Reattach from any terminal with mend attach, or from the phone.",
       tunnelText,

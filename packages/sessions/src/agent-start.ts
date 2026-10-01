@@ -60,7 +60,7 @@ const WARMUP_SCRIPT = [
   `cd / || exit 0`,
   `limit=""`,
   `command -v timeout >/dev/null 2>&1 && limit="timeout ${Duration.toSeconds(HARNESS_WARMUP_TIMEOUT)}"`,
-  `HOME="$d" XDG_CONFIG_HOME="$d/config" XDG_CACHE_HOME="$d/cache" XDG_DATA_HOME="$d/data" XDG_STATE_HOME="$d/state" CLAUDE_CONFIG_DIR="$d/claude" CODEX_HOME="$d/codex" DISABLE_AUTOUPDATER=1 $limit "$bin" --version >/dev/null 2>&1`,
+  `HOME="$d" XDG_CONFIG_HOME="$d/config" XDG_CACHE_HOME="$d/cache" XDG_DATA_HOME="$d/data" XDG_STATE_HOME="$d/state" CLAUDE_CONFIG_DIR="$d/claude" CODEX_HOME="$d/codex" PI_CODING_AGENT_DIR="$d/pi" PI_SKIP_VERSION_CHECK=1 OPENCODE_DISABLE_AUTOUPDATE=1 DISABLE_AUTOUPDATER=1 $limit "$bin" --version >/dev/null 2>&1`,
   `code=$?`,
   `rm -rf "$d"`,
   `exit $code`,

@@ -130,7 +130,7 @@ import { cliVersion, fetchServerVersion, versionLines } from "./version.ts";
  *
  *   mend                                  the dashboard: projects + sessions, live
  *   mend adopt [source] [--name <name>]   clone a repo into the store
- *   mend codex|claude|opencode [...]      session worktree + launch the harness there
+ *   mend codex|claude|opencode|pi [...]   session worktree + launch the harness there
  *   mend run -- <command...>              same, arbitrary command
  *   mend projects                         adopted projects
  *   mend sessions [--all]                 sessions with their review facts
@@ -1550,7 +1550,7 @@ const resolveLiveSession = async (
     project === undefined ? sessions : sessions.filter((s) => s.projectId === project.id);
   const only = candidates[0];
   if (only === undefined) {
-    return fail("no live or retained session — start one with mend codex|claude|opencode");
+    return fail("no live or retained session — start one with mend codex|claude|opencode|pi");
   }
   if (candidates.length === 1) return only;
   if (process.stdin.isTTY !== true) {
@@ -3431,7 +3431,7 @@ _mend() {
   local -a commands
   commands=(
     'adopt:adopt a repository into the store'
-    'codex:new session + codex' 'claude:new session + claude' 'opencode:new session + opencode'
+    'codex:new session + codex' 'claude:new session + claude' 'opencode:new session + opencode' 'pi:new session + pi'
     'run:new session + arbitrary command'
     'attach:reattach to a running session' 'stop:stop the agent — record and review remain'
     'shell:open a shell in a live session workspace'
@@ -3481,7 +3481,7 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode run attach stop shell service server uninstall keys git-author skills pair doctor continue resume rejoin land pull refresh projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode pi run attach stop shell service server uninstall keys git-author skills pair doctor continue resume rejoin land pull refresh projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
@@ -4470,6 +4470,7 @@ const main = async () => {
     case "codex":
     case "claude":
     case "opencode":
+    case "pi":
     case "run":
       return withAgentShare(config, () => launch(config, command, rest));
     case "attach":

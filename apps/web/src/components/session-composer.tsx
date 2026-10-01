@@ -216,18 +216,20 @@ export function SessionComposer({ projects }: { readonly projects: ReadonlyArray
             <ComposerPill onClick={openMenu("harness")} open={menu?.kind === "harness"}>
               <span className="font-mono text-[12px]">{harness}</span>
             </ComposerPill>
-            <ComposerPill
-              className="hidden @md:inline-flex"
-              onClick={openMenu("model")}
-              open={menu?.kind === "model"}
-            >
-              <span className="truncate text-xs">
-                {HARNESS_MODELS[harness]?.find((option) => option.id === harnessPrefs.model)
-                  ?.label ??
-                  harnessPrefs.model ??
-                  "Model"}
-              </span>
-            </ComposerPill>
+            {HARNESS_MODELS[harness] !== undefined && (
+              <ComposerPill
+                className="hidden @md:inline-flex"
+                onClick={openMenu("model")}
+                open={menu?.kind === "model"}
+              >
+                <span className="truncate text-xs">
+                  {HARNESS_MODELS[harness]?.find((option) => option.id === harnessPrefs.model)
+                    ?.label ??
+                    harnessPrefs.model ??
+                    "Model"}
+                </span>
+              </ComposerPill>
+            )}
             <ComposerPill
               className="hidden @md:inline-flex"
               onClick={openMenu("settings")}

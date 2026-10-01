@@ -70,6 +70,14 @@ export const CODEX_TRUST_SEED =
   `printf '\\n[projects."/workspace/repo"]\\ntrust_level = "trusted"\\n' >> "$HOME/.codex/config.toml"; ` +
   `exec "$@"`;
 
+/**
+ * opencode's and pi's: no first-run questions to answer (opencode's permissions ride the launch's
+ * environment, pi's project trust its `--approve`), only their own update checks, which a
+ * workspace's image owns: Core installs each harness at build time.
+ */
+export const OPENCODE_SEED = `export OPENCODE_DISABLE_AUTOUPDATE=1; exec "$@"`;
+export const PI_SEED = `export PI_SKIP_VERSION_CHECK=1; exec "$@"`;
+
 /** `argv` behind its harness's seed; a harness without one runs as it is. */
 export const withHarnessSetup = (
   harness: string,
@@ -77,5 +85,7 @@ export const withHarnessSetup = (
 ): ReadonlyArray<string> => {
   if (harness === "claude") return ["sh", "-c", CLAUDE_ONBOARDING_SEED, "sh", ...argv];
   if (harness === "codex") return ["sh", "-c", CODEX_TRUST_SEED, "sh", ...argv];
+  if (harness === "opencode") return ["sh", "-c", OPENCODE_SEED, "sh", ...argv];
+  if (harness === "pi") return ["sh", "-c", PI_SEED, "sh", ...argv];
   return argv;
 };

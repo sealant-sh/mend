@@ -21,6 +21,10 @@ export type EffortLevel = (typeof EFFORT_LEVELS)[number];
 export const HARNESS_EFFORTS: Readonly<Record<string, ReadonlyArray<EffortLevel>>> = {
   claude: ["low", "medium", "high", "xhigh", "max"],
   codex: ["low", "medium", "high", "xhigh", "max", "ultra"],
+  // pi's `--thinking` takes off, minimal and these five.
+  pi: ["low", "medium", "high", "xhigh", "max"],
+  // opencode's `--variant` is provider-specific: no shared scale to offer.
+  opencode: [],
 };
 
 /** The efforts to offer for a harness and model: the model's own when catalogued, else the harness's. */
@@ -108,7 +112,20 @@ export const HARNESS_MODELS: Record<string, ReadonlyArray<HarnessModelOption>> =
 };
 
 /** Harnesses whose composed argv actually carries an opening prompt. */
-export const PROMPTABLE_HARNESSES: ReadonlySet<string> = new Set(["claude", "codex", "opencode"]);
+export const PROMPTABLE_HARNESSES: ReadonlySet<string> = new Set([
+  "claude",
+  "codex",
+  "opencode",
+  "pi",
+]);
+
+/**
+ * opencode's permission switch, set at launch (`OPENCODE_PERMISSION`, JSON): `allow` is Mend's
+ * stance as for every harness (the workspace is the sandbox), `ask` restores its prompts. Set in
+ * the environment, so the user's own opencode config is never written.
+ */
+export const OPENCODE_PERMISSION_ALLOW = 'OPENCODE_PERMISSION={"*":"allow"}';
+const OPENCODE_PERMISSION_ASK = 'OPENCODE_PERMISSION={"*":"ask"}';
 
 /** A structured start; every field optional — all-absent composes the bare harness. */
 export interface LaunchStart {
@@ -159,8 +176,24 @@ export const composeLaunchArgv = (harness: string, start: LaunchStart): Readonly
       if (prompt !== null) argv.push(prompt);
       return argv;
     }
-    case "opencode":
-      return prompt === null ? ["opencode"] : ["opencode", "run", prompt];
+    case "opencode": {
+      // The TUI, opened on the prompt (`opencode run` is one-shot and would end the session).
+      const argv = ["opencode"];
+      if (model !== null) argv.push("--model", model);
+      if (prompt !== null) argv.push("--prompt", prompt);
+      // `ask` names the permission itself, which suppresses the engine's `allow` default.
+      return start.permissionMode === "ask" ? ["env", OPENCODE_PERMISSION_ASK, ...argv] : argv;
+    }
+    case "pi": {
+      // pi has no approval prompts to bypass (it relies on the sandbox, which the workspace is);
+      // `ask` therefore changes nothing for it.
+      const argv = ["pi"];
+      if (model !== null) argv.push("--model", model);
+      const effort = effortFor("pi", model, start.effort);
+      if (effort !== undefined) argv.push("--thinking", effort);
+      if (prompt !== null) argv.push(prompt);
+      return argv;
+    }
     case "shell":
       return ["bash"];
     default:

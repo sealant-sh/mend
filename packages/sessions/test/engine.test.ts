@@ -3516,6 +3516,44 @@ describe("SessionEngine", () => {
     );
   });
 
+  it.each([
+    [
+      "opencode",
+      ["env", 'OPENCODE_PERMISSION={"*":"allow"}', "opencode"],
+      "OPENCODE_DISABLE_AUTOUPDATE=1",
+    ],
+    ["pi", ["pi", "--approve"], "PI_SKIP_VERSION_CHECK=1"],
+  ] as const)(
+    "launches %s in the unified image, past its permission default and behind its seed",
+    async (harness, tail, seed) => {
+      const created: CreateOptions[] = [];
+      const spawned: ReadonlyArray<string>[] = [];
+      await withEngine(
+        (world, tmp) =>
+          Effect.gen(function* () {
+            const project = yield* setup(tmp, world);
+            const engine = yield* SessionEngine;
+            const session = yield* engine.provision({
+              projectId: project.id,
+              harness,
+              label: null,
+              name: null,
+              ownerUserId: "user-fixture",
+              base: null,
+            });
+            yield* engine.launch(session.id, [harness]);
+
+            const argv = spawned.at(-1) ?? [];
+            expect(argv.slice(-tail.length)).toEqual([...tail]);
+            expect(argv.join(" ")).toContain(seed);
+            // The shell's shape: the unified image, which bakes every agent CLI.
+            expect(created.at(-1)?.harness.id).toBe("codex");
+          }),
+        { sealantLayer: lifecycleLayer(created, { spawned }) },
+      );
+    },
+  );
+
   it("a cold launch says where it stands while the platform builds the image and boots the executor, and answers once it runs", async () => {
     // Alpha 2026-09-30: the first launch after an image recipe change waited ~8 min for the
     // MicroVM image build and the session line said nothing but `starting`.
@@ -6281,7 +6319,7 @@ describe("SessionEngine files into a captured workspace", () => {
           yield* engine.launch(session.id, ["codex"]);
           const written = writtenFiles(execCalls);
           const text = (file: string) => written.get(file)?.toString("utf8");
-          for (const target of [".claude/skills", ".codex/skills"]) {
+          for (const target of [".claude/skills", ".codex/skills", ".pi/agent/skills"]) {
             expect(text(`/workspace/harness-home/${target}/global/SKILL.md`)).toBe("owner global");
             expect(text(`/workspace/harness-home/${target}/local/SKILL.md`)).toBe("project local");
           }
@@ -6290,6 +6328,7 @@ describe("SessionEngine files into a captured workspace", () => {
           ).toEqual({
             ".claude/skills": ["global", "local"],
             ".codex/skills": ["global", "local"],
+            ".pi/agent/skills": ["global", "local"],
           });
           expect(
             JSON.parse(text("/workspace/harness-home/.mend-managed-skills-digests.json") ?? "{}"),

@@ -13,6 +13,7 @@ export const HARNESS_COMMANDS: Record<string, ReadonlyArray<string>> = {
   codex: ["codex"],
   claude: ["claude"],
   opencode: ["opencode"],
+  pi: ["pi"],
   // Not a coding agent: a plain bash session in its own recorded worktree.
   shell: ["bash"],
 };
@@ -21,7 +22,8 @@ export const HARNESS_COMMANDS: Record<string, ReadonlyArray<string>> = {
 export const CONTINUE_COMMANDS: Record<string, (instruction: string) => ReadonlyArray<string>> = {
   codex: (instruction) => ["codex", instruction],
   claude: (instruction) => ["claude", instruction],
-  opencode: (instruction) => ["opencode", "run", instruction],
+  opencode: (instruction) => ["opencode", "--prompt", instruction],
+  pi: (instruction) => ["pi", instruction],
 };
 
 /** Mirror of @mend/domain/workbench harness-launch.ts — the CLI ships dependency-free. */

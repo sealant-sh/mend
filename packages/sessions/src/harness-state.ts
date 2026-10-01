@@ -197,6 +197,8 @@ interface HarnessStateShape {
 const CLAUDE_JSONL = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
 const CODEX_ROLLOUT =
   /rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
+/** pi: `<ISO time>_<session id>.jsonl` under `sessions/<encoded working directory>/`. */
+const PI_SESSION = /_([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
 
 /**
  * Provider credentials that can appear inside a session's harness home, because the platform
@@ -207,6 +209,8 @@ const CODEX_ROLLOUT =
 export const HARNESS_HOME_CREDENTIALS: ReadonlyArray<string> = [
   ".claude/.credentials.json",
   ".codex/auth.json",
+  ".pi/agent/auth.json",
+  ".local/share/opencode/auth.json",
 ];
 
 /** `chmod go-rwx` over every credential that exists, quiet about the ones that do not. */
@@ -235,12 +239,21 @@ export const HARNESS_STATE: Record<string, HarnessStateShape> = {
     liveTranscript: /^\.codex\/sessions\/[^/]+\/[^/]+\/[^/]+\/rollout-[^/]+\.jsonl$/,
     providerSessionId: (file) => CODEX_ROLLOUT.exec(file)?.[1] ?? null,
   },
+  // opencode keeps its sessions in a SQLite database (`opencode.db`), not files: the directory
+  // is relocated and harvested whole, and no session id is read from it yet.
   opencode: {
     paths: [".local/share/opencode"],
     homeDirs: [".local/share/opencode"],
     latestTranscript: "true",
     liveTranscript: null,
     providerSessionId: () => null,
+  },
+  pi: {
+    paths: [".pi/agent/sessions", ".pi/agent/settings.json"],
+    homeDirs: [".pi"],
+    latestTranscript: 'ls -t "$HOME"/.pi/agent/sessions/*/*.jsonl 2>/dev/null | head -1',
+    liveTranscript: /^\.pi\/agent\/sessions\/[^/]+\/[^/]+\.jsonl$/,
+    providerSessionId: (file) => PI_SESSION.exec(file)?.[1] ?? null,
   },
 };
 
@@ -483,6 +496,18 @@ export const nativeResumeArgv = (
       if (argv[0] !== "codex" || argv[1] === "resume") return argv;
       const [, ...tail] = argv;
       return ["codex", "resume", providerSessionId, ...tail];
+    }
+    case "pi": {
+      if (
+        argv[0] !== "pi" ||
+        ["--session", "--session-id", "--continue", "-c", "--resume", "-r", "--fork"].some((flag) =>
+          argv.includes(flag),
+        )
+      ) {
+        return argv;
+      }
+      const [, ...tail] = argv;
+      return ["pi", "--session", providerSessionId, ...tail];
     }
     default:
       return argv;
