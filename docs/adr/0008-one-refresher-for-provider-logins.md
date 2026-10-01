@@ -101,6 +101,13 @@ so a kept copy would soon hold a spent refresh token, and sending it again would
 login with a dead one. Each `mend connect codex` is a fresh login. `--use-my-login` keeps the shared
 login for anyone who accepts the race, as it does for Claude.
 
+**Amended 2026-10-01: Claude keeps no copy either.** ADR 0005's grant lived in
+`~/.config/mend/claude-grant`, and `mend connect claude` re-sent it while it had not expired. Once
+the server refreshed the login, that copy held a spent refresh token: on alpha a reconnect re-sent
+the 09-20 file and replaced the login with a dead one, which the keep-fresh worker refused at the
+next sweep. `mend connect claude` now logs in against a throwaway directory as Codex does, sends the
+grant, deletes the directory (and on macOS its Keychain item), and removes the old kept directory.
+
 ### Whose login pays
 
 A connected login belongs to one Mend account and is spent only on that account's own sessions and

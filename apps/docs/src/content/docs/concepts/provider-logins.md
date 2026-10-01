@@ -25,11 +25,16 @@ through the provider's own flow, and sends that login to your Mend server. It is
 not the one your laptop's Claude Code or Codex uses, so using Mend never signs your laptop out and
 your laptop never signs Mend out.
 
-- **Claude:** a browser login into a directory of Mend's own on your machine
-  (`~/.config/mend/claude-grant`). Only the Claude part of the file (`claudeAiOauth`) is sent;
-  tokens for MCP servers you have authorized stay on your machine.
-- **Codex:** a device-code login (`codex login --device-auth`) into a throwaway directory. Its
-  `auth.json` is sent and the directory is deleted: your machine keeps no copy.
+- **Claude:** a browser login into a throwaway directory under `~/.config/mend`. Only the Claude
+  part of the file (`claudeAiOauth`) is sent, and the directory is deleted (on macOS, with its
+  Keychain item).
+- **Codex:** a device-code login (`codex login --device-auth`) into a throwaway directory under
+  `~/.config/mend`. Its `auth.json` is sent and the directory is deleted.
+
+Your machine keeps no copy of either. The server refreshes the login from then on, so a kept copy
+would soon hold a spent refresh token, and sending it again would replace a good login with a dead
+one. Each `mend connect` is a fresh login. An older `mend` kept the Claude login in
+`~/.config/mend/claude-grant`; `mend connect claude` removes it.
 
 The server stores the login encrypted (AES-256-GCM) in its database.
 

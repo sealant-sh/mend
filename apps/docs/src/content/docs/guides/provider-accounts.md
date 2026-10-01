@@ -57,13 +57,13 @@ mend connect claude
 
 Claude Code rotates its refresh token on every refresh, so two copies of one login race and the one
 that refreshes second is signed out. Mend refreshes on a schedule. So `mend connect claude` runs
-Claude's own browser login once against a directory Mend keeps, `~/.config/mend/claude-grant`, and
-sends that grant. Your own Claude login under `$CLAUDE_CONFIG_DIR` or `~/.claude` stays as it is,
-and the command checks that it still works afterwards. Claude Code must be installed on this
-machine; `MEND_CLAUDE_BIN` points at another binary.
+Claude's own browser login against a throwaway directory, sends that grant and deletes the
+directory: this machine keeps no copy, because the server refreshes the login from then on. Your own
+Claude login under `$CLAUDE_CONFIG_DIR` or `~/.claude` stays as it is, and the command checks that
+it still works afterwards. Claude Code must be installed on this machine; `MEND_CLAUDE_BIN` points
+at another binary.
 
-Run it again when Mend says the grant expired. When the grant on this machine has no refresh token
-or is past its expiry, the command logs in again once and says which it was.
+Run it again when Mend says the login needs reconnecting. Every run is a fresh login.
 
 To send the login this machine already uses instead:
 

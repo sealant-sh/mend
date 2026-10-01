@@ -20,6 +20,7 @@ import { type FirstOutputGate, firstOutputGate, startingLabelOf } from "./attach
 import {
   claudeCli,
   claudeGrantDir,
+  forgetGrant,
   grantStatus,
   personalClaudeDir,
   readGrant,
@@ -52,6 +53,7 @@ import {
 import { useHttp1 } from "./http-client.ts";
 import { type Download, landCommand, pullCommand } from "./landing.ts";
 import { followStart, startingLineOf, type StartOutcome } from "./launch-follow.ts";
+import { throwawayLoginDir } from "./login-dir.ts";
 import { loginCommand } from "./login.ts";
 import {
   folderCommand,
@@ -2480,8 +2482,11 @@ const staleGrantReason = (secret: string): string | null => {
 };
 
 /**
- * Mend's own Claude grant: log in once against a directory Mend owns, then read it. Returns the
- * credential to send, or null after saying why it could not get one.
+ * A Claude login of Mend's own (ADR 0005), made fresh on every connect (ADR 0008): the browser
+ * login runs against a throwaway directory, the grant is read, and the directory is deleted. The
+ * server is the login's only refresher from then on, so a kept copy would soon hold a spent
+ * refresh token, and sending it again would replace a good login with a dead one (alpha
+ * 2026-10-01). Returns the credential to send, or null after saying why it could not get one.
  *
  * The person's own login is probed before and after, because the one thing nobody has verified is
  * whether Anthropic lets one account hold two live grants. If the second login signs the first one
@@ -2490,90 +2495,83 @@ const staleGrantReason = (secret: string): string | null => {
  */
 const claudeGrant = async (): Promise<string | null> => {
   const cli = claudeCli();
-  const dir = claudeGrantDir(mendCliHome());
+  const home = mendCliHome();
   const personal = personalClaudeDir();
   const personalBefore = grantStatus(cli, personal);
-
-  let status = grantStatus(cli, dir);
-  if (status === null) {
-    fail(
-      "claude: could not run `claude auth status` — install Claude Code, set MEND_CLAUDE_BIN, " +
-        "or paste a credential: mend connect claude --from-stdin",
-    );
-    return null;
-  }
-  if (!status.loggedIn) {
-    say(`  Mend needs its own Claude login, kept in ${dir}`);
+  const dir = throwawayLoginDir(home, "claude-login-");
+  try {
+    if (grantStatus(cli, dir) === null) {
+      fail(
+        "claude: could not run `claude auth status` — install Claude Code, set MEND_CLAUDE_BIN, " +
+          "or paste a credential: mend connect claude --from-stdin",
+      );
+      return null;
+    }
+    say("  Mend needs its own Claude login; it is sent to your server and not kept here");
     say(dim("  your own Claude login stays as it is"));
     if (!runClaudeLogin(cli, dir)) {
       fail("claude: the login did not complete");
       return null;
     }
-    status = grantStatus(cli, dir) ?? status;
-    if (!status.loggedIn) {
+    const status = grantStatus(cli, dir);
+    if (status === null || !status.loggedIn) {
       fail("claude: the login completed but Claude still reports no grant in Mend's directory");
       return null;
     }
-  }
-  // Proof the isolation took effect: a Claude that ignored CLAUDE_CONFIG_DIR would report the
-  // person's directory here, and Mend would be about to send the very grant it set out to avoid.
-  if (
-    status.configDirectory !== null &&
-    path.resolve(status.configDirectory) !== path.resolve(dir)
-  ) {
-    fail(
-      `claude: this Claude read ${status.configDirectory} instead of ${dir}, so a separate grant is not possible — ` +
-        "connect the shared one deliberately with --use-my-login",
-    );
-    return null;
-  }
-
-  let read = readGrant(dir);
-  if (read.kind !== "missing") {
+    // Proof the isolation took effect: a Claude that ignored CLAUDE_CONFIG_DIR would report the
+    // person's directory here, and Mend would be about to send the very grant it set out to avoid.
+    if (
+      status.configDirectory !== null &&
+      path.resolve(status.configDirectory) !== path.resolve(dir)
+    ) {
+      fail(
+        `claude: this Claude read ${status.configDirectory} instead of ${dir}, so a separate grant is not possible — ` +
+          "connect the shared one deliberately with --use-my-login",
+      );
+      return null;
+    }
+    const read = readGrant(dir);
+    if (read.kind === "missing") {
+      const where =
+        read.triedService === null
+          ? read.triedPath
+          : `${read.triedPath} or the Keychain item ${read.triedService}`;
+      fail(`claude: logged in, but no credential to read — looked in ${where}`);
+      return null;
+    }
     const why = staleGrantReason(read.secret);
     if (why !== null) {
-      say(`  Mend's Claude grant is ${why}; logging in again`);
-      if (!runClaudeLogin(cli, dir)) {
-        fail("claude: the login did not complete");
-        return null;
-      }
-      read = readGrant(dir);
-      const still = read.kind === "missing" ? "missing" : staleGrantReason(read.secret);
-      if (still !== null) {
-        fail(`claude: the grant is still ${still} after logging in`);
-        return null;
-      }
+      fail(`claude: the new login is already ${why}`);
+      return null;
     }
-  }
-  if (read.kind === "missing") {
-    const where =
-      read.triedService === null
-        ? read.triedPath
-        : `${read.triedPath} or the Keychain item ${read.triedService}`;
-    fail(`claude: logged in, but no credential to read — looked in ${where}`);
-    return null;
-  }
+    const mine = localCredential("claude");
+    if (mine !== null && sameGrant(read.secret, mine)) {
+      fail(
+        "claude: that is the same grant this machine's Claude holds, so both sides would race on " +
+          "refresh — connect it deliberately with --use-my-login",
+      );
+      return null;
+    }
 
-  const mine = localCredential("claude");
-  if (mine !== null && sameGrant(read.secret, mine)) {
-    fail(
-      "claude: that is the same grant this machine's Claude holds, so both sides would race on " +
-        "refresh — remove Mend's directory and log in again, or accept the race with --use-my-login",
-    );
-    return null;
+    const personalAfter = grantStatus(cli, personal);
+    if (personalBefore?.loggedIn === true && personalAfter?.loggedIn === false) {
+      say(
+        `  your own Claude login was signed out by this one — this account allows one grant at a time. ` +
+          `Run \`claude auth login\` to get it back, and connect the shared grant with --use-my-login instead.`,
+      );
+    } else if (personalAfter?.loggedIn === true) {
+      say(dim("  your own Claude login still works · verified"));
+    }
+    // The copy an older CLI kept: never sent again, so nothing of it stays.
+    const kept = claudeGrantDir(home);
+    if (fs.existsSync(kept)) {
+      forgetGrant(kept);
+      say(dim(`  removed the copy an older mend kept in ${kept} · the server refreshes the login`));
+    }
+    return read.secret;
+  } finally {
+    forgetGrant(dir);
   }
-
-  const personalAfter = grantStatus(cli, personal);
-  if (personalBefore?.loggedIn === true && personalAfter?.loggedIn === false) {
-    say(
-      `  your own Claude login was signed out by this one — this account allows one grant at a time. ` +
-        `Run \`claude auth login\` to get it back, and connect the shared grant with --use-my-login instead.`,
-    );
-  } else if (personalAfter?.loggedIn === true) {
-    say(dim("  your own Claude login still works · verified"));
-  }
-  say(dim(`  grant ${read.kind === "file" ? read.path : `keychain ${read.service}`}`));
-  return read.secret;
 };
 
 /**
@@ -2609,12 +2607,13 @@ const connectCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
       cli: codexCli(),
       personalAuthJson: readIfExists(path.join(personalCodexHome(), "auth.json")),
       say,
+      parent: mendCliHome(),
     });
     if (grant.kind === "failed") return fail(grant.reason);
     secret = grant.secret;
   } else if (provider === "claude" && !flags.includes("--use-my-login")) {
     // A grant of Mend's own, so Mend's scheduled refresh never rotates the token this machine's
-    // Claude is holding (docs/adr/0005-claude-credentials-and-a-grant-of-mends-own.md).
+    // Claude is holding (ADR 0005), made fresh and not kept (ADR 0008).
     secret = await claudeGrant();
     if (secret === null) return;
   } else {

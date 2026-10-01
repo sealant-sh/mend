@@ -19,8 +19,27 @@ import * as path from "node:path";
  * once against a directory of its own and reads the grant from there.
  */
 
-/** Where Mend keeps its own Claude login. `$XDG_CONFIG_HOME/mend`, as the CLI's own config does. */
+/**
+ * Where Mend kept its own Claude login before ADR 0008. The server refreshes the login now, so a
+ * kept copy soon holds a spent refresh token, and sending it again replaced a good login with a
+ * dead one (alpha 2026-10-01). `mend connect claude` removes it; `mend doctor` still reads one
+ * left from an older CLI.
+ */
 export const claudeGrantDir = (home: string): string => path.join(home, "claude-grant");
+
+/**
+ * Remove a login directory, and on macOS the Keychain item a login into it wrote
+ * (`keychainService`). Nothing of the login stays on this machine.
+ */
+export const forgetGrant = (configDir: string, platform: string = process.platform): void => {
+  fs.rmSync(configDir, { recursive: true, force: true });
+  if (platform !== "darwin") return;
+  spawnSync(
+    "security",
+    ["delete-generic-password", "-a", os.userInfo().username, "-s", keychainService(configDir)],
+    { stdio: "ignore", timeout: 60_000 },
+  );
+};
 
 /** The machine's own Claude configuration — the one Mend must not touch. */
 export const personalClaudeDir = (

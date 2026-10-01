@@ -34,17 +34,28 @@ const fakeCodex = (content: string | null, seen: { home?: string } = {}): CodexC
   return { bin, env: { PATH: process.env["PATH"] } };
 };
 
+/** Mend's config directory for one test: where the throwaway login home is made. */
+const mendHome = (): string => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-home-"));
+  made.push(dir);
+  return dir;
+};
+
 describe("codexGrant", () => {
-  it("logs in to a throwaway home, returns that login, and keeps no copy", () => {
+  it("logs in to a throwaway home under Mend's directory, returns that login, and keeps no copy", () => {
     const seen: { home?: string } = {};
+    const parent = mendHome();
     const result = codexGrant({
       cli: fakeCodex(authJson("rt-mend"), seen),
       personalAuthJson: null,
       say: () => {},
+      parent,
     });
     expect(result).toEqual({ kind: "grant", secret: authJson("rt-mend") });
-    expect(seen.home).toBeDefined();
+    // Not the system temp directory, where Codex refuses its helper binaries.
+    expect(path.dirname(seen.home ?? "")).toBe(parent);
     expect(fs.existsSync(seen.home ?? "")).toBe(false);
+    expect(fs.readdirSync(parent)).toEqual([]);
   });
 
   it("refuses the machine's own login rather than sending a shared one", () => {
@@ -52,19 +63,26 @@ describe("codexGrant", () => {
       cli: fakeCodex(authJson("rt-laptop")),
       personalAuthJson: authJson("rt-laptop"),
       say: () => {},
+      parent: mendHome(),
     });
     expect(result.kind).toBe("failed");
   });
 
   it("says so when the login does not complete, or wrote no ChatGPT session", () => {
-    expect(codexGrant({ cli: fakeCodex(null), personalAuthJson: null, say: () => {} }).kind).toBe(
-      "failed",
-    );
+    expect(
+      codexGrant({
+        cli: fakeCodex(null),
+        personalAuthJson: null,
+        say: () => {},
+        parent: mendHome(),
+      }).kind,
+    ).toBe("failed");
     expect(
       codexGrant({
         cli: fakeCodex(JSON.stringify({ OPENAI_API_KEY: "sk" })),
         personalAuthJson: null,
         say: () => {},
+        parent: mendHome(),
       }).kind,
     ).toBe("failed");
   });

@@ -23,13 +23,14 @@ version. One-shot commands require Node 22 or newer. The terminal dashboard requ
 | `mend pair [--url <base-url>]`                                                    | Create a single-use, ten-minute pairing code for another device; `--url` selects one of the server's configured origins                                                                                                                                                       |
 | `mend version`                                                                    | Print this CLI's version and the server's, when it answers within two seconds                                                                                                                                                                                                 |
 
-`mend connect codex` reads the file the Codex CLI wrote when you logged in, and
-`mend connect github` asks `gh` for its token. `mend connect claude` opens a browser login for a
-Claude login of Mend's own, kept in a directory Mend holds, so your own Claude login stays as it is.
-Claude rotates its refresh token, and two copies of one login sign each other out; `--use-my-login`
-sends the login this machine already uses instead, and both sides then share one grant. Run
-`mend connect claude` again when Mend says the grant expired. Read
-[Connect provider accounts](/guides/provider-accounts/) for credential sources and removal.
+`mend connect claude` and `mend connect codex` log in afresh through the provider's own flow (a
+browser login for Claude, a device code for Codex) into a throwaway directory, send that login and
+delete it, so your own logins stay as they are and this machine keeps no copy. Both rotate their
+refresh token, and two copies of one login sign each other out; `--use-my-login` sends the login
+this machine already uses instead, and both sides then share it. `mend connect github` asks `gh` for
+its token. Run `mend connect claude` or `mend connect codex` again when Mend says a login needs
+reconnecting. Read [Connect provider accounts](/guides/provider-accounts/) for credential sources
+and removal.
 
 `mend doctor --bundle` collects the CLI and its environment, the doctor lines, the server's health,
 the local server's compose file and the names of its `.env` keys (never their values), Docker facts,
