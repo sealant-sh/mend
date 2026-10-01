@@ -48,6 +48,10 @@ is used there full time, to find bugs by using it while it is built.
    each offers, the picker, effort, per-harness defaults, and whether a session says which model it
    runs on. Then one model picker, the same on every client.
 
+6. **pi and opencode as harnesses,** next to Claude and Codex: a session on either, with its own
+   agent home (memory, settings, login) handled the same way, since 0.36 reworks the harness homes
+   anyway. opencode starts today as a bare command; pi is new.
+
 ### Should
 
 - See and delete what the agent remembers, in the web app and on the phone.
