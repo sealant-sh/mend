@@ -2877,6 +2877,33 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         };
       });
 
+      /** One launch verb per session at a time (`launch-gate.ts`). */
+      const launchGate = makeLaunchGate();
+      /**
+       * Launches their owner stopped while they were under way (alpha 2026-10-01, 3c4e991b). The
+       * stop came two seconds before the agent's process row: it found no agent to end, settled
+       * `stopped` and drained the executor, and the launch went on, started the agent and its row
+       * reopened the session as `running`, with nothing behind it once the drain ended the
+       * machine. A launch looks here just before it starts the agent
+       * (`refuseIfStoppedDuringLaunch`), and one that started it anyway is stopped again as it
+       * ends (`oneLaunch`).
+       */
+      const stoppedDuringLaunch = new Set<SessionId>();
+      /** The launch stands down before its agent starts: nothing of it runs after the stop. */
+      const refuseIfStoppedDuringLaunch = (sessionId: SessionId) =>
+        Effect.suspend(() =>
+          stoppedDuringLaunch.has(sessionId)
+            ? Effect.fail(
+                new SealantPlatformError({
+                  code: "launch_cancelled",
+                  status: 409,
+                  message: "stopped while starting · the agent was not started",
+                  cause: null,
+                }),
+              )
+            : Effect.void,
+        );
+
       /** Launches waiting on a worktree's previous executor (`awaitWorktreeHolder`). */
       const waitingLaunches = new Set<SessionId>();
       /** Of those, the ones their owner stopped meanwhile: they launch nothing. */
@@ -9061,19 +9088,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           protocolStart === null
             ? withHarnessBootstrap(session.harness, shapedArgv)
             : withHarnessSetup(session.harness, shapedArgv);
-        const pty = yield* sealant
-          .openSession(
-            workspace,
-            launchedArgv,
-            protocolStart === null ? undefined : { mode: "pipe" },
-          )
-          .pipe(
-            // Co-located: the workspace's id is not on the row yet — reap it here or it burns
-            // until the platform TTL. Capture mode: the row names it (`acceptExecutor`), and it
-            // drains before it goes.
-            Effect.tapError((error) => abandonExecutor(workspace, error.message)),
-            settleOnFailure,
-          );
+        const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
+          Effect.andThen(
+            sealant.openSession(
+              workspace,
+              launchedArgv,
+              protocolStart === null ? undefined : { mode: "pipe" },
+            ),
+          ),
+          // Co-located: the workspace's id is not on the row yet — reap it here or it burns
+          // until the platform TTL. Capture mode: the row names it (`acceptExecutor`), and it
+          // drains before it goes. A stop that came first leaves the same executor behind.
+          Effect.tapError((error) => abandonExecutor(workspace, error.message)),
+          settleOnFailure,
+        );
         const sealantRunId = SealantRunId.make(pty.runId);
         yield* sessionRuns.create({
           sessionId,
@@ -9643,19 +9671,20 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             protocolStart === null
               ? withHarnessBootstrap(session.harness, shapedArgv)
               : withHarnessSetup(session.harness, shapedArgv);
-          const pty = yield* sealant
-            .openSession(
-              workspace,
-              launchedArgv,
-              protocolStart === null ? undefined : { mode: "pipe" },
-            )
-            .pipe(
-              Effect.tapError((error) =>
-                sessions
-                  .settle(sessionId, "failed", `resume failed: ${error.message}`)
-                  .pipe(Effect.ignore),
+          const pty = yield* refuseIfStoppedDuringLaunch(sessionId).pipe(
+            Effect.andThen(
+              sealant.openSession(
+                workspace,
+                launchedArgv,
+                protocolStart === null ? undefined : { mode: "pipe" },
               ),
-            );
+            ),
+            Effect.tapError((error) =>
+              sessions
+                .settle(sessionId, "failed", `resume failed: ${error.message}`)
+                .pipe(Effect.ignore),
+            ),
+          );
           const sealantRunId = SealantRunId.make(pty.runId);
           const previousRun = yield* sessionRuns.latestForSession(sessionId);
           yield* sessionRuns.create({
@@ -10094,6 +10123,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         const session = yield* sessions.byId(sessionId);
         // A launch still waiting for the worktree's previous executor launches nothing now.
         if (waitingLaunches.has(sessionId)) stoppedWhileWaiting.add(sessionId);
+        // One further along stands down before its agent starts, or is stopped again as it ends.
+        if (launchGate.underWay(sessionId)) stoppedDuringLaunch.add(sessionId);
         const rows = yield* processes.listForSession(sessionId);
         const activeRun = yield* sessionRuns.activeForSession(sessionId);
         // Capture mode: when nothing but what this stop ends holds the workspace, the stop is a
@@ -12339,8 +12370,38 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const detached = <A, E>(effect: Effect.Effect<A, E>) =>
         detach(effect).pipe(Effect.flatMap(Fiber.join));
 
-      const launchGate = makeLaunchGate();
-      const oneLaunch = launchGate.run;
+      /**
+       * One launch at a time (`launch-gate.ts`), and the second half of a stop during a launch: a
+       * stop that came after the launch's last look found no agent to end, and the launch started
+       * one anyway. Stopped again as the launch ends, it finds the agent's row and ends it, so the
+       * session ends on the stop. A launch the gate refuses leaves the one under way its mark.
+       */
+      const oneLaunch =
+        (sessionId: SessionId) =>
+        <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+          Effect.suspend(() =>
+            launchGate.underWay(sessionId)
+              ? launchGate.run(sessionId)(effect)
+              : launchGate
+                  .run(sessionId)(effect)
+                  .pipe(
+                    Effect.ensuring(
+                      Effect.suspend(() =>
+                        stoppedDuringLaunch.delete(sessionId)
+                          ? stop(sessionId).pipe(
+                              Effect.catchCause((cause) =>
+                                Effect.logWarning(
+                                  "session engine: the stop after a stopped launch did not finish",
+                                ).pipe(
+                                  Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
+                                ),
+                              ),
+                            )
+                          : Effect.void,
+                      ),
+                    ),
+                  ),
+          );
 
       // Every public verb about a session runs AS ITS OWNER (docs/SEALANT-IDENTITY.md): the
       // platform resources belong to the owner's Sealant user, whoever is at the keyboard.
