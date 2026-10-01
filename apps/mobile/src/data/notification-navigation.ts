@@ -6,15 +6,18 @@
 
 import * as Notifications from "expo-notifications";
 
+import {
+  foregroundPresentation,
+  notifiedSessionId,
+  watchedSessionId,
+} from "@/data/notification-presence";
+
 export interface NotificationRouter {
   readonly push: (sessionId: string) => void;
 }
 
-const sessionIdOf = (response: Notifications.NotificationResponse): string | null => {
-  const data: Record<string, unknown> | undefined = response.notification.request.content.data;
-  const sessionId = data?.["sessionId"];
-  return typeof sessionId === "string" && sessionId !== "" ? sessionId : null;
-};
+const sessionIdOf = (response: Notifications.NotificationResponse): string | null =>
+  notifiedSessionId(response.notification.request.content.data);
 
 export const wireNotificationNavigation = (router: NotificationRouter): (() => void) => {
   const handled = new Set<string>();
@@ -35,15 +38,16 @@ export const wireNotificationNavigation = (router: NotificationRouter): (() => v
   return () => subscription.remove();
 };
 
-/** Foreground: the surface being watched is already on screen — list, no banner. */
+/**
+ * Foreground: a push about the session on screen is silent — it is already
+ * there; any other shows as it would from the lock screen
+ * (notification-presence.ts).
+ */
 export const configureForegroundPresentation = (): void => {
   Notifications.setNotificationHandler({
-    handleNotification: () =>
-      Promise.resolve({
-        shouldShowBanner: false,
-        shouldShowList: true,
-        shouldPlaySound: false,
-        shouldSetBadge: false,
-      }),
+    handleNotification: (notification) =>
+      Promise.resolve(
+        foregroundPresentation(watchedSessionId(), notification.request.content.data),
+      ),
   });
 };

@@ -5,9 +5,10 @@
 // reads it as. routes.test.ts pins the paths; this pins the payloads.
 
 import type { OpenReviewResult, ReviewDiffView, SessionDetail } from "@mend/api-contracts";
-import type { ReviewComment } from "@mend/domain/workbench";
+import type { NotificationSettings, ReviewComment } from "@mend/domain/workbench";
 import { describe, expect, it } from "vitest";
 
+import type { NotificationSettingsDto } from "./notification-settings";
 import type { OpenReviewDto, ReviewCommentDto, ReviewDiffDto } from "./review";
 import type { CheckpointDto } from "./review-state";
 
@@ -32,9 +33,13 @@ const pins: {
     Wire<typeof SessionDetail.Encoded>["checkpoints"][number],
     CheckpointDto
   >;
-} = { open: true, diff: true, comment: true, checkpoint: true };
+  readonly notificationSettings: Fits<
+    Wire<typeof NotificationSettings.Encoded>,
+    NotificationSettingsDto
+  >;
+} = { open: true, diff: true, comment: true, checkpoint: true, notificationSettings: true };
 
-describe("review payloads", () => {
+describe("review and settings payloads", () => {
   it("fit the DTOs the phone reads them as (checked by typecheck)", () => {
     expect(Object.values(pins).every((fits) => fits)).toBe(true);
   });

@@ -282,7 +282,7 @@ const failureMessage = (method: string, route: string, status: number, body: unk
 
 /** Shared by the review data module — one transport, one error shape. */
 export const api = async <T>(
-  method: "GET" | "POST" | "DELETE",
+  method: "GET" | "POST" | "PUT" | "DELETE",
   route: string,
   body?: unknown,
 ): Promise<T> => {

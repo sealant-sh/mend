@@ -39,6 +39,7 @@ export * from "./repos/user-events.ts";
 export * from "./repos/sealant-identities.ts";
 export * from "./repos/projects.ts";
 export * from "./repos/push-devices.ts";
+export * from "./repos/notification-settings.ts";
 export * from "./repos/references.ts";
 export * from "./repos/change-passes.ts";
 export * from "./repos/change-tours.ts";

@@ -2693,6 +2693,24 @@ const processFirstOutputMigration = Effect.gen(function* () {
   yield* sql`ALTER TABLE session_processes ADD COLUMN IF NOT EXISTS first_output_at timestamptz`;
 });
 
+/**
+ * Phone notifications (packages/jobs/src/session-notifier.ts): what each person hears about on
+ * their phones. No row means the defaults, which the columns repeat: sessions started from Slack
+ * push only what their thread does not already say, and every kind is on.
+ */
+const notificationSettingsMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE user_notification_settings (
+      user_id text PRIMARY KEY REFERENCES "user" (id) ON DELETE CASCADE,
+      slack_sessions boolean NOT NULL DEFAULT false,
+      turn_finished boolean NOT NULL DEFAULT true,
+      needs_input boolean NOT NULL DEFAULT true,
+      failed boolean NOT NULL DEFAULT true,
+      updated_at timestamptz NOT NULL DEFAULT now()
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2789,4 +2807,5 @@ export const migrations = {
   "0093_capture_overdue": captureOverdueMigration,
   "0094_capture_git_fsck_recheck": captureGitFsckRecheckMigration,
   "0095_process_first_output": processFirstOutputMigration,
+  "0096_notification_settings": notificationSettingsMigration,
 };

@@ -1,3 +1,4 @@
+import { NotificationSettings } from "@mend/domain/workbench";
 import { PublicOrigin } from "@mend/network";
 import { Schema } from "effect";
 import { HttpApiEndpoint, HttpApiGroup } from "effect/unstable/httpapi";
@@ -16,6 +17,18 @@ export const devicesGroup = HttpApiGroup.make("devices")
   .add(
     HttpApiEndpoint.delete("unregister", "/devices/:token", {
       params: { token: Schema.String },
+    }),
+  )
+  // What the signed-in account hears about on its phones; PUT saves the whole setting.
+  .add(
+    HttpApiEndpoint.get("notificationSettings", "/me/notifications", {
+      success: NotificationSettings,
+    }),
+  )
+  .add(
+    HttpApiEndpoint.put("setNotificationSettings", "/me/notifications", {
+      payload: NotificationSettings,
+      success: NotificationSettings,
     }),
   )
   .middleware(AuthMiddleware);

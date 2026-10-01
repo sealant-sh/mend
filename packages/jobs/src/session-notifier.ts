@@ -3,23 +3,32 @@ import {
   AgentConversationRepo,
   MEND_EVENTS_CHANNEL,
   MendEvent,
+  NotificationSettingsRepo,
   OrganizationsRepo,
   ProjectsRepo,
   PushDevicesRepo,
   SessionProcessesRepo,
   SessionsRepo,
+  SlackInstallsRepo,
+  SlackThreadsRepo,
 } from "@mend/db";
 import { AgentTurnId, SessionId } from "@mend/domain";
 import {
   agentProcessOutcome,
   captureStatusLine,
   currentAgentProcess,
+  DEFAULT_NOTIFICATION_SETTINGS,
+  notificationPushes,
   type AgentTurn,
+  type NotificationKind,
+  type Project,
   type ProjectTenancy,
   type Session,
   type SessionProcess,
+  type SlackThreadReach,
 } from "@mend/domain/workbench";
 import { mayRunIn } from "@mend/sessions";
+import { slackThreadReach } from "@mend/slack";
 import { Effect, Layer, Schema, Stream } from "effect";
 
 import { notificationRecipients } from "./notification-recipients.ts";
@@ -39,6 +48,12 @@ import { notificationRecipients } from "./notification-recipients.ts";
  *   state silently — reconnecting or restarting the server must not buzz the
  *   phone. A turn rings only if this process saw it open first.
  * - freshness: a terminal state older than two minutes is history, not news.
+ * - stops: the idle stop (`idle · stopped after 15 min`) and a person's stop never ring. Both end
+ *   the agent as `stopped` and cancel its open turns; a session whose idle stop is claimed reads
+ *   no phase even before the stop lands.
+ *
+ * Then each recipient's own settings (`NotificationSettings`) decide, and a session started from
+ * Slack pushes only what its thread does not already say (`notificationPushes`).
  */
 
 type Phase = "attention" | "completed" | "failed";
@@ -72,6 +87,23 @@ export const phaseOf = (status: string, currentAgent: SessionProcess | null): Ph
       return null;
   }
 };
+
+/**
+ * The phase the notifier folds for a session. A session whose idle stop is claimed is Mend's own
+ * housekeeping in flight: whatever its processes read on the way down, it is not news.
+ */
+export const sessionPhase = (
+  session: Pick<Session, "status" | "idleStoppedAt">,
+  currentAgent: SessionProcess | null,
+): Phase | null => (session.idleStoppedAt === null ? phaseOf(session.status, currentAgent) : null);
+
+/** The kind of news a phase is, as a person's settings name it. */
+export const phaseKind = (phase: Phase): NotificationKind =>
+  phase === "attention" ? "needs-input" : phase === "completed" ? "finished" : "failed";
+
+/** The kind of news an ended turn is; null for an end that is the person's own hand. */
+export const turnKind = (status: AgentTurn["status"]): NotificationKind | null =>
+  status === "completed" ? "finished" : status === "failed" ? "failed" : null;
 
 const clip = (text: string): string =>
   text.length > BODY_LIMIT ? `${text.slice(0, BODY_LIMIT)}…` : text;
@@ -148,12 +180,16 @@ const decodeEvent = Schema.decodeUnknownEffect(Schema.fromJsonString(MendEvent))
 
 /**
  * The phones a session's notification goes to (docs/adr/0003): its owner's, plus whoever sent the
- * latest turn while control is shared, and none for a session with no owner.
+ * latest turn while control is shared, and none for a session with no owner. Each recipient's own
+ * settings decide whether `kind` reaches them; `slackThread` is the reach of the session's Slack
+ * thread, or null for a session without one.
  */
 export const pushTargets = (
   devices: PushDevicesRepo["Service"],
+  settings: Pick<NotificationSettingsRepo["Service"], "forUsers">,
   session: Pick<Session, "ownerUserId" | "sharedControlEnabledAt">,
   latestTurnSenderUserId: string | null,
+  notice: { readonly kind: NotificationKind; readonly slackThread: SlackThreadReach | null },
 ) =>
   Effect.gen(function* () {
     const recipients = notificationRecipients({
@@ -162,7 +198,39 @@ export const pushTargets = (
       latestTurnSenderUserId,
     });
     if (recipients.size === 0) return [];
-    return yield* devices.listForUsers([...recipients]);
+    const saved = yield* settings.forUsers([...recipients]);
+    const listening = [...recipients].filter((userId) =>
+      notificationPushes({
+        kind: notice.kind,
+        settings: saved.get(userId) ?? DEFAULT_NOTIFICATION_SETTINGS,
+        slackThread: notice.slackThread,
+      }),
+    );
+    if (listening.length === 0) return [];
+    return yield* devices.listForUsers(listening);
+  });
+
+/**
+ * How far the session's Slack thread reaches the person who asked, or null for a session that
+ * reports to no thread. A session whose project is gone reaches nobody there.
+ */
+export const slackReachOf = (
+  threads: Pick<SlackThreadsRepo["Service"], "forSession">,
+  installs: Pick<SlackInstallsRepo["Service"], "byTeam">,
+  session: Pick<Session, "id">,
+  project: Pick<Project, "organizationId" | "visibility"> | null,
+) =>
+  Effect.gen(function* () {
+    const thread = yield* threads.forSession(session.id);
+    if (thread === null) return null;
+    if (project === null) return "none" as const;
+    const install = yield* installs.byTeam(thread.teamId);
+    return slackThreadReach({
+      installOrganizationId: install?.organizationId ?? null,
+      projectOrganizationId: project.organizationId,
+      channelId: thread.channelId,
+      visibility: project.visibility,
+    });
   });
 
 /**
@@ -189,6 +257,9 @@ export const SessionNotifierLive = Layer.effectDiscard(
     const devices = yield* PushDevicesRepo;
     const conversations = yield* AgentConversationRepo;
     const organizations = yield* OrganizationsRepo;
+    const notificationSettings = yield* NotificationSettingsRepo;
+    const slackThreads = yield* SlackThreadsRepo;
+    const slackInstalls = yield* SlackInstallsRepo;
 
     const lastPhase = new Map<string, Phase | null>();
     /** Per session: the open (queued/running) turn ids seen on the last event. */
@@ -199,6 +270,7 @@ export const SessionNotifierLive = Layer.effectDiscard(
 
     const send = Effect.fn("SessionNotifier.send")(function* (
       session: Session,
+      kind: NotificationKind,
       body: string,
       ownerOnly = false,
     ) {
@@ -210,7 +282,11 @@ export const SessionNotifierLive = Layer.effectDiscard(
         project === null || ownerOnly
           ? null
           : yield* latestSenderWhoSees(organizations, project, turns);
-      const targets = yield* pushTargets(devices, session, latestSender);
+      const slackThread = yield* slackReachOf(slackThreads, slackInstalls, session, project);
+      const targets = yield* pushTargets(devices, notificationSettings, session, latestSender, {
+        kind,
+        slackThread,
+      });
       if (targets.length === 0) return;
       const title = project?.name ?? session.harness;
       const messages = targets.map((device) => ({
@@ -254,6 +330,7 @@ export const SessionNotifierLive = Layer.effectDiscard(
       for (const alert of ring) {
         yield* send(
           session,
+          "failed",
           alert === "not-saved"
             ? notSavedNotificationBody(session)
             : captureFailingNotificationBody(session),
@@ -261,7 +338,7 @@ export const SessionNotifierLive = Layer.effectDiscard(
         );
       }
       const currentAgent = currentAgentProcess(yield* processes.listForSession(session.id));
-      const phase = phaseOf(session.status, currentAgent);
+      const phase = sessionPhase(session, currentAgent);
       const previous = lastPhase.get(session.id);
       lastPhase.set(session.id, phase);
       if (previous === undefined) return; // unknown baseline — record, never ring
@@ -271,21 +348,23 @@ export const SessionNotifierLive = Layer.effectDiscard(
           session.settledAt?.getTime() ?? currentAgent?.exitedAt?.getTime() ?? Date.now();
         if (Date.now() - endedAt > TERMINAL_FRESHNESS_MS) return;
       }
-      yield* send(session, notificationBody(session, phase));
+      yield* send(session, phaseKind(phase), notificationBody(session, phase));
     });
 
     const ringForTurn = Effect.fn("SessionNotifier.ringForTurn")(function* (
       sessionId: string,
       turn: AgentTurn,
     ) {
-      // Interrupted/cancelled is the user's own hand; stale ends are history.
-      if (turn.status !== "completed" && turn.status !== "failed") return;
+      // Interrupted/cancelled is the user's own hand (or the idle stop's); stale ends are history.
+      const kind = turnKind(turn.status);
+      if (kind === null) return;
       const endedAt = turn.endedAt?.getTime() ?? Date.now();
       if (Date.now() - endedAt > TERMINAL_FRESHNESS_MS) return;
       const session = yield* sessions.byId(SessionId.make(sessionId));
       // A settling or waiting session rings through the phase path above.
       if (session.status !== "running" && session.status !== "idle") return;
-      yield* send(session, turnNotificationBody(session, turn));
+      if (session.idleStoppedAt !== null) return;
+      yield* send(session, kind, turnNotificationBody(session, turn));
     });
 
     // Diff the open-turn set: whatever left it since the last event ended, and
@@ -308,7 +387,7 @@ export const SessionNotifierLive = Layer.effectDiscard(
     const active = yield* sessions.listActive();
     for (const session of active) {
       const currentAgent = currentAgentProcess(yield* processes.listForSession(session.id));
-      lastPhase.set(session.id, phaseOf(session.status, currentAgent));
+      lastPhase.set(session.id, sessionPhase(session, currentAgent));
       lastCaptureAlerts.set(session.id, captureAlertStateOf(session));
     }
 

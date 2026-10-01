@@ -36,7 +36,6 @@ import {
   changeUrl,
   diffMessages,
   disclosureFor,
-  isDirectMessage,
   isSettledState,
   landingStatusLines,
   landOfferMessage,
@@ -52,6 +51,7 @@ import {
   statusMayMove,
   statusMessage,
   switchOffered,
+  threadShowsReplies,
   type ChangeCounts,
   type LandOffer,
   type SlackMessage,
@@ -688,7 +688,7 @@ export const makeSlackReporter = (options: SlackReporterOptions = {}) =>
       const token = yield* botTokenOf(install);
       if (token === null) return;
       // Everyone in a channel reads the thread: a project made private since is not shown there.
-      if (!isDirectMessage(look.thread.channelId) && project.visibility !== "shared") {
+      if (!threadShowsReplies(look.thread.channelId, project.visibility)) {
         return yield* reportStatus(install, token, look, null);
       }
       yield* reportStatus(install, token, look, project.name);

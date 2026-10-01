@@ -11,6 +11,7 @@ import {
   FollowUpsRepo,
   HotWorkspacesRepo,
   IssuesRepo,
+  NotificationSettingsRepo,
   OrganizationSettingsRepo,
   ProjectClusterBindingsRepo,
   ProjectEnvironmentRepo,
@@ -246,6 +247,7 @@ export const createTenancyApi = async (
       ),
       recording(ReviewCommentsRepo, "comments", {}, calls),
       recording(UserDotfilesRepo, "userDotfiles", userDotfiles, calls),
+      recording(NotificationSettingsRepo, "notificationSettings", {}, calls),
     ),
     Layer.mergeAll(
       recording(ReviewSlicesRepo, "slices", {}, calls),

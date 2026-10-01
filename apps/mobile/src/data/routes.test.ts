@@ -53,6 +53,9 @@ const MOBILE_ROUTES: ReadonlyArray<readonly [method: string, path: string]> = [
   ["POST", "/changes/:id/reviews/:sliceId/comments"],
   ["GET", "/sessions/:id/follow-up"],
   ["POST", "/sessions/:id/follow-up/deliver"],
+  // notification-settings.ts — what this account hears about on its phones
+  ["GET", "/me/notifications"],
+  ["PUT", "/me/notifications"],
   // pairing-client.ts + notifications.ts — reached with a raw fetch
   ["POST", "/pair"],
   ["POST", "/devices"],

@@ -1892,3 +1892,63 @@ describe.skipIf(!reachable)("0077 capture drain resume", () => {
     expect(existing).toEqual({ resume: null, drain: "relaunch" });
   });
 });
+
+describe.skipIf(!reachable)("0096 notification settings", () => {
+  const NOTIFY_DB = `${SCRATCH_DB}_notifications`;
+  const notifyLayer = (() => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${NOTIFY_DB}`;
+    return PgClient.layer({ url: Redacted.make(url.toString()) });
+  })();
+  const withNotifyDb = <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+    Effect.runPromise(effect.pipe(Effect.provide(notifyLayer), Effect.scoped));
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`CREATE DATABASE ${NOTIFY_DB}`);
+      }),
+    );
+  });
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* sql.unsafe(`DROP DATABASE IF EXISTS ${NOTIFY_DB} WITH (FORCE)`);
+      }),
+    );
+  });
+
+  it("gives a row the defaults: Slack sessions off, every kind on", async () => {
+    const rows = await withNotifyDb(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        yield* upTo("0095_process_first_output");
+        yield* migrations["0096_notification_settings"];
+        yield* sql`
+          INSERT INTO "user" ("id", "name", "email", "createdAt")
+          VALUES ('anna', 'Anna Example', 'anna@example.com', '2026-01-01T00:00:00Z')`;
+        yield* sql`INSERT INTO user_notification_settings (user_id) VALUES ('anna')`;
+        return yield* sql<{
+          readonly user_id: string;
+          readonly slack_sessions: boolean;
+          readonly turn_finished: boolean;
+          readonly needs_input: boolean;
+          readonly failed: boolean;
+        }>`
+          SELECT user_id, slack_sessions, turn_finished, needs_input, failed
+          FROM user_notification_settings`;
+      }),
+    );
+    expect(rows.map((row) => ({ ...row }))).toEqual([
+      {
+        user_id: "anna",
+        slack_sessions: false,
+        turn_finished: true,
+        needs_input: true,
+        failed: true,
+      },
+    ]);
+  });
+});

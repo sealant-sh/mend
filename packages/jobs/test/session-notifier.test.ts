@@ -1,4 +1,11 @@
-import { OrganizationsRepo, PushDevice, type PushDevicesRepo } from "@mend/db";
+import {
+  OrganizationsRepo,
+  PushDevice,
+  type NotificationSettingsRepo,
+  type PushDevicesRepo,
+  type SealedSlackInstall,
+  type SlackThreadSession,
+} from "@mend/db";
 import {
   OrganizationId,
   ProjectId,
@@ -8,7 +15,16 @@ import {
   Sha,
   WorktreeId,
 } from "@mend/domain";
-import { Organization, Session, SessionProcess } from "@mend/domain/workbench";
+import {
+  DEFAULT_NOTIFICATION_SETTINGS,
+  NotificationSettings,
+  notificationPushes,
+  Organization,
+  Session,
+  SessionProcess,
+  type NotificationKind,
+  type SlackThreadReach,
+} from "@mend/domain/workbench";
 import { Effect, Layer } from "effect";
 import { describe, expect, it } from "vitest";
 
@@ -17,8 +33,12 @@ import {
   captureFailingNotificationBody,
   latestSenderWhoSees,
   notSavedNotificationBody,
+  phaseKind,
   phaseOf,
   pushTargets,
+  sessionPhase,
+  slackReachOf,
+  turnKind,
 } from "../src/session-notifier.ts";
 
 const agent = (patch: Partial<SessionProcess>) =>
@@ -80,6 +100,106 @@ describe("phaseOf", () => {
   });
 });
 
+describe("sessionPhase", () => {
+  const ended = new Date("2026-09-27T10:15:00.000Z");
+  const stoppedAgent = agent({ kind: "agent-protocol", status: "stopped", exitedAt: ended });
+
+  it("never rings for the idle stop, settled or held open by a shell or a Service", () => {
+    const idleStoppedAt = new Date("2026-09-27T10:14:59.000Z");
+    expect(sessionPhase({ status: "stopped", idleStoppedAt }, stoppedAgent)).toBeNull();
+    expect(sessionPhase({ status: "idle", idleStoppedAt }, stoppedAgent)).toBeNull();
+    // Claimed and on its way down: whatever the processes read meanwhile is not news.
+    const exited = agent({
+      kind: "agent-protocol",
+      status: "exited",
+      exitCode: 1,
+      exitedAt: ended,
+    });
+    expect(sessionPhase({ status: "idle", idleStoppedAt }, exited)).toBeNull();
+    expect(sessionPhase({ status: "failed", idleStoppedAt }, exited)).toBeNull();
+    expect(sessionPhase({ status: "completed", idleStoppedAt }, null)).toBeNull();
+  });
+
+  it("never rings for a person's stop", () => {
+    expect(sessionPhase({ status: "stopped", idleStoppedAt: null }, stoppedAgent)).toBeNull();
+    expect(sessionPhase({ status: "idle", idleStoppedAt: null }, stoppedAgent)).toBeNull();
+  });
+
+  it("reads the phase of any other session as phaseOf does", () => {
+    expect(sessionPhase({ status: "waiting", idleStoppedAt: null }, null)).toBe("attention");
+    expect(sessionPhase({ status: "failed", idleStoppedAt: null }, null)).toBe("failed");
+  });
+});
+
+describe("the kind of news", () => {
+  it("names phases and turn ends as a person's settings do", () => {
+    expect(phaseKind("attention")).toBe("needs-input");
+    expect(phaseKind("completed")).toBe("finished");
+    expect(phaseKind("failed")).toBe("failed");
+    expect(turnKind("completed")).toBe("finished");
+    expect(turnKind("failed")).toBe("failed");
+    // The person's own interrupt, and the idle stop's cancel, are not news.
+    expect(turnKind("interrupted")).toBeNull();
+    expect(turnKind("cancelled")).toBeNull();
+    expect(turnKind("running")).toBeNull();
+  });
+});
+
+describe("notificationPushes", () => {
+  const kinds: ReadonlyArray<NotificationKind> = ["finished", "needs-input", "failed"];
+  const pushesFor = (
+    slackThread: SlackThreadReach | null,
+    settings = DEFAULT_NOTIFICATION_SETTINGS,
+  ) =>
+    Object.fromEntries(
+      kinds.map((kind) => [kind, notificationPushes({ kind, settings, slackThread })]),
+    );
+
+  it("by default, a session started in Mend pushes every kind", () => {
+    expect(pushesFor(null)).toEqual({ finished: true, "needs-input": true, failed: true });
+  });
+
+  it("by default, a Slack session pushes only what its thread does not say", () => {
+    // Replies: the closing message, the question naming the owner, the approval line.
+    expect(pushesFor("replies")).toEqual({ finished: false, "needs-input": false, failed: true });
+    // A channel thread of a private project: status line and reaction only, no question.
+    expect(pushesFor("status")).toEqual({ finished: false, "needs-input": true, failed: true });
+    // The app was removed: the thread says nothing.
+    expect(pushesFor("none")).toEqual({ finished: true, "needs-input": true, failed: true });
+  });
+
+  it("with Slack sessions on, a Slack session pushes like any other", () => {
+    const on = new NotificationSettings({ ...DEFAULT_NOTIFICATION_SETTINGS, slackSessions: true });
+    expect(pushesFor("replies", on)).toEqual({ finished: true, "needs-input": true, failed: true });
+  });
+
+  it("each kind turned off pushes for no session", () => {
+    const off = new NotificationSettings({
+      slackSessions: true,
+      turnFinished: false,
+      needsInput: false,
+      failed: false,
+    });
+    for (const reach of [null, "replies", "status", "none"] as const) {
+      expect(pushesFor(reach, off)).toEqual({
+        finished: false,
+        "needs-input": false,
+        failed: false,
+      });
+    }
+    const onlyFailures = new NotificationSettings({
+      ...DEFAULT_NOTIFICATION_SETTINGS,
+      turnFinished: false,
+      needsInput: false,
+    });
+    expect(pushesFor(null, onlyFailures)).toEqual({
+      finished: false,
+      "needs-input": false,
+      failed: true,
+    });
+  });
+});
+
 describe("pushTargets", () => {
   const registered = [
     new PushDevice({ token: "alice-phone", platform: "ios", userId: "alice" }),
@@ -97,14 +217,38 @@ describe("pushTargets", () => {
     removeOwned: () => Effect.void,
     removeAllForUser: () => Effect.void,
   };
+  const saved = new Map<string, NotificationSettings>();
+  const settings: Pick<NotificationSettingsRepo["Service"], "forUsers"> = {
+    forUsers: (userIds) =>
+      Effect.sync(
+        () =>
+          new Map(
+            userIds.map((userId) => [userId, saved.get(userId) ?? DEFAULT_NOTIFICATION_SETTINGS]),
+          ),
+      ),
+  };
+  const finished = { kind: "finished", slackThread: null } as const;
 
   it("rings the owner's phones only, and nobody's for a session with no owner", async () => {
+    asked.length = 0;
     const owned = await Effect.runPromise(
-      pushTargets(devices, { ownerUserId: "alice", sharedControlEnabledAt: null }, "carol"),
+      pushTargets(
+        devices,
+        settings,
+        { ownerUserId: "alice", sharedControlEnabledAt: null },
+        "carol",
+        finished,
+      ),
     );
     expect(owned.map((device) => device.token)).toEqual(["alice-phone"]);
     const unowned = await Effect.runPromise(
-      pushTargets(devices, { ownerUserId: null, sharedControlEnabledAt: new Date() }, "carol"),
+      pushTargets(
+        devices,
+        settings,
+        { ownerUserId: null, sharedControlEnabledAt: new Date() },
+        "carol",
+        finished,
+      ),
     );
     expect(unowned).toEqual([]);
     expect(asked).toEqual([["alice"]]);
@@ -112,9 +256,116 @@ describe("pushTargets", () => {
 
   it("while control is shared, also rings whoever sent the latest turn", async () => {
     const shared = await Effect.runPromise(
-      pushTargets(devices, { ownerUserId: "alice", sharedControlEnabledAt: new Date() }, "carol"),
+      pushTargets(
+        devices,
+        settings,
+        { ownerUserId: "alice", sharedControlEnabledAt: new Date() },
+        "carol",
+        finished,
+      ),
     );
     expect(shared.map((device) => device.token)).toEqual(["alice-phone", "carol-phone"]);
+  });
+
+  it("each recipient's own settings decide, and a Slack thread that says it rings no one", async () => {
+    saved.set(
+      "carol",
+      new NotificationSettings({ ...DEFAULT_NOTIFICATION_SETTINGS, turnFinished: false }),
+    );
+    const session = { ownerUserId: "alice", sharedControlEnabledAt: new Date() };
+    const mendFinished = await Effect.runPromise(
+      pushTargets(devices, settings, session, "carol", finished),
+    );
+    expect(mendFinished.map((device) => device.token)).toEqual(["alice-phone"]);
+
+    asked.length = 0;
+    const slackFinished = await Effect.runPromise(
+      pushTargets(devices, settings, session, "carol", {
+        kind: "finished",
+        slackThread: "replies",
+      }),
+    );
+    expect(slackFinished).toEqual([]);
+    expect(asked).toEqual([]); // nobody listening: no device lookup at all
+
+    const slackFailed = await Effect.runPromise(
+      pushTargets(devices, settings, session, "carol", { kind: "failed", slackThread: "replies" }),
+    );
+    expect(slackFailed.map((device) => device.token)).toEqual(["alice-phone", "carol-phone"]);
+    saved.clear();
+  });
+});
+
+/** A thread, an install and a project, for `slackReachOf`. */
+const reachOrg = OrganizationId.make("org-acme");
+const thread = (channelId: string): SlackThreadSession => ({
+  sessionId: SessionId.make("session-1"),
+  teamId: "T1",
+  channelId,
+  threadTs: "1.0",
+  requestTs: "1.0",
+  statusTs: "1.1",
+  slackUserId: "U1",
+  projectSource: "channel-default",
+  external: false,
+  reportedState: null,
+  reportedStatus: null,
+  createdAt: new Date("2026-09-27T10:00:00.000Z"),
+});
+const install = (organizationId: OrganizationId): SealedSlackInstall => ({
+  organizationId,
+  teamId: "T1",
+  teamName: "Acme",
+  botUserId: "B1",
+  appId: "A1",
+  sealedAppToken: "sealed",
+  sealedBotToken: "sealed",
+  webOrigin: "https://mend.example.com",
+  settings: {
+    defaultHarness: "codex",
+    showAgentMessages: true,
+    showDiffs: false,
+    externalChannels: false,
+    landAutomatically: true,
+  },
+  installedByUserId: "alice",
+  createdAt: new Date("2026-09-01T00:00:00.000Z"),
+  updatedAt: new Date("2026-09-01T00:00:00.000Z"),
+});
+const reach = (
+  found: SlackThreadSession | null,
+  installed: SealedSlackInstall | null,
+  project: {
+    readonly organizationId: OrganizationId;
+    readonly visibility: "shared" | "private";
+  } | null,
+) =>
+  Effect.runPromise(
+    slackReachOf(
+      { forSession: () => Effect.succeed(found) },
+      { byTeam: () => Effect.succeed(installed) },
+      { id: SessionId.make("session-1") },
+      project,
+    ),
+  );
+describe("slackReachOf", () => {
+  const acme = reachOrg;
+  const shared = { organizationId: acme, visibility: "shared" } as const;
+  const privateProject = { organizationId: acme, visibility: "private" } as const;
+
+  it("is null for a session that reports to no thread", async () => {
+    expect(await reach(null, install(acme), shared)).toBeNull();
+  });
+
+  it("reads as the reporter writes: replies, status only, or nothing", async () => {
+    expect(await reach(thread("C1"), install(acme), shared)).toBe("replies");
+    expect(await reach(thread("D1"), install(acme), privateProject)).toBe("replies");
+    expect(await reach(thread("C1"), install(acme), privateProject)).toBe("status");
+    expect(await reach(thread("C1"), null, shared)).toBe("none");
+    expect(await reach(thread("C1"), install(OrganizationId.make("org-other")), shared)).toBe(
+      "none",
+    );
+    expect(await reach(thread("C1"), install(acme), null)).toBe("none");
   });
 });
 
