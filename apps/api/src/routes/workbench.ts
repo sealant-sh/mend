@@ -133,6 +133,7 @@ import {
   type GitAuthMode,
   gitAuthorIssue,
   normalizeGitAuthor,
+  Session,
   type SessionStatus,
 } from "@mend/domain/workbench";
 import { JobRunner, queueReviewPass } from "@mend/jobs";
@@ -208,6 +209,20 @@ const fileListingFailure = (error: { readonly stderr: string }) =>
   new StoreFailure({ message: error.stderr === "" ? "git could not list files" : error.stderr });
 
 /** A worktree read that could not be served — the observed reason, in the read's own words. */
+
+/**
+ * A settled session whose launch verb is under way reads `starting`
+ * (`SessionEngine.launchUnderWay`). A resume keeps the row settled until its agent runs; read
+ * as it is, a phone kept offering Resume while the resume set up a machine, and each tap started
+ * another (alpha 2026-09-30, 523ce2cb).
+ */
+const asLaunching =
+  (launchUnderWay: (sessionId: SessionId) => boolean) =>
+  (session: Session): Session =>
+    session.settledAt !== null && launchUnderWay(session.id)
+      ? new Session({ ...session, status: "starting", settledAt: null })
+      : session;
+
 export const readFailure = (error: WorktreeReadError): StoreFailure =>
   new StoreFailure({
     message:
@@ -565,9 +580,10 @@ export const ProjectsGroupLive = HttpApiBuilder.group(MendApi, "projects", (hand
           if (list === undefined) bySession.set(row.sessionId, [row]);
           else list.push(row);
         }
+        const launching = asLaunching((yield* SessionEngine).launchUnderWay);
         return new ProjectDetail({
           project,
-          sessions: projectSessions,
+          sessions: projectSessions.map(launching),
           hiddenEndedSessions: sessionVisibility.hiddenEndedSessions,
           annotations: annotations.map(
             (row) =>
@@ -2240,7 +2256,7 @@ export const SessionsGroupLive = HttpApiBuilder.group(MendApi, "sessions", (hand
         const viewer = yield* (yield* ProjectAccess).viewer();
         const steer = viewer !== null && canSteerSession(session, viewer.userId);
         return new SessionDetail({
-          session,
+          session: asLaunching((yield* SessionEngine).launchUnderWay)(session),
           control: new SessionControlView({
             own: viewer !== null && session.ownerUserId === viewer.userId,
             steer,

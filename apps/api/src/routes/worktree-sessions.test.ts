@@ -27,6 +27,7 @@ describe("POST /worktrees/:id/sessions", () => {
       {
         implement: {
           engine: {
+            launchUnderWay: () => false,
             provisionSessionIn: (_worktreeId, input) =>
               Effect.suspend(() => {
                 provisioned.push({ ownerUserId: input.ownerUserId, autoLand: input.autoLand });

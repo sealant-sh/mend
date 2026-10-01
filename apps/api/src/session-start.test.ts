@@ -141,6 +141,7 @@ const startWorld = (
             ),
         }),
         Layer.mock(SessionEngine, {
+          launchUnderWay: () => false,
           detach: (effect) => Effect.forkDetach(effect),
           provision: (input) =>
             note(
