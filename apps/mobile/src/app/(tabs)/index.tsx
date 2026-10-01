@@ -104,7 +104,7 @@ export default function NowScreen() {
         title="Now"
         meta={
           all.isError
-            ? "server unreachable — check Settings"
+            ? "sessions could not be read"
             : all.isLoading
               ? "connecting…"
               : `${(groups[0]?.items.length ?? 0) === 0 ? "nothing waiting on you" : `${groups[0]?.items.length} waiting`} · ${groups[1]?.items.length ?? 0} live`
@@ -112,8 +112,17 @@ export default function NowScreen() {
       />
       {all.isError && (
         <Panel>
-          <View style={{ padding: 16 }}>
-            <MonoText>{String((all.error as Error | null)?.message ?? "error")}</MonoText>
+          <View style={{ padding: 16, gap: 10 }}>
+            <MonoText tone="ink2">{all.error.message}</MonoText>
+            <View style={{ flexDirection: "row" }}>
+              <EvButton
+                size="sm"
+                variant="outline"
+                label={all.isFetching ? "retrying…" : "Retry"}
+                disabled={all.isFetching}
+                onPress={() => void all.refetch()}
+              />
+            </View>
           </View>
         </Panel>
       )}

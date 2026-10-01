@@ -4,16 +4,23 @@
 // fast only while one is running, so a queued pass surfaces quickly and a
 // quiet screen stays cheap.
 
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useRef } from "react";
+import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useRef, useState } from "react";
 
 import {
   api,
   ApiError,
   requireFollowUpDelivery,
+  useSession,
   type FollowUpDto,
   type SessionChangeDto,
 } from "@/data/live";
+import {
+  advanceTarget,
+  newerCheckpoint,
+  type CheckpointDto,
+  type ObservationDto,
+} from "@/data/review-state";
 
 // ─── wire types (the server's DTOs, minimally) ──────────────────────────────
 
@@ -40,6 +47,15 @@ export interface ReviewCommentDto {
   readonly evidence: ReadonlyArray<RecordLinkDto>;
   readonly sentToSessionId: string | null;
   readonly createdAt: string;
+  /** The slice the comment was written on; null for a legacy live-diff comment. */
+  readonly anchor?: ReviewCommentAnchorDto | null;
+}
+
+/** Where a comment was written: one slice, and the checkpoints that bound it. */
+export interface ReviewCommentAnchorDto {
+  readonly reviewSliceId: string;
+  readonly checkpointAId: string;
+  readonly checkpointBId: string;
 }
 
 /** One stop of the composed review tour. Coordinates are new-file lines. */
@@ -105,59 +121,126 @@ export interface ReviewDiffFileDto {
 
 export interface OpenReviewDto {
   readonly slice: ReviewSliceDto;
+  readonly checkpointA: CheckpointDto;
+  readonly checkpointB: CheckpointDto;
   readonly reused: boolean;
 }
 
 export interface ReviewDiffDto {
   readonly change: SessionChangeDto;
   readonly slice: ReviewSliceDto;
+  readonly checkpointA: CheckpointDto;
+  readonly checkpointB: CheckpointDto;
   readonly patch: string;
   readonly files: ReadonlyArray<ReviewDiffFileDto>;
-  /** A live observation only — the rendered patch stays the slice's. */
+  /**
+   * A live observation only — the rendered patch stays the slice's. In
+   * capture mode it is judged against the newest capture, which
+   * `observation` names.
+   */
   readonly worktreeChangedSinceSnapshot: boolean;
+  /** Absent from servers that predate captures. */
+  readonly observation?: ObservationDto;
 }
 
 // ─── queries ────────────────────────────────────────────────────────────────
 
-// Opening a review is an idempotent mutation used as a query (the web review
-// does the same per tab): one key per change per app run pins one slice, and
-// pull-to-refresh rotates the key to reopen at the current worktree.
-let openSequence = 0;
-const openKeys = new Map<string, string>();
+// Opening a review is an idempotent mutation used as a query, as the web
+// review does per tab. Here one screen visit is the tab: every visit opens at
+// the change's current state (the server reuses the last slice when nothing
+// moved), and a newer checkpoint from the session reopens it while the
+// screen stays up. Pull-to-refresh starts a new visit.
+let visitSequence = 0;
 
-const openReviewKey = (changeId: string): string => {
-  const existing = openKeys.get(changeId);
-  if (existing !== undefined) return existing;
-  openSequence += 1;
-  const created = `mobile-review-open:${changeId}:${Date.now().toString(36)}:${openSequence.toString(36)}`;
-  openKeys.set(changeId, created);
-  return created;
+const newVisitKey = (changeId: string): string => {
+  visitSequence += 1;
+  return `mobile-review:${changeId}:${Date.now().toString(36)}:${visitSequence.toString(36)}`;
 };
 
-/** Forget the pinned slice so the next open pins a fresh one at the current worktree. */
-export const resetOpenReview = (changeId: string): void => {
-  openKeys.delete(changeId);
-};
+/**
+ * The slice a screen renders, and the requests behind it. `hold` keeps the
+ * slice where it is while the reviewer writes on it — a draft stays on the
+ * slice it was started on, and the review advances once it is sent or
+ * dropped.
+ */
+export const usePinnedReview = (changeId: string | null, hold: boolean) => {
+  const queryClient = useQueryClient();
+  const [visit, setVisit] = useState(() => newVisitKey(changeId ?? ""));
+  const [advancedFor, setAdvancedFor] = useState<string | null>(null);
+  // The key a pull-to-refresh opened, so the spinner answers the pull only —
+  // an automatic advance or a background re-read never pulls the list down.
+  const [pulledKey, setPulledKey] = useState<string | null>(null);
+  const idempotencyKey = `${visit}:${advancedFor ?? "open"}`;
 
-export const useOpenReview = (changeId: string | null) =>
-  useQuery({
-    queryKey: ["change", changeId, "review-open"],
+  const open = useQuery({
+    queryKey: ["change", changeId, "review-open", idempotencyKey],
     enabled: changeId !== null,
+    // Pinned for this key: a refetch with the same key answers the same slice.
     staleTime: Number.POSITIVE_INFINITY,
     queryFn: () =>
-      api<OpenReviewDto>("POST", `/changes/${changeId}/reviews/open`, {
-        idempotencyKey: openReviewKey(changeId ?? ""),
-      }),
+      api<OpenReviewDto>("POST", `/changes/${changeId}/reviews/open`, { idempotencyKey }),
   });
-
-export const useReviewDiff = (changeId: string | null, sliceId: string | null) =>
-  useQuery({
+  const sliceId = open.data?.slice.id ?? null;
+  const diff = useQuery({
     queryKey: ["change", changeId, "review-diff", sliceId],
     enabled: changeId !== null && sliceId !== null,
-    // The slice's patch is pinned by digest — it cannot change under us.
-    staleTime: Number.POSITIVE_INFINITY,
+    // The patch is pinned by digest; re-reading (every 30 s on screen, and on
+    // foreground) refreshes only the moved-since observation beside it, so
+    // an agent mid-turn shows as "differs from checkpoint N" before its
+    // turn-boundary checkpoint advances the slice.
+    staleTime: 30_000,
+    refetchInterval: 30_000,
+    // The slice on screen stays while the next one opens (or fails to).
+    placeholderData: keepPreviousData,
     queryFn: () => api<ReviewDiffDto>("GET", `/changes/${changeId}/reviews/${sliceId}/diff`),
   });
+  const review = diff.data ?? null;
+
+  // The session's detail carries the worktree's checkpoint chain and is
+  // already polled — it is the phone's stand-in for the web's live events.
+  const session = useSession(review?.change.sessionId ?? null);
+  const chain = session.data?.checkpoints ?? [];
+  const target = advanceTarget({
+    chain,
+    pinned: review?.checkpointB ?? null,
+    advancedFor,
+    hold,
+  });
+  // Adjusting state from what was just read, during render (no effect): the
+  // guard in advanceTarget makes this fire once per newer checkpoint.
+  if (target !== null) setAdvancedFor(target);
+  const waiting = newerCheckpoint(chain, review?.checkpointB ?? null);
+
+  return {
+    open,
+    diff,
+    review,
+    /** The newest checkpoint past the pinned one, while the review waits on a draft. */
+    heldFor: hold ? waiting : null,
+    /** A newer open in flight while the older slice stays on screen. */
+    advancing: diff.isPlaceholderData && open.status !== "error",
+    refreshing: pulledKey === idempotencyKey && (open.isLoading || diff.isPlaceholderData),
+    /** Pull-to-refresh: a new visit, opened at the change's current state. */
+    refresh: () => {
+      const next = newVisitKey(changeId ?? "");
+      // Keyed on the newest checkpoint already seen, so the new visit opens
+      // once rather than opening and then advancing straight after.
+      const nextAdvancedFor = waiting?.id ?? null;
+      setVisit(next);
+      setAdvancedFor(nextAdvancedFor);
+      setPulledKey(`${next}:${nextAdvancedFor ?? "open"}`);
+      // The comments, tour and passes; the new key reads its own slice.
+      void queryClient.invalidateQueries({
+        predicate: (query) =>
+          query.queryKey[0] === "change" &&
+          query.queryKey[1] === changeId &&
+          query.queryKey[2] !== "review-open" &&
+          query.queryKey[2] !== "review-diff",
+      });
+      void session.refetch();
+    },
+  };
+};
 
 export const useChangeComments = (changeId: string | null) =>
   useQuery({

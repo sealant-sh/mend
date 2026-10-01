@@ -1,18 +1,23 @@
 // The accumulated change as a plain unified diff — the git story without
-// the review apparatus (plan §7.4: readable unified diffs). Worktree versus
-// session base; pull to refresh while the agent keeps writing. Review is the
-// place for comments and tours — this screen only shows the evidence.
+// the review apparatus (plan §7.4: readable unified diffs). It reads the same
+// pinned slice Review reads (the worktree's first checkpoint to the newest),
+// so the two screens never disagree, and moves to a newer slice when the
+// session takes a newer checkpoint; pull to refresh opens one at the current
+// state. Review is the place for comments and tours — this screen only shows
+// the evidence.
 
 import { useLocalSearchParams } from "expo-router";
 import { useMemo, useState } from "react";
 import { Pressable, RefreshControl, ScrollView, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
+import { BodyPanel, SliceStatus } from "@/components/change-body";
 import { BASE_LINE_H, CodeChunk, parseFiles, TOTAL_BUDGET } from "@/components/diff";
 import { Panel } from "@/components/panel";
 import { ScreenHeader } from "@/components/screen";
 import { MonoText, UiText, useTextScale } from "@/components/typography";
-import { useChangeDiff } from "@/data/live";
+import { usePinnedReview } from "@/data/review";
+import { advanceFailure, changeBody } from "@/data/review-state";
 import { spacing, useEvidenceTheme } from "@/theme/evidence";
 
 export default function DiffScreen() {
@@ -22,11 +27,27 @@ export default function DiffScreen() {
   const textScale = useTextScale();
   const lineH = Math.round(BASE_LINE_H * textScale);
 
-  const diffQuery = useChangeDiff(id ?? null);
-  const change = diffQuery.data?.change ?? null;
-  const stats = diffQuery.data?.files ?? [];
-  const diffText = diffQuery.data?.diff ?? "";
+  // Nothing is written here, so nothing holds the slice.
+  const pinned = usePinnedReview(id ?? null, false);
+  const review = pinned.review;
+  const change = review?.change ?? null;
+  const stats = (review?.files ?? []).map((file) => ({
+    path: file.newPath ?? file.oldPath ?? "unknown path",
+    additions: file.additions,
+    deletions: file.deletions,
+  }));
+  const diffText = review?.patch ?? "";
   const files = useMemo(() => parseFiles(diffText), [diffText]);
+  const readFacts = {
+    open: { status: pinned.open.status, error: pinned.open.error },
+    diff: { status: pinned.diff.status, error: pinned.diff.error },
+    slice:
+      review === null ? null : { fileCount: review.files.length, checkpointB: review.checkpointB },
+  };
+  const body = changeBody(readFacts);
+  const failure = advanceFailure(readFacts);
+  const retry = (step: "open" | "diff") =>
+    void (step === "open" ? pinned.open.refetch() : pinned.diff.refetch());
 
   // Past the render budget, later files start collapsed — same discipline as
   // Review: the header with its counts is the whole story until opened.
@@ -45,26 +66,13 @@ export default function DiffScreen() {
   const additions = stats.reduce((sum, file) => sum + file.additions, 0);
   const deletions = stats.reduce((sum, file) => sum + file.deletions, 0);
 
-  let body = null;
-  if (diffQuery.isLoading) {
-    body = <MonoText tone="faint">reading the change…</MonoText>;
-  } else if (diffQuery.isError) {
-    body = (
-      <MonoText tone="danger" numberOfLines={4}>
-        {diffQuery.error.message}
-      </MonoText>
-    );
-  } else if (files.length === 0) {
-    body = <MonoText tone="faint">no changes in the worktree yet</MonoText>;
-  }
-
   return (
     <ScrollView
       style={{ flex: 1, backgroundColor: colors.bg }}
       refreshControl={
         <RefreshControl
-          refreshing={diffQuery.isRefetching}
-          onRefresh={() => void diffQuery.refetch()}
+          refreshing={pinned.refreshing}
+          onRefresh={pinned.refresh}
           tintColor={colors.faint}
         />
       }
@@ -78,13 +86,22 @@ export default function DiffScreen() {
       <ScreenHeader
         eyebrow="diff"
         title={change === null ? "Change" : change.branch}
-        {...(change === null
-          ? {}
-          : {
-              meta: `${change.baseSha.slice(0, 7)} → ${change.headSha?.slice(0, 7) ?? "worktree"} · ${stats.length} file${stats.length === 1 ? "" : "s"} · +${additions} −${deletions}`,
-            })}
+        meta={
+          review === null
+            ? body.kind === "failed"
+              ? "not opened"
+              : "opening the change…"
+            : `checkpoint ${review.checkpointA.ordinal} → ${review.checkpointB.ordinal} · ${review.checkpointB.sha.slice(0, 7)} · ${stats.length} file${stats.length === 1 ? "" : "s"} · +${additions} −${deletions}`
+        }
       />
-      {body}
+      <SliceStatus
+        review={review}
+        advancing={pinned.advancing}
+        heldFor={null}
+        failure={failure}
+        onRetry={retry}
+      />
+      {body.kind === "files" ? null : <BodyPanel body={body} onRetry={retry} />}
       {files.map((file) => {
         const stat = stats.find((candidate) => candidate.path === file.path);
         const collapsedHere = isCollapsed(file.path);

@@ -7,6 +7,7 @@ import { useLocalSearchParams, useRouter } from "expo-router";
 import { useState } from "react";
 import { View } from "react-native";
 
+import { EvButton } from "@/components/button";
 import { ClearSettledButton } from "@/components/clear-settled";
 import { Panel, PanelRow } from "@/components/panel";
 import { RenameSessionModal, type RenameTarget } from "@/components/rename-session";
@@ -33,12 +34,20 @@ export default function ProjectScreen() {
   const project = detail.data?.project;
   const sessions = detail.data?.sessions ?? [];
 
-  if (detail.isError) {
+  if (detail.isError && project === undefined) {
     return (
       <Screen>
-        <BodyText tone="muted">
-          {String((detail.error as Error | null)?.message ?? "This project is not reachable.")}
-        </BodyText>
+        <MonoText tone="danger">project · could not be read</MonoText>
+        <BodyText tone="muted">{detail.error.message}</BodyText>
+        <View style={{ flexDirection: "row" }}>
+          <EvButton
+            size="sm"
+            variant="outline"
+            label={detail.isFetching ? "retrying…" : "Retry"}
+            disabled={detail.isFetching}
+            onPress={() => void detail.refetch()}
+          />
+        </View>
       </Screen>
     );
   }
