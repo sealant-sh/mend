@@ -38,15 +38,32 @@ export function ScreenHeader({
   eyebrow,
   title,
   meta,
+  action,
 }: {
   readonly eyebrow: string;
   readonly title: string;
   readonly meta?: string;
+  /** A control at the title's right edge. */
+  readonly action?: ReactNode;
 }) {
   return (
     <View style={{ gap: 8 }}>
       <Eyebrow>{eyebrow}</Eyebrow>
-      <DisplayTitle>{title}</DisplayTitle>
+      {action === undefined ? (
+        <DisplayTitle>{title}</DisplayTitle>
+      ) : (
+        <View
+          style={{
+            flexDirection: "row",
+            alignItems: "center",
+            justifyContent: "space-between",
+            gap: 12,
+          }}
+        >
+          <DisplayTitle>{title}</DisplayTitle>
+          {action}
+        </View>
+      )}
       {meta === undefined ? null : (
         <MonoText tone="faint" size={11.5}>
           {meta}

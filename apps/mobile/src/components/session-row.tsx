@@ -63,6 +63,7 @@ export function SessionRow({
   session,
   detail = null,
   first = false,
+  selected = false,
   onPress,
   onRename,
   onDelete,
@@ -71,6 +72,8 @@ export function SessionRow({
   /** Optional mono second line: change stats, last progress, settle summary. */
   readonly detail?: string | null;
   readonly first?: boolean;
+  /** The session open beside the list on an unfolded screen. */
+  readonly selected?: boolean;
   readonly onPress?: () => void;
   /** Reveal a rename action on slide-left. */
   readonly onRename?: () => void;
@@ -84,12 +87,16 @@ export function SessionRow({
   const row = (
     <Pressable
       {...(onPress ? { onPress } : {})}
+      accessibilityState={{ selected }}
       style={({ pressed }) => [
         {
-          paddingHorizontal: 16,
+          paddingLeft: selected ? 14 : 16,
+          paddingRight: 16,
           paddingVertical: 12,
           gap: 4,
-          backgroundColor: pressed ? colors.sunken : colors.panel,
+          backgroundColor: pressed ? colors.sunken : selected ? colors.wash : colors.panel,
+          borderLeftWidth: selected ? 2 : 0,
+          borderLeftColor: colors.accent,
         },
       ]}
     >
