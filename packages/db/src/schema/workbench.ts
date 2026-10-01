@@ -591,6 +591,47 @@ export const userPiProfiles = pgTable("user_pi_profiles", {
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 
+/**
+ * Each person's agent memory per project (docs/adr/0009), one row per file: its path in the harness
+ * home, its contents, and the session whose agent last wrote it (null for an import).
+ */
+export const agentMemoryFiles = pgTable(
+  "agent_memory_files",
+  {
+    userId: text().notNull(),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    path: text().notNull(),
+    encoding: text().$type<"utf8" | "base64">().notNull(),
+    contents: text().notNull(),
+    digest: text().notNull(),
+    bytes: integer().notNull(),
+    updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+    updatedBySession: text(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.projectId, table.path] })],
+);
+
+/** Every memory file Mend replaced or deleted, by digest: the base a merge reads, and an undo. */
+export const agentMemoryVersions = pgTable(
+  "agent_memory_versions",
+  {
+    userId: text().notNull(),
+    projectId: text()
+      .$type<ProjectId>()
+      .notNull()
+      .references(() => projects.id, { onDelete: "cascade" }),
+    path: text().notNull(),
+    digest: text().notNull(),
+    encoding: text().$type<"utf8" | "base64">().notNull(),
+    contents: text().notNull(),
+    savedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [primaryKey({ columns: [table.userId, table.projectId, table.path, table.digest] })],
+);
+
 export const userDotfiles = pgTable("user_dotfiles", {
   userId: text().primaryKey(),
   repository: jsonbOf(DotfilesRepository),

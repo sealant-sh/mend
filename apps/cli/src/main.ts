@@ -16,6 +16,7 @@ import {
   validatePiProfile,
 } from "@mend/domain/workbench";
 
+import { claudeMemoryDirFor, scanClaudeMemory } from "./agent-memory.ts";
 import { type AgentShareHandle, shareAgent, startAgentShare } from "./agent-share.ts";
 import { type FirstOutputGate, firstOutputGate, startingLabelOf } from "./attach-starting.ts";
 import {
@@ -648,6 +649,15 @@ const adopt = async (config: CliConfig, args: ReadonlyArray<string>) => {
   say(
     `${dim("  sessions start with:")} mend codex ${dim("(from anywhere —")} --project ${project.name}${dim(")")}`,
   );
+  // Adopted from inside the checkout: say what Claude already learned about it here.
+  const repoRoot = positional[0] === undefined ? cwdFacts(process.cwd()).repoRoot : null;
+  const memory = repoRoot === null ? null : claudeMemoryDirFor(repoRoot);
+  if (memory !== null) {
+    const count = scanClaudeMemory(memory).files.length;
+    say(
+      `${dim("  claude memory")} ${count} file${count === 1 ? "" : "s"} on this machine ${dim("→ mend memory import")}`,
+    );
+  }
 };
 
 // ─── session launch ─────────────────────────────────────────────────────────
@@ -2327,6 +2337,118 @@ const serviceCommand = async (config: CliConfig, args: ReadonlyArray<string>) =>
   }
 };
 
+// ─── memory: the agents' memory per person per project (docs/adr/0009) ───────
+
+interface AgentMemoryEntryDto {
+  readonly path: string;
+  readonly harness: string;
+  readonly name: string;
+  readonly bytes: number;
+  readonly updatedAt: string;
+  readonly updatedBySession: string | null;
+}
+
+const kilobytes = (bytes: number) =>
+  bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
+
+/** A file named as `mend memory` lists it (`MEMORY.md`), or by its full path. */
+const memoryPathOf = (name: string): string =>
+  name.startsWith(".") ? name : `.claude/projects/-workspace-repo/memory/${name}`;
+
+const memoryImport = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const repoRoot = cwdFacts(process.cwd()).repoRoot;
+  if (repoRoot === null) return fail("run mend memory import inside the repository's checkout");
+  const dir = claudeMemoryDirFor(repoRoot);
+  if (dir === null) return fail(`claude keeps no memory for ${repoRoot} on this machine`);
+  const scan = scanClaudeMemory(dir);
+  for (const note of scan.notes) say(dim(`  ${note}`));
+  if (scan.files.length === 0) return fail(`${dir} holds no files`);
+  const project = await findProject(config, takeFlagValue(args, "--project"));
+  say(`claude memory · ${dir} · ${scan.files.length} file${scan.files.length === 1 ? "" : "s"}`);
+  if (args.includes("--dry-run")) {
+    for (const file of scan.files) say(`  ${file.path.split("/memory/").at(-1) ?? file.path}`);
+    say(dim("  --dry-run: nothing sent"));
+    return;
+  }
+  const report = await withSpinner(
+    "importing",
+    api<{
+      readonly added: ReadonlyArray<string>;
+      readonly unchanged: ReadonlyArray<string>;
+      readonly conflicting: ReadonlyArray<string>;
+    }>(config, "POST", `/projects/${project.id}/memory/import`, { files: scan.files }),
+  );
+  say(
+    `${green("imported")} into ${project.name} · ${report.added.length} added · ${report.unchanged.length} unchanged${
+      report.conflicting.length === 0
+        ? ""
+        : ` · ${report.conflicting.length} already there with other contents, left as they are`
+    }`,
+  );
+  for (const conflicting of report.conflicting) {
+    say(dim(`  kept Mend's ${conflicting.split("/memory/").at(-1) ?? conflicting}`));
+  }
+  say(dim("sessions in the project receive it from the next launch"));
+};
+
+/** `mend memory`: what the agents remember about a project, for you. */
+const memoryCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
+  const [verb, ...rest] = args;
+  if (verb === "import") return memoryImport(config, rest);
+  const flags = verb === "show" || verb === "rm" ? rest : args;
+  const project = await findProject(config, takeFlagValue(flags, "--project"));
+  const base = `/projects/${project.id}/memory`;
+  if (verb === "show" || verb === "rm") {
+    const name = rest.find(
+      (arg, index) => !arg.startsWith("--") && rest[index - 1] !== "--project",
+    );
+    if (name === undefined) return fail(usageOf(`memory ${verb}`));
+    const query = `?path=${encodeURIComponent(memoryPathOf(name))}`;
+    if (verb === "rm") {
+      const removed = await api<{ readonly removed: boolean }>(
+        config,
+        "DELETE",
+        `${base}/file${query}`,
+      );
+      return say(
+        removed.removed ? `removed ${name} · kept as a version` : `${name}: not in memory`,
+      );
+    }
+    const file = await api<{ readonly encoding: string; readonly contents: string }>(
+      config,
+      "GET",
+      `${base}/file${query}`,
+    );
+    process.stdout.write(
+      file.encoding === "utf8" ? file.contents : Buffer.from(file.contents, "base64"),
+    );
+    return;
+  }
+  const view = await api<{ readonly files: ReadonlyArray<AgentMemoryEntryDto> }>(
+    config,
+    "GET",
+    base,
+  );
+  if (view.files.length === 0) {
+    say(
+      `${project.name}: no agent memory yet ${dim("· mend memory import brings this machine's")}`,
+    );
+    return;
+  }
+  const width = Math.max(...view.files.map((file) => file.name.length));
+  for (const file of view.files) {
+    say(
+      `${file.harness.padEnd(7)} ${file.name.padEnd(width)}  ${kilobytes(file.bytes).padStart(8)}  ${dim(
+        `${file.updatedAt.slice(0, 16).replace("T", " ")} · ${
+          file.updatedBySession === null
+            ? "imported"
+            : `session ${file.updatedBySession.slice(0, 8)}`
+        }`,
+      )}`,
+    );
+  }
+};
+
 // ─── connect / accounts: the user's own provider credentials ────────────────
 
 type ConnectedAccountProvider = "claude" | "codex" | "github";
@@ -3484,6 +3606,7 @@ _mend() {
     'keys:the machine Mend deploy key — init, show, share'
     'git-author:the name and email your workspaces commit as'
     'skills:skill libraries — list, push'
+    'memory:what the agents remember about a project — list, show, rm, import'
     'accounts:your connected accounts on the platform'
     'pair:pair a phone or a second machine' 'doctor:read-only checklist of this setup'
     'connect:send this machine'"'"'s claude/codex/github credential, or your pi setup'
@@ -3524,7 +3647,7 @@ _mend "$@"
 const BASH_COMPLETIONS = `_mend() {
   local cur=\${COMP_WORDS[COMP_CWORD]}
   if [ "$COMP_CWORD" -eq 1 ]; then
-    COMPREPLY=( $(compgen -W "adopt codex claude opencode pi run attach stop shell service server uninstall keys git-author skills pair doctor continue resume rejoin land pull refresh projects sessions status ui help" -- "$cur") )
+    COMPREPLY=( $(compgen -W "adopt codex claude opencode pi run attach stop shell service server uninstall keys git-author skills memory connect pair doctor continue resume rejoin land pull refresh projects sessions status ui help" -- "$cur") )
     return
   fi
   case \${COMP_WORDS[1]} in
@@ -4538,6 +4661,8 @@ const main = async () => {
       return dotfilesCommand(config, rest);
     case "skills":
       return skillsCommand(config, rest);
+    case "memory":
+      return memoryCommand(config, rest);
     case "accounts":
       return accountsCommand(config);
     case "connect":

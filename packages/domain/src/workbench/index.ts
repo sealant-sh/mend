@@ -23,6 +23,7 @@
 export * from "./audit.ts";
 export * from "./agent-start.ts";
 export * from "./agent-protocol.ts";
+export * from "./agent-memory.ts";
 export * from "./capture-drain.ts";
 export * from "./change.ts";
 export * from "./checkpoint.ts";

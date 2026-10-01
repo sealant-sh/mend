@@ -1,6 +1,7 @@
 import { HttpApi } from "effect/unstable/httpapi";
 
 import { accountsGroup } from "./accounts.ts";
+import { agentMemoryGroup } from "./agent-memory.ts";
 import { sessionChangesGroup } from "./changes.ts";
 import { cliAuthGroup, devicesGroup, userDevicesGroup, pairGroup } from "./devices.ts";
 import { foldersGroup } from "./folders.ts";
@@ -53,6 +54,7 @@ export const MendApi = HttpApi.make("mend")
   .add(dotfilesGroup)
   .add(skillsGroup)
   .add(piProfileGroup)
+  .add(agentMemoryGroup)
   .add(issuesGroup)
   .add(briefsGroup)
   .add(runsGroup)

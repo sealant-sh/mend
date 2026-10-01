@@ -38,6 +38,7 @@ import {
   SessionRunsRepo,
   SessionsRepo,
   SettingsRepo,
+  AgentMemoryRepo,
   PiProfilesRepo,
   SkillsRepo,
   UserDotfilesRepo,
@@ -56,6 +57,7 @@ import {
   WorktreeNotFoundError,
   type ExecutorCaptureEvidence,
   piProfileDigest,
+  agentMemoryDigest,
 } from "@mend/db";
 import {
   AgentTurnId,
@@ -921,6 +923,20 @@ const piProfilesLayerOf = (
     forUser: saved,
     save: () => Effect.die("not in test"),
     remove: () => Effect.die("not in test"),
+  });
+
+/** The owner's agent memory; none stored, and every read-back recorded, unless a test says. */
+const agentMemoryLayerOf = (
+  implement: Partial<AgentMemoryRepo["Service"]> = {},
+): Layer.Layer<AgentMemoryRepo> =>
+  Layer.succeed(AgentMemoryRepo, {
+    forLaunch: () => Effect.succeed([]),
+    list: () => Effect.succeed([]),
+    read: () => Effect.succeed(null),
+    remove: () => Effect.succeed(false),
+    readBack: () => Effect.succeed({ saved: [], merged: [], deleted: [], skipped: [] }),
+    importFiles: () => Effect.succeed({ added: [], unchanged: [], conflicting: [] }),
+    ...implement,
   });
 
 const skillsForLaunchLayer = (
@@ -2569,6 +2585,7 @@ const withEngine = <A, E>(
     readonly hotWorkspacesLayer?: Layer.Layer<HotWorkspacesRepo>;
     readonly skillsLayer?: Layer.Layer<SkillsRepo>;
     readonly piProfilesLayer?: Layer.Layer<PiProfilesRepo>;
+    readonly agentMemoryLayer?: Layer.Layer<AgentMemoryRepo>;
     /** The owner's dotfiles; none configured unless a test brings its own. */
     readonly userDotfilesLayer?: Layer.Layer<UserDotfilesRepo>;
     /** The owner's git author; `Account <id>` <`<id>@accounts.example`> unless a test says. */
@@ -2739,6 +2756,7 @@ const withEngine = <A, E>(
         options.dotfilesClonerLayer ?? dotfilesClonerLayer(),
         options.skillsLayer ?? skillsStubLayer,
         options.piProfilesLayer ?? piProfilesLayerOf(),
+        options.agentMemoryLayer ?? agentMemoryLayerOf(),
       ),
     ),
   );
@@ -3026,6 +3044,58 @@ describe("SessionEngine", () => {
           expect(asked).toEqual(["owner-pi"]);
         }),
       { sealantLayer: sealantLaunchLayer(created), piProfilesLayer },
+    );
+  });
+
+  it("delivers the owner's agent memory at launch and reads back what the agent learned when it stops", async () => {
+    const created: CreateOptions[] = [];
+    const root = ".claude/projects/-workspace-repo/memory";
+    const index = { path: `${root}/MEMORY.md`, encoding: "utf8", contents: "- one\n" } as const;
+    const readBacks: Array<Parameters<AgentMemoryRepo["Service"]["readBack"]>[0]> = [];
+    const agentMemoryLayer = agentMemoryLayerOf({
+      forLaunch: (userId) =>
+        Effect.succeed(
+          userId === "owner-memory"
+            ? [{ ...index, digest: agentMemoryDigest(index), updatedBySession: null }]
+            : [],
+        ),
+      readBack: (input) =>
+        Effect.sync(() => {
+          readBacks.push(input);
+          return { saved: [], merged: [], deleted: [], skipped: [] };
+        }),
+    });
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const session = yield* engine.provision({
+            projectId: project.id,
+            harness: "claude",
+            label: null,
+            name: null,
+            ownerUserId: "owner-memory",
+            base: null,
+          });
+          yield* engine.launch(session.id, ["claude"]);
+          const home = harnessHomePathOf(project.storePath, session.id);
+          expect(fs.readFileSync(path.join(home, index.path), "utf8")).toBe("- one\n");
+
+          // The agent learned something, then the session stopped.
+          fs.writeFileSync(path.join(home, root, "learned.md"), "the API listens on 3101\n");
+          yield* engine.stop(session.id);
+          yield* until(() => readBacks.length > 0, "agent memory read back");
+          const [readBack] = readBacks;
+          expect(readBack?.userId).toBe("owner-memory");
+          expect(readBack?.sessionId).toBe(session.id);
+          expect(readBack?.delivered).toEqual({ [index.path]: agentMemoryDigest(index) });
+          expect(readBack?.session.map((file) => file.path).toSorted()).toEqual([
+            index.path,
+            `${root}/learned.md`,
+          ]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created), agentMemoryLayer },
     );
   });
 
@@ -5911,6 +5981,7 @@ describe("SessionEngine", () => {
           dotfilesClonerLayer(),
           skillsStubLayer,
           piProfilesLayerOf(),
+          agentMemoryLayerOf(),
         ),
       ),
     );
@@ -6862,6 +6933,8 @@ const verifyDeferredFinalHarvest = async (pathKind: "stop" | "handoff" | "sweep"
   const spawned: ReadonlyArray<string>[] = [];
   const attached: Array<{ readonly process: SessionProcess; readonly mode: string }> = [];
   const memory = makeMemoryCaptureStore();
+  // What the agent learned, read back from the final capture (docs/adr/0009).
+  const readBacks: Array<Parameters<AgentMemoryRepo["Service"]["readBack"]>[0]> = [];
   const flushStarted = await Effect.runPromise(Deferred.make<void>());
   const releaseFlush = await Effect.runPromise(Deferred.make<void>());
   const rolloutId = crypto.randomUUID();
@@ -6953,9 +7026,26 @@ const verifyDeferredFinalHarvest = async (pathKind: "stop" | "handoff" | "sweep"
         expect(fs.readFileSync(path.join(stateDir, "transcript.native"), "utf8")).toContain(
           `${pathKind} final answer`,
         );
+        if (pathKind !== "handoff") {
+          yield* until(() => readBacks.length > 0, `${pathKind} agent memory read back`);
+          expect(readBacks[0]?.session).toEqual([
+            {
+              path: ".claude/projects/-workspace-repo/memory/learned.md",
+              encoding: "utf8",
+              contents: `${pathKind}: the API listens on 3101\n`,
+            },
+          ]);
+        }
       }),
     {
       captured: memory,
+      agentMemoryLayer: agentMemoryLayerOf({
+        readBack: (input) =>
+          Effect.sync(() => {
+            readBacks.push(input);
+            return { saved: [], merged: [], deleted: [], skipped: [] };
+          }),
+      }),
       protocolHostLayer: recordingProtocolHostLayer(attached, []),
       sealantLayer: sealantLaunchLayer(
         created,
@@ -7004,6 +7094,12 @@ const verifyDeferredFinalHarvest = async (pathKind: "stop" | "handoff" | "sweep"
             );
             fs.mkdirSync(path.dirname(transcript), { recursive: true });
             fs.writeFileSync(transcript, transcriptContents);
+            const learned = path.join(
+              relocation.homePath,
+              ".claude/projects/-workspace-repo/memory/learned.md",
+            );
+            fs.mkdirSync(path.dirname(learned), { recursive: true });
+            fs.writeFileSync(learned, `${pathKind}: the API listens on 3101\n`);
           },
           flush: () => {
             flushes += 1;

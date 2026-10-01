@@ -22,11 +22,12 @@ is used there full time, to find bugs by using it while it is built.
 
 ### Must
 
-1. **One agent home per person per project.** Shared by that person's sessions on the project,
+1. **One agent memory per person per project.** Shared by that person's sessions on the project,
    private to them. A session starts with the agent's memory in place and saves what it learned back
-   when it ends. Today each session starts empty (`packages/sessions/src/harness-state.ts`:
-   `sessions/<id>/harness-home/`). Prototype first: Claude files its memory under the working
-   directory's path, and a session's path is not the laptop's.
+   when it ends. Proposed in [ADR 0009](docs/adr/0009-agent-memory-per-person-per-project.md): the
+   memory is carried, not the whole harness home, which would break resume and transcript discovery.
+   Every session's agent runs in `/workspace/repo`, so Claude's memory key is the same in each.
+   Claude only for now; Codex builds memory from rollouts a session does not bring.
 2. **Import on adoption,** through the CLI, from the person's own machine (owner decision
    2026-09-28):
    - Claude: `~/.claude/projects/<repo path>/memory/*.md`.
