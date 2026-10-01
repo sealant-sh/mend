@@ -1,5 +1,28 @@
 # @sealant/mend
 
+## 0.35.1
+
+### Patch Changes
+
+- c72fac3: The CLI speaks HTTP/1.1 to the server. Node 26's built-in `fetch` negotiates HTTP/2 and
+  puts the whole process on one connection, and on an instance behind an edge that connection could
+  wedge once the dashboard's or the tunnels' event stream opened: a dashboard launch sat at
+  `starting` without reaching the server, and `mend attach` timed out waiting for its upgrade
+  ticket. Each request now has its own connection, so one cannot hold up another.
+- abd1da3: `mend connect claude` logs in afresh every time and keeps no copy on this machine, as
+  `mend connect codex` does: the browser login runs against a throwaway directory, the grant is sent
+  and the directory deleted (on macOS, with its Keychain item). It used to keep Mend's grant in
+  `~/.config/mend/claude-grant` and send that again while it had not expired; once the server had
+  refreshed the login, that copy held a spent refresh token, and a reconnect replaced a working
+  login with a dead one. The old directory is removed on the next connect. Both logins' throwaway
+  directories now live under `~/.config/mend`, where Codex no longer warns that it cannot create its
+  helper binaries.
+- 462f5ea: A stop sent while a session is still starting now ends it. Before, a stop that arrived
+  before the agent's process existed found nothing to end, and the launch went on to start the
+  agent: the session read `running` with no machine behind it once the stop's drain ended the
+  executor. A launch now stands down just before it starts the agent when a stop came first, and one
+  that started the agent anyway is stopped again as it finishes.
+
 ## 0.35.0
 
 ### Minor Changes
