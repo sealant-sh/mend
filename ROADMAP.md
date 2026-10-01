@@ -69,16 +69,19 @@ project. The plan is in Obsidian (`10 Projects/Sealant/Mend/Mend live preview pl
 ADR first, and six open decisions: the domain, public links, the shared database model, the setup
 cache, idle defaults, and the gateway on a private instance.
 
-## 0.38: Context packs
+## 0.38: Context packs and shared control on the steerer's login
 
-Named, versioned selections of context that a session receives as an immutable snapshot
-(`MEND-AGENT-WORKBENCH-PLAN.md` §5.4).
+1. **Context packs.** Named, versioned selections of context that a session receives as an immutable
+   snapshot (`MEND-AGENT-WORKBENCH-PLAN.md` §5.4).
+2. **Shared control, paid by whoever steers.** When a member steers someone else's session, their
+   turn runs on their own login: the session's credentials are passed with each turn, on the fly,
+   instead of being fixed when the session starts. Today the owner's login pays for every turn (ADR
+   0008, "Whose login pays"). Open in the design: a steerer's token is readable on the owner's
+   machine while their turn runs; Codex reads a new login only after a 401 unless its external-auth
+   mode is used; terminal sessions have no turn boundaries for Mend to swap at.
 
 ## Not scheduled
 
-- **Shared control on the steerer's own login.** Recommended: "continue as me" (the steerer forks
-  the session onto a worktree of their own, on their login and machine). A hot swap would put one
-  person's login on the other's machine. Decision pending.
 - **Models on mobile.**
 - **Isolated sessions on our own hardware** (one small VM per session) before people outside the
   team use the box. Docker sessions run privileged, so a shared box is for trusted users only.
