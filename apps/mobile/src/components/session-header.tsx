@@ -8,6 +8,7 @@ import { Modal, Pressable, StyleSheet, View } from "react-native";
 import { useSafeAreaInsets } from "react-native-safe-area-context";
 
 import { UiText } from "@/components/typography";
+import { splitHeaderActions } from "@/data/header-actions";
 import { radius, useEvidenceTheme } from "@/theme/evidence";
 
 export interface HeaderAction {
@@ -20,6 +21,8 @@ export interface HeaderAction {
   readonly active?: boolean;
   readonly tone?: "accent" | "danger";
   readonly disabled?: boolean;
+  /** Only ever in the "more" menu, never a button (`splitHeaderActions`). */
+  readonly menuOnly?: boolean;
 }
 
 const BUTTON = 40;
@@ -141,9 +144,7 @@ export function SessionHeader({
   readonly topInset: number;
 }) {
   const { colors } = useEvidenceTheme();
-  // A "more" button that hides one action saves nothing.
-  const shown = actions.length <= direct + 1 ? actions : actions.slice(0, direct);
-  const rest = actions.slice(shown.length);
+  const { shown, rest } = splitHeaderActions(actions, direct);
   return (
     <View
       style={{
