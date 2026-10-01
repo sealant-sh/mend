@@ -1,5 +1,5 @@
 import {
-  EFFORT_LEVELS,
+  effortsFor,
   FAST_CAPABLE_HARNESSES,
   HARNESS_MODELS,
   type EffortLevel,
@@ -419,7 +419,7 @@ export function SessionComposer({
                           effort: null,
                         }),
                     },
-                    ...EFFORT_LEVELS.map((level: EffortLevel) => ({
+                    ...effortsFor(harness, harnessPrefs.model).map((level: EffortLevel) => ({
                       key: level,
                       label: level,
                       selected: harnessPrefs.effort === level,

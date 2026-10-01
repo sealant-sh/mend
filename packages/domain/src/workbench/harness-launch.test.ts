@@ -1,9 +1,11 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  HARNESS_MODELS,
   ProtocolHarnessUnsupportedError,
   composeLaunchArgv,
   composeProtocolArgv,
+  effortsFor,
 } from "./harness-launch.ts";
 
 describe("composeLaunchArgv", () => {
@@ -144,5 +146,47 @@ describe("composeProtocolArgv", () => {
 
   it("rejects harnesses without a protocol shape", () => {
     expect(composeProtocolArgv("opencode", {})).toBeInstanceOf(ProtocolHarnessUnsupportedError);
+  });
+});
+
+describe("the model catalog and its efforts", () => {
+  it("offers claude by family alias, so a new model needs no new list", () => {
+    expect((HARNESS_MODELS.claude ?? []).map((model) => model.id)).toEqual([
+      "fable",
+      "opus",
+      "sonnet",
+      "haiku",
+    ]);
+    expect(HARNESS_MODELS.claude?.find((model) => model.isDefault)?.id).toBe("fable");
+    expect(HARNESS_MODELS.codex?.find((model) => model.isDefault)?.id).toBe("gpt-6.1-sol");
+  });
+
+  it("offers each model only the efforts it takes", () => {
+    expect(effortsFor("claude", "opus")).toEqual(["low", "medium", "high", "xhigh", "max"]);
+    expect(effortsFor("codex", "gpt-6.1-sol").at(-1)).toBe("ultra");
+    expect(effortsFor("codex", "gpt-6-luna").at(-1)).toBe("max");
+    expect(effortsFor("codex", "gpt-5.5").at(-1)).toBe("xhigh");
+    // A model the catalog does not know gets its harness's efforts.
+    expect(effortsFor("codex", "gpt-7-preview").at(-1)).toBe("ultra");
+  });
+
+  it("clamps an effort the model does not take to the highest it does", () => {
+    expect(composeLaunchArgv("claude", { effort: "ultra" })).toEqual(["claude", "--effort", "max"]);
+    expect(composeLaunchArgv("codex", { model: "gpt-5.5", effort: "ultra" })).toEqual([
+      "codex",
+      "--model",
+      "gpt-5.5",
+      "-c",
+      "model_reasoning_effort=xhigh",
+    ]);
+    expect(composeLaunchArgv("codex", { model: "gpt-6.1-sol", effort: "ultra" })).toEqual([
+      "codex",
+      "--model",
+      "gpt-6.1-sol",
+      "-c",
+      "model_reasoning_effort=ultra",
+    ]);
+    const protocol = composeProtocolArgv("claude", { effort: "ultra" }, "provider-1");
+    expect(Array.isArray(protocol) && protocol.join(" ")).toContain("--effort max");
   });
 });
