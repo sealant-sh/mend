@@ -1,7 +1,9 @@
 # Claude credentials: a grant of Mend's own
 
-Status: proposed 2026-09-18. Commits Mend to connecting Claude through a **dedicated grant** — a
-Claude login that belongs to Mend and not to the person's laptop — and to sending only the Claude
+Status: proposed 2026-09-18. Its "Refresh stays where the credential lives" section is replaced by
+[ADR 0008](0008-one-refresher-for-provider-logins.md): the platform is the only refresher, and
+copies cannot rotate. Commits Mend to connecting Claude through a **dedicated grant** — a Claude
+login that belongs to Mend and not to the person's laptop — and to sending only the Claude
 credential, never the third-party tokens that sit beside it. It closes the over-share this work
 found, states who refreshes what, and names the two platform halves it cannot do alone.
 
