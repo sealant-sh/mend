@@ -71,12 +71,51 @@ export const CODEX_TRUST_SEED =
   `exec "$@"`;
 
 /**
- * opencode's and pi's: no first-run questions to answer (opencode's permissions ride the launch's
- * environment, pi's project trust its `--approve`), only their own update checks, which a
- * workspace's image owns: Core installs each harness at build time.
+ * The refresh token every copy of a Codex login carries (Core's `CODEX_COPY_REFRESH_TOKEN`, ADR
+ * 0008): no provider accepts it, so no copy can rotate the login the platform refreshes.
  */
-export const OPENCODE_SEED = `export OPENCODE_DISABLE_AUTOUPDATE=1; exec "$@"`;
-export const PI_SEED = `export PI_SKIP_VERSION_CHECK=1; exec "$@"`;
+export const COPY_REFRESH_TOKEN = "sealant-copy-cannot-refresh";
+
+/**
+ * The ChatGPT login pi and opencode run on: the Codex login the platform injected
+ * (`$HOME/.codex/auth.json`, already a copy that cannot refresh), written into the tool's own
+ * `auth.json` in its own shape — `{type: "oauth", access, refresh, expires, accountId}` under
+ * `openai-codex` (pi) or `openai` (opencode). Both read it as their ChatGPT subscription login
+ * (verified 2026-10-01: pi `auth check` reads it `ready`, opencode lists it as OpenAI oauth).
+ *
+ * The entry is written only when it is absent or is an earlier copy (its refresh token is the
+ * placeholder), so a login the user made inside the session is never replaced. The expiry is the
+ * access token's own; a session that outlives it gets the platform's newer copy at its next launch
+ * or resume. pi's default provider becomes `openai-codex` only when the user has chosen none.
+ *
+ * `argv[1]` is the auth file, `argv[2]` the entry's key, `argv[3]` pi's settings file or "".
+ */
+const CHATGPT_LOGIN_PROGRAM = [
+  `const fs=require("fs"),path=require("path"),[file,key,settings]=process.argv.slice(1);`,
+  `let codex;try{codex=JSON.parse(fs.readFileSync(require("os").homedir()+"/.codex/auth.json","utf8"))}catch{process.exit(0)}`,
+  `const t=codex&&codex.tokens;if(!t||typeof t.access_token!=="string"||typeof t.account_id!=="string")process.exit(0);`,
+  `let exp;try{exp=JSON.parse(Buffer.from(t.access_token.split(".")[1].replace(/-/g,"+").replace(/_/g,"/"),"base64").toString()).exp}catch{}`,
+  `if(typeof exp!=="number")process.exit(0);`,
+  `function read(p){try{const v=JSON.parse(fs.readFileSync(p,"utf8"));return v!==null&&typeof v==="object"&&!Array.isArray(v)?v:null}catch(e){return e.code==="ENOENT"?{}:null}}`,
+  `function put(p,v){fs.mkdirSync(path.dirname(p),{recursive:true,mode:0o700});const tmp=p+".mend-seed-"+process.pid;fs.writeFileSync(tmp,JSON.stringify(v,null,2),{mode:0o600});fs.renameSync(tmp,p)}`,
+  `const auth=read(file);if(auth===null)process.exit(0);`,
+  `const prior=auth[key];if(prior&&typeof prior==="object"&&prior.refresh!==${JSON.stringify(COPY_REFRESH_TOKEN)})process.exit(0);`,
+  `auth[key]={type:"oauth",access:t.access_token,refresh:${JSON.stringify(COPY_REFRESH_TOKEN)},expires:exp*1000,accountId:t.account_id};put(file,auth);`,
+  `if(settings){const s=read(settings);if(s!==null&&!s.defaultProvider){s.defaultProvider=key;put(settings,s)}}`,
+].join("");
+
+/**
+ * opencode's and pi's seeds: no first-run questions to answer (opencode's permissions ride the
+ * launch's environment, pi's project trust its `--approve`). Each writes the ChatGPT login it runs
+ * on (`CHATGPT_LOGIN_PROGRAM`) and turns off its own update check, which a workspace's image owns:
+ * Core installs each harness at build time.
+ */
+export const OPENCODE_SEED =
+  `node -e '${CHATGPT_LOGIN_PROGRAM}' "\${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json" openai "" 2>/dev/null; ` +
+  `export OPENCODE_DISABLE_AUTOUPDATE=1; exec "$@"`;
+export const PI_SEED =
+  `node -e '${CHATGPT_LOGIN_PROGRAM}' "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/auth.json" openai-codex "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/settings.json" 2>/dev/null; ` +
+  `export PI_SKIP_VERSION_CHECK=1; exec "$@"`;
 
 /** `argv` behind its harness's seed; a harness without one runs as it is. */
 export const withHarnessSetup = (
