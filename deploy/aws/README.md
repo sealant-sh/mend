@@ -195,7 +195,8 @@ locations are needed for an orderly handoff and teardown; do not discard them.
   incomplete multipart uploads after one day. **No versioning or object expiry**; both have
   `force_destroy=false`. Capture retention belongs to the application.
 - Immutable-tag ECR repository; MicroVM build, connector and runtime-log roles; 14-day log groups.
-  MicroVM sessions are configured with a 3600-second maximum. Keep project standby counts at zero.
+  MicroVM sessions run for at most 8 hours, the platform maximum
+  (`SEALANT_MICROVM_MAX_DURATION_SECONDS`, 28800 by default). Keep project standby counts at zero.
 - **$100 account-wide monthly budget**, actual alerts at $25/$75 and forecast alert at $100. It
   includes unrelated AWS usage, excludes PlanetScale billing, and is **not a spending cap**.
 
