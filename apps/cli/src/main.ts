@@ -49,6 +49,7 @@ import {
   renderManPage,
   usageOf,
 } from "./help.ts";
+import { useHttp1 } from "./http-client.ts";
 import { type Download, landCommand, pullCommand } from "./landing.ts";
 import { followStart, startingLineOf, type StartOutcome } from "./launch-follow.ts";
 import { loginCommand } from "./login.ts";
@@ -4445,6 +4446,8 @@ const manCommand = (words: ReadonlyArray<string>) => {
 };
 
 const main = async () => {
+  // Before any request: every fetch and WebSocket goes over HTTP/1.1 (`http-client.ts`).
+  useHttp1();
   const [command, ...rest] = process.argv.slice(2);
   // `mend <command> --help` (or -h) before the separator is that command's page,
   // never an argument: `mend run -- cmd --help` keeps its --help for cmd.
