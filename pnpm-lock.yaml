@@ -295,6 +295,9 @@ importers:
       react:
         specifier: 'catalog:'
         version: 19.2.3
+      undici:
+        specifier: 'catalog:'
+        version: 7.28.0
     devDependencies:
       '@effect/vitest':
         specifier: 'catalog:'

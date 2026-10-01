@@ -46,7 +46,8 @@
     "@opentui/react": "^0.5.1",
     "@tanstack/react-query": "catalog:",
     "qrcode": "catalog:",
-    "react": "catalog:"
+    "react": "catalog:",
+    "undici": "catalog:"
   },
   "devDependencies": {
     "@effect/vitest": "catalog:",
