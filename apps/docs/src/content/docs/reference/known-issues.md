@@ -123,7 +123,7 @@ of them wrote can appear twice. The agent tidies its memory as it goes.
 
 Mend carries Claude Code's memory per person per project. Codex builds its memory from the
 conversations already in its home, which a new session does not bring, so Codex memory stays with
-each session. pi and opencode keep no memory of their own.
+each session. pi keeps no memory of its own.
 
 Everything else in a session's harness home stays with that session: its conversations, and settings
 or plugins changed inside it. A conversation resumes in its own session, not from another.
