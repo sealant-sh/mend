@@ -74,15 +74,16 @@ survives: the platform keeps it and boots it again to save what it holds. An exe
 fails without warning can lose what was written after its last capture. Captures run 2 seconds after
 the files go quiet, and at least every 10 seconds while they keep changing.
 
-## pi and opencode run in the terminal only
+## opencode does not really work yet
 
-pi and opencode sessions run as terminals: attach from the CLI, the web app, the desktop app or VS
-Code. The phone and Slack cannot start or steer them yet; both need the structured mode Claude Code
-and Codex have.
+opencode sessions start, but little else about them is finished. Treat opencode as unsupported for
+now.
 
-opencode keeps its conversations in one database rather than a file per conversation, so Mend cannot
-resume an opencode conversation by itself. The session's data directory is kept, and opencode's own
-session list inside it still works.
+## pi runs in the terminal only
+
+pi sessions run as terminals: attach from the CLI, the web app, the desktop app or VS Code. The
+phone and Slack cannot start or steer them yet; that needs the structured mode Claude Code and Codex
+have.
 
 ## pi packages that build native code need build tools
 
@@ -104,7 +105,6 @@ when the same session launches again. Agent memory is the only thing carried bet
 
 `mend connect pi` saves one profile per person, delivered to every pi session you start, in any
 project. A project's own `.pi/settings.json` in the repository still applies on top of it, as it
-does on your machine. opencode has no profile: a session starts with opencode's defaults, plus
-Mend's workspace note and skills.
+does on your machine.
 
 A session that is already running keeps the profile it started with.
