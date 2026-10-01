@@ -1176,7 +1176,7 @@ describe("the Slack runner, before anything starts", () => {
     );
 
     expect(posts(w, "postEphemeral").map((post) => post.text)).toEqual([
-      "not started · effort=extreme · not one of low, medium, high, xhigh, max",
+      "not started · effort=extreme · not one of low, medium, high, xhigh, max, ultra",
     ]);
     expect(w.slack.reactions.get("C-general:1.1")).toEqual(new Set(["x"]));
     expect(w.effects.some((entry) => entry.startsWith("start."))).toBe(false);

@@ -56,7 +56,29 @@ describe("claude onboarding seed", () => {
     });
     expect(readJson(path.join(home, ".claude", "settings.json"))).toEqual({
       skipDangerousModePermissionPrompt: true,
-      model: "claude-fable-5",
+      model: "fable",
+    });
+  });
+
+  it("moves Mend's own earlier default to the latest Fable, and keeps a model the user chose", () => {
+    const earlier = makeHome();
+    write(
+      path.join(earlier, ".claude", "settings.json"),
+      JSON.stringify({ model: "claude-fable-5" }),
+    );
+    expect(runSeed(CLAUDE_ONBOARDING_SEED, earlier)).toBe("ran 1\n");
+    expect(readJson(path.join(earlier, ".claude", "settings.json"))).toMatchObject({
+      model: "fable",
+    });
+
+    const chosen = makeHome();
+    write(
+      path.join(chosen, ".claude", "settings.json"),
+      JSON.stringify({ model: "claude-opus-4-8" }),
+    );
+    expect(runSeed(CLAUDE_ONBOARDING_SEED, chosen)).toBe("ran 1\n");
+    expect(readJson(path.join(chosen, ".claude", "settings.json"))).toMatchObject({
+      model: "claude-opus-4-8",
     });
   });
 
@@ -137,7 +159,7 @@ describe("claude onboarding seed", () => {
     expect(readJson(dotfiles)).toEqual({
       theme: "dark",
       skipDangerousModePermissionPrompt: true,
-      model: "claude-fable-5",
+      model: "fable",
     });
     expect(fs.statSync(dotfiles).mode & 0o777).toBe(0o640);
     expect(fs.lstatSync(path.join(home, ".claude.json")).isSymbolicLink()).toBe(true);
@@ -189,7 +211,7 @@ describe("claude onboarding seed, temporary names", () => {
     expect(readJson(path.join(home, ".claude", "settings.json"))).toEqual({
       theme: "dark",
       skipDangerousModePermissionPrompt: true,
-      model: "claude-fable-5",
+      model: "fable",
     });
     for (const prefix of taken) {
       const siblings = fs

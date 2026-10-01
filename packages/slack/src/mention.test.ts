@@ -79,7 +79,11 @@ describe("parsing a mention", () => {
     expect(parsed.options.harness).toBeNull();
     expect(parsed.options.branch).toBeNull();
     expect(parsed.rejected).toEqual([
-      { option: "effort", value: "extreme", reason: "not one of low, medium, high, xhigh, max" },
+      {
+        option: "effort",
+        value: "extreme",
+        reason: "not one of low, medium, high, xhigh, max, ultra",
+      },
       { option: "harness", value: "vim", reason: "not one of claude, codex" },
       { option: "branch", value: "", reason: "no value" },
     ]);

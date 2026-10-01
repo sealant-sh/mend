@@ -1,6 +1,6 @@
 import * as path from "node:path";
 
-import { repositoryCloneUrlIssue } from "@mend/domain/workbench";
+import { effortsFor, HARNESS_MODELS, repositoryCloneUrlIssue } from "@mend/domain/workbench";
 import { parseWorkspaceSshTarget } from "@mend/workspace-ssh";
 import * as vscode from "vscode";
 
@@ -34,21 +34,6 @@ import type {
   WorktreeJoin,
 } from "./types.js";
 import { runWorkspaceSshSetup, workspaceSshReadiness } from "./workspace-ssh.js";
-
-const MODEL_OPTIONS: Readonly<Record<string, ReadonlyArray<readonly [string, string]>>> = {
-  claude: [
-    ["claude-fable-5", "Fable 5"],
-    ["claude-opus-5", "Opus 5"],
-    ["claude-opus-4-8", "Opus 4.8"],
-    ["claude-sonnet-5", "Sonnet 5"],
-  ],
-  codex: [
-    ["gpt-5.6-sol", "GPT-5.6 Sol"],
-    ["gpt-5.6-terra", "GPT-5.6 Terra"],
-    ["gpt-5.6-luna", "GPT-5.6 Luna"],
-    ["gpt-5.5", "GPT-5.5"],
-  ],
-};
 
 const liveStatuses: ReadonlySet<string> = new Set(["starting", "running", "waiting", "idle"]);
 
@@ -700,11 +685,15 @@ class MendCommands {
       { title: newSessionTitle(project, join), placeHolder: "Harness", ignoreFocusOut: true },
     );
     if (harness === undefined) return;
-    const modelOptions = MODEL_OPTIONS[harness.id] ?? [];
+    const modelOptions = HARNESS_MODELS[harness.id] ?? [];
     const model = await vscode.window.showQuickPick<ModelPick>(
       [
         { label: "Default model", model: null },
-        ...modelOptions.map(([id, label]) => ({ label, description: id, model: id })),
+        ...modelOptions.map((option) => ({
+          label: option.label,
+          description: option.id,
+          model: option.id,
+        })),
       ],
       { title: `New ${harness.description} session`, placeHolder: "Model", ignoreFocusOut: true },
     );
@@ -712,11 +701,7 @@ class MendCommands {
     const effort = await vscode.window.showQuickPick<EffortPick>(
       [
         { label: "default", effort: null },
-        { label: "low", effort: "low" },
-        { label: "medium", effort: "medium" },
-        { label: "high", effort: "high" },
-        { label: "xhigh", effort: "xhigh" },
-        { label: "max", effort: "max" },
+        ...effortsFor(harness.id, model.model).map((level) => ({ label: level, effort: level })),
       ],
       {
         title: `New ${harness.description} session`,

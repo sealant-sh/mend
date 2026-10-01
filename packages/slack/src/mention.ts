@@ -82,7 +82,14 @@ export interface MentionVocabulary {
 export const DEFAULT_MENTION_VOCABULARY: MentionVocabulary = {
   harnesses: ["claude", "codex"],
   models: {
-    claude: [...(HARNESS_MODELS.claude ?? []).map((model) => model.id), "opus", "sonnet", "haiku"],
+    claude: [
+      ...new Set([
+        ...(HARNESS_MODELS.claude ?? []).map((model) => model.id),
+        "opus",
+        "sonnet",
+        "haiku",
+      ]),
+    ],
     codex: (HARNESS_MODELS.codex ?? []).map((model) => model.id),
   },
   projects: [],

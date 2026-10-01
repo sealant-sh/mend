@@ -71,7 +71,7 @@ export type ProjectResolution =
 export interface LaunchStart {
   readonly prompt?: string | undefined;
   readonly model?: string | undefined;
-  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | undefined;
+  readonly effort?: "low" | "medium" | "high" | "xhigh" | "max" | "ultra" | undefined;
   readonly permissionMode?: "ask" | undefined;
   readonly speed?: "fast" | undefined;
 }

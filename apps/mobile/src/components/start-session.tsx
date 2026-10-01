@@ -11,7 +11,7 @@ import { EvButton } from "@/components/button";
 import { PanelRow } from "@/components/panel";
 import { MonoText, UiText } from "@/components/typography";
 import {
-  EFFORT_LEVELS,
+  effortsFor,
   FAST_CAPABLE_HARNESSES,
   HARNESS_MODELS,
   setLaunchOptions,
@@ -150,7 +150,7 @@ function HarnessRow({
                 chosen={options.effort === null}
                 onPress={() => set({ effort: null })}
               />
-              {EFFORT_LEVELS.map((effort) => (
+              {effortsFor(harness, options.model).map((effort) => (
                 <Chip
                   key={effort}
                   label={effort}

@@ -25,7 +25,15 @@ export const CONTINUE_COMMANDS: Record<string, (instruction: string) => Readonly
 };
 
 /** Mirror of @mend/domain/workbench harness-launch.ts — the CLI ships dependency-free. */
-export const EFFORT_LEVELS: ReadonlyArray<string> = ["low", "medium", "high", "xhigh", "max"];
+/** Every effort the server takes (`@mend/domain`'s scale); a level a model cannot take is clamped there. */
+export const EFFORT_LEVELS: ReadonlyArray<string> = [
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+];
 
 /**
  * Ids of optimistic cache rows the server has not named yet — a session still

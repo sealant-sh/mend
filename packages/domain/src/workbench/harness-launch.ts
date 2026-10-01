@@ -9,13 +9,40 @@
  */
 
 /**
- * Thinking depth, one shared scale; each harness maps it to its own flag.
- * Both harnesses accept all five (claude `--effort`, codex
- * `model_reasoning_effort` — its extra codex-only `ultra` tier is not
- * offered here).
+ * Thinking depth, one shared scale; each harness maps it to its own flag (claude `--effort`, codex
+ * `model_reasoning_effort`). `ultra` is codex's own top tier ("maximum reasoning with automatic
+ * task delegation"); claude stops at `max`, and so do some codex models. What a model takes is in
+ * its catalog entry (`effortsFor`); a launch clamps what a harness cannot take (`effortFor`).
  */
-export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max"] as const;
+export const EFFORT_LEVELS = ["low", "medium", "high", "xhigh", "max", "ultra"] as const;
 export type EffortLevel = (typeof EFFORT_LEVELS)[number];
+
+/** What each harness's CLI accepts at all; a model may take fewer (`HarnessModelOption`). */
+export const HARNESS_EFFORTS: Readonly<Record<string, ReadonlyArray<EffortLevel>>> = {
+  claude: ["low", "medium", "high", "xhigh", "max"],
+  codex: ["low", "medium", "high", "xhigh", "max", "ultra"],
+};
+
+/** The efforts to offer for a harness and model: the model's own when catalogued, else the harness's. */
+export const effortsFor = (harness: string, model: string | null): ReadonlyArray<EffortLevel> => {
+  const entry = HARNESS_MODELS[harness]?.find((option) => option.id === model);
+  return entry?.efforts ?? HARNESS_EFFORTS[harness] ?? EFFORT_LEVELS;
+};
+
+/**
+ * The effort a launch passes: a level the model (or its harness) does not take — a saved `ultra`
+ * sent to claude, or to a codex model that stops at `max` — becomes the highest it does, so a stale
+ * preference never fails a launch.
+ */
+const effortFor = (
+  harness: string,
+  model: string | null,
+  effort: EffortLevel | undefined,
+): EffortLevel | undefined => {
+  const taken = effortsFor(harness, model);
+  if (effort === undefined || taken.includes(effort)) return effort;
+  return taken.at(-1);
+};
 
 /**
  * Priority processing. `fast` maps to codex `service_tier=priority`
@@ -43,28 +70,40 @@ export interface HarnessModelOption {
   readonly id: string;
   readonly label: string;
   readonly isDefault: boolean;
+  /** The efforts this model takes, when fewer than its harness's (`HARNESS_EFFORTS`). */
+  readonly efforts?: ReadonlyArray<EffortLevel>;
 }
 
+const CODEX_UP_TO_MAX: ReadonlyArray<EffortLevel> = ["low", "medium", "high", "xhigh", "max"];
+const CODEX_UP_TO_XHIGH: ReadonlyArray<EffortLevel> = ["low", "medium", "high", "xhigh"];
+
 /**
- * Advisory catalogs for model pickers; the contract keeps `model` free-form
- * because harnesses accept ids these lists don't know yet. The claude default
- * mirrors the engine's onboarding seed (`CLAUDE_ONBOARDING_SEED`); the codex
- * list comes from `codex debug models` (the CLI's own catalog, minus internal
- * entries), with the user's config default first.
+ * Advisory catalogs for model pickers; the contract keeps `model` free-form because harnesses
+ * accept ids these lists don't know yet.
+ *
+ * Claude is offered by family alias (`fable`, `opus`, `sonnet`, `haiku`): Claude Code resolves
+ * each to the latest model of that family, so the list does not go stale when a model ships. As of
+ * 2026-10-01 they are Fable 5.1, Opus 5.5, Sonnet 5.5 and Haiku 4.5.
+ *
+ * Codex is `codex debug models` (codex-cli 0.159.2, 2026-10-01): the entries it lists, in its own
+ * order, its default first, and each model's efforts where it takes fewer than `ultra`.
  */
 export const HARNESS_MODELS: Record<string, ReadonlyArray<HarnessModelOption>> = {
   claude: [
-    { id: "claude-fable-5", label: "Fable 5", isDefault: true },
-    { id: "claude-opus-5", label: "Opus 5", isDefault: false },
-    { id: "claude-opus-4-8", label: "Opus 4.8", isDefault: false },
-    { id: "claude-sonnet-5", label: "Sonnet 5", isDefault: false },
+    { id: "fable", label: "Fable · latest", isDefault: true },
+    { id: "opus", label: "Opus · latest", isDefault: false },
+    { id: "sonnet", label: "Sonnet · latest", isDefault: false },
+    { id: "haiku", label: "Haiku · latest", isDefault: false },
   ],
   codex: [
-    { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", isDefault: true },
+    { id: "gpt-6.1-sol", label: "GPT-6.1 Sol", isDefault: true },
+    { id: "gpt-6-astra", label: "GPT-6 Astra", isDefault: false },
+    { id: "gpt-6-sol", label: "GPT-6 Sol", isDefault: false },
+    { id: "gpt-6-luna", label: "GPT-6 Luna", isDefault: false, efforts: CODEX_UP_TO_MAX },
+    { id: "gpt-5.6-sol", label: "GPT-5.6 Sol", isDefault: false },
     { id: "gpt-5.6-terra", label: "GPT-5.6 Terra", isDefault: false },
-    { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", isDefault: false },
-    { id: "gpt-5.5", label: "GPT-5.5", isDefault: false },
-    { id: "gpt-5.4", label: "GPT-5.4", isDefault: false },
+    { id: "gpt-5.6-luna", label: "GPT-5.6 Luna", isDefault: false, efforts: CODEX_UP_TO_MAX },
+    { id: "gpt-5.5", label: "GPT-5.5", isDefault: false, efforts: CODEX_UP_TO_XHIGH },
   ],
 };
 
@@ -99,7 +138,8 @@ export const composeLaunchArgv = (harness: string, start: LaunchStart): Readonly
     case "claude": {
       const argv = ["claude"];
       if (model !== null) argv.push("--model", model);
-      if (start.effort !== undefined) argv.push("--effort", start.effort);
+      const effort = effortFor("claude", model, start.effort);
+      if (effort !== undefined) argv.push("--effort", effort);
       if (start.permissionMode === "ask") argv.push("--permission-mode", "auto");
       if (prompt !== null) argv.push(prompt);
       return argv;
@@ -107,7 +147,8 @@ export const composeLaunchArgv = (harness: string, start: LaunchStart): Readonly
     case "codex": {
       const argv = ["codex"];
       if (model !== null) argv.push("--model", model);
-      if (start.effort !== undefined) argv.push("-c", `model_reasoning_effort=${start.effort}`);
+      const effort = effortFor("codex", model, start.effort);
+      if (effort !== undefined) argv.push("-c", `model_reasoning_effort=${effort}`);
       // Priority processing; codex warns and omits the tier when the model
       // doesn't advertise it, so this degrades harmlessly.
       if (start.speed === "fast") argv.push("-c", "service_tier=priority");
@@ -164,7 +205,8 @@ export const composeProtocolArgv = (
       if (providerSessionId === undefined) argv.push("--session-id", crypto.randomUUID());
       else argv.push("--resume", providerSessionId);
       if (model !== null) argv.push("--model", model);
-      if (start.effort !== undefined) argv.push("--effort", start.effort);
+      const effort = effortFor("claude", model, start.effort);
+      if (effort !== undefined) argv.push("--effort", effort);
       if (start.permissionMode !== "ask") {
         argv.push("--permission-mode", "bypassPermissions");
       }

@@ -47,7 +47,9 @@ const CLAUDE_SEED_PROGRAM = [
   // writes exactly this key), not .claude.json. The workspace image never sees the operator's
   // own ~/.claude settings, so a fresh session silently falls back to the CLI's default model:
   // default-if-absent only, so a restored session's own choice (or a mid-session /model) stays.
-  `merge(h+"/.claude/settings.json",s=>{s.skipDangerousModePermissionPrompt=true;s.model=s.model||"claude-fable-5"});`,
+  // The default is the `fable` alias, which Claude Code resolves to the latest Fable; a session
+  // still holding Mend's own earlier default (`claude-fable-5`) moves to it (2026-10-01).
+  `merge(h+"/.claude/settings.json",s=>{s.skipDangerousModePermissionPrompt=true;if(!s.model||s.model==="claude-fable-5")s.model="fable"});`,
 ].join("");
 
 /**
