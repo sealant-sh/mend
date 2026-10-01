@@ -1,0 +1,101 @@
+# Roadmap
+
+What each Mend release contains, across `sealant-sh/mend`, `sealant-sh/sealant` (Core) and
+`sealant-sh/sealantd`. Written 2026-10-01, after 0.35.1. Update it as items land; a release's
+section goes when it ships.
+
+## How releases work
+
+- **A release has a scope, written here.** Pull requests merge to `main` in all three repositories
+  when they are ready. Tags wait until the release's scope is done. CI takes long enough that a
+  release per merged change, waiting on the repositories in turn, is not worth it.
+- **One release of each repository per Mend release:** sealantd, then Core, then Mend's pin of both,
+  then Mend. Not one per pull request.
+- **Patch releases (0.36.1 and on) are for what is broken** on the box or on alpha: a session that
+  cannot start, attach, stop or save. Nothing else gets its own tag.
+- **A release is done when its exit criteria hold on the box,** not when CI passes.
+
+## 0.36: Mend on our own box, every day
+
+Mend moves onto the Hetzner box (`yiannis-k8s-arc`: i9-9900K, 16 threads, 62 GB, 2 × 1 TB NVMe) and
+is used there full time, to find bugs by using it while it is built.
+
+### Must
+
+1. **One agent home per person per project.** Shared by that person's sessions on the project,
+   private to them. A session starts with the agent's memory in place and saves what it learned back
+   when it ends. Today each session starts empty (`packages/sessions/src/harness-state.ts`:
+   `sessions/<id>/harness-home/`). Prototype first: Claude files its memory under the working
+   directory's path, and a session's path is not the laptop's.
+2. **Import on adoption,** through the CLI, from the person's own machine (owner decision
+   2026-09-28):
+   - Claude: `~/.claude/projects/<repo path>/memory/*.md`.
+   - Codex: `memories_1.sqlite`, filtered to this repository's threads by each thread's working
+     directory. Never copied whole.
+   - "Bring your previous sessions for this repo?" Yes also imports the transcripts. They are opt-in
+     because they hold pasted secrets.
+   - Never imported: goals, logins (`.credentials.json`, `auth.json`), logs, caches.
+3. **Self-host saves without the wait.** On Docker with Garage a seal takes about ten minutes today.
+   Bring it to one or two. Check what is still slow after 0.35.0's "a launch waits for a saving
+   predecessor" (#432). Notes so far: sealantd fetches a fresh URL for every upload, with no clock
+   margin when co-located.
+4. **The move.** `mend server setup` on the box, the Caddy edge in front, DNS. The Kubernetes and
+   Ceph clusters stop; their definitions stay in the repository (deployment options are product).
+   The box's Minecraft servers are the owner's call.
+
+5. **Models, on the phone first.** The phone needs a working model choice now, and models in general
+   need UX work. Start with an audit across the phone, the web app, the CLI and the desktop: what
+   each offers, the picker, effort, per-harness defaults, and whether a session says which model it
+   runs on. Then one model picker, the same on every client.
+
+6. **pi and opencode as harnesses,** next to Claude and Codex: a session on either, with its own
+   agent home (memory, settings, login) handled the same way, since 0.36 reworks the harness homes
+   anyway. opencode starts today as a bare command; pi is new.
+
+### Should
+
+- See and delete what the agent remembers, in the web app and on the phone.
+
+### Already open, ships with it
+
+- sealant#307 (one pinned vitest, so CI's lockfile-free install stops splitting it) and sealant#306
+  (an idle interval's upload throughput no longer stops a MicroVM early).
+- mend#450 (the phone's Stop session asks first, behind "more") and mend#451 (AWS MicroVMs get 8
+  hours by default).
+- Mend's wording for Core's planned stop before a runtime's deadline. It reads "stopped outside
+  Mend" today.
+
+### Exit criteria
+
+- A week of daily use on the box, with sessions started from the CLI, the phone and the web app.
+- A session started on Monday knows what Friday's sessions on the same project learned.
+- A stop's save takes under two minutes, measured on the box.
+
+## 0.37: Live previews
+
+Preview links for a session's running app, from Slack and the phone, plus services shared by a
+project. The plan is in Obsidian (`10 Projects/Sealant/Mend/Mend live preview plan.md`). It needs an
+ADR first, and six open decisions: the domain, public links, the shared database model, the setup
+cache, idle defaults, and the gateway on a private instance.
+
+## 0.38: Context packs and shared control on the steerer's login
+
+1. **Context packs.** Named, versioned selections of context that a session receives as an immutable
+   snapshot (`MEND-AGENT-WORKBENCH-PLAN.md` §5.4).
+2. **Shared control, paid by whoever steers.** When a member steers someone else's session, their
+   turn runs on their own login: the session's credentials are passed with each turn, on the fly,
+   instead of being fixed when the session starts. Today the owner's login pays for every turn (ADR
+   0008, "Whose login pays"). Open in the design: a steerer's token is readable on the owner's
+   machine while their turn runs; Codex reads a new login only after a 401 unless its external-auth
+   mode is used; terminal sessions have no turn boundaries for Mend to swap at.
+
+## Not scheduled
+
+- **Isolated sessions on our own hardware** (one small VM per session) before people outside the
+  team use the box. Docker sessions run privileged, so a shared box is for trusted users only.
+- **Flaky tests:** Mend `doctor.test` (spawns the CLI, `docker info` on CI), the `engine.test`
+  resume and shell race, Core marketing and docs sharing inspector port 9229, sealantd cadence and
+  capture.
+- **S3 seal proofs at register time,** so a stop's seal on AWS is instant.
+- **Alpha boot time,** about 137 s, up from 100 s.
+- **A bigger box,** after a week of measured use on this one.
