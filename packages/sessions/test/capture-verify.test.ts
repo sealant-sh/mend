@@ -50,7 +50,9 @@ import {
   UNEXPLAINED_CHECKS_BOUND,
   UPLOAD_ANSWER_PRESENT,
   UPLOAD_ANSWER_SHA256,
+  BOUND_SINGLE_PUT_MAX_BYTES,
   type CaptureUploadPolicy,
+  MULTIPART_THRESHOLD_BYTES,
 } from "../src/capture-channel.ts";
 import {
   CaptureSeals,
@@ -3159,7 +3161,7 @@ describeSeals(
       expect(refused?._tag === "Failure" ? refused.failure.status : null).toBe(409);
     });
 
-    it("review: a call with a part URL records authority, as part bytes are not bound", async () => {
+    it("review: a call with a part URL records authority, as part bytes are not bound (a key past the bound PUT's ceiling)", async () => {
       const at = await claimed();
       await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
       const big = captureKeys(at.worktreeId, at.epoch).pack("9".repeat(64));
@@ -3168,7 +3170,7 @@ describeSeals(
           worktree_id: at.worktreeId,
           epoch: at.epoch,
           keys: [big],
-          sizes: { [big]: 40 * 1024 * 1024 },
+          sizes: { [big]: BOUND_SINGLE_PUT_MAX_BYTES + 1 },
         }),
       );
       expect(Object.keys(minted.multipart)).toEqual([big]);
@@ -3241,6 +3243,43 @@ describeSeals(
       expect(answered.present).toEqual([index]);
       // No URL left Mend for those bytes, and the binding the call reserved is given back.
       expect(boundIndexDigest(index, Date.now())).toBeNull();
+    });
+
+    it("answers a key past the multipart threshold as one bound PUT, so it holds no seal", async () => {
+      presigned.length = 0;
+      const at = await claimed();
+      await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const file = sealedFile(at, "a large pack, as sealantd caps them\n");
+      const index = `${file.key}.idx`;
+      const large = MULTIPART_THRESHOLD_BYTES * 4;
+      const minted = await run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [file.key, index],
+          sizes: { [file.key]: large, [index]: MULTIPART_THRESHOLD_BYTES + 1 },
+          sha256: { [index]: "d".repeat(64) },
+        }),
+      );
+      expect(Object.keys(minted.urls).toSorted()).toEqual([file.key, index].toSorted());
+      expect(minted.multipart).toEqual({});
+      expect(presigned.map((entry) => entry.key).toSorted()).toEqual([file.key, index].toSorted());
+      expect(authority(at)).toBeUndefined();
+
+      // An index whose bytes nobody declared cannot be bound: it goes in parts, as before.
+      const undeclared = await claimed();
+      await plan(undeclared, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const unbound = `${sealedFile(undeclared, "an index nobody hashed, large\n").key}.idx`;
+      const parts = await run(
+        undeclared.api.uploadUrls({
+          worktree_id: undeclared.worktreeId,
+          epoch: undeclared.epoch,
+          keys: [unbound],
+          sizes: { [unbound]: MULTIPART_THRESHOLD_BYTES + 1 },
+        }),
+      );
+      expect(Object.keys(parts.multipart)).toEqual([unbound]);
+      expect(authority(undeclared)?.getTime() ?? 0).toBeGreaterThan(Date.now());
     });
 
     it("records authority as before for an executor that sends no checksum, and for an index it declares nothing about", async () => {

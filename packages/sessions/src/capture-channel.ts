@@ -731,6 +731,15 @@ export const MULTIPART_THRESHOLD_BYTES = 16 * 1024 * 1024;
 export const MULTIPART_PART_SIZE_BYTES = 16 * 1024 * 1024;
 /** S3's cap on parts per upload. */
 export const MULTIPART_MAX_PARTS = 10_000;
+/**
+ * The largest key a bindable call answers as one PUT bound to its bytes, past the multipart
+ * threshold. A part URL cannot be bound (a part's bytes are not the object's), so a multipart key
+ * records write authority and holds its seal until the URL expires; one bound PUT holds nothing.
+ * sealantd caps a pack near 64 MiB and takes a single URL for a key it asked parts for. A key
+ * above this still goes in parts: one PUT this size fits its URL's life at the assumed rate
+ * (`putUrlTtlSeconds`), and a retried PUT starts over where a retried part does not.
+ */
+export const BOUND_SINGLE_PUT_MAX_BYTES = 256 * 1024 * 1024;
 const S3_MIN_PART_BYTES = 5 * 1024 * 1024;
 
 /**
@@ -1947,9 +1956,22 @@ export const CaptureChannelLive: Layer.Layer<
           readonly size: number | null;
         }> = [];
         for (const [key, size] of wanted) {
+          // A key whose bytes the URL can be bound to (its name says them, or the executor
+          // declared them) goes as one bound PUT well past the multipart threshold: a part URL
+          // would hold the seal for its whole life (`BOUND_SINGLE_PUT_MAX_BYTES`).
+          const boundable =
+            bindable &&
+            size !== null &&
+            size <= BOUND_SINGLE_PUT_MAX_BYTES &&
+            (contentDigestOfKey(key) !== null || input.sha256?.[key] !== undefined);
           // A stored key's legacy URL is one write-once PUT, whatever its size: there is nothing
           // to assemble, and a bucket that honours the precondition refuses it outright.
-          if (size === null || size < policy.multipartThresholdBytes || storedLegacy.has(key)) {
+          if (
+            size === null ||
+            size < policy.multipartThresholdBytes ||
+            boundable ||
+            storedLegacy.has(key)
+          ) {
             plans.push({ key, parts: 0, size });
             continue;
           }
