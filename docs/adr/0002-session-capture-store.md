@@ -1480,7 +1480,9 @@ Mend-side details the decision record left open, decided in this ADR:
       of it leaves Mend. Bindings dead for an hour are swept with a predicate asked of the row as it
       is deleted, so one renewed meanwhile stays. A binding is never given back, even when its call
       hands out no URL: another call may have signed a URL under that very row since, and the row
-      cannot say whose it is.
+      cannot say whose it is. An extension finds only a binding live at the moment of signing: a
+      call that stalled past its reservation's life signs nothing, since a seal may have stood over
+      other bytes since.
     - **The upgrade, once.** The server before migration 0099 kept its bindings in memory, and a URL
       it bound in its last minutes outlives it. The migration writes a cutover 20 minutes ahead
       (`capture_bound_index_cutover`) when the database already has worktrees. Until then seals wait
@@ -1520,7 +1522,8 @@ Mend-side details the decision record left open, decided in this ADR:
       replaceable bytes and one hang: the index key rule above, the upgrade, the two reads of a
       scope, the sweep, an extension overwritten, and the unbounded background pass. A second pass
       found two more: a reservation given back under another call's signed URL, and seals recorded
-      before the index key rule. Each is fixed as described here, with a test named for it.
+      before the index key rule. A third found a lapsed binding revived by a call that stalled past
+      its reservation. Each is fixed as described here, with a test named for it.
     - **sealantd** (its changeset of the same day): a final flush is not throttled, reads small
       files on reader threads, hashes and compresses a large file's parts on them, hashes each pack
       on its own thread, takes SHA-256 from `ring`, and uploads large objects four at a time.

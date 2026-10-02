@@ -442,10 +442,12 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
         });
         return { outcome: "reserved", fresh: bound === null } as const;
       }),
-    extendBoundIndex: (key, sha256, until) =>
+    extendBoundIndex: (key, sha256, at, until) =>
       Effect.sync(() => {
         const row = boundIndexes.get(key);
-        if (row === undefined || row.sha256 !== sha256) return false;
+        if (row === undefined || row.sha256 !== sha256 || row.until.getTime() <= at.getTime()) {
+          return false;
+        }
         if (row.until.getTime() < until.getTime()) boundIndexes.set(key, { sha256, until });
         return true;
       }),

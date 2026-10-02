@@ -1402,8 +1402,8 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
         const again = yield* repo.reserveBoundIndex(key, first, minutes(1), minutes(5));
         const conflict = yield* repo.reserveBoundIndex(key, other, minutes(2), minutes(12));
         const live = yield* repo.boundIndexesAmong([key, "captures/none.idx"], minutes(9));
-        yield* repo.extendBoundIndex(key, first, minutes(15));
-        yield* repo.extendBoundIndex(key, other, minutes(60));
+        yield* repo.extendBoundIndex(key, first, minutes(9), minutes(15));
+        yield* repo.extendBoundIndex(key, other, minutes(9), minutes(60));
         const extended = yield* repo.boundIndexesAmong([key], minutes(14));
         // Dead at 15 minutes: other bytes may be bound, and that reservation is fresh.
         const dead = yield* repo.boundIndexesAmong([key], minutes(15));
@@ -1454,18 +1454,22 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
         const repo = yield* CaptureStoreRepo;
         yield* repo.reserveBoundIndex(key, digest, t0, minutes(20));
         // The URL was signed late: its binding is extended past what the reservation said.
-        const extended = yield* repo.extendBoundIndex(key, digest, minutes(27));
+        const extended = yield* repo.extendBoundIndex(key, digest, minutes(7), minutes(27));
         // A second call for the same bytes worked its expiry out earlier (Astra review: it
         // overwrote 27 with 21, and the seal stood while the first URL could still be used).
         yield* repo.reserveBoundIndex(key, digest, minutes(1), minutes(21));
         const kept = yield* repo.boundIndexesAmong([key], minutes(22));
         // An extension to an earlier time shortens nothing either.
-        const earlier = yield* repo.extendBoundIndex(key, digest, minutes(5));
+        const earlier = yield* repo.extendBoundIndex(key, digest, minutes(2), minutes(5));
         const still = yield* repo.boundIndexesAmong([key], minutes(22));
         // No binding of these bytes to extend: said, so the URL does not leave.
-        const other = yield* repo.extendBoundIndex(key, "4".repeat(64), minutes(30));
-        const none = yield* repo.extendBoundIndex(`${key}.gone`, digest, minutes(30));
-        return { extended, kept, earlier, still, other, none };
+        const other = yield* repo.extendBoundIndex(key, "4".repeat(64), minutes(8), minutes(30));
+        const none = yield* repo.extendBoundIndex(`${key}.gone`, digest, minutes(8), minutes(30));
+        // A binding that lapsed is not revived by a call that stalled past it (Astra review,
+        // third pass): a seal may have stood over other bytes since.
+        const lapsed = yield* repo.extendBoundIndex(key, digest, minutes(28), minutes(48));
+        const gone = yield* repo.boundIndexesAmong([key], minutes(28));
+        return { extended, kept, earlier, still, other, none, lapsed, gone };
       }),
     );
     expect(result.extended).toBe(true);
@@ -1474,6 +1478,8 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     expect(result.still).toEqual([{ key, sha256: digest, until: minutes(27) }]);
     expect(result.other).toBe(false);
     expect(result.none).toBe(false);
+    expect(result.lapsed).toBe(false);
+    expect(result.gone).toEqual([]);
   });
 
   it("pack index bindings (0099): only bindings long dead are swept, never one renewed", async () => {

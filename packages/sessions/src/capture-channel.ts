@@ -2243,12 +2243,15 @@ export const CaptureChannelLive: Layer.Layer<
               .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
             // A URL is good from when it was signed: the binding lasts at least that long.
             if (digest !== undefined && contentDigestOfKey(plan.key) === null) {
+              const signedAt = Date.now();
               const extended = yield* repo.extendBoundIndex(
                 plan.key,
                 digest,
-                new Date(Date.now() + BOUND_URL_LIFETIME_MS),
+                new Date(signedAt),
+                new Date(signedAt + BOUND_URL_LIFETIME_MS),
               );
-              // The binding this URL was signed under is gone: the URL is on no record, and
+              // The binding this URL was signed under is gone, or lapsed while this call stalled
+              // (a seal may have stood over other bytes since): the URL is on no record, and
               // none of the call's URLs leaves Mend. The executor asks again.
               if (!extended) {
                 for (const key of unpriced.keys()) ledger.delete(key);

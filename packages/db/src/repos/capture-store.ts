@@ -478,10 +478,16 @@ export class CaptureStoreRepo extends Context.Service<
     >;
     /**
      * Extend `key`'s binding to `until`: a URL is good from when it was signed. False when no
-     * binding of `key` to `sha256` is there to extend: the URL just signed is on no record, and
-     * must not leave Mend.
+     * binding of `key` to `sha256` is live at `at`: the URL just signed is on no record, and must
+     * not leave Mend. A binding that lapsed is never revived (Astra review, 2026-10-02): a seal
+     * may have stood over other bytes since, and a URL for these would replace them.
      */
-    readonly extendBoundIndex: (key: string, sha256: string, until: Date) => Effect.Effect<boolean>;
+    readonly extendBoundIndex: (
+      key: string,
+      sha256: string,
+      at: Date,
+      until: Date,
+    ) => Effect.Effect<boolean>;
     /** The bindings among `keys` still live at `at`. */
     readonly boundIndexesAmong: (
       keys: ReadonlyArray<string>,
@@ -1226,11 +1232,12 @@ export const CaptureStoreRepoLive: Layer.Layer<
     const extendBoundIndex = Effect.fn("CaptureStoreRepo.extendBoundIndex")(function* (
       key: string,
       sha256: string,
+      at: Date,
       until: Date,
     ) {
       const rows = yield* sql<{ readonly key: string }>`
         UPDATE capture_bound_indexes SET until = GREATEST(until, ${until})
-         WHERE key = ${key} AND sha256 = ${sha256}
+         WHERE key = ${key} AND sha256 = ${sha256} AND until > ${at}
         RETURNING key`.pipe(Effect.orDie);
       return rows.length > 0;
     });
