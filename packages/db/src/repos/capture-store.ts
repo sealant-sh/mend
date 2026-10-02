@@ -439,12 +439,19 @@ export class CaptureStoreRepo extends Context.Service<
       scopes: ReadonlyArray<CaptureScopeRef>,
     ) => Effect.Effect<Date | null>;
     /**
-     * Whether Mend still speaks for every one of `scopes`: each worktree is there, so every upload
-     * URL ever handed out under its prefix that could replace an object is on record
-     * (`capture_put_authority`, written before the URL leaves). A worktree that is gone took its
-     * rows with it, and a URL handed out before it went may still live: not spoken for.
+     * What is on record about upload URLs that could replace an object under `scopes`, read in
+     * one statement: `until`, the latest expiry of an unbound URL handed out under any of them
+     * (`putAuthorityUntilOver`), and `spokenFor`, whether that record is whole. It is whole when
+     * every worktree is there (one that is gone took its rows with it, and a URL handed out
+     * before it went may still live) and `at` is past the cutover of migration 0099 (before it,
+     * the server this one replaced may have bound a pack index URL nothing recorded). One
+     * statement, so a worktree removed while a seal is being decided is either seen gone or
+     * seen with its authority, never neither.
      */
-    readonly scopesSpokenFor: (scopes: ReadonlyArray<CaptureScopeRef>) => Effect.Effect<boolean>;
+    readonly sealAuthorityOver: (
+      scopes: ReadonlyArray<CaptureScopeRef>,
+      at: Date,
+    ) => Effect.Effect<{ readonly until: Date | null; readonly spokenFor: boolean }>;
     /**
      * Bind the pack index `key` to `sha256` until `until` (0099, ADR 0002 decision 48), in one
      * step: `conflict` while a binding live at `now` names other bytes. A binding for the same
@@ -461,8 +468,12 @@ export class CaptureStoreRepo extends Context.Service<
     >;
     /** Give back a reservation while it is still exactly the one made (same bytes, same `until`). */
     readonly releaseBoundIndex: (key: string, sha256: string, until: Date) => Effect.Effect<void>;
-    /** Extend `key`'s binding to `until`: a URL is good from when it was signed. */
-    readonly extendBoundIndex: (key: string, sha256: string, until: Date) => Effect.Effect<void>;
+    /**
+     * Extend `key`'s binding to `until`: a URL is good from when it was signed. False when no
+     * binding of `key` to `sha256` is there to extend: the URL just signed is on no record, and
+     * must not leave Mend.
+     */
+    readonly extendBoundIndex: (key: string, sha256: string, until: Date) => Effect.Effect<boolean>;
     /** The bindings among `keys` still live at `at`. */
     readonly boundIndexesAmong: (
       keys: ReadonlyArray<string>,
@@ -1101,17 +1112,33 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return row?.expiresAt ?? null;
     });
 
-    const scopesSpokenFor = Effect.fn("CaptureStoreRepo.scopesSpokenFor")(function* (
+    const sealAuthorityOver = Effect.fn("CaptureStoreRepo.sealAuthorityOver")(function* (
       scopes: ReadonlyArray<CaptureScopeRef>,
+      at: Date,
     ) {
       const wanted = [...new Set(scopes.map((scope) => scope.worktreeId))];
-      if (wanted.length === 0) return true;
-      const [row] = yield* sql<{ readonly found: number }>`
-        SELECT count(*)::int AS found FROM worktrees
-         WHERE id IN (SELECT jsonb_array_elements_text(${JSON.stringify(wanted)}::jsonb))`.pipe(
-        Effect.orDie,
-      );
-      return (row?.found ?? 0) === wanted.length;
+      const [row] = yield* sql<{
+        readonly expiresAt: Date | null;
+        readonly found: number;
+        readonly cutover: Date | null;
+      }>`
+        SELECT
+          (SELECT max(a.expires_at)
+             FROM capture_put_authority a
+             JOIN jsonb_to_recordset(${JSON.stringify(scopes)}::jsonb)
+                  AS s("worktreeId" text, epoch bigint)
+               ON a.worktree_id = s."worktreeId" AND a.epoch = s.epoch) AS expires_at,
+          (SELECT count(*)::int FROM worktrees
+            WHERE id IN (SELECT jsonb_array_elements_text(${JSON.stringify(wanted)}::jsonb))
+          ) AS found,
+          (SELECT max(until) FROM capture_bound_index_cutover) AS cutover`.pipe(Effect.orDie);
+      const cutover = row?.cutover ?? null;
+      return {
+        until: row?.expiresAt ?? null,
+        spokenFor:
+          (row?.found ?? 0) === wanted.length &&
+          (cutover === null || at.getTime() >= cutover.getTime()),
+      };
     });
 
     const reserveBoundIndex = Effect.fn("CaptureStoreRepo.reserveBoundIndex")(function* (
@@ -1123,24 +1150,38 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return yield* sql
         .withTransaction(
           Effect.gen(function* () {
-            // One reservation of a key at a time, whether or not its row exists yet.
+            // One reservation of a key at a time, whether or not its row exists yet. The row
+            // itself is locked from this read to the write below, so an extension
+            // (`extendBoundIndex`) waits and then extends what this wrote: it can never be
+            // overwritten with an expiry worked out before it (Astra review, 2026-10-02).
             yield* sql`SELECT pg_advisory_xact_lock(hashtext(${`mend:capture-bound-index:${key}`}))`;
             const [row] = yield* sql<{ readonly sha256: string; readonly until: Date }>`
-              SELECT sha256, until FROM capture_bound_indexes WHERE key = ${key}`;
+              SELECT sha256, until FROM capture_bound_indexes WHERE key = ${key} FOR UPDATE`;
             const live = row !== undefined && row.until.getTime() > now.getTime() ? row : null;
             if (live !== null && live.sha256 !== sha256) return { outcome: "conflict" } as const;
-            const kept = new Date(Math.max(until.getTime(), live?.until.getTime() ?? 0));
+            // Never shortened for the same bytes, whatever was read above.
             yield* sql`
               INSERT INTO capture_bound_indexes (key, sha256, until)
-              VALUES (${key}, ${sha256}, ${kept})
-              ON CONFLICT (key) DO UPDATE SET sha256 = EXCLUDED.sha256, until = EXCLUDED.until`;
-            // Bindings long dead go, a few at a time.
+              VALUES (${key}, ${sha256}, ${until})
+              ON CONFLICT (key) DO UPDATE SET
+                until = CASE
+                  WHEN capture_bound_indexes.sha256 = EXCLUDED.sha256
+                  THEN GREATEST(capture_bound_indexes.until, EXCLUDED.until)
+                  ELSE EXCLUDED.until
+                END,
+                sha256 = EXCLUDED.sha256`;
+            // Bindings long dead go, a few at a time. The outer predicate is asked of the row
+            // as it is when it is deleted, so one renewed since the inner read stays; rows
+            // another reservation holds are skipped, not waited for.
+            const cutoff = new Date(now.getTime() - 60 * 60 * 1000);
             yield* sql`
               DELETE FROM capture_bound_indexes
-               WHERE key IN (
-                 SELECT key FROM capture_bound_indexes
-                  WHERE until < ${new Date(now.getTime() - 60 * 60 * 1000)}
-                  LIMIT 200)`;
+               WHERE until < ${cutoff}
+                 AND key IN (
+                   SELECT key FROM capture_bound_indexes
+                    WHERE until < ${cutoff}
+                    LIMIT 200
+                      FOR UPDATE SKIP LOCKED)`;
             return { outcome: "reserved", fresh: live === null } as const;
           }),
         )
@@ -1162,9 +1203,11 @@ export const CaptureStoreRepoLive: Layer.Layer<
       sha256: string,
       until: Date,
     ) {
-      yield* sql`
-        UPDATE capture_bound_indexes SET until = ${until}
-         WHERE key = ${key} AND sha256 = ${sha256} AND until < ${until}`.pipe(Effect.orDie);
+      const rows = yield* sql<{ readonly key: string }>`
+        UPDATE capture_bound_indexes SET until = GREATEST(until, ${until})
+         WHERE key = ${key} AND sha256 = ${sha256}
+        RETURNING key`.pipe(Effect.orDie);
+      return rows.length > 0;
     });
 
     const boundIndexesAmong = Effect.fn("CaptureStoreRepo.boundIndexesAmong")(function* (
@@ -1456,7 +1499,7 @@ export const CaptureStoreRepoLive: Layer.Layer<
       recordPutAuthority,
       putAuthorityUntil,
       putAuthorityUntilOver,
-      scopesSpokenFor,
+      sealAuthorityOver,
       reserveBoundIndex,
       releaseBoundIndex,
       extendBoundIndex,

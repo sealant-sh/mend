@@ -158,7 +158,7 @@ const readBacks = makeSingleFlight<SealStanding, never>();
  *
  * Two things keep that from costing a Stop (ADR 0002 decision 49). The store's window after a
  * start (`BlobStore.startupUntil`) is not waited out when Mend still speaks for every epoch the
- * seal's objects live under (`scopesSpokenFor`): every URL a process before this one handed out
+ * seal's objects live under (`sealAuthorityOver`): every URL a process before this one handed out
  * that could replace one of them is on record, in that epoch's authority or in the pack index
  * bindings. And the read-back does not read again what this process already read whole, and
  * found to be what its name says, since the last moment a URL could have replaced it.
@@ -201,12 +201,14 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
   // index bindings (0099). So while Mend still speaks for every scope (each worktree is there,
   // its rows with it), the window adds nothing, and a restart holds no seal for 20 minutes
   // (2026-10-02). What this process itself minted for these keys past that window still counts.
+  // Whether the record is whole and what it holds are read together, in one statement: a
+  // worktree removed meanwhile is seen gone, or seen with its authority, never neither. The
+  // record is not whole before the cutover of migration 0099 either: the server this one
+  // replaced kept its index bindings in memory (Astra review, 2026-10-02).
   const startupUntil = yield* blobs.startupUntil;
-  if (startupUntil > 0 && storeUntil <= startupUntil && (yield* repo.scopesSpokenFor(scopes))) {
-    storeUntil = 0;
-  }
-  const recorded = yield* repo.putAuthorityUntilOver(scopes);
-  const until = Math.max(storeUntil, recorded?.getTime() ?? 0);
+  const record = yield* repo.sealAuthorityOver(scopes, new Date(now()));
+  if (startupUntil > 0 && storeUntil <= startupUntil && record.spokenFor) storeUntil = 0;
+  const until = Math.max(storeUntil, record.until?.getTime() ?? 0);
   const at = now();
   // A pack index a live bytes-bound URL names other bytes for could be replaced by them: never
   // standing over it until that URL is dead (ADR 0002 decision 48).

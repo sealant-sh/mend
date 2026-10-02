@@ -2767,6 +2767,12 @@ const agentMemoryMigration = Effect.gen(function* () {
  * each start (measured on a self-hosted box, 2026-10-02). On record here, a restart forgets
  * nothing: a seal never stands over an index a live URL bound to other bytes could replace, and
  * waits for nothing else.
+ *
+ * The server this one replaces kept its bindings in memory, and they are gone. A URL it bound in
+ * its last minutes can live for 20 more (the longest life of a URL plus the bucket's clock
+ * margin). `capture_bound_index_cutover` says until when: seals wait the start window out as
+ * before until then, once, and never again. A database with no worktree has handed out no URL,
+ * and gets no such wait.
  */
 const captureBoundIndexesMigration = Effect.gen(function* () {
   const sql = yield* SqlClient.SqlClient;
@@ -2777,6 +2783,14 @@ const captureBoundIndexesMigration = Effect.gen(function* () {
       until timestamptz NOT NULL
     )`;
   yield* sql`CREATE INDEX capture_bound_indexes_until ON capture_bound_indexes (until)`;
+  yield* sql`
+    CREATE TABLE capture_bound_index_cutover (
+      only_row boolean PRIMARY KEY DEFAULT true CHECK (only_row),
+      until timestamptz NOT NULL
+    )`;
+  yield* sql`
+    INSERT INTO capture_bound_index_cutover (until)
+    SELECT now() + interval '20 minutes' WHERE EXISTS (SELECT 1 FROM worktrees)`;
 });
 
 export const migrations = {

@@ -34,8 +34,10 @@ export interface MemoryCaptureStore {
   readonly putAuthority: Map<string, Date>;
   /** `capture_bound_indexes`: key → the digest its bound URLs name, and until when (0099). */
   readonly boundIndexes: Map<string, { sha256: string; until: Date }>;
-  /** Worktrees that are gone: Mend no longer speaks for their scopes (`scopesSpokenFor`). */
+  /** Worktrees that are gone: Mend no longer speaks for their scopes (`sealAuthorityOver`). */
   readonly goneWorktrees: Set<string>;
+  /** `capture_bound_index_cutover`: until when the record of bound index URLs is not whole. */
+  readonly boundIndexCutover: { until: number };
   /** `capture_deletion_claims`: key → token → when the claim lapses (store clock, ms). */
   readonly claims: Map<string, Map<string, number>>;
   readonly packs: Map<string, PackRow>;
@@ -82,6 +84,7 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
   const putAuthority = new Map<string, Date>();
   const boundIndexes = new Map<string, { sha256: string; until: Date }>();
   const goneWorktrees = new Set<string>();
+  const boundIndexCutover = { until: 0 };
   const holdRecordSeal = { held: false };
   /** A live deletion claim on `key`: some pass may still delete its bytes. */
   const claimed = (key: string) =>
@@ -407,8 +410,19 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
         });
         return times.length === 0 ? null : new Date(Math.max(...times));
       }),
-    scopesSpokenFor: (scopes) =>
-      Effect.sync(() => scopes.every((scope) => !goneWorktrees.has(scope.worktreeId))),
+    sealAuthorityOver: (scopes, at) =>
+      Effect.sync(() => {
+        const times = scopes.flatMap((scope) => {
+          const until = putAuthority.get(`${scope.worktreeId}:${scope.epoch}`);
+          return until === undefined ? [] : [until.getTime()];
+        });
+        return {
+          until: times.length === 0 ? null : new Date(Math.max(...times)),
+          spokenFor:
+            scopes.every((scope) => !goneWorktrees.has(scope.worktreeId)) &&
+            at.getTime() >= boundIndexCutover.until,
+        };
+      }),
     reserveBoundIndex: (key, sha256, now, until) =>
       Effect.sync(() => {
         const row = boundIndexes.get(key);
@@ -430,9 +444,9 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
     extendBoundIndex: (key, sha256, until) =>
       Effect.sync(() => {
         const row = boundIndexes.get(key);
-        if (row !== undefined && row.sha256 === sha256 && row.until.getTime() < until.getTime()) {
-          boundIndexes.set(key, { sha256, until });
-        }
+        if (row === undefined || row.sha256 !== sha256) return false;
+        if (row.until.getTime() < until.getTime()) boundIndexes.set(key, { sha256, until });
+        return true;
       }),
     boundIndexesAmong: (keys, at) =>
       Effect.sync(() =>
@@ -614,5 +628,6 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
     putAuthority,
     boundIndexes,
     goneWorktrees,
+    boundIndexCutover,
   };
 };

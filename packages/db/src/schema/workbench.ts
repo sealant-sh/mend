@@ -2100,6 +2100,16 @@ export const captureBoundIndexes = pgTable(
 );
 
 /**
+ * Until when a pack index URL bound by the server before migration 0099, which kept its bindings
+ * in memory, could still be used: one row, written by the migration when the database already
+ * had worktrees. Seals wait the store's start window out until then.
+ */
+export const captureBoundIndexCutover = pgTable("capture_bound_index_cutover", {
+  onlyRow: boolean().primaryKey().default(true),
+  until: timestamp({ mode: "date", withTimezone: true }).notNull(),
+});
+
+/**
  * Until when an upload URL Mend handed out under one worktree epoch's prefix could still write
  * to the bucket (migration 0089, review 2026-09-28 (7) #8): the latest expiry of every PUT and
  * part URL minted for `captures/<worktree>/<epoch>/…`, recorded before the URL is handed out. On

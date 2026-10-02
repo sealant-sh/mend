@@ -741,6 +741,9 @@ export const MULTIPART_MAX_PARTS = 10_000;
  * when the PUT arrives, so a long upload is not cut off by it.
  */
 export const BOUND_SINGLE_PUT_MAX_BYTES = 5 * 1024 * 1024 * 1024;
+
+/** How long the background verification of one register's packs may run (`register`). */
+const PACK_WARM_UP_LIMIT = Duration.minutes(5);
 const S3_MIN_PART_BYTES = 5 * 1024 * 1024;
 
 /**
@@ -2225,11 +2228,19 @@ export const CaptureChannelLive: Layer.Layer<
               .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
             // A URL is good from when it was signed: the binding lasts at least that long.
             if (digest !== undefined && contentDigestOfKey(plan.key) === null) {
-              yield* repo.extendBoundIndex(
+              const extended = yield* repo.extendBoundIndex(
                 plan.key,
                 digest,
                 new Date(Date.now() + BOUND_URL_LIFETIME_MS),
               );
+              // The binding this URL was signed under is gone: the URL is on no record, and
+              // none of the call's URLs leaves Mend. The executor asks again.
+              if (!extended) {
+                for (const key of unpriced.keys()) ledger.delete(key);
+                return yield* Effect.die(
+                  "capture channel: a pack index URL was signed, and its binding is no longer on record · none handed out",
+                );
+              }
             }
             continue;
           }
@@ -2782,6 +2793,20 @@ export const CaptureChannelLive: Layer.Layer<
               .join(", ")}`,
           );
         }
+        // A chunked class lists packs and dir packs, never a pack index. An index key names its
+        // pack's digest, not its own bytes', and nothing below would check one as the pack it
+        // is listed as (Astra review, 2026-10-02).
+        const listedIndexes = chunked
+          .flatMap((section) => [...section.packs, ...dirPacksOf(section)])
+          .filter((key) => key.endsWith(".idx"));
+        if (listedIndexes.length > 0) {
+          return yield* bad(
+            `a chunked section lists ${listedIndexes.length} pack index key(s) as packs: ${listedIndexes
+              .slice(0, 3)
+              .map((key) => JSON.stringify(key))
+              .join(", ")}`,
+          );
+        }
         const badDigests = chunked
           .filter((section) => sectionFormatOf(section) === FORMAT_DIR_PACKS)
           .filter(
@@ -2847,12 +2872,14 @@ export const CaptureChannelLive: Layer.Layer<
         // decompressed 788 MB the register before it had just walked). What it finds wrong is
         // the seal's to say (`sealChecks`), so nothing here is reported. A sealing register runs
         // those checks itself.
+        // Bounded: a store that stops answering must not hold the verification permits for good.
         if (manifest.final_seal === undefined) {
           yield* Effect.forkDetach(
             withCaptureReadPass(
               verifyPackPayloads(chunked.flatMap((section) => section.packs)),
             ).pipe(
               Effect.provideService(BlobStore, blobs),
+              Effect.timeoutOption(PACK_WARM_UP_LIMIT),
               Effect.catchCause(() => Effect.void),
             ),
           );

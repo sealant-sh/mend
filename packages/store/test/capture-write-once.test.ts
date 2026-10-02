@@ -2,7 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 
-import { Effect, Layer } from "effect";
+import { Effect, Layer, Option } from "effect";
 import { afterAll, describe, expect, it } from "vitest";
 
 import { BlobStore, BlobStoreFsLive } from "../src/blob-store.ts";
@@ -13,6 +13,7 @@ import {
   verifyPackPayloads,
   verifySectionRestorable,
 } from "../src/captures.ts";
+import { PACK_VERIFY_WORKERS } from "../src/pack-verify-pool.ts";
 import { sectionOf, snapshotDirectory, uploadObjects, writeCdcPack } from "./capture-fixture.ts";
 
 /**
@@ -102,6 +103,62 @@ describe("capture proofs are bound to the store and stand only once nothing can 
     expect(await run(storedObjectProblem(key, { reuseProofs: true }), replaceable)).toMatch(
       /holds bytes that hash to/,
     );
+  });
+
+  it("Astra review: a pack stored under a pack index's name keeps no lasting proof", async () => {
+    // `<digest>.idx` names its pack's digest, not its own bytes'. A chunk pack stored there,
+    // verified once and then replaced, must be verified again: nothing reads an index key back
+    // as a pack.
+    const { key, good, bad } = packPair("wt-index-name");
+    const disguised = `${key}.idx`;
+    const root = freshDir("index-name");
+    const replaceable = Layer.effect(
+      BlobStore,
+      Effect.map(BlobStore, (inner): typeof BlobStore.Service => ({
+        ...inner,
+        identity: `garage-like:${root}`,
+        replaceableUntil: () => Effect.succeed(Date.now() + 15 * 60 * 1000),
+      })),
+    ).pipe(Layer.provide(BlobStoreFsLive(root)));
+    await run(uploadObjects(new Map([[disguised, good]])), replaceable);
+    expect(await outcome(verifyPackPayloads([disguised]), replaceable)).toBe("read");
+    replaceInPlace(root, disguised, bad);
+    expect(await outcome(verifyPackPayloads([disguised]), replaceable)).toBe(
+      "CaptureIntegrityError",
+    );
+  });
+
+  it("Astra review: verifications cut off while their reads hang give their places back, and a waiter verifies for itself", async () => {
+    const root = freshDir("stalled");
+    const packs = Array.from({ length: PACK_VERIFY_WORKERS + 1 }, (_, n) =>
+      packPair(`wt-stalled-${n}`),
+    );
+    // A store whose reads never answer while `stalled`.
+    const hold = { stalled: true };
+    const stalling = Layer.effect(
+      BlobStore,
+      Effect.map(BlobStore, (inner): typeof BlobStore.Service => ({
+        ...inner,
+        get: (key: string) => (hold.stalled ? Effect.never : inner.get(key)),
+      })),
+    ).pipe(Layer.provide(BlobStoreFsLive(root)));
+    await run(uploadObjects(new Map(packs.map((pack) => [pack.key, pack.good]))), stalling);
+    // A background verification takes every place and hangs on its reads, until its bound.
+    const cutOff = await run(
+      verifyPackPayloads(packs.slice(0, PACK_VERIFY_WORKERS).map((pack) => pack.key)).pipe(
+        Effect.timeoutOption("150 millis"),
+      ),
+      stalling,
+    );
+    expect(Option.isNone(cutOff)).toBe(true);
+    // The store answers again. A pack the cut-off pass was reading is verified by the next
+    // asker, and one it never reached finds a free place.
+    hold.stalled = false;
+    const after = await run(
+      verifyPackPayloads(packs.map((pack) => pack.key)).pipe(Effect.timeout("10 seconds")),
+      stalling,
+    );
+    expect(after.packs).toBe(packs.length);
   });
 
   it("#9 a dir pack read from one store does not stand for the same key in another", async () => {

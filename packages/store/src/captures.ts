@@ -2231,9 +2231,11 @@ export const verifyPackPayloads = (
           const cacheKey = proofKey(store, key);
           const proven = Effect.gen(function* () {
             const verifiedAt = payloadVerified.get(cacheKey);
+            // Never a pack index key: its name is its pack's digest, not its own bytes'
+            // (Astra review, 2026-10-02).
             return (
               verifiedAt !== undefined &&
-              (digestOfKey(key) !== null || (yield* proofStands(store, key, verifiedAt)))
+              (contentDigestOfKey(key) !== null || (yield* proofStands(store, key, verifiedAt)))
             );
           });
           if (yield* proven) return;
@@ -3669,8 +3671,7 @@ export const storedCaptureProblem = (
         proofs !== undefined &&
         key !== manifestKey &&
         !gitPacks.has(key) &&
-        !key.endsWith(".idx") &&
-        digestOfKey(key) !== null
+        contentDigestOfKey(key) !== null
       ) {
         const provenAt = contentVerified.get(proofKey(store, key));
         if (provenAt !== undefined && provenAt >= proofs.sinceMs) {

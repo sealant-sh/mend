@@ -3026,6 +3026,8 @@ describeSeals(
 const presigned: Array<{ readonly key: string; readonly sha256: string | undefined }> = [];
 /** Keys whose next `head` in the suite below answers absent: a look before the key landed. */
 const boundHeadMisses = new Set<string>();
+/** Called as a PUT URL of the suite below is signed, with its key. */
+const boundOnPresign: { hook: ((key: string) => void) | undefined } = { hook: undefined };
 /** Let a short-lived binding in the registry die. */
 const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 /** When the store's window for a process before this one ends in the suite below; 0: long over. */
@@ -3058,7 +3060,10 @@ describeSeals(
             sha256?: string,
           ) =>
             Effect.sync(() => {
-              if (method === "PUT") presigned.push({ key, sha256 });
+              if (method === "PUT") {
+                presigned.push({ key, sha256 });
+                boundOnPresign.hook?.(key);
+              }
             }).pipe(Effect.andThen(store.presign(key, method, ttl, length, sha256))),
         })),
       ).pipe(Layer.provide(BlobStoreFsLive(root))),
@@ -3245,10 +3250,81 @@ describeSeals(
         // A worktree that is gone took its record with it: the window is waited out, as before.
         world.memory.goneWorktrees.add(at.worktreeId);
         expect(await sealOf(at)).toBeNull();
+        world.memory.goneWorktrees.delete(at.worktreeId);
+        // The first start after the upgrade: the server before it kept index bindings in
+        // memory, so until its longest URL is dead the record is not whole (Astra review).
+        world.memory.boundIndexCutover.until = Date.now() + 20 * 60_000;
+        expect(await sealOf(at)).toBeNull();
+        world.memory.boundIndexCutover.until = Date.now() - 1;
+        expect((await sealOf(at))?.captureId).toBe(file.cap.id);
       } finally {
         world.memory.goneWorktrees.delete(at.worktreeId);
+        world.memory.boundIndexCutover.until = 0;
         boundStartupUntil.at = 0;
       }
+    });
+
+    it("Astra review: a chunked section that lists a pack index as a pack is refused", async () => {
+      const at = await claimed();
+      await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const file = sealedFile(at, "a pack under an index's name\n");
+      // The pack's own bytes stored under `<its digest>.idx`: a chunk pack where only a git pack
+      // index may be, whose payload proof would outlive what is stored there.
+      const disguised = `${file.key}.idx`;
+      const workspace = file.cap.manifest.sections.workspace;
+      const manifest = {
+        ...file.cap.manifest,
+        sections: {
+          ...file.cap.manifest.sections,
+          workspace: { ...workspace, packs: workspace.packs.map(() => disguised) },
+        },
+      };
+      const bytes = new Uint8Array(Buffer.from(JSON.stringify(manifest)));
+      const id = sha256Hex(bytes);
+      const built = {
+        manifest,
+        bytes,
+        id,
+        key: captureKeys(at.worktreeId, at.epoch).manifest(id),
+      };
+      await run(
+        uploadObjects(
+          new Map([...file.snapshot.objects, [disguised, file.bytes], [built.key, built.bytes]]),
+        ),
+      );
+      const refused = await run(
+        registerOn(at.worktreeId, at.epoch, at.api)(built).pipe(Effect.flip),
+      );
+      expect(refused).toMatchObject({ status: 400 });
+      expect(String(refused.message)).toContain("pack index key(s) as packs");
+    });
+
+    it("Astra review: an index URL whose binding is gone by the time it is signed does not leave Mend", async () => {
+      const at = await claimed();
+      await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const index = `${captureKeys(at.worktreeId, at.epoch).pack("7".repeat(64))}.idx`;
+      const ask = at.api.uploadUrls({
+        worktree_id: at.worktreeId,
+        epoch: at.epoch,
+        keys: [index],
+        sizes: { [index]: 12 },
+        sha256: { [index]: "8".repeat(64) },
+      });
+      // The binding goes between the reservation and the signature (a sweep that should never
+      // take it, a row lost): the URL is on no record.
+      boundOnPresign.hook = (key) => {
+        if (key === index) world.memory.boundIndexes.delete(index);
+      };
+      try {
+        const refused = await run(ask.pipe(Effect.exit));
+        expect(Exit.isFailure(refused)).toBe(true);
+      } finally {
+        boundOnPresign.hook = undefined;
+      }
+      // Asked again, it is bound and handed out.
+      const again = await run(ask);
+      expect(Object.keys(again.urls)).toEqual([index]);
+      expect(world.memory.boundIndexes.get(index)?.sha256).toBe("8".repeat(64));
     });
 
     it("Astra re-review: an index stored after the call's first look is answered present, and gets no URL for other bytes", async () => {

@@ -1465,13 +1465,24 @@ Mend-side details the decision record left open, decided in this ADR:
       those that could replace an object a seal names is on record: an unbound one in its epoch's
       write authority (`capture_put_authority`, written before the URL leaves), and one bound to a
       pack index in `capture_bound_indexes` (migration 0099, which replaces the in-memory registry
-      of decision 48: reserved under an advisory lock per key, so two calls still cannot bind one
-      index to two digests). `sealStandingOf` drops the store's startup term
-      (`BlobStore.startupUntil`) when Mend still speaks for every scope the seal's objects live
-      under, that is, each worktree is there with its rows (`scopesSpokenFor`). A scope whose
-      worktree is gone took its record with it: the window is waited out as before. What this
-      process itself minted for a key past the window still counts. A multipart complete never
-      replaces a stored object on such a bucket (`completeOnce`), restart or not.
+      of decision 48). `sealStandingOf` drops the store's startup term (`BlobStore.startupUntil`)
+      when that record is whole for every scope the seal's objects live under (`sealAuthorityOver`):
+      each worktree is there with its rows, and the cutover below is past. A scope whose worktree is
+      gone took its record with it: the window is waited out as before. Whether the record is whole
+      and what it holds are read in one statement, so a worktree removed meanwhile is seen gone or
+      seen with its authority. What this process itself minted for a key past the window still
+      counts. A multipart complete never replaces a stored object on such a bucket (`completeOnce`),
+      restart or not.
+    - **The bindings in Postgres.** A reservation takes an advisory lock on the key and the row's
+      own lock from its read to its write, so two calls cannot bind one index to two digests and an
+      extension made meanwhile is never overwritten with an earlier expiry. The same bytes bound
+      again never shorten a binding. An extension that finds no binding fails the call, and no URL
+      of it leaves Mend. Bindings dead for an hour are swept with a predicate asked of the row as it
+      is deleted, so one renewed meanwhile stays.
+    - **The upgrade, once.** The server before migration 0099 kept its bindings in memory, and a URL
+      it bound in its last minutes outlives it. The migration writes a cutover 20 minutes ahead
+      (`capture_bound_index_cutover`) when the database already has worktrees. Until then seals wait
+      the startup window out as they did. A new install has no such wait.
     - **The read-back reads nothing twice.** `storedCaptureProblem` takes
       `proofs: { sinceMs, usedFromMs }`: an object whose name is its digest, read whole by this
       process at or after `sinceMs` and found to be what its name says, is asked for (`head`) and
@@ -1487,12 +1498,19 @@ Mend-side details the decision record left open, decided in this ADR:
       nothing can replace the object. The same holds for a link member's digest (`digestOf`): every
       chunk read for it is checked against the hash that names it, so the digest is a fact about
       that list of chunk hashes. Before, both lapsed with `proofStands`, and every seal in the 20
-      minutes after a start decompressed every pack and hashed every linked member again.
+      minutes after a start decompressed every pack and hashed every linked member again. A pack
+      index key is not such a key: it names its pack's digest, not its own bytes'. It keeps the old
+      rule, and a register refuses a chunked section that lists one as a pack.
     - **Verification leaves Mend's thread, and starts early.** Packs are verified on worker threads
       (`pack-verify-pool.ts`), up to eight at once, at most that many packs in memory whoever asks.
       A register that seals nothing starts verifying the packs it lists in the background, so the
       sealing register that follows waits for what is left. A second asker of a pack under
-      verification waits for the first.
+      verification waits for the first. The background pass is cut off after five minutes, which
+      gives its places back and sends its waiters to verify for themselves.
+    - **Reviewed.** GPT-6 Astra read the first cut and found five ways a seal could stand over
+      replaceable bytes and one hang: the index key rule above, the upgrade, the two reads of a
+      scope, the sweep, an extension overwritten, and the unbounded background pass. Each is fixed
+      as described here, with a test named for it.
     - **sealantd** (its changeset of the same day): a final flush is not throttled, reads small
       files on reader threads, hashes and compresses a large file's parts on them, hashes each pack
       on its own thread, takes SHA-256 from `ring`, and uploads large objects four at a time.

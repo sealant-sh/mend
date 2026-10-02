@@ -29,7 +29,8 @@ The wait for links remains:
 - for a Stop that uploaded a single object over 5 GB, which goes up in parts.
 
 A restart of Mend no longer holds a Stop. Before 0.36 every Stop in the 20 minutes after a start
-waited those 20 minutes out.
+waited those 20 minutes out. The upgrade to 0.36 itself still does, once: for 20 minutes after the
+first start on 0.36, a Stop waits as it did before.
 
 Meanwhile the session stays `stopping` and says `final seal not confirmed`, and the executor keeps
 running. Nothing is lost: the session finishes stopping once the seal stands.
