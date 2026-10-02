@@ -1443,7 +1443,12 @@ Mend-side details the decision record left open, decided in this ADR:
     - **Restarts.** A URL a process before this one minted (bound URLs record nothing) is covered by
       the store's startup window, now its longest life plus the clock margin: seals wait the first
       20 minutes after a Mend start.
+    - **Large objects go as one bound PUT** (2026-10-02, the first Stop on a Garage box): a bindable
+      call answers a key it can bind as one PUT up to `BOUND_SINGLE_PUT_MAX_BYTES` (256 MiB), past
+      the 16 MiB multipart threshold. A session's first save carries dozens of 40–67 MiB packs, and
+      as parts each held the seal for the URLs' life: that Stop waited 10 minutes. sealantd takes a
+      single URL for a key it asked parts for. 256 MiB fits the URL's life at the assumed rate.
     - **What remains.** The 20 minutes after a Mend start; a Stop that uploaded through part URLs
-      (an object of 16 MiB or more); an executor of an older daemon; the read-back's own time, which
-      grows with what a capture names (follow-up: read back only what is new since the last standing
-      seal).
+      (an object over 256 MiB, or one Mend cannot bind); an executor of an older daemon; the
+      read-back's own time, which grows with what a capture names (follow-up: read back only what is
+      new since the last standing seal).

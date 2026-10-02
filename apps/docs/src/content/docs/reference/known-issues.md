@@ -24,7 +24,7 @@ the more the session holds. The wait for links remains:
 - for an executor whose sealantd predates bound links, until its links expire plus a 5-minute margin
   for the bucket's clock: about 10.5 minutes after a small Stop, up to 20 after a large one;
 - for a seal that carries what such an executor saved, until that executor's links have expired;
-- for a Stop that uploaded an object of 16 MB or more, which goes up in parts;
+- for a Stop that uploaded an object over 256 MB, which goes up in parts;
 - for 20 minutes after Mend starts.
 
 Meanwhile the session stays `stopping` and says `final seal not confirmed`, and the executor keeps
