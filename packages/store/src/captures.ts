@@ -6,11 +6,12 @@ import { Readable } from "node:stream";
 import { pipeline as pipelinePromise } from "node:stream/promises";
 import * as zlib from "node:zlib";
 
-import { Effect, Schema } from "effect";
+import { Effect, Result, Schema } from "effect";
 import * as Context from "effect/Context";
 
 import { BlobNotFoundError, BlobStore, BlobStoreError, isValidBlobKey } from "./blob-store.ts";
 import { git, type GitError, gitHostFaultWords, gitRejectsContent } from "./git.ts";
+import { PACK_VERIFY_WORKERS, verifyPackOnWorker } from "./pack-verify-pool.ts";
 
 /**
  * The capture format of sealantd ADR-0015 ("Capture format"), read-side only: Mend never writes
@@ -2218,26 +2219,91 @@ export const verifyPackPayloads = (
     const store = yield* BlobStore;
     let packs = 0;
     let chunks = 0;
-    for (const key of new Set(keys)) {
-      const cacheKey = proofKey(store, key);
-      const verifiedAt = payloadVerified.get(cacheKey);
-      if (verifiedAt !== undefined && (yield* proofStands(store, key, verifiedAt))) continue;
-      const atMs = Date.now();
-      const bytes = yield* store.get(key);
-      yield* verifyDigest(key, bytes);
-      rememberContentVerified(store, key, atMs);
-      const entries = yield* readPackIndex(key, bytes);
-      for (const entry of entries) {
-        yield* readChunk(key, bytes, entry);
-        chunks += 1;
-      }
-      packs += 1;
-      rememberPayloadVerified(cacheKey, atMs);
-      // Its index, read from the very bytes just verified: a member lookup later in the pass
-      // does not read it again.
-      yield* notePackIndex(store, key, entriesByHash(entries), atMs);
-    }
+    yield* Effect.forEach(
+      [...new Set(keys)],
+      (key) =>
+        Effect.gen(function* () {
+          const cacheKey = proofKey(store, key);
+          const verifiedAt = payloadVerified.get(cacheKey);
+          if (verifiedAt !== undefined && (yield* proofStands(store, key, verifiedAt))) return;
+          const atMs = Date.now();
+          const entries = yield* verifyPackBytes(key, yield* store.get(key)).pipe(
+            // The worker could not run the check (it would not start, it died): that says
+            // nothing about the pack. Read again and checked here, as before there were workers.
+            Effect.catchTag("PackWorkerUnavailable", () =>
+              store.get(key).pipe(Effect.flatMap((bytes) => verifyPackBytesHere(key, bytes))),
+            ),
+          );
+          rememberContentVerified(store, key, atMs);
+          chunks += entries.length;
+          packs += 1;
+          rememberPayloadVerified(cacheKey, atMs);
+          // Its index, read from the very bytes just verified: a member lookup later in the pass
+          // does not read it again.
+          yield* notePackIndex(store, key, entriesByHash(entries), atMs);
+        }),
+      { concurrency: PACK_VERIFY_WORKERS, discard: true },
+    );
     return { packs, chunks };
+  });
+
+/** The worker pool could not run a check; nothing was observed about the pack. */
+class PackWorkerUnavailable extends Schema.TaggedErrorClass<PackWorkerUnavailable>()(
+  "PackWorkerUnavailable",
+  { reason: Schema.String },
+) {}
+
+/** One pack verified on this thread: its digest, its index, every chunk (`readChunk`). */
+const verifyPackBytesHere = (
+  key: string,
+  bytes: Uint8Array,
+): Effect.Effect<ReadonlyArray<PackIndexEntry>, CaptureFormatError | CaptureIntegrityError> =>
+  Effect.gen(function* () {
+    yield* verifyDigest(key, bytes);
+    const entries = yield* readPackIndex(key, bytes);
+    for (const entry of entries) yield* readChunk(key, bytes, entry);
+    return entries;
+  });
+
+/**
+ * One pack verified on a worker thread (`pack-verify-pool.ts`): the same checks as
+ * `verifyPackBytesHere`, in the same order of precedence (a pack that does not hash to its key
+ * is that, whatever its index says). The index is decoded and bounds-checked here; the worker
+ * hashes the pack and decompresses and hashes each chunk. `bytes` is handed to the worker.
+ */
+const verifyPackBytes = (
+  key: string,
+  bytes: Uint8Array,
+): Effect.Effect<
+  ReadonlyArray<PackIndexEntry>,
+  CaptureFormatError | CaptureIntegrityError | PackWorkerUnavailable
+> =>
+  Effect.gen(function* () {
+    const index = yield* readPackIndex(key, bytes).pipe(Effect.result);
+    if (Result.isFailure(index)) {
+      // No index to hand a worker: the digest is checked here, and it decides first.
+      yield* verifyDigest(key, bytes);
+      return yield* Effect.fail(index.failure);
+    }
+    const entries = index.success;
+    // The worker takes the buffer itself: a view into a larger one is copied out first.
+    const whole =
+      bytes.buffer instanceof ArrayBuffer &&
+      bytes.byteOffset === 0 &&
+      bytes.byteLength === bytes.buffer.byteLength
+        ? bytes.buffer
+        : bytes.slice().buffer;
+    const problem = yield* Effect.tryPromise({
+      try: () => verifyPackOnWorker(digestOfKey(key), entries, whole),
+      catch: (cause) =>
+        new PackWorkerUnavailable({
+          reason: cause instanceof Error ? cause.message : String(cause),
+        }),
+    });
+    if (problem === null) return entries;
+    return yield* problem.tag === "integrity"
+      ? new CaptureIntegrityError({ key, expected: problem.expected, actual: problem.actual })
+      : new CaptureFormatError({ key, reason: problem.reason });
   });
 
 /** What a restorability check walked. */

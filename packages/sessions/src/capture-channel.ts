@@ -735,11 +735,13 @@ export const MULTIPART_MAX_PARTS = 10_000;
  * The largest key a bindable call answers as one PUT bound to its bytes, past the multipart
  * threshold. A part URL cannot be bound (a part's bytes are not the object's), so a multipart key
  * records write authority and holds its seal until the URL expires; one bound PUT holds nothing.
- * sealantd caps a pack near 64 MiB and takes a single URL for a key it asked parts for. A key
- * above this still goes in parts: one PUT this size fits its URL's life at the assumed rate
- * (`putUrlTtlSeconds`), and a retried PUT starts over where a retried part does not.
+ * sealantd takes a single URL for a key it asked parts for, and gives that PUT the time its length
+ * needs. The ceiling is S3's own for one PUT: a git pack holding one large new file is a single
+ * object of the file's size (2026-10-02: a 629 MiB pack went in parts under a 256 MiB ceiling,
+ * and its Stop waited 18 minutes for the part URLs to expire). A bucket checks a URL's expiry
+ * when the PUT arrives, so a long upload is not cut off by it.
  */
-export const BOUND_SINGLE_PUT_MAX_BYTES = 256 * 1024 * 1024;
+export const BOUND_SINGLE_PUT_MAX_BYTES = 5 * 1024 * 1024 * 1024;
 const S3_MIN_PART_BYTES = 5 * 1024 * 1024;
 
 /**
@@ -995,6 +997,21 @@ const bulkKeysOf = (section: BulkSectionReady): ReadonlyArray<string> => [
 ];
 
 /** Bytes priced in a ledger (key → bytes). */
+/** Run an effect and note how long it took, in milliseconds, under `name` in `into`. */
+const timedInto =
+  (into: Record<string, number>, name: string) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+    Effect.suspend(() => {
+      const started = performance.now();
+      return effect.pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            into[name] = Math.round(performance.now() - started);
+          }),
+        ),
+      );
+    });
+
 const sumOf = (ledger: ReadonlyMap<string, number>): number => {
   let total = 0;
   for (const bytes of ledger.values()) total += bytes;
@@ -2476,9 +2493,16 @@ export const CaptureChannelLive: Layer.Layer<
           withCaptureReadPass(
             Effect.gen(function* () {
               const problems: Array<string> = [];
+              // How long each check took: a Stop waits on them (2026-10-02).
+              const took: Record<string, number> = {};
+              yield* Effect.addFinalizer(() =>
+                Effect.logInfo("capture channel: seal checks · timings").pipe(
+                  Effect.annotateLogs({ ...annotations, ...took }),
+                ),
+              );
               const payloads = yield* verifyPackPayloads(
                 chunked.flatMap((section) => section.packs),
-              ).pipe(Effect.result);
+              ).pipe(timedInto(took, "payloadsMs"), Effect.result);
               if (Result.isFailure(payloads)) {
                 const error = payloads.failure;
                 yield* Effect.logWarning(
@@ -2502,7 +2526,9 @@ export const CaptureChannelLive: Layer.Layer<
                 problems.push("chunk payloads not read");
               }
               if (metaDocument === null) return { problems };
-              const crossLinks = yield* crossLinksProblem(manifest, metaDocument);
+              const crossLinks = yield* crossLinksProblem(manifest, metaDocument).pipe(
+                timedInto(took, "crossLinksMs"),
+              );
               if (crossLinks !== null) problems.push(`cross-class links: ${crossLinks}`);
               if (
                 (metaDocument.hardlinks ?? []).length > 0 ||
@@ -2511,13 +2537,17 @@ export const CaptureChannelLive: Layer.Layer<
                 const trackedLinks =
                   restoreTree === null
                     ? "the tree a restore checks out was not listed"
-                    : yield* linkTopologyProblem(manifest, metaDocument, restoreTree);
+                    : yield* linkTopologyProblem(manifest, metaDocument, restoreTree).pipe(
+                        timedInto(took, "linkTopologyMs"),
+                      );
                 if (trackedLinks !== null) problems.push(`tracked links: ${trackedLinks}`);
               }
-              const inodeMeta = yield* inodeMetadataProblem(manifest, metaDocument);
+              const inodeMeta = yield* inodeMetadataProblem(manifest, metaDocument).pipe(
+                timedInto(took, "inodeMetadataMs"),
+              );
               if (inodeMeta !== null) problems.push(`inode metadata: ${inodeMeta}`);
               return { problems };
-            }),
+            }).pipe(Effect.scoped),
           ),
         );
 
@@ -2864,6 +2894,8 @@ export const CaptureChannelLive: Layer.Layer<
         };
         /** This register's seal checks, kept across its guard retries. */
         let job: SealJob | undefined;
+        // How long each step of this register took; logged for the kinds a person waits on.
+        const registerTook: Record<string, number> = {};
         /** What the store records of the seal, with the CAS or once its checks pass. */
         const sealFields = {
           executorId: launchId,
@@ -3008,7 +3040,9 @@ export const CaptureChannelLive: Layer.Layer<
           const verification =
             already !== null || !VERIFIED_AT_REGISTER.has(manifest.kind)
               ? null
-              : yield* verifier.verify(scope.projectId, manifest);
+              : yield* verifier
+                  .verify(scope.projectId, manifest)
+                  .pipe(timedInto(registerTook, "gitVerifyMs"));
           const gitFsck = already?.gitFsck ?? verification?.outcome ?? "unverified";
           if (verification !== null && verification.outcome !== "verified") {
             yield* Effect.logWarning(
@@ -3035,7 +3069,9 @@ export const CaptureChannelLive: Layer.Layer<
             const tree = rawTreeOf(manifest.sections.git);
             if (tree === undefined) return new Map<string, RestoreTreePath>();
             return verification?.outcome === "verified"
-              ? yield* verifier.treeObjects(scope.projectId, manifest, tree)
+              ? yield* verifier
+                  .treeObjects(scope.projectId, manifest, tree)
+                  .pipe(timedInto(registerTook, "restoreTreeMs"))
               : null;
           });
           // The worktree metadata document against the namespace it applies to (review
@@ -3052,7 +3088,7 @@ export const CaptureChannelLive: Layer.Layer<
               manifest,
               metaDocument,
               restoreTree,
-            ).pipe(Effect.provideService(BlobStore, blobs));
+            ).pipe(Effect.provideService(BlobStore, blobs), timedInto(registerTook, "namespaceMs"));
             if (problem !== null) {
               return yield* new CaptureRouteError({
                 status: 422,
@@ -3101,7 +3137,10 @@ export const CaptureChannelLive: Layer.Layer<
           const verdict =
             job === undefined
               ? null
-              : yield* Deferred.await(job.verdict).pipe(Effect.timeoutOption(remaining()));
+              : yield* Deferred.await(job.verdict).pipe(
+                  Effect.timeoutOption(remaining()),
+                  timedInto(registerTook, "sealChecksMs"),
+                );
           const pendingSeal = verdict !== null && Option.isNone(verdict);
           // Checks that concluded nothing (the store failed a read, review 2026-09-28 (12) #4):
           // registered without the seal, answered `withheld` (`unavailable`), checked again on
@@ -3250,8 +3289,20 @@ export const CaptureChannelLive: Layer.Layer<
                           input.epoch,
                           input.capture_id,
                           sealProblem,
-                        );
+                        ).pipe(timedInto(registerTook, "sealStandingMs"));
                       });
+        // A Stop waits on a final capture's register: where its time went.
+        if (manifest.kind === "final" && Object.keys(registerTook).length > 0) {
+          yield* Effect.logInfo("capture channel: register · timings").pipe(
+            Effect.annotateLogs({
+              worktreeId,
+              n: input.n,
+              captureId: input.capture_id,
+              epoch: input.epoch,
+              ...registerTook,
+            }),
+          );
+        }
         if (sealAnswer !== null && sealAnswer.outcome.state !== "recorded") {
           yield* Effect.logInfo(`capture channel: final seal · ${sealAnswer.outcome.state}`).pipe(
             Effect.annotateLogs({

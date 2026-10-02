@@ -287,6 +287,9 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
       seal.captureId,
       new Date(at),
     );
+    yield* Effect.logInfo("capture seals: read back").pipe(
+      Effect.annotateLogs({ ...annotations, marked, readBackMs: now() - at }),
+    );
     if (!marked) {
       yield* Effect.logWarning(
         "capture seals: an upload URL of its epoch was handed out while its objects were read back · withheld",
