@@ -22,7 +22,7 @@ export const LAUNCH_BOOTING = "booting";
  * this says what was observed and what it usually means, never that an image is being built.
  */
 export const LAUNCH_PREPARING =
-  "preparing the workspace · no runtime yet (an image build after an update takes about 8 minutes)";
+  "preparing the workspace · no runtime yet · after an update, building the image takes about 8 minutes";
 /** What `LAUNCH_PREPARING` said before 2026-10-02, still in stored summaries. */
 const LAUNCH_BUILDING_IMAGE_LEGACY =
   "building the workspace image (first launch after an update, ~8 min)";

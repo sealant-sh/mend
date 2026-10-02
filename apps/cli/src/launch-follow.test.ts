@@ -168,11 +168,11 @@ describe("startingLineOf", () => {
     expect(
       startingLineOf(
         starting(
-          "preparing the workspace · no runtime yet (an image build after an update takes about 8 minutes)",
+          "preparing the workspace · no runtime yet · after an update, building the image takes about 8 minutes",
         ),
       ),
     ).toBe(
-      "starting · preparing the workspace · no runtime yet (an image build after an update takes about 8 minutes)",
+      "starting · preparing the workspace · no runtime yet · after an update, building the image takes about 8 minutes",
     );
     expect(
       startingLineOf(starting("waiting · the previous session in this worktree is saving")),

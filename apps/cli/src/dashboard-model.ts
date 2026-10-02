@@ -387,7 +387,7 @@ export const deriveHarnesses = (resuming: SessionDto | null): ReadonlyArray<Harn
       {
         harness: null,
         label: resuming.harness,
-        hint: "same harness — native resume, conversation intact",
+        hint: "same harness · native resume, conversation intact",
       },
       ...others.map(
         (harness): HarnessItem => ({
@@ -395,7 +395,7 @@ export const deriveHarnesses = (resuming: SessionDto | null): ReadonlyArray<Harn
           label: harness,
           hint:
             harness === "shell"
-              ? "a bash in the worktree — resume either agent from inside"
+              ? "a bash in the worktree · resume either agent from inside"
               : "the conversation crosses as a distilled prompt",
         }),
       ),
@@ -407,8 +407,8 @@ export const deriveHarnesses = (resuming: SessionDto | null): ReadonlyArray<Harn
       label: harness,
       hint:
         harness === "shell"
-          ? "a plain bash session — new worktree, recorded"
-          : `mend ${harness} — new worktree, recorded session`,
+          ? "a plain bash session · new worktree, recorded"
+          : `mend ${harness} · new worktree, recorded session`,
     }),
   );
 };
@@ -499,12 +499,12 @@ export const startingExplanationOf = (session: SessionDto): string => {
   switch (phase.kind) {
     case "waiting-previous":
       return phase.words.endsWith("is saving")
-        ? "waiting for this worktree's previous session to finish saving; this one starts from that save"
+        ? "the previous session in this worktree is still saving · this one starts from its save"
         : phase.words;
     case "booting":
-      return "the workspace is booting; the agent starts once it is up";
+      return "the workspace is booting · the agent starts when it is up";
     case "preparing":
-      return "the workspace has no runtime yet · building its image, on the first launch after an update, takes about 8 minutes";
+      return "the workspace has no runtime yet · after an update, building its image takes about 8 minutes";
   }
 };
 
@@ -867,12 +867,12 @@ export interface CreatingState {
  */
 export const baseStepNotice = (state: CreatingState): string | null => {
   if (state.branchError !== null) {
-    return `branches unreadable — ${state.branchError} · enter uses the default`;
+    return `branches unreadable · ${state.branchError} · enter uses the default`;
   }
   if (state.branches === null) return "reading branches…";
-  if (state.branches.length === 0) return "no branches read — enter uses the default branch";
+  if (state.branches.length === 0) return "no branches read · enter uses the default branch";
   if (filterBranches(state.branches, state.query).length === 0) {
-    return "no branch matches — enter uses the default branch";
+    return "no branch matches · enter uses the default branch";
   }
   return null;
 };

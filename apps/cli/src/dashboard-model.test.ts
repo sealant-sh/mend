@@ -714,13 +714,13 @@ describe("baseStepNotice", () => {
     expect(failed).toContain("502 Bad Gateway");
     // Same empty list, no error: a different, non-alarming sentence.
     expect(baseStepNotice(creating({ branches: [] }))).toBe(
-      "no branches read — enter uses the default branch",
+      "no branches read · enter uses the default branch",
     );
   });
 
   it("distinguishes a query that matches nothing from a list that has nothing", () => {
     expect(baseStepNotice(creating({ query: "zzz" }))).toBe(
-      "no branch matches — enter uses the default branch",
+      "no branch matches · enter uses the default branch",
     );
   });
 });
@@ -949,7 +949,7 @@ describe("dashboard status stories", () => {
     expect(
       startingWordsOf(
         at(
-          "preparing the workspace · no runtime yet (an image build after an update takes about 8 minutes)",
+          "preparing the workspace · no runtime yet · after an update, building the image takes about 8 minutes",
         ),
       ),
     ).toBe("preparing the workspace");
@@ -966,13 +966,11 @@ describe("dashboard status stories", () => {
     // Words in front of the phase stay the summary's; the phase is still read from the end.
     expect(startingWordsOf(at("dotfiles not applied · booting"))).toBe("booting");
     expect(startingExplanationOf(at("booting"))).toBe(
-      "the workspace is booting; the agent starts once it is up",
+      "the workspace is booting · the agent starts when it is up",
     );
     expect(
       startingExplanationOf(at("waiting · the previous session in this worktree is saving")),
-    ).toBe(
-      "waiting for this worktree's previous session to finish saving; this one starts from that save",
-    );
+    ).toBe("the previous session in this worktree is still saving · this one starts from its save");
     // A resume is a start too: no time fact while it starts, however old the session.
     expect(
       sessionTimeWords(itemOf({ id: "s", status: "starting", createdAt: minutesAgo(21) }), NOW),
@@ -1126,7 +1124,7 @@ describe("dashboard status stories", () => {
       id: "s",
       status: "starting",
       summary:
-        "preparing the workspace · no runtime yet (an image build after an update takes about 8 minutes)",
+        "preparing the workspace · no runtime yet · after an update, building the image takes about 8 minutes",
     });
     expect(sessionRowFacts(preparing, 40, NOW)).toBe("preparing the workspace · claude");
     expect(sessionRowFacts(preparing, 20, NOW)).toBe("preparing the wor… …");
