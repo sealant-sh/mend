@@ -25,7 +25,8 @@ jobs:
     needs: [images, github-release]
     # Github-hosted runner on purpose: the OIDC id-token should be minted on
     # infrastructure GitHub controls.
-    runs-on: blacksmith-4vcpu-ubuntu-2404
+    # npm trusted publishing (OIDC) needs a GitHub-hosted runner: this job stays off Blacksmith.
+    runs-on: ubuntu-latest
     environment: release
     permissions:
       contents: read
