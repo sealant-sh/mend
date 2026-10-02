@@ -2728,6 +2728,38 @@ const userPiProfilesMigration = Effect.gen(function* () {
     )`;
 });
 
+/**
+ * Each person's agent memory per project (docs/adr/0009): one row per file, and the versions Mend
+ * replaced or deleted. Both go with the account and with the project.
+ */
+const agentMemoryMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE agent_memory_files (
+      user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
+      project_id text NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+      path text NOT NULL,
+      encoding text NOT NULL,
+      contents text NOT NULL,
+      digest text NOT NULL,
+      bytes integer NOT NULL,
+      updated_at timestamptz NOT NULL DEFAULT now(),
+      updated_by_session text,
+      PRIMARY KEY (user_id, project_id, path)
+    )`;
+  yield* sql`
+    CREATE TABLE agent_memory_versions (
+      user_id text NOT NULL REFERENCES "user" (id) ON DELETE CASCADE,
+      project_id text NOT NULL REFERENCES projects (id) ON DELETE CASCADE,
+      path text NOT NULL,
+      digest text NOT NULL,
+      encoding text NOT NULL,
+      contents text NOT NULL,
+      saved_at timestamptz NOT NULL DEFAULT now(),
+      PRIMARY KEY (user_id, project_id, path, digest)
+    )`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2826,4 +2858,5 @@ export const migrations = {
   "0095_process_first_output": processFirstOutputMigration,
   "0096_notification_settings": notificationSettingsMigration,
   "0097_user_pi_profiles": userPiProfilesMigration,
+  "0098_agent_memory": agentMemoryMigration,
 };

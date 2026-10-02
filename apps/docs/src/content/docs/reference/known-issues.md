@@ -108,3 +108,33 @@ project. A project's own `.pi/settings.json` in the repository still applies on 
 does on your machine.
 
 A session that is already running keeps the profile it started with.
+
+## Agent memory is saved when the agent ends
+
+Mend reads back what the agent learned when its agent ends: on a Stop, when the agent exits, or when
+a session is handed to another mode. A conversation that stays open for days saves its memory then,
+not before, so a session started meanwhile does not see what that one has learned yet. See
+[Agent memory](/guides/agent-memory/).
+
+When two of your sessions changed the same memory file, both sides' lines are kept, so a line both
+of them wrote can appear twice. The agent tidies its memory as it goes.
+
+## Only Claude Code's memory is carried between sessions
+
+Mend carries Claude Code's memory per person per project. Codex builds its memory from the
+conversations already in its home, which a new session does not bring, so Codex memory stays with
+each session. pi keeps no memory of its own.
+
+Everything else in a session's harness home stays with that session: its conversations, and settings
+or plugins changed inside it. A conversation resumes in its own session, not from another.
+
+## Importing brings memory, not conversations
+
+`mend memory import` brings the memory Claude Code keeps for the checkout on your machine. Your past
+conversations are not imported: a conversation needs its paths rewritten to resume in a session.
+`mend adopt` says when there is memory to import; it does not import it itself.
+
+## Agent memory is in the CLI only
+
+`mend memory`, `mend memory show` and `mend memory rm` list, print and remove your memory for a
+project. The web app and the phone do not show it yet.

@@ -62,6 +62,7 @@ export default defineConfig({
             { label: "Development services", slug: "guides/services" },
             { label: "Skills", slug: "guides/skills" },
             { label: "Your pi setup", slug: "guides/pi" },
+            { label: "Agent memory", slug: "guides/agent-memory" },
           ],
         },
         {

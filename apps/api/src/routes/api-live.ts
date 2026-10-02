@@ -53,6 +53,7 @@ import { HttpApiBuilder } from "effect/unstable/httpapi";
 import { ProjectAccess } from "../access.ts";
 import { ExposureConfig } from "../exposure.ts";
 import { TenancyConfig } from "../tenancy.ts";
+import { AgentMemoryGroupLive } from "./agent-memory.ts";
 import { DevicePairingLive } from "./devices.ts";
 import { FoldersGroupLive } from "./folders.ts";
 import { GithubGroupLive } from "./github.ts";
@@ -668,7 +669,9 @@ export const MendApiLive = HttpApiBuilder.layer(MendApi).pipe(
     ),
   ),
   Layer.provide(SettingsGroupLive),
-  Layer.provide(Layer.mergeAll(DotfilesGroupLive, SkillsGroupLive, PiProfileGroupLive)),
+  Layer.provide(
+    Layer.mergeAll(DotfilesGroupLive, SkillsGroupLive, PiProfileGroupLive, AgentMemoryGroupLive),
+  ),
   Layer.provide(IssuesGroupLive),
   Layer.provide(BriefsGroupLive),
   Layer.provide(RunsGroupLive),

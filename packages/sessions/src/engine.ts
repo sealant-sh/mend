@@ -33,6 +33,7 @@ import {
   SessionProcessesRepo,
   SessionRunsRepo,
   SessionsRepo,
+  AgentMemoryRepo,
   PiProfilesRepo,
   SettingsRepo,
   SkillsRepo,
@@ -127,6 +128,8 @@ import {
   observeCaptureThroughput,
   OPENCODE_PERMISSION_ALLOW,
   planExecutorCap,
+  AGENT_MEMORY_MAX_FILE_BYTES,
+  AGENT_MEMORY_ROOTS,
 } from "@mend/domain/workbench";
 import {
   asSealantUser,
@@ -151,6 +154,7 @@ import {
   listCaptureFiles,
   processStatePathOf,
   readCaptureFile,
+  readCaptureFileBytes,
   sessionStatePathOf,
   resolveRemoteEnv,
   sshTransportArgs,
@@ -187,6 +191,17 @@ import {
 import * as Context from "effect/Context";
 import * as Semaphore from "effect/Semaphore";
 
+import {
+  AGENT_MEMORY_DELIVERED,
+  asMemoryFile,
+  deliverAgentMemoryExec,
+  materializeAgentMemory,
+  mergeTextUnion,
+  parseAgentMemoryDelivered,
+  parseAgentMemoryOutcomes,
+  planAgentMemory,
+  readAgentMemoryFromHome,
+} from "./agent-memory.ts";
 import { harnessWarmupArgv, isOutputEntry } from "./agent-start.ts";
 import {
   type CapturePlanNotice,
@@ -468,6 +483,29 @@ const withHarnessBootstrap = (
   harness: string,
   argv: ReadonlyArray<string>,
 ): ReadonlyArray<string> => withHarnessSetup(harness, withPermissionDefaults(harness, argv));
+
+/** What one memory delivery did, counted; a file it could not place is said by name. */
+const logAgentMemoryDelivered = (
+  sessionId: SessionId,
+  outcomes: ReadonlyArray<{ readonly outcome: string; readonly path: string }>,
+) => {
+  const count = (outcome: string) => outcomes.filter((item) => item.outcome === outcome).length;
+  return outcomes.length === 0
+    ? Effect.void
+    : Effect.logInfo("session engine: agent memory · delivered").pipe(
+        Effect.annotateLogs({
+          sessionId,
+          written: count("written"),
+          unchanged: count("unchanged"),
+          leftAsTheSessionHasIt: count("left"),
+          keptAside: count("kept"),
+          errors: outcomes
+            .filter((item) => item.outcome === "error")
+            .map((item) => item.path)
+            .join(", "),
+        }),
+      );
+};
 
 /** A pi profile directory kept aside, or one that could not be cleared, is said once. */
 const logPiProfileVacated = (sessionId: SessionId, outcomes: ReadonlyArray<SkillsVacateOutcome>) =>
@@ -1475,6 +1513,7 @@ type SessionEngineRequirements =
   | DotfilesCloner
   | SkillsRepo
   | PiProfilesRepo
+  | AgentMemoryRepo
   | SessionRunsRepo
   | SessionProcessesRepo
   | ServicesRepo
@@ -4845,6 +4884,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const dotfilesCloner = yield* DotfilesCloner;
       const skillsRepo = yield* SkillsRepo;
       const piProfiles = yield* PiProfilesRepo;
+      const agentMemory = yield* AgentMemoryRepo;
       const sessionRuns = yield* SessionRunsRepo;
       const processes = yield* SessionProcessesRepo;
       const services = yield* ServicesRepo;
@@ -6184,6 +6224,21 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             );
           }),
           Effect.flatMap((harvest) => classifyTranscript(agentProcess, harvest)),
+          // Every harvest also reads back what the agent learned (docs/adr/0009), and never in
+          // the way of the settle: a memory that could not be read back is said.
+          Effect.tap(() =>
+            sessions.byId(agentProcess.sessionId).pipe(
+              Effect.flatMap(readBackAgentMemory),
+              Effect.catchCause((cause) =>
+                Effect.logWarning("session engine: agent memory was not read back").pipe(
+                  Effect.annotateLogs({
+                    sessionId: agentProcess.sessionId,
+                    cause: Cause.pretty(cause),
+                  }),
+                ),
+              ),
+            ),
+          ),
         );
 
       /**
@@ -8363,6 +8418,136 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         );
       });
 
+      /**
+       * The owner's agent memory for the project (`agent-memory.ts`, docs/adr/0009), into the
+       * session's harness home after the relocation: host-side in the co-located store, through
+       * exec in capture mode. Best-effort: an agent without it still starts.
+       */
+      const deliverAgentMemory = Effect.fn("SessionEngine.deliverAgentMemory")(function* (
+        session: Session,
+        project: Project,
+        workspace: Workspace,
+      ) {
+        if (session.ownerUserId === null) return;
+        const stored = yield* agentMemory.forLaunch(session.ownerUserId, project.id);
+        const plan = planAgentMemory(stored);
+        if (capture === null) {
+          const home = harnessHomePathOf(project.storePath, session.id);
+          // Nothing stored and nothing delivered before: nothing to write, not even a record.
+          const deliveredBefore = yield* Effect.promise(() =>
+            fs.access(path.join(home, AGENT_MEMORY_DELIVERED)).then(
+              () => true,
+              () => false,
+            ),
+          );
+          if (stored.length === 0 && !deliveredBefore) return;
+          yield* logAgentMemoryDelivered(session.id, yield* materializeAgentMemory(home, plan));
+          return;
+        }
+        const home = HARNESS_HOME_MOUNT_PATH;
+        if (stored.length === 0) {
+          const before = yield* sealant.exec(workspace, [
+            "cat",
+            path.posix.join(home, AGENT_MEMORY_DELIVERED),
+          ]);
+          if (before.exitCode !== 0) return;
+        }
+        yield* writeWorkspaceFiles(
+          workspace,
+          plan.staged.map((file) => ({
+            path: path.posix.join(home, file.path),
+            bytes: file.bytes,
+          })),
+        );
+        const delivered = yield* sealant.exec(workspace, deliverAgentMemoryExec(home, plan));
+        yield* logAgentMemoryDelivered(session.id, parseAgentMemoryOutcomes(delivered.stdout));
+        if (delivered.exitCode !== 0) {
+          return yield* new WorkspaceFileError({
+            path: home,
+            message: `exit ${delivered.exitCode}: ${delivered.stderr.trim()}`,
+          });
+        }
+      });
+
+      /** The memory in a session's head capture, and what was delivered there; null without one. */
+      const agentMemoryFromCapture = Effect.fn("SessionEngine.agentMemoryFromCapture")(function* (
+        session: Session,
+      ) {
+        if (capture === null) return null;
+        const head = (yield* capture.repo.headOf(session.worktreeId))?.head ?? null;
+        if (head === null) return null;
+        const manifest = yield* capture.blobs
+          .get(head.manifestKey)
+          .pipe(Effect.flatMap((bytes) => decodeManifest(head.manifestKey, bytes)));
+        const read = (relative: string) =>
+          readCaptureFileBytes(manifest, "workspace", relative).pipe(
+            Effect.provideService(BlobStore, capture.blobs),
+          );
+        const files: Array<{
+          readonly path: string;
+          readonly encoding: "utf8" | "base64";
+          readonly contents: string;
+        }> = [];
+        for (const { root } of AGENT_MEMORY_ROOTS) {
+          const listed = yield* listCaptureFiles(manifest, "workspace", `harness/${root}`).pipe(
+            Effect.provideService(BlobStore, capture.blobs),
+          );
+          for (const file of listed) {
+            if (file.entry.kind !== "file" || file.entry.size > AGENT_MEMORY_MAX_FILE_BYTES)
+              continue;
+            files.push(asMemoryFile(file.path.replace(/^harness\//, ""), yield* read(file.path)));
+          }
+        }
+        const record = yield* read(`harness/${AGENT_MEMORY_DELIVERED}`).pipe(
+          Effect.map((bytes) => new TextDecoder().decode(bytes)),
+          Effect.orElseSucceed(() => null),
+        );
+        return { delivered: parseAgentMemoryDelivered(record), files };
+      });
+
+      /**
+       * What the session's agent learned, read back into the owner's memory for the project when
+       * the agent ends (docs/adr/0009, decision 3): from the harness home in the co-located store,
+       * from the flushed head capture in capture mode.
+       */
+      const readBackAgentMemory = Effect.fn("SessionEngine.readBackAgentMemory")(function* (
+        session: Session,
+      ) {
+        if (session.ownerUserId === null) return;
+        const project = yield* projects.byId(session.projectId);
+        const read =
+          capture === null
+            ? yield* readAgentMemoryFromHome(harnessHomePathOf(project.storePath, session.id))
+            : yield* agentMemoryFromCapture(session);
+        if (read === null) return;
+        if (read.files.length === 0 && Object.keys(read.delivered).length === 0) return;
+        const report = yield* agentMemory.readBack({
+          userId: session.ownerUserId,
+          projectId: project.id,
+          sessionId: session.id,
+          delivered: read.delivered,
+          session: read.files,
+          merge: mergeTextUnion,
+        });
+        if (
+          report.saved.length +
+            report.merged.length +
+            report.deleted.length +
+            report.skipped.length >
+          0
+        ) {
+          yield* Effect.logInfo("session engine: agent memory · read back").pipe(
+            Effect.annotateLogs({
+              sessionId: session.id,
+              saved: report.saved.length,
+              merged: report.merged.join(", "),
+              deleted: report.deleted.join(", "),
+              skipped: report.skipped.join(", "),
+            }),
+          );
+        }
+      });
+
       const storePastedImage = Effect.fn("SessionEngine.storePastedImage")(function* (
         sessionId: SessionId,
         bytes: Uint8Array,
@@ -9152,6 +9337,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
         }
+        yield* deliverAgentMemory(session, project, workspace).pipe(
+          Effect.catch((error) =>
+            Effect.logWarning("session engine: agent memory was not delivered").pipe(
+              Effect.annotateLogs({ sessionId, message: error.message }),
+            ),
+          ),
+        );
         yield* deliverPiProfile(session, project, workspace).pipe(
           Effect.catch((error) =>
             Effect.logWarning("session engine: the pi profile was not delivered").pipe(
