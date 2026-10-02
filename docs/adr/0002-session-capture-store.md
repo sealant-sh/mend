@@ -1419,34 +1419,31 @@ Mend-side details the decision record left open, decided in this ADR:
       its body hashes to that value (`InvalidDigest`); without the header it is refused as unsigned,
       with another value as a bad signature (measured on v2.4.1, 2026-10-02). Every capture key but
       a pack index ends in the SHA-256 of its bytes. A URL with that SHA-256 signed in therefore
-      writes those bytes or nothing. It cannot replace an object with other bytes, so it is no write
-      authority.
+      writes those bytes or nothing: no write authority.
     - **Negotiated.** An executor that lists `sha256` in `plan.get`'s `upload_answers` (sealantd,
-      "Bytes-bound PUT URLs") sends `x-amz-checksum-sha256` on every PUT whose URL signs it. It also
-      declares, in `upload.urls`, the SHA-256 of each pack index. On a store that measures as
-      checking the checksum (`BlobStore.bindsBytes`: it replaces objects, and refuses a mismatched
-      checksum on a probe key), single-PUT URLs are bound: to the digest the key names, or to the
-      index's declared one. A declared digest a key's name contradicts is refused 400.
-    - **A pack index is bound to one digest.** While any bound URL of an index could live, every URL
-      of it names the same digest, and a call that declares another is refused 409. The check and
-      the reservation are one synchronous step, so two concurrent calls cannot both pass (review
-      2026-10-02 #1). An entry goes only once every URL it covers is dead. A full map binds no more
-      indexes (they record authority), and is never cleared wholesale (#2). Mend serves the channel
-      from one process, so the map sees every URL it handed out — except a process before it. For
-      the first 20 minutes of a process (the longest URL plus the margin), no index is bound (#3).
-    - **What carries no authority.** A call whose single PUTs are all bound records no write
-      authority, and a bound URL is not counted by `replaceableUntil`. A call with any part URL
-      records it as before: part bytes are not bound (#4). So does a call with any unbound single
-      PUT: an older daemon, a store that does not check checksums, an index declared nothing about,
-      or an index too early in a process.
-    - **The seal.** A seal stands as registered, with no wait and no read-back, when three hold. No
-      expiry is recorded over its epochs. Mend still speaks for each epoch: its authority row or its
-      worktree is there (#5). A row is made before any URL leaves Mend under its epoch, and goes
-      only with its worktree. And this process's startup window plus the clock margin has passed.
-      Nothing could have replaced what it names since its objects were verified at register. The
-      stand is taken as the read-back's mark is (`markSealReverified`), a compare-and-set under the
-      scope rows' locks: authority committed since the reads refuses it, and authority recorded
-      after it sees the seal (re-review (b)). Otherwise, as before: the wait, then the read-back.
-    - **What remains.** The first 20 minutes after a Mend restart; a Stop that uploaded through part
-      URLs (an object of 16 MiB or more) or a pack index early in a process; an executor of an older
-      daemon, and a seal that carries what one saved.
+      "Bytes-bound PUT URLs") sends `x-amz-checksum-sha256` on every PUT whose URL signs it, and
+      declares in `upload.urls` the SHA-256 of each pack index. On a store that measures as checking
+      it (`BlobStore.bindsBytes`: a probe key refused with a checksum-mismatch error, then taken
+      with the right checksum), single-PUT URLs are bound: to the digest the key names, or to the
+      index's declared one. A declared digest a key's name contradicts is 400.
+    - **What still records authority, as before:** a call with any part URL (part bytes are not
+      bound), any single PUT not bound (an older daemon, another store, an index declared nothing
+      about, a full index registry), every call on S3, R2, MinIO and the directory store.
+    - **The seal is still read back.** A bound-only epoch records no authority, so its seal waits
+      for nothing; once this process's own window is past, its objects are read back and the seal
+      stands (the mark under the scope rows' locks, as always). The wait goes; the read-back stays.
+      Three adversarial reviews (2026-10-02, two models) found every hole in a shortcut that skipped
+      it, or in pack indexes; this design keeps the read-back.
+    - **Pack indexes.** A process-wide registry (`bound-index-digests.ts`) holds the digest every
+      bound URL of an index names and until when one could be used (its longest life plus the
+      margin, extended after signing). Reserved in the synchronous step that checks it, so two calls
+      cannot bind one index to two digests; dead entries go, a full registry binds no more. A seal
+      never stands — on any path — while a live binding names other bytes than an index it names
+      holds: it is withheld until that URL is dead.
+    - **Restarts.** A URL a process before this one minted (bound URLs record nothing) is covered by
+      the store's startup window, now its longest life plus the clock margin: seals wait the first
+      20 minutes after a Mend start.
+    - **What remains.** The 20 minutes after a Mend start; a Stop that uploaded through part URLs
+      (an object of 16 MiB or more); an executor of an older daemon; the read-back's own time, which
+      grows with what a capture names (follow-up: read back only what is new since the last standing
+      seal).

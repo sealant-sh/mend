@@ -32,8 +32,6 @@ export interface MemoryCaptureStore {
   readonly seals: Map<string, SealedCompletion>;
   /** `capture_put_authority`: `<worktree>:<epoch>` → the latest upload URL expiry (0089). */
   readonly putAuthority: Map<string, Date>;
-  /** Worktrees deleted, for `putAuthorityKnownOver`: their authority rows went with them. */
-  readonly deletedWorktrees: Set<string>;
   /** `capture_deletion_claims`: key → token → when the claim lapses (store clock, ms). */
   readonly claims: Map<string, Map<string, number>>;
   readonly packs: Map<string, PackRow>;
@@ -78,7 +76,6 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
   const seals = new Map<string, SealedCompletion>();
   /** `capture_put_authority`: `<worktree>:<epoch>` → the latest upload URL expiry. */
   const putAuthority = new Map<string, Date>();
-  const deletedWorktrees = new Set<string>();
   const holdRecordSeal = { held: false };
   /** A live deletion claim on `key`: some pass may still delete its bytes. */
   const claimed = (key: string) =>
@@ -394,15 +391,6 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
         }
         return { recorded: true } as const;
       }),
-    putAuthorityKnownOver: (scopes) =>
-      Effect.sync(
-        () =>
-          new Set(
-            scopes
-              .filter((scope) => !deletedWorktrees.has(scope.worktreeId))
-              .map((scope) => `${scope.worktreeId}:${scope.epoch}`),
-          ).size,
-      ),
     putAuthorityUntil: (worktreeId, epoch) =>
       Effect.sync(() => putAuthority.get(`${worktreeId}:${epoch}`) ?? null),
     putAuthorityUntilOver: (scopes) =>
@@ -582,6 +570,5 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
     claims,
     seals,
     putAuthority,
-    deletedWorktrees,
   };
 };

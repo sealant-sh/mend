@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { type CaptureScopeRef, CaptureStoreRepo, type SealedCompletion } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
 import {
@@ -9,6 +11,7 @@ import {
 import { Duration, Effect, Layer, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
+import { boundIndexDigest } from "./bound-index-digests.ts";
 import { makeSingleFlight } from "./single-flight.ts";
 
 /**
@@ -113,10 +116,25 @@ export const SEAL_VERIFICATION_LIMIT = Duration.minutes(30);
 export const SEAL_VERIFICATION_LIMIT_WORDS = "30 minutes";
 
 /**
- * The bucket-clock margin past this process's own window (`replaceableUntil` counts a URL minted
- * before this process started by its longest life alone): `PUT_URL_CLOCK_MARGIN_SECONDS`.
+ * The first pack index among `listed` that a live bytes-bound upload URL names other bytes for
+ * (`reserveBoundIndex`), with until when; null when there is none. Reads only the indexes that
+ * have a live binding, and each is small.
  */
-const STARTUP_CLOCK_MARGIN_MS = 5 * 60 * 1000;
+const boundIndexHold = (listed: ReadonlyArray<string>, at: number) =>
+  Effect.gen(function* () {
+    const blobs = yield* BlobStore;
+    for (const key of listed) {
+      if (!key.endsWith(".idx")) continue;
+      const binding = boundIndexDigest(key, at);
+      if (binding === null) continue;
+      const stored = yield* blobs.get(key).pipe(
+        Effect.map((bytes) => createHash("sha256").update(bytes).digest("hex")),
+        Effect.orElseSucceed(() => null),
+      );
+      if (stored !== binding.sha256) return { key, until: binding.until };
+    }
+    return null;
+  });
 
 /** Seal read-backs in flight (`sealStandingOf`), by store, seal and the authority it waited out. */
 const readBacks = makeSingleFlight<SealStanding, never>();
@@ -180,25 +198,24 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
   const recorded = yield* repo.putAuthorityUntilOver(scopes);
   const until = Math.max(storeUntil, recorded?.getTime() ?? 0);
   const at = now();
-  // No write authority was ever recorded under any of those epochs: every URL handed out under
-  // them was bound to its bytes (`BlobStore.bindsBytes`) or a part URL, none of which can
-  // replace a stored object, and this process minted none that could still. The objects are
-  // what they were verified to be when they registered: nothing to wait for, nothing to read
-  // back (Garage self-host, e2e 2026-10-02: a Stop's seal waited 10.5 minutes for this).
-  if (recorded === null && at >= storeUntil + STARTUP_CLOCK_MARGIN_MS) {
-    // Mend still speaks for every epoch it lives under (`putAuthorityKnownOver`): one whose row
-    // went with its worktree says nothing, and the seal waits and reads back as before.
-    const distinct = new Set(scopes.map((scope) => `${scope.worktreeId}:${scope.epoch}`)).size;
-    // Taken as the read-back's mark is (`markSealReverified`): a compare-and-set under the
-    // scope rows' locks, which `recordPutAuthority` takes before it records. Authority that
-    // committed since the reads above refuses the mark; any recorded after it sees the seal and
-    // hands out no URL that could replace what it names (review 2026-10-02, re-review (b)).
-    if (
-      (yield* repo.putAuthorityKnownOver(scopes)) === distinct &&
-      (yield* repo.markSealReverified(seal.worktreeId, seal.epoch, seal.captureId, new Date(at)))
-    ) {
-      return { state: "standing" } satisfies SealStanding;
-    }
+  // A pack index a live bytes-bound URL names other bytes for could be replaced by them: never
+  // standing over it until that URL is dead (ADR 0002 decision 48).
+  const bound = yield* boundIndexHold(listed, at);
+  if (bound !== null) {
+    yield* Effect.logInfo(
+      "capture seals: sealed, but a bound upload URL names other bytes for a pack index it names · withheld until it expires",
+    ).pipe(
+      Effect.annotateLogs({
+        ...annotations,
+        key: bound.key,
+        until: new Date(bound.until).toISOString(),
+      }),
+    );
+    return {
+      state: "withheld",
+      code: "write-authority",
+      reason: `an upload URL bound to other bytes could replace ${bound.key} until ${new Date(bound.until).toISOString()}`,
+    } satisfies SealStanding;
   }
   if (at < until) {
     const words = `an upload URL of ${epochsWords(seal, scopes)} could replace what it names until ${new Date(until).toISOString()}`;
@@ -253,6 +270,15 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
         "capture seals: an object the seal names read back as other bytes · the seal is void",
       ).pipe(Effect.annotateLogs({ ...annotations, problem: problem.success }));
       return { state: "void", code: "void", reason: problem.success } satisfies SealStanding;
+    }
+    // A bound URL for other bytes handed out while the objects were read back.
+    if ((yield* boundIndexHold(listed, now())) !== null) {
+      return {
+        state: "withheld",
+        code: "write-authority",
+        reason:
+          "an upload URL bound to other bytes for a pack index it names was handed out while its objects were read back",
+      } satisfies SealStanding;
     }
     // Marked only if no URL of the epoch was handed out since the read began (`at`).
     const marked = yield* repo.markSealReverified(

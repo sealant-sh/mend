@@ -56,6 +56,7 @@ import {
 import { Cause, Deferred, Duration, Effect, Exit, Layer, Option, Result, Schema } from "effect";
 import * as Context from "effect/Context";
 
+import { extendBoundIndex, reserveBoundIndex } from "./bound-index-digests.ts";
 import { CaptureRemotes, type PlanRemote } from "./capture-remotes.ts";
 import {
   SEAL_VERIFICATION_LIMIT,
@@ -667,13 +668,7 @@ export const putUrlTtlSeconds = (bytes: number | null): number =>
         PUT_URL_TTL_MIN_SECONDS + Math.ceil(Math.max(0, bytes) / PUT_URL_ASSUMED_BYTES_PER_SECOND),
       );
 /** The longest a bound URL could be used, by the bucket's clock: its longest life plus the margin. */
-const BOUND_URL_LIFETIME_MS = (PRESIGN_TTL_SECONDS + PUT_URL_CLOCK_MARGIN_SECONDS) * 1000;
-
-/**
- * How long after this process started it binds no pack index (`boundDigests`): until every URL a
- * process before it could have handed out is dead by the bucket's clock.
- */
-export const BOUND_INDEX_TRUSTED_AFTER_MS = BOUND_URL_LIFETIME_MS;
+export const BOUND_URL_LIFETIME_MS = (PRESIGN_TTL_SECONDS + PUT_URL_CLOCK_MARGIN_SECONDS) * 1000;
 
 /**
  * Request quota: `upload.urls` CALLS per session per rolling hour, and keys per call. Calls are
@@ -765,11 +760,6 @@ export class CaptureUploadPolicy extends Context.Service<
      * never switched off — captures already written in either format keep restoring.
      */
     readonly manifestFormat: SectionFormat;
-    /**
-     * How long after this process started it binds no pack index (`BOUND_INDEX_TRUSTED_AFTER_MS`
-     * when absent): a test that starts its world fresh sets 0.
-     */
-    readonly boundIndexTrustedAfterMs?: number;
   }
 >()("@mend/sessions/CaptureUploadPolicy") {}
 
@@ -1165,19 +1155,6 @@ export const CaptureChannelLive: Layer.Layer<
       readsPresent.set(launch, (input.upload_answers ?? []).includes(UPLOAD_ANSWER_PRESENT));
       sendsSha256.set(launch, (input.upload_answers ?? []).includes(UPLOAD_ANSWER_SHA256));
     };
-    /**
-     * The SHA-256 every bound URL of a key whose name does not say it (a pack index) was minted
-     * for, and until when one of them could be used: every URL of the key while one lives must
-     * name the same digest, so all of them write the same bytes. Reserved in the same
-     * synchronous step that checks it (two calls cannot both pass the check); an entry goes only
-     * once every URL it covers is dead, and a full map binds no more pack indexes (they record
-     * authority, as an unbound URL does). Mend serves the channel from one process (the engine
-     * holds live state; Helm pins one replica), so this map sees every URL handed out — except
-     * those of a process before this one: until they are all dead (`BOUND_INDEX_TRUSTED_AFTER_MS`
-     * after this process started) no pack index is bound.
-     */
-    const boundDigests = new Map<string, { readonly sha256: string; readonly until: number }>();
-    const channelStartedAt = Date.now();
     /**
      * The byte ledger, per physical launch: object key → bytes priced for it, once. `upload.urls`
      * reserves a sized key at its declared size; `capture.register` prices every pack under the
@@ -2006,28 +1983,25 @@ export const CaptureChannelLive: Layer.Layer<
               continue;
             }
             if (said === undefined) continue;
-            const now = callStartedAt;
-            // URLs a process before this one handed out could still be live: not bound yet.
-            const trustedAfter = policy.boundIndexTrustedAfterMs ?? BOUND_INDEX_TRUSTED_AFTER_MS;
-            if (now < channelStartedAt + trustedAfter) continue;
-            const first = boundDigests.get(plan.key);
-            if (first !== undefined && first.until > now && first.sha256 !== said) {
+            // Reserved in the step that checks it (`reserveBoundIndex`): while a URL of this
+            // index bound to other bytes could live, none is handed out for these, and a seal
+            // never stands over stored bytes a live binding does not name (`sealStandingOf`).
+            const reserved = reserveBoundIndex(
+              plan.key,
+              said,
+              callStartedAt,
+              Date.now() + BOUND_URL_LIFETIME_MS,
+            );
+            if (reserved === "conflict") {
               return yield* new CaptureRouteError({
                 status: 409,
                 reason: "exists",
-                message: `${plan.key} was handed a URL for other bytes (sha256 ${first.sha256}); it is bound to those`,
+                message: `${plan.key} was handed a URL for other bytes; it is bound to those`,
                 key: plan.key,
               });
             }
-            if (first === undefined && boundDigests.size >= MINTED_KEYS_REMEMBERED) {
-              for (const [key, entry] of boundDigests)
-                if (entry.until <= now) boundDigests.delete(key);
-              // Still full: this index records authority, as an unbound URL does.
-              if (boundDigests.size >= MINTED_KEYS_REMEMBERED) continue;
-            }
-            // Reserved here, in the step that checked it: no other call passes the check for
-            // other bytes while one of these URLs could live.
-            boundDigests.set(plan.key, { sha256: said, until: Date.now() + BOUND_URL_LIFETIME_MS });
+            // No room: this index records authority, as an unbound URL does.
+            if (reserved === "full") continue;
             boundTo.set(plan.key, said);
           }
         }
@@ -2173,9 +2147,14 @@ export const CaptureChannelLive: Layer.Layer<
             // Below the threshold: one PUT URL, write-once (`If-None-Match: *` signed in). A
             // declared size is signed into the URL: the bucket takes those bytes or none. Bound
             // to its bytes where it can be (`boundTo`): the bucket takes exactly those or none.
+            const digest = boundTo.get(plan.key);
             urls[plan.key] = yield* blobs
-              .presign(plan.key, "PUT", ttlSeconds, plan.size ?? undefined, boundTo.get(plan.key))
+              .presign(plan.key, "PUT", ttlSeconds, plan.size ?? undefined, digest)
               .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
+            // A URL is good from when it was signed: the binding lasts at least that long.
+            if (digest !== undefined && contentDigestOfKey(plan.key) === null) {
+              extendBoundIndex(plan.key, digest, Date.now() + BOUND_URL_LIFETIME_MS);
+            }
             continue;
           }
           const partUrls: Array<string> = [];

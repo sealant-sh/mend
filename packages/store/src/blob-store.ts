@@ -313,6 +313,12 @@ export const BlobStoreConfigLive: Layer.Layer<BlobStoreConfig> = Layer.effect(
  */
 export const PUT_URL_TTL_MAX_SECONDS = 15 * 60;
 
+/**
+ * How far behind this host's the bucket's clock may run (the channel's
+ * `PUT_URL_CLOCK_MARGIN_SECONDS`), for the window after a start (`replaceableUntil`).
+ */
+const STARTUP_CLOCK_MARGIN_SECONDS = 5 * 60;
+
 /** Published objects are read-only: a writer holding a `file://` URL cannot open one to rewrite it. */
 const READ_ONLY = 0o444;
 
@@ -788,6 +794,9 @@ const signedPutHeaders = (bound: boolean, checksum: boolean): Set<string> =>
     ...(checksum ? ["x-amz-checksum-sha256"] : []),
   ]);
 
+/** The `x-amz-checksum-sha256` of some text. */
+const sumOf = (text: string) => crypto.createHash("sha256").update(text).digest("base64");
+
 /** A hex SHA-256 as the base64 `x-amz-checksum-sha256` carries; null when it is not one. */
 const checksumOfHex = (hex: string): string | null =>
   /^[0-9a-f]{64}$/.test(hex) ? Buffer.from(hex, "hex").toString("base64") : null;
@@ -877,25 +886,38 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
       return false;
     }
     const probe = `mend-probes/bound/${crypto.randomUUID()}`;
-    const other = crypto.createHash("sha256").update("not these bytes").digest("base64");
-    const answered = yield* Effect.tryPromise({
-      try: () =>
-        client.send(
-          new PutObjectCommand({
-            Bucket: bucket,
-            Key: probe,
-            Body: "these bytes",
-            ContentLength: "these bytes".length,
-            ChecksumSHA256: other,
-          }),
+    const body = "these bytes";
+    const putWith = (checksum: string) =>
+      Effect.tryPromise({
+        try: () =>
+          client.send(
+            new PutObjectCommand({
+              Bucket: bucket,
+              Key: probe,
+              Body: body,
+              ContentLength: body.length,
+              ChecksumSHA256: checksum,
+            }),
+          ),
+        catch: (cause) => cause,
+      });
+    const answered = yield* Effect.gen(function* () {
+      // Other bytes' checksum: refused as a mismatch (`InvalidDigest` on Garage, `BadDigest` on
+      // S3), and nothing else counts; then the right one is taken.
+      const mismatch = yield* putWith(sumOf("not these bytes")).pipe(
+        Effect.as("taken" as const),
+        Effect.catch((cause) =>
+          Effect.succeed(
+            s3Name(cause) === "InvalidDigest" || s3Name(cause) === "BadDigest"
+              ? ("mismatch" as const)
+              : ("other" as const),
+          ),
         ),
-      catch: (cause) => cause,
+      );
+      if (mismatch !== "mismatch") return false;
+      yield* putWith(sumOf(body));
+      return true;
     }).pipe(
-      // Taken: the store does not check the checksum, so a URL cannot be bound here.
-      Effect.as(false),
-      Effect.catch((cause) =>
-        s3Status(cause) === 400 ? Effect.succeed(true) : Effect.fail(cause),
-      ),
       Effect.ensuring(
         Effect.tryPromise(() =>
           client.send(new DeleteObjectCommand({ Bucket: bucket, Key: probe })),
@@ -923,7 +945,14 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
   const replaceableUntil = (key: string) =>
     probeRefusesOverwrite.pipe(
       Effect.map((refused) =>
-        refused ? 0 : Math.max(minted.get(key) ?? 0, startedAtMs + PUT_URL_TTL_MAX_SECONDS * 1000),
+        refused
+          ? 0
+          : Math.max(
+              minted.get(key) ?? 0,
+              // A URL a process before this one minted — bound ones record nothing anywhere —
+              // lives by the bucket's clock: the longest life, plus the clock margin.
+              startedAtMs + (PUT_URL_TTL_MAX_SECONDS + STARTUP_CLOCK_MARGIN_SECONDS) * 1000,
+            ),
       ),
     );
 

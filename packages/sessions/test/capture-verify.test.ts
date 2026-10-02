@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -32,6 +33,7 @@ import { Cause, Effect, Exit, Fiber, Layer, Option, Scope } from "effect";
 import * as Context from "effect/Context";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
+import { reserveBoundIndex } from "../src/bound-index-digests.ts";
 import {
   CaptureChannel,
   type CapturePlanNotice,
@@ -3021,13 +3023,12 @@ describeSeals(
 // bound to their bytes on a store that checks them (`bindsBytes`): none of them can replace an
 // object, so none is recorded as write authority, and the seal stands as soon as it registers.
 const presigned: Array<{ readonly key: string; readonly sha256: string | undefined }> = [];
-/** Object reads in the suite below: a seal that stands without a read-back reads none. */
-let objectReads = 0;
+/** Let a short-lived binding in the registry die. */
+const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
 describeSeals(
   "bytes-bound upload URLs: no write authority, no wait",
   {
-    // A world started this instant: no process before it handed out URLs.
-    policy: { boundIndexTrustedAfterMs: 0 },
     blobs: (root) =>
       Layer.effect(
         BlobStore,
@@ -3037,10 +3038,6 @@ describeSeals(
           // (a URL minted before it started), and the clock margin past it, are over.
           replaceableUntil: () => Effect.sync(() => Date.now() - 10 * 60_000),
           bindsBytes: Effect.succeed(true),
-          get: (key: string) =>
-            Effect.sync(() => (objectReads += 1)).pipe(Effect.andThen(store.get(key))),
-          getStream: (key: string) =>
-            Effect.sync(() => (objectReads += 1)).pipe(Effect.andThen(store.getStream(key))),
           presign: (
             key: string,
             method: "GET" | "PUT",
@@ -3106,11 +3103,9 @@ describeSeals(
       await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
       const registered = await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
       expect(registered.seal).toEqual({ state: "recorded" });
-      // Nothing could replace what it names: it stands now, not 10.5 minutes from now, and
-      // nothing was read back for it — marked as the read-back's mark is, under the row locks.
-      objectReads = 0;
+      // Nothing could replace what it names: no URL to wait out, so it stands once its objects
+      // read back — now, not 10.5 minutes from now.
       expect((await sealOf(at))?.captureId).toBe(file.cap.id);
-      expect(objectReads).toBe(0);
       expect((await recordedSeal(at))?.reverifiedAt).toBeInstanceOf(Date);
     });
 
@@ -3176,26 +3171,38 @@ describeSeals(
       expect(authority(at)?.getTime() ?? 0).toBeGreaterThan(Date.now());
     });
 
-    it("review: a seal whose epoch's row is gone is read back, never taken as holding no authority", async () => {
+    it("review: a seal never stands over a pack index a live bound URL names other bytes for", async () => {
       const at = await claimed();
       await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
-      const file = sealedFile(at, "a row that went away\n");
-      await run(
-        at.api.uploadUrls({
-          worktree_id: at.worktreeId,
-          epoch: at.epoch,
-          keys: [file.key],
-          sizes: { [file.key]: file.bytes.length },
-        }),
-      );
+      const file = sealedFile(at, "an index that another URL names\n");
       await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
       const registered = await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
       expect(registered.seal).toEqual({ state: "recorded" });
-      // The epoch's row goes with its worktree: the seal is read back as before the change — it
-      // stands re-verified — never taken as standing over an epoch known to hold nothing.
-      world.memory.deletedWorktrees.add(at.worktreeId);
+      // The pack index the seal names: the base pack's, which Mend laid down itself.
+      const indexOf = (git: object) => {
+        const packs = "packs" in git && Array.isArray(git.packs) ? git.packs : [];
+        const key = `${String(packs[0] ?? "")}.idx`;
+        const bytes = fs.readFileSync(path.join(world.blobRoot, key));
+        return { key, sha256: createHash("sha256").update(bytes).digest("hex") };
+      };
+      // The registry is the process's: every binding here lives a moment, and is gone when the
+      // test ends.
+      // A bound URL for other bytes of it, still live: not standing.
+      const index = indexOf(at.git);
+      expect(reserveBoundIndex(index.key, "0".repeat(64), Date.now(), Date.now() + 300)).toBe(
+        "reserved",
+      );
+      expect(reserveBoundIndex(index.key, index.sha256, Date.now(), Date.now() + 300)).toBe(
+        "conflict",
+      );
+      expect(await sealOf(at)).toBeNull();
+      // Once that URL is dead, a URL bound to the bytes stored there: nothing could replace them.
+      await settle(350);
+      expect(reserveBoundIndex(index.key, index.sha256, Date.now(), Date.now() + 300)).toBe(
+        "reserved",
+      );
       expect((await sealOf(at))?.captureId).toBe(file.cap.id);
-      expect((await recordedSeal(at))?.reverifiedAt).toBeInstanceOf(Date);
+      await settle(350);
     });
 
     it("records authority as before for an executor that sends no checksum, and for an index it declares nothing about", async () => {
@@ -3224,48 +3231,6 @@ describeSeals(
         }),
       );
       expect(authority(undeclared)?.getTime() ?? 0).toBeGreaterThan(Date.now());
-    });
-  },
-);
-
-describeSeals(
-  "bytes-bound upload URLs, a process just started",
-  {
-    blobs: (root) =>
-      Layer.effect(
-        BlobStore,
-        Effect.map(BlobStore, (store) => ({
-          ...store,
-          replaceableUntil: () => Effect.sync(() => Date.now() - 60_000),
-          bindsBytes: Effect.succeed(true),
-        })),
-      ).pipe(Layer.provide(BlobStoreFsLive(root))),
-  },
-  ({ world, run, claimed }) => {
-    it("review: binds no pack index until a process before it could have none live, and records its authority", async () => {
-      const at = await claimed();
-      await run(
-        at.api.planGet({
-          worktree_id: at.worktreeId,
-          epoch: at.epoch,
-          manifest_format: 2,
-          manifest_features: MANIFEST_FEATURES,
-          upload_answers: [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256],
-        }),
-      );
-      const index = `${sealedFile(at, "an index too early\n").key}.idx`;
-      await run(
-        at.api.uploadUrls({
-          worktree_id: at.worktreeId,
-          epoch: at.epoch,
-          keys: [index],
-          sizes: { [index]: 12 },
-          sha256: { [index]: "a".repeat(64) },
-        }),
-      );
-      expect(
-        world.memory.putAuthority.get(`${at.worktreeId}:${at.epoch}`)?.getTime() ?? 0,
-      ).toBeGreaterThan(Date.now());
     });
   },
 );
