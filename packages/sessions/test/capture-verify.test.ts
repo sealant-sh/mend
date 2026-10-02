@@ -33,7 +33,7 @@ import { Cause, Effect, Exit, Fiber, Layer, Option, Scope } from "effect";
 import * as Context from "effect/Context";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { reserveBoundIndex } from "../src/bound-index-digests.ts";
+import { boundIndexDigest, reserveBoundIndex } from "../src/bound-index-digests.ts";
 import {
   CaptureChannel,
   type CapturePlanNotice,
@@ -3023,6 +3023,8 @@ describeSeals(
 // bound to their bytes on a store that checks them (`bindsBytes`): none of them can replace an
 // object, so none is recorded as write authority, and the seal stands as soon as it registers.
 const presigned: Array<{ readonly key: string; readonly sha256: string | undefined }> = [];
+/** Keys whose next `head` in the suite below answers absent: a look before the key landed. */
+const boundHeadMisses = new Set<string>();
 /** Let a short-lived binding in the registry die. */
 const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -3038,6 +3040,8 @@ describeSeals(
           // (a URL minted before it started), and the clock margin past it, are over.
           replaceableUntil: () => Effect.sync(() => Date.now() - 10 * 60_000),
           bindsBytes: Effect.succeed(true),
+          head: (key: string) =>
+            boundHeadMisses.delete(key) ? Effect.succeed(null) : store.head(key),
           presign: (
             key: string,
             method: "GET" | "PUT",
@@ -3189,20 +3193,54 @@ describeSeals(
       // test ends.
       // A bound URL for other bytes of it, still live: not standing.
       const index = indexOf(at.git);
-      expect(reserveBoundIndex(index.key, "0".repeat(64), Date.now(), Date.now() + 300)).toBe(
-        "reserved",
-      );
-      expect(reserveBoundIndex(index.key, index.sha256, Date.now(), Date.now() + 300)).toBe(
+      expect(
+        reserveBoundIndex(index.key, "0".repeat(64), Date.now(), Date.now() + 300).outcome,
+      ).toBe("reserved");
+      expect(reserveBoundIndex(index.key, index.sha256, Date.now(), Date.now() + 300).outcome).toBe(
         "conflict",
       );
       expect(await sealOf(at)).toBeNull();
       // Once that URL is dead, a URL bound to the bytes stored there: nothing could replace them.
       await settle(350);
-      expect(reserveBoundIndex(index.key, index.sha256, Date.now(), Date.now() + 300)).toBe(
+      expect(reserveBoundIndex(index.key, index.sha256, Date.now(), Date.now() + 300).outcome).toBe(
         "reserved",
       );
       expect((await sealOf(at))?.captureId).toBe(file.cap.id);
       await settle(350);
+    });
+
+    it("Astra re-review: an index stored after the call's first look is answered present, and gets no URL for other bytes", async () => {
+      const at = await claimed();
+      await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      // A valid pack and its index under this executor's own prefix: the base pack's bytes.
+      const base = (at.git as { readonly packs: ReadonlyArray<string> }).packs[0] ?? "";
+      const name = base.slice(base.lastIndexOf("/") + 1);
+      const pack = captureKeys(at.worktreeId, at.epoch).pack(name);
+      const index = `${pack}.idx`;
+      await run(
+        uploadObjects(
+          new Map([
+            [pack, new Uint8Array(fs.readFileSync(path.join(world.blobRoot, base)))],
+            [index, new Uint8Array(fs.readFileSync(path.join(world.blobRoot, `${base}.idx`)))],
+          ]),
+        ),
+      );
+      // The call's first look at the bucket misses the index (it landed a moment later), and the
+      // call asks for a URL bound to other bytes of it.
+      boundHeadMisses.add(index);
+      const answered = await run(
+        at.api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [index],
+          sizes: { [index]: 12 },
+          sha256: { [index]: "9".repeat(64) },
+        }),
+      );
+      expect(answered.urls).toEqual({});
+      expect(answered.present).toEqual([index]);
+      // No URL left Mend for those bytes, and the binding the call reserved is given back.
+      expect(boundIndexDigest(index, Date.now())).toBeNull();
     });
 
     it("records authority as before for an executor that sends no checksum, and for an index it declares nothing about", async () => {
