@@ -2793,6 +2793,24 @@ const captureBoundIndexesMigration = Effect.gen(function* () {
     SELECT now() + interval '20 minutes' WHERE EXISTS (SELECT 1 FROM worktrees)`;
 });
 
+/**
+ * 0100: what each executor launch said it reads, in its `plan.get` (`upload_answers`): `present`,
+ * and `sha256` for upload URLs bound to their bytes. It was kept in the server's memory, and an
+ * executor plans once, at boot. So after a Mend restart every running executor was answered as
+ * an older daemon: unbound URLs, and its Stop waited 10.5 minutes for them to expire (measured
+ * on a self-hosted box, 2026-10-02). On record, a restart changes nothing for it.
+ */
+const captureLaunchAnswersMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE capture_launch_answers (
+      launch_id text PRIMARY KEY,
+      answers jsonb NOT NULL,
+      noted_at timestamptz NOT NULL DEFAULT now()
+    )`;
+  yield* sql`CREATE INDEX capture_launch_answers_noted_at ON capture_launch_answers (noted_at)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2893,4 +2911,5 @@ export const migrations = {
   "0097_user_pi_profiles": userPiProfilesMigration,
   "0098_agent_memory": agentMemoryMigration,
   "0099_capture_bound_indexes": captureBoundIndexesMigration,
+  "0100_capture_launch_answers": captureLaunchAnswersMigration,
 };

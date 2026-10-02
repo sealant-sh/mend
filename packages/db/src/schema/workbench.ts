@@ -2100,6 +2100,20 @@ export const captureBoundIndexes = pgTable(
 );
 
 /**
+ * What each executor launch listed in `plan.get`'s `upload_answers` (migration 0100): the answer
+ * shapes it reads. Kept so a Mend restart answers a running executor as it did before.
+ */
+export const captureLaunchAnswers = pgTable(
+  "capture_launch_answers",
+  {
+    launchId: text().primaryKey(),
+    answers: jsonb().$type<ReadonlyArray<string>>().notNull(),
+    notedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("capture_launch_answers_noted_at").on(table.notedAt)],
+);
+
+/**
  * Until when a pack index URL bound by the server before migration 0099, which kept its bindings
  * in memory, could still be used: one row, written by the migration when the database already
  * had worktrees. Seals wait the store's start window out until then.

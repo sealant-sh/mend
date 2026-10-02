@@ -1507,6 +1507,21 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     expect(left).toEqual([renewed, other].toSorted());
   });
 
+  it("launch answers (0100): what a launch listed when it planned is kept, and the latest plan replaces it", async () => {
+    const launch = `launch:answers-${process.pid}`;
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const never = yield* repo.launchAnswers(launch);
+        yield* repo.noteLaunchAnswers(launch, ["present", "sha256"]);
+        const first = yield* repo.launchAnswers(launch);
+        yield* repo.noteLaunchAnswers(launch, []);
+        return { never, first, replanned: yield* repo.launchAnswers(launch) };
+      }),
+    );
+    expect(result).toEqual({ never: null, first: ["present", "sha256"], replanned: [] });
+  });
+
   it("sealAuthorityOver: what is on record and whether it is whole, in one read", async () => {
     const result = await run(
       Effect.gen(function* () {

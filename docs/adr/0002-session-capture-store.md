@@ -1483,6 +1483,12 @@ Mend-side details the decision record left open, decided in this ADR:
       it bound in its last minutes outlives it. The migration writes a cutover 20 minutes ahead
       (`capture_bound_index_cutover`) when the database already has worktrees. Until then seals wait
       the startup window out as they did. A new install has no such wait.
+    - **What an executor said it reads survives a restart too.** An executor plans once, at boot,
+      and lists there whether it reads `present` and sends `sha256`. Mend kept that in memory, so
+      after a restart every running executor was answered as an older daemon: unbound URLs, and a
+      Stop that waited 10.5 minutes (measured on the box, the first Stop after a restart with the
+      window gone). It is on record now (`capture_launch_answers`, migration 0100) and read by a
+      process that never saw the launch plan.
     - **The read-back reads nothing twice.** `storedCaptureProblem` takes
       `proofs: { sinceMs, usedFromMs }`: an object whose name is its digest, read whole by this
       process at or after `sinceMs` and found to be what its name says, is asked for (`head`) and

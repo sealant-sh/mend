@@ -3264,6 +3264,53 @@ describeSeals(
       }
     });
 
+    it("2026-10-02: after a Mend restart a running executor is still answered bound URLs, and its seal waits for none", async () => {
+      const at = await claimed();
+      // The executor plans once, at boot, and says what it reads.
+      await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const file = sealedFile(at, "saved after a restart\n");
+      // Mend restarts: a fresh channel over the same store and bucket. The executor does not
+      // plan again. Before, it was answered as an older daemon: an unbound URL, its authority
+      // recorded, and a Stop that waited 10.5 minutes for it to expire.
+      presigned.length = 0;
+      const restarted = <A, E>(use: (api: SessionCaptureApi) => Effect.Effect<A, E>) =>
+        Effect.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const channel = yield* Layer.build(Layer.fresh(world.channel));
+              return yield* use(
+                Context.get(channel, CaptureChannel).apiFor({
+                  worktreeId: at.worktreeId,
+                  projectId: world.project.id,
+                  executorId: "executor-1",
+                  footprintBytes: 0,
+                }),
+              );
+            }),
+          ),
+        );
+      const minted = await restarted((api) =>
+        api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [file.key],
+          sizes: { [file.key]: file.bytes.length },
+        }),
+      );
+      await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
+      const registered = await restarted((api) =>
+        registerOn(at.worktreeId, at.epoch, api)(file.cap),
+      );
+      const outcome = { minted, registered };
+      expect(Object.keys(outcome.minted.urls)).toEqual([file.key]);
+      expect(presigned).toEqual([
+        { key: file.key, sha256: file.key.slice(file.key.lastIndexOf("/") + 1) },
+      ]);
+      expect(authority(at)).toBeUndefined();
+      expect(outcome.registered.seal).toEqual({ state: "recorded" });
+      expect((await sealOf(at))?.captureId).toBe(file.cap.id);
+    });
+
     it("Astra review: a chunked section that lists a pack index as a pack is refused", async () => {
       const at = await claimed();
       await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);

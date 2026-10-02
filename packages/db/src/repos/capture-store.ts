@@ -453,6 +453,16 @@ export class CaptureStoreRepo extends Context.Service<
       at: Date,
     ) => Effect.Effect<{ readonly until: Date | null; readonly spokenFor: boolean }>;
     /**
+     * Record what the executor launch `launchId` listed in `plan.get`'s `upload_answers` (0100):
+     * the latest plan's list replaces the one before.
+     */
+    readonly noteLaunchAnswers: (
+      launchId: string,
+      answers: ReadonlyArray<string>,
+    ) => Effect.Effect<void>;
+    /** What `launchId` last listed (`noteLaunchAnswers`); null when it never planned on record. */
+    readonly launchAnswers: (launchId: string) => Effect.Effect<ReadonlyArray<string> | null>;
+    /**
      * Bind the pack index `key` to `sha256` until `until` (0099, ADR 0002 decision 48), in one
      * step: `conflict` while a binding live at `now` names other bytes. A binding for the same
      * bytes is extended, never shortened. `fresh` says no live binding was there before: one the
@@ -1141,6 +1151,33 @@ export const CaptureStoreRepoLive: Layer.Layer<
       };
     });
 
+    const noteLaunchAnswers = Effect.fn("CaptureStoreRepo.noteLaunchAnswers")(function* (
+      launchId: string,
+      answers: ReadonlyArray<string>,
+    ) {
+      yield* sql`
+        INSERT INTO capture_launch_answers (launch_id, answers, noted_at)
+        VALUES (${launchId}, ${JSON.stringify(answers)}::jsonb, now())
+        ON CONFLICT (launch_id) DO UPDATE
+          SET answers = EXCLUDED.answers, noted_at = EXCLUDED.noted_at`.pipe(Effect.orDie);
+      // Launches that last planned two months ago are long gone.
+      yield* sql`
+        DELETE FROM capture_launch_answers
+         WHERE noted_at < now() - interval '60 days'`.pipe(Effect.orDie);
+    });
+
+    const launchAnswers = Effect.fn("CaptureStoreRepo.launchAnswers")(function* (launchId: string) {
+      const [row] = yield* sql<{ readonly answers: unknown }>`
+        SELECT answers FROM capture_launch_answers WHERE launch_id = ${launchId}`.pipe(
+        Effect.orDie,
+      );
+      if (row === undefined) return null;
+      const answers = typeof row.answers === "string" ? JSON.parse(row.answers) : row.answers;
+      return Array.isArray(answers)
+        ? answers.filter((answer): answer is string => typeof answer === "string")
+        : [];
+    });
+
     const reserveBoundIndex = Effect.fn("CaptureStoreRepo.reserveBoundIndex")(function* (
       key: string,
       sha256: string,
@@ -1500,6 +1537,8 @@ export const CaptureStoreRepoLive: Layer.Layer<
       putAuthorityUntil,
       putAuthorityUntilOver,
       sealAuthorityOver,
+      noteLaunchAnswers,
+      launchAnswers,
       reserveBoundIndex,
       releaseBoundIndex,
       extendBoundIndex,

@@ -38,6 +38,8 @@ export interface MemoryCaptureStore {
   readonly goneWorktrees: Set<string>;
   /** `capture_bound_index_cutover`: until when the record of bound index URLs is not whole. */
   readonly boundIndexCutover: { until: number };
+  /** `capture_launch_answers`: launch → what its last `plan.get` listed (0100). */
+  readonly launchAnswers: Map<string, ReadonlyArray<string>>;
   /** `capture_deletion_claims`: key → token → when the claim lapses (store clock, ms). */
   readonly claims: Map<string, Map<string, number>>;
   readonly packs: Map<string, PackRow>;
@@ -85,6 +87,7 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
   const boundIndexes = new Map<string, { sha256: string; until: Date }>();
   const goneWorktrees = new Set<string>();
   const boundIndexCutover = { until: 0 };
+  const launchAnswers = new Map<string, ReadonlyArray<string>>();
   const holdRecordSeal = { held: false };
   /** A live deletion claim on `key`: some pass may still delete its bytes. */
   const claimed = (key: string) =>
@@ -423,6 +426,11 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
             at.getTime() >= boundIndexCutover.until,
         };
       }),
+    noteLaunchAnswers: (launchId, answers) =>
+      Effect.sync(() => {
+        launchAnswers.set(launchId, [...answers]);
+      }),
+    launchAnswers: (launchId) => Effect.sync(() => launchAnswers.get(launchId) ?? null),
     reserveBoundIndex: (key, sha256, now, until) =>
       Effect.sync(() => {
         const row = boundIndexes.get(key);
@@ -629,5 +637,6 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
     boundIndexes,
     goneWorktrees,
     boundIndexCutover,
+    launchAnswers,
   };
 };

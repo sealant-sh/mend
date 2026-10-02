@@ -1170,19 +1170,35 @@ export const CaptureChannelLive: Layer.Layer<
     const minted = new Map<string, Set<string>>();
     /**
      * Whether each launch's latest `plan.get` listed `present` in `upload_answers` (cross-repo
-     * decision 20): only such a launch is answered `present`; any other — an older daemon, or a
-     * launch this process never saw plan (a Mend restart) — gets the legacy answer, a write-once
-     * URL for a stored key whose bytes were verified. Bound to the launch its token names.
+     * decision 20): only such a launch is answered `present`; any other — an older daemon —
+     * gets the legacy answer, a write-once URL for a stored key whose bytes were verified. Bound
+     * to the launch its token names. Kept on record too (`capture_launch_answers`, 0100), and
+     * read from there by a process that never saw the launch plan: an executor plans once, at
+     * boot, and after a Mend restart it was answered as an older daemon, with unbound URLs its
+     * Stop then waited 10.5 minutes on (measured on a self-hosted box, 2026-10-02).
      */
     const readsPresent = new Map<string, boolean>();
     /** Whether each launch's latest `plan.get` listed `sha256` (`UPLOAD_ANSWER_SHA256`). */
     const sendsSha256 = new Map<string, boolean>();
-    const noteUploadAnswers = (launch: string, input: PlanGetRequest) => {
+    const rememberUploadAnswers = (launch: string, answers: ReadonlyArray<string>) => {
       if (readsPresent.size > MINTED_KEYS_REMEMBERED) readsPresent.clear();
       if (sendsSha256.size > MINTED_KEYS_REMEMBERED) sendsSha256.clear();
-      readsPresent.set(launch, (input.upload_answers ?? []).includes(UPLOAD_ANSWER_PRESENT));
-      sendsSha256.set(launch, (input.upload_answers ?? []).includes(UPLOAD_ANSWER_SHA256));
+      readsPresent.set(launch, answers.includes(UPLOAD_ANSWER_PRESENT));
+      sendsSha256.set(launch, answers.includes(UPLOAD_ANSWER_SHA256));
     };
+    const noteUploadAnswers = (launch: string, input: PlanGetRequest) =>
+      Effect.gen(function* () {
+        const answers = input.upload_answers ?? [];
+        rememberUploadAnswers(launch, answers);
+        yield* repo.noteLaunchAnswers(launch, answers);
+      });
+    /** What `launch` listed when it planned, from the record when this process never saw it. */
+    const recallUploadAnswers = (launch: string) =>
+      Effect.gen(function* () {
+        if (readsPresent.has(launch)) return;
+        const answers = yield* repo.launchAnswers(launch);
+        if (answers !== null) rememberUploadAnswers(launch, answers);
+      });
     /**
      * The byte ledger, per physical launch: object key → bytes priced for it, once. `upload.urls`
      * reserves a sized key at its declared size; `capture.register` prices every pack under the
@@ -1386,7 +1402,7 @@ export const CaptureChannelLive: Layer.Layer<
           });
         }
         yield* refuseOtherLaunch(input, scope.launchId ?? scope.executorId);
-        noteUploadAnswers(scope.launchId ?? scope.executorId, input);
+        yield* noteUploadAnswers(scope.launchId ?? scope.executorId, input);
         const plan = yield* scope
           .plan(input.platform)
           .pipe(Effect.catch(() => storeError("preparing the standby plan")({ _tag: "plan" })));
@@ -1683,7 +1699,7 @@ export const CaptureChannelLive: Layer.Layer<
       const planGet = Effect.fn("SessionCaptureApi.planGet")(function* (input: PlanGetRequest) {
         yield* requireWorktree(input.worktree_id);
         yield* refuseOtherLaunch(input, launchId);
-        noteUploadAnswers(launchId, input);
+        yield* noteUploadAnswers(launchId, input);
         const asked = input.epoch ?? 0;
         const reads = readerFormatOf(input);
         const lease = yield* repo.leaseOf(worktreeId);
@@ -1912,6 +1928,7 @@ export const CaptureChannelLive: Layer.Layer<
         // uploaded). On a bucket that ignores `If-None-Match` (Garage) that URL could replace the
         // verified bytes until it expires: its expiry is recorded, and no seal stands while it
         // lives (`CaptureSealsStoreLive`, review 2026-09-28 (7) #8).
+        yield* recallUploadAnswers(launchId);
         const answersPresent = readsPresent.get(launchId) === true;
         // Before any bucket read: an index binding judged live at this moment stays judged so
         // through the HEADs below, never later than it was.
