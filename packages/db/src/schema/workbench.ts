@@ -65,6 +65,7 @@ import {
   RecordLink,
   ReviewCommentAnchor,
   SessionDotfiles,
+  PiProfileFile,
   SkillFile,
   SlackPendingMention,
   TourStop,
@@ -573,6 +574,20 @@ export const userNotificationSettings = pgTable("user_notification_settings", {
   turnFinished: boolean().notNull().default(true),
   needsInput: boolean().notNull().default(true),
   failed: boolean().notNull().default(true),
+  updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+});
+
+/**
+ * Each person's pi setup (`mend connect pi`; pi-profile.ts in @mend/domain), one row per account.
+ * The files ride the row as jsonb, like skills; `digest` is their tree digest, which a launch
+ * compares with what the session's agent directory already holds.
+ */
+export const userPiProfiles = pgTable("user_pi_profiles", {
+  userId: text().primaryKey(),
+  files: jsonbArrayOf(PiProfileFile).notNull(),
+  digest: text().notNull(),
+  bytes: integer().notNull(),
+  revision: integer().notNull().default(1),
   updatedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
 });
 

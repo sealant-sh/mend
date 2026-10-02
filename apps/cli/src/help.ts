@@ -94,7 +94,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     name: "connect",
     section: "start",
     summary: "send this machine's provider credential to the platform",
-    synopsis: ["<claude|codex|github> [--use-my-login] [--from-stdin] [--remove]"],
+    synopsis: [
+      "<claude|codex|github> [--use-my-login] [--from-stdin] [--remove]",
+      "pi [--dir <path>] [--dry-run] [--remove]",
+    ],
     description: [
       "Sessions run on the platform, so the platform needs your provider login. It is stored under your own user and used only for your work. Nothing is shared with other users.",
       "Claude and Codex get a login of Mend's own. Both rotate their refresh token, so two copies of one login fight and the one that refreshes second is signed out, and Mend's server refreshes on a schedule. So this logs in through the provider's own flow and your own login stays as it is: Claude in the browser, Codex with a device code, both sent and not kept here. Run it again whenever Mend says a login needs reconnecting. GitHub sends gh's token.",
@@ -112,7 +115,24 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       { command: "mend connect codex", text: "a Codex login of Mend's own, with a device code" },
       { command: "mend connect github --remove", text: "" },
     ],
-    see: ["accounts"],
+    see: ["accounts", "connect pi"],
+  },
+  {
+    name: "connect pi",
+    section: "start",
+    summary: "send your pi setup to every pi session of yours",
+    synopsis: ["[--dir <path>] [--dry-run] [--remove]"],
+    description: [
+      "Reads pi's agent directory on this machine (~/.pi/agent, or $PI_CODING_AGENT_DIR) and saves it as your pi profile: extensions, themes, prompt templates, settings, mcp.json and keybindings. Every pi session you start receives it, and before pi starts the session installs the packages settings.json declares and what your extensions import. A package that fails to install is left out of that session, and the terminal says why.",
+      "Links are followed, so a setup a tool such as Home Manager links in is read as the files it points at. A package settings.json names by local path is copied into the profile. Your login stays here: pi runs on the ChatGPT login mend connect codex makes. Skills go with mend skills push. Run it again after you change your setup; sessions already running keep the profile they started with.",
+    ],
+    options: [
+      { flag: "--dir <path>", text: "read another agent directory" },
+      { flag: "--dry-run", text: "say what would be sent, and send nothing" },
+      { flag: "--remove", text: "delete the saved profile" },
+    ],
+    examples: [{ command: "mend connect pi --dry-run", text: "what your pi profile would hold" }],
+    see: ["connect", "skills push"],
   },
   {
     name: "adopt",

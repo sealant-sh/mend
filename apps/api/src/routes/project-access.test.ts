@@ -112,6 +112,10 @@ const UNSCOPED: ReadonlySet<string> = new Set([
   "dotfiles.snapshot",
   "dotfiles.clearSnapshot",
   "skills.list",
+  // The caller's own pi profile: no route names anyone else's (pi-profile.test.ts).
+  "piProfile.get",
+  "piProfile.save",
+  "piProfile.remove",
   "gitKeys.show",
   "gitKeys.init",
   "gitKeys.bridgeStatus",

@@ -38,6 +38,7 @@ import {
   SessionRunsRepo,
   SessionsRepo,
   SettingsRepo,
+  PiProfilesRepo,
   SkillsRepo,
   UserDotfilesRepo,
   UserGitAuthorRepo,
@@ -54,6 +55,7 @@ import {
   SessionChannelTokensRepoMemory,
   WorktreeNotFoundError,
   type ExecutorCaptureEvidence,
+  piProfileDigest,
 } from "@mend/db";
 import {
   AgentTurnId,
@@ -98,6 +100,7 @@ import {
   Session,
   SessionProcess,
   SessionRun,
+  PiProfile,
   Skill,
   SkillWithFiles,
   Worktree,
@@ -909,6 +912,16 @@ const skillsStubLayer = Layer.succeed(SkillsRepo, {
   sync: () => Effect.die("not in test"),
   forLaunch: () => Effect.succeed({ user: [], project: [] }),
 });
+
+/** The owner's pi profile; none unless a test brings one. */
+const piProfilesLayerOf = (
+  saved: PiProfilesRepo["Service"]["forUser"] = () => Effect.succeed(null),
+): Layer.Layer<PiProfilesRepo> =>
+  Layer.succeed(PiProfilesRepo, {
+    forUser: saved,
+    save: () => Effect.die("not in test"),
+    remove: () => Effect.die("not in test"),
+  });
 
 const skillsForLaunchLayer = (
   forLaunch: SkillsRepo["Service"]["forLaunch"],
@@ -2555,6 +2568,7 @@ const withEngine = <A, E>(
     readonly protocolHostLayer?: Layer.Layer<ProtocolHost>;
     readonly hotWorkspacesLayer?: Layer.Layer<HotWorkspacesRepo>;
     readonly skillsLayer?: Layer.Layer<SkillsRepo>;
+    readonly piProfilesLayer?: Layer.Layer<PiProfilesRepo>;
     /** The owner's dotfiles; none configured unless a test brings its own. */
     readonly userDotfilesLayer?: Layer.Layer<UserDotfilesRepo>;
     /** The owner's git author; `Account <id>` <`<id>@accounts.example`> unless a test says. */
@@ -2724,6 +2738,7 @@ const withEngine = <A, E>(
         options.dotfilesStoreLayer ?? dotfilesStoreStubLayer,
         options.dotfilesClonerLayer ?? dotfilesClonerLayer(),
         options.skillsLayer ?? skillsStubLayer,
+        options.piProfilesLayer ?? piProfilesLayerOf(),
       ),
     ),
   );
@@ -2952,6 +2967,65 @@ describe("SessionEngine", () => {
           );
         }),
       { sealantLayer: sealantLaunchLayer(created), skillsLayer },
+    );
+  });
+
+  it("delivers the owner's pi profile to a pi session, and to no other", async () => {
+    const created: CreateOptions[] = [];
+    const files = [
+      {
+        path: "extensions/git-info/index.ts",
+        encoding: "utf8",
+        contents: "export default () => {};\n",
+      },
+    ] as const;
+    const asked: Array<string> = [];
+    const piProfilesLayer = piProfilesLayerOf((userId) =>
+      Effect.sync(() => {
+        asked.push(userId);
+        return {
+          profile: new PiProfile({
+            fileCount: 1,
+            bytes: files[0].contents.length,
+            extensions: ["git-info"],
+            packages: [],
+            digest: piProfileDigest(files),
+            revision: 1,
+            updatedAt: new Date(0),
+          }),
+          files,
+        };
+      }),
+    );
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const start = (harness: string) =>
+            engine.provision({
+              projectId: project.id,
+              harness,
+              label: null,
+              name: null,
+              ownerUserId: "owner-pi",
+              base: null,
+            });
+          const pi = yield* start("pi");
+          yield* engine.launch(pi.id, ["pi"]);
+          const codex = yield* start("codex");
+          yield* engine.launch(codex.id, ["codex"]);
+
+          const delivered = (sessionId: typeof pi.id) =>
+            path.join(
+              harnessHomePathOf(project.storePath, sessionId),
+              ".pi/agent/mend/profile/extensions/git-info/index.ts",
+            );
+          expect(fs.readFileSync(delivered(pi.id), "utf8")).toBe(files[0].contents);
+          expect(fs.existsSync(delivered(codex.id))).toBe(false);
+          expect(asked).toEqual(["owner-pi"]);
+        }),
+      { sealantLayer: sealantLaunchLayer(created), piProfilesLayer },
     );
   });
 
@@ -5836,6 +5910,7 @@ describe("SessionEngine", () => {
           dotfilesStoreStubLayer,
           dotfilesClonerLayer(),
           skillsStubLayer,
+          piProfilesLayerOf(),
         ),
       ),
     );

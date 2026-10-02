@@ -1,3 +1,5 @@
+import { PI_PROFILE_PROGRAM } from "./pi-profile.ts";
+
 /**
  * The shell prefixes that pre-answer a harness's first-run questions before Mend execs its real
  * argv (`sh -c <seed> sh <argv…>`). They run at every launch, over whatever the harness home holds
@@ -108,12 +110,14 @@ const CHATGPT_LOGIN_PROGRAM = [
  * opencode's and pi's seeds: no first-run questions to answer (opencode's permissions ride the
  * launch's environment, pi's project trust its `--approve`). Each writes the ChatGPT login it runs
  * on (`CHATGPT_LOGIN_PROGRAM`) and turns off its own update check, which a workspace's image owns:
- * Core installs each harness at build time.
+ * Core installs each harness at build time. pi's first sets up the person's pi profile, when one
+ * was delivered (`PI_PROFILE_PROGRAM`), so the login's default provider defers to theirs.
  */
 export const OPENCODE_SEED =
   `node -e '${CHATGPT_LOGIN_PROGRAM}' "\${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json" openai "" 2>/dev/null; ` +
   `export OPENCODE_DISABLE_AUTOUPDATE=1; exec "$@"`;
 export const PI_SEED =
+  `node -e '${PI_PROFILE_PROGRAM}' "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}"; ` +
   `node -e '${CHATGPT_LOGIN_PROGRAM}' "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/auth.json" openai-codex "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/settings.json" 2>/dev/null; ` +
   `export PI_SKIP_VERSION_CHECK=1; exec "$@"`;
 

@@ -1,0 +1,231 @@
+import { spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+
+import {
+  PI_PROFILE_AGENT_PATH,
+  piProfileFileBytes,
+  validatePiProfileFilePath,
+} from "@mend/domain/workbench";
+import { Effect, Schema } from "effect";
+
+import {
+  SKILLS_VACATE_PROGRAM,
+  parseSkillsVacateOutcomes,
+  type SkillsVacate,
+  type SkillsVacateOutcome,
+} from "./skills.ts";
+import { shellQuote } from "./workspace-files.ts";
+
+/**
+ * A person's pi setup (`mend connect pi`, pi-profile.ts in @mend/domain), delivered into each pi
+ * session they start: the files go to `.pi/agent/mend/profile` in the harness home, and before pi
+ * starts `PI_PROFILE_PROGRAM` installs what they need and points `settings.json` at them.
+ *
+ * The profile directory is delivered as skills are (`skills.ts`): one that already holds exactly
+ * the profile is left alone, and anything else there is moved aside whole, to
+ * `.mend/pi-profile-kept/<stamp>/`, never deleted. What the session installs inside it
+ * (`node_modules`) is not part of the comparison.
+ */
+
+/** The profile directory, relative to the harness home. */
+export const PI_PROFILE_HOME_DIR = path.posix.join(".pi/agent", PI_PROFILE_AGENT_PATH);
+
+/** Where a profile directory that is not exactly the one being delivered goes. */
+export const PI_PROFILE_KEPT_DIR = ".mend/pi-profile-kept";
+
+/** What the session builds inside a delivered profile, which the comparison leaves out. */
+const SESSION_BUILT = ["node_modules"];
+
+export class PiProfileDeliveryError extends Schema.TaggedErrorClass<PiProfileDeliveryError>()(
+  "PiProfileDeliveryError",
+  { message: Schema.String },
+) {}
+
+/** What one delivery writes: the directory to clear, and the files, relative to the harness home. */
+export interface PiProfilePlan {
+  readonly vacate: SkillsVacate;
+  readonly files: ReadonlyArray<{ readonly path: string; readonly bytes: Uint8Array }>;
+}
+
+/**
+ * The plan for a saved profile. Paths and contents were validated when it was saved; they are
+ * checked again before they touch a filesystem, and a file that fails is left out.
+ */
+export const planPiProfile = (profile: {
+  readonly digest: string;
+  readonly files: ReadonlyArray<{
+    readonly path: string;
+    readonly encoding: "utf8" | "base64";
+    readonly contents: string;
+  }>;
+}): PiProfilePlan => ({
+  vacate: {
+    dir: PI_PROFILE_HOME_DIR,
+    accept: [profile.digest],
+    delivering: profile.digest,
+    skip: SESSION_BUILT,
+  },
+  files: profile.files.flatMap((file) => {
+    const bytes = piProfileFileBytes(file);
+    if (bytes === null || validatePiProfileFilePath(file.path) !== null) return [];
+    return [{ path: path.posix.join(PI_PROFILE_HOME_DIR, file.path), bytes }];
+  }),
+});
+
+/** A fresh kept directory for one delivery, relative to the harness home. */
+export const piProfileKeptDir = (now: Date = new Date()): string =>
+  path.posix.join(
+    PI_PROFILE_KEPT_DIR,
+    `${now.toISOString().replace(/[:.]/g, "-")}-${randomUUID().slice(0, 8)}`,
+  );
+
+/** The exec that clears the way for `plan` in a workspace's harness home (`SKILLS_VACATE_PROGRAM`). */
+export const vacatePiProfileExec = (
+  home: string,
+  kept: string,
+  plan: PiProfilePlan,
+): ReadonlyArray<string> => [
+  "sh",
+  "-c",
+  `set -e; mkdir -p "$1"/${shellQuote(path.posix.dirname(PI_PROFILE_HOME_DIR))}; ` +
+    `exec node -e ${shellQuote(SKILLS_VACATE_PROGRAM)} "$1" "$2" "$3"`,
+  "mend-pi-profile",
+  home,
+  kept,
+  JSON.stringify([plan.vacate]),
+];
+
+/** The plan's files, unless the directory already held exactly them. */
+export const piProfileFilesToWrite = (
+  plan: PiProfilePlan,
+  outcomes: ReadonlyArray<SkillsVacateOutcome>,
+): PiProfilePlan["files"] =>
+  outcomes.some((outcome) => outcome.dir === plan.vacate.dir && outcome.outcome === "unchanged")
+    ? []
+    : plan.files;
+
+/**
+ * Write the profile into a session's harness home on this machine: the co-located store, where
+ * that directory is the workspace's mounted harness home. Capture mode applies the same plan
+ * inside the workspace through exec.
+ */
+export const materializePiProfile = (
+  harnessHomePath: string,
+  plan: PiProfilePlan,
+): Effect.Effect<ReadonlyArray<SkillsVacateOutcome>, PiProfileDeliveryError> =>
+  Effect.tryPromise({
+    try: async () => {
+      // A harness home that was never made was never mounted: nothing here would reach pi.
+      await fs.access(harnessHomePath);
+      await fs.mkdir(path.join(harnessHomePath, path.dirname(PI_PROFILE_HOME_DIR)), {
+        recursive: true,
+      });
+      const vacated = spawnSync(
+        process.execPath,
+        [
+          "-e",
+          SKILLS_VACATE_PROGRAM,
+          harnessHomePath,
+          piProfileKeptDir(),
+          JSON.stringify([plan.vacate]),
+        ],
+        { encoding: "utf8" },
+      );
+      const outcomes = parseSkillsVacateOutcomes(vacated.stdout ?? "");
+      if (vacated.status !== 0) {
+        throw new Error(`could not clear ${PI_PROFILE_HOME_DIR}: ${vacated.stderr ?? ""}`);
+      }
+      // As the workspace writer does (`workspace-files.ts`): directories 0755, files 0644.
+      for (const file of piProfileFilesToWrite(plan, outcomes)) {
+        const filePath = path.join(harnessHomePath, file.path);
+        await fs.mkdir(path.dirname(filePath), { recursive: true });
+        await fs.chmod(path.dirname(filePath), 0o755);
+        await fs.writeFile(filePath, file.bytes, { mode: 0o644 });
+        await fs.chmod(filePath, 0o644);
+      }
+      return outcomes;
+    },
+    catch: (error) =>
+      new PiProfileDeliveryError({
+        message: `the pi profile could not be written into the harness home: ${String(error)}`,
+      }),
+  });
+
+/**
+ * Runs before pi starts in a session (`PI_SEED`), with pi's agent directory as `argv[1]`, and does
+ * nothing when no profile was delivered there. Every step says what it does on the terminal, and
+ * none of them stops pi from starting:
+ *
+ * 1. Installs what the profile's extensions import (its `package.json`), what an extension with
+ *    its own `package.json` imports when the profile's does not already name it all, and what each
+ *    bundled local package imports, each in place. The directory's own scripts do not run (an
+ *    extension's `prepare` is a build step of its author's, needing dev tools that are not
+ *    installed); its dependencies' do, through `npm rebuild`. Nothing is written beside the
+ *    delivered files (no lockfile), so the profile still reads as delivered at the next launch. A
+ *    marker in `node_modules` skips an install already done. pi refuses to start when an extension cannot load, so these matter.
+ * 2. Installs each `npm:` package `settings.json` declares, with the command pi itself runs, into
+ *    pi's own `npm/` directory, so pi finds it there. pi installs a missing package itself at
+ *    startup, but a package that fails to install there stops pi (observed 2026-10-01: a native
+ *    build without `make`). One that fails here is left out of this session's settings, and the
+ *    terminal says so.
+ * 3. Merges the profile's settings into the session's `settings.json`. A setting the session has
+ *    not changed since the last delivery takes the profile's value; one it changed keeps its own.
+ *    The packages are the profile itself, the profile's, then any the session added.
+ * 4. Copies `root/mcp.json` and `root/keybindings.json` into the agent directory, unless the
+ *    session changed its copy since the last delivery.
+ *
+ * What was last delivered is kept beside the profile (`mend/delivered-*.json`). No single quotes:
+ * the program rides `sh -c` inside them.
+ */
+export const PI_PROFILE_PROGRAM = [
+  `try{const fs=require("fs"),path=require("path"),cp=require("child_process"),crypto=require("crypto");`,
+  `const A=process.argv[1],M=path.join(A,"mend"),P=path.join(M,"profile");if(!fs.existsSync(P))process.exit(0);`,
+  `const say=m=>process.stderr.write("mend: "+m+"\\n");`,
+  `const sha=b=>crypto.createHash("sha256").update(b).digest("hex");`,
+  `function read(p){try{const v=JSON.parse(fs.readFileSync(p,"utf8"));return v!==null&&typeof v==="object"&&!Array.isArray(v)?v:null}catch(e){return e.code==="ENOENT"?{}:null}}`,
+  `function put(p,v,mode){fs.mkdirSync(path.dirname(p),{recursive:true});const t=p+".mend-seed-"+process.pid;`,
+  `fs.writeFileSync(t,Buffer.isBuffer(v)?v:JSON.stringify(v,null,2),{mode:mode||0o644});fs.renameSync(t,p)}`,
+  `function why(r){const l=String(r.stderr||r.error||"").split("\\n").map(x=>x.trim()).filter(x=>x&&!/_logs\\/|complete log|^npm (ERR!|error) *$/.test(x));`,
+  `const telling=l.find(x=>/not found|cannot find|ERESOLVE|E404|ETARGET|ENOTFOUND|EACCES|code E/i.test(x));return telling||(l.length?l[l.length-1]:"exit "+r.status)}`,
+  `function npm(args,cwd){return cp.spawnSync("npm",args,{cwd,encoding:"utf8",stdio:["ignore","ignore","pipe"]})}`,
+  `function deps(dir,label){let m;try{m=JSON.parse(fs.readFileSync(path.join(dir,"package.json"),"utf8"))}catch{return}`,
+  `if(!m||!m.dependencies||Object.keys(m.dependencies).length===0)return;`,
+  `const lock=path.join(dir,"package-lock.json"),locked=fs.existsSync(lock),verb=locked?"ci":"install";`,
+  `const want=sha(fs.readFileSync(path.join(dir,"package.json"))+"\\0"+(locked?fs.readFileSync(lock):""));`,
+  `const mark=path.join(dir,"node_modules",".mend-installed");try{if(fs.readFileSync(mark,"utf8")===want)return}catch{}`,
+  `say("installing what "+label+" import");let r=npm([verb,...(locked?[]:["--no-package-lock"]),"--omit=dev","--ignore-scripts","--legacy-peer-deps","--no-audit","--no-fund"],dir);`,
+  `if(r.status===0)r=npm(["rebuild"],dir);`,
+  `if(r.status===0)fs.writeFileSync(mark,want);else say(label+": npm "+verb+" failed: "+why(r))}`,
+  `deps(P,"your pi extensions");const list=d=>{try{return fs.readdirSync(d)}catch{return[]}};`,
+  `let shared=[];try{shared=Object.keys(JSON.parse(fs.readFileSync(path.join(P,"package.json"),"utf8")).dependencies||{})}catch{}`,
+  `for(const n of list(path.join(P,"extensions"))){const d=path.join(P,"extensions",n);let m;try{m=JSON.parse(fs.readFileSync(path.join(d,"package.json"),"utf8"))}catch{continue}`,
+  `const names=Object.keys((m&&m.dependencies)||{});if(names.length>0&&!names.every(x=>shared.includes(x)))deps(d,"pi extension "+n)}`,
+  `for(const n of list(path.join(P,"packages")))deps(path.join(P,"packages",n),"pi package "+n);`,
+  `const prof=read(path.join(P,"settings.json"))||{},declared=Array.isArray(prof.packages)?prof.packages:[];`,
+  `const src=e=>typeof e==="string"?e:e!==null&&typeof e==="object"&&typeof e.source==="string"?e.source:null;`,
+  `const N=path.join(A,"npm"),failed=new Set();`,
+  `for(const e of declared){const s=src(e);if(s===null||!s.startsWith("npm:"))continue;const spec=s.slice(4);`,
+  `const at=spec.lastIndexOf("@"),name=at>0?spec.slice(0,at):spec,version=at>0?spec.slice(at+1):"";`,
+  `let have=null;try{have=JSON.parse(fs.readFileSync(path.join(N,"node_modules",name,"package.json"),"utf8")).version}catch{}`,
+  `if(typeof have==="string"&&(!/^\\d+\\.\\d+\\.\\d+(-[\\w.]+)?$/.test(version)||have===version))continue;`,
+  `if(!fs.existsSync(path.join(N,"package.json")))put(path.join(N,"package.json"),{name:"pi-extensions",private:true});`,
+  `say("installing pi package "+spec);const r=npm(["install",spec,"--prefix",N,"--legacy-peer-deps","--no-audit","--no-fund"],A);`,
+  `if(r.status!==0){failed.add(s);say("pi package "+spec+" did not install, so this session runs without it: "+why(r))}}`,
+  `const S=path.join(A,"settings.json"),D=path.join(M,"delivered-settings.json"),cur=read(S);`,
+  `if(cur===null)say("settings.json could not be read, so your profile settings were not applied");else{`,
+  `const last=read(D)||{},same=(a,b)=>JSON.stringify(a)===JSON.stringify(b),has=Object.hasOwn,out=Object.assign({},cur);`,
+  `for(const k of Object.keys(prof)){if(k!=="packages"&&(!has(cur,k)||same(cur[k],last[k])))out[k]=prof[k]}`,
+  `for(const k of Object.keys(last)){if(k!=="packages"&&!has(prof,k)&&has(cur,k)&&same(cur[k],last[k]))delete out[k]}`,
+  `const id=e=>JSON.stringify(e),delivered=["./${PI_PROFILE_AGENT_PATH}",...declared.filter(e=>!failed.has(src(e)))];`,
+  `const before=new Set((Array.isArray(last.packages)?last.packages:[]).map(id)),now=new Set(delivered.map(id));`,
+  `out.packages=[...delivered,...(Array.isArray(cur.packages)?cur.packages:[]).filter(e=>!before.has(id(e))&&!now.has(id(e)))];`,
+  `put(S,out,0o600);put(D,Object.assign({},prof,{packages:delivered}))}`,
+  `const F=path.join(M,"delivered-files.json"),lastFiles=read(F)||{},nextFiles={};`,
+  `for(const f of ["mcp.json","keybindings.json"]){let want;try{want=fs.readFileSync(path.join(P,"root",f))}catch{continue}`,
+  `const to=path.join(A,f);let have=null;try{have=sha(fs.readFileSync(to))}catch(e){if(e.code!=="ENOENT")continue}`,
+  `if(have===null||have===lastFiles[f]||have===sha(want)){put(to,want,0o600);nextFiles[f]=sha(want)}`,
+  `else{say(f+" was changed in this session, so the profile did not replace it");if(lastFiles[f])nextFiles[f]=lastFiles[f]}}`,
+  `put(F,nextFiles)}catch(e){process.stderr.write("mend: the pi profile was not set up: "+(e&&e.message)+"\\n")}`,
+].join("");

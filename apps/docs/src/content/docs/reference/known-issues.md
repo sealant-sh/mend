@@ -73,3 +73,38 @@ A Stop, a replacement or a resume keeps everything. So does an executor killed o
 survives: the platform keeps it and boots it again to save what it holds. An executor whose machine
 fails without warning can lose what was written after its last capture. Captures run 2 seconds after
 the files go quiet, and at least every 10 seconds while they keep changing.
+
+## opencode does not really work yet
+
+opencode sessions start, but little else about them is finished. Treat opencode as unsupported for
+now.
+
+## pi runs in the terminal only
+
+pi sessions run as terminals: attach from the CLI, the web app, the desktop app or VS Code. The
+phone and Slack cannot start or steer them yet; that needs the structured mode Claude Code and Codex
+have.
+
+## pi packages that build native code need build tools
+
+A pi package that compiles native code when it installs needs `make`, a C compiler and Python.
+Workspace images do not include them, so such a package (`@plannotator/pi-extension` is one) fails
+to install. The session leaves it out, says so in the terminal, and pi starts without it: pi itself
+would stop at startup. Add the build tools to the project's
+[workspace image](/guides/workspace-images/) to install it.
+
+A package that failed is tried again at every launch, which adds a few seconds.
+
+## Each new pi session installs its packages again
+
+A session's harness home is its own, so every new pi session installs the packages and extension
+dependencies of your [pi profile](/guides/pi/) again: about a minute the first time, a few seconds
+when the same session launches again. Agent memory is the only thing carried between sessions.
+
+## Your pi profile is the same in every project
+
+`mend connect pi` saves one profile per person, delivered to every pi session you start, in any
+project. A project's own `.pi/settings.json` in the repository still applies on top of it, as it
+does on your machine.
+
+A session that is already running keeps the profile it started with.
