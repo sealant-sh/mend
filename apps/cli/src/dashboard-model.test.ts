@@ -5,7 +5,9 @@ import {
   baseStepNotice,
   clampIndex,
   createLaunchGate,
+  deriveProjects,
   deriveWorktrees,
+  elapsedWords,
   filterBranches,
   foldGroupStatus,
   fitHints,
@@ -13,6 +15,7 @@ import {
   groupBaseLabel,
   KEY_BINDINGS,
   isDeadEnd,
+  liveCountWords,
   liveProtocolOf,
   liveShellOf,
   markServicesStopped,
@@ -24,6 +27,10 @@ import {
   removeWorktreeGroup,
   sessionDisplayName,
   sessionHold,
+  sessionRowFacts,
+  sessionTimeWords,
+  startingExplanationOf,
+  startingWordsOf,
   stepColumn,
   verbForKey,
   verbHints,
@@ -577,6 +584,12 @@ describe("optimistic verbs", () => {
     ).toEqual([]);
     // The other worktree is untouched.
     expect(groups.find((group) => group.name === "docs")?.live).toBe(1);
+    // With no Service, a stop is asked, not observed: the row reads stopping (story S28).
+    const bare = markSessionStopped({ ...data, servicesBySession: new Map() }, "a");
+    expect(
+      deriveWorktrees(bare, "proj-1").find((group) => group.name === "fix-auth")?.sessions[0]
+        ?.session.status,
+    ).toBe("stopping");
   });
 
   it("removeWorktreeGroup drops the group from the rows before the server answers", () => {
@@ -701,13 +714,13 @@ describe("baseStepNotice", () => {
     expect(failed).toContain("502 Bad Gateway");
     // Same empty list, no error: a different, non-alarming sentence.
     expect(baseStepNotice(creating({ branches: [] }))).toBe(
-      "no branches read — enter uses the default branch",
+      "no branches read · enter uses the default branch",
     );
   });
 
   it("distinguishes a query that matches nothing from a list that has nothing", () => {
     expect(baseStepNotice(creating({ query: "zzz" }))).toBe(
-      "no branch matches — enter uses the default branch",
+      "no branch matches · enter uses the default branch",
     );
   });
 });
@@ -864,5 +877,264 @@ describe("sessionHold", () => {
       processes: [],
     };
     expect(sessionHold(quiet)).toBeNull();
+  });
+});
+
+// docs/dashboard-status-stories.md: each test names the story it checks.
+describe("dashboard status stories", () => {
+  const NOW = Date.parse("2026-10-02T08:30:00.000Z");
+  const minutesAgo = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString();
+  const itemOf = (
+    over: Partial<SessionDto> & { readonly id: string },
+    agentCreatedAt?: string,
+  ) => ({
+    session: session(over),
+    annotation:
+      agentCreatedAt === undefined
+        ? undefined
+        : {
+            sessionId: over.id,
+            changeId: null,
+            openComments: 0,
+            pendingFollowUp: false,
+            currentAgent: {
+              status: "running",
+              exitCode: null,
+              exitedAt: null,
+              harness: "claude",
+              sealantSessionId: "pty-1",
+              kind: "agent-pty",
+              createdAt: agentCreatedAt,
+            },
+            liveServices: 0,
+          },
+    services: [],
+    processes: [],
+  });
+  const groupOf = (statuses: ReadonlyArray<string>) => {
+    const detail: ProjectDetailDto = {
+      project: {
+        id: "p",
+        name: "p",
+        originUrl: null,
+        storePath: "/s",
+        defaultBranch: "main",
+      },
+      sessions: statuses.map((status, index) =>
+        session({ id: `s${index}`, status, worktreeId: "wt" }),
+      ),
+      annotations: [],
+      worktrees: [worktree({ id: "wt" })],
+    };
+    const data: Workbench = {
+      projects: [detail.project],
+      details: new Map([["p", detail]]),
+      servicesBySession: new Map(),
+      processesBySession: new Map(),
+    };
+    return { group: deriveWorktrees(data, "p")[0]!, project: deriveProjects(data)[0]! };
+  };
+
+  it("S1: a launch the server has not answered says it is launching", () => {
+    const pending = session({ id: "pending-1", status: "starting" });
+    expect(startingWordsOf(pending)).toBe("launching");
+    expect(startingExplanationOf(pending)).toBe("launching");
+  });
+
+  it("S2: a starting session names its launch phase, never its age or an image build it cannot see", () => {
+    const at = (summary: string | null) =>
+      session({ id: "s", status: "starting", summary, createdAt: minutesAgo(21) });
+    expect(startingWordsOf(at(null))).toBe("launching");
+    expect(startingWordsOf(at("booting"))).toBe("booting");
+    expect(
+      startingWordsOf(
+        at(
+          "preparing the workspace · no runtime yet · after an update, building the image takes about 8 minutes",
+        ),
+      ),
+    ).toBe("preparing the workspace");
+    // Stored before 2026-10-02: the old words still read as the same phase.
+    expect(
+      startingWordsOf(at("building the workspace image (first launch after an update, ~8 min)")),
+    ).toBe("preparing the workspace");
+    expect(startingWordsOf(at("waiting · the previous session in this worktree is saving"))).toBe(
+      "waiting for the previous save",
+    );
+    expect(
+      startingWordsOf(at("waiting · the previous session in this worktree is not answering")),
+    ).toBe("waiting for the previous session");
+    // Words in front of the phase stay the summary's; the phase is still read from the end.
+    expect(startingWordsOf(at("dotfiles not applied · booting"))).toBe("booting");
+    expect(startingExplanationOf(at("booting"))).toBe(
+      "the workspace is booting · the agent starts when it is up",
+    );
+    expect(
+      startingExplanationOf(at("waiting · the previous session in this worktree is saving")),
+    ).toBe("the previous session in this worktree is still saving · this one starts from its save");
+    // A resume is a start too: no time fact while it starts, however old the session.
+    expect(
+      sessionTimeWords(itemOf({ id: "s", status: "starting", createdAt: minutesAgo(21) }), NOW),
+    ).toBeNull();
+  });
+
+  it("S2/S7/S24: a resume waiting on the previous save says what is left, and never claims it uploaded", () => {
+    const draining = (over: Partial<SessionDto>) =>
+      itemOf({ id: "s", status: "starting", captureDrain: "relaunch", ...over });
+    expect(sessionHold(draining({ capturePending: 3, capturePendingBytes: 12_000_000 }))).toBe(
+      "saving · 12 MB left",
+    );
+    expect(sessionHold(draining({ capturePending: 0, capturePendingBytes: 0 }))).toBe(
+      "saving · no uploads pending",
+    );
+    expect(sessionHold(draining({ capturePending: 0, capturePendingBytes: null }))).toBe(
+      "saving · no uploads pending",
+    );
+    expect(sessionHold(draining({ capturePending: null, capturePendingBytes: null }))).toBe(
+      "saving",
+    );
+  });
+
+  it("S3/S16-S18: a live session reads how long its own agent has been up, or what it knows", () => {
+    const resumed = itemOf(
+      { id: "s", status: "running", createdAt: minutesAgo(120) },
+      minutesAgo(4),
+    );
+    expect(sessionTimeWords(resumed, NOW)).toBe("up 4m");
+    // No agent on the wire (an older server): only what it knows, the creation.
+    expect(
+      sessionTimeWords(itemOf({ id: "s", status: "idle", createdAt: minutesAgo(9) }), NOW),
+    ).toBe("created 9m ago");
+    // The agent exited and something else holds the session live: when it ended.
+    const ended = itemOf({ id: "s", status: "idle", createdAt: minutesAgo(120) }, minutesAgo(30));
+    const endedItem = {
+      ...ended,
+      annotation: {
+        ...ended.annotation!,
+        currentAgent: { ...ended.annotation!.currentAgent!, exitedAt: minutesAgo(5) },
+      },
+    };
+    expect(sessionTimeWords(endedItem, NOW)).toBe("agent ended 5m ago");
+    // A shell session's uptime is the shell's; an observed agent's is only activity seen.
+    expect(
+      sessionTimeWords(
+        itemOf({ id: "s", status: "running", harness: "shell" }, minutesAgo(4)),
+        NOW,
+      ),
+    ).toBe("shell up 4m");
+    const observed = itemOf({ id: "s", status: "running" }, minutesAgo(4));
+    expect(
+      sessionTimeWords(
+        {
+          ...observed,
+          annotation: {
+            ...observed.annotation!,
+            currentAgent: { ...observed.annotation!.currentAgent!, kind: "agent-external" },
+          },
+        },
+        NOW,
+      ),
+    ).toBe("activity seen 4m ago");
+  });
+
+  it("S5/S20-S22: stopping with no save to report: the workspace end is not confirmed", () => {
+    // No agent row: nothing says an agent ran (an interrupted launch, story S22).
+    expect(sessionHold(itemOf({ id: "s", status: "stopping" }))).toBe(
+      "workspace end not confirmed",
+    );
+    const exited = itemOf({ id: "s", status: "stopping" }, minutesAgo(10));
+    expect(
+      sessionHold({
+        ...exited,
+        annotation: {
+          ...exited.annotation!,
+          currentAgent: { ...exited.annotation!.currentAgent!, exitedAt: minutesAgo(1) },
+        },
+      }),
+    ).toBe("agent ended · workspace end not confirmed");
+    expect(sessionTimeWords(itemOf({ id: "s", status: "stopping" }), NOW)).toBeNull();
+  });
+
+  it("S6/S8: a stop drain says what is left, or why it stalled", () => {
+    expect(
+      sessionHold(itemOf({ id: "s", status: "stopping", captureDrain: "stop", capturePending: 3 })),
+    ).toBe("saving · 3 left");
+    expect(
+      sessionHold(
+        itemOf({
+          id: "s",
+          status: "stopping",
+          captureDrain: "stop",
+          capturePending: 3,
+          captureNotSavedAt: minutesAgo(1),
+          captureIncompleteReason: "ship-failed",
+        }),
+      ),
+    ).toBe("not saved · upload failed · 3 pending · workspace kept");
+  });
+
+  it("S9: a settled session reads when it ended", () => {
+    expect(
+      sessionTimeWords(
+        itemOf({
+          id: "s",
+          status: "completed",
+          settledAt: minutesAgo(5),
+          createdAt: minutesAgo(60),
+        }),
+        NOW,
+      ),
+    ).toBe("ended 5m ago");
+    expect(
+      sessionTimeWords(itemOf({ id: "s", status: "failed", settledAt: minutesAgo(0) }), NOW),
+    ).toBe("ended just now");
+    // An older server sends no settledAt: when it was created, not a guess at when it ended.
+    expect(
+      sessionTimeWords(itemOf({ id: "s", status: "completed", createdAt: minutesAgo(120) }), NOW),
+    ).toBe("created 2h ago");
+  });
+
+  it("worktree states: the most pressing session word, starting and stopping included", () => {
+    expect(foldGroupStatus(groupOf(["starting"]).group)).toBe("starting");
+    expect(foldGroupStatus(groupOf(["starting", "idle"]).group)).toBe("starting");
+    expect(foldGroupStatus(groupOf(["running", "starting"]).group)).toBe("running");
+    expect(foldGroupStatus(groupOf(["idle", "waiting"]).group)).toBe("waiting");
+    expect(foldGroupStatus(groupOf(["stopping", "completed"]).group)).toBe("stopping");
+    expect(foldGroupStatus(groupOf(["idle", "stopping"]).group)).toBe("stopping");
+    expect(foldGroupStatus(groupOf(["completed", "failed"]).group)).toBe("settled");
+  });
+
+  it("project states: live and stopping counted apart, settled only when neither", () => {
+    expect(groupOf(["running", "stopping", "completed"]).project).toMatchObject({
+      live: 1,
+      stopping: 1,
+      total: 3,
+    });
+    expect(liveCountWords(1, 0)).toBe("1 live");
+    expect(liveCountWords(1, 1)).toBe("1 live · 1 stopping");
+    expect(liveCountWords(0, 2)).toBe("2 stopping");
+    expect(liveCountWords(0, 0)).toBe("settled");
+  });
+
+  it("S31: a narrow column cuts the state and keeps it first; the harness drops before it", () => {
+    const stopping = itemOf({ id: "s", status: "stopping" });
+    // 120 columns leave about 25 for a session's facts.
+    expect(sessionRowFacts(stopping, 25, NOW)).toBe("workspace end not conf… …");
+    expect(sessionRowFacts(stopping, 60, NOW)).toBe("workspace end not confirmed · claude");
+    const preparing = itemOf({
+      id: "s",
+      status: "starting",
+      summary:
+        "preparing the workspace · no runtime yet · after an update, building the image takes about 8 minutes",
+    });
+    expect(sessionRowFacts(preparing, 40, NOW)).toBe("preparing the workspace · claude");
+    expect(sessionRowFacts(preparing, 20, NOW)).toBe("preparing the wor… …");
+  });
+
+  it("rule 1: a number always says what it counts", () => {
+    expect(elapsedWords(minutesAgo(0), NOW)).toBe("<1m");
+    expect(elapsedWords(minutesAgo(59), NOW)).toBe("59m");
+    expect(elapsedWords(minutesAgo(61), NOW)).toBe("1h");
+    expect(elapsedWords(minutesAgo(60 * 49), NOW)).toBe("2d");
+    expect(elapsedWords(new Date(NOW + 60_000).toISOString(), NOW)).toBeNull();
   });
 });

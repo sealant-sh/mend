@@ -402,7 +402,7 @@ describe("a long launch", () => {
         json(response, { ...session, status: "starting" });
       } else if (route === `POST /api/sessions/${session.id}/launch`) {
         // An edge (or fetch's own five-minute limit) gives up on the long request while Mend
-        // keeps building the workspace image.
+        // keeps preparing the workspace.
         setTimeout(() => request.socket.destroy(), 100);
       } else if (route === `GET /api/sessions/${session.id}`) {
         reads += 1;
@@ -413,7 +413,7 @@ describe("a long launch", () => {
                 session: {
                   ...session,
                   status: "starting",
-                  summary: "building the workspace image",
+                  summary: "preparing the workspace",
                 },
                 currentAgent: null,
               }
@@ -427,7 +427,7 @@ describe("a long launch", () => {
       await Promise.race([fake.endFrameSent, cli.exited]);
       await expectFastExit(cli.exited, () => cli.stdout() + cli.stderr());
       expect(cli.stderr()).not.toContain("cannot reach");
-      expect(cli.stdout()).toContain("starting · building the workspace image");
+      expect(cli.stdout()).toContain("starting · preparing the workspace");
     } finally {
       cli.child.kill("SIGKILL");
       await fake.close();

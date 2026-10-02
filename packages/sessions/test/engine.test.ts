@@ -116,6 +116,7 @@ import {
   executorEndOf,
   withoutAgentStarting,
 } from "@mend/domain/workbench";
+import { LAUNCH_BOOTING, LAUNCH_PREPARING, LAUNCH_WAITING_SAVING } from "@mend/domain/workbench";
 import {
   type CaptureFlushKind,
   SealantClient,
@@ -146,9 +147,6 @@ import {
   makeDotfilesClonerLayer,
   HARNESS_HOME_MOUNT_PATH,
   HarnessStateNotFoundError,
-  LAUNCH_BOOTING,
-  LAUNCH_BUILDING_IMAGE,
-  LAUNCH_WAITING_SAVING,
   LegacyBenchReadOnlyError,
   ProtocolHost,
   ServiceHost,
@@ -3757,7 +3755,7 @@ describe("SessionEngine", () => {
           );
           // No executor on the platform past `imageBuildAfter`: the image is being built.
           yield* until(
-            () => world.sessions.get(session.id)?.summary === LAUNCH_BUILDING_IMAGE,
+            () => world.sessions.get(session.id)?.summary === LAUNCH_PREPARING,
             "the image build line",
           );
           expect(world.sessions.get(session.id)?.status).toBe("starting");

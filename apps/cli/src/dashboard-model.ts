@@ -1,4 +1,4 @@
-import { servicesHoldLine } from "@mend/domain/workbench";
+import { launchPhaseOf, servicesHoldLine } from "@mend/domain/workbench";
 
 import {
   agentIsLive,
@@ -41,6 +41,8 @@ export interface SessionDto extends SessionCaptureLike {
   /** False = settled without a conversation: nothing to resume; hidden. Absent on older servers. */
   readonly hasTranscript?: boolean | null;
   readonly createdAt: string;
+  /** When the session ended and its workspace went; absent on older servers. */
+  readonly settledAt?: string | null;
 }
 
 export interface WorktreeDto {
@@ -235,6 +237,8 @@ export interface ProjectItem {
   readonly project: ProjectDto;
   readonly total: number;
   readonly live: number;
+  /** Sessions whose agent ended and whose workspace is still being saved or ended. */
+  readonly stopping: number;
   readonly open: number;
 }
 
@@ -280,8 +284,9 @@ export const deriveProjects = (data: Workbench | undefined): ReadonlyArray<Proje
     const detail = data?.details.get(project.id);
     const sessions = detail?.sessions ?? [];
     const live = sessions.filter((s) => LIVE_STATUSES.has(s.status)).length;
+    const stopping = sessions.filter((s) => s.status === "stopping").length;
     const open = (detail?.annotations ?? []).reduce((sum, a) => sum + a.openComments, 0);
-    return { project, total: sessions.length, live, open };
+    return { project, total: sessions.length, live, stopping, open };
   });
 
 export const bySessionRecency = (a: SessionDto, b: SessionDto): number => {
@@ -306,7 +311,10 @@ export const toSessionItem =
  * lists it, and removing the worktree takes it along.
  */
 export const isDeadEnd = (session: Pick<SessionDto, "status" | "hasTranscript">): boolean =>
-  !LIVE_STATUSES.has(session.status) && session.hasTranscript === false;
+  // A stopping session may still be saving, or kept for recovery: never hidden (story S23).
+  !LIVE_STATUSES.has(session.status) &&
+  session.status !== "stopping" &&
+  session.hasTranscript === false;
 
 export const deriveWorktrees = (
   data: Workbench | undefined,
@@ -379,7 +387,7 @@ export const deriveHarnesses = (resuming: SessionDto | null): ReadonlyArray<Harn
       {
         harness: null,
         label: resuming.harness,
-        hint: "same harness — native resume, conversation intact",
+        hint: "same harness · native resume, conversation intact",
       },
       ...others.map(
         (harness): HarnessItem => ({
@@ -387,7 +395,7 @@ export const deriveHarnesses = (resuming: SessionDto | null): ReadonlyArray<Harn
           label: harness,
           hint:
             harness === "shell"
-              ? "a bash in the worktree — resume either agent from inside"
+              ? "a bash in the worktree · resume either agent from inside"
               : "the conversation crosses as a distilled prompt",
         }),
       ),
@@ -399,8 +407,8 @@ export const deriveHarnesses = (resuming: SessionDto | null): ReadonlyArray<Harn
       label: harness,
       hint:
         harness === "shell"
-          ? "a plain bash session — new worktree, recorded"
-          : `mend ${harness} — new worktree, recorded session`,
+          ? "a plain bash session · new worktree, recorded"
+          : `mend ${harness} · new worktree, recorded session`,
     }),
   );
 };
@@ -429,13 +437,123 @@ export const groupActivityAt = (group: WorktreeGroup): string =>
     group.createdAt,
   );
 
-/** The worktree's folded status word: waiting wins, then running, then idle. */
+/**
+ * The worktree's word: its most pressing session's (docs/dashboard-status-stories.md, "Worktree
+ * states") — waiting, running, starting, stopping, idle — and `settled` when none is live or
+ * stopping. A worktree whose only session is starting says `starting`, never `running`; one whose
+ * session is still saving says `stopping`, never `settled`.
+ */
 export const foldGroupStatus = (group: WorktreeGroup): string => {
-  const statuses = group.sessions.map((item) => item.session.status);
-  if (statuses.includes("waiting")) return "waiting";
-  if (statuses.includes("running") || statuses.includes("starting")) return "running";
-  if (statuses.includes("idle")) return "idle";
-  return statuses[0] ?? "idle";
+  const statuses = new Set(group.sessions.map((item) => item.session.status));
+  for (const word of ["waiting", "running", "starting", "stopping", "idle"]) {
+    if (statuses.has(word)) return word;
+  }
+  return "settled";
+};
+
+/** A section's fact for live and stopping counts: `1 live · 1 stopping`, or `settled`. */
+export const liveCountWords = (live: number, stopping: number): string => {
+  const words = [
+    ...(live > 0 ? [`${live} live`] : []),
+    ...(stopping > 0 ? [`${stopping} stopping`] : []),
+  ];
+  return words.length === 0 ? "settled" : words.join(" · ");
+};
+
+/** `<1m`, `4m`, `2h`, `3d`: how long since `iso`; null when unreadable or in the future. */
+export const elapsedWords = (iso: string, now: number = Date.now()): string | null => {
+  const ms = now - new Date(iso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+};
+
+/**
+ * Where a launch stands, as a starting session's row says it (stories S1, S2): what the server's
+ * launch phase words name, shortened; `launching` before the server names one.
+ */
+export const startingWordsOf = (session: SessionDto): string => {
+  if (isPendingId(session.id)) return "launching";
+  const phase = launchPhaseOf(session.summary);
+  if (phase === null) return "launching";
+  switch (phase.kind) {
+    case "waiting-previous":
+      return phase.words.endsWith("is saving")
+        ? "waiting for the previous save"
+        : "waiting for the previous session";
+    case "booting":
+      return "booting";
+    case "preparing":
+      return "preparing the workspace";
+  }
+};
+
+/** What the detail pane says under a starting session (story S2): the phase, explained. */
+export const startingExplanationOf = (session: SessionDto): string => {
+  const phase = isPendingId(session.id) ? null : launchPhaseOf(session.summary);
+  if (phase === null) return "launching";
+  switch (phase.kind) {
+    case "waiting-previous":
+      return phase.words.endsWith("is saving")
+        ? "the previous session in this worktree is still saving · this one starts from its save"
+        : phase.words;
+    case "booting":
+      return "the workspace is booting · the agent starts when it is up";
+    case "preparing":
+      return "the workspace has no runtime yet · after an update, building its image takes about 8 minutes";
+  }
+};
+
+/**
+ * The time fact a session carries (stories S3, S9, S16-S18, S29), never a bare age:
+ * - `up 4m` while its agent's own process is live, from that process's start (a resumed session's
+ *   creation is not how long its agent has run); `shell up 4m` for a shell session; `activity
+ *   seen 4m ago` for an agent Mend observed rather than launched;
+ * - `agent ended 5m ago` once that process exited and the session is still live (shells or
+ *   Services hold it);
+ * - `ended 5m ago` once the session settled;
+ * - `created 2h ago` when none of those is known (an older server, no agent row).
+ * Null while it starts or stops (the phase or the save says more) or when no time can be read.
+ */
+export const sessionTimeWords = (item: SessionItem, now: number = Date.now()): string | null => {
+  const { session } = item;
+  if (session.status === "starting" || session.status === "stopping") return null;
+  const agent = item.annotation?.currentAgent ?? null;
+  const created = elapsedWords(session.createdAt, now);
+  const createdWords = created === null ? null : `created ${agoWords(created)}`;
+  if (LIVE_STATUSES.has(session.status)) {
+    if (agent === null || agent.createdAt === undefined) return createdWords;
+    if (agent.exitedAt !== null) {
+      const ended = elapsedWords(agent.exitedAt, now);
+      return ended === null ? createdWords : `agent ended ${agoWords(ended)}`;
+    }
+    const up = elapsedWords(agent.createdAt, now);
+    if (up === null) return createdWords;
+    if (agent.kind === "agent-external") return `activity seen ${agoWords(up)}`;
+    return session.harness === "shell" ? `shell up ${up}` : `up ${up}`;
+  }
+  const settledAt = session.settledAt ?? null;
+  const ended = settledAt === null ? null : elapsedWords(settledAt, now);
+  return ended === null ? createdWords : `ended ${agoWords(ended)}`;
+};
+
+/** `just now` under a minute, else `5m ago`. */
+const agoWords = (elapsed: string): string => (elapsed === "<1m" ? "just now" : `${elapsed} ago`);
+
+/**
+ * What a session row leads with (story S31): its state, short enough to survive a narrow column —
+ * the save or hold line, the launch phase, else the time fact. Fitted on its own, before the
+ * harness, so it is cut, never dropped.
+ */
+export const sessionStateWords = (item: SessionItem, now: number = Date.now()): string | null => {
+  const hold = sessionHold(item);
+  if (hold !== null) return hold;
+  if (item.session.status === "starting") return startingWordsOf(item.session);
+  return sessionTimeWords(item, now);
 };
 
 // ─── attach + verb helpers ──────────────────────────────────────────────────
@@ -550,7 +668,15 @@ export const markSessionStopped = (data: Workbench, sessionId: string): Workbenc
   // A stop ends the agent and leaves Services running: their rows stay until their own stop.
   return {
     ...mapWorkbenchSessions(data, (session) =>
-      session.id === sessionId ? { ...session, status: "stopped" } : session,
+      // Asked, not observed (story S28): `stopping` until the server says how it ended. A stop
+      // leaves Services running, so a session with Services reads as stopped with what holds it.
+      session.id === sessionId
+        ? {
+            ...session,
+            status:
+              (data.servicesBySession.get(sessionId) ?? []).length > 0 ? "stopped" : "stopping",
+          }
+        : session,
     ),
     processesBySession,
   };
@@ -575,6 +701,23 @@ export const sessionHold = (item: SessionItem): string | null => {
   // A workspace a stop is still saving (docs/adr/0002) reads what is left, first.
   const capture = captureLineOf(item.session);
   if (capture !== null) return capture;
+  // Stopping with no save to report (stories S5, S20-S22): what Mend has not observed yet is the
+  // workspace's end. Never "still up" (the executor may not be answering) nor "saved".
+  if (item.session.status === "stopping") {
+    const agent = item.annotation?.currentAgent ?? null;
+    return agent !== null && agent.exitedAt !== null
+      ? "agent ended · workspace end not confirmed"
+      : "workspace end not confirmed";
+  }
+  return servicesHoldOf(item);
+};
+
+/**
+ * Whether the session's Services keep its workspace up after its agent ended, in words — the one
+ * fact ⇧K acts on to stop Services. Never derived from the display line (a save line is not a
+ * Service).
+ */
+export const servicesHoldOf = (item: SessionItem): string | null => {
   const agent = item.annotation?.currentAgent ?? null;
   const agentProcessLive = item.processes.some(
     (process) => process.kind !== "shell" && process.exitedAt === null,
@@ -588,6 +731,38 @@ export const sessionHold = (item: SessionItem): string | null => {
     liveServices: Math.max(item.annotation?.liveServices ?? 0, item.services.length),
   });
 };
+
+/**
+ * A session row's second line (story S31): its state first, cut to fit and never dropped, then the
+ * harness and what lives in it, dropped from the end as the column narrows.
+ */
+export const sessionRowFacts = (
+  item: SessionItem,
+  width: number,
+  now: number = Date.now(),
+): string => {
+  const agents = item.processes.filter((process) => process.kind !== "shell").length;
+  const shells = item.processes.filter((process) => process.kind === "shell").length;
+  const services = item.services.length;
+  const state = sessionStateWords(item, now);
+  // A wide column keeps room for ` · claude` after the state; a narrow one gives the state all of
+  // it but the ` …` that says more was cut.
+  const stateWidth = width > 40 ? width - 9 : width - 2;
+  return fitHints(
+    [
+      ...(state === null ? [] : [cut(state, stateWidth)]),
+      item.session.harness,
+      ...(shells > 0 ? [`${shells} shell`] : []),
+      ...(agents > 0 ? [`${agents} agent`] : []),
+      ...(services > 0 && servicesHoldOf(item) === null ? [`${services} service`] : []),
+    ],
+    width,
+  );
+};
+
+/** Cut to width with an ellipsis. */
+const cut = (text: string, width: number): string =>
+  text.length <= width ? text : `${text.slice(0, Math.max(0, width - 1))}…`;
 
 /** The optimistic removal: the whole group leaves the list before the server answers. */
 export const removeWorktreeGroup = (
@@ -692,12 +867,12 @@ export interface CreatingState {
  */
 export const baseStepNotice = (state: CreatingState): string | null => {
   if (state.branchError !== null) {
-    return `branches unreadable — ${state.branchError} · enter uses the default`;
+    return `branches unreadable · ${state.branchError} · enter uses the default`;
   }
   if (state.branches === null) return "reading branches…";
-  if (state.branches.length === 0) return "no branches read — enter uses the default branch";
+  if (state.branches.length === 0) return "no branches read · enter uses the default branch";
   if (filterBranches(state.branches, state.query).length === 0) {
-    return "no branch matches — enter uses the default branch";
+    return "no branch matches · enter uses the default branch";
   }
   return null;
 };

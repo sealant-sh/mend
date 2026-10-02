@@ -1,3 +1,4 @@
+import { withoutLaunchPhase } from "@mend/domain/workbench";
 import { CliRenderEvents, createCliRenderer, type ScrollBoxRenderable } from "@opentui/core";
 import { createRoot, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import {
@@ -26,6 +27,7 @@ import {
   fetchWorkbench,
   filterBranches,
   fitHints,
+  elapsedWords,
   foldGroupStatus,
   isNavSection,
   groupActivityAt,
@@ -43,7 +45,13 @@ import {
   removeWorktreeGroup,
   replaceSession,
   sessionDisplayName,
+  liveCountWords,
+  servicesHoldOf,
   sessionHold,
+  sessionRowFacts,
+  sessionTimeWords,
+  startingExplanationOf,
+  startingWordsOf,
   stepColumn,
   verbForKey,
   verbHints,
@@ -143,6 +151,8 @@ const STATUS_COLOR: Record<string, string> = {
   completed: FAINT,
   failed: ERROR,
   stopped: FAINT,
+  stopping: INK_2,
+  settled: FAINT,
 };
 
 /** The agent itself is still working: never remove from under it. Idle (agent gone) may go. */
@@ -159,7 +169,18 @@ const timeAgo = (iso: string): string => {
   return `${Math.floor(hours / 24)}d ago`;
 };
 
-const shortAge = (iso: string): string => timeAgo(iso).replace(" ago", "");
+/**
+ * A worktree's activity fact, never a bare `5m` (story S30): when its newest session was created,
+ * or, with none, when the worktree was. A resume is not a creation, and Mend does not carry when
+ * one started, so this says created.
+ */
+const lastSessionWords = (group: WorktreeGroup): ReadonlyArray<string> => {
+  const at = group.sessions.length === 0 ? group.createdAt : groupActivityAt(group);
+  const elapsed = elapsedWords(at);
+  if (elapsed === null) return [];
+  const ago = elapsed === "<1m" ? "just now" : `${elapsed} ago`;
+  return [group.sessions.length === 0 ? `created ${ago}` : `last session created ${ago}`];
+};
 
 /** Cut to width with an ellipsis, so a long name never wraps a one-line row. */
 const fit = (text: string, width: number): string =>
@@ -301,8 +322,10 @@ const ProjectRow = ({
       <text height={1} bg="transparent">
         <Gutter selected={selected} />
         <span fg={INK}>{fit(item.project.name, nameWidth).padEnd(nameWidth + 1)}</span>
-        <span fg={item.live > 0 ? MUTED : FAINT}>
-          {item.live > 0 ? `${item.live}/${item.total}` : String(item.total)}
+        <span fg={item.live + item.stopping > 0 ? MUTED : FAINT}>
+          {item.live + item.stopping > 0
+            ? `${item.live + item.stopping}/${item.total}`
+            : String(item.total)}
         </span>
       </text>
     </box>
@@ -323,10 +346,8 @@ const WorktreeRow = ({
   readonly selected: boolean;
   readonly width: number;
 }) => {
-  const folded = foldGroupStatus(group);
-  const live = group.live > 0;
-  const status = live ? folded : "settled";
-  const color = live ? (STATUS_COLOR[folded] ?? MUTED) : FAINT;
+  const status = foldGroupStatus(group);
+  const color = STATUS_COLOR[status] ?? MUTED;
   const open = group.annotation?.openComments ?? 0;
   const sessions = group.sessions.length;
   const nameWidth = Math.max(6, width - 5 - status.length);
@@ -335,8 +356,8 @@ const WorktreeRow = ({
   // One session is the ordinary case and says nothing worth a column of width.
   const facts = fitHints(
     [
-      fit(groupBaseLabel(group), factWidth),
-      shortAge(groupActivityAt(group)),
+      fit(`from ${groupBaseLabel(group)}`, Math.max(12, Math.floor(factWidth / 2))),
+      ...lastSessionWords(group),
       ...(open > 0 ? [`${open} open`] : []),
       ...(sessions === 0 ? ["empty"] : sessions === 1 ? [] : [`${sessions} sessions`]),
     ],
@@ -370,27 +391,12 @@ const SessionRow = ({
   readonly selected: boolean;
   readonly width: number;
 }) => {
-  const { session, processes, services } = item;
+  const { session } = item;
   const status = session.status;
   const color = STATUS_COLOR[status] ?? MUTED;
-  const agents = processes.filter((process) => process.kind !== "shell").length;
-  const shells = processes.filter((process) => process.kind === "shell").length;
   const nameWidth = Math.max(6, width - 5 - status.length);
   const factWidth = Math.max(8, width - 3);
-  // A stopped agent's Services keep the workspace up: that leads, or it would read as done.
-  const hold = sessionHold(item);
-  // The harness leads otherwise: it is the fact the machine id used to crowd out.
-  const facts = fitHints(
-    [
-      ...(hold === null ? [] : [hold]),
-      session.harness,
-      shortAge(session.createdAt),
-      ...(shells > 0 ? [`${shells} shell`] : []),
-      ...(agents > 0 ? [`${agents} agent`] : []),
-      ...(hold === null && services.length > 0 ? [`${services.length} service`] : []),
-    ],
-    factWidth,
-  );
+  const facts = sessionRowFacts(item, factWidth);
   return (
     <box flexShrink={0} flexDirection="column" backgroundColor={selected ? WASH : "transparent"}>
       <box height={1} flexShrink={0} backgroundColor="transparent">
@@ -479,7 +485,13 @@ const SessionFacts = ({
   const { session, annotation, services } = item;
   const color = STATUS_COLOR[session.status] ?? MUTED;
   const hold = sessionHold(item);
-  const summary = session.summary?.split("\n")[0] ?? null;
+  const starting = session.status === "starting";
+  // While it starts the status line names the launch phase; the summary does not say it again.
+  const phase = starting ? startingWordsOf(session) : null;
+  const summary =
+    (starting ? withoutLaunchPhase(session.summary) : session.summary)?.split("\n")[0] ?? null;
+  // The created line's last fact: how long the agent has been up, or when the session ended.
+  const when = starting ? null : sessionTimeWords(item);
   const change = annotation ?? group?.annotation;
   const lines: ReadonlyArray<ReactNode> = [
     <text key="name" height={1} bg="transparent">
@@ -490,6 +502,12 @@ const SessionFacts = ({
     <text key="status" height={1} bg="transparent">
       <span>{"  "}</span>
       <span fg={color}>{session.status}</span>
+      {phase === null ? null : (
+        <>
+          <span fg={FAINT}>{" · "}</span>
+          <span fg={INK_2}>{phase}</span>
+        </>
+      )}
       {hold === null ? null : (
         <>
           <span fg={FAINT}>{" · "}</span>
@@ -503,7 +521,13 @@ const SessionFacts = ({
       </span>
     </text>,
     <text key="started" height={1} bg="transparent" fg={FAINT}>
-      {`  started ${timeAgo(session.createdAt)} · ${isPendingId(session.id) ? "provisioning" : session.id.slice(0, 8)}`}
+      {[
+        ...(timeAgo(session.createdAt) === "" ? [] : [`created ${timeAgo(session.createdAt)}`]),
+        isPendingId(session.id) ? "provisioning" : session.id.slice(0, 8),
+        ...(when === null || when.startsWith("created ") ? [] : [when]),
+      ]
+        .join(" · ")
+        .replace(/^/, "  ")}
     </text>,
     <text key="services" height={1} bg="transparent">
       <span>{"  "}</span>
@@ -594,7 +618,7 @@ const StatusLine = ({
       ? status !== null && Date.now() - status.at < 5000
         ? ` ${status.text}`
         : ""
-      : ` ${busy} ${Math.max(0, Math.round((now - busyStarted) / 1000))}s`;
+      : ` ${busy} ${Math.max(0, Math.round((now - busyStarted) / 1000))}s elapsed`;
   return (
     <text height={1} fg={INK_2} bg="transparent">
       {text}
@@ -625,8 +649,8 @@ const startedOrStarting = async (
 /** What the status line says once a start call returned: started, or still starting. */
 const startedLine = (session: SessionDto): string =>
   session.status === "starting"
-    ? `still starting · ${sessionDisplayName(session)} — a attaches once the row reads running`
-    : `started · ${sessionDisplayName(session)} — a attaches`;
+    ? `still starting · ${sessionDisplayName(session)} · a attaches once the row reads running`
+    : `started · ${sessionDisplayName(session)} · a attaches`;
 
 /**
  * Keep a selection inside its scrollbox. The viewport is passed in rather than
@@ -863,9 +887,9 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     return share.subscribe((event: ShareEvent | null) => {
       if (event === null) return;
       if (event.kind === "sign-requested") {
-        say(`✎ signature requested (${event.context}) — touch your key if it blinks`);
+        say(`✎ signature requested · ${event.context} · touch your key if it blinks`);
       } else if (event.kind === "signed") say(`✓ signed (${event.seconds.toFixed(1)}s)`);
-      else if (event.kind === "not-signed") say(`✗ not signed — ${event.message}`);
+      else if (event.kind === "not-signed") say(`✗ not signed · ${event.message}`);
     });
   }, [ctx.agentShare]);
 
@@ -941,7 +965,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           // A phone pickup holds the session in protocol mode — no PTY behind
           // it. Take it over: end the protocol agent, resume the same
           // conversation as a TUI, then attach to that.
-          process.stdout.write(`taking over from the protocol session — same conversation…\n\n`);
+          process.stdout.write(`taking over from the protocol session · same conversation…\n\n`);
           await ctx.api<SessionDto>("POST", `/sessions/${session.id}/handoff`, { to: "pty" });
           outcome = await ctx.attachTty(session.id, session.harness);
         } else if (existing === null) {
@@ -949,10 +973,10 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
             "POST",
             `/sessions/${session.id}/shell`,
           );
-          process.stdout.write(`no live terminal — opened a shell in the workspace\n\n`);
+          process.stdout.write(`no live terminal · opened a shell in the workspace\n\n`);
           outcome = await ctx.attachTty(session.id, "shell", shell.id);
         } else {
-          process.stdout.write(`no live terminal — rejoining the open shell\n\n`);
+          process.stdout.write(`no live terminal · rejoining the open shell\n\n`);
           outcome = await ctx.attachTty(session.id, "shell", existing.id);
         }
       }
@@ -965,14 +989,14 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     }
     say(
       outcome === "unavailable"
-        ? "attach unavailable — could not connect"
+        ? "attach unavailable · could not connect"
         : outcome === "no-answer"
-          ? `no answer — the server did not open ${short}'s terminal; it keeps running · a tries again`
+          ? `no answer · the server did not open ${short}'s terminal; it keeps running · a tries again`
           : outcome === "detached" || outcome === "interrupted"
-            ? `detached — ${short} keeps running`
+            ? `detached · ${short} keeps running`
             : outcome === "dropped"
-              ? `disconnected · ${short} — refreshing session status`
-              : `terminal ended · ${short} — refreshing session status`,
+              ? `disconnected · ${short} · refreshing session status`
+              : `terminal ended · ${short} · refreshing session status`,
     );
     refetch();
   };
@@ -1030,7 +1054,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       );
       setWorktreeKey(vars.pendingKey);
       selectSession(vars.pendingKey);
-      setBusy(`provisioning ${vars.harness} workspace — a first launch builds the harness image ·`);
+      setBusy(`provisioning ${vars.harness} workspace ·`);
       setBusyStarted(Date.now());
     },
     onError: (error, vars) => {
@@ -1077,7 +1101,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       );
       selectSession(vars.session.id);
       setBusy(
-        `resuming ${sessionDisplayName(vars.session)} — a fresh workspace restores the saved state ·`,
+        `resuming ${sessionDisplayName(vars.session)} · a fresh workspace restores the saved state ·`,
       );
       setBusyStarted(Date.now());
     },
@@ -1093,8 +1117,8 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       setBusy(null);
       say(
         resumed.status === "starting"
-          ? `still resuming · ${sessionDisplayName(resumed)} — a attaches once the row reads running`
-          : `resumed · ${sessionDisplayName(resumed)} — a attaches`,
+          ? `still resuming · ${sessionDisplayName(resumed)} · a attaches once the row reads running`
+          : `resumed · ${sessionDisplayName(resumed)} · a attaches`,
       );
     },
     onSettled: (_data, _error, vars) => {
@@ -1112,7 +1136,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     {
       mode: "mend-key",
       label: "mend-key",
-      hint: "the machine's Mend deploy key — add its public half on the git host",
+      hint: "the machine's Mend deploy key · add its public half on the git host",
     },
     {
       mode: "bridge",
@@ -1130,7 +1154,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       }),
     onMutate: (offer) => {
       setAdoptOffer(null);
-      setBusy(`adopting ${offer.name} — cloning into the store ·`);
+      setBusy(`adopting ${offer.name} · cloning into the store ·`);
       setBusyStarted(Date.now());
     },
     onError: (error) => {
@@ -1144,7 +1168,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         return;
       }
       const project = result.project;
-      say(`adopted · ${project.name} — w starts a worktree`);
+      say(`adopted · ${project.name} · w starts a worktree`);
       setProjectKey(project.id);
       setWorktreeKey(null);
       setSessionKey(null);
@@ -1189,7 +1213,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     },
     onSuccess: (result, session) => {
       say(
-        `stopped ${result.stopped} service${result.stopped === 1 ? "" : "s"} · ${sessionDisplayName(session)} — the workspace ends once nothing is live`,
+        `stopped ${result.stopped} service${result.stopped === 1 ? "" : "s"} · ${sessionDisplayName(session)} · the workspace ends once nothing is live`,
       );
     },
     onError: (error) => {
@@ -1206,7 +1230,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       await queryClient.cancelQueries({ queryKey: WORKBENCH_KEY });
       // The row settles and its live process/service facts drop in one paint.
       patchWorkbench((current) => markSessionStopped(current, session.id));
-      say(`stopped · ${sessionDisplayName(session)} — the record and review remain`);
+      say(`stopped · ${sessionDisplayName(session)} · the record and review remain`);
     },
     onError: (error) => {
       say(errorText(error));
@@ -1323,7 +1347,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       refetch();
     },
     onSuccess: (_result, session) => {
-      say(`removed · ${sessionDisplayName(session)} — the worktree remains`);
+      say(`removed · ${sessionDisplayName(session)} · the worktree remains`);
       refetch();
     },
     onSettled: settleRefetch,
@@ -1343,7 +1367,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       if (group === null || group.sessions.some((item) => isPendingId(item.session.id))) return;
       if (group.live > 0) {
         say(
-          `${group.live} session${group.live === 1 ? "" : "s"} live — stop them first (⇧K) · ${group.name}`,
+          `${group.live} session${group.live === 1 ? "" : "s"} live · stop them first (⇧K) · ${group.name}`,
         );
         return;
       }
@@ -1357,13 +1381,13 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         group.sessions.length === 1
           ? "its session and change go with it"
           : `${group.sessions.length} sessions and the change go with it`;
-      say(`press ⇧D again to remove worktree · ${group.name} — ${facts}`);
+      say(`press ⇧D again to remove worktree · ${group.name} · ${facts}`);
       return;
     }
     const session = selectedSession;
     if (session === null || isPendingId(session.id)) return;
     if (AGENT_LIVE_STATUSES.has(session.status)) {
-      say(`the agent is still working — stop it first (⇧K) · ${sessionDisplayName(session)}`);
+      say(`the agent is still working · stop it first (⇧K) · ${sessionDisplayName(session)}`);
       return;
     }
     if (removeArmed === session.id && confirmationVisible("press ⇧D again")) {
@@ -1373,7 +1397,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     }
     setRemoveArmed(session.id);
     say(
-      `press ⇧D again to remove session · ${sessionDisplayName(session)} — its record goes, the worktree stays`,
+      `press ⇧D again to remove session · ${sessionDisplayName(session)} · its record goes, the worktree stays`,
     );
   };
 
@@ -1384,7 +1408,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       if (group === null) return;
       const live = group.sessions.filter((item) => LIVE_STATUSES.has(item.session.status));
       if (live.length === 0) {
-        say("nothing to stop — the worktree is settled");
+        say("nothing to stop · the worktree is settled");
         return;
       }
       if (stopArmed === `wt:${group.key}` && confirmationVisible("press ⇧K again")) {
@@ -1400,8 +1424,9 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     }
     const session = selectedSession;
     if (session === null || isPendingId(session.id)) return;
-    // The agent is no longer live and Services keep the workspace up: ⇧K stops those.
-    const hold = selectedItem === null ? null : sessionHold(selectedItem);
+    // The agent is no longer live and Services keep the workspace up: ⇧K stops those. Read from
+    // the Services themselves, never from the display line (a save line is not a Service).
+    const hold = selectedItem === null ? null : servicesHoldOf(selectedItem);
     if (hold !== null) {
       if (stopArmed === `svc:${session.id}` && confirmationVisible("press ⇧K again")) {
         setStopArmed(null);
@@ -1409,11 +1434,16 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         return;
       }
       setStopArmed(`svc:${session.id}`);
-      say(`press ⇧K again to stop the services · ${sessionDisplayName(session)} — ${hold}`);
+      say(`press ⇧K again to stop the services · ${sessionDisplayName(session)} · ${hold}`);
+      return;
+    }
+    if (session.status === "stopping") {
+      const saving = selectedItem === null ? null : sessionHold(selectedItem);
+      say(`already stopping${saving === null ? "" : ` · ${saving}`}`);
       return;
     }
     if (!LIVE_STATUSES.has(session.status)) {
-      say("nothing to stop — the session is settled");
+      say("nothing to stop · the session is settled");
       return;
     }
     if (stopArmed === session.id && confirmationVisible("press ⇧K again")) {
@@ -1477,7 +1507,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         if (creatingRef.current?.projectId !== projectId || request !== branchRequest.current)
           return;
         const message = errorText(error);
-        say(`could not read branches — ${message}`);
+        say(`could not read branches · ${message}`);
         setCreating((current) =>
           current?.projectId === projectId
             ? { ...current, branches: [], branchError: message }
@@ -1524,7 +1554,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     const gateKey = `launch:${current.projectId}:${current.name}`;
     if (!gate.take(gateKey)) {
       setCreating(null);
-      say("that worktree is already starting — wait for it to finish before starting another");
+      say("that worktree is already starting · wait for it to finish before starting another");
       return;
     }
     setCreating(null);
@@ -1561,11 +1591,11 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         return;
       case "starting":
         say(
-          `still starting · ${sessionDisplayName(plan.session)} — a attaches once the row reads running`,
+          `still starting · ${sessionDisplayName(plan.session)} · a attaches once the row reads running`,
         );
         return;
       case "settled":
-        say(`settled · ${sessionDisplayName(plan.session)} — r resumes it, ⇧D removes it`);
+        say(`settled · ${sessionDisplayName(plan.session)} · r resumes it, ⇧D removes it`);
         return;
       case "stopping":
         say(
@@ -1573,10 +1603,10 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         );
         return;
       case "pending":
-        say("still provisioning — the row fills in when the workspace answers");
+        say("still provisioning · the row fills in when the workspace answers");
         return;
       case "none":
-        say("no session selected — n starts one");
+        say("no session selected · n starts one");
         return;
     }
   };
@@ -1593,13 +1623,13 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         openPicker(plan.session);
         return;
       case "live":
-        say(`already live · ${sessionDisplayName(plan.session)} — a attaches`);
+        say(`already live · ${sessionDisplayName(plan.session)} · a attaches`);
         return;
       case "pending":
-        say("still provisioning — nothing to resume yet");
+        say("still provisioning · nothing to resume yet");
         return;
       case "none":
-        say("no session selected — n starts one");
+        say("no session selected · n starts one");
         return;
     }
   };
@@ -1878,7 +1908,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       focus === "projects" &&
       ["attach", "resume", "stop", "remove", "rename", "openWeb", "review"].includes(verb ?? "")
     ) {
-      say("select a session first — → opens worktrees");
+      say("select a session first · → opens worktrees");
       return;
     }
     // One table decides what a keystroke means; the footer reads the same one.
@@ -1934,7 +1964,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         const session = selectedSession;
         if (session === null) return;
         if (isPendingId(session.id)) {
-          say("still provisioning — nothing to review yet");
+          say("still provisioning · nothing to review yet");
           return;
         }
         const target = reviewTargetForSession(
@@ -1956,6 +1986,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
 
   // ── chrome ──
   const liveTotal = projectItems.reduce((sum, item) => sum + item.live, 0);
+  const stoppingTotal = projectItems.reduce((sum, item) => sum + item.stopping, 0);
   const columnTitle = (column: Column): string => {
     if (column === "worktrees") {
       return selectedProject === null
@@ -1978,9 +2009,9 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       ? ""
       : picker.worktree === undefined
         ? picker.session === null
-          ? "new session — pick a harness"
-          : `resume ${sessionDisplayName(picker.session)} — pick a harness`
-        : `new session in ${picker.worktree.name} — pick a harness`;
+          ? "new session · pick a harness"
+          : `resume ${sessionDisplayName(picker.session)} · pick a harness`
+        : `new session in ${picker.worktree.name} · pick a harness`;
   // One big fixed-size modal: every step visible at once, nothing shifts as
   // focus moves through name → base → harness.
   const creatingHeight = 2 + 1 + 1 + 6 + 1 + deriveHarnesses(null).length;
@@ -2028,11 +2059,11 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const sectionFact = (section: NavSection): string => {
     if (section === "projects") {
       if (selectedProject === null) return "";
-      return selectedProject.live > 0 ? `${selectedProject.live} live` : "settled";
+      return liveCountWords(selectedProject.live, selectedProject.stopping);
     }
     if (section === "worktrees") {
       if (selectedGroup === null) return "";
-      return selectedGroup.live > 0 ? foldGroupStatus(selectedGroup) : "settled";
+      return foldGroupStatus(selectedGroup);
     }
     return selectedSession?.status ?? "";
   };
@@ -2123,7 +2154,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
                 />
               ))}
               {data !== undefined && worktreeGroups.length === 0 ? (
-                <EmptyNote text="no worktrees — w starts one" />
+                <EmptyNote text="no worktrees · w starts one" />
               ) : null}
             </scrollbox>
           </Pane>
@@ -2154,13 +2185,13 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
               {data !== undefined && sessionItems.length === 0 ? (
                 <EmptyNote
                   text={
-                    selectedGroup === null ? "no worktree selected" : "no sessions — n starts one"
+                    selectedGroup === null ? "no worktree selected" : "no sessions · n starts one"
                   }
                 />
               ) : null}
               {loadFailure === null ? null : (
                 <text height={1} fg={INK_2} bg="transparent">
-                  {`  ${loadFailure} — retrying`}
+                  {`  ${loadFailure} · retrying`}
                 </text>
               )}
             </scrollbox>
@@ -2172,7 +2203,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const renderDetail = (): ReactNode => (
     <Pane title={paneTitle("detail", detailWidth + 2)} focused={focus === "detail"} grow>
       {selectedItem === null ? (
-        <EmptyNote text="no session selected — n starts one" />
+        <EmptyNote text="no session selected · n starts one" />
       ) : (
         <>
           <SessionFacts
@@ -2193,9 +2224,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
                   <span>{"  "}</span>
                   <span fg={INK_2}>starting</span>
                   <span fg={FAINT}>
-                    {
-                      " · the image builds, then the session boots · a first build on a new setup takes about 7 minutes"
-                    }
+                    {` · ${selectedSession === null ? "launching" : startingExplanationOf(selectedSession)}`}
                   </span>
                 </text>
                 {snakeShown ? (
@@ -2205,9 +2234,9 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
                 )}
               </>
             ) : previewSessionId === null ? (
-              <EmptyNote text="provisioning — no record yet" />
+              <EmptyNote text="provisioning · no record yet" />
             ) : selectedSession?.harness === "shell" ? (
-              <EmptyNote text="shell — no conversation record; a attaches if live" />
+              <EmptyNote text="shell · no conversation record; a attaches if live" />
             ) : transcript.isPending ? (
               <EmptyNote text="reading the record…" />
             ) : transcript.error === null ? (
@@ -2220,7 +2249,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
               )
             ) : (
               <text height={1} fg={INK_2} bg="transparent">
-                {`  could not read the record — ${errorText(transcript.error)}`}
+                {`  could not read the record · ${errorText(transcript.error)}`}
               </text>
             )}
           </box>
@@ -2243,6 +2272,12 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           </span>
           <span fg={FAINT}> · </span>
           <span fg={liveTotal > 0 ? MUTED : FAINT}>{liveTotal} live</span>
+          {stoppingTotal > 0 ? (
+            <>
+              <span fg={FAINT}> · </span>
+              <span fg={INK_2}>{stoppingTotal} stopping</span>
+            </>
+          ) : null}
           {gate.count() > 0 ? (
             <>
               <span fg={FAINT}> · </span>
@@ -2353,7 +2388,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           border
           borderStyle="rounded"
           borderColor={ACCENT}
-          title={` label — ${editing.harness} ${editing.id.slice(0, 8)} `}
+          title={` label · ${editing.harness} ${editing.id.slice(0, 8)} `}
           titleAlignment="left"
           backgroundColor={SURFACE}
           height={3}
@@ -2431,7 +2466,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           border
           borderStyle="rounded"
           borderColor={ACCENT}
-          title={` new worktree — ${selectedProject?.project.name ?? "project"} `}
+          title={` new worktree · ${selectedProject?.project.name ?? "project"} `}
           titleAlignment="left"
           backgroundColor={SURFACE}
           flexDirection="column"
@@ -2485,7 +2520,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
               <input
                 focused
                 value=""
-                placeholder="type to filter (enter = highlighted; empty = default)"
+                placeholder="type to filter · enter takes the highlighted branch, or the default when empty"
                 backgroundColor={SURFACE}
                 focusedBackgroundColor={SURFACE}
                 textColor={INK}
@@ -2537,7 +2572,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
                   <Gutter selected={highlighted} />
                   <span fg={active ? INK : FAINT}>{branch.name.slice(0, 40).padEnd(41)}</span>
                   <span fg={FAINT}>{branch.sha.slice(0, 8).padEnd(10)}</span>
-                  <span fg={active ? MUTED : FAINT}>{shortAge(branch.committedAt).padEnd(6)}</span>
+                  <span fg={active ? MUTED : FAINT}>{timeAgo(branch.committedAt).padEnd(9)}</span>
                   {branch.isDefault ? <span fg={FAINT}>default</span> : null}
                 </text>
               </box>
@@ -2573,7 +2608,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
         <StatusLine busy={busy} busyStarted={busyStarted} status={status} />
       ) : (
         <text height={1} fg={ERROR} bg="transparent">
-          {` could not load workbench — ${loadFailure} · retrying`}
+          {` could not load workbench · ${loadFailure} · retrying`}
         </text>
       )}
       <text height={1} fg={FAINT} bg="transparent">

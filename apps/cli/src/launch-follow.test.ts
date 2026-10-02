@@ -59,14 +59,14 @@ describe("followStart", () => {
         session: starting("waiting · the previous session in this worktree is saving"),
         currentAgent: null,
       },
-      { session: starting("building the workspace image"), currentAgent: null },
-      { session: starting("building the workspace image"), currentAgent: null },
+      { session: starting("preparing the workspace"), currentAgent: null },
+      { session: starting("preparing the workspace"), currentAgent: null },
       { session: running, currentAgent: ptyAgent },
     ]);
     expect(await run.outcome).toEqual({ kind: "live", session: running });
     expect(run.lines).toEqual([
       "waiting · the previous session in this worktree is saving",
-      "starting · building the workspace image",
+      "starting · preparing the workspace",
     ]);
   });
 
@@ -83,7 +83,7 @@ describe("followStart", () => {
     const run = follow(
       Promise.reject(new MendRequestError("timeout", "POST /sessions/session-1/launch no answer")),
       [
-        { session: starting("building the workspace image"), currentAgent: null },
+        { session: starting("preparing the workspace"), currentAgent: null },
         { session: running, currentAgent: ptyAgent },
       ],
     );
@@ -161,8 +161,18 @@ describe("followStart", () => {
 describe("startingLineOf", () => {
   it("leads with the status word unless the server's words already carry one", () => {
     expect(startingLineOf(starting())).toBe("starting");
-    expect(startingLineOf(starting("building the workspace image"))).toBe(
-      "starting · building the workspace image",
+    expect(startingLineOf(starting("preparing the workspace"))).toBe(
+      "starting · preparing the workspace",
+    );
+    // Phase words with their own `·` are not a status word (Astra review 2026-10-02 #13).
+    expect(
+      startingLineOf(
+        starting(
+          "preparing the workspace · no runtime yet · after an update, building the image takes about 8 minutes",
+        ),
+      ),
+    ).toBe(
+      "starting · preparing the workspace · no runtime yet · after an update, building the image takes about 8 minutes",
     );
     expect(
       startingLineOf(starting("waiting · the previous session in this worktree is saving")),

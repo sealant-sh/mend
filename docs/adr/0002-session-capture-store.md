@@ -360,11 +360,12 @@ before its process row and `running` were written, so a running agent's session 
 `POST /sessions/:id/launch` answers within 30 s: with the launched session, or with the session as
 it stands (`starting`). Its summary then says where the launch is:
 `waiting · the previous session in this worktree is saving`,
-`building the workspace image (first launch after an update, ~8 min)`, or `booting`. The launch goes
-on to `running`, or settles `failed` with the reason. The account's launch slot is held until the
-launch ends, not until the answer. Mend infers "building" from what the platform reports: no
-executor 20 s after the create was accepted. SDK 0.38.0 reports no build state (PLATFORM-FEEDBACK.md
-2026-09-30).
+`preparing the workspace · no runtime yet · after an update, building the image takes about 8 minutes`,
+or `booting`. Until 2026-10-02 the middle one said `building the workspace image …`, a build Mend
+cannot observe. The launch goes on to `running`, or settles `failed` with the reason. The account's
+launch slot is held until the launch ends, not until the answer. Mend infers "building" from what
+the platform reports: no executor 20 s after the create was accepted. SDK 0.38.0 reports no build
+state (PLATFORM-FEEDBACK.md 2026-09-30).
 
 ### Stop drains, then terminates
 
