@@ -3097,6 +3097,105 @@ describe("SessionEngine", () => {
     );
   });
 
+  it("carries the owner's earlier Codex conversations into a Codex launch, minus what Codex summarised (docs/adr/0009, Codex)", async () => {
+    const created: CreateOptions[] = [];
+    const summarisedId = "11111111-1111-4111-8111-111111111111";
+    const pendingId = "22222222-2222-4222-8222-222222222222";
+    // The stored summary database lists one of the two conversations as summarised.
+    const dbDir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-codex-db-"));
+    const dbFile = path.join(dbDir, "memories_1.sqlite");
+    const { DatabaseSync } = await import("node:sqlite");
+    const db = new DatabaseSync(dbFile);
+    db.exec(
+      "create table stage1_outputs (thread_id text primary key, source_updated_at integer not null)",
+    );
+    const summarisedAt = Math.floor((Date.now() - 8 * 60 * 60 * 1000) / 1000);
+    db.prepare("insert into stage1_outputs values (?, ?)").run(summarisedId, summarisedAt);
+    db.close();
+    const database = {
+      path: ".codex/memories_1.sqlite",
+      encoding: "base64",
+      contents: fs.readFileSync(dbFile).toString("base64"),
+    } as const;
+    const agentMemoryLayer = agentMemoryLayerOf({
+      forLaunch: () =>
+        Effect.succeed([
+          { ...database, digest: agentMemoryDigest(database), updatedBySession: null },
+        ]),
+    });
+    await withEngine(
+      (world, tmp) =>
+        Effect.gen(function* () {
+          const project = yield* setup(tmp, world);
+          const engine = yield* SessionEngine;
+          const provision = () =>
+            engine.provision({
+              projectId: project.id,
+              harness: "codex",
+              label: null,
+              name: null,
+              ownerUserId: "owner-codex",
+              base: null,
+            });
+          // Two earlier Codex sessions of the owner's, each with a harvested conversation that
+          // ended eight hours ago.
+          for (const providerSessionId of [summarisedId, pendingId]) {
+            const earlier = yield* provision();
+            yield* engine.launch(earlier.id, ["codex"]);
+            const agent = [...world.processes.values()].find(
+              (row) => row.sessionId === earlier.id && row.kind === "agent-pty",
+            );
+            if (agent === undefined) throw new Error("the earlier launch recorded no agent");
+            world.processes.set(
+              agent.id,
+              new SessionProcess({ ...agent, status: "exited", exitCode: 0, exitedAt: now() }),
+            );
+            const stateDir = processStatePathOf(project.storePath, earlier.id, agent.id);
+            fs.mkdirSync(stateDir, { recursive: true });
+            fs.writeFileSync(
+              path.join(stateDir, "manifest.json"),
+              JSON.stringify({
+                harness: "codex",
+                providerSessionId,
+                // The summary's own time: Codex summarised this exact revision.
+                capturedAt: new Date(summarisedAt * 1000).toISOString(),
+              }),
+            );
+            fs.writeFileSync(
+              path.join(stateDir, "transcript.native"),
+              `${JSON.stringify({ type: "session_meta", payload: { id: providerSessionId, timestamp: "2026-09-30T08:00:00Z" } })}\n`,
+            );
+          }
+
+          const session = yield* provision();
+          yield* engine.launch(session.id, ["codex"]);
+          const home = harnessHomePathOf(project.storePath, session.id);
+          const carried = path.join(
+            home,
+            `.codex/sessions/2026/09/30/rollout-2026-09-30T08-00-00-${pendingId}.jsonl`,
+          );
+          yield* until(() => fs.existsSync(carried), "the pending conversation carried in");
+          expect(
+            fs
+              .readFileSync(path.join(home, ".mend/carried-transcripts"), "utf8")
+              .trim()
+              .split("\n")
+              .toSorted(),
+          ).toEqual([summarisedId, pendingId].toSorted());
+          // The summarised one is there as a stub: its first line, at the summary's time, so Codex
+          // keeps its summary without making it again.
+          const stub = path.join(
+            home,
+            `.codex/sessions/2026/09/30/rollout-2026-09-30T08-00-00-${summarisedId}.jsonl`,
+          );
+          expect(fs.readFileSync(stub, "utf8").trim().split("\n")).toHaveLength(1);
+          expect(Math.floor(fs.statSync(stub).mtimeMs / 1000)).toBe(summarisedAt);
+          expect(fs.readFileSync(carried, "utf8")).toContain(pendingId);
+        }),
+      { sealantLayer: sealantLaunchLayer(created), agentMemoryLayer },
+    );
+  });
+
   it("launches a protocol agent through a pipe and records an agent-protocol process", async () => {
     const created: CreateOptions[] = [];
     const spawned: ReadonlyArray<string>[] = [];
@@ -3131,7 +3230,13 @@ describe("SessionEngine", () => {
           );
 
           expect(openedOptions).toEqual([{ mode: "pipe" }]);
-          expect(spawned[0]?.slice(-2)).toEqual(["codex", "app-server"]);
+          // Codex's memory is on in every Codex session Mend starts (docs/adr/0009, "Codex").
+          expect(spawned[0]?.slice(-4)).toEqual([
+            "codex",
+            "-c",
+            "features.memories=true",
+            "app-server",
+          ]);
           expect(attached).toHaveLength(1);
           expect(attached[0]?.mode).toBe("pipe");
           expect(attached[0]?.process.kind).toBe("agent-protocol");
@@ -4081,7 +4186,7 @@ describe("SessionEngine", () => {
           const transportArgv = deliveryProcess?.argv ?? [];
           expect(transportArgv.slice(0, 2)).toEqual(["sh", "-c"]);
           expect(transportArgv[2]).toContain(
-            "exec codex --dangerously-bypass-approvals-and-sandbox",
+            "exec codex -c features.memories=true --dangerously-bypass-approvals-and-sandbox",
           );
           expect(Buffer.from(transportArgv.slice(4).join(""), "base64").toString("utf8")).toBe(
             instruction,

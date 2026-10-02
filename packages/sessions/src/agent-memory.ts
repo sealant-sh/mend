@@ -6,13 +6,15 @@ import * as path from "node:path";
 
 import type { MergeText, StoredMemoryFile } from "@mend/db";
 import {
-  AGENT_MEMORY_MAX_FILE_BYTES,
+  AGENT_MEMORY_FILES,
   AGENT_MEMORY_ROOTS,
+  agentMemoryMaxFileBytes,
   piProfileFileBytes,
   validateAgentMemoryPath,
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 
+import { consolidateCodexDatabase } from "./codex-memory.ts";
 import { shellQuote } from "./workspace-files.ts";
 
 /**
@@ -215,17 +217,30 @@ export const asMemoryFile = (filePath: string, bytes: Uint8Array): MemoryFile =>
 };
 
 /**
- * The memory in a harness home on this machine, and what was delivered there: the co-located
- * read-back. Links and anything over the per-file limit are not read.
+ * What a read-back found: the files, what was delivered, and the paths that are there but were not
+ * read (over the limit, or a database that did not open). A skipped path is not a deleted one:
+ * `withoutSkipped` takes it out of `delivered`, so the stored file stays.
  */
-export const readAgentMemoryFromHome = (
-  harnessHomePath: string,
-): Effect.Effect<{
+export interface AgentMemoryRead {
   readonly delivered: Readonly<Record<string, string>>;
   readonly files: ReadonlyArray<MemoryFile>;
-}> =>
+  readonly skipped: ReadonlyArray<string>;
+}
+
+/** `delivered` without the paths a read-back found and could not read. */
+export const withoutSkipped = (read: AgentMemoryRead): Readonly<Record<string, string>> =>
+  Object.fromEntries(
+    Object.entries(read.delivered).filter(([filePath]) => !read.skipped.includes(filePath)),
+  );
+
+/**
+ * The memory in a harness home on this machine, and what was delivered there: the co-located
+ * read-back. Links are not read; anything over the per-file limit is skipped.
+ */
+export const readAgentMemoryFromHome = (harnessHomePath: string): Effect.Effect<AgentMemoryRead> =>
   Effect.promise(async () => {
     const files: Array<MemoryFile> = [];
+    const skipped: Array<string> = [];
     const walk = async (relative: string): Promise<void> => {
       let entries;
       try {
@@ -239,19 +254,41 @@ export const readAgentMemoryFromHome = (
         else if (entry.isFile()) {
           const abs = path.join(harnessHomePath, at);
           const stat = await fs.stat(abs);
-          if (stat.size > AGENT_MEMORY_MAX_FILE_BYTES) continue;
+          if (stat.size > agentMemoryMaxFileBytes(at)) {
+            skipped.push(at);
+            continue;
+          }
           files.push(asMemoryFile(at, await fs.readFile(abs)));
         }
       }
     };
     for (const { root } of AGENT_MEMORY_ROOTS) await walk(root);
+    for (const { path: file } of AGENT_MEMORY_FILES) {
+      const abs = path.join(harnessHomePath, file);
+      const stat = await fs.lstat(abs).catch(() => null);
+      if (stat === null || !stat.isFile()) continue;
+      if (stat.size > agentMemoryMaxFileBytes(file)) {
+        skipped.push(file);
+        continue;
+      }
+      // A SQLite file is read with its write-ahead log and stored as one consolidated file.
+      const wal = await fs.readFile(`${abs}-wal`).catch(() => null);
+      const consolidated = await Effect.runPromise(
+        consolidateCodexDatabase(await fs.readFile(abs), wal),
+      );
+      if (consolidated === null || consolidated.byteLength > agentMemoryMaxFileBytes(file)) {
+        skipped.push(file);
+        continue;
+      }
+      files.push(asMemoryFile(file, consolidated));
+    }
     const delivered = await fs
       .readFile(path.join(harnessHomePath, AGENT_MEMORY_DELIVERED), "utf8")
       .then(
         (raw) => raw,
         () => null,
       );
-    return { delivered: parseAgentMemoryDelivered(delivered), files };
+    return { delivered: parseAgentMemoryDelivered(delivered), files, skipped };
   });
 
 /**

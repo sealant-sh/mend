@@ -11,6 +11,8 @@ import {
   COPY_REFRESH_TOKEN,
   OPENCODE_SEED,
   PI_SEED,
+  withCodexMemory,
+  withHarnessSetup,
 } from "./harness-seeds.ts";
 
 const homes: Array<string> = [];
@@ -358,5 +360,26 @@ describe("pi and opencode seeds: the ChatGPT login from the Codex copy", () => {
     expect(runToolSeed(OPENCODE_SEED, home)).toBe("ran\n");
     expect(fs.existsSync(path.join(home, ".pi", "agent", "auth.json"))).toBe(false);
     expect(fs.existsSync(path.join(home, ".local", "share", "opencode", "auth.json"))).toBe(false);
+  });
+});
+
+describe("Codex's memory (docs/adr/0009, Codex)", () => {
+  it("is on in every Codex launch, terminal or app-server, unless the launch names it itself", () => {
+    expect(withCodexMemory(["codex", "resume", "abc"])).toEqual([
+      "codex",
+      "-c",
+      "features.memories=true",
+      "resume",
+      "abc",
+    ]);
+    expect(withHarnessSetup("codex", ["codex", "app-server"]).slice(-4)).toEqual([
+      "codex",
+      "-c",
+      "features.memories=true",
+      "app-server",
+    ]);
+    const own = ["codex", "-c", "features.memories=false"];
+    expect(withCodexMemory(own)).toEqual(own);
+    expect(withCodexMemory(["claude"])).toEqual(["claude"]);
   });
 });

@@ -134,8 +134,9 @@ import {
   observeCaptureThroughput,
   OPENCODE_PERMISSION_ALLOW,
   planExecutorCap,
-  AGENT_MEMORY_MAX_FILE_BYTES,
+  AGENT_MEMORY_FILES,
   AGENT_MEMORY_ROOTS,
+  agentMemoryMaxFileBytes,
 } from "@mend/domain/workbench";
 import {
   asSealantUser,
@@ -207,6 +208,7 @@ import {
   parseAgentMemoryOutcomes,
   planAgentMemory,
   readAgentMemoryFromHome,
+  withoutSkipped,
 } from "./agent-memory.ts";
 import { harnessWarmupArgv, isOutputEntry } from "./agent-start.ts";
 import {
@@ -225,6 +227,20 @@ import {
   REPLACEMENT_AGE_SECONDS,
 } from "./capture-runtime.ts";
 import { CaptureSeals } from "./capture-seals.ts";
+import {
+  carryConversationsExec,
+  consolidateCodexDatabase,
+  materializeCarriedConversations,
+  parseCarryOutcomes,
+  planCodexCarry,
+  prepareCarriedConversations,
+  readRolloutFacts,
+  storedCodexDatabase,
+  storedCodexThreadLines,
+  summarisedThreads,
+  type CodexRevision,
+  type RolloutFacts,
+} from "./codex-memory.ts";
 import { detectInstallCommand, PLATFORM_PROBE_SCRIPT, platformKeyOf } from "./dependency-cache.ts";
 import { DotfilesCloner, DotfilesResolveError, snapshotArchive } from "./dotfiles.ts";
 import { gitAuthorConfigArgv } from "./git-author.ts";
@@ -238,9 +254,12 @@ import {
   HarnessStateIOError,
   HarnessStateInvalidError,
   distillOpeningPrompt,
+  readHarnessStateManifest,
   extractTranscript,
   hasLiveHarnessState,
+  CARRIED_TRANSCRIPTS,
   locateLiveTranscript,
+  parseCarriedTranscripts,
   nativeResumeArgv,
   relocateHarnessHomeScript,
   type HarnessStateManifest,
@@ -344,7 +363,7 @@ const promptArgv = (harness: string, prompt: string): ReadonlyArray<string> | nu
       case "claude":
         return 'exec claude --dangerously-skip-permissions "$prompt"';
       case "codex":
-        return 'exec codex --dangerously-bypass-approvals-and-sandbox "$prompt"';
+        return 'exec codex -c features.memories=true --dangerously-bypass-approvals-and-sandbox "$prompt"';
       case "opencode":
         return `exec env '${OPENCODE_PERMISSION_ALLOW}' opencode --prompt "$prompt"`;
       case "pi":
@@ -5553,8 +5572,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           "-c",
           // -h dereferences: the boot step turns `$HOME` state dirs into symlinks onto the
           // harness-home mount, and the capture must carry their contents, not the links.
+          // Conversations Mend carried in from other sessions (docs/adr/0009, "Codex") stay out:
+          // restored without their list, one could read as this session's own.
           `cd "$HOME" || exit 1; L=""; for p in ${list}; do [ -e "$p" ] && L="$L $p"; done; ` +
-            `[ -n "$L" ] || exit 3; tar -czhf /tmp/mend-harness-state.tgz $L && ` +
+            `[ -n "$L" ] || exit 3; X=/tmp/mend-harness-state.exclude; : > "$X"; ` +
+            `C="${HARNESS_HOME_MOUNT_PATH}/${CARRIED_TRANSCRIPTS}"; ` +
+            `[ -s "$C" ] && sed 's/.*/*&*/' "$C" > "$X"; ` +
+            `tar -czhf /tmp/mend-harness-state.tgz -X "$X" $L && ` +
             `base64 -w0 /tmp/mend-harness-state.tgz`,
         ]);
         if (pack.exitCode !== 0 || pack.stdout.trim() === "") {
@@ -5776,7 +5800,40 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           ),
         );
         const pattern = shape.liveTranscript;
-        const transcript = files.find((file) => pattern.test(file.path.replace(/^harness\//, "")));
+        // Never a conversation Mend carried in from another session (docs/adr/0009, "Codex"),
+        // and the newest of the rest: a resumed session's home holds several of its own.
+        const carried = parseCarriedTranscripts(
+          yield* readCaptureFileBytes(manifest, "workspace", `harness/${CARRIED_TRANSCRIPTS}`).pipe(
+            Effect.provideService(BlobStore, blobs),
+            Effect.map((bytes) => new TextDecoder().decode(bytes)),
+            Effect.orElseSucceed(() => null),
+          ),
+        );
+        const own = files.filter((file) => {
+          const relative = file.path.replace(/^harness\//, "");
+          if (file.entry.kind !== "file" || !pattern.test(relative)) return false;
+          const id = shape.providerSessionId(relative);
+          return id === null || !carried.has(id);
+        });
+        // The conversation this agent is known to hold first (a resume names it); else the newest.
+        const known =
+          agent.providerSessionId === null
+            ? undefined
+            : own.find(
+                (file) =>
+                  shape.providerSessionId(file.path.replace(/^harness\//, "")) ===
+                  agent.providerSessionId,
+              );
+        const transcript =
+          known ??
+          own.reduce<(typeof files)[number] | undefined>(
+            (newest, file) =>
+              newest === undefined ||
+              BigInt(String(file.entry.mtime)) > BigInt(String(newest.entry.mtime))
+                ? file
+                : newest,
+            undefined,
+          );
         if (transcript === undefined) return null;
         const stateDir = processStatePathOf(project.storePath, session.id, agent.id);
         const manifestPath = path.join(stateDir, "manifest.json");
@@ -8445,6 +8502,100 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
       });
 
+      /**
+       * Codex's memory (docs/adr/0009, "Codex"): the person's own Codex conversations on the
+       * project, laid into this session's home before Codex starts. In full, the few Codex would
+       * summarise and has not; as stubs, the ones it has summarised, so it keeps their summaries.
+       * Never a conversation already in the home that Mend did not carry, and never one from this
+       * worktree in capture mode, whose sessions share the home.
+       */
+      const carryCodexConversations = Effect.fn("SessionEngine.carryCodexConversations")(function* (
+        session: Session,
+        project: Project,
+        workspace: Workspace,
+      ) {
+        if (session.harness !== "codex" || session.ownerUserId === null) return;
+        const owner = session.ownerUserId;
+        const stored = yield* agentMemory.forLaunch(owner, project.id);
+        const summarised = yield* summarisedThreads(storedCodexDatabase(stored));
+        const imported = storedCodexThreadLines(stored);
+        const others = (yield* sessions.listForProject(project.id)).filter(
+          (other) =>
+            other.id !== session.id &&
+            other.ownerUserId === owner &&
+            other.harness === "codex" &&
+            (capture === null || other.worktreeId !== session.worktreeId),
+        );
+        const revisions: Array<CodexRevision> = [];
+        const facts = new Map<string, RolloutFacts>();
+        // A conversation an agent holds right now is still going: never carried in full.
+        const live = new Set<string>();
+        const rows =
+          others.length === 0
+            ? []
+            : yield* processes.listForSessions(others.map((other) => other.id));
+        for (const row of rows) {
+          if (row.harness !== "codex") continue;
+          if (row.exitedAt === null) {
+            if (row.providerSessionId !== null) live.add(row.providerSessionId);
+            continue;
+          }
+          const stateDir = processStatePathOf(project.storePath, row.sessionId, row.id);
+          const manifest = yield* readHarnessStateManifest(stateDir, row.sessionId).pipe(
+            Effect.option,
+          );
+          if (Option.isNone(manifest) || manifest.value.providerSessionId === null) continue;
+          const transcriptPath = path.join(stateDir, "transcript.native");
+          const read = yield* readRolloutFacts(transcriptPath);
+          if (read === null) continue;
+          facts.set(transcriptPath, read);
+          revisions.push({
+            providerSessionId: manifest.value.providerSessionId,
+            transcriptPath,
+            capturedAt: new Date(manifest.value.capturedAt),
+          });
+        }
+        const plan = planCodexCarry({
+          revisions,
+          facts,
+          summarised,
+          imported,
+          live,
+          now: Date.now(),
+        });
+        if (plan.full.length === 0 && plan.stubs.length === 0) return;
+        const files = yield* prepareCarriedConversations(plan);
+        if (files.length === 0) return;
+        let outcomes: ReadonlyArray<{ readonly outcome: string; readonly id: string }>;
+        if (capture === null) {
+          outcomes = yield* materializeCarriedConversations(
+            harnessHomePathOf(project.storePath, session.id),
+            files,
+          );
+        } else {
+          const carry = carryConversationsExec(HARNESS_HOME_MOUNT_PATH, files);
+          yield* writeWorkspaceFiles(workspace, carry.staged);
+          const result = yield* sealant.exec(workspace, carry.argv);
+          outcomes = parseCarryOutcomes(result.stdout);
+        }
+        const count = (outcome: string) =>
+          outcomes.filter((candidate) => candidate.outcome === outcome).length;
+        yield* Effect.logInfo("session engine: codex conversations carried").pipe(
+          Effect.annotateLogs({
+            sessionId: session.id,
+            full: plan.full.length,
+            stubs: plan.stubs.length,
+            written: count("written"),
+            present: count("present"),
+            own: count("own"),
+            failed: outcomes
+              .filter((outcome) => outcome.outcome === "error")
+              .map((outcome) => outcome.id)
+              .join(", "),
+          }),
+        );
+      });
+
       /** The memory in a session's head capture, and what was delivered there; null without one. */
       const agentMemoryFromCapture = Effect.fn("SessionEngine.agentMemoryFromCapture")(function* (
         session: Session,
@@ -8464,21 +8615,45 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly encoding: "utf8" | "base64";
           readonly contents: string;
         }> = [];
+        const skipped: Array<string> = [];
         for (const { root } of AGENT_MEMORY_ROOTS) {
           const listed = yield* listCaptureFiles(manifest, "workspace", `harness/${root}`).pipe(
             Effect.provideService(BlobStore, capture.blobs),
           );
           for (const file of listed) {
-            if (file.entry.kind !== "file" || file.entry.size > AGENT_MEMORY_MAX_FILE_BYTES)
+            const relative = file.path.replace(/^harness\//, "");
+            if (file.entry.kind !== "file") continue;
+            if (file.entry.size > agentMemoryMaxFileBytes(relative)) {
+              skipped.push(relative);
               continue;
-            files.push(asMemoryFile(file.path.replace(/^harness\//, ""), yield* read(file.path)));
+            }
+            files.push(asMemoryFile(relative, yield* read(file.path)));
           }
+        }
+        // Single memory files (Codex's summary database): read with the write-ahead log the
+        // capture holds beside it, and stored as one consolidated file.
+        for (const { path: relative } of AGENT_MEMORY_FILES) {
+          const bytes = yield* read(`harness/${relative}`).pipe(Effect.option);
+          if (Option.isNone(bytes)) continue;
+          const wal = yield* read(`harness/${relative}-wal`).pipe(Effect.option);
+          const consolidated = yield* consolidateCodexDatabase(
+            bytes.value,
+            Option.isNone(wal) ? null : wal.value,
+          );
+          if (
+            consolidated === null ||
+            consolidated.byteLength > agentMemoryMaxFileBytes(relative)
+          ) {
+            skipped.push(relative);
+            continue;
+          }
+          files.push(asMemoryFile(relative, consolidated));
         }
         const record = yield* read(`harness/${AGENT_MEMORY_DELIVERED}`).pipe(
           Effect.map((bytes) => new TextDecoder().decode(bytes)),
           Effect.orElseSucceed(() => null),
         );
-        return { delivered: parseAgentMemoryDelivered(record), files };
+        return { delivered: parseAgentMemoryDelivered(record), files, skipped };
       });
 
       /**
@@ -8501,7 +8676,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           userId: session.ownerUserId,
           projectId: project.id,
           sessionId: session.id,
-          delivered: read.delivered,
+          // A file there that could not be read is not a deleted one: the stored copy stays.
+          delivered: withoutSkipped(read),
           session: read.files,
           merge: mergeTextUnion,
         });
@@ -9317,6 +9493,13 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.catch((error) =>
             Effect.logWarning("session engine: agent memory was not delivered").pipe(
               Effect.annotateLogs({ sessionId, message: error.message }),
+            ),
+          ),
+        );
+        yield* carryCodexConversations(session, project, workspace).pipe(
+          Effect.catchCause((cause) =>
+            Effect.logWarning("session engine: codex conversations were not carried").pipe(
+              Effect.annotateLogs({ sessionId, cause: Cause.pretty(cause) }),
             ),
           ),
         );
