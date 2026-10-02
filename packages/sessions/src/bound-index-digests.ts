@@ -27,22 +27,36 @@ export const boundIndexDigest = (key: string, now: number): Binding | null => {
 /**
  * Reserve `key` for `sha256` until `until`, in one synchronous step: refused (`conflict`) while a
  * live binding names other bytes, `full` when no room is left once dead entries go. A binding for
- * the same bytes is extended, never shortened.
+ * the same bytes is extended, never shortened. `fresh` says no live binding was there before: one
+ * the caller may give back (`releaseBoundIndex`) if it hands out no URL after all.
  */
 export const reserveBoundIndex = (
   key: string,
   sha256: string,
   now: number,
   until: number,
-): "reserved" | "conflict" | "full" => {
+):
+  | { readonly outcome: "reserved"; readonly fresh: boolean }
+  | { readonly outcome: "conflict" | "full" } => {
   const live = boundIndexDigest(key, now);
-  if (live !== null && live.sha256 !== sha256) return "conflict";
+  if (live !== null && live.sha256 !== sha256) return { outcome: "conflict" };
   if (live === null && bindings.size >= BOUND_INDEX_KEYS_REMEMBERED) {
     for (const [known, binding] of bindings) if (binding.until <= now) bindings.delete(known);
-    if (bindings.size >= BOUND_INDEX_KEYS_REMEMBERED) return "full";
+    if (bindings.size >= BOUND_INDEX_KEYS_REMEMBERED) return { outcome: "full" };
   }
   bindings.set(key, { sha256, until: Math.max(until, live?.until ?? 0) });
-  return "reserved";
+  return { outcome: "reserved", fresh: live === null };
+};
+
+/**
+ * Give back a fresh reservation no URL was handed out for: only while it is still exactly the
+ * one the caller made (same bytes, not extended since).
+ */
+export const releaseBoundIndex = (key: string, sha256: string, until: number): void => {
+  const binding = bindings.get(key);
+  if (binding !== undefined && binding.sha256 === sha256 && binding.until === until) {
+    bindings.delete(key);
+  }
 };
 
 /** Extend `key`'s binding to `until` (after signing: a URL is good from when it was signed). */

@@ -56,7 +56,7 @@ import {
 import { Cause, Deferred, Duration, Effect, Exit, Layer, Option, Result, Schema } from "effect";
 import * as Context from "effect/Context";
 
-import { extendBoundIndex, reserveBoundIndex } from "./bound-index-digests.ts";
+import { extendBoundIndex, releaseBoundIndex, reserveBoundIndex } from "./bound-index-digests.ts";
 import { CaptureRemotes, type PlanRemote } from "./capture-remotes.ts";
 import {
   SEAL_VERIFICATION_LIMIT,
@@ -1965,6 +1965,8 @@ export const CaptureChannelLive: Layer.Layer<
         // or, for a pack index, the one the executor declared — the same for every URL of the key.
         const declared = input.sha256 ?? {};
         const boundTo = new Map<string, string>();
+        /** Index bindings this call made, which it gives back if it hands out no URL for them. */
+        const freshIndexes = new Map<string, { readonly sha256: string; readonly until: number }>();
         if (bindable) {
           for (const plan of plans) {
             if (plan.parts > 0) continue;
@@ -1986,13 +1988,9 @@ export const CaptureChannelLive: Layer.Layer<
             // Reserved in the step that checks it (`reserveBoundIndex`): while a URL of this
             // index bound to other bytes could live, none is handed out for these, and a seal
             // never stands over stored bytes a live binding does not name (`sealStandingOf`).
-            const reserved = reserveBoundIndex(
-              plan.key,
-              said,
-              callStartedAt,
-              Date.now() + BOUND_URL_LIFETIME_MS,
-            );
-            if (reserved === "conflict") {
+            const reservedUntil = Date.now() + BOUND_URL_LIFETIME_MS;
+            const reserved = reserveBoundIndex(plan.key, said, callStartedAt, reservedUntil);
+            if (reserved.outcome === "conflict") {
               return yield* new CaptureRouteError({
                 status: 409,
                 reason: "exists",
@@ -2001,9 +1999,40 @@ export const CaptureChannelLive: Layer.Layer<
               });
             }
             // No room: this index records authority, as an unbound URL does.
-            if (reserved === "full") continue;
+            if (reserved.outcome !== "reserved") continue;
+            if (reserved.fresh) freshIndexes.set(plan.key, { sha256: said, until: reservedUntil });
             boundTo.set(plan.key, said);
           }
+        }
+        // A pack index bound above may have been stored, and sealed, since this call first asked
+        // the bucket: a URL for it now could replace bytes a seal stands over with the declared
+        // ones. Its binding is in place (reserved above, in the step that checked it), so a seal
+        // asked from here on sees it; asked of the bucket again now, a stored index is answered
+        // present and gets no URL — the recheck a recorded authority makes for every other call
+        // (review 9 #6), which a bound call never records (Astra re-review, 2026-10-02).
+        const boundIndexes = plans.filter(
+          (plan) => boundTo.has(plan.key) && contentDigestOfKey(plan.key) === null,
+        );
+        if (boundIndexes.length > 0) {
+          const again = yield* Effect.forEach(
+            boundIndexes,
+            (plan) =>
+              blobs.head(plan.key).pipe(
+                Effect.map((found) => [plan.key, found !== null] as const),
+                Effect.catch(storeError("asking the bucket for", plan.key)),
+              ),
+            { concurrency: PRESENT_HEADS_IN_FLIGHT },
+          );
+          const storedNow = new Set(again.filter(([, stored]) => stored).map(([key]) => key));
+          for (const key of storedNow) {
+            yield* verifyStored(key);
+            present.push(key);
+            wanted.delete(key);
+            boundTo.delete(key);
+            const fresh = freshIndexes.get(key);
+            if (fresh !== undefined) releaseBoundIndex(key, fresh.sha256, fresh.until);
+          }
+          plans = plans.filter((plan) => !storedNow.has(plan.key));
         }
         // Every URL of the call bound to its bytes: the call carries no write authority. A part
         // URL is not bound (a part's bytes are not the object's), so a call with one records it,
