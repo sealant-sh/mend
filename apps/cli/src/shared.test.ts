@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  firstPositional,
   captureLineOf,
   isDetachChunk,
   isPasteChunk,
@@ -260,5 +261,19 @@ describe("captureLineOf", () => {
     ).toBe("not saved · 3 pending · workspace kept");
     expect(captureLineOf({ capturePending: 0, captureDrain: null })).toBeNull();
     expect(captureLineOf({})).toBeNull();
+  });
+});
+
+describe("firstPositional", () => {
+  it("takes the first word when no valued flag is present (mend stop <id>)", () => {
+    expect(firstPositional(["a404034c"], ["--project"])).toBe("a404034c");
+    expect(firstPositional(["a404034c", "--all"], ["--project"])).toBe("a404034c");
+  });
+
+  it("skips a valued flag's own word, wherever the flag stands", () => {
+    expect(firstPositional(["--project", "mend", "a404034c"], ["--project"])).toBe("a404034c");
+    expect(firstPositional(["a404034c", "--project", "mend"], ["--project"])).toBe("a404034c");
+    expect(firstPositional(["--from", "12", "web"], ["--from"])).toBe("web");
+    expect(firstPositional(["--project", "mend"], ["--project"])).toBeUndefined();
   });
 });

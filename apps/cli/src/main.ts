@@ -105,6 +105,7 @@ import {
   servicesHoldOf,
   captureLineOf,
   type SessionCaptureLike,
+  firstPositional,
 } from "./shared.ts";
 import { type AttachOutcome } from "./shared.ts";
 import { DEFAULT_SKILLS_DIR, scanSkillLibrary } from "./skills.ts";
@@ -1418,7 +1419,7 @@ const stopCommand = async (config: CliConfig, args: ReadonlyArray<string>) => {
     projectFlag !== -1 && args[projectFlag + 1] !== undefined
       ? String(args[projectFlag + 1])
       : null;
-  const prefix = args.find((arg, index) => !arg.startsWith("--") && index !== projectFlag + 1);
+  const prefix = firstPositional(args, ["--project"]);
   // Neither an id nor --all: pick the session to close, the same resolution
   // `mend attach` uses. --all and --project keep their bulk meaning.
   if (!all && prefix === undefined && projectName === null) {
@@ -2015,9 +2016,7 @@ const serviceRun = async (config: CliConfig, args: ReadonlyArray<string>) => {
 const serviceLogs = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const fromFlag = args.indexOf("--from");
   const from = fromFlag === -1 ? "0" : args[fromFlag + 1];
-  const needle = args.find(
-    (argument, index) => !argument.startsWith("--") && index !== fromFlag + 1,
-  );
+  const needle = firstPositional(args, ["--from"]);
   if (needle === undefined || from === undefined || !/^(0|[1-9]\d*)$/.test(from)) {
     return fail(usageOf("service logs"));
   }
@@ -3963,7 +3962,7 @@ const rejoinCommand = async (config: CliConfig, args: ReadonlyArray<string>) => 
     harnessFlag !== -1 && args[harnessFlag + 1] !== undefined
       ? String(args[harnessFlag + 1])
       : null;
-  const prefix = args.find((arg, index) => !arg.startsWith("--") && index !== harnessFlag + 1);
+  const prefix = firstPositional(args, ["--harness"]);
   const tunnels = attachTunnels(config, args.includes("--no-tunnel"));
 
   const project = await findProject(config, null);
