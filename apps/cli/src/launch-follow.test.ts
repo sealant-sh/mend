@@ -164,6 +164,16 @@ describe("startingLineOf", () => {
     expect(startingLineOf(starting("preparing the workspace"))).toBe(
       "starting · preparing the workspace",
     );
+    // Phase words with their own `·` are not a status word (Astra review 2026-10-02 #13).
+    expect(
+      startingLineOf(
+        starting(
+          "preparing the workspace · no runtime yet (an image build after an update takes about 8 minutes)",
+        ),
+      ),
+    ).toBe(
+      "starting · preparing the workspace · no runtime yet (an image build after an update takes about 8 minutes)",
+    );
     expect(
       startingLineOf(starting("waiting · the previous session in this worktree is saving")),
     ).toBe("waiting · the previous session in this worktree is saving");

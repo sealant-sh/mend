@@ -46,7 +46,9 @@ import {
   replaceSession,
   sessionDisplayName,
   liveCountWords,
+  servicesHoldOf,
   sessionHold,
+  sessionRowFacts,
   sessionTimeWords,
   startingExplanationOf,
   startingWordsOf,
@@ -167,13 +169,17 @@ const timeAgo = (iso: string): string => {
   return `${Math.floor(hours / 24)}d ago`;
 };
 
-const shortAge = (iso: string): string => timeAgo(iso).replace(" ago", "");
-
-/** A worktree's activity fact: `last start 5m ago`, never a bare `5m`. */
-const lastStartWords = (iso: string): ReadonlyArray<string> => {
-  const elapsed = elapsedWords(iso);
+/**
+ * A worktree's activity fact, never a bare `5m` (story S30): when its newest session was created,
+ * or, with none, when the worktree was. A resume is not a creation, and Mend does not carry when
+ * one started, so this says created.
+ */
+const lastSessionWords = (group: WorktreeGroup): ReadonlyArray<string> => {
+  const at = group.sessions.length === 0 ? group.createdAt : groupActivityAt(group);
+  const elapsed = elapsedWords(at);
   if (elapsed === null) return [];
-  return [elapsed === "<1m" ? "last start just now" : `last start ${elapsed} ago`];
+  const ago = elapsed === "<1m" ? "just now" : `${elapsed} ago`;
+  return [group.sessions.length === 0 ? `created ${ago}` : `last session created ${ago}`];
 };
 
 /** Cut to width with an ellipsis, so a long name never wraps a one-line row. */
@@ -350,8 +356,8 @@ const WorktreeRow = ({
   // One session is the ordinary case and says nothing worth a column of width.
   const facts = fitHints(
     [
-      fit(`from ${groupBaseLabel(group)}`, factWidth),
-      ...lastStartWords(groupActivityAt(group)),
+      fit(`from ${groupBaseLabel(group)}`, Math.max(12, Math.floor(factWidth / 2))),
+      ...lastSessionWords(group),
       ...(open > 0 ? [`${open} open`] : []),
       ...(sessions === 0 ? ["empty"] : sessions === 1 ? [] : [`${sessions} sessions`]),
     ],
@@ -385,30 +391,12 @@ const SessionRow = ({
   readonly selected: boolean;
   readonly width: number;
 }) => {
-  const { session, processes, services } = item;
+  const { session } = item;
   const status = session.status;
   const color = STATUS_COLOR[status] ?? MUTED;
-  const agents = processes.filter((process) => process.kind !== "shell").length;
-  const shells = processes.filter((process) => process.kind === "shell").length;
   const nameWidth = Math.max(6, width - 5 - status.length);
   const factWidth = Math.max(8, width - 3);
-  // A stopped agent's Services keep the workspace up: that leads, or it would read as done.
-  const hold = sessionHold(item);
-  // The harness leads otherwise: it is the fact the machine id used to crowd out. Then where a
-  // launch stands, or how long the agent has been up, or when it ended — never a bare age
-  // (docs/dashboard-status-stories.md).
-  const when = status === "starting" ? startingWordsOf(session) : sessionTimeWords(item);
-  const facts = fitHints(
-    [
-      ...(hold === null ? [] : [hold]),
-      session.harness,
-      ...(when === null ? [] : [when]),
-      ...(shells > 0 ? [`${shells} shell`] : []),
-      ...(agents > 0 ? [`${agents} agent`] : []),
-      ...(hold === null && services.length > 0 ? [`${services.length} service`] : []),
-    ],
-    factWidth,
-  );
+  const facts = sessionRowFacts(item, factWidth);
   return (
     <box flexShrink={0} flexDirection="column" backgroundColor={selected ? WASH : "transparent"}>
       <box height={1} flexShrink={0} backgroundColor="transparent">
@@ -533,7 +521,13 @@ const SessionFacts = ({
       </span>
     </text>,
     <text key="started" height={1} bg="transparent" fg={FAINT}>
-      {`  created ${timeAgo(session.createdAt)} · ${isPendingId(session.id) ? "provisioning" : session.id.slice(0, 8)}${when === null ? "" : ` · ${when.startsWith("up ") ? `agent ${when}` : when}`}`}
+      {[
+        ...(timeAgo(session.createdAt) === "" ? [] : [`created ${timeAgo(session.createdAt)}`]),
+        isPendingId(session.id) ? "provisioning" : session.id.slice(0, 8),
+        ...(when === null || when.startsWith("created ") ? [] : [when]),
+      ]
+        .join(" · ")
+        .replace(/^/, "  ")}
     </text>,
     <text key="services" height={1} bg="transparent">
       <span>{"  "}</span>
@@ -624,7 +618,7 @@ const StatusLine = ({
       ? status !== null && Date.now() - status.at < 5000
         ? ` ${status.text}`
         : ""
-      : ` ${busy} ${Math.max(0, Math.round((now - busyStarted) / 1000))}s`;
+      : ` ${busy} ${Math.max(0, Math.round((now - busyStarted) / 1000))}s elapsed`;
   return (
     <text height={1} fg={INK_2} bg="transparent">
       {text}
@@ -1060,7 +1054,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       );
       setWorktreeKey(vars.pendingKey);
       selectSession(vars.pendingKey);
-      setBusy(`provisioning ${vars.harness} workspace — a first launch builds the harness image ·`);
+      setBusy(`provisioning ${vars.harness} workspace ·`);
       setBusyStarted(Date.now());
     },
     onError: (error, vars) => {
@@ -1430,8 +1424,9 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
     }
     const session = selectedSession;
     if (session === null || isPendingId(session.id)) return;
-    // The agent is no longer live and Services keep the workspace up: ⇧K stops those.
-    const hold = selectedItem === null ? null : sessionHold(selectedItem);
+    // The agent is no longer live and Services keep the workspace up: ⇧K stops those. Read from
+    // the Services themselves, never from the display line (a save line is not a Service).
+    const hold = selectedItem === null ? null : servicesHoldOf(selectedItem);
     if (hold !== null) {
       if (stopArmed === `svc:${session.id}` && confirmationVisible("press ⇧K again")) {
         setStopArmed(null);
@@ -1440,6 +1435,11 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
       }
       setStopArmed(`svc:${session.id}`);
       say(`press ⇧K again to stop the services · ${sessionDisplayName(session)} — ${hold}`);
+      return;
+    }
+    if (session.status === "stopping") {
+      const saving = selectedItem === null ? null : sessionHold(selectedItem);
+      say(`already stopping${saving === null ? "" : ` · ${saving}`}`);
       return;
     }
     if (!LIVE_STATUSES.has(session.status)) {
@@ -2572,7 +2572,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
                   <Gutter selected={highlighted} />
                   <span fg={active ? INK : FAINT}>{branch.name.slice(0, 40).padEnd(41)}</span>
                   <span fg={FAINT}>{branch.sha.slice(0, 8).padEnd(10)}</span>
-                  <span fg={active ? MUTED : FAINT}>{shortAge(branch.committedAt).padEnd(6)}</span>
+                  <span fg={active ? MUTED : FAINT}>{timeAgo(branch.committedAt).padEnd(9)}</span>
                   {branch.isDefault ? <span fg={FAINT}>default</span> : null}
                 </text>
               </box>

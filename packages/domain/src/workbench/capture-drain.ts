@@ -675,7 +675,8 @@ const timeOf = (at: Date | string | null | undefined): Date | null => {
 /**
  * The capture line every surface shows beside a session (web, CLI, phone, Slack):
  * - `saving · 3 left` (`saving · 12 MB left` once sealantd reports bytes) while a drain runs, and
- *   `uploaded · confirming the save` once nothing is left to upload and the drain still runs;
+ *   `saving · no uploads pending` once the executor reports an empty queue and the drain still
+ *   runs;
  * - `not saved · 3 pending · workspace kept` once a drain stalled, or cannot move, with the
  *   executor's reason when its final flush said why and what sealantd named behind it (`not
  *   saved · snapshot failed · EACCES: tree/secrets.pem · 3 pending · workspace kept`);
@@ -708,14 +709,15 @@ export const captureStatusLine = (facts: SessionCaptureFacts): string | null => 
         ...(facts.captureIncompleteReason === CAPTURE_EXECUTOR_RETAINED ? [] : ["workspace kept"]),
       ].join(" · ");
     }
-    // Nothing left to upload, the drain still running: the save is uploaded and Mend has not
-    // confirmed it yet (its seal waits, or the final flush has not answered). Never `0 B left`.
-    const uploaded =
+    // The queue the executor last reported is empty and the drain still runs. That is all it
+    // says: the final flush may still be snapshotting, or its seal not yet confirmed, so never
+    // `uploaded` (nothing observed that) and never `0 B left` (it reads as a count).
+    const noneQueued =
       facts.capturePendingBytes === 0 ||
       (facts.capturePendingBytes === null && facts.capturePending === 0);
     return [
-      uploaded
-        ? "uploaded · confirming the save"
+      noneQueued
+        ? "saving · no uploads pending"
         : left === null
           ? "saving"
           : `saving · ${left} left`,

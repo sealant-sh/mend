@@ -70,7 +70,11 @@ const agentRuns = (agent: AgentProcessLike | null): boolean =>
 export const startingLineOf = (session: StartingSession): string => {
   const summary = session.summary?.trim() ?? "";
   if (summary === "") return session.status;
-  if (/^[a-z][a-z -]*·/u.test(summary)) return summary;
+  // Already led by a status word (`failed · …`): as said. Only those, and the lease wait's own
+  // `waiting · …`: phase words such as `preparing the workspace · …` are not a status.
+  if (/^(starting|running|waiting|idle|stopping|completed|failed|stopped) ·/u.test(summary)) {
+    return summary;
+  }
   return `${session.status} · ${summary}`;
 };
 
