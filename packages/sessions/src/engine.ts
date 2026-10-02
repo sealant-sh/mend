@@ -70,6 +70,12 @@ import type {
   Worktree,
 } from "@mend/domain/workbench";
 import {
+  LAUNCH_BOOTING,
+  LAUNCH_PREPARING,
+  leaseWaitWords,
+  withoutLaunchPhase,
+} from "@mend/domain/workbench";
+import {
   agentPushedBranches,
   agentStartingWords,
   withoutAgentStarting,
@@ -669,28 +675,6 @@ const STALE_ON_START_PREFIXES = [
   DEPENDENCY_INSTALL_SKIPPED_PREFIX,
 ] as const;
 
-/**
- * What a launch says on the session line while it is under way and before its agent runs: it waits
- * for the worktree's previous executor to end, or the platform builds and boots the workspace.
- * Always the last words of the summary, replaced as the launch moves on and taken off once the
- * agent runs (`clearStaleStartSummary`); a failure's own words replace them.
- */
-export const LAUNCH_WAITING_PREFIX = "waiting · the previous session in this worktree";
-export const LAUNCH_WAITING_SAVING = `${LAUNCH_WAITING_PREFIX} is saving`;
-export const LAUNCH_BOOTING = "booting";
-export const LAUNCH_BUILDING_IMAGE =
-  "building the workspace image (first launch after an update, ~8 min)";
-const LAUNCH_PHASE_PREFIXES = [LAUNCH_WAITING_PREFIX, LAUNCH_BOOTING, LAUNCH_BUILDING_IMAGE];
-/** A summary without the launch phase words at its end; null when they were all it said. */
-export const withoutLaunchPhase = (summary: string | null): string | null => {
-  if (summary === null) return null;
-  for (const prefix of LAUNCH_PHASE_PREFIXES) {
-    if (summary.startsWith(prefix)) return null;
-    const at = summary.indexOf(` · ${prefix}`);
-    if (at >= 0) return summary.slice(0, at);
-  }
-  return summary;
-};
 /** A create Core fenced before it made anything, found with no launch asking again. */
 const LAUNCH_CANCELLED_SUMMARY = "launch cancelled · nothing was created";
 /**
@@ -3000,14 +2984,6 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
       const waitingLaunches = new Set<SessionId>();
       /** Of those, the ones their owner stopped meanwhile: they launch nothing. */
       const stoppedWhileWaiting = new Set<SessionId>();
-
-      /** The session line while a launch waits on the holder (`LAUNCH_WAITING_PREFIX`). */
-      const leaseWaitWords = (holder: { readonly kind: "ending" | "unreachable" | "lapsed" }) =>
-        holder.kind === "ending"
-          ? LAUNCH_WAITING_SAVING
-          : holder.kind === "unreachable"
-            ? `${LAUNCH_WAITING_PREFIX} is not answering`
-            : `${LAUNCH_WAITING_PREFIX} has not confirmed its end`;
 
       /**
        * One executor per worktree, waited for rather than refused (alpha 2026-09-30: a session
@@ -9878,7 +9854,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               const building =
                 runtime.value === null &&
                 Date.now() - since >= Duration.toMillis(drainPolicy.imageBuildAfter);
-              yield* sayLaunchPhase(sessionId, building ? LAUNCH_BUILDING_IMAGE : LAUNCH_BOOTING);
+              yield* sayLaunchPhase(sessionId, building ? LAUNCH_PREPARING : LAUNCH_BOOTING);
             }
           }).pipe(
             Effect.catchCause((cause) =>

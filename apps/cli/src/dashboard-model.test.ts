@@ -5,7 +5,9 @@ import {
   baseStepNotice,
   clampIndex,
   createLaunchGate,
+  deriveProjects,
   deriveWorktrees,
+  elapsedWords,
   filterBranches,
   foldGroupStatus,
   fitHints,
@@ -13,6 +15,7 @@ import {
   groupBaseLabel,
   KEY_BINDINGS,
   isDeadEnd,
+  liveCountWords,
   liveProtocolOf,
   liveShellOf,
   markServicesStopped,
@@ -24,6 +27,9 @@ import {
   removeWorktreeGroup,
   sessionDisplayName,
   sessionHold,
+  sessionTimeWords,
+  startingExplanationOf,
+  startingWordsOf,
   stepColumn,
   verbForKey,
   verbHints,
@@ -864,5 +870,211 @@ describe("sessionHold", () => {
       processes: [],
     };
     expect(sessionHold(quiet)).toBeNull();
+  });
+});
+
+// docs/dashboard-status-stories.md: each test names the story it checks.
+describe("dashboard status stories", () => {
+  const NOW = Date.parse("2026-10-02T08:30:00.000Z");
+  const minutesAgo = (minutes: number) => new Date(NOW - minutes * 60_000).toISOString();
+  const itemOf = (
+    over: Partial<SessionDto> & { readonly id: string },
+    agentCreatedAt?: string,
+  ) => ({
+    session: session(over),
+    annotation:
+      agentCreatedAt === undefined
+        ? undefined
+        : {
+            sessionId: over.id,
+            changeId: null,
+            openComments: 0,
+            pendingFollowUp: false,
+            currentAgent: {
+              status: "running",
+              exitCode: null,
+              exitedAt: null,
+              harness: "claude",
+              sealantSessionId: "pty-1",
+              kind: "agent-pty",
+              createdAt: agentCreatedAt,
+            },
+            liveServices: 0,
+          },
+    services: [],
+    processes: [],
+  });
+  const groupOf = (statuses: ReadonlyArray<string>) => {
+    const detail: ProjectDetailDto = {
+      project: {
+        id: "p",
+        name: "p",
+        originUrl: null,
+        storePath: "/s",
+        defaultBranch: "main",
+      },
+      sessions: statuses.map((status, index) =>
+        session({ id: `s${index}`, status, worktreeId: "wt" }),
+      ),
+      annotations: [],
+      worktrees: [worktree({ id: "wt" })],
+    };
+    const data: Workbench = {
+      projects: [detail.project],
+      details: new Map([["p", detail]]),
+      servicesBySession: new Map(),
+      processesBySession: new Map(),
+    };
+    return { group: deriveWorktrees(data, "p")[0]!, project: deriveProjects(data)[0]! };
+  };
+
+  it("S1: a launch the server has not answered says it is launching", () => {
+    const pending = session({ id: "pending-1", status: "starting" });
+    expect(startingWordsOf(pending)).toBe("launching");
+    expect(startingExplanationOf(pending)).toBe("launching");
+  });
+
+  it("S2: a starting session names its launch phase, never its age or an image build it cannot see", () => {
+    const at = (summary: string | null) =>
+      session({ id: "s", status: "starting", summary, createdAt: minutesAgo(21) });
+    expect(startingWordsOf(at(null))).toBe("launching");
+    expect(startingWordsOf(at("booting"))).toBe("booting");
+    expect(
+      startingWordsOf(
+        at(
+          "preparing the workspace · no runtime yet (an image build after an update takes about 8 minutes)",
+        ),
+      ),
+    ).toBe("preparing the workspace");
+    // Stored before 2026-10-02: the old words still read as the same phase.
+    expect(
+      startingWordsOf(at("building the workspace image (first launch after an update, ~8 min)")),
+    ).toBe("preparing the workspace");
+    expect(startingWordsOf(at("waiting · the previous session in this worktree is saving"))).toBe(
+      "waiting for the previous save",
+    );
+    expect(
+      startingWordsOf(at("waiting · the previous session in this worktree is not answering")),
+    ).toBe("waiting for the previous session");
+    // Words in front of the phase stay the summary's; the phase is still read from the end.
+    expect(startingWordsOf(at("dotfiles not applied · booting"))).toBe("booting");
+    expect(startingExplanationOf(at("booting"))).toBe(
+      "the workspace is booting; the agent starts once it is up",
+    );
+    expect(
+      startingExplanationOf(at("waiting · the previous session in this worktree is saving")),
+    ).toBe(
+      "waiting for this worktree's previous session to finish saving; this one starts from that save",
+    );
+    // A resume is a start too: no time fact while it starts, however old the session.
+    expect(
+      sessionTimeWords(itemOf({ id: "s", status: "starting", createdAt: minutesAgo(21) }), NOW),
+    ).toBeNull();
+  });
+
+  it("S2/S7: a resume waiting on the previous save says what is left, then that it is confirming", () => {
+    const draining = (over: Partial<SessionDto>) =>
+      itemOf({ id: "s", status: "starting", captureDrain: "relaunch", ...over });
+    expect(sessionHold(draining({ capturePending: 3, capturePendingBytes: 12_000_000 }))).toBe(
+      "saving · 12 MB left",
+    );
+    expect(sessionHold(draining({ capturePending: 0, capturePendingBytes: 0 }))).toBe(
+      "uploaded · confirming the save",
+    );
+    expect(sessionHold(draining({ capturePending: 0, capturePendingBytes: null }))).toBe(
+      "uploaded · confirming the save",
+    );
+    expect(sessionHold(draining({ capturePending: null, capturePendingBytes: null }))).toBe(
+      "saving",
+    );
+  });
+
+  it("S3: a live agent reads how long it has been up, from the agent's own start", () => {
+    const resumed = itemOf(
+      { id: "s", status: "running", createdAt: minutesAgo(120) },
+      minutesAgo(4),
+    );
+    expect(sessionTimeWords(resumed, NOW)).toBe("up 4m");
+    // No agent on the wire (an older server): from the session's creation.
+    expect(
+      sessionTimeWords(itemOf({ id: "s", status: "idle", createdAt: minutesAgo(9) }), NOW),
+    ).toBe("up 9m");
+    expect(
+      sessionTimeWords(itemOf({ id: "s", status: "waiting", createdAt: minutesAgo(0) }), NOW),
+    ).toBe("up <1m");
+  });
+
+  it("S5: the agent ended and nothing is draining yet: the workspace is still up", () => {
+    expect(sessionHold(itemOf({ id: "s", status: "stopping" }))).toBe(
+      "agent ended · workspace still up",
+    );
+    expect(sessionTimeWords(itemOf({ id: "s", status: "stopping" }), NOW)).toBeNull();
+  });
+
+  it("S6/S8: a stop drain says what is left, or why it stalled", () => {
+    expect(
+      sessionHold(itemOf({ id: "s", status: "stopping", captureDrain: "stop", capturePending: 3 })),
+    ).toBe("saving · 3 left");
+    expect(
+      sessionHold(
+        itemOf({
+          id: "s",
+          status: "stopping",
+          captureDrain: "stop",
+          capturePending: 3,
+          captureNotSavedAt: minutesAgo(1),
+          captureIncompleteReason: "ship-failed",
+        }),
+      ),
+    ).toBe("not saved · upload failed · 3 pending · workspace kept");
+  });
+
+  it("S9: a settled session reads when it ended", () => {
+    expect(
+      sessionTimeWords(
+        itemOf({
+          id: "s",
+          status: "completed",
+          settledAt: minutesAgo(5),
+          createdAt: minutesAgo(60),
+        }),
+        NOW,
+      ),
+    ).toBe("ended 5m ago");
+    expect(
+      sessionTimeWords(itemOf({ id: "s", status: "failed", settledAt: minutesAgo(0) }), NOW),
+    ).toBe("ended just now");
+    // An older server sends no settledAt: no time fact rather than a wrong one.
+    expect(sessionTimeWords(itemOf({ id: "s", status: "completed" }), NOW)).toBeNull();
+  });
+
+  it("worktree states: the most pressing session word, starting and stopping included", () => {
+    expect(foldGroupStatus(groupOf(["starting"]).group)).toBe("starting");
+    expect(foldGroupStatus(groupOf(["starting", "idle"]).group)).toBe("starting");
+    expect(foldGroupStatus(groupOf(["running", "starting"]).group)).toBe("running");
+    expect(foldGroupStatus(groupOf(["idle", "waiting"]).group)).toBe("waiting");
+    expect(foldGroupStatus(groupOf(["stopping", "completed"]).group)).toBe("stopping");
+    expect(foldGroupStatus(groupOf(["idle", "stopping"]).group)).toBe("stopping");
+    expect(foldGroupStatus(groupOf(["completed", "failed"]).group)).toBe("settled");
+  });
+
+  it("project states: live and stopping counted apart, settled only when neither", () => {
+    expect(groupOf(["running", "stopping", "completed"]).project).toMatchObject({
+      live: 1,
+      stopping: 1,
+      total: 3,
+    });
+    expect(liveCountWords(1, 0)).toBe("1 live");
+    expect(liveCountWords(1, 1)).toBe("1 live · 1 stopping");
+    expect(liveCountWords(0, 2)).toBe("2 stopping");
+    expect(liveCountWords(0, 0)).toBe("settled");
+  });
+
+  it("rule 1: a number always says what it counts", () => {
+    expect(elapsedWords(minutesAgo(0), NOW)).toBe("<1m");
+    expect(elapsedWords(minutesAgo(59), NOW)).toBe("59m");
+    expect(elapsedWords(minutesAgo(61), NOW)).toBe("1h");
+    expect(elapsedWords(minutesAgo(60 * 49), NOW)).toBe("2d");
+    expect(elapsedWords(new Date(NOW + 60_000).toISOString(), NOW)).toBeNull();
   });
 });

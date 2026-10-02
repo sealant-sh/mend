@@ -42,7 +42,7 @@ export interface FollowStartOptions<S extends StartingSession> {
   readonly start: Promise<S> | null;
   /** One read of the session. */
   readonly read: () => Promise<StartingDetail<S>>;
-  /** Called with each new status line (`starting · building the workspace image`). */
+  /** Called with each new status line (`starting · preparing the workspace`). */
   readonly onLine: (line: string) => void;
   readonly sleep: (ms: number) => Promise<void>;
   readonly now: () => number;

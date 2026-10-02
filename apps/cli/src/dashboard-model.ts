@@ -1,4 +1,4 @@
-import { servicesHoldLine } from "@mend/domain/workbench";
+import { launchPhaseOf, servicesHoldLine } from "@mend/domain/workbench";
 
 import {
   agentIsLive,
@@ -41,6 +41,8 @@ export interface SessionDto extends SessionCaptureLike {
   /** False = settled without a conversation: nothing to resume; hidden. Absent on older servers. */
   readonly hasTranscript?: boolean | null;
   readonly createdAt: string;
+  /** When the session ended and its workspace went; absent on older servers. */
+  readonly settledAt?: string | null;
 }
 
 export interface WorktreeDto {
@@ -235,6 +237,8 @@ export interface ProjectItem {
   readonly project: ProjectDto;
   readonly total: number;
   readonly live: number;
+  /** Sessions whose agent ended and whose workspace is still being saved or ended. */
+  readonly stopping: number;
   readonly open: number;
 }
 
@@ -280,8 +284,9 @@ export const deriveProjects = (data: Workbench | undefined): ReadonlyArray<Proje
     const detail = data?.details.get(project.id);
     const sessions = detail?.sessions ?? [];
     const live = sessions.filter((s) => LIVE_STATUSES.has(s.status)).length;
+    const stopping = sessions.filter((s) => s.status === "stopping").length;
     const open = (detail?.annotations ?? []).reduce((sum, a) => sum + a.openComments, 0);
-    return { project, total: sessions.length, live, open };
+    return { project, total: sessions.length, live, stopping, open };
   });
 
 export const bySessionRecency = (a: SessionDto, b: SessionDto): number => {
@@ -429,13 +434,94 @@ export const groupActivityAt = (group: WorktreeGroup): string =>
     group.createdAt,
   );
 
-/** The worktree's folded status word: waiting wins, then running, then idle. */
+/**
+ * The worktree's word: its most pressing session's (docs/dashboard-status-stories.md, "Worktree
+ * states") — waiting, running, starting, stopping, idle — and `settled` when none is live or
+ * stopping. A worktree whose only session is starting says `starting`, never `running`; one whose
+ * session is still saving says `stopping`, never `settled`.
+ */
 export const foldGroupStatus = (group: WorktreeGroup): string => {
-  const statuses = group.sessions.map((item) => item.session.status);
-  if (statuses.includes("waiting")) return "waiting";
-  if (statuses.includes("running") || statuses.includes("starting")) return "running";
-  if (statuses.includes("idle")) return "idle";
-  return statuses[0] ?? "idle";
+  const statuses = new Set(group.sessions.map((item) => item.session.status));
+  for (const word of ["waiting", "running", "starting", "stopping", "idle"]) {
+    if (statuses.has(word)) return word;
+  }
+  return "settled";
+};
+
+/** A section's fact for live and stopping counts: `1 live · 1 stopping`, or `settled`. */
+export const liveCountWords = (live: number, stopping: number): string => {
+  const words = [
+    ...(live > 0 ? [`${live} live`] : []),
+    ...(stopping > 0 ? [`${stopping} stopping`] : []),
+  ];
+  return words.length === 0 ? "settled" : words.join(" · ");
+};
+
+/** `<1m`, `4m`, `2h`, `3d`: how long since `iso`; null when unreadable or in the future. */
+export const elapsedWords = (iso: string, now: number = Date.now()): string | null => {
+  const ms = now - new Date(iso).getTime();
+  if (!Number.isFinite(ms) || ms < 0) return null;
+  const minutes = Math.floor(ms / 60_000);
+  if (minutes < 1) return "<1m";
+  if (minutes < 60) return `${minutes}m`;
+  const hours = Math.floor(minutes / 60);
+  if (hours < 24) return `${hours}h`;
+  return `${Math.floor(hours / 24)}d`;
+};
+
+/**
+ * Where a launch stands, as a starting session's row says it (stories S1, S2): what the server's
+ * launch phase words name, shortened; `launching` before the server names one.
+ */
+export const startingWordsOf = (session: SessionDto): string => {
+  if (isPendingId(session.id)) return "launching";
+  const phase = launchPhaseOf(session.summary);
+  if (phase === null) return "launching";
+  switch (phase.kind) {
+    case "waiting-previous":
+      return phase.words.endsWith("is saving")
+        ? "waiting for the previous save"
+        : "waiting for the previous session";
+    case "booting":
+      return "booting";
+    case "preparing":
+      return "preparing the workspace";
+  }
+};
+
+/** What the detail pane says under a starting session (story S2): the phase, explained. */
+export const startingExplanationOf = (session: SessionDto): string => {
+  const phase = isPendingId(session.id) ? null : launchPhaseOf(session.summary);
+  if (phase === null) return "launching";
+  switch (phase.kind) {
+    case "waiting-previous":
+      return phase.words.endsWith("is saving")
+        ? "waiting for this worktree's previous session to finish saving; this one starts from that save"
+        : phase.words;
+    case "booting":
+      return "the workspace is booting; the agent starts once it is up";
+    case "preparing":
+      return "the workspace has no runtime yet · building its image, on the first launch after an update, takes about 8 minutes";
+  }
+};
+
+/**
+ * The time fact a session row carries (stories S3, S9): `up 4m` while the agent is live, from the
+ * agent's own start (a resumed session's creation is not how long its agent has run); `ended 5m
+ * ago` once settled. Null while it starts or stops: the phase or the save says more.
+ */
+export const sessionTimeWords = (item: SessionItem, now: number = Date.now()): string | null => {
+  const { session } = item;
+  if (LIVE_STATUSES.has(session.status) && session.status !== "starting") {
+    const agentStart = item.annotation?.currentAgent?.createdAt ?? session.createdAt;
+    const up = elapsedWords(agentStart, now);
+    return up === null ? null : `up ${up}`;
+  }
+  if (session.status === "starting" || session.status === "stopping") return null;
+  const settledAt = session.settledAt ?? null;
+  if (settledAt === null) return null;
+  const ago = elapsedWords(settledAt, now);
+  return ago === null ? null : ago === "<1m" ? "ended just now" : `ended ${ago} ago`;
 };
 
 // ─── attach + verb helpers ──────────────────────────────────────────────────
@@ -575,6 +661,9 @@ export const sessionHold = (item: SessionItem): string | null => {
   // A workspace a stop is still saving (docs/adr/0002) reads what is left, first.
   const capture = captureLineOf(item.session);
   if (capture !== null) return capture;
+  // The agent ended and its executor is being looked at before the stop drain begins (story S5):
+  // the workspace is still up, and nothing yet says so.
+  if (item.session.status === "stopping") return "agent ended · workspace still up";
   const agent = item.annotation?.currentAgent ?? null;
   const agentProcessLive = item.processes.some(
     (process) => process.kind !== "shell" && process.exitedAt === null,

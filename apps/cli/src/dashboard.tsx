@@ -1,3 +1,4 @@
+import { withoutLaunchPhase } from "@mend/domain/workbench";
 import { CliRenderEvents, createCliRenderer, type ScrollBoxRenderable } from "@opentui/core";
 import { createRoot, useKeyboard, useRenderer, useTerminalDimensions } from "@opentui/react";
 import {
@@ -26,6 +27,7 @@ import {
   fetchWorkbench,
   filterBranches,
   fitHints,
+  elapsedWords,
   foldGroupStatus,
   isNavSection,
   groupActivityAt,
@@ -43,7 +45,11 @@ import {
   removeWorktreeGroup,
   replaceSession,
   sessionDisplayName,
+  liveCountWords,
   sessionHold,
+  sessionTimeWords,
+  startingExplanationOf,
+  startingWordsOf,
   stepColumn,
   verbForKey,
   verbHints,
@@ -143,6 +149,8 @@ const STATUS_COLOR: Record<string, string> = {
   completed: FAINT,
   failed: ERROR,
   stopped: FAINT,
+  stopping: INK_2,
+  settled: FAINT,
 };
 
 /** The agent itself is still working: never remove from under it. Idle (agent gone) may go. */
@@ -160,6 +168,13 @@ const timeAgo = (iso: string): string => {
 };
 
 const shortAge = (iso: string): string => timeAgo(iso).replace(" ago", "");
+
+/** A worktree's activity fact: `last start 5m ago`, never a bare `5m`. */
+const lastStartWords = (iso: string): ReadonlyArray<string> => {
+  const elapsed = elapsedWords(iso);
+  if (elapsed === null) return [];
+  return [elapsed === "<1m" ? "last start just now" : `last start ${elapsed} ago`];
+};
 
 /** Cut to width with an ellipsis, so a long name never wraps a one-line row. */
 const fit = (text: string, width: number): string =>
@@ -301,8 +316,10 @@ const ProjectRow = ({
       <text height={1} bg="transparent">
         <Gutter selected={selected} />
         <span fg={INK}>{fit(item.project.name, nameWidth).padEnd(nameWidth + 1)}</span>
-        <span fg={item.live > 0 ? MUTED : FAINT}>
-          {item.live > 0 ? `${item.live}/${item.total}` : String(item.total)}
+        <span fg={item.live + item.stopping > 0 ? MUTED : FAINT}>
+          {item.live + item.stopping > 0
+            ? `${item.live + item.stopping}/${item.total}`
+            : String(item.total)}
         </span>
       </text>
     </box>
@@ -323,10 +340,8 @@ const WorktreeRow = ({
   readonly selected: boolean;
   readonly width: number;
 }) => {
-  const folded = foldGroupStatus(group);
-  const live = group.live > 0;
-  const status = live ? folded : "settled";
-  const color = live ? (STATUS_COLOR[folded] ?? MUTED) : FAINT;
+  const status = foldGroupStatus(group);
+  const color = STATUS_COLOR[status] ?? MUTED;
   const open = group.annotation?.openComments ?? 0;
   const sessions = group.sessions.length;
   const nameWidth = Math.max(6, width - 5 - status.length);
@@ -335,8 +350,8 @@ const WorktreeRow = ({
   // One session is the ordinary case and says nothing worth a column of width.
   const facts = fitHints(
     [
-      fit(groupBaseLabel(group), factWidth),
-      shortAge(groupActivityAt(group)),
+      fit(`from ${groupBaseLabel(group)}`, factWidth),
+      ...lastStartWords(groupActivityAt(group)),
       ...(open > 0 ? [`${open} open`] : []),
       ...(sessions === 0 ? ["empty"] : sessions === 1 ? [] : [`${sessions} sessions`]),
     ],
@@ -379,12 +394,15 @@ const SessionRow = ({
   const factWidth = Math.max(8, width - 3);
   // A stopped agent's Services keep the workspace up: that leads, or it would read as done.
   const hold = sessionHold(item);
-  // The harness leads otherwise: it is the fact the machine id used to crowd out.
+  // The harness leads otherwise: it is the fact the machine id used to crowd out. Then where a
+  // launch stands, or how long the agent has been up, or when it ended — never a bare age
+  // (docs/dashboard-status-stories.md).
+  const when = status === "starting" ? startingWordsOf(session) : sessionTimeWords(item);
   const facts = fitHints(
     [
       ...(hold === null ? [] : [hold]),
       session.harness,
-      shortAge(session.createdAt),
+      ...(when === null ? [] : [when]),
       ...(shells > 0 ? [`${shells} shell`] : []),
       ...(agents > 0 ? [`${agents} agent`] : []),
       ...(hold === null && services.length > 0 ? [`${services.length} service`] : []),
@@ -479,7 +497,13 @@ const SessionFacts = ({
   const { session, annotation, services } = item;
   const color = STATUS_COLOR[session.status] ?? MUTED;
   const hold = sessionHold(item);
-  const summary = session.summary?.split("\n")[0] ?? null;
+  const starting = session.status === "starting";
+  // While it starts the status line names the launch phase; the summary does not say it again.
+  const phase = starting ? startingWordsOf(session) : null;
+  const summary =
+    (starting ? withoutLaunchPhase(session.summary) : session.summary)?.split("\n")[0] ?? null;
+  // The created line's last fact: how long the agent has been up, or when the session ended.
+  const when = starting ? null : sessionTimeWords(item);
   const change = annotation ?? group?.annotation;
   const lines: ReadonlyArray<ReactNode> = [
     <text key="name" height={1} bg="transparent">
@@ -490,6 +514,12 @@ const SessionFacts = ({
     <text key="status" height={1} bg="transparent">
       <span>{"  "}</span>
       <span fg={color}>{session.status}</span>
+      {phase === null ? null : (
+        <>
+          <span fg={FAINT}>{" · "}</span>
+          <span fg={INK_2}>{phase}</span>
+        </>
+      )}
       {hold === null ? null : (
         <>
           <span fg={FAINT}>{" · "}</span>
@@ -503,7 +533,7 @@ const SessionFacts = ({
       </span>
     </text>,
     <text key="started" height={1} bg="transparent" fg={FAINT}>
-      {`  started ${timeAgo(session.createdAt)} · ${isPendingId(session.id) ? "provisioning" : session.id.slice(0, 8)}`}
+      {`  created ${timeAgo(session.createdAt)} · ${isPendingId(session.id) ? "provisioning" : session.id.slice(0, 8)}${when === null ? "" : ` · ${when.startsWith("up ") ? `agent ${when}` : when}`}`}
     </text>,
     <text key="services" height={1} bg="transparent">
       <span>{"  "}</span>
@@ -1956,6 +1986,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
 
   // ── chrome ──
   const liveTotal = projectItems.reduce((sum, item) => sum + item.live, 0);
+  const stoppingTotal = projectItems.reduce((sum, item) => sum + item.stopping, 0);
   const columnTitle = (column: Column): string => {
     if (column === "worktrees") {
       return selectedProject === null
@@ -2028,11 +2059,11 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
   const sectionFact = (section: NavSection): string => {
     if (section === "projects") {
       if (selectedProject === null) return "";
-      return selectedProject.live > 0 ? `${selectedProject.live} live` : "settled";
+      return liveCountWords(selectedProject.live, selectedProject.stopping);
     }
     if (section === "worktrees") {
       if (selectedGroup === null) return "";
-      return selectedGroup.live > 0 ? foldGroupStatus(selectedGroup) : "settled";
+      return foldGroupStatus(selectedGroup);
     }
     return selectedSession?.status ?? "";
   };
@@ -2193,9 +2224,7 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
                   <span>{"  "}</span>
                   <span fg={INK_2}>starting</span>
                   <span fg={FAINT}>
-                    {
-                      " · the image builds, then the session boots · a first build on a new setup takes about 7 minutes"
-                    }
+                    {` · ${selectedSession === null ? "launching" : startingExplanationOf(selectedSession)}`}
                   </span>
                 </text>
                 {snakeShown ? (
@@ -2243,6 +2272,12 @@ const App = ({ ctx, onQuit }: { readonly ctx: DashboardContext; readonly onQuit:
           </span>
           <span fg={FAINT}> · </span>
           <span fg={liveTotal > 0 ? MUTED : FAINT}>{liveTotal} live</span>
+          {stoppingTotal > 0 ? (
+            <>
+              <span fg={FAINT}> · </span>
+              <span fg={INK_2}>{stoppingTotal} stopping</span>
+            </>
+          ) : null}
           {gate.count() > 0 ? (
             <>
               <span fg={FAINT}> · </span>
