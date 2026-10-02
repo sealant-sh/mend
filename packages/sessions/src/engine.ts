@@ -9559,6 +9559,11 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         author: string | null,
         launchCorrelationId: string | null = null,
         forceFreshWorkspace = false,
+        /**
+         * A mode handoff's: the agent it just ended held the current workspace, and its
+         * successor starts there (one live agent process at a time, same executor).
+         */
+        handedOver = false,
       ) {
         const session = yield* sessions.byId(sessionId);
         const rows = yield* processes.listForSession(sessionId);
@@ -9604,7 +9609,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             providerSessionId ?? null,
           );
         const retainCurrentWorkspace =
-          !forceFreshWorkspace && (yield* retainedWorkspaceAvailable(session));
+          !forceFreshWorkspace && (yield* retainedWorkspaceAvailable(session, handedOver));
         if (!retainCurrentWorkspace) {
           return yield* launchFresh();
         }
@@ -10074,8 +10079,14 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         },
       );
 
+      /**
+       * Whether a launch may join the session's current workspace rather than replace it: a shell,
+       * a Service or a forward still holds it, or (`handedOver`) a mode handoff just ended the
+       * agent that held it and is starting its successor there. Either way the workspace must be
+       * live and not final-flushed.
+       */
       const retainedWorkspaceAvailable = Effect.fn("SessionEngine.retainedWorkspaceAvailable")(
-        function* (session: Session) {
+        function* (session: Session, handedOver = false) {
           if (session.sealantWorkspaceId === null) return false;
           const supportingLeases = (yield* processes.listLiveForWorkspace(
             session.sealantWorkspaceId,
@@ -10083,7 +10094,9 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           const forwardLeases = (yield* serviceForwards.listOpen()).filter(
             (forward) => forward.sealantWorkspaceId === session.sealantWorkspaceId,
           );
-          if (supportingLeases.length === 0 && forwardLeases.length === 0) return false;
+          if (!handedOver && supportingLeases.length === 0 && forwardLeases.length === 0) {
+            return false;
+          }
           if (yield* workspaceFinalFlushed(session.worktreeId, session.sealantWorkspaceId)) {
             return false;
           }
@@ -10204,6 +10217,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         // Mode handoff: a formerly-protocol session picked up from a terminal
         // must come back as a TUI, not re-enter protocol mode.
         forcePty = false,
+        // Mode handoff: the agent it ended held the current workspace; the TUI starts there.
+        handedOver = false,
       ) {
         const session = yield* sessions.byId(sessionId);
         if (isLegacyBench(session)) {
@@ -10277,7 +10292,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             ),
           );
         }
-        const retainCurrentWorkspace = !fresh && (yield* retainedWorkspaceAvailable(session));
+        const retainCurrentWorkspace =
+          !fresh && (yield* retainedWorkspaceAvailable(session, handedOver));
         // A shell resume reopens the worktree with no agent: saved state
         // restored when it exists — and none required, because the session
         // that died before harvesting is exactly the one worth a shell. The
@@ -10641,9 +10657,25 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
               ),
             ),
           );
-          return yield* launchProtocol(sessionId, { ...start, mode: "protocol" }, author);
+          // The agent it ended held the session's workspace: its successor starts in it, never in
+          // a fresh one. A fresh workspace cost the 2026-10-02 pickup 2 min 14 s: the old one's
+          // save and stop, then a boot and a restore, for a process swap.
+          return yield* launchProtocol(
+            sessionId,
+            { ...start, mode: "protocol" },
+            author,
+            null,
+            false,
+            handedOver !== null && handedOver.sealantWorkspaceId === session.sealantWorkspaceId,
+          );
         }
-        return yield* resumeSession(sessionId, null, false, true).pipe(
+        return yield* resumeSession(
+          sessionId,
+          null,
+          false,
+          true,
+          handedOver !== null && handedOver.sealantWorkspaceId === session.sealantWorkspaceId,
+        ).pipe(
           Effect.catchTag("HarnessStateNotFoundError", () =>
             Effect.fail(
               new SealantPlatformError({

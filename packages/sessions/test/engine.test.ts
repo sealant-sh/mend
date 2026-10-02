@@ -6997,6 +6997,13 @@ const verifyDeferredFinalHarvest = async (pathKind: "stop" | "handoff" | "sweep"
           yield* Deferred.succeed(releaseFlush, undefined);
           yield* Fiber.join(handoff);
           expect(attached).toHaveLength(1);
+          // The successor starts in the workspace the ended agent held: no second create, no
+          // save-stop-boot-restore for a process swap (the 2026-10-02 pickup took 2 min 14 s).
+          expect(created).toHaveLength(1);
+          const successor = [...world.processes.values()].find(
+            (process) => process.kind === "agent-protocol",
+          );
+          expect(successor?.sealantWorkspaceId).toBe(agent.sealantWorkspaceId);
         } else {
           if (pathKind === "sweep") {
             world.processes.set(
