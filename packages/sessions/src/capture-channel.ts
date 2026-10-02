@@ -1908,6 +1908,9 @@ export const CaptureChannelLive: Layer.Layer<
         // verified bytes until it expires: its expiry is recorded, and no seal stands while it
         // lives (`CaptureSealsStoreLive`, review 2026-09-28 (7) #8).
         const answersPresent = readsPresent.get(launchId) === true;
+        // Before any bucket read: an index binding judged live at this moment stays judged so
+        // through the HEADs below, never later than it was.
+        const callStartedAt = Date.now();
         // Bytes-bound URLs (`UPLOAD_ANSWER_SHA256`): an executor that sends the checksum, on a
         // store that checks it but cannot refuse an overwrite. Such a URL writes the bytes it was
         // minted for or nothing, so it carries no authority to replace an object.
@@ -2003,7 +2006,7 @@ export const CaptureChannelLive: Layer.Layer<
               continue;
             }
             if (said === undefined) continue;
-            const now = Date.now();
+            const now = callStartedAt;
             // URLs a process before this one handed out could still be live: not bound yet.
             const trustedAfter = policy.boundIndexTrustedAfterMs ?? BOUND_INDEX_TRUSTED_AFTER_MS;
             if (now < channelStartedAt + trustedAfter) continue;
@@ -2024,7 +2027,7 @@ export const CaptureChannelLive: Layer.Layer<
             }
             // Reserved here, in the step that checked it: no other call passes the check for
             // other bytes while one of these URLs could live.
-            boundDigests.set(plan.key, { sha256: said, until: now + BOUND_URL_LIFETIME_MS });
+            boundDigests.set(plan.key, { sha256: said, until: Date.now() + BOUND_URL_LIFETIME_MS });
             boundTo.set(plan.key, said);
           }
         }

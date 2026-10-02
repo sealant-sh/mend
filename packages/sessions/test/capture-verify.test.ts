@@ -3021,6 +3021,8 @@ describeSeals(
 // bound to their bytes on a store that checks them (`bindsBytes`): none of them can replace an
 // object, so none is recorded as write authority, and the seal stands as soon as it registers.
 const presigned: Array<{ readonly key: string; readonly sha256: string | undefined }> = [];
+/** Object reads in the suite below: a seal that stands without a read-back reads none. */
+let objectReads = 0;
 describeSeals(
   "bytes-bound upload URLs: no write authority, no wait",
   {
@@ -3035,6 +3037,10 @@ describeSeals(
           // (a URL minted before it started), and the clock margin past it, are over.
           replaceableUntil: () => Effect.sync(() => Date.now() - 10 * 60_000),
           bindsBytes: Effect.succeed(true),
+          get: (key: string) =>
+            Effect.sync(() => (objectReads += 1)).pipe(Effect.andThen(store.get(key))),
+          getStream: (key: string) =>
+            Effect.sync(() => (objectReads += 1)).pipe(Effect.andThen(store.getStream(key))),
           presign: (
             key: string,
             method: "GET" | "PUT",
@@ -3101,9 +3107,11 @@ describeSeals(
       const registered = await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
       expect(registered.seal).toEqual({ state: "recorded" });
       // Nothing could replace what it names: it stands now, not 10.5 minutes from now, and
-      // nothing was read back for it.
+      // nothing was read back for it — marked as the read-back's mark is, under the row locks.
+      objectReads = 0;
       expect((await sealOf(at))?.captureId).toBe(file.cap.id);
-      expect((await recordedSeal(at))?.reverifiedAt ?? null).toBeNull();
+      expect(objectReads).toBe(0);
+      expect((await recordedSeal(at))?.reverifiedAt).toBeInstanceOf(Date);
     });
 
     it("keeps an index's URLs to one SHA-256, and refuses a declared SHA-256 its name contradicts", async () => {

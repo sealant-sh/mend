@@ -1443,8 +1443,10 @@ Mend-side details the decision record left open, decided in this ADR:
       expiry is recorded over its epochs. Mend still speaks for each epoch: its authority row or its
       worktree is there (#5). A row is made before any URL leaves Mend under its epoch, and goes
       only with its worktree. And this process's startup window plus the clock margin has passed.
-      Nothing could have replaced what it names since its objects were verified at register.
-      Otherwise, as before: the wait, then the read-back.
+      Nothing could have replaced what it names since its objects were verified at register. The
+      stand is taken as the read-back's mark is (`markSealReverified`), a compare-and-set under the
+      scope rows' locks: authority committed since the reads refuses it, and authority recorded
+      after it sees the seal (re-review (b)). Otherwise, as before: the wait, then the read-back.
     - **What remains.** The first 20 minutes after a Mend restart; a Stop that uploaded through part
       URLs (an object of 16 MiB or more) or a pack index early in a process; an executor of an older
       daemon, and a seal that carries what one saved.

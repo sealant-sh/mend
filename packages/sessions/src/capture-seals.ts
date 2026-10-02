@@ -189,7 +189,14 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
     // Mend still speaks for every epoch it lives under (`putAuthorityKnownOver`): one whose row
     // went with its worktree says nothing, and the seal waits and reads back as before.
     const distinct = new Set(scopes.map((scope) => `${scope.worktreeId}:${scope.epoch}`)).size;
-    if ((yield* repo.putAuthorityKnownOver(scopes)) === distinct) {
+    // Taken as the read-back's mark is (`markSealReverified`): a compare-and-set under the
+    // scope rows' locks, which `recordPutAuthority` takes before it records. Authority that
+    // committed since the reads above refuses the mark; any recorded after it sees the seal and
+    // hands out no URL that could replace what it names (review 2026-10-02, re-review (b)).
+    if (
+      (yield* repo.putAuthorityKnownOver(scopes)) === distinct &&
+      (yield* repo.markSealReverified(seal.worktreeId, seal.epoch, seal.captureId, new Date(at)))
+    ) {
       return { state: "standing" } satisfies SealStanding;
     }
   }
