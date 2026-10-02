@@ -341,7 +341,11 @@ describe("workspace note", () => {
     );
   });
 
-  it("names both harness files", () => {
-    expect(WORKSPACE_NOTE_FILES).toEqual([".claude/CLAUDE.md", ".codex/AGENTS.md"]);
+  it("names each harness's own file (opencode reads Claude Code's)", () => {
+    expect(WORKSPACE_NOTE_FILES).toEqual([
+      ".claude/CLAUDE.md",
+      ".codex/AGENTS.md",
+      ".pi/agent/AGENTS.md",
+    ]);
   });
 });

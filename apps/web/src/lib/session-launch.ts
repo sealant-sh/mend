@@ -11,8 +11,8 @@ import {
 } from "#/lib/api";
 import type { TrpcProxy } from "#/lib/trpc";
 
-/** Harnesses the web can start; opencode stays CLI-only until it is exercised end to end. */
-export const HARNESSES = ["claude", "codex", "shell"] as const;
+/** Harnesses the web can start, as terminal sessions; `shell` is the plain workbench. */
+export const HARNESSES = ["claude", "codex", "opencode", "pi", "shell"] as const;
 export type Harness = (typeof HARNESSES)[number];
 
 type Navigate = UseNavigateResult<string>;

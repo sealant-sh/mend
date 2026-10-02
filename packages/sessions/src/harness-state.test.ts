@@ -13,6 +13,7 @@ import {
   extractTranscript,
   hasLiveHarnessState,
   locateLiveTranscript,
+  HARNESS_HOME_CREDENTIALS,
   nativeResumeArgv,
   relocateHarnessHomeScript,
 } from "./harness-state.ts";
@@ -104,6 +105,34 @@ describe("transcript adapters", () => {
         "/root/.codex/sessions/2026/07/25/rollout-2026-07-25T22-11-00-0f9a2c3d-1111-2222-3333-444455556666.jsonl",
       ),
     ).toBe("0f9a2c3d-1111-2222-3333-444455556666");
+  });
+
+  it("reads pi's session id from its file, resumes it, and keeps pi's and opencode's logins private", () => {
+    expect(
+      HARNESS_STATE["pi"]?.providerSessionId(
+        "/root/.pi/agent/sessions/--workspace-repo--/2026-10-01T13-33-08-888Z_01a02ed3-3598-7bda-85a7-382585b3712c.jsonl",
+      ),
+    ).toBe("01a02ed3-3598-7bda-85a7-382585b3712c");
+    expect(
+      HARNESS_STATE["pi"]?.liveTranscript?.test(
+        ".pi/agent/sessions/--workspace-repo--/2026-10-01T13-33-08-888Z_01a02ed3-3598-7bda-85a7-382585b3712c.jsonl",
+      ),
+    ).toBe(true);
+    expect(HARNESS_STATE["pi"]?.homeDirs).toEqual([".pi"]);
+    expect(nativeResumeArgv("pi", "pi-session-id", ["pi", "--approve"])).toEqual([
+      "pi",
+      "--session",
+      "pi-session-id",
+      "--approve",
+    ]);
+    expect(nativeResumeArgv("pi", "saved", ["pi", "--session", "requested"])).toEqual([
+      "pi",
+      "--session",
+      "requested",
+    ]);
+    expect(HARNESS_HOME_CREDENTIALS).toEqual(
+      expect.arrayContaining([".pi/agent/auth.json", ".local/share/opencode/auth.json"]),
+    );
   });
 
   it("resumes a saved Codex session by provider id", () => {

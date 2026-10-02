@@ -375,7 +375,7 @@ function SessionPage() {
           {!agentLive && control.steer && (
             <div className="flex items-center gap-2">
               <span className="text-xs text-label">resume with:</span>
-              {(["claude", "codex", "opencode"] as const).map((harness) => (
+              {(["claude", "codex", "opencode", "pi"] as const).map((harness) => (
                 <button
                   key={harness}
                   type="button"

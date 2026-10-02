@@ -36,8 +36,11 @@ import { shellQuote } from "./workspace-files.ts";
  * program does this in both stores (`SKILLS_VACATE_PROGRAM`).
  */
 
-/** Harness-home-relative skills directories, one per harness that reads skills. */
-export const SKILL_TARGET_DIRS = [".claude/skills", ".codex/skills"] as const;
+/**
+ * Harness-home-relative skills directories, one per harness that reads skills. opencode needs none
+ * of its own: it reads Claude Code's `~/.claude/skills`.
+ */
+export const SKILL_TARGET_DIRS = [".claude/skills", ".codex/skills", ".pi/agent/skills"] as const;
 
 /**
  * The bookkeeping file that makes materialization reconciling rather than

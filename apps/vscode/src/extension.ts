@@ -207,7 +207,7 @@ interface SessionKindPick extends vscode.QuickPickItem {
 }
 
 interface HarnessPick extends vscode.QuickPickItem {
-  readonly id: "claude" | "codex";
+  readonly id: "claude" | "codex" | "opencode" | "pi";
 }
 
 interface ModelPick extends vscode.QuickPickItem {
@@ -681,6 +681,8 @@ class MendCommands {
       [
         { label: "Claude", description: "claude", id: "claude" },
         { label: "Codex", description: "codex", id: "codex" },
+        { label: "opencode", description: "opencode", id: "opencode" },
+        { label: "pi", description: "pi", id: "pi" },
       ],
       { title: newSessionTitle(project, join), placeHolder: "Harness", ignoreFocusOut: true },
     );

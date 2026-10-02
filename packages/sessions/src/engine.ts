@@ -124,6 +124,7 @@ import {
   restatedSummary,
   executorUnansweredWords,
   observeCaptureThroughput,
+  OPENCODE_PERMISSION_ALLOW,
   planExecutorCap,
 } from "@mend/domain/workbench";
 import {
@@ -316,7 +317,9 @@ const promptArgv = (harness: string, prompt: string): ReadonlyArray<string> | nu
       case "codex":
         return 'exec codex --dangerously-bypass-approvals-and-sandbox "$prompt"';
       case "opencode":
-        return 'exec opencode run "$prompt"';
+        return `exec env '${OPENCODE_PERMISSION_ALLOW}' opencode --prompt "$prompt"`;
+      case "pi":
+        return 'exec pi --approve "$prompt"';
       default:
         return null;
     }
@@ -383,6 +386,11 @@ const platformShape = (
           undefined,
         ],
       };
+    case "opencode":
+    case "pi":
+      // Baked into the unified image with every other agent CLI (Core 0.39): the shell's shape,
+      // its credential ladder included, until each brings logins of its own.
+      return platformShape("shell");
     default:
       return { harness: opencode(), credentialAttempts: [{ github: true }, undefined] };
   }
@@ -425,6 +433,21 @@ const withPermissionDefaults = (
     return argv.includes("--dangerously-bypass-approvals-and-sandbox")
       ? argv
       : ["codex", "--dangerously-bypass-approvals-and-sandbox", ...rest];
+  }
+  // opencode reads its permissions from the environment; an argv that sets them itself (`env …`,
+  // the composed `ask`) is left alone.
+  if (harness === "opencode" && head === "opencode") {
+    return ["env", OPENCODE_PERMISSION_ALLOW, ...argv];
+  }
+  // pi asks nothing per tool call; it does ask whether to trust the repository's own `.pi`
+  // resources, which the user decided when they adopted it.
+  if (
+    harness === "pi" &&
+    head === "pi" &&
+    !argv.includes("--approve") &&
+    !argv.includes("--no-approve")
+  ) {
+    return ["pi", "--approve", ...rest];
   }
   return argv;
 };
@@ -9442,6 +9465,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         claude: ["claude"],
         codex: ["codex"],
         opencode: ["opencode"],
+        pi: ["pi"],
       };
 
       const ACTIVE_STATUSES = new Set(["starting", "running", "waiting", "idle"]);

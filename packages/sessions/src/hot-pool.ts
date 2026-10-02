@@ -70,8 +70,9 @@ const byName = <T extends { readonly name: string }>(items: ReadonlyArray<T>): R
 export const hotFingerprint = (inputs: HotFingerprintInputs): string => {
   const canonical = {
     // Bump when launch preparation changes in a way an already-running standby cannot inherit.
-    // v1 relocates every harness directory into sealantd's configured capture root before launch.
-    harnessHomeLayout: "capture-root-v1",
+    // v1 relocates every harness directory into sealantd's configured capture root before launch;
+    // v2 relocates pi's `.pi` too (a standby made before it would leave pi's state ephemeral).
+    harnessHomeLayout: "capture-root-v2",
     workspaceImage: encodeWorkspaceImage(inputs.workspaceImage),
     applyDotfiles: inputs.applyDotfiles,
     inheritUserSkills: inputs.inheritUserSkills,
