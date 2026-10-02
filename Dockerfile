@@ -3,9 +3,15 @@
 # this build never imports Core source or its database schema. Sealant 0.38.1 runs its job queue
 # in Postgres and keeps workspace images in the host Docker Engine, so the bundle carries no
 # RabbitMQ and no registry.
-FROM ghcr.io/sealant-sh/sealant-api@sha256:73b148883bb0d9635d8253092e796113531715f3a0eda1a0e4723b55b12b7443 AS sealant-api
-FROM ghcr.io/sealant-sh/sealant-worker@sha256:f46251c1a01477cc56c5fa5573a8f407614fd5083756dc0b221f0436193bf7be AS sealant-worker
-FROM ghcr.io/sealant-sh/sealant-ssh-gateway@sha256:f7513a5541af8d8ed548b1aeb29c527b6a2d3bd0bc884b81bf7c594fb747ce82 AS sealant-ssh-gateway
+#
+# The defaults are the release pins. Only a preview build (.github/workflows/preview.yml) passes
+# other Core images, built from a Sealant branch; a release build passes none of these.
+ARG SEALANT_API_IMAGE=ghcr.io/sealant-sh/sealant-api@sha256:73b148883bb0d9635d8253092e796113531715f3a0eda1a0e4723b55b12b7443
+ARG SEALANT_WORKER_IMAGE=ghcr.io/sealant-sh/sealant-worker@sha256:f46251c1a01477cc56c5fa5573a8f407614fd5083756dc0b221f0436193bf7be
+ARG SEALANT_SSH_GATEWAY_IMAGE=ghcr.io/sealant-sh/sealant-ssh-gateway@sha256:f7513a5541af8d8ed548b1aeb29c527b6a2d3bd0bc884b81bf7c594fb747ce82
+FROM ${SEALANT_API_IMAGE} AS sealant-api
+FROM ${SEALANT_WORKER_IMAGE} AS sealant-worker
+FROM ${SEALANT_SSH_GATEWAY_IMAGE} AS sealant-ssh-gateway
 
 # Mend's API server and web front are esbuild-bundled here (tooling/scripts/bundle-app.mjs and
 # apps/web/scripts/build-server.mjs), so the runtime ships two self-contained files plus the
@@ -25,6 +31,9 @@ RUN pnpm --filter @mend/api-server build && pnpm --filter @mend/web build
 FROM node:26-bookworm-slim AS runtime
 
 ARG MEND_VERSION=dev
+# A preview build's sealantd image (by digest), baked into workspace images by the bundled worker;
+# scripts/bundle-supervisor.mjs hands it over. Empty in a release build, which changes nothing.
+ARG MEND_PREVIEW_SEALANTD_IMAGE=""
 LABEL org.opencontainers.image.title="Mend bundle" \
   org.opencontainers.image.version="${MEND_VERSION}" \
   dev.sealant.mend.sealant-version="0.38.1"
@@ -61,6 +70,7 @@ RUN mkdir -p /var/lib/mend/store /var/lib/mend/config /var/lib/mend/ssh /run/sea
 
 ENV NODE_ENV=production \
   MEND_VERSION=${MEND_VERSION} \
+  MEND_PREVIEW_SEALANTD_IMAGE=${MEND_PREVIEW_SEALANTD_IMAGE} \
   HOME=/var/lib/mend/config \
   XDG_CONFIG_HOME=/var/lib/mend/config \
   MEND_MODE=all \

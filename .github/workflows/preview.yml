@@ -1,0 +1,425 @@
+name: Preview
+
+# One Mend preview build for a self-hosted box: the Mend ref this workflow is dispatched on, plus an
+# optional Sealant Core ref and an optional sealantd ref. It builds the images those refs need,
+# pushes ghcr.io/sealant-sh/mend:<version>, and prints the command that deploys it with
+# scripts/preview-deploy.sh. See docs/operations/preview-builds.md.
+#
+# No packaged acceptance runs here, on purpose: a preview is for trying branches on a box, and it
+# stays fast. Releases still go through image.yml, which runs the acceptance.
+on:
+  workflow_dispatch:
+    inputs:
+      sealant_ref:
+        description:
+          "sealant-sh/sealant branch, tag or commit. Empty: the Core this Mend commit pins"
+        required: false
+        type: string
+        default: ""
+      sealantd_ref:
+        description: "sealant-sh/sealantd branch, tag or commit. Empty: the sealantd Core pins"
+        required: false
+        type: string
+        default: ""
+      platforms:
+        description: "Image platforms"
+        required: true
+        type: choice
+        default: linux/amd64
+        options:
+          - linux/amd64
+          - linux/arm64
+          - linux/amd64,linux/arm64
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  plan:
+    if: github.repository == 'sealant-sh/mend'
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.resolve.outputs.version }}
+      sealant_sha: ${{ steps.resolve.outputs.sealant_sha }}
+      sealantd_sha: ${{ steps.resolve.outputs.sealantd_sha }}
+      platforms: ${{ steps.resolve.outputs.platforms }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Resolve the version, the upstream commits and the platforms
+        id: resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SEALANT_REF: ${{ inputs.sealant_ref }}
+          SEALANTD_REF: ${{ inputs.sealantd_ref }}
+          PLATFORMS: ${{ inputs.platforms }}
+          RUN_NUMBER: ${{ github.run_number }}
+        run: |
+          set -euo pipefail
+          # One commit per input, resolved once, so every architecture builds the same source
+          # even when the branch moves during the run.
+          for ref in "$SEALANT_REF" "$SEALANTD_REF"; do
+            if [[ -n $ref && ! $ref =~ ^[A-Za-z0-9._/-]+$ ]]; then
+              echo "::error::\"$ref\" is not a branch, tag or commit name."
+              exit 1
+            fi
+          done
+          resolve() {
+            local repository=$1 ref=$2
+            if [[ -n $ref ]]; then gh api "repos/$repository/commits/$ref" --jq .sha; fi
+          }
+          sealant_sha=$(resolve sealant-sh/sealant "$SEALANT_REF")
+          sealantd_sha=$(resolve sealant-sh/sealantd "$SEALANTD_REF")
+
+          # The next minor of the CLI version, so a preview always upgrades from the release it
+          # follows, and the run number, so each preview upgrades from the one before it.
+          cli_version=$(jq -r .version apps/cli/package.json)
+          [[ $cli_version =~ ^(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\. ]] || {
+            echo "::error::apps/cli/package.json has no usable version (\"$cli_version\")."
+            exit 1
+          }
+          version="${BASH_REMATCH[1]}.$((BASH_REMATCH[2] + 1)).0-preview.$RUN_NUMBER"
+
+          amd64='{"arch":"amd64","runner":"ubuntu-latest"}'
+          arm64='{"arch":"arm64","runner":"ubuntu-24.04-arm"}'
+          case $PLATFORMS in
+            linux/amd64) platforms="[$amd64]" ;;
+            linux/arm64) platforms="[$arm64]" ;;
+            linux/amd64,linux/arm64) platforms="[$amd64,$arm64]" ;;
+            *) echo "::error::Unknown platforms \"$PLATFORMS\"."; exit 1 ;;
+          esac
+
+          {
+            echo "version=$version"
+            echo "sealant_sha=$sealant_sha"
+            echo "sealantd_sha=$sealantd_sha"
+            echo "platforms=$platforms"
+          } >> "$GITHUB_OUTPUT"
+          echo "Mend $version: sealant ${sealant_sha:-pinned}, sealantd ${sealantd_sha:-pinned}, $PLATFORMS"
+
+  # sealantd needs no Core rebuild: the bundled Sealant worker bakes whatever image
+  # SEALANT_SEALANTD_IMAGE names into workspace images (scripts/bundle-supervisor.mjs).
+  sealantd:
+    needs: plan
+    if: needs.plan.outputs.sealantd_sha != ''
+    strategy:
+      matrix:
+        platform: ${{ fromJSON(needs.plan.outputs.platforms) }}
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: sealant-sh/sealantd
+          ref: ${{ needs.plan.outputs.sealantd_sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/${{ matrix.platform.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.plan.outputs.sealantd_sha }}
+            dev.sealant.mend.preview.source=sealant-sh/sealantd@${{ needs.plan.outputs.sealantd_sha }}
+          outputs:
+            type=image,name=ghcr.io/${{ github.repository_owner
+            }}/mend-preview-sealantd,push-by-digest=true,name-canonical=true,push=true
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-digests-sealantd--${{ matrix.platform.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  sealantd-image:
+    needs: [plan, sealantd]
+    runs-on: ubuntu-latest
+    outputs:
+      ref: ${{ steps.merge.outputs.ref }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: preview-digests-sealantd--*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tag the image and resolve it by digest
+        id: merge
+        working-directory: /tmp/digests
+        env:
+          REPOSITORY: ghcr.io/${{ github.repository_owner }}/mend-preview-sealantd
+          SHA: ${{ needs.plan.outputs.sealantd_sha }}
+        run: |
+          set -euo pipefail
+          sources=()
+          for digest in *; do sources+=("$REPOSITORY@sha256:$digest"); done
+          docker buildx imagetools create --tag "$REPOSITORY:${SHA:0:12}" "${sources[@]}"
+          digest=$(docker buildx imagetools inspect "$REPOSITORY:${SHA:0:12}" --format '{{json .Manifest}}' | jq -r .digest)
+          [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::No digest for $REPOSITORY:${SHA:0:12}"; exit 1; }
+          # By digest: the worker's workspace image plan names this reference, so every sealantd
+          # build gets its own workspace images instead of reusing the last preview's.
+          echo "ref=$REPOSITORY@$digest" >> "$GITHUB_OUTPUT"
+
+  core:
+    needs: plan
+    if: needs.plan.outputs.sealant_sha != ''
+    strategy:
+      matrix:
+        image: [api, worker, ssh-gateway]
+        platform: ${{ fromJSON(needs.plan.outputs.platforms) }}
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: sealant-sh/sealant
+          ref: ${{ needs.plan.outputs.sealant_sha }}
+          persist-credentials: false
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: apps/${{ matrix.image }}/Dockerfile
+          platforms: linux/${{ matrix.platform.arch }}
+          labels: |
+            org.opencontainers.image.source=https://github.com/${{ github.repository }}
+            org.opencontainers.image.revision=${{ needs.plan.outputs.sealant_sha }}
+            dev.sealant.mend.preview.source=sealant-sh/sealant@${{ needs.plan.outputs.sealant_sha }}
+          outputs:
+            type=image,name=ghcr.io/${{ github.repository_owner }}/mend-preview-sealant-${{
+            matrix.image }},push-by-digest=true,name-canonical=true,push=true
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-digests-core-${{ matrix.image }}--${{ matrix.platform.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  core-images:
+    needs: [plan, core]
+    runs-on: ubuntu-latest
+    outputs:
+      api: ${{ steps.merge.outputs.api }}
+      worker: ${{ steps.merge.outputs.worker }}
+      ssh_gateway: ${{ steps.merge.outputs.ssh_gateway }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: preview-digests-core-*
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tag the images and resolve them by digest
+        id: merge
+        env:
+          OWNER: ${{ github.repository_owner }}
+          SHA: ${{ needs.plan.outputs.sealant_sha }}
+        run: |
+          set -euo pipefail
+          for image in api worker ssh-gateway; do
+            repository="ghcr.io/$OWNER/mend-preview-sealant-$image"
+            sources=()
+            for file in /tmp/digests/preview-digests-core-"$image"--*/*; do
+              sources+=("$repository@sha256:$(basename "$file")")
+            done
+            docker buildx imagetools create --tag "$repository:${SHA:0:12}" "${sources[@]}"
+            digest=$(docker buildx imagetools inspect "$repository:${SHA:0:12}" --format '{{json .Manifest}}' | jq -r .digest)
+            [[ $digest =~ ^sha256:[0-9a-f]{64}$ ]] || { echo "::error::No digest for $repository:${SHA:0:12}"; exit 1; }
+            echo "${image//-/_}=$repository@$digest" >> "$GITHUB_OUTPUT"
+          done
+
+  mend:
+    needs: [plan, sealantd-image, core-images]
+    # Runs when each upstream image was built, or was not asked for.
+    if: >-
+      ${{ !cancelled() && needs.plan.result == 'success' && (needs.plan.outputs.sealantd_sha == ''
+      || needs.sealantd-image.result == 'success') && (needs.plan.outputs.sealant_sha == '' ||
+      needs.core-images.result == 'success') }}
+    strategy:
+      matrix:
+        platform: ${{ fromJSON(needs.plan.outputs.platforms) }}
+    runs-on: ${{ matrix.platform.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Choose build arguments and labels
+        id: args
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          SEALANT_SHA: ${{ needs.plan.outputs.sealant_sha }}
+          SEALANTD_SHA: ${{ needs.plan.outputs.sealantd_sha }}
+          API_IMAGE: ${{ needs.core-images.outputs.api }}
+          WORKER_IMAGE: ${{ needs.core-images.outputs.worker }}
+          SSH_GATEWAY_IMAGE: ${{ needs.core-images.outputs.ssh_gateway }}
+          SEALANTD_IMAGE: ${{ needs.sealantd-image.outputs.ref }}
+        run: |
+          set -euo pipefail
+          # Without a Core ref the Dockerfile's pinned Core digests stay; without a sealantd ref
+          # MEND_PREVIEW_SEALANTD_IMAGE stays empty and the worker keeps the sealantd Core pins.
+          {
+            echo "build_args<<ARGS"
+            echo "MEND_VERSION=$VERSION"
+            if [[ -n $SEALANT_SHA ]]; then
+              echo "SEALANT_API_IMAGE=$API_IMAGE"
+              echo "SEALANT_WORKER_IMAGE=$WORKER_IMAGE"
+              echo "SEALANT_SSH_GATEWAY_IMAGE=$SSH_GATEWAY_IMAGE"
+            fi
+            if [[ -n $SEALANTD_SHA ]]; then echo "MEND_PREVIEW_SEALANTD_IMAGE=$SEALANTD_IMAGE"; fi
+            echo "ARGS"
+            echo "labels<<LABELS"
+            echo "org.opencontainers.image.revision=$GITHUB_SHA"
+            echo "dev.sealant.mend.preview.sealant=${SEALANT_SHA:-pinned}"
+            echo "dev.sealant.mend.preview.sealantd=${SEALANTD_SHA:-pinned}"
+            if [[ -n $SEALANT_SHA ]]; then
+              echo "dev.sealant.mend.sealant-version=preview-${SEALANT_SHA:0:12}"
+            fi
+            echo "LABELS"
+          } >> "$GITHUB_OUTPUT"
+      - id: build
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          platforms: linux/${{ matrix.platform.arch }}
+          build-args: ${{ steps.args.outputs.build_args }}
+          labels: ${{ steps.args.outputs.labels }}
+          outputs:
+            type=image,name=ghcr.io/${{ github.repository_owner
+            }}/mend,push-by-digest=true,name-canonical=true,push=true
+      - name: Export digest
+        env:
+          DIGEST: ${{ steps.build.outputs.digest }}
+        run: |
+          mkdir -p /tmp/digests
+          touch "/tmp/digests/${DIGEST#sha256:}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: preview-digests-mend--${{ matrix.platform.arch }}
+          path: /tmp/digests/*
+          if-no-files-found: error
+          retention-days: 1
+
+  mend-image:
+    needs: [plan, sealantd-image, core-images, mend]
+    if: ${{ !cancelled() && needs.mend.result == 'success' }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: /tmp/digests
+          pattern: preview-digests-mend--*
+          merge-multiple: true
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Tag the preview
+        id: merge
+        working-directory: /tmp/digests
+        env:
+          REPOSITORY: ghcr.io/${{ github.repository_owner }}/mend
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          set -euo pipefail
+          sources=()
+          for digest in *; do sources+=("$REPOSITORY@sha256:$digest"); done
+          docker buildx imagetools create --tag "$REPOSITORY:$VERSION" "${sources[@]}"
+          docker buildx imagetools inspect "$REPOSITORY:$VERSION"
+          digest=$(docker buildx imagetools inspect "$REPOSITORY:$VERSION" --format '{{json .Manifest}}' | jq -r .digest)
+          echo "digest=$digest" >> "$GITHUB_OUTPUT"
+      - name: Summary
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          MEND_DIGEST: ${{ steps.merge.outputs.digest }}
+          MEND_REF: ${{ github.ref_name }}
+          SEALANT_REF: ${{ inputs.sealant_ref }}
+          SEALANT_SHA: ${{ needs.plan.outputs.sealant_sha }}
+          SEALANTD_REF: ${{ inputs.sealantd_ref }}
+          SEALANTD_SHA: ${{ needs.plan.outputs.sealantd_sha }}
+          API_IMAGE: ${{ needs.core-images.outputs.api }}
+          WORKER_IMAGE: ${{ needs.core-images.outputs.worker }}
+          SSH_GATEWAY_IMAGE: ${{ needs.core-images.outputs.ssh_gateway }}
+          SEALANTD_IMAGE: ${{ needs.sealantd-image.outputs.ref }}
+          PLATFORMS: ${{ inputs.platforms }}
+          OWNER: ${{ github.repository_owner }}
+        run: |
+          set -euo pipefail
+          raw="https://raw.githubusercontent.com/$GITHUB_REPOSITORY/$GITHUB_SHA/scripts/preview-deploy.sh"
+          {
+            echo "## Mend $VERSION"
+            echo
+            echo "| Repository | Ref | Commit | Images |"
+            echo "| --- | --- | --- | --- |"
+            echo "| $GITHUB_REPOSITORY | \`$MEND_REF\` | \`$GITHUB_SHA\` | \`ghcr.io/$OWNER/mend:$VERSION\` (\`$MEND_DIGEST\`) |"
+            if [[ -n $SEALANT_SHA ]]; then
+              echo "| sealant-sh/sealant | \`$SEALANT_REF\` | \`$SEALANT_SHA\` | \`$API_IMAGE\`<br>\`$WORKER_IMAGE\`<br>\`$SSH_GATEWAY_IMAGE\` |"
+            else
+              echo "| sealant-sh/sealant | pinned by this Mend commit | | the Dockerfile's Core digests |"
+            fi
+            if [[ -n $SEALANTD_SHA ]]; then
+              echo "| sealant-sh/sealantd | \`$SEALANTD_REF\` | \`$SEALANTD_SHA\` | \`$SEALANTD_IMAGE\` |"
+            else
+              echo "| sealant-sh/sealantd | pinned by Core | | the worker's default |"
+            fi
+            echo
+            echo "Platforms: \`$PLATFORMS\`. No packaged acceptance ran for this preview."
+            echo
+            echo "Deploy on the box, as root, with the \`mend\` CLI installed:"
+            echo
+            echo '```sh'
+            echo "scripts/preview-deploy.sh $VERSION $GITHUB_SHA"
+            echo '```'
+            echo
+            echo "Without a Mend checkout on the box:"
+            echo
+            echo '```sh'
+            echo "curl -fsSL $raw | bash -s -- $VERSION $GITHUB_SHA"
+            echo '```'
+            if [[ -n $SEALANTD_SHA ]]; then
+              echo
+              echo "The box's Docker pulls \`ghcr.io/$OWNER/mend-preview-sealantd\` when it builds a workspace image: that package must be public (docs/operations/preview-builds.md)."
+            fi
+          } | tee -a "$GITHUB_STEP_SUMMARY"

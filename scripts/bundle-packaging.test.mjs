@@ -145,18 +145,31 @@ test("the bundle pins published Sealant 0.38.1 artifacts and its official migrat
   assert.equal(contract.captureStore.image, "dxflrs/garage:v2.4.1");
   assert.equal(contract.registry, undefined);
   assert.match(dockerfile, /MEND_VERSION=\$\{MEND_VERSION\}/);
+  // A release build passes no image arguments, so these defaults are the release pins. Only a
+  // preview build (.github/workflows/preview.yml) overrides them.
   assert.match(
     dockerfile,
-    /^FROM ghcr\.io\/sealant-sh\/sealant-api@sha256:73b148883bb0d9635d8253092e796113531715f3a0eda1a0e4723b55b12b7443 AS sealant-api$/m,
+    /^ARG SEALANT_API_IMAGE=ghcr\.io\/sealant-sh\/sealant-api@sha256:73b148883bb0d9635d8253092e796113531715f3a0eda1a0e4723b55b12b7443$/m,
   );
   assert.match(
     dockerfile,
-    /^FROM ghcr\.io\/sealant-sh\/sealant-worker@sha256:f46251c1a01477cc56c5fa5573a8f407614fd5083756dc0b221f0436193bf7be AS sealant-worker$/m,
+    /^ARG SEALANT_WORKER_IMAGE=ghcr\.io\/sealant-sh\/sealant-worker@sha256:f46251c1a01477cc56c5fa5573a8f407614fd5083756dc0b221f0436193bf7be$/m,
   );
   assert.match(
     dockerfile,
-    /^FROM ghcr\.io\/sealant-sh\/sealant-ssh-gateway@sha256:f7513a5541af8d8ed548b1aeb29c527b6a2d3bd0bc884b81bf7c594fb747ce82 AS sealant-ssh-gateway$/m,
+    /^ARG SEALANT_SSH_GATEWAY_IMAGE=ghcr\.io\/sealant-sh\/sealant-ssh-gateway@sha256:f7513a5541af8d8ed548b1aeb29c527b6a2d3bd0bc884b81bf7c594fb747ce82$/m,
   );
+  // Declared before the first FROM, so the FROM lines can read them.
+  const firstFrom = dockerfile.search(/^FROM /m);
+  for (const [argument, stage] of [
+    ["SEALANT_API_IMAGE", "sealant-api"],
+    ["SEALANT_WORKER_IMAGE", "sealant-worker"],
+    ["SEALANT_SSH_GATEWAY_IMAGE", "sealant-ssh-gateway"],
+  ]) {
+    assert.ok(dockerfile.search(new RegExp(`^ARG ${argument}=`, "m")) < firstFrom, argument);
+    assert.match(dockerfile, new RegExp(`^FROM \\$\\{${argument}\\} AS ${stage}$`, "m"));
+  }
+  assert.equal(dockerfile.match(/^FROM .*sealant-sh\/sealant-/gm), null);
   assert.match(dockerfile, /dev\.sealant\.mend\.sealant-version="0\.38\.1"/);
   assert.match(supervisor, /applying Sealant 0\.38\.1 migrations/);
   assert.doesNotMatch(
@@ -175,4 +188,45 @@ test("the bundle pins published Sealant 0.38.1 artifacts and its official migrat
   assert.match(supervisor, /\/opt\/sealant\/api\/dist\/migrate\.js/);
   assert.match(supervisor, /DRIZZLE_MIGRATIONS_DIR: "\/opt\/sealant\/api\/drizzle"/);
   assert.doesNotMatch(dockerfile, /Core-volume-mounts|COPY .*Core/);
+});
+
+test("a preview sealantd image reaches only the Sealant worker, and a release adds nothing", async () => {
+  const [dockerfile, supervisor, { previewSealantdEnvironment }] = await Promise.all([
+    readFile(path.join(root, "Dockerfile"), "utf8"),
+    readFile(path.join(root, "scripts/bundle-supervisor.mjs"), "utf8"),
+    import("./bundle-supervisor.mjs"),
+  ]);
+  assert.match(dockerfile, /^ARG MEND_PREVIEW_SEALANTD_IMAGE=""$/m);
+  assert.match(dockerfile, /MEND_PREVIEW_SEALANTD_IMAGE=\$\{MEND_PREVIEW_SEALANTD_IMAGE\}/);
+  assert.equal(supervisor.match(/previewSealantdEnvironment\(process\.env\)/g)?.length, 1);
+  assert.match(
+    supervisor,
+    /WORKSPACE_CONTROL_SOCKET_HOST_DIR: SOCKET_ROOT,\n\s+\.\.\.previewSealantdEnvironment\(process\.env\),/,
+  );
+
+  assert.deepEqual(previewSealantdEnvironment({}), {});
+  assert.deepEqual(previewSealantdEnvironment({ MEND_PREVIEW_SEALANTD_IMAGE: "" }), {});
+  assert.deepEqual(
+    previewSealantdEnvironment({
+      MEND_PREVIEW_SEALANTD_IMAGE: "  ",
+      SEALANT_SEALANTD_RECOVERY_BOOT_IMAGES: "example.invalid/sealantd:dev",
+    }),
+    {},
+  );
+
+  const image = `ghcr.io/sealant-sh/mend-preview-sealantd@sha256:${"a".repeat(64)}`;
+  assert.deepEqual(previewSealantdEnvironment({ MEND_PREVIEW_SEALANTD_IMAGE: image }), {
+    SEALANT_SEALANTD_IMAGE: image,
+    SEALANT_SEALANTD_RECOVERY_BOOT_IMAGES: image,
+  });
+  assert.deepEqual(
+    previewSealantdEnvironment({
+      MEND_PREVIEW_SEALANTD_IMAGE: image,
+      SEALANT_SEALANTD_RECOVERY_BOOT_IMAGES: ` example.invalid/sealantd:dev ,,${image}`,
+    }),
+    {
+      SEALANT_SEALANTD_IMAGE: image,
+      SEALANT_SEALANTD_RECOVERY_BOOT_IMAGES: `example.invalid/sealantd:dev,${image}`,
+    },
+  );
 });

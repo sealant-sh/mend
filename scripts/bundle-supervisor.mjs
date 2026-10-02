@@ -103,6 +103,29 @@ const httpResponds = async (url) => {
   return response.status < 500;
 };
 
+/**
+ * The worker environment a preview build's sealantd image needs (see .github/workflows/preview.yml).
+ * Sealant's worker bakes `SEALANT_SEALANTD_IMAGE` into every workspace image it builds, and trusts
+ * the recovery boot of an image that is not a released `ghcr.io/sealant-sh/sealantd:X.Y.Z` only
+ * when `SEALANT_SEALANTD_RECOVERY_BOOT_IMAGES` lists it. A release bundle carries no preview image
+ * and this adds nothing.
+ *
+ * @param {Readonly<Record<string, string | undefined>>} environment
+ * @returns {Record<string, string>}
+ */
+export const previewSealantdEnvironment = (environment) => {
+  const image = environment.MEND_PREVIEW_SEALANTD_IMAGE?.trim() ?? "";
+  if (image === "") return {};
+  const declared = (environment.SEALANT_SEALANTD_RECOVERY_BOOT_IMAGES ?? "")
+    .split(",")
+    .map((entry) => entry.trim())
+    .filter((entry) => entry !== "" && entry !== image);
+  return {
+    SEALANT_SEALANTD_IMAGE: image,
+    SEALANT_SEALANTD_RECOVERY_BOOT_IMAGES: [...declared, image].join(","),
+  };
+};
+
 const baseSpecification = (name, command, environment = {}) => ({
   name,
   command,
@@ -145,6 +168,7 @@ const startBundle = async (supervisor) => {
       ...sealantEnvironment,
       DEFAULT_SSH_ENDPOINT_EXPOSURE_STRATEGY: "container-network",
       WORKSPACE_CONTROL_SOCKET_HOST_DIR: SOCKET_ROOT,
+      ...previewSealantdEnvironment(process.env),
     }),
   );
   await supervisor.waitFor("Sealant API", () => httpResponds("http://127.0.0.1:4000/healthz"));
@@ -205,4 +229,5 @@ const startBundle = async (supervisor) => {
   console.log("[bundle] ready: Mend web and the Sealant API, worker and SSH gateway");
 };
 
-await supervise(startBundle, { shutdownGraceMs: 20_000 });
+// Imported by the packaging tests for previewSealantdEnvironment; only the entry point supervises.
+if (import.meta.main) await supervise(startBundle, { shutdownGraceMs: 20_000 });
