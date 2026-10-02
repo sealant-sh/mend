@@ -125,32 +125,45 @@ to build it.
 6. **Codex's memory is on in every Codex session Mend starts:** `-c features.memories=true` on the
    terminal, `app-server` and follow-up launches. A launch that names the feature itself keeps its
    own setting.
-7. **It travels as agent memory, as Claude's does:**
-   - the folder `.codex/memories/`;
-   - two single files, `.codex/memories_1.sqlite` and its `-wal`.
+7. **It travels as agent memory, as Claude's does:** the folder `.codex/memories/` and the summary
+   database `.codex/memories_1.sqlite`. The database is stored as one file: at read-back its
+   write-ahead log is folded in with `VACUUM INTO`, and a copy that does not open as a database is
+   not stored, so the last good one stays. The WAL is never stored on its own, because a database
+   and a log from two different sessions do not make a database. The summary database's limit is 16
+   MB, and a person's total in a project is 32 MB. Without the database, every session would
+   summarise the same two newest conversations again and never get past them.
+8. **Mend lays conversations down, counting each by its latest harvested revision.** Codex merges
+   only summaries whose conversation its state database lists, and a fresh home lists only the
+   rollouts in it. So at launch a Codex session receives the person's own Codex conversations on the
+   project:
+   - **In full:** the ones Codex would summarise and has not summarised at that revision. That means
+     an interactive source (`cli` or `vscode`), memory not turned off for it, and 6 hours to 10 days
+     since its latest revision. A conversation whose latest revision is under 6 hours old is still
+     going and is not carried. Newest first, at most four, at most 8 MB compressed, and no rollout
+     over 64 MB is read.
+   - **As a stub:** every other one Codex has summarised. A stub is its first line, at the summary's
+     time, so Codex keeps the summary without making it again. A summary imported from another
+     machine gets its stub from the line imported with it (`.mend/codex-threads/<id>.jsonl`).
 
-   The summary database gets its own limit of 16 MB, and a person's total in a project rises to 32
-   MB. Without the database, every session would summarise the same two newest conversations again
-   and never get past them.
+   Each file goes under its rollout name, with its time as its modification time, which is the time
+   Codex reads.
 
-8. **Mend carries conversations in.** At launch, a Codex session receives the person's own Codex
-   conversations on the project, harvested from their other sessions. Mend picks the ones Codex
-   would take: quiet for 6 hours, under 10 days old, and not yet in the stored summary database,
-   which Mend reads on the server. It takes the newest first, at most four, and at most 8 MB
-   compressed. Each is written where Codex keeps rollouts, under its original name, with its harvest
-   time as its modification time.
-9. **A carried conversation is never the session's own.** Its id is listed in
-   `.mend/carried-transcripts` before its file appears. Every lookup of "this session's
-   conversation" skips the listed ones:
-   - the workspace's newest-rollout snippet;
-   - the server-side `locateLiveTranscript`, behind the crash harvest, the transcript reader and the
-     external-agent observer;
-   - the capture-mode harvest, which also takes the newest of the rest now, where it used to take
-     the first.
-10. **Import takes Codex's summaries, never its folder.** `mend memory import` builds a summary
-    database holding only the summaries of conversations whose working directory is the repository
-    or inside it. Every summary comes in unselected, so the next session merges them into the
-    project's own folder. The folder itself mixes every repository and is never imported.
+9. **A carried conversation is never the session's own:**
+   - Its id is listed in `.mend/carried-transcripts` before its file appears.
+   - A file already at that path that Mend did not carry is left alone and never listed.
+   - A carried one is replaced only by a later revision.
+   - In capture mode, a session never carries from its own worktree, whose sessions share the home.
+   - Every lookup of "this session's conversation" skips the listed ones: the workspace snippet,
+     `locateLiveTranscript` (the crash harvest, the transcript reader, the observer) and the
+     capture-mode harvest. The capture-mode harvest also prefers the conversation the agent is known
+     to hold, else the newest.
+   - The co-located archive leaves listed files out.
+10. **Import takes Codex's summaries, never its folder.** `mend memory import` sends:
+    - a summary database holding only the summaries of conversations whose working directory is the
+      repository or inside it, each unselected;
+    - each such conversation's first line, for its stub.
+
+    The folder itself mixes every repository and is never imported.
 
 ### Consequences
 

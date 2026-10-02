@@ -49,11 +49,22 @@ describe("reading this machine's Codex memory for a repository", () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "mend-codex-home-"));
     dirs.push(home);
     const state = new DatabaseSync(path.join(home, "state_5.sqlite"));
-    state.exec("create table threads (id text primary key, cwd text not null)");
-    const thread = state.prepare("insert into threads values (?, ?)");
-    thread.run("in-repo", "/home/you/code/my-app");
-    thread.run("in-subdir", "/home/you/code/my-app/packages/api");
-    thread.run("elsewhere", "/home/you/code/my-app-two");
+    state.exec(
+      "create table threads (id text primary key, cwd text not null, rollout_path text not null)",
+    );
+    const rollout = (thread: string) => {
+      const file = path.join(home, "sessions", `rollout-${thread}.jsonl`);
+      fs.mkdirSync(path.dirname(file), { recursive: true });
+      fs.writeFileSync(
+        file,
+        `{"type":"session_meta","payload":{"id":"${thread}"}}\n{"type":"x"}\n`,
+      );
+      return file;
+    };
+    const thread = state.prepare("insert into threads values (?, ?, ?)");
+    thread.run("in-repo", "/home/you/code/my-app", rollout("in-repo"));
+    thread.run("in-subdir", "/home/you/code/my-app/packages/api", rollout("in-subdir"));
+    thread.run("elsewhere", "/home/you/code/my-app-two", rollout("elsewhere"));
     state.close();
     const memories = new DatabaseSync(path.join(home, "memories_1.sqlite"));
     memories.exec(
@@ -81,7 +92,13 @@ describe("reading this machine's Codex memory for a repository", () => {
     const home = codexHome();
     const scan = scanCodexMemory("/home/you/code/my-app", home);
     expect(scan.summaries).toBe(2);
-    expect(scan.files.map((file) => file.path)).toEqual([".codex/memories_1.sqlite"]);
+    // The database, and each summarised conversation's first line for its stub.
+    expect(scan.files.map((file) => file.path)).toEqual([
+      ".codex/memories_1.sqlite",
+      ".mend/codex-threads/in-repo.jsonl",
+      ".mend/codex-threads/in-subdir.jsonl",
+    ]);
+    expect(scan.files[1]?.contents).toBe('{"type":"session_meta","payload":{"id":"in-repo"}}\n');
     const copy = path.join(home, "copy.sqlite");
     fs.writeFileSync(copy, Buffer.from(scan.files[0]?.contents ?? "", "base64"));
     const db = new DatabaseSync(copy, { readOnly: true });

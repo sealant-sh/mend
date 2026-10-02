@@ -20,17 +20,18 @@ import { Timestamp } from "../timestamp.ts";
 export const AGENT_MEMORY_ROOTS = [
   { harness: "claude", root: ".claude/projects/-workspace-repo/memory" },
   { harness: "codex", root: ".codex/memories" },
+  // Mend's own: the first line of each conversation Codex summarised on another machine
+  // (`mend memory import`), so a session can list that conversation for Codex again.
+  { harness: "codex", root: ".mend/codex-threads" },
 ] as const;
 
 /**
  * Memory kept in single files outside a root: Codex's record of which conversations it has
  * summarised and what each summary said (`stage1_outputs`). Without it, every session would
- * summarise the same two newest conversations again and never get past them.
+ * summarise the same two newest conversations again and never get past them. Stored as one
+ * consolidated file: its write-ahead log is folded in at read-back, never kept apart.
  */
-export const AGENT_MEMORY_FILES = [
-  { harness: "codex", path: ".codex/memories_1.sqlite" },
-  { harness: "codex", path: ".codex/memories_1.sqlite-wal" },
-] as const;
+export const AGENT_MEMORY_FILES = [{ harness: "codex", path: ".codex/memories_1.sqlite" }] as const;
 
 /** Codex's summary database, as `AGENT_MEMORY_FILES` names it. */
 export const CODEX_MEMORY_DATABASE = ".codex/memories_1.sqlite";

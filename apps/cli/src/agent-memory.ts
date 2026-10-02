@@ -89,6 +89,29 @@ export const scanClaudeMemory = (dir: string): ClaudeMemoryScan => {
   return { dir, files, notes };
 };
 
+/** Where `mend memory import` keeps each imported summary's conversation line (docs/adr/0009). */
+const CODEX_THREADS_ROOT =
+  AGENT_MEMORY_ROOTS.find((root) => root.root.endsWith("codex-threads"))?.root ??
+  ".mend/codex-threads";
+
+/** A file's first line, read without the rest; null when it cannot be read. */
+const firstLineOf = (file: string): string | null => {
+  try {
+    const fd = fs.openSync(file, "r");
+    try {
+      const buffer = Buffer.alloc(256 * 1024);
+      const read = fs.readSync(fd, buffer, 0, buffer.byteLength, 0);
+      const text = buffer.subarray(0, read).toString("utf8");
+      const end = text.indexOf("\n");
+      return end === -1 ? null : text.slice(0, end);
+    } finally {
+      fs.closeSync(fd);
+    }
+  } catch {
+    return null;
+  }
+};
+
 /** Codex's own home on this machine. */
 const codexHome = (): string => process.env["CODEX_HOME"] ?? path.join(os.homedir(), ".codex");
 
@@ -126,24 +149,29 @@ export const scanCodexMemory = (repoRoot: string, home: string = codexHome()): C
     return { home, files: [], summaries: 0, notes: [] };
   }
   const threads = new DatabaseSync(state, { readOnly: true });
-  const ids = (() => {
+  // This repository's threads, and where each one's rollout is.
+  const inRepo = (() => {
     try {
-      return threads
-        .prepare("select id, cwd from threads")
-        .all()
-        .flatMap((row) => {
-          const cwd = row["cwd"];
-          const id = row["id"];
-          return typeof id === "string" &&
-            typeof cwd === "string" &&
-            (cwd === repoRoot || cwd.startsWith(`${repoRoot}/`))
-            ? [id]
-            : [];
-        });
+      return new Map(
+        threads
+          .prepare("select id, cwd, rollout_path from threads")
+          .all()
+          .flatMap((row) => {
+            const cwd = row["cwd"];
+            const id = row["id"];
+            const rollout = row["rollout_path"];
+            return typeof id === "string" &&
+              typeof cwd === "string" &&
+              (cwd === repoRoot || cwd.startsWith(`${repoRoot}/`))
+              ? [[id, typeof rollout === "string" ? rollout : null] as const]
+              : [];
+          }),
+      );
     } finally {
       threads.close();
     }
   })();
+  const ids = [...inRepo.keys()];
   if (ids.length === 0) return { home, files: [], summaries: 0, notes: [] };
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), "mend-codex-import-"));
   try {
@@ -182,6 +210,31 @@ export const scanCodexMemory = (repoRoot: string, home: string = codexHome()): C
       target.close();
     }
     if (summaries === 0) return { home, files: [], summaries: 0, notes: [] };
+    const summarisedIds = (() => {
+      const copy = new DatabaseSync(out, { readOnly: true });
+      try {
+        return copy
+          .prepare("select thread_id from stage1_outputs")
+          .all()
+          .flatMap((row) => (typeof row["thread_id"] === "string" ? [row["thread_id"]] : []));
+      } finally {
+        copy.close();
+      }
+    })();
+    // Each summarised conversation's first line: a session lists it for Codex again from that,
+    // or Codex would drop the summary of a conversation its home does not hold.
+    const threadLines: Array<MemoryFile> = [];
+    for (const id of summarisedIds) {
+      const rollout = inRepo.get(id) ?? null;
+      const head = rollout === null ? null : firstLineOf(rollout);
+      if (head !== null) {
+        threadLines.push({
+          path: `${CODEX_THREADS_ROOT}/${id}.jsonl`,
+          encoding: "utf8",
+          contents: `${head}\n`,
+        });
+      }
+    }
     const bytes = fs.readFileSync(out);
     if (bytes.byteLength > AGENT_MEMORY_MAX_DATABASE_BYTES) {
       return {
@@ -197,6 +250,7 @@ export const scanCodexMemory = (repoRoot: string, home: string = codexHome()): C
       home,
       files: [
         { path: CODEX_MEMORY_DATABASE, encoding: "base64", contents: bytes.toString("base64") },
+        ...threadLines,
       ],
       summaries,
       notes: [],

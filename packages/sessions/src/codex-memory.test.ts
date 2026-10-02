@@ -11,147 +11,207 @@ import {
   CARRIED_INCOMING,
   CODEX_CARRY_MAX_CONVERSATIONS,
   carryConversationsExec,
+  codexWouldSummarise,
+  consolidateCodexDatabase,
   materializeCarriedConversations,
   parseCarryOutcomes,
-  planCarriedConversations,
+  planCodexCarry,
   prepareCarriedConversations,
   rolloutPathOf,
   summarisedThreads,
-  type CodexConversation,
+  type CodexRevision,
 } from "./codex-memory.ts";
 import { CARRIED_TRANSCRIPTS, locateLiveTranscript } from "./harness-state.ts";
 
 const HOUR = 60 * 60 * 1000;
 const NOW = Date.parse("2026-10-02T12:00:00.000Z");
 const id = (n: number) => `0000000${n}-1111-2222-3333-444444444444`;
-const conversation = (n: number, hoursAgo: number, transcriptPath = ""): CodexConversation => ({
+const metaLine = (source = "cli", memoryMode: string | null = null) =>
+  JSON.stringify({
+    type: "session_meta",
+    payload: {
+      timestamp: "2026-09-30T08:00:00Z",
+      source,
+      ...(memoryMode === null ? {} : { memory_mode: memoryMode }),
+    },
+  });
+const revision = (n: number, hoursAgo: number, at = `/store/${n}/${hoursAgo}`): CodexRevision => ({
   providerSessionId: id(n),
-  transcriptPath,
+  transcriptPath: at,
   capturedAt: new Date(NOW - hoursAgo * HOUR),
 });
 const scratch = () => fs.mkdtempSync(path.join(os.tmpdir(), "mend-codex-memory-test-"));
+const plan = (
+  revisions: ReadonlyArray<CodexRevision>,
+  options: {
+    readonly summarised?: ReadonlyMap<string, number>;
+    readonly imported?: ReadonlyMap<string, string>;
+    readonly lines?: ReadonlyMap<string, string>;
+  } = {},
+) =>
+  planCodexCarry({
+    revisions,
+    firstLines:
+      options.lines ?? new Map(revisions.map((r) => [r.transcriptPath, metaLine()] as const)),
+    summarised: options.summarised ?? new Map(),
+    imported: options.imported ?? new Map(),
+    now: NOW,
+  });
+const fullIds = (carry: ReturnType<typeof plan>) => carry.full.map((r) => r.providerSessionId);
 
-describe("planCarriedConversations", () => {
-  it("takes conversations Codex would summarise: quiet six hours, under ten days old", () => {
-    const planned = planCarriedConversations({
-      conversations: [conversation(1, 1), conversation(2, 7), conversation(3, 24 * 11)],
-      summarised: new Set(),
-      alreadyCarried: new Set(),
-      now: NOW,
-    });
-    expect(planned.map((c) => c.providerSessionId)).toEqual([id(2)]);
+describe("which conversations a Codex launch carries", () => {
+  it("in full: quiet six hours, under ten days old, newest first, a few at most", () => {
+    const carry = plan([7, 8, 9, 10, 11, 12, 1, 24 * 11].map((hours, n) => revision(n, hours)));
+    expect(fullIds(carry)).toEqual([id(0), id(1), id(2), id(3)]);
+    expect(carry.full).toHaveLength(CODEX_CARRY_MAX_CONVERSATIONS);
   });
 
-  it("skips what Codex already summarised or the home already holds; newest first, a few at most", () => {
-    const planned = planCarriedConversations({
-      conversations: [7, 8, 9, 10, 11, 12, 13].map((hours, index) => conversation(index, hours)),
-      summarised: new Set([id(0)]),
-      alreadyCarried: new Set([id(1)]),
-      now: NOW,
+  it("counts a conversation by its latest revision: still active, it is not carried at all", () => {
+    expect(fullIds(plan([revision(1, 30), revision(1, 2)]))).toEqual([]);
+    expect(plan([revision(1, 30), revision(1, 8)]).full[0]?.capturedAt).toEqual(
+      new Date(NOW - 8 * HOUR),
+    );
+  });
+
+  it("only what Codex would summarise: an interactive source, memory not turned off", () => {
+    const lines = new Map([
+      ["/a", metaLine("exec")],
+      ["/b", metaLine("cli", "disabled")],
+      ["/c", metaLine("vscode")],
+    ]);
+    const carry = plan([revision(1, 8, "/a"), revision(2, 8, "/b"), revision(3, 8, "/c")], {
+      lines,
     });
-    expect(planned.map((c) => c.providerSessionId)).toEqual([id(2), id(3), id(4), id(5)]);
-    expect(planned).toHaveLength(CODEX_CARRY_MAX_CONVERSATIONS);
+    expect(fullIds(carry)).toEqual([id(3)]);
+    expect(codexWouldSummarise("not json")).toBe(false);
+  });
+
+  it("a summarised conversation goes as a stub at the summary's time; a later revision goes in full", () => {
+    const summarisedAt = Math.floor((NOW - 30 * HOUR) / 1000);
+    const summarised = new Map([
+      [id(1), summarisedAt],
+      [id(2), summarisedAt],
+    ]);
+    const carry = plan([revision(1, 30), revision(2, 30), revision(2, 8)], { summarised });
+    expect(fullIds(carry)).toEqual([id(2)]);
+    expect(carry.stubs).toEqual([
+      { providerSessionId: id(1), firstLine: metaLine(), mtime: summarisedAt },
+    ]);
+  });
+
+  it("a summary imported from another machine gets its stub from the imported line", () => {
+    const carry = plan([], {
+      summarised: new Map([[id(7), 1_700_000_000]]),
+      imported: new Map([[id(7), metaLine()]]),
+    });
+    expect(carry.stubs.map((stub) => stub.providerSessionId)).toEqual([id(7)]);
   });
 });
 
 describe("rolloutPathOf", () => {
   it("names the rollout as Codex does, from its first line's start time", () => {
-    const first = JSON.stringify({
-      timestamp: "2026-09-30T14:02:11.500Z",
-      type: "session_meta",
-      payload: { id: id(1), timestamp: "2026-09-30T14:02:11.000Z" },
-    });
-    expect(rolloutPathOf(first, id(1), new Date(NOW))).toBe(
-      `.codex/sessions/2026/09/30/rollout-2026-09-30T14-02-11-${id(1)}.jsonl`,
+    expect(rolloutPathOf(metaLine(), id(1), new Date(NOW))).toBe(
+      `.codex/sessions/2026/09/30/rollout-2026-09-30T08-00-00-${id(1)}.jsonl`,
     );
-  });
-
-  it("falls back to the harvest time when the first line is not readable", () => {
     expect(rolloutPathOf("not json", id(1), new Date(NOW))).toBe(
       `.codex/sessions/2026/10/02/rollout-2026-10-02T12-00-00-${id(1)}.jsonl`,
     );
   });
 });
 
-describe("summarisedThreads", () => {
-  it("reads the thread ids Codex summarised from the stored database", async () => {
-    const dir = scratch();
+describe("Codex's summary database", () => {
+  const withWal = (dir: string) => {
     const file = path.join(dir, "memories_1.sqlite");
     const db = new DatabaseSync(file);
+    db.exec("pragma journal_mode = wal; pragma wal_autocheckpoint = 0");
     db.exec(
-      "create table stage1_outputs (thread_id text primary key, source_updated_at integer not null, raw_memory text not null)",
+      "create table stage1_outputs (thread_id text primary key, source_updated_at integer not null)",
     );
-    db.prepare("insert into stage1_outputs values (?, 1, 'x')").run(id(4));
+    db.prepare("insert into stage1_outputs values (?, ?)").run(id(4), 1234);
+    // Copied while open: the row is in the write-ahead log, not the database file.
+    const copy = {
+      db: fs.readFileSync(file),
+      wal: fs.readFileSync(`${file}-wal`),
+    };
     db.close();
-    const ids = await Effect.runPromise(
-      summarisedThreads({ db: fs.readFileSync(file), wal: null }),
-    );
-    expect([...ids]).toEqual([id(4)]);
-    expect(
-      await Effect.runPromise(summarisedThreads({ db: Buffer.from("not sqlite"), wal: null })),
-    ).toEqual(new Set());
-    expect(await Effect.runPromise(summarisedThreads({ db: null, wal: null }))).toEqual(new Set());
+    return copy;
+  };
+
+  it("is stored as one file with its write-ahead log folded in, and read for what it summarised", async () => {
+    const { db, wal } = withWal(scratch());
+    const consolidated = await Effect.runPromise(consolidateCodexDatabase(db, wal));
+    expect(consolidated).not.toBeNull();
+    const read = await Effect.runPromise(summarisedThreads(consolidated));
+    expect([...read]).toEqual([[id(4), 1234]]);
+  });
+
+  it("stores nothing for bytes that are not a database, and reads them as nothing summarised", async () => {
+    expect(await Effect.runPromise(consolidateCodexDatabase(Buffer.from("torn"), null))).toBeNull();
+    expect(await Effect.runPromise(summarisedThreads(Buffer.from("torn")))).toEqual(new Map());
+    expect(await Effect.runPromise(summarisedThreads(null))).toEqual(new Map());
   });
 });
 
 describe("laying carried conversations down", () => {
-  const prepared = async (dir: string) => {
-    const transcript = path.join(dir, "transcript.native");
-    fs.writeFileSync(
-      transcript,
-      `${JSON.stringify({ type: "session_meta", payload: { timestamp: "2026-09-30T08:00:00Z" } })}\n{"type":"x"}\n`,
+  const files = async (dir: string, hoursAgo = 8) => {
+    const transcript = path.join(dir, `transcript-${hoursAgo}.native`);
+    fs.writeFileSync(transcript, `${metaLine()}\n{"type":"x","at":${hoursAgo}}\n`);
+    return Effect.runPromise(
+      prepareCarriedConversations({ full: [revision(5, hoursAgo, transcript)], stubs: [] }),
     );
-    return Effect.runPromise(prepareCarriedConversations([conversation(5, 8, transcript)]));
   };
 
-  it("on this machine: listed first, written once, with its harvest time, never the newest", async () => {
+  it("on this machine: listed before it appears, its time kept, replaced only by a later revision", async () => {
     const dir = scratch();
     const home = path.join(dir, "home");
-    const own = path.join(
-      home,
-      `.codex/sessions/2026/10/02/rollout-2026-10-02T11-59-00-${id(9)}.jsonl`,
-    );
-    fs.mkdirSync(path.dirname(own), { recursive: true });
-    fs.writeFileSync(own, "{}\n");
-    const files = await prepared(dir);
-    expect(await Effect.runPromise(materializeCarriedConversations(home, files))).toEqual([
+    const older = await files(dir, 30);
+    expect(await Effect.runPromise(materializeCarriedConversations(home, older))).toEqual([
       { outcome: "written", id: id(5) },
     ]);
-    const carried = path.join(home, files[0]?.path ?? "");
-    expect(fs.readFileSync(carried, "utf8")).toContain('{"type":"x"}');
-    expect(Math.round(fs.statSync(carried).mtimeMs / 1000)).toBe((NOW - 8 * HOUR) / 1000);
+    const carried = path.join(home, older[0]?.path ?? "");
+    expect(Math.round(fs.statSync(carried).mtimeMs / 1000)).toBe((NOW - 30 * HOUR) / 1000);
     expect(fs.readFileSync(path.join(home, CARRIED_TRANSCRIPTS), "utf8")).toBe(`${id(5)}\n`);
-    // A second carry finds it there and leaves it.
-    expect(await Effect.runPromise(materializeCarriedConversations(home, files))).toEqual([
+    expect(await Effect.runPromise(materializeCarriedConversations(home, older))).toEqual([
       { outcome: "present", id: id(5) },
     ]);
-    // The session's own conversation is still the one every lookup finds, even when the carried
-    // one is made newer.
-    fs.utimesSync(carried, new Date(), new Date(Date.now() + HOUR));
+    const newer = await files(dir, 8);
+    expect(await Effect.runPromise(materializeCarriedConversations(home, newer))).toEqual([
+      { outcome: "written", id: id(5) },
+    ]);
+    expect(fs.readFileSync(carried, "utf8")).toContain('"at":8');
+  });
+
+  it("never touches or lists a conversation already in the home that Mend did not carry", async () => {
+    const dir = scratch();
+    const home = path.join(dir, "home");
+    const carry = await files(dir);
+    const own = path.join(home, carry[0]?.path ?? "");
+    fs.mkdirSync(path.dirname(own), { recursive: true });
+    fs.writeFileSync(own, "the session's own\n");
+    expect(await Effect.runPromise(materializeCarriedConversations(home, carry))).toEqual([
+      { outcome: "own", id: id(5) },
+    ]);
+    expect(fs.readFileSync(own, "utf8")).toBe("the session's own\n");
+    expect(fs.existsSync(path.join(home, CARRIED_TRANSCRIPTS))).toBe(false);
     expect((await Effect.runPromise(locateLiveTranscript(home, "codex")))?.providerSessionId).toBe(
-      id(9),
+      id(5),
     );
   });
 
-  it("in a workspace: the program lays them down from the staged files", async () => {
+  it("in a workspace: the program does the same from staged files, and no lookup takes them", async () => {
     const dir = scratch();
     const home = path.join(dir, "home");
-    const files = await prepared(dir);
-    const carry = carryConversationsExec(home, files);
-    for (const staged of carry.staged) {
+    const carry = await files(dir);
+    const exec = carryConversationsExec(home, carry);
+    for (const staged of exec.staged) {
       fs.mkdirSync(path.dirname(staged.path), { recursive: true });
       fs.writeFileSync(staged.path, staged.bytes);
     }
-    const [command, ...args] = carry.argv;
+    const [command, ...args] = exec.argv;
     const run = spawnSync(command ?? "node", args, { encoding: "utf8" });
     expect(run.status, run.stderr).toBe(0);
     expect(parseCarryOutcomes(run.stdout)).toEqual([{ outcome: "written", id: id(5) }]);
-    expect(fs.readFileSync(path.join(home, files[0]?.path ?? ""), "utf8")).toContain(
-      '{"type":"x"}',
-    );
-    expect(fs.readFileSync(path.join(home, CARRIED_TRANSCRIPTS), "utf8")).toBe(`${id(5)}\n`);
     expect(fs.readdirSync(path.join(home, CARRIED_INCOMING))).toEqual([]);
-    // With nothing of its own, the session has no conversation: a carried one is never taken.
     expect(await Effect.runPromise(locateLiveTranscript(home, "codex"))).toBeNull();
   });
 });

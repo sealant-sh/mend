@@ -117,7 +117,13 @@ describe("Codex memory in a harness home (docs/adr/0009, Codex)", () => {
     fs.mkdirSync(path.join(home, ".codex/memories/rollout_summaries"), { recursive: true });
     fs.writeFileSync(path.join(home, ".codex/memories/MEMORY.md"), "- tests run with pnpm\n");
     fs.writeFileSync(path.join(home, ".codex/memories/rollout_summaries/a.md"), "summary\n");
-    fs.writeFileSync(path.join(home, ".codex/memories_1.sqlite"), Buffer.from([0, 1, 2, 3]));
+    const { DatabaseSync } = await import("node:sqlite");
+    const database = new DatabaseSync(path.join(home, ".codex/memories_1.sqlite"));
+    database.exec("create table stage1_outputs (thread_id text primary key)");
+    database.close();
+    // A torn database is not stored: the last stored one stays.
+    fs.mkdirSync(path.join(home, "torn/.codex"), { recursive: true });
+    fs.writeFileSync(path.join(home, "torn/.codex/memories_1.sqlite"), Buffer.from([0, 1, 2, 3]));
     fs.mkdirSync(path.join(home, ".codex/sessions/2026/10/02"), { recursive: true });
     fs.writeFileSync(path.join(home, ".codex/sessions/2026/10/02/rollout-x.jsonl"), "{}\n");
     fs.writeFileSync(path.join(home, ".codex/auth.json"), "{}");
@@ -128,5 +134,7 @@ describe("Codex memory in a harness home (docs/adr/0009, Codex)", () => {
       ".codex/memories_1.sqlite",
     ]);
     expect(read.files.find((file) => file.path.endsWith(".sqlite"))?.encoding).toBe("base64");
+    const torn = await Effect.runPromise(readAgentMemoryFromHome(path.join(home, "torn")));
+    expect(torn.files).toEqual([]);
   });
 });

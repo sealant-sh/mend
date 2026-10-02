@@ -14,6 +14,7 @@ import {
 } from "@mend/domain/workbench";
 import { Effect, Schema } from "effect";
 
+import { consolidateCodexDatabase } from "./codex-memory.ts";
 import { shellQuote } from "./workspace-files.ts";
 
 /**
@@ -250,7 +251,15 @@ export const readAgentMemoryFromHome = (
       const abs = path.join(harnessHomePath, file);
       const stat = await fs.lstat(abs).catch(() => null);
       if (stat === null || !stat.isFile() || stat.size > agentMemoryMaxFileBytes(file)) continue;
-      files.push(asMemoryFile(file, await fs.readFile(abs)));
+      // A SQLite file is read with its write-ahead log and stored as one consolidated file.
+      const wal = await fs.readFile(`${abs}-wal`).catch(() => null);
+      const consolidated = await Effect.runPromise(
+        consolidateCodexDatabase(await fs.readFile(abs), wal),
+      );
+      if (consolidated === null || consolidated.byteLength > agentMemoryMaxFileBytes(file)) {
+        continue;
+      }
+      files.push(asMemoryFile(file, consolidated));
     }
     const delivered = await fs
       .readFile(path.join(harnessHomePath, AGENT_MEMORY_DELIVERED), "utf8")

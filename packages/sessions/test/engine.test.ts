@@ -3106,8 +3106,11 @@ describe("SessionEngine", () => {
     const dbFile = path.join(dbDir, "memories_1.sqlite");
     const { DatabaseSync } = await import("node:sqlite");
     const db = new DatabaseSync(dbFile);
-    db.exec("create table stage1_outputs (thread_id text primary key)");
-    db.prepare("insert into stage1_outputs values (?)").run(summarisedId);
+    db.exec(
+      "create table stage1_outputs (thread_id text primary key, source_updated_at integer not null)",
+    );
+    const summarisedAt = Math.floor((Date.now() - 8 * 60 * 60 * 1000) / 1000);
+    db.prepare("insert into stage1_outputs values (?, ?)").run(summarisedId, summarisedAt);
     db.close();
     const database = {
       path: ".codex/memories_1.sqlite",
@@ -3154,7 +3157,8 @@ describe("SessionEngine", () => {
               JSON.stringify({
                 harness: "codex",
                 providerSessionId,
-                capturedAt: new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString(),
+                // The summary's own time: Codex summarised this exact revision.
+                capturedAt: new Date(summarisedAt * 1000).toISOString(),
               }),
             );
             fs.writeFileSync(
@@ -3171,17 +3175,22 @@ describe("SessionEngine", () => {
             `.codex/sessions/2026/09/30/rollout-2026-09-30T08-00-00-${pendingId}.jsonl`,
           );
           yield* until(() => fs.existsSync(carried), "the pending conversation carried in");
-          expect(fs.readFileSync(path.join(home, ".mend/carried-transcripts"), "utf8")).toBe(
-            `${pendingId}\n`,
-          );
           expect(
-            fs.existsSync(
-              path.join(
-                home,
-                `.codex/sessions/2026/09/30/rollout-2026-09-30T08-00-00-${summarisedId}.jsonl`,
-              ),
-            ),
-          ).toBe(false);
+            fs
+              .readFileSync(path.join(home, ".mend/carried-transcripts"), "utf8")
+              .trim()
+              .split("\n")
+              .toSorted(),
+          ).toEqual([summarisedId, pendingId].toSorted());
+          // The summarised one is there as a stub: its first line, at the summary's time, so Codex
+          // keeps its summary without making it again.
+          const stub = path.join(
+            home,
+            `.codex/sessions/2026/09/30/rollout-2026-09-30T08-00-00-${summarisedId}.jsonl`,
+          );
+          expect(fs.readFileSync(stub, "utf8").trim().split("\n")).toHaveLength(1);
+          expect(Math.floor(fs.statSync(stub).mtimeMs / 1000)).toBe(summarisedAt);
+          expect(fs.readFileSync(carried, "utf8")).toContain(pendingId);
         }),
       { sealantLayer: sealantLaunchLayer(created), agentMemoryLayer },
     );
