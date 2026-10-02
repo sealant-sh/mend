@@ -32,22 +32,24 @@ One line per fact, in the order a first run needs them:
 ○ codex cli   not on PATH
 ✓ gh cli      on PATH · credential present
 ✓ exposure    declared private · https origin · arrived via a trusted proxy · 5 gate items open → mend operator exposure
+✓ workspaces  the server's host allows rootless Docker
 ```
 
 `✓` means observed working, `○` not set up yet, and `✗` that the workbench cannot run like this. Any
 `✗` line makes the command exit with status 1. No request waits longer than three seconds; a line
 whose check could not run says `not checked`.
 
-| Line                                | What it reads                                                                                                                                                                            |
-| ----------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `server`                            | The server's `/health`: its URL and version, or `cannot reach <url>`.                                                                                                                    |
-| `signed in`                         | Whether the saved token is accepted: `token accepted`, or `no token saved` and `token rejected`, which point to `mend login`. Another answer prints the status `GET /projects` returned. |
-| `sealant`                           | Whether the server reaches the platform: `connected`, or `unauthorized`, `unreachable` or `mismatched` with the platform's message.                                                      |
-| `claude`, `codex`, `github`         | Your connected accounts on the platform: `connected` with the account's login or email, `not connected`, or the account's status.                                                        |
-| `grant`                             | Mend's own Claude grant on this machine. Printed only when Mend keeps one (see below).                                                                                                   |
-| `projects`                          | How many projects you have adopted, or `none adopted → mend adopt`.                                                                                                                      |
-| `claude cli`, `codex cli`, `gh cli` | Whether each tool is on this machine's `PATH`, and whether it holds a credential here to forward.                                                                                        |
-| `exposure`                          | How the instance is reached, as declared and as observed. See [Exposure and the public gate](/operate/exposure/).                                                                        |
+| Line                                | What it reads                                                                                                                                                                                                      |
+| ----------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `server`                            | The server's `/health`: its URL and version, or `cannot reach <url>`.                                                                                                                                              |
+| `signed in`                         | Whether the saved token is accepted: `token accepted`, or `no token saved` and `token rejected`, which point to `mend login`. Another answer prints the status `GET /projects` returned.                           |
+| `sealant`                           | Whether the server reaches the platform: `connected`, or `unauthorized`, `unreachable` or `mismatched` with the platform's message.                                                                                |
+| `claude`, `codex`, `github`         | Your connected accounts on the platform: `connected` with the account's login or email, `not connected`, or the account's status.                                                                                  |
+| `grant`                             | Mend's own Claude grant on this machine. Printed only when Mend keeps one (see below).                                                                                                                             |
+| `projects`                          | How many projects you have adopted, or `none adopted → mend adopt`.                                                                                                                                                |
+| `claude cli`, `codex cli`, `gh cli` | Whether each tool is on this machine's `PATH`, and whether it holds a credential here to forward.                                                                                                                  |
+| `exposure`                          | How the instance is reached, as declared and as observed. See [Exposure and the public gate](/operate/exposure/).                                                                                                  |
+| `workspaces`                        | Whether the server's host lets a workspace's rootless Docker start: `✗` with the command to run when its kernel refuses unprivileged user namespaces. Printed only when workspaces run on the server's own Docker. |
 
 ### The Claude grant line
 
@@ -169,6 +171,26 @@ another host:
 ```text
 this session's Git access is bound to github.com; pushes and fetches to gitlab.com run without Mend's signer
 ```
+
+### Every session fails to launch on Ubuntu
+
+On Ubuntu 23.10 and later, every launch fails while the workspace starts, with an error such as:
+
+```text
+Workspace Docker service 'sealant-…-docker' did not become ready … container … is not running
+```
+
+Each workspace runs its own rootless Docker, and Ubuntu refuses the unprivileged user namespaces it
+needs (`kernel.apparmor_restrict_unprivileged_userns=1`). `mend doctor` reports it on the
+`workspaces` line. Allow them on the server's host; no restart is needed:
+
+```sh
+echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf
+sudo sysctl --system
+```
+
+Start the session again. On Debian, the equivalent switch is `kernel.unprivileged_userns_clone`;
+`mend doctor` names the one your host needs.
 
 ### The database runs out of connections
 

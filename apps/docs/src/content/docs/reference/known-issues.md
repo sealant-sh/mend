@@ -34,6 +34,13 @@ AWS S3, Cloudflare R2 and MinIO refuse a conditional overwrite, and a Stop there
 Only AWS MicroVM executors have a time limit, and they use S3. Docker and Kubernetes executors have
 no time limit.
 
+## Sessions cannot start on Ubuntu 23.10 and later until user namespaces are allowed
+
+Each workspace runs its own rootless Docker, which Ubuntu's default AppArmor setting refuses. Mend
+does not change a host's kernel settings for you: `mend server setup` and `mend doctor` say what to
+run. See
+[Every session fails to launch on Ubuntu](/operate/troubleshooting/#every-session-fails-to-launch-on-ubuntu).
+
 ## SHA-256 repositories are not supported
 
 Mend refuses to adopt a repository that uses SHA-256 object names:

@@ -64,6 +64,8 @@ const makeRuntime = (
     readonly operatingSystem?: string;
     readonly imageVersion?: string;
     readonly imageStatus?: number;
+    /** What the host-kernel probe container prints; absent: the probe fails, as on no image. */
+    readonly hostKernel?: string;
   } = {},
 ): RuntimeControl => {
   const commands: Array<readonly [string, ReadonlyArray<string>]> = [];
@@ -164,6 +166,9 @@ const makeRuntime = (
           stdout: options.operatingSystem ?? "Docker Engine - Community",
           stderr: "",
         };
+      }
+      if (args[2] === "run" && args.includes("--entrypoint") && options.hostKernel !== undefined) {
+        return { status: 0, stdout: options.hostKernel, stderr: "" };
       }
       if (args.includes("compose") && args.includes("up")) {
         return {
@@ -681,6 +686,33 @@ describe("mend server setup", () => {
       readEnv(activeFile(control.runtime.configDir, "server.env")).get("DOCKER_SOCKET_PATH"),
     ).toBe("/var/run/docker.sock");
   });
+  it("says last, with the command, when the Docker host refuses user namespaces (Ubuntu 24.04)", async () => {
+    const control = makeRuntime({ hostKernel: "1\n|Y\n|1\n|" });
+    const result = await serverCommand(["setup"], control.runtime);
+    expect(result).toEqual({ _tag: "ok" });
+    expect(control.lines.at(-1)).toBe(
+      "No session can start on this Docker host yet: its kernel refuses unprivileged user namespaces, which each workspace's rootless Docker service needs. On the host, run: echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl --system",
+    );
+    const probe = control.commands.find(([, args]) => args.includes("--entrypoint"));
+    expect(probe?.[1].slice(0, 9)).toEqual([
+      "--context",
+      "default",
+      "run",
+      "--rm",
+      "--network",
+      "none",
+      "--entrypoint",
+      "sh",
+      "ghcr.io/sealant-sh/mend:0.23.0",
+    ]);
+  });
+
+  it("says nothing about user namespaces on a host that allows them", async () => {
+    const control = makeRuntime({ hostKernel: "-|-|-|" });
+    expect(await serverCommand(["setup"], control.runtime)).toEqual({ _tag: "ok" });
+    expect(control.lines.some((line) => line.includes("user namespaces"))).toBe(false);
+  });
+
   it("creates a pinned localhost installation and starts compose through the selected context", async () => {
     const control = makeRuntime();
 

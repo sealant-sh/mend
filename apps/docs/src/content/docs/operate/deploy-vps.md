@@ -48,6 +48,16 @@ built and launched in the host Docker Engine through the mounted daemon socket. 
 their own disk and capture their work to the bucket; nothing from the host is bind-mounted into
 them.
 
+Each workspace runs its own rootless Docker, which needs unprivileged user namespaces. Ubuntu 23.10
+and later (24.04 LTS included) refuse them by default, and then no session can start.
+`mend server setup` says so as its last line, and `mend doctor` shows it as `workspaces`. To allow
+them, on the server:
+
+```sh
+echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf
+sudo sysctl --system
+```
+
 On your laptop, install only the CLI:
 
 ```sh
