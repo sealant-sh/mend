@@ -87,6 +87,15 @@ export class MachineView extends Schema.Class<MachineView>("MachineView")({
       gateOpen: Schema.Int,
     }),
   ),
+  /**
+   * Whether this host's kernel lets a workspace's Docker service start: a rootless Docker daemon,
+   * which needs unprivileged user namespaces (`hostUserNamespacesOf` in `@mend/domain`). `setting`
+   * is the sysctl line that allows them, when they are refused. Present only when workspaces run
+   * on this host's Docker.
+   */
+  userNamespaces: Schema.optional(
+    Schema.Struct({ allowed: Schema.Boolean, setting: Schema.NullOr(Schema.String) }),
+  ),
 }) {}
 
 export const machineGroup = HttpApiGroup.make("machine")

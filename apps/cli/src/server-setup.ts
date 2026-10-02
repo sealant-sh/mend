@@ -5,6 +5,12 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import {
+  HOST_USER_NAMESPACE_FILES,
+  hostUserNamespacesFix,
+  hostUserNamespacesOf,
+} from "@mend/domain/workbench";
+
+import {
   type DockerDaemonFacts,
   dockerShutdownSetupLine,
   hostDockerDaemonFacts,
@@ -645,6 +651,49 @@ const checkDocker = async (runtime: ServerSetupRuntime, context: string): Promis
     throw commandFailure("Could not identify the Docker runtime; check the selected context", info);
   }
   return info.stdout.trim();
+};
+
+/**
+ * What setup says when the Docker host's kernel refuses unprivileged user namespaces: every
+ * workspace's Docker service is a rootless Docker daemon that needs them, so no session could start
+ * (Ubuntu 23.10 and later refuse them by default). Read from the Docker host's own kernel through a
+ * throwaway container of the Mend image, so it holds for a remote context too. Null when the host
+ * allows them, or when the container could not answer: nothing observed, nothing said.
+ */
+const hostUserNamespacesLine = async (
+  runtime: ServerSetupRuntime,
+  context: string,
+  image: string,
+): Promise<string | null> => {
+  const read = HOST_USER_NAMESPACE_FILES.map(
+    (file) => `printf '%s|' "$(cat ${file} 2>/dev/null || echo -)"`,
+  ).join("; ");
+  const probe = await runtime.run("docker", [
+    "--context",
+    context,
+    "run",
+    "--rm",
+    "--network",
+    "none",
+    "--entrypoint",
+    "sh",
+    image,
+    "-c",
+    read,
+  ]);
+  if (probe.status !== 0) return null;
+  const [restrict, apparmor, clone] = probe.stdout
+    .trim()
+    .split("|")
+    .map((value) => (value.trim() === "-" ? null : value));
+  const observed = hostUserNamespacesOf({
+    apparmorRestrictUnprivilegedUserns: restrict ?? null,
+    apparmorEnabled: apparmor ?? null,
+    unprivilegedUsernsClone: clone ?? null,
+  });
+  return observed.allowed
+    ? null
+    : `No session can start on this Docker host yet: its kernel refuses unprivileged user namespaces, which each workspace's rootless Docker service needs. On the host, run: ${hostUserNamespacesFix(observed.setting)}`;
 };
 
 const resolveLatestVersion = async (runtime: ServerSetupRuntime): Promise<string> => {
@@ -1338,6 +1387,11 @@ const setupServer = async (
   });
   if (ownership._tag === "error") throw setupError(ownership.error.message);
   await checkLocalImages(runtime, config, options.offline ? "local" : "pull-missing");
+  const userNamespaces = await hostUserNamespacesLine(
+    runtime,
+    config.dockerContext,
+    `ghcr.io/sealant-sh/mend:${config.serverVersion}`,
+  );
   storeValue(store.activate(generation));
   await startCompose(runtime, config, generation);
   await initGarage(runtime, { directory: generation.directory, config }, secrets);
@@ -1346,6 +1400,8 @@ const setupServer = async (
   runtime.writeLine(
     `Open ${config.appUrl}, create the first account, then run: mend login --url ${config.appUrl}`,
   );
+  // Last, where it is read: the server runs, but its sessions cannot until this is changed.
+  if (userNamespaces !== null) runtime.writeLine(userNamespaces);
 };
 
 const serverVersionParts = (version: string) => {

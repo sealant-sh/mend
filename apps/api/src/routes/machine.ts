@@ -1,6 +1,8 @@
+import { existsSync, readFileSync } from "node:fs";
 import { hostname, networkInterfaces, platform } from "node:os";
 
 import { MachineView, MendApi, type AddressKind } from "@mend/api-contracts";
+import { HOST_USER_NAMESPACE_FILES, hostUserNamespacesOf } from "@mend/domain/workbench";
 import { isTrustedHop, NetworkConfig, trustedProxyCidrs } from "@mend/network";
 import { Effect, Option } from "effect";
 import { HttpServerRequest } from "effect/unstable/http";
@@ -111,8 +113,40 @@ export const originOnMachine = (appUrl: string): boolean => {
   }
 };
 
+const readHostFile = (file: string): string | null => {
+  try {
+    return readFileSync(file, "utf8");
+  } catch {
+    return null;
+  }
+};
+
+/**
+ * Whether workspaces' rootless Docker services can start on this host, when workspaces run on its
+ * Docker: the bundle drives the host's daemon through its socket unless the deployment turned that
+ * runtime off (`scripts/bundle-supervisor.mjs`). A container reads its host's kernel in /proc/sys,
+ * so this answers for the host. Undefined when workspaces run elsewhere.
+ */
+export const observedUserNamespaces = (
+  read: (file: string) => string | null = readHostFile,
+  dockerOnThisHost: boolean = process.env.DOCKER_RUNTIME_ENABLED?.trim() !== "false" &&
+    existsSync("/var/run/docker.sock"),
+): MachineView["userNamespaces"] => {
+  if (!dockerOnThisHost) return undefined;
+  const [restrict, apparmor, clone] = HOST_USER_NAMESPACE_FILES;
+  const observed = hostUserNamespacesOf({
+    apparmorRestrictUnprivilegedUserns: read(restrict),
+    apparmorEnabled: read(apparmor),
+    unprivilegedUsernsClone: read(clone),
+  });
+  return observed.allowed
+    ? { allowed: true, setting: null }
+    : { allowed: false, setting: observed.setting };
+};
+
 export const readMachine = (exposure: NonNullable<MachineView["exposure"]>): MachineView => {
   const address = detectTailnetAddress();
+  const userNamespaces = observedUserNamespaces();
   return new MachineView({
     hostname: hostname(),
     platform: platform(),
@@ -121,6 +155,7 @@ export const readMachine = (exposure: NonNullable<MachineView["exposure"]>): Mac
         ? { status: "not-detected", address: null }
         : { status: "reachable", address },
     exposure,
+    ...(userNamespaces === undefined ? {} : { userNamespaces }),
   });
 };
 

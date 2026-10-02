@@ -5,6 +5,7 @@ import {
   arrivedThroughAnEdge,
   detectTailnetAddress,
   observedAddressKinds,
+  observedUserNamespaces,
 } from "./machine.ts";
 
 const iface = (address: string, internal = false) => [
@@ -94,5 +95,39 @@ describe("whether the asking request came through an edge", () => {
     expect(arrivedThroughAnEdge(undefined, "1.2.3.4, 192.168.250.2", EDGE)).toBe(false);
     // A client that writes its own X-Forwarded-For: the web tier appends the client, not a hop.
     expect(arrivedThroughAnEdge("127.0.0.1", "192.168.250.2, 203.0.113.9", EDGE)).toBe(false);
+  });
+});
+
+/** A host whose kernel files hold these contents, and no others. */
+const host =
+  (files: Readonly<Record<string, string>>) =>
+  (file: string): string | null =>
+    files[file] ?? null;
+
+describe("observedUserNamespaces", () => {
+  it("reports Ubuntu 24.04's default as refusing them, with the setting that allows them", () => {
+    expect(
+      observedUserNamespaces(
+        host({
+          "/proc/sys/kernel/apparmor_restrict_unprivileged_userns": "1\n",
+          "/sys/module/apparmor/parameters/enabled": "Y\n",
+          "/proc/sys/kernel/unprivileged_userns_clone": "1\n",
+        }),
+        true,
+      ),
+    ).toEqual({ allowed: false, setting: "kernel.apparmor_restrict_unprivileged_userns = 0" });
+  });
+
+  it("reports a host without the switch as allowing them", () => {
+    expect(observedUserNamespaces(host({}), true)).toEqual({ allowed: true, setting: null });
+  });
+
+  it("says nothing when workspaces do not run on this host's Docker", () => {
+    expect(
+      observedUserNamespaces(
+        host({ "/proc/sys/kernel/apparmor_restrict_unprivileged_userns": "1" }),
+        false,
+      ),
+    ).toBeUndefined();
   });
 });

@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 
 import { readShutdownTimeout } from "./docker-shutdown.ts";
-import { exposureCheck, formatCheck, runChecks } from "./doctor.ts";
+import { exposureCheck, formatCheck, runChecks, userNamespacesCheck } from "./doctor.ts";
 
 type Handler = (request: IncomingMessage, response: ServerResponse) => void;
 
@@ -199,6 +199,31 @@ describe("mend doctor", { timeout: 30_000 }, () => {
     } finally {
       await fake.close();
     }
+  });
+});
+
+describe("the workspaces line", () => {
+  it("says a host that allows rootless Docker is fine", () => {
+    expect(userNamespacesCheck({ allowed: true, setting: null })).toEqual({
+      label: "workspaces",
+      state: "ok",
+      detail: "the server's host allows rootless Docker",
+      fix: null,
+    });
+  });
+
+  it("fails a host that refuses user namespaces, with the command that allows them", () => {
+    expect(
+      userNamespacesCheck({
+        allowed: false,
+        setting: "kernel.apparmor_restrict_unprivileged_userns = 0",
+      }),
+    ).toEqual({
+      label: "workspaces",
+      state: "failed",
+      detail: "the server's host refuses user namespaces · no workspace can start",
+      fix: "on the server's host: echo 'kernel.apparmor_restrict_unprivileged_userns = 0' | sudo tee /etc/sysctl.d/60-mend-rootless-docker.conf && sudo sysctl --system",
+    });
   });
 });
 

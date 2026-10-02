@@ -1,7 +1,7 @@
 import * as fs from "node:fs";
 import * as path from "node:path";
 
-import { claudeGrantFacts } from "@mend/domain/workbench";
+import { claudeGrantFacts, hostUserNamespacesFix } from "@mend/domain/workbench";
 
 import {
   dockerShutdownCheck,
@@ -137,6 +137,8 @@ interface MachineDto {
     readonly addressKinds: ReadonlyArray<string>;
     readonly gateOpen: number;
   };
+  /** Absent from an older server, and from one whose workspaces run elsewhere than its host. */
+  readonly userNamespaces?: { readonly allowed: boolean; readonly setting: string | null };
 }
 
 /**
@@ -171,6 +173,29 @@ export const exposureCheck = (exposure: NonNullable<MachineDto["exposure"]>): Ch
         : "mend operator exposure",
   };
 };
+
+/**
+ * Whether the server's host lets a workspace's Docker service start, as one doctor line. That
+ * service is a rootless Docker daemon; a kernel that refuses unprivileged user namespaces (Ubuntu
+ * 23.10 and later, by default) stops it, and every session's launch fails.
+ */
+export const userNamespacesCheck = (observed: NonNullable<MachineDto["userNamespaces"]>): Check =>
+  observed.allowed
+    ? {
+        label: "workspaces",
+        state: "ok",
+        detail: "the server's host allows rootless Docker",
+        fix: null,
+      }
+    : {
+        label: "workspaces",
+        state: "failed",
+        detail: "the server's host refuses user namespaces · no workspace can start",
+        fix:
+          observed.setting === null
+            ? null
+            : `on the server's host: ${hostUserNamespacesFix(observed.setting)}`,
+      };
 
 /** Where each provider's own CLI writes the credential Mend forwards (mirrors `mend connect`). */
 const LOGIN_COMMANDS: Record<Provider, string> = {
@@ -397,6 +422,9 @@ export const runChecks = async (
   const machine = signedIn ? await getJson<MachineDto>(config, "/machine") : null;
   const exposure = machine === null || machine.value === null ? undefined : machine.value.exposure;
   checks.push(exposure === undefined ? notChecked("exposure") : exposureCheck(exposure));
+  const userNamespaces =
+    machine === null || machine.value === null ? undefined : machine.value.userNamespaces;
+  if (userNamespaces !== undefined) checks.push(userNamespacesCheck(userNamespaces));
 
   // A daemon shutdown (host restart, Docker Desktop quit) kills workspaces after the daemon's own
   // timeout, whatever their stop grace: read where this machine's daemon sets it.
