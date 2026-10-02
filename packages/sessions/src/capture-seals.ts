@@ -5,6 +5,7 @@ import type { WorktreeId } from "@mend/domain";
 import {
   BlobStore,
   CaptureCheckUnfinishedError,
+  chunkedIndexKeysOf,
   keysOfSections,
   storedCaptureProblem,
 } from "@mend/store";
@@ -185,6 +186,17 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
       code: "verifying",
       reason: "the sealed capture is not registered",
     } satisfies SealStanding;
+  }
+  // A capture an older server registered may list a pack index key as a chunk pack, which a
+  // register refuses now: no read-back can vouch for one (`chunkedIndexKeysOf`). On any store.
+  const disguised = chunkedIndexKeysOf(row.sections);
+  if (disguised.length > 0) {
+    const reason = `a chunked section lists a pack index as a pack: ${disguised[0] ?? ""}`;
+    yield* repo.voidSeal(seal.worktreeId, seal.epoch, seal.captureId, reason);
+    yield* Effect.logError(
+      "capture seals: the sealed capture lists a pack index as a chunk pack · the seal is void",
+    ).pipe(Effect.annotateLogs({ ...annotations, key: disguised[0] ?? "" }));
+    return { state: "void", code: "void", reason } satisfies SealStanding;
   }
   // Every object the capture lists, not only its manifest: the store remembers URLs by key.
   const listed = [row.manifestKey, ...keysOfSections(row.sections)];

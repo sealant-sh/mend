@@ -465,8 +465,8 @@ export class CaptureStoreRepo extends Context.Service<
     /**
      * Bind the pack index `key` to `sha256` until `until` (0099, ADR 0002 decision 48), in one
      * step: `conflict` while a binding live at `now` names other bytes. A binding for the same
-     * bytes is extended, never shortened. `fresh` says no live binding was there before: one the
-     * caller gives back (`releaseBoundIndex`) if it hands out no URL after all.
+     * bytes is extended, never shortened. `fresh` says no live binding was there before. A binding is
+     * never given back: nothing in its row says which call a signed URL under it belongs to.
      */
     readonly reserveBoundIndex: (
       key: string,
@@ -476,8 +476,6 @@ export class CaptureStoreRepo extends Context.Service<
     ) => Effect.Effect<
       { readonly outcome: "reserved"; readonly fresh: boolean } | { readonly outcome: "conflict" }
     >;
-    /** Give back a reservation while it is still exactly the one made (same bytes, same `until`). */
-    readonly releaseBoundIndex: (key: string, sha256: string, until: Date) => Effect.Effect<void>;
     /**
      * Extend `key`'s binding to `until`: a URL is good from when it was signed. False when no
      * binding of `key` to `sha256` is there to extend: the URL just signed is on no record, and
@@ -1225,16 +1223,6 @@ export const CaptureStoreRepoLive: Layer.Layer<
         .pipe(Effect.orDie);
     });
 
-    const releaseBoundIndex = Effect.fn("CaptureStoreRepo.releaseBoundIndex")(function* (
-      key: string,
-      sha256: string,
-      until: Date,
-    ) {
-      yield* sql`
-        DELETE FROM capture_bound_indexes
-         WHERE key = ${key} AND sha256 = ${sha256} AND until = ${until}`.pipe(Effect.orDie);
-    });
-
     const extendBoundIndex = Effect.fn("CaptureStoreRepo.extendBoundIndex")(function* (
       key: string,
       sha256: string,
@@ -1540,7 +1528,6 @@ export const CaptureStoreRepoLive: Layer.Layer<
       noteLaunchAnswers,
       launchAnswers,
       reserveBoundIndex,
-      releaseBoundIndex,
       extendBoundIndex,
       boundIndexesAmong,
       markSealReverified,

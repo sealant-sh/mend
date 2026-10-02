@@ -3504,6 +3504,24 @@ export const keysOfSections = (sections: unknown): ReadonlyArray<string> => {
   ];
 };
 
+/**
+ * The pack index keys (`….idx`) a capture row's chunked sections list as packs or dir packs: none,
+ * for every capture sealantd writes. An index key names its pack's digest, not its own bytes',
+ * so nothing that reads one back can tell a chunk pack stored there from other bytes that pass
+ * as a git pack index. A register refuses such a capture; a seal an older server recorded over
+ * one never stands (`sealStandingOf`; Astra review, 2026-10-02).
+ */
+export const chunkedIndexKeysOf = (sections: unknown): ReadonlyArray<string> => {
+  if (typeof sections !== "object" || sections === null) return [];
+  return [
+    ...chunkedSectionsOf(sections).flatMap((section) => [
+      ...rowPacksOf(section),
+      ...rowDirPacksOf(section),
+    ]),
+    ...rowPacksOf(worktreeMetaOf(sections)),
+  ].filter((key) => key.endsWith(".idx"));
+};
+
 /** A row's `workspace.worktree_meta`, whatever it holds. */
 const worktreeMetaOf = (sections: object): unknown => {
   const workspace: unknown = Reflect.get(sections, "workspace");

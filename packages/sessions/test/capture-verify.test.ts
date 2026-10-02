@@ -3346,6 +3346,25 @@ describeSeals(
       expect(String(refused.message)).toContain("pack index key(s) as packs");
     });
 
+    it("Astra review: a seal an older server recorded over a pack listed under an index's name is void", async () => {
+      const at = await claimed();
+      await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const file = sealedFile(at, "sealed before the rule\n");
+      await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
+      await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
+      expect((await sealOf(at))?.captureId).toBe(file.cap.id);
+      // As an older server would have registered it: the workspace pack listed as `<sha>.idx`.
+      const row = world.memory.captures.get(file.cap.id);
+      if (row === undefined) throw new Error("the sealed capture is not registered");
+      const sections = JSON.parse(JSON.stringify(row.sections)) as {
+        workspace: { packs: Array<string> };
+      };
+      sections.workspace.packs = sections.workspace.packs.map((key) => `${key}.idx`);
+      world.memory.captures.set(file.cap.id, { ...row, sections });
+      expect(await sealOf(at)).toBeNull();
+      expect((await recordedSeal(at))?.voidReason).toContain("lists a pack index as a pack");
+    });
+
     it("Astra review: an index URL whose binding is gone by the time it is signed does not leave Mend", async () => {
       const at = await claimed();
       await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
@@ -3404,8 +3423,9 @@ describeSeals(
       );
       expect(answered.urls).toEqual({});
       expect(answered.present).toEqual([index]);
-      // No URL left Mend for those bytes, and the binding the call reserved is given back.
-      expect(world.memory.boundIndexes.has(index)).toBe(false);
+      // No URL left Mend for those bytes. The binding stays until it lapses: another call may
+      // have signed a URL under it, and the row cannot say (Astra review, 2026-10-02).
+      expect(world.memory.boundIndexes.get(index)?.sha256).toBe("9".repeat(64));
     });
 
     it("answers a key past the multipart threshold as one bound PUT, so it holds no seal", async () => {

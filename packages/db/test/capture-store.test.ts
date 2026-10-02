@@ -1388,7 +1388,7 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     );
   }, 120_000);
 
-  it("pack index bindings (0099): one digest per key while a binding lives; released, extended and read back", async () => {
+  it("pack index bindings (0099): one digest per key while a binding lives; extended and read back", async () => {
     const key = `captures/wt-bound-${process.pid}/1/g0/packs/${"a".repeat(64)}.idx`;
     const first = "1".repeat(64);
     const other = "2".repeat(64);
@@ -1408,12 +1408,8 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
         // Dead at 15 minutes: other bytes may be bound, and that reservation is fresh.
         const dead = yield* repo.boundIndexesAmong([key], minutes(15));
         const replaced = yield* repo.reserveBoundIndex(key, other, minutes(15), minutes(25));
-        // Given back only while it is exactly the reservation made.
-        yield* repo.releaseBoundIndex(key, other, minutes(24));
         const kept = yield* repo.boundIndexesAmong([key], minutes(16));
-        yield* repo.releaseBoundIndex(key, other, minutes(25));
-        const released = yield* repo.boundIndexesAmong([key], minutes(16));
-        return { reserved, again, conflict, live, extended, dead, replaced, kept, released };
+        return { reserved, again, conflict, live, extended, dead, replaced, kept };
       }),
     );
     expect(result.reserved).toEqual({ outcome: "reserved", fresh: true });
@@ -1424,7 +1420,6 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
     expect(result.dead).toEqual([]);
     expect(result.replaced).toEqual({ outcome: "reserved", fresh: true });
     expect(result.kept).toEqual([{ key, sha256: other, until: minutes(25) }]);
-    expect(result.released).toEqual([]);
   });
 
   it("pack index bindings (0099): two reservations of one key at once never both bind other bytes", async () => {

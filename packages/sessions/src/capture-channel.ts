@@ -2023,8 +2023,6 @@ export const CaptureChannelLive: Layer.Layer<
         // or, for a pack index, the one the executor declared — the same for every URL of the key.
         const declared = input.sha256 ?? {};
         const boundTo = new Map<string, string>();
-        /** Index bindings this call made, which it gives back if it hands out no URL for them. */
-        const freshIndexes = new Map<string, { readonly sha256: string; readonly until: number }>();
         if (bindable) {
           for (const plan of plans) {
             if (plan.parts > 0) continue;
@@ -2061,7 +2059,6 @@ export const CaptureChannelLive: Layer.Layer<
                 key: plan.key,
               });
             }
-            if (reserved.fresh) freshIndexes.set(plan.key, { sha256: said, until: reservedUntil });
             boundTo.set(plan.key, said);
           }
         }
@@ -2089,11 +2086,12 @@ export const CaptureChannelLive: Layer.Layer<
             yield* verifyStored(key);
             present.push(key);
             wanted.delete(key);
+            // The binding stays. Giving it back was only safe while one process held every
+            // binding in one step: another call may have signed a URL under this very row since,
+            // and nothing in the row says whose it is (Astra review, 2026-10-02). A binding that
+            // names the stored bytes holds no seal. One that names other bytes holds a seal over
+            // this index until it lapses, as a URL for those bytes would.
             boundTo.delete(key);
-            const fresh = freshIndexes.get(key);
-            if (fresh !== undefined) {
-              yield* repo.releaseBoundIndex(key, fresh.sha256, new Date(fresh.until));
-            }
           }
           plans = plans.filter((plan) => !storedNow.has(plan.key));
         }

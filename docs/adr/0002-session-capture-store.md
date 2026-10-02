@@ -1478,7 +1478,9 @@ Mend-side details the decision record left open, decided in this ADR:
       extension made meanwhile is never overwritten with an earlier expiry. The same bytes bound
       again never shorten a binding. An extension that finds no binding fails the call, and no URL
       of it leaves Mend. Bindings dead for an hour are swept with a predicate asked of the row as it
-      is deleted, so one renewed meanwhile stays.
+      is deleted, so one renewed meanwhile stays. A binding is never given back, even when its call
+      hands out no URL: another call may have signed a URL under that very row since, and the row
+      cannot say whose it is.
     - **The upgrade, once.** The server before migration 0099 kept its bindings in memory, and a URL
       it bound in its last minutes outlives it. The migration writes a cutover 20 minutes ahead
       (`capture_bound_index_cutover`) when the database already has worktrees. Until then seals wait
@@ -1506,7 +1508,8 @@ Mend-side details the decision record left open, decided in this ADR:
       that list of chunk hashes. Before, both lapsed with `proofStands`, and every seal in the 20
       minutes after a start decompressed every pack and hashed every linked member again. A pack
       index key is not such a key: it names its pack's digest, not its own bytes'. It keeps the old
-      rule, and a register refuses a chunked section that lists one as a pack.
+      rule, and a register refuses a chunked section that lists one as a pack. A seal an older
+      server recorded over such a capture is void.
     - **Verification leaves Mend's thread, and starts early.** Packs are verified on worker threads
       (`pack-verify-pool.ts`), up to eight at once, at most that many packs in memory whoever asks.
       A register that seals nothing starts verifying the packs it lists in the background, so the
@@ -1515,8 +1518,9 @@ Mend-side details the decision record left open, decided in this ADR:
       gives its places back and sends its waiters to verify for themselves.
     - **Reviewed.** GPT-6 Astra read the first cut and found five ways a seal could stand over
       replaceable bytes and one hang: the index key rule above, the upgrade, the two reads of a
-      scope, the sweep, an extension overwritten, and the unbounded background pass. Each is fixed
-      as described here, with a test named for it.
+      scope, the sweep, an extension overwritten, and the unbounded background pass. A second pass
+      found two more: a reservation given back under another call's signed URL, and seals recorded
+      before the index key rule. Each is fixed as described here, with a test named for it.
     - **sealantd** (its changeset of the same day): a final flush is not throttled, reads small
       files on reader threads, hashes and compresses a large file's parts on them, hashes each pack
       on its own thread, takes SHA-256 from `ring`, and uploads large objects four at a time.
