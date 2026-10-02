@@ -8,7 +8,7 @@ import {
   HOST_USER_NAMESPACE_FILES,
   hostUserNamespacesFix,
   hostUserNamespacesOf,
-} from "@mend/domain/workbench";
+} from "@mend/domain/host-user-namespaces";
 
 import {
   type DockerDaemonFacts,
