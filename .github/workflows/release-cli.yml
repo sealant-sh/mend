@@ -25,6 +25,7 @@ jobs:
     needs: [images, github-release]
     # Github-hosted runner on purpose: the OIDC id-token should be minted on
     # infrastructure GitHub controls.
+    # npm trusted publishing (OIDC) needs a GitHub-hosted runner: this job stays off Blacksmith.
     runs-on: ubuntu-latest
     environment: release
     permissions:
@@ -62,7 +63,7 @@ jobs:
   github-release:
     name: Publish and verify setup assets
     needs: images
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     timeout-minutes: 15
     permissions:
       contents: write
@@ -138,7 +139,7 @@ jobs:
   promote-images:
     name: Promote the complete stable release
     needs: [npm, github-release]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     permissions:
       contents: write
       packages: write
