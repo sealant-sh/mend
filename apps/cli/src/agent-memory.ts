@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import * as zlib from "node:zlib";
 
 import {
   AGENT_MEMORY_MAX_DATABASE_BYTES,
@@ -94,21 +95,29 @@ const CODEX_THREADS_ROOT =
   AGENT_MEMORY_ROOTS.find((root) => root.root.endsWith("codex-threads"))?.root ??
   ".mend/codex-threads";
 
-/** A file's first line, read without the rest; null when it cannot be read. */
-const firstLineOf = (file: string): string | null => {
+/**
+ * A rollout's first line, read without the rest; null when it cannot be read. Codex may have
+ * compressed an old rollout to `<path>.zst` (its opt-in rollout compression): that is read too.
+ */
+const firstLineOf = async (file: string): Promise<string | null> => {
+  const plain = fs.existsSync(file) ? file : null;
+  const compressed = plain === null && fs.existsSync(`${file}.zst`) ? `${file}.zst` : null;
+  if (plain === null && compressed === null) return null;
+  const source = fs.createReadStream(plain ?? compressed ?? file);
+  const stream = compressed === null ? source : source.pipe(zlib.createZstdDecompress());
+  let text = "";
   try {
-    const fd = fs.openSync(file, "r");
-    try {
-      const buffer = Buffer.alloc(256 * 1024);
-      const read = fs.readSync(fd, buffer, 0, buffer.byteLength, 0);
-      const text = buffer.subarray(0, read).toString("utf8");
+    for await (const chunk of stream) {
+      text += Buffer.isBuffer(chunk) ? chunk.toString("utf8") : String(chunk);
       const end = text.indexOf("\n");
-      return end === -1 ? null : text.slice(0, end);
-    } finally {
-      fs.closeSync(fd);
+      if (end !== -1) return text.slice(0, end);
+      if (text.length > 1024 * 1024) return null;
     }
+    return null;
   } catch {
     return null;
+  } finally {
+    source.destroy();
   }
 };
 
@@ -142,7 +151,10 @@ export interface CodexMemoryScan {
  * `memories/` folder is never imported; the next session consolidates these summaries into the
  * project's own. Every summary comes in unselected, so that consolidation takes them all.
  */
-export const scanCodexMemory = (repoRoot: string, home: string = codexHome()): CodexMemoryScan => {
+export const scanCodexMemory = async (
+  repoRoot: string,
+  home: string = codexHome(),
+): Promise<CodexMemoryScan> => {
   const memories = path.join(home, "memories_1.sqlite");
   const state = codexStateDatabase(home);
   if (!fs.existsSync(memories) || state === null) {
@@ -154,7 +166,15 @@ export const scanCodexMemory = (repoRoot: string, home: string = codexHome()): C
     try {
       return new Map(
         threads
-          .prepare("select id, cwd, rollout_path from threads")
+          // Only threads whose memory is on: Codex leaves the others out of its memory, and so does
+          // the import (a stub would turn it back on).
+          .prepare(
+            threads
+              .prepare("select name from pragma_table_info('threads') where name = 'memory_mode'")
+              .get() === undefined
+              ? "select id, cwd, rollout_path from threads"
+              : "select id, cwd, rollout_path from threads where memory_mode = 'enabled'",
+          )
           .all()
           .flatMap((row) => {
             const cwd = row["cwd"];
@@ -226,7 +246,7 @@ export const scanCodexMemory = (repoRoot: string, home: string = codexHome()): C
     const threadLines: Array<MemoryFile> = [];
     for (const id of summarisedIds) {
       const rollout = inRepo.get(id) ?? null;
-      const head = rollout === null ? null : firstLineOf(rollout);
+      const head = rollout === null ? null : await firstLineOf(rollout);
       if (head !== null) {
         threadLines.push({
           path: `${CODEX_THREADS_ROOT}/${id}.jsonl`,

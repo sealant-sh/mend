@@ -127,23 +127,32 @@ to build it.
    own setting.
 7. **It travels as agent memory, as Claude's does:** the folder `.codex/memories/` and the summary
    database `.codex/memories_1.sqlite`. The database is stored as one file: at read-back its
-   write-ahead log is folded in with `VACUUM INTO`, and a copy that does not open as a database is
-   not stored, so the last good one stays. The WAL is never stored on its own, because a database
-   and a log from two different sessions do not make a database. The summary database's limit is 16
-   MB, and a person's total in a project is 32 MB. Without the database, every session would
-   summarise the same two newest conversations again and never get past them.
+   write-ahead log is folded in with `VACUUM INTO`. A copy that does not open as a database, or
+   fails SQLite's integrity check, is not stored. It is not taken as deleted either, so the last
+   good one stays. The WAL is never stored on its own, because a database and a log from two
+   different sessions do not make a database. The summary database's limit is 16 MB, and a person's
+   total in a project is 32 MB. Without the database, every session would summarise the same two
+   newest conversations again and never get past them.
 8. **Mend lays conversations down, counting each by its latest harvested revision.** Codex merges
    only summaries whose conversation its state database lists, and a fresh home lists only the
    rollouts in it. So at launch a Codex session receives the person's own Codex conversations on the
    project:
-   - **In full:** the ones Codex would summarise and has not summarised at that revision. That means
-     an interactive source (`cli` or `vscode`), memory not turned off for it, and 6 hours to 10 days
-     since its latest revision. A conversation whose latest revision is under 6 hours old is still
-     going and is not carried. Newest first, at most four, at most 8 MB compressed, and no rollout
-     over 64 MB is read.
-   - **As a stub:** every other one Codex has summarised. A stub is its first line, at the summary's
-     time, so Codex keeps the summary without making it again. A summary imported from another
-     machine gets its stub from the line imported with it (`.mend/codex-threads/<id>.jsonl`).
+   - **In full:** the ones Codex would summarise and has not summarised at that revision. That
+     means:
+     - an interactive source (`cli` or `vscode`);
+     - memory not turned off for it, which Codex reads, as Mend does, from the last `session_meta`
+       line that names a mode;
+     - 6 hours to 10 days since its latest revision.
+
+     A conversation whose latest revision is under 6 hours old, or that an agent holds right now, is
+     still going and is not carried. Newest first, at most four, at most 8 MB compressed, and no
+     rollout over 64 MB is read.
+
+   - **As a stub:** every other one Codex has summarised whose memory is on, in Codex's own order of
+     preference, up to 512. A full copy that cannot be prepared keeps its stub. A stub is its first
+     line, at the summary's time, so Codex keeps the summary without making it again. A summary
+     imported from another machine gets its stub from the line imported with it
+     (`.mend/codex-threads/<id>.jsonl`).
 
    Each file goes under its rollout name, with its time as its modification time, which is the time
    Codex reads.
@@ -160,8 +169,9 @@ to build it.
    - The co-located archive leaves listed files out.
 10. **Import takes Codex's summaries, never its folder.** `mend memory import` sends:
     - a summary database holding only the summaries of conversations whose working directory is the
-      repository or inside it, each unselected;
-    - each such conversation's first line, for its stub.
+      repository or inside it, and whose memory is on, each unselected;
+    - each such conversation's first line, for its stub. A rollout Codex compressed (`.jsonl.zst`)
+      is read too.
 
     The folder itself mixes every repository and is never imported.
 
@@ -176,6 +186,11 @@ to build it.
   learns only from what was carried at its first launch.
 - Two Codex sessions ending at once: the later read-back's summary database replaces the earlier
   one, which is kept as a version. What the earlier one summarised is summarised again later.
+- The database and its log are copied file by file, from the home or from a capture. Two live Codex
+  sessions of the same person sharing a worktree's home can therefore yield a copy that is valid but
+  mixes two moments, which no integrity check can see. The cost is a summary made twice or a
+  selection out of date, never a corrupt file. A snapshot through SQLite inside the workspace would
+  close it; the images do not all ship SQLite tooling yet.
 
 ## Delivery
 

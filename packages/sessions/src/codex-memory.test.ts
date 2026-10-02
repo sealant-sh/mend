@@ -17,6 +17,7 @@ import {
   parseCarryOutcomes,
   planCodexCarry,
   prepareCarriedConversations,
+  readRolloutFacts,
   rolloutPathOf,
   summarisedThreads,
   type CodexRevision,
@@ -47,14 +48,24 @@ const plan = (
     readonly summarised?: ReadonlyMap<string, number>;
     readonly imported?: ReadonlyMap<string, string>;
     readonly lines?: ReadonlyMap<string, string>;
+    readonly modes?: ReadonlyMap<string, string>;
+    readonly live?: ReadonlySet<string>;
   } = {},
 ) =>
   planCodexCarry({
     revisions,
-    firstLines:
-      options.lines ?? new Map(revisions.map((r) => [r.transcriptPath, metaLine()] as const)),
+    facts: new Map(
+      revisions.map((r) => [
+        r.transcriptPath,
+        {
+          firstLine: options.lines?.get(r.transcriptPath) ?? metaLine(),
+          memoryMode: options.modes?.get(r.transcriptPath) ?? null,
+        },
+      ]),
+    ),
     summarised: options.summarised ?? new Map(),
     imported: options.imported ?? new Map(),
+    live: options.live ?? new Set(),
     now: NOW,
   });
 const fullIds = (carry: ReturnType<typeof plan>) => carry.full.map((r) => r.providerSessionId);
@@ -81,9 +92,27 @@ describe("which conversations a Codex launch carries", () => {
     ]);
     const carry = plan([revision(1, 8, "/a"), revision(2, 8, "/b"), revision(3, 8, "/c")], {
       lines,
+      modes: new Map([["/b", "disabled"]]),
     });
     expect(fullIds(carry)).toEqual([id(3)]);
-    expect(codexWouldSummarise("not json")).toBe(false);
+    expect(codexWouldSummarise({ firstLine: "not json", memoryMode: null })).toBe(false);
+  });
+
+  it("memory turned off later in a conversation: no full copy, and no stub to turn it back on", () => {
+    const summarisedAt = Math.floor((NOW - 30 * HOUR) / 1000);
+    const carry = plan([revision(1, 8, "/later-off"), revision(2, 30, "/summarised-off")], {
+      summarised: new Map([[id(2), summarisedAt]]),
+      modes: new Map([
+        ["/later-off", "disabled"],
+        ["/summarised-off", "polluted"],
+      ]),
+    });
+    expect(fullIds(carry)).toEqual([]);
+    expect(carry.stubs).toEqual([]);
+  });
+
+  it("a conversation an agent holds right now is never carried in full", () => {
+    expect(fullIds(plan([revision(1, 8)], { live: new Set([id(1)]) }))).toEqual([]);
   });
 
   it("a summarised conversation goes as a stub at the summary's time; a later revision goes in full", () => {
@@ -94,9 +123,8 @@ describe("which conversations a Codex launch carries", () => {
     ]);
     const carry = plan([revision(1, 30), revision(2, 30), revision(2, 8)], { summarised });
     expect(fullIds(carry)).toEqual([id(2)]);
-    expect(carry.stubs).toEqual([
-      { providerSessionId: id(1), firstLine: metaLine(), mtime: summarisedAt },
-    ]);
+    // Every summarised one has a stub ready; preparing drops the stubs of those laid down in full.
+    expect(carry.stubs.map((stub) => stub.providerSessionId)).toEqual([id(1), id(2)]);
   });
 
   it("a summary imported from another machine gets its stub from the imported line", () => {
@@ -145,10 +173,41 @@ describe("Codex's summary database", () => {
     expect([...read]).toEqual([[id(4), 1234]]);
   });
 
+  it("reads summaries in Codex's own order of preference", async () => {
+    const file = path.join(scratch(), "memories_1.sqlite");
+    const db = new DatabaseSync(file);
+    db.exec(
+      "create table stage1_outputs (thread_id text primary key, source_updated_at integer not null, usage_count integer, last_usage integer)",
+    );
+    const row = db.prepare("insert into stage1_outputs values (?, ?, ?, ?)");
+    row.run(id(1), 100, 0, null);
+    row.run(id(2), 50, 5, 60);
+    row.run(id(3), 200, 0, null);
+    db.close();
+    const read = await Effect.runPromise(summarisedThreads(fs.readFileSync(file)));
+    expect([...read.keys()]).toEqual([id(2), id(3), id(1)]);
+  });
+
   it("stores nothing for bytes that are not a database, and reads them as nothing summarised", async () => {
     expect(await Effect.runPromise(consolidateCodexDatabase(Buffer.from("torn"), null))).toBeNull();
     expect(await Effect.runPromise(summarisedThreads(Buffer.from("torn")))).toEqual(new Map());
     expect(await Effect.runPromise(summarisedThreads(null))).toEqual(new Map());
+  });
+});
+
+describe("preparing a carry", () => {
+  it("a full rollout that cannot be prepared keeps its stub", async () => {
+    const dir = scratch();
+    const missing = path.join(dir, "gone.native");
+    const files = await Effect.runPromise(
+      prepareCarriedConversations({
+        full: [revision(1, 8, missing)],
+        stubs: [{ providerSessionId: id(1), firstLine: metaLine(), mtime: 1_700_000_000 }],
+      }),
+    );
+    expect(files.map((file) => [file.providerSessionId, file.mtime])).toEqual([
+      [id(1), 1_700_000_000],
+    ]);
   });
 });
 
@@ -213,5 +272,20 @@ describe("laying carried conversations down", () => {
     expect(parseCarryOutcomes(run.stdout)).toEqual([{ outcome: "written", id: id(5) }]);
     expect(fs.readdirSync(path.join(home, CARRIED_INCOMING))).toEqual([]);
     expect(await Effect.runPromise(locateLiveTranscript(home, "codex"))).toBeNull();
+  });
+});
+
+describe("readRolloutFacts", () => {
+  it("takes the memory mode from the last session_meta line that names one, as Codex does", async () => {
+    const file = path.join(scratch(), "rollout.jsonl");
+    fs.writeFileSync(
+      file,
+      [metaLine(), '{"type":"x"}', metaLine("cli", "disabled"), '{"type":"y"}', ""].join("\n"),
+    );
+    expect(await Effect.runPromise(readRolloutFacts(file))).toEqual({
+      firstLine: metaLine(),
+      memoryMode: "disabled",
+    });
+    expect(await Effect.runPromise(readRolloutFacts(path.join(scratch(), "none")))).toBeNull();
   });
 });

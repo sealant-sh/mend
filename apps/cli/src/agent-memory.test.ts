@@ -2,6 +2,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import * as zlib from "node:zlib";
 
 import { afterEach, describe, expect, it } from "vitest";
 
@@ -88,9 +89,9 @@ describe("reading this machine's Codex memory for a repository", () => {
     return home;
   };
 
-  it("keeps only the summaries of conversations held in the repository, unselected", () => {
+  it("keeps only the summaries of conversations held in the repository, unselected", async () => {
     const home = codexHome();
-    const scan = scanCodexMemory("/home/you/code/my-app", home);
+    const scan = await scanCodexMemory("/home/you/code/my-app", home);
     expect(scan.summaries).toBe(2);
     // The database, and each summarised conversation's first line for its stub.
     expect(scan.files.map((file) => file.path)).toEqual([
@@ -117,8 +118,28 @@ describe("reading this machine's Codex memory for a repository", () => {
     }
   });
 
-  it("finds nothing for a repository Codex never worked in, or without Codex at all", () => {
-    expect(scanCodexMemory("/home/you/code/unknown", codexHome()).files).toEqual([]);
-    expect(scanCodexMemory("/home/you/code/my-app", "/nonexistent/codex").files).toEqual([]);
+  it("finds nothing for a repository Codex never worked in, or without Codex at all", async () => {
+    expect((await scanCodexMemory("/home/you/code/unknown", codexHome())).files).toEqual([]);
+    expect((await scanCodexMemory("/home/you/code/my-app", "/nonexistent/codex")).files).toEqual(
+      [],
+    );
+  });
+
+  it("leaves out a thread whose memory is off, and reads a compressed rollout's first line", async () => {
+    const home = codexHome();
+    const state = new DatabaseSync(path.join(home, "state_5.sqlite"));
+    state.exec("alter table threads add column memory_mode text not null default 'enabled'");
+    state.exec("update threads set memory_mode = 'disabled' where id = 'in-subdir'");
+    // Codex compressed the old rollout: only its .zst remains.
+    const rollout = path.join(home, "sessions", "rollout-in-repo.jsonl");
+    fs.writeFileSync(`${rollout}.zst`, zlib.zstdCompressSync(fs.readFileSync(rollout)));
+    fs.rmSync(rollout);
+    state.close();
+    const scan = await scanCodexMemory("/home/you/code/my-app", home);
+    expect(scan.summaries).toBe(1);
+    expect(scan.files.map((file) => file.path)).toEqual([
+      ".codex/memories_1.sqlite",
+      ".mend/codex-threads/in-repo.jsonl",
+    ]);
   });
 });

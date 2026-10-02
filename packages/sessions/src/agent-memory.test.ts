@@ -13,6 +13,7 @@ import {
   mergeTextUnion,
   planAgentMemory,
   readAgentMemoryFromHome,
+  withoutSkipped,
 } from "./agent-memory.ts";
 
 const ROOT = ".claude/projects/-workspace-repo/memory";
@@ -136,5 +137,18 @@ describe("Codex memory in a harness home (docs/adr/0009, Codex)", () => {
     expect(read.files.find((file) => file.path.endsWith(".sqlite"))?.encoding).toBe("base64");
     const torn = await Effect.runPromise(readAgentMemoryFromHome(path.join(home, "torn")));
     expect(torn.files).toEqual([]);
+    expect(torn.skipped).toEqual([".codex/memories_1.sqlite"]);
+  });
+});
+
+describe("a memory file the read-back could not read", () => {
+  it("is not taken as deleted: it leaves the delivered record before the read-back", () => {
+    expect(
+      withoutSkipped({
+        delivered: { a: "1", ".codex/memories_1.sqlite": "2" },
+        files: [],
+        skipped: [".codex/memories_1.sqlite"],
+      }),
+    ).toEqual({ a: "1" });
   });
 });

@@ -208,6 +208,7 @@ import {
   parseAgentMemoryOutcomes,
   planAgentMemory,
   readAgentMemoryFromHome,
+  withoutSkipped,
 } from "./agent-memory.ts";
 import { harnessWarmupArgv, isOutputEntry } from "./agent-start.ts";
 import {
@@ -233,11 +234,12 @@ import {
   parseCarryOutcomes,
   planCodexCarry,
   prepareCarriedConversations,
-  readFirstLine,
+  readRolloutFacts,
   storedCodexDatabase,
   storedCodexThreadLines,
   summarisedThreads,
   type CodexRevision,
+  type RolloutFacts,
 } from "./codex-memory.ts";
 import { detectInstallCommand, PLATFORM_PROBE_SCRIPT, platformKeyOf } from "./dependency-cache.ts";
 import { DotfilesCloner, DotfilesResolveError, snapshotArchive } from "./dotfiles.ts";
@@ -8525,22 +8527,28 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             (capture === null || other.worktreeId !== session.worktreeId),
         );
         const revisions: Array<CodexRevision> = [];
-        const firstLines = new Map<string, string>();
+        const facts = new Map<string, RolloutFacts>();
+        // A conversation an agent holds right now is still going: never carried in full.
+        const live = new Set<string>();
         const rows =
           others.length === 0
             ? []
             : yield* processes.listForSessions(others.map((other) => other.id));
         for (const row of rows) {
-          if (row.harness !== "codex" || row.exitedAt === null) continue;
+          if (row.harness !== "codex") continue;
+          if (row.exitedAt === null) {
+            if (row.providerSessionId !== null) live.add(row.providerSessionId);
+            continue;
+          }
           const stateDir = processStatePathOf(project.storePath, row.sessionId, row.id);
           const manifest = yield* readHarnessStateManifest(stateDir, row.sessionId).pipe(
             Effect.option,
           );
           if (Option.isNone(manifest) || manifest.value.providerSessionId === null) continue;
           const transcriptPath = path.join(stateDir, "transcript.native");
-          const firstLine = yield* readFirstLine(transcriptPath);
-          if (firstLine === null) continue;
-          firstLines.set(transcriptPath, firstLine);
+          const read = yield* readRolloutFacts(transcriptPath);
+          if (read === null) continue;
+          facts.set(transcriptPath, read);
           revisions.push({
             providerSessionId: manifest.value.providerSessionId,
             transcriptPath,
@@ -8549,9 +8557,10 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
         }
         const plan = planCodexCarry({
           revisions,
-          firstLines,
+          facts,
           summarised,
           imported,
+          live,
           now: Date.now(),
         });
         if (plan.full.length === 0 && plan.stubs.length === 0) return;
@@ -8606,14 +8615,18 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           readonly encoding: "utf8" | "base64";
           readonly contents: string;
         }> = [];
+        const skipped: Array<string> = [];
         for (const { root } of AGENT_MEMORY_ROOTS) {
           const listed = yield* listCaptureFiles(manifest, "workspace", `harness/${root}`).pipe(
             Effect.provideService(BlobStore, capture.blobs),
           );
           for (const file of listed) {
             const relative = file.path.replace(/^harness\//, "");
-            if (file.entry.kind !== "file" || file.entry.size > agentMemoryMaxFileBytes(relative))
+            if (file.entry.kind !== "file") continue;
+            if (file.entry.size > agentMemoryMaxFileBytes(relative)) {
+              skipped.push(relative);
               continue;
+            }
             files.push(asMemoryFile(relative, yield* read(file.path)));
           }
         }
@@ -8631,6 +8644,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
             consolidated === null ||
             consolidated.byteLength > agentMemoryMaxFileBytes(relative)
           ) {
+            skipped.push(relative);
             continue;
           }
           files.push(asMemoryFile(relative, consolidated));
@@ -8639,7 +8653,7 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           Effect.map((bytes) => new TextDecoder().decode(bytes)),
           Effect.orElseSucceed(() => null),
         );
-        return { delivered: parseAgentMemoryDelivered(record), files };
+        return { delivered: parseAgentMemoryDelivered(record), files, skipped };
       });
 
       /**
@@ -8662,7 +8676,8 @@ export const SessionEngineLive: Layer.Layer<SessionEngine, never, SessionEngineR
           userId: session.ownerUserId,
           projectId: project.id,
           sessionId: session.id,
-          delivered: read.delivered,
+          // A file there that could not be read is not a deleted one: the stored copy stays.
+          delivered: withoutSkipped(read),
           session: read.files,
           merge: mergeTextUnion,
         });

@@ -59,32 +59,54 @@ export interface CodexRevision {
 /** What Codex records of a summary: the thread, and the conversation's time it summarised. */
 export type Summarised = ReadonlyMap<string, number>;
 
-/**
- * A conversation's first line (`session_meta`), as Codex reads it: whether Codex would summarise
- * it (an interactive source, memory not turned off for it).
- */
-export const codexWouldSummarise = (firstLine: string): boolean => {
+/** What a rollout says of itself, as Codex reads it at backfill. */
+export interface RolloutFacts {
+  /** Its first line (`session_meta`): the stub of it. */
+  readonly firstLine: string;
+  /** The memory mode its last `session_meta` that names one sets; null when none does. */
+  readonly memoryMode: string | null;
+}
+
+const payloadOf = (line: string): Record<string, unknown> | null => {
   try {
-    const parsed: unknown = JSON.parse(firstLine);
-    if (typeof parsed !== "object" || parsed === null || !("payload" in parsed)) return false;
+    const parsed: unknown = JSON.parse(line);
+    if (typeof parsed !== "object" || parsed === null || !("payload" in parsed)) return null;
     const payload = parsed.payload;
-    if (typeof payload !== "object" || payload === null) return false;
-    const source = "source" in payload ? payload.source : "vscode";
-    const mode = "memory_mode" in payload ? payload.memory_mode : null;
-    return (
-      typeof source === "string" &&
-      CODEX_INTERACTIVE_SOURCES.has(source) &&
-      (mode === null || mode === undefined || mode === "enabled")
-    );
+    return typeof payload === "object" && payload !== null
+      ? (payload as Record<string, unknown>)
+      : null;
   } catch {
-    return false;
+    return null;
   }
 };
 
+/**
+ * Whether Codex would summarise a conversation (codex-rs `phase1.rs`, `metadata.rs`): an
+ * interactive source, from its first line, and memory not turned off for it, from the last
+ * `session_meta` line that names a mode (a later turn can turn it off).
+ */
+export const codexWouldSummarise = (facts: RolloutFacts): boolean => {
+  const payload = payloadOf(facts.firstLine);
+  if (payload === null) return false;
+  const source = payload["source"] ?? "vscode";
+  return (
+    typeof source === "string" &&
+    CODEX_INTERACTIVE_SOURCES.has(source) &&
+    (facts.memoryMode === null || facts.memoryMode === "enabled")
+  );
+};
+
+/** Codex keeps a summary only for a thread whose memory is not turned off. */
+const memoryOn = (facts: RolloutFacts): boolean =>
+  facts.memoryMode === null || facts.memoryMode === "enabled";
+
 export interface CarryPlan {
-  /** Laid down whole, for Codex to summarise. */
+  /** Laid down whole, for Codex to summarise; a stub stands in when one cannot be. */
   readonly full: ReadonlyArray<CodexRevision>;
-  /** Laid down as their first line, at the summary's time, so Codex keeps their summaries. */
+  /**
+   * Every summarised conversation's stub (its first line, at the summary's time), in Codex's own
+   * order of preference: the ones laid down in full are left out when they are prepared.
+   */
   readonly stubs: ReadonlyArray<{
     readonly providerSessionId: string;
     readonly firstLine: string;
@@ -93,19 +115,23 @@ export interface CarryPlan {
 }
 
 /**
- * What a launch lays down. Each conversation counts by its latest revision only; one still active
- * (its latest revision under six hours old) is never carried in full. In full: those Codex would
- * summarise and has not summarised at that revision, newest first, at most
- * `CODEX_CARRY_MAX_CONVERSATIONS`. As a stub: every other one Codex summarised, by the first line
- * of its latest revision or, for one summarised on another machine, the line imported with it.
+ * What a launch lays down. Each conversation counts by its latest harvested revision; one with a
+ * live agent, or whose latest revision is under six hours old, is still going and is not carried
+ * in full. In full: those Codex would summarise and has not summarised at that revision, newest
+ * first, at most `CODEX_CARRY_MAX_CONVERSATIONS`. As stubs: every summarised one whose memory is
+ * on, by its latest revision's first line or, for one summarised on another machine, the line
+ * imported with it.
  */
 export const planCodexCarry = (input: {
   readonly revisions: ReadonlyArray<CodexRevision>;
-  /** Each latest revision's first line, by its transcript path. */
-  readonly firstLines: ReadonlyMap<string, string>;
+  /** What each revision's rollout says of itself, by its transcript path. */
+  readonly facts: ReadonlyMap<string, RolloutFacts>;
+  /** Codex's summaries, in its own order of preference. */
   readonly summarised: Summarised;
   /** First lines imported from another machine, by thread id. */
   readonly imported: ReadonlyMap<string, string>;
+  /** Conversations an agent holds right now. */
+  readonly live: ReadonlySet<string>;
   readonly now: number;
 }): CarryPlan => {
   const latest = new Map<string, CodexRevision>();
@@ -117,6 +143,7 @@ export const planCodexCarry = (input: {
   }
   const full = [...latest.values()]
     .filter((revision) => {
+      if (input.live.has(revision.providerSessionId)) return false;
       const age = input.now - revision.capturedAt.getTime();
       if (age < CODEX_MIN_IDLE_MS || age > CODEX_MAX_AGE_MS) return false;
       const summarisedAt = input.summarised.get(revision.providerSessionId);
@@ -128,19 +155,17 @@ export const planCodexCarry = (input: {
       ) {
         return false;
       }
-      const firstLine = input.firstLines.get(revision.transcriptPath);
-      return firstLine !== undefined && codexWouldSummarise(firstLine);
+      const facts = input.facts.get(revision.transcriptPath);
+      return facts !== undefined && codexWouldSummarise(facts);
     })
     .toSorted((a, b) => b.capturedAt.getTime() - a.capturedAt.getTime())
     .slice(0, CODEX_CARRY_MAX_CONVERSATIONS);
-  const inFull = new Set(full.map((revision) => revision.providerSessionId));
   const stubs: Array<CarryPlan["stubs"][number]> = [];
   for (const [id, mtime] of input.summarised) {
-    if (inFull.has(id) || stubs.length >= CODEX_CARRY_MAX_STUBS) continue;
     const revision = latest.get(id);
-    const firstLine =
-      (revision === undefined ? undefined : input.firstLines.get(revision.transcriptPath)) ??
-      input.imported.get(id);
+    const facts = revision === undefined ? undefined : input.facts.get(revision.transcriptPath);
+    if (facts !== undefined && !memoryOn(facts)) continue;
+    const firstLine = facts?.firstLine ?? input.imported.get(id);
     if (firstLine === undefined) continue;
     stubs.push({ providerSessionId: id, firstLine, mtime });
   }
@@ -160,7 +185,19 @@ export const summarisedThreads = (database: Uint8Array | null): Effect.Effect<Su
       await fs.writeFile(file, database);
       const db = new DatabaseSync(file, { readOnly: true });
       try {
-        const rows = db.prepare("select thread_id, source_updated_at from stage1_outputs").all();
+        // Codex's own order of preference for its 256 (codex-rs `memories.rs`
+        // `get_phase2_input_selection`); a database without its columns reads unordered.
+        const rows = (() => {
+          try {
+            return db
+              .prepare(
+                "select thread_id, source_updated_at from stage1_outputs order by usage_count desc, coalesce(last_usage, source_updated_at) desc, source_updated_at desc, thread_id desc",
+              )
+              .all();
+          } catch {
+            return db.prepare("select thread_id, source_updated_at from stage1_outputs").all();
+          }
+        })();
         return new Map(
           rows.flatMap((row) =>
             typeof row["thread_id"] === "string"
@@ -200,6 +237,13 @@ export const consolidateCodexDatabase = (
       } finally {
         opened.close();
       }
+      const check = new DatabaseSync(out, { readOnly: true });
+      try {
+        const verdict = check.prepare("pragma integrity_check").get();
+        if (verdict?.["integrity_check"] !== "ok") return null;
+      } finally {
+        check.close();
+      }
       return new Uint8Array(await fs.readFile(out));
     } catch {
       return null;
@@ -208,20 +252,39 @@ export const consolidateCodexDatabase = (
     }
   });
 
-/** A rollout's first line, read without reading the rest; null when it cannot be read. */
-export const readFirstLine = (file: string): Effect.Effect<string | null> =>
+/** Rollout facts already read, by path, size and time: a launch reads each file once. */
+const factsRead = new Map<string, RolloutFacts | null>();
+
+/**
+ * What a rollout says of itself (`RolloutFacts`), read line by line; null when it cannot be read,
+ * has no first line, or is over `CODEX_CARRY_MAX_ROLLOUT_BYTES`.
+ */
+export const readRolloutFacts = (file: string): Effect.Effect<RolloutFacts | null> =>
   Effect.promise(async () => {
+    const stat = await fs.stat(file).catch(() => null);
+    if (stat === null || stat.size === 0 || stat.size > CODEX_CARRY_MAX_ROLLOUT_BYTES) return null;
+    const key = `${file}\0${stat.size}\0${stat.mtimeMs}`;
+    if (factsRead.has(key)) return factsRead.get(key) ?? null;
     const handle = await fs.open(file, "r").catch(() => null);
     if (handle === null) return null;
+    let firstLine: string | null = null;
+    let memoryMode: string | null = null;
     try {
-      const buffer = Buffer.alloc(256 * 1024);
-      const { bytesRead } = await handle.read(buffer, 0, buffer.byteLength, 0);
-      const text = buffer.subarray(0, bytesRead).toString("utf8");
-      const end = text.indexOf("\n");
-      return end === -1 ? null : text.slice(0, end);
+      for await (const line of handle.readLines()) {
+        if (firstLine === null) firstLine = line;
+        if (!line.includes('"session_meta"')) continue;
+        const mode = payloadOf(line)?.["memory_mode"];
+        if (typeof mode === "string") memoryMode = mode;
+      }
+    } catch {
+      firstLine = null;
     } finally {
-      await handle.close();
+      await handle.close().catch(() => undefined);
     }
+    const facts = firstLine === null ? null : { firstLine, memoryMode };
+    if (factsRead.size > 4096) factsRead.clear();
+    factsRead.set(key, facts);
+    return facts;
   });
 
 /** `2026-09-30T14-02-11`: the time in a rollout's file name, from an ISO timestamp, UTC. */
@@ -271,12 +334,17 @@ export interface CarriedFile {
   readonly mtime: number;
 }
 
-/** Read and compress a plan's files: full rollouts within the limits, then every stub. */
+/**
+ * Read and compress a plan's files: full rollouts within the limits, then the stubs of every
+ * summarised conversation not laid down in full, up to `CODEX_CARRY_MAX_STUBS` in Codex's order.
+ * A full rollout that cannot be prepared keeps its stub.
+ */
 export const prepareCarriedConversations = (
   plan: CarryPlan,
 ): Effect.Effect<ReadonlyArray<CarriedFile>> =>
   Effect.promise(async () => {
     const files: Array<CarriedFile> = [];
+    const inFull = new Set<string>();
     let total = 0;
     for (const revision of plan.full) {
       const stat = await fs.stat(revision.transcriptPath).catch(() => null);
@@ -291,6 +359,7 @@ export const prepareCarriedConversations = (
           .subarray(0, 256 * 1024)
           .toString("utf8")
           .split("\n", 1)[0] ?? "";
+      inFull.add(revision.providerSessionId);
       files.push({
         providerSessionId: revision.providerSessionId,
         path: rolloutPathOf(firstLine, revision.providerSessionId, revision.capturedAt),
@@ -298,7 +367,10 @@ export const prepareCarriedConversations = (
         mtime: Math.floor(revision.capturedAt.getTime() / 1000),
       });
     }
+    let stubs = 0;
     for (const stub of plan.stubs) {
+      if (inFull.has(stub.providerSessionId) || stubs >= CODEX_CARRY_MAX_STUBS) continue;
+      stubs += 1;
       files.push({
         providerSessionId: stub.providerSessionId,
         path: rolloutPathOf(stub.firstLine, stub.providerSessionId, new Date(stub.mtime * 1000)),

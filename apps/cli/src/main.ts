@@ -2373,7 +2373,7 @@ const memoryImport = async (config: CliConfig, args: ReadonlyArray<string>) => {
   if (repoRoot === null) return fail("run mend memory import inside the repository's checkout");
   const claudeDir = claudeMemoryDirFor(repoRoot);
   const claude = claudeDir === null ? null : scanClaudeMemory(claudeDir);
-  const codex = scanCodexMemory(repoRoot);
+  const codex = await scanCodexMemory(repoRoot);
   for (const note of [...(claude?.notes ?? []), ...codex.notes]) say(dim(`  ${note}`));
   const files = [...(claude?.files ?? []), ...codex.files];
   if (files.length === 0) {
