@@ -1,3 +1,4 @@
+import * as crypto from "node:crypto";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -375,6 +376,9 @@ describe("BlobStore (dir)", () => {
 
 // ─── S3 store (Garage, R2, S3 …) — opt-in through the environment ───────────
 
+/** The `x-amz-checksum-sha256` of a body. */
+const checksum = (body: string) => crypto.createHash("sha256").update(body).digest("base64");
+
 const S3_URL = process.env["MEND_TEST_S3_URL"];
 const s3Config = (() => {
   if (S3_URL === undefined || S3_URL === "") return null;
@@ -492,6 +496,54 @@ describe.skipIf(s3Config === null)("BlobStore (s3)", () => {
       expect(untilBefore).toBeGreaterThan(now);
       expect(untilAfter).toBeGreaterThanOrEqual(now + 14 * 60 * 1000);
     }
+  });
+
+  // Garage, 2026-10-02: a bucket that replaces objects can still refuse other bytes. A PUT URL
+  // with the bytes' SHA-256 signed in as `x-amz-checksum-sha256` writes those bytes or none, so
+  // it gives no authority to replace the object, and `replaceableUntil` does not count it.
+  it("a PUT URL bound to its bytes takes only those bytes, and gives no authority to replace", async () => {
+    if (s3Config === null || process.env["MEND_TEST_S3_WRITE_ONCE"] === "1") return;
+    const good = "the bytes the name says";
+    const digest = crypto.createHash("sha256").update(good).digest("hex");
+    const key = `${prefix}/bound/packs/${digest}`;
+    const { binds, url, untilBefore, untilAfter } = await Effect.runPromise(
+      Effect.gen(function* () {
+        const store = yield* BlobStore;
+        const before = yield* store.replaceableUntil(key);
+        const minted = yield* store.presign(key, "PUT", 900, good.length, digest);
+        return {
+          binds: yield* store.bindsBytes,
+          url: minted,
+          untilBefore: before,
+          untilAfter: yield* store.replaceableUntil(key),
+        };
+      }).pipe(Effect.provide(layerOf())),
+    );
+    expect(binds).toBe(true);
+    expect(signedHeadersOf(url)).toContain("x-amz-checksum-sha256");
+    const putWith = (body: string, sum: string | null) =>
+      fetch(url, {
+        method: "PUT",
+        body,
+        headers: {
+          "if-none-match": "*",
+          ...(sum === null ? {} : { "x-amz-checksum-sha256": sum }),
+        },
+      });
+    const evil = "other bytes, same size!";
+    expect(evil.length).toBe(good.length);
+    expect((await putWith(evil, checksum(good))).ok).toBe(false);
+    expect((await putWith(evil, checksum(evil))).ok).toBe(false);
+    expect((await putWith(evil, null)).ok).toBe(false);
+    expect((await putWith(good, checksum(good))).ok).toBe(true);
+    expect((await putWith(evil, checksum(good))).ok).toBe(false);
+    expect((await putWith(good, checksum(good))).ok).toBe(true);
+    const stored = await Effect.runPromise(
+      Effect.flatMap(BlobStore, (store) => store.get(key)).pipe(Effect.provide(layerOf())),
+    );
+    expect(text(stored)).toBe(good);
+    // The bound URL is not write authority: what a seal waits for is unchanged by it.
+    expect(untilAfter).toBe(untilBefore);
   });
 });
 

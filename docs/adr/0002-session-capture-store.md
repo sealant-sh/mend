@@ -1410,3 +1410,40 @@ Mend-side details the decision record left open, decided in this ADR:
       it, because nothing proves its chunks decode until then. A register takes no payload proof,
       and the proofs live only in this process, so the first seal after a Mend restart reads its
       capture again.
+48. (2026-10-02) Upload URLs bound to their bytes: a Stop on Garage seals without the wait.
+    - **What waited.** A bucket that ignores `If-None-Match` (Garage) cannot refuse to replace an
+      object, so a seal waited until every upload URL of its epochs had expired, plus the 5-minute
+      clock margin (decisions 26 and 31): about 10.5 minutes after a small Stop, up to 20 after a
+      large one. Garage still ignores `If-None-Match` (v2.4.1; no release adds it).
+    - **What Garage does check.** A PUT whose URL signs `x-amz-checksum-sha256` is refused unless
+      its body hashes to that value (`InvalidDigest`); without the header it is refused as unsigned,
+      with another value as a bad signature (measured on v2.4.1, 2026-10-02). Every capture key but
+      a pack index ends in the SHA-256 of its bytes. A URL with that SHA-256 signed in therefore
+      writes those bytes or nothing: no write authority.
+    - **Negotiated.** An executor that lists `sha256` in `plan.get`'s `upload_answers` (sealantd,
+      "Bytes-bound PUT URLs") sends `x-amz-checksum-sha256` on every PUT whose URL signs it, and
+      declares in `upload.urls` the SHA-256 of each pack index. On a store that measures as checking
+      it (`BlobStore.bindsBytes`: a probe key refused with a checksum-mismatch error, then taken
+      with the right checksum), single-PUT URLs are bound: to the digest the key names, or to the
+      index's declared one. A declared digest a key's name contradicts is 400.
+    - **What still records authority, as before:** a call with any part URL (part bytes are not
+      bound), any single PUT not bound (an older daemon, another store, an index declared nothing
+      about, a full index registry), every call on S3, R2, MinIO and the directory store.
+    - **The seal is still read back.** A bound-only epoch records no authority, so its seal waits
+      for nothing; once this process's own window is past, its objects are read back and the seal
+      stands (the mark under the scope rows' locks, as always). The wait goes; the read-back stays.
+      Three adversarial reviews (2026-10-02, two models) found every hole in a shortcut that skipped
+      it, or in pack indexes; this design keeps the read-back.
+    - **Pack indexes.** A process-wide registry (`bound-index-digests.ts`) holds the digest every
+      bound URL of an index names and until when one could be used (its longest life plus the
+      margin, extended after signing). Reserved in the synchronous step that checks it, so two calls
+      cannot bind one index to two digests; dead entries go, a full registry binds no more. A seal
+      never stands — on any path — while a live binding names other bytes than an index it names
+      holds: it is withheld until that URL is dead.
+    - **Restarts.** A URL a process before this one minted (bound URLs record nothing) is covered by
+      the store's startup window, now its longest life plus the clock margin: seals wait the first
+      20 minutes after a Mend start.
+    - **What remains.** The 20 minutes after a Mend start; a Stop that uploaded through part URLs
+      (an object of 16 MiB or more); an executor of an older daemon; the read-back's own time, which
+      grows with what a capture names (follow-up: read back only what is new since the last standing
+      seal).

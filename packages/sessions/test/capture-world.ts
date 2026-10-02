@@ -33,6 +33,7 @@ import { Effect, Layer } from "effect";
 import {
   type CaptureChannel,
   CaptureChannelLive,
+  CaptureUploadPolicy,
   CaptureUploadPolicyDefault,
 } from "../src/capture-channel.ts";
 import { CaptureRemotesLive } from "../src/capture-remotes.ts";
@@ -292,6 +293,8 @@ export const makeCaptureWorld = (
     readonly blobs?: (root: string) => Layer.Layer<BlobStore>;
     /** The project repository's object format: `sha1` when absent. */
     readonly objectFormat?: "sha1" | "sha256";
+    /** Upload policy beyond the defaults. */
+    readonly policy?: Partial<CaptureUploadPolicy["Service"]>;
   } = {},
 ): CaptureWorld => {
   const scratch = fs.mkdtempSync(path.join(os.tmpdir(), "mend-capture-world-"));
@@ -322,7 +325,14 @@ export const makeCaptureWorld = (
     Layer.provide(CaptureGitVerifierLive.pipe(Layer.provide(runner), Layer.provide(refs))),
     Layer.provide(memory.layer),
     Layer.provide(blobs),
-    Layer.provide(CaptureUploadPolicyDefault),
+    Layer.provide(
+      options.policy === undefined
+        ? CaptureUploadPolicyDefault
+        : Layer.effect(
+            CaptureUploadPolicy,
+            Effect.map(CaptureUploadPolicy, (defaults) => ({ ...defaults, ...options.policy })),
+          ).pipe(Layer.provide(CaptureUploadPolicyDefault)),
+    ),
     Layer.provide(sources),
     Layer.provide(CaptureRemotesLive.pipe(Layer.provide(projectsFor(project)))),
   );

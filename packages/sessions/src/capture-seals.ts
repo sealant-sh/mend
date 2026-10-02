@@ -1,3 +1,5 @@
+import { createHash } from "node:crypto";
+
 import { type CaptureScopeRef, CaptureStoreRepo, type SealedCompletion } from "@mend/db";
 import type { WorktreeId } from "@mend/domain";
 import {
@@ -9,6 +11,7 @@ import {
 import { Duration, Effect, Layer, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
+import { boundIndexDigest } from "./bound-index-digests.ts";
 import { makeSingleFlight } from "./single-flight.ts";
 
 /**
@@ -112,6 +115,27 @@ export const sealVerifications: Semaphore.Semaphore = Semaphore.makeUnsafe(1);
 export const SEAL_VERIFICATION_LIMIT = Duration.minutes(30);
 export const SEAL_VERIFICATION_LIMIT_WORDS = "30 minutes";
 
+/**
+ * The first pack index among `listed` that a live bytes-bound upload URL names other bytes for
+ * (`reserveBoundIndex`), with until when; null when there is none. Reads only the indexes that
+ * have a live binding, and each is small.
+ */
+const boundIndexHold = (listed: ReadonlyArray<string>, at: number) =>
+  Effect.gen(function* () {
+    const blobs = yield* BlobStore;
+    for (const key of listed) {
+      if (!key.endsWith(".idx")) continue;
+      const binding = boundIndexDigest(key, at);
+      if (binding === null) continue;
+      const stored = yield* blobs.get(key).pipe(
+        Effect.map((bytes) => createHash("sha256").update(bytes).digest("hex")),
+        Effect.orElseSucceed(() => null),
+      );
+      if (stored !== binding.sha256) return { key, until: binding.until };
+    }
+    return null;
+  });
+
 /** Seal read-backs in flight (`sealStandingOf`), by store, seal and the authority it waited out. */
 const readBacks = makeSingleFlight<SealStanding, never>();
 
@@ -131,6 +155,13 @@ const readBacks = makeSingleFlight<SealStanding, never>();
  *   the objects were being read back voids the read, and the seal stays withheld. Any other
  *   bytes → void, for good;
  * - a store that could not be read concludes nothing: withheld, asked again on the next read.
+ *
+ * Under epochs that hold no write authority — no expiry recorded, and Mend still speaks for each
+ * (its row or its worktree is there): every URL handed out under them was bound to its bytes,
+ * which a store that `bindsBytes` checks — nothing could have replaced the objects once this
+ * process's own window (`replaceableUntil`, plus the clock margin) is past: the seal stands as
+ * recorded. An epoch whose row went with its worktree says nothing: the wait and the read-back,
+ * as before.
  */
 export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function* (
   seal: SealedCompletion,
@@ -167,6 +198,25 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
   const recorded = yield* repo.putAuthorityUntilOver(scopes);
   const until = Math.max(storeUntil, recorded?.getTime() ?? 0);
   const at = now();
+  // A pack index a live bytes-bound URL names other bytes for could be replaced by them: never
+  // standing over it until that URL is dead (ADR 0002 decision 48).
+  const bound = yield* boundIndexHold(listed, at);
+  if (bound !== null) {
+    yield* Effect.logInfo(
+      "capture seals: sealed, but a bound upload URL names other bytes for a pack index it names · withheld until it expires",
+    ).pipe(
+      Effect.annotateLogs({
+        ...annotations,
+        key: bound.key,
+        until: new Date(bound.until).toISOString(),
+      }),
+    );
+    return {
+      state: "withheld",
+      code: "write-authority",
+      reason: `an upload URL bound to other bytes could replace ${bound.key} until ${new Date(bound.until).toISOString()}`,
+    } satisfies SealStanding;
+  }
   if (at < until) {
     const words = `an upload URL of ${epochsWords(seal, scopes)} could replace what it names until ${new Date(until).toISOString()}`;
     yield* Effect.logInfo(
@@ -220,6 +270,15 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
         "capture seals: an object the seal names read back as other bytes · the seal is void",
       ).pipe(Effect.annotateLogs({ ...annotations, problem: problem.success }));
       return { state: "void", code: "void", reason: problem.success } satisfies SealStanding;
+    }
+    // A bound URL for other bytes handed out while the objects were read back.
+    if ((yield* boundIndexHold(listed, now())) !== null) {
+      return {
+        state: "withheld",
+        code: "write-authority",
+        reason:
+          "an upload URL bound to other bytes for a pack index it names was handed out while its objects were read back",
+      } satisfies SealStanding;
     }
     // Marked only if no URL of the epoch was handed out since the read began (`at`).
     const marked = yield* repo.markSealReverified(
