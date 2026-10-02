@@ -153,7 +153,9 @@ describe("status lines", () => {
   });
 });
 
-describe("mend doctor", () => {
+// Each test here spawns the CLI from source: on a loaded CI runner the import graph alone can take
+// longer than vitest's 5 s default.
+describe("mend doctor", { timeout: 30_000 }, () => {
   it("reports every fact and exits 0 when the machine is set up", async () => {
     const fake = await startFakeMend(greenServer);
     try {
