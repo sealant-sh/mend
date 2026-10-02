@@ -1387,6 +1387,92 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
       }),
     );
   }, 120_000);
+
+  it("pack index bindings (0099): one digest per key while a binding lives; released, extended and read back", async () => {
+    const key = `captures/wt-bound-${process.pid}/1/g0/packs/${"a".repeat(64)}.idx`;
+    const first = "1".repeat(64);
+    const other = "2".repeat(64);
+    const t0 = new Date("2026-10-02T12:00:00.000Z");
+    const minutes = (n: number) => new Date(t0.getTime() + n * 60_000);
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const reserved = yield* repo.reserveBoundIndex(key, first, t0, minutes(10));
+        // The same bytes again: extended, never shortened, and no longer fresh.
+        const again = yield* repo.reserveBoundIndex(key, first, minutes(1), minutes(5));
+        const conflict = yield* repo.reserveBoundIndex(key, other, minutes(2), minutes(12));
+        const live = yield* repo.boundIndexesAmong([key, "captures/none.idx"], minutes(9));
+        yield* repo.extendBoundIndex(key, first, minutes(15));
+        yield* repo.extendBoundIndex(key, other, minutes(60));
+        const extended = yield* repo.boundIndexesAmong([key], minutes(14));
+        // Dead at 15 minutes: other bytes may be bound, and that reservation is fresh.
+        const dead = yield* repo.boundIndexesAmong([key], minutes(15));
+        const replaced = yield* repo.reserveBoundIndex(key, other, minutes(15), minutes(25));
+        // Given back only while it is exactly the reservation made.
+        yield* repo.releaseBoundIndex(key, other, minutes(24));
+        const kept = yield* repo.boundIndexesAmong([key], minutes(16));
+        yield* repo.releaseBoundIndex(key, other, minutes(25));
+        const released = yield* repo.boundIndexesAmong([key], minutes(16));
+        return { reserved, again, conflict, live, extended, dead, replaced, kept, released };
+      }),
+    );
+    expect(result.reserved).toEqual({ outcome: "reserved", fresh: true });
+    expect(result.again).toEqual({ outcome: "reserved", fresh: false });
+    expect(result.conflict).toEqual({ outcome: "conflict" });
+    expect(result.live).toEqual([{ key, sha256: first, until: minutes(10) }]);
+    expect(result.extended).toEqual([{ key, sha256: first, until: minutes(15) }]);
+    expect(result.dead).toEqual([]);
+    expect(result.replaced).toEqual({ outcome: "reserved", fresh: true });
+    expect(result.kept).toEqual([{ key, sha256: other, until: minutes(25) }]);
+    expect(result.released).toEqual([]);
+  });
+
+  it("pack index bindings (0099): two reservations of one key at once never both bind other bytes", async () => {
+    const key = `captures/wt-race-${process.pid}/1/g0/packs/${"b".repeat(64)}.idx`;
+    const now = new Date();
+    const until = new Date(now.getTime() + 60_000);
+    const outcomes = await run(
+      Effect.flatMap(CaptureStoreRepo, (repo) =>
+        Effect.all(
+          Array.from({ length: 8 }, (_, n) =>
+            repo.reserveBoundIndex(key, String(n % 2).repeat(64), now, until),
+          ),
+          { concurrency: "unbounded" },
+        ),
+      ),
+    );
+    // Whichever digest got there first holds the key: its four reserve, the other four conflict.
+    expect(outcomes.filter((outcome) => outcome.outcome === "reserved")).toHaveLength(4);
+    expect(outcomes.filter((outcome) => outcome.outcome === "conflict")).toHaveLength(4);
+    expect(
+      outcomes.filter((outcome) => outcome.outcome === "reserved" && outcome.fresh),
+    ).toHaveLength(1);
+  });
+
+  it("scopesSpokenFor: every scope's worktree is there, or a URL of a deleted one may still live", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const repo = yield* CaptureStoreRepo;
+        const here = yield* freshWorktree;
+        const gone = yield* freshWorktree;
+        const scopes = [
+          { worktreeId: here, epoch: 1 },
+          { worktreeId: here, epoch: 2 },
+          { worktreeId: gone, epoch: 1 },
+        ];
+        const both = yield* repo.scopesSpokenFor(scopes);
+        yield* sql`DELETE FROM worktrees WHERE id = ${gone}`;
+        return {
+          both,
+          afterDelete: yield* repo.scopesSpokenFor(scopes),
+          own: yield* repo.scopesSpokenFor(scopes.slice(0, 2)),
+          none: yield* repo.scopesSpokenFor([]),
+        };
+      }),
+    );
+    expect(result).toEqual({ both: true, afterDelete: false, own: true, none: true });
+  });
 });
 
 // Review 2026-09-28 (10) #5, seals recorded before 0092: each gets every epoch prefix its

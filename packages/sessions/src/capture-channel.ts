@@ -56,7 +56,6 @@ import {
 import { Cause, Deferred, Duration, Effect, Exit, Layer, Option, Result, Schema } from "effect";
 import * as Context from "effect/Context";
 
-import { extendBoundIndex, releaseBoundIndex, reserveBoundIndex } from "./bound-index-digests.ts";
 import { CaptureRemotes, type PlanRemote } from "./capture-remotes.ts";
 import {
   SEAL_VERIFICATION_LIMIT,
@@ -2028,7 +2027,12 @@ export const CaptureChannelLive: Layer.Layer<
             // index bound to other bytes could live, none is handed out for these, and a seal
             // never stands over stored bytes a live binding does not name (`sealStandingOf`).
             const reservedUntil = Date.now() + BOUND_URL_LIFETIME_MS;
-            const reserved = reserveBoundIndex(plan.key, said, callStartedAt, reservedUntil);
+            const reserved = yield* repo.reserveBoundIndex(
+              plan.key,
+              said,
+              new Date(callStartedAt),
+              new Date(reservedUntil),
+            );
             if (reserved.outcome === "conflict") {
               return yield* new CaptureRouteError({
                 status: 409,
@@ -2037,8 +2041,6 @@ export const CaptureChannelLive: Layer.Layer<
                 key: plan.key,
               });
             }
-            // No room: this index records authority, as an unbound URL does.
-            if (reserved.outcome !== "reserved") continue;
             if (reserved.fresh) freshIndexes.set(plan.key, { sha256: said, until: reservedUntil });
             boundTo.set(plan.key, said);
           }
@@ -2069,7 +2071,9 @@ export const CaptureChannelLive: Layer.Layer<
             wanted.delete(key);
             boundTo.delete(key);
             const fresh = freshIndexes.get(key);
-            if (fresh !== undefined) releaseBoundIndex(key, fresh.sha256, fresh.until);
+            if (fresh !== undefined) {
+              yield* repo.releaseBoundIndex(key, fresh.sha256, new Date(fresh.until));
+            }
           }
           plans = plans.filter((plan) => !storedNow.has(plan.key));
         }
@@ -2221,7 +2225,11 @@ export const CaptureChannelLive: Layer.Layer<
               .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
             // A URL is good from when it was signed: the binding lasts at least that long.
             if (digest !== undefined && contentDigestOfKey(plan.key) === null) {
-              extendBoundIndex(plan.key, digest, Date.now() + BOUND_URL_LIFETIME_MS);
+              yield* repo.extendBoundIndex(
+                plan.key,
+                digest,
+                new Date(Date.now() + BOUND_URL_LIFETIME_MS),
+              );
             }
             continue;
           }
@@ -2833,6 +2841,22 @@ export const CaptureChannelLive: Layer.Layer<
           seen.add(key);
           return true;
         });
+        // The packs a capture that seals nothing lists are verified on worker threads from now
+        // on, beside the register's own checks and after it answers. The sealing register that
+        // follows waits for what is left of that, not for all of it (2026-10-02: a Stop's seal
+        // decompressed 788 MB the register before it had just walked). What it finds wrong is
+        // the seal's to say (`sealChecks`), so nothing here is reported. A sealing register runs
+        // those checks itself.
+        if (manifest.final_seal === undefined) {
+          yield* Effect.forkDetach(
+            withCaptureReadPass(
+              verifyPackPayloads(chunked.flatMap((section) => section.packs)),
+            ).pipe(
+              Effect.provideService(BlobStore, blobs),
+              Effect.catchCause(() => Effect.void),
+            ),
+          );
+        }
         // Every chunked section the parent holds: one this capture holds unchanged was checked
         // restorable when the parent registered, and the parent — the head — keeps its objects
         // alive; only what is new is walked.

@@ -102,6 +102,13 @@ export class BlobStore extends Context.Service<
      */
     readonly replaceableUntil: (key: string) => Effect.Effect<number>;
     /**
+     * The part of `replaceableUntil` that stands for a URL a process before this one handed out
+     * (ms since the epoch): when the last of those can no longer be used. 0 on a store that
+     * refuses to replace an object. A seal does not wait it out when every such URL is on record
+     * elsewhere (`sealStandingOf`); a proof this process took still does.
+     */
+    readonly startupUntil: Effect.Effect<number>;
+    /**
      * Whether a PUT URL can be bound to its bytes, and needs to be: the store cannot refuse to
      * replace an object (`replaceableUntil` is not 0 for what it hands out), but it does check a
      * body against a signed `x-amz-checksum-sha256` and refuses other bytes (Garage, measured
@@ -728,6 +735,7 @@ export const makeFsBlobStore = (root: string): typeof BlobStore.Service => {
     identity: `dir:${path.resolve(root)}`,
     // Every object is published by a link that refuses an existing name, read-only.
     replaceableUntil: () => Effect.succeed(0),
+    startupUntil: Effect.succeed(0),
     // Nothing to bind: an object is never replaced here.
     bindsBytes: Effect.succeed(false),
     put,
@@ -942,18 +950,16 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
     }
     minted.set(key, Math.max(untilMs, minted.get(key) ?? 0));
   };
+  // A URL a process before this one minted lives by the bucket's clock: the longest life, plus
+  // the clock margin.
+  const startupWindowEnds =
+    startedAtMs + (PUT_URL_TTL_MAX_SECONDS + STARTUP_CLOCK_MARGIN_SECONDS) * 1000;
+  const startupUntil = probeRefusesOverwrite.pipe(
+    Effect.map((refused) => (refused ? 0 : startupWindowEnds)),
+  );
   const replaceableUntil = (key: string) =>
     probeRefusesOverwrite.pipe(
-      Effect.map((refused) =>
-        refused
-          ? 0
-          : Math.max(
-              minted.get(key) ?? 0,
-              // A URL a process before this one minted — bound ones record nothing anywhere —
-              // lives by the bucket's clock: the longest life, plus the clock margin.
-              startedAtMs + (PUT_URL_TTL_MAX_SECONDS + STARTUP_CLOCK_MARGIN_SECONDS) * 1000,
-            ),
-      ),
+      Effect.map((refused) => (refused ? 0 : Math.max(minted.get(key) ?? 0, startupWindowEnds))),
     );
 
   const put = Effect.fn("BlobStore.put")(function* (
@@ -1357,6 +1363,7 @@ export const makeS3BlobStore = (options: S3BlobStoreOptions): typeof BlobStore.S
   return {
     identity: `s3:${options.endpoint ?? "aws"}/${bucket}`,
     replaceableUntil,
+    startupUntil,
     bindsBytes: probeBindsBytes,
     put,
     get,

@@ -2084,6 +2084,22 @@ export const captureSeals = pgTable(
 );
 
 /**
+ * The SHA-256 every bytes-bound upload URL of a pack index (`packs/<sha>.idx`, the one capture
+ * key whose name does not say its digest) was signed for, and until when one of them could still
+ * be used (migration 0099, ADR 0002 decision 48). A seal never stands over an index a live
+ * binding names other bytes for. Kept here, not in the server's memory, so a restart forgets none.
+ */
+export const captureBoundIndexes = pgTable(
+  "capture_bound_indexes",
+  {
+    key: text().primaryKey(),
+    sha256: text().notNull(),
+    until: timestamp({ mode: "date", withTimezone: true }).notNull(),
+  },
+  (table) => [index("capture_bound_indexes_until").on(table.until)],
+);
+
+/**
  * Until when an upload URL Mend handed out under one worktree epoch's prefix could still write
  * to the bucket (migration 0089, review 2026-09-28 (7) #8): the latest expiry of every PUT and
  * part URL minted for `captures/<worktree>/<epoch>/…`, recorded before the URL is handed out. On

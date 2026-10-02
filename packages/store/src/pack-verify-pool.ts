@@ -29,7 +29,7 @@ export type PackVerifyProblem =
   | { readonly tag: "format"; readonly reason: string };
 
 /** How many packs are verified at once: each holds one pack (64 MiB) and its largest chunk. */
-export const PACK_VERIFY_WORKERS = Math.max(1, Math.min(4, os.availableParallelism() - 1));
+export const PACK_VERIFY_WORKERS = Math.max(1, Math.min(8, os.availableParallelism() - 1));
 
 /**
  * The worker's program. Plain JavaScript in a string, as the workspace programs are: it runs

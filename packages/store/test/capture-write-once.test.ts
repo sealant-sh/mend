@@ -77,7 +77,7 @@ describe("capture proofs are bound to the store and stand only once nothing can 
     expect(await outcome(verifyPackPayloads([key]), second)).toBe("CaptureIntegrityError");
   });
 
-  it("#9 on a store an upload URL could still write, a proof is taken again, and finds replaced bytes", async () => {
+  it("#9 on a store an upload URL could still write, a read-back reads again and finds replaced bytes", async () => {
     const { key, good, bad } = packPair("wt-replaceable");
     const root = freshDir("replaceable");
     // A bucket that accepts `If-None-Match: *` and replaces the object anyway (Garage, measured):
@@ -92,8 +92,16 @@ describe("capture proofs are bound to the store and stand only once nothing can 
     ).pipe(Layer.provide(BlobStoreFsLive(root)));
     await run(uploadObjects(new Map([[key, good]])), replaceable);
     expect(await outcome(verifyPackPayloads([key]), replaceable)).toBe("read");
+    expect(await run(storedObjectProblem(key), replaceable)).toBeNull();
     replaceInPlace(root, key, bad);
-    expect(await outcome(verifyPackPayloads([key]), replaceable)).toBe("CaptureIntegrityError");
+    // What the pack's chunks decode to was proven of the bytes that hash to the key, and is not
+    // asked again (2026-10-02). Whether the stored object still is those bytes is the read-back's
+    // question, and it never answers from a read taken while a URL could replace them.
+    expect(await outcome(verifyPackPayloads([key]), replaceable)).toBe("read");
+    expect(await run(storedObjectProblem(key), replaceable)).toMatch(/holds bytes that hash to/);
+    expect(await run(storedObjectProblem(key, { reuseProofs: true }), replaceable)).toMatch(
+      /holds bytes that hash to/,
+    );
   });
 
   it("#9 a dir pack read from one store does not stand for the same key in another", async () => {

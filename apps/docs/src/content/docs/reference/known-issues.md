@@ -18,14 +18,18 @@ Applies to buckets that ignore conditional writes (`If-None-Match`). Garage, the
 On such a bucket an upload link Mend handed out could replace an object until it expires, so Mend
 does not accept a final save (its seal) while one could. An executor whose sealantd binds each
 upload link to the bytes it was minted for has none of those links: Garage refuses any other bytes
-through them, so a Stop waits for no link, only for Mend to read the save back, which takes longer
-the more the session holds. The wait for links remains:
+through them, so a Stop waits for no link. Mend still reads the save back before it accepts it. It
+skips what it has already read and verified since the last link that could have changed anything.
+After Mend restarts, the first Stop of each session reads everything that session's save names once.
+The wait for links remains:
 
 - for an executor whose sealantd predates bound links, until its links expire plus a 5-minute margin
   for the bucket's clock: about 10.5 minutes after a small Stop, up to 20 after a large one;
 - for a seal that carries what such an executor saved, until that executor's links have expired;
-- for a Stop that uploaded a single object over 5 GB, which goes up in parts;
-- for 20 minutes after Mend starts.
+- for a Stop that uploaded a single object over 5 GB, which goes up in parts.
+
+A restart of Mend no longer holds a Stop. Before 0.36 every Stop in the 20 minutes after a start
+waited those 20 minutes out.
 
 Meanwhile the session stays `stopping` and says `final seal not confirmed`, and the executor keeps
 running. Nothing is lost: the session finishes stopping once the seal stands.

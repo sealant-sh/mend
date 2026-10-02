@@ -2760,6 +2760,25 @@ const agentMemoryMigration = Effect.gen(function* () {
     )`;
 });
 
+/**
+ * 0099: the SHA-256 each bytes-bound upload URL of a pack index was signed for, and until when one
+ * of them could still be used (ADR 0002 decision 48). It was a registry in the server's memory, so
+ * a restart forgot it and every seal waited out the longest a URL could live, 20 minutes after
+ * each start (measured on a self-hosted box, 2026-10-02). On record here, a restart forgets
+ * nothing: a seal never stands over an index a live URL bound to other bytes could replace, and
+ * waits for nothing else.
+ */
+const captureBoundIndexesMigration = Effect.gen(function* () {
+  const sql = yield* SqlClient.SqlClient;
+  yield* sql`
+    CREATE TABLE capture_bound_indexes (
+      key text PRIMARY KEY,
+      sha256 text NOT NULL,
+      until timestamptz NOT NULL
+    )`;
+  yield* sql`CREATE INDEX capture_bound_indexes_until ON capture_bound_indexes (until)`;
+});
+
 export const migrations = {
   "0001_init": init,
   "0002_failure_brief": failureBrief,
@@ -2859,4 +2878,5 @@ export const migrations = {
   "0096_notification_settings": notificationSettingsMigration,
   "0097_user_pi_profiles": userPiProfilesMigration,
   "0098_agent_memory": agentMemoryMigration,
+  "0099_capture_bound_indexes": captureBoundIndexesMigration,
 };

@@ -439,6 +439,38 @@ export class CaptureStoreRepo extends Context.Service<
       scopes: ReadonlyArray<CaptureScopeRef>,
     ) => Effect.Effect<Date | null>;
     /**
+     * Whether Mend still speaks for every one of `scopes`: each worktree is there, so every upload
+     * URL ever handed out under its prefix that could replace an object is on record
+     * (`capture_put_authority`, written before the URL leaves). A worktree that is gone took its
+     * rows with it, and a URL handed out before it went may still live: not spoken for.
+     */
+    readonly scopesSpokenFor: (scopes: ReadonlyArray<CaptureScopeRef>) => Effect.Effect<boolean>;
+    /**
+     * Bind the pack index `key` to `sha256` until `until` (0099, ADR 0002 decision 48), in one
+     * step: `conflict` while a binding live at `now` names other bytes. A binding for the same
+     * bytes is extended, never shortened. `fresh` says no live binding was there before: one the
+     * caller gives back (`releaseBoundIndex`) if it hands out no URL after all.
+     */
+    readonly reserveBoundIndex: (
+      key: string,
+      sha256: string,
+      now: Date,
+      until: Date,
+    ) => Effect.Effect<
+      { readonly outcome: "reserved"; readonly fresh: boolean } | { readonly outcome: "conflict" }
+    >;
+    /** Give back a reservation while it is still exactly the one made (same bytes, same `until`). */
+    readonly releaseBoundIndex: (key: string, sha256: string, until: Date) => Effect.Effect<void>;
+    /** Extend `key`'s binding to `until`: a URL is good from when it was signed. */
+    readonly extendBoundIndex: (key: string, sha256: string, until: Date) => Effect.Effect<void>;
+    /** The bindings among `keys` still live at `at`. */
+    readonly boundIndexesAmong: (
+      keys: ReadonlyArray<string>,
+      at: Date,
+    ) => Effect.Effect<
+      ReadonlyArray<{ readonly key: string; readonly sha256: string; readonly until: Date }>
+    >;
+    /**
      * Every object the seal's capture names read back as what its name says, starting at `at`:
      * recorded on the seal while it still names that capture — and only if no upload URL of any
      * epoch its objects live under (`scopes`, 0092, cross-repo decision 31) was handed out since
@@ -1069,6 +1101,85 @@ export const CaptureStoreRepoLive: Layer.Layer<
       return row?.expiresAt ?? null;
     });
 
+    const scopesSpokenFor = Effect.fn("CaptureStoreRepo.scopesSpokenFor")(function* (
+      scopes: ReadonlyArray<CaptureScopeRef>,
+    ) {
+      const wanted = [...new Set(scopes.map((scope) => scope.worktreeId))];
+      if (wanted.length === 0) return true;
+      const [row] = yield* sql<{ readonly found: number }>`
+        SELECT count(*)::int AS found FROM worktrees
+         WHERE id IN (SELECT jsonb_array_elements_text(${JSON.stringify(wanted)}::jsonb))`.pipe(
+        Effect.orDie,
+      );
+      return (row?.found ?? 0) === wanted.length;
+    });
+
+    const reserveBoundIndex = Effect.fn("CaptureStoreRepo.reserveBoundIndex")(function* (
+      key: string,
+      sha256: string,
+      now: Date,
+      until: Date,
+    ) {
+      return yield* sql
+        .withTransaction(
+          Effect.gen(function* () {
+            // One reservation of a key at a time, whether or not its row exists yet.
+            yield* sql`SELECT pg_advisory_xact_lock(hashtext(${`mend:capture-bound-index:${key}`}))`;
+            const [row] = yield* sql<{ readonly sha256: string; readonly until: Date }>`
+              SELECT sha256, until FROM capture_bound_indexes WHERE key = ${key}`;
+            const live = row !== undefined && row.until.getTime() > now.getTime() ? row : null;
+            if (live !== null && live.sha256 !== sha256) return { outcome: "conflict" } as const;
+            const kept = new Date(Math.max(until.getTime(), live?.until.getTime() ?? 0));
+            yield* sql`
+              INSERT INTO capture_bound_indexes (key, sha256, until)
+              VALUES (${key}, ${sha256}, ${kept})
+              ON CONFLICT (key) DO UPDATE SET sha256 = EXCLUDED.sha256, until = EXCLUDED.until`;
+            // Bindings long dead go, a few at a time.
+            yield* sql`
+              DELETE FROM capture_bound_indexes
+               WHERE key IN (
+                 SELECT key FROM capture_bound_indexes
+                  WHERE until < ${new Date(now.getTime() - 60 * 60 * 1000)}
+                  LIMIT 200)`;
+            return { outcome: "reserved", fresh: live === null } as const;
+          }),
+        )
+        .pipe(Effect.orDie);
+    });
+
+    const releaseBoundIndex = Effect.fn("CaptureStoreRepo.releaseBoundIndex")(function* (
+      key: string,
+      sha256: string,
+      until: Date,
+    ) {
+      yield* sql`
+        DELETE FROM capture_bound_indexes
+         WHERE key = ${key} AND sha256 = ${sha256} AND until = ${until}`.pipe(Effect.orDie);
+    });
+
+    const extendBoundIndex = Effect.fn("CaptureStoreRepo.extendBoundIndex")(function* (
+      key: string,
+      sha256: string,
+      until: Date,
+    ) {
+      yield* sql`
+        UPDATE capture_bound_indexes SET until = ${until}
+         WHERE key = ${key} AND sha256 = ${sha256} AND until < ${until}`.pipe(Effect.orDie);
+    });
+
+    const boundIndexesAmong = Effect.fn("CaptureStoreRepo.boundIndexesAmong")(function* (
+      keys: ReadonlyArray<string>,
+      at: Date,
+    ) {
+      if (keys.length === 0) return [];
+      return yield* sql<{ readonly key: string; readonly sha256: string; readonly until: Date }>`
+        SELECT key, sha256, until FROM capture_bound_indexes
+         WHERE until > ${at}
+           AND key IN (SELECT jsonb_array_elements_text(${JSON.stringify(keys)}::jsonb))`.pipe(
+        Effect.orDie,
+      );
+    });
+
     const markSealReverified = Effect.fn("CaptureStoreRepo.markSealReverified")(function* (
       worktreeId: WorktreeId,
       epoch: number,
@@ -1345,6 +1456,11 @@ export const CaptureStoreRepoLive: Layer.Layer<
       recordPutAuthority,
       putAuthorityUntil,
       putAuthorityUntilOver,
+      scopesSpokenFor,
+      reserveBoundIndex,
+      releaseBoundIndex,
+      extendBoundIndex,
+      boundIndexesAmong,
       markSealReverified,
       voidSeal,
       listChain,
