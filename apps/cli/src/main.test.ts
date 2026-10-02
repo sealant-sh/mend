@@ -224,6 +224,28 @@ describe("Mend CLI session selection", () => {
     }
   });
 
+  it("stop takes the session id it is given, first on the line, with no --project", async () => {
+    const second = { ...session, id: "session-5678", worktree: "session-5678" };
+    const stopped: Array<string> = [];
+    const fake = await startFakeMend((request, response) => {
+      if (request.url === "/api/sessions") json(response, [session, second]);
+      else if (request.url === "/api/projects") json(response, [project]);
+      else if (request.url === `/api/sessions/${second.id}/stop`) {
+        stopped.push(second.id);
+        json(response, second);
+      } else response.writeHead(404).end();
+    });
+    const cli = startCli(fake.url, ["stop", "session-56"]);
+
+    try {
+      await cli.exited;
+      expect(stopped, cli.stderr()).toEqual([second.id]);
+    } finally {
+      cli.child.kill("SIGKILL");
+      await fake.close();
+    }
+  });
+
   it("names the command it could not disambiguate when no terminal can pick", async () => {
     const second = { ...session, id: "session-5678", worktree: "session-5678" };
     const fake = await startFakeMend((request, response) => {

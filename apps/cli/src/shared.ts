@@ -556,3 +556,18 @@ export const trackBracketedPaste = (output: Buffer, current: boolean): boolean =
 /** The bytes that paste `text` into the remote app, bracketed when it asked. */
 export const pasteBytes = (text: string, bracketed: boolean): Buffer =>
   Buffer.from(bracketed ? `\u001b[200~${text}\u001b[201~` : text, "utf8");
+
+/**
+ * The first positional argument: not a flag, and not the value of one of the `valued` flags (the
+ * word after `--project`, `--from`, …). A flag that is absent takes no word with it: the first
+ * argument stays a candidate (2026-10-02: `mend stop <id>` skipped index 0 whenever `--project`
+ * was absent, and answered "several live sessions").
+ */
+export const firstPositional = (
+  args: ReadonlyArray<string>,
+  valued: ReadonlyArray<string>,
+): string | undefined =>
+  args.find(
+    (argument, index) =>
+      !argument.startsWith("--") && (index === 0 || !valued.includes(args[index - 1] ?? "")),
+  );
