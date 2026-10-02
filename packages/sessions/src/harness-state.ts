@@ -194,6 +194,29 @@ interface HarnessStateShape {
   readonly providerSessionId: (transcriptPath: string) => string | null;
 }
 
+/**
+ * Where the session's durable harness home is mounted inside every workspace (read-write; the
+ * source is `harnessHomePathOf` in the store). Boot symlinks each harness's `homeDirs` here.
+ */
+export const HARNESS_HOME_MOUNT_PATH = "/workspace/harness-home";
+
+/**
+ * Conversations Mend carried into a session's home from the owner's other sessions on the project
+ * (docs/adr/0009, "Codex"), one provider session id per line, relative to the harness home. They
+ * are there for Codex to learn from; nothing that looks for "this session's conversation" (the
+ * harvest, the crash harvest, the transcript reader, the external-agent observer) may take one.
+ */
+export const CARRIED_TRANSCRIPTS = ".mend/carried-transcripts";
+
+/** The provider session ids a carried-transcripts file lists. */
+export const parseCarriedTranscripts = (raw: string | null): ReadonlySet<string> =>
+  new Set(
+    (raw ?? "")
+      .split("\n")
+      .map((line) => line.trim())
+      .filter((line) => /^[0-9a-f-]{36}$/.test(line)),
+  );
+
 const CLAUDE_JSONL = /([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
 const CODEX_ROLLOUT =
   /rollout-.*-([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\.jsonl$/;
@@ -235,7 +258,11 @@ export const HARNESS_STATE: Record<string, HarnessStateShape> = {
   codex: {
     paths: [".codex/sessions", ".codex/history.jsonl"],
     homeDirs: [".codex"],
-    latestTranscript: 'ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | head -1',
+    // Newest first, never a conversation Mend carried in (`CARRIED_TRANSCRIPTS`).
+    latestTranscript:
+      'ls -t "$HOME"/.codex/sessions/*/*/*/rollout-*.jsonl 2>/dev/null | ' +
+      `{ if [ -s "${HARNESS_HOME_MOUNT_PATH}/${CARRIED_TRANSCRIPTS}" ]; ` +
+      `then grep -vF -f "${HARNESS_HOME_MOUNT_PATH}/${CARRIED_TRANSCRIPTS}"; else cat; fi; } | head -1`,
     liveTranscript: /^\.codex\/sessions\/[^/]+\/[^/]+\/[^/]+\/rollout-[^/]+\.jsonl$/,
     providerSessionId: (file) => CODEX_ROLLOUT.exec(file)?.[1] ?? null,
   },
@@ -256,12 +283,6 @@ export const HARNESS_STATE: Record<string, HarnessStateShape> = {
     providerSessionId: (file) => PI_SESSION.exec(file)?.[1] ?? null,
   },
 };
-
-/**
- * Where the session's durable harness home is mounted inside every workspace (read-write; the
- * source is `harnessHomePathOf` in the store). Boot symlinks each harness's `homeDirs` here.
- */
-export const HARNESS_HOME_MOUNT_PATH = "/workspace/harness-home";
 
 /**
  * The boot step that makes harness state durable: for every supported harness (a workspace
@@ -449,6 +470,11 @@ export const locateLiveTranscript = (
     if (shape === undefined || shape.liveTranscript === null) return null;
     const pattern = shape.liveTranscript;
     try {
+      const carried = parseCarriedTranscripts(
+        await fs
+          .readFile(path.join(harnessHomePath, CARRIED_TRANSCRIPTS), "utf8")
+          .catch(() => null),
+      );
       const entries = await fs.readdir(harnessHomePath, { recursive: true, withFileTypes: true });
       let newest: { readonly path: string; readonly mtimeMs: number } | null = null;
       for (const entry of entries) {
@@ -456,6 +482,8 @@ export const locateLiveTranscript = (
         const absolute = path.join(entry.parentPath, entry.name);
         const relative = path.relative(harnessHomePath, absolute);
         if (!pattern.test(relative)) continue;
+        const id = shape.providerSessionId(relative);
+        if (id !== null && carried.has(id)) continue;
         const stat = await fs.stat(absolute);
         if (newest === null || stat.mtimeMs > newest.mtimeMs) {
           newest = { path: absolute, mtimeMs: stat.mtimeMs };

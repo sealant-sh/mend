@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import type { ProjectId } from "@mend/domain";
 import {
   AGENT_MEMORY_MAX_BYTES,
-  AGENT_MEMORY_MAX_FILE_BYTES,
+  agentMemoryMaxFileBytes,
   AGENT_MEMORY_MAX_FILES,
   AgentMemoryEntry,
   agentMemoryNameOf,
@@ -193,7 +193,8 @@ const toStored = (row: typeof agentMemoryFiles.$inferSelect): StoredMemoryFile =
 /** A file Mend stores: a memory path, and within the per-file limit. */
 const storable = (file: MemoryFile): boolean =>
   validateAgentMemoryPath(file.path) === null &&
-  (piProfileFileBytes(file)?.byteLength ?? Number.POSITIVE_INFINITY) <= AGENT_MEMORY_MAX_FILE_BYTES;
+  (piProfileFileBytes(file)?.byteLength ?? Number.POSITIVE_INFINITY) <=
+    agentMemoryMaxFileBytes(file.path);
 
 /** One person's memory in one project. */
 const of = (userId: string, projectId: ProjectId) =>

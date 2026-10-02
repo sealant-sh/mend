@@ -656,7 +656,8 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
       "rm <file> [--project <p>]",
     ],
     description: [
-      "Claude Code writes what it learns about a repository to its memory. Mend keeps that memory per person per project: every session you start on the project receives it, and what the agent learned is saved back when it ends. When two of your sessions change the same file, both sides' lines are kept.",
+      "Claude Code and Codex write what they learn about a repository to their memory. Mend keeps that memory per person per project: every session you start on the project receives it, and what the agent learned is saved back when it ends. When two of your sessions change the same text file, both sides' lines are kept.",
+      "Codex builds its memory from your past conversations when a session starts, with model calls on your own login. Mend carries your earlier Codex conversations on the project into each new session so it has some to learn from.",
       "This lists your memory for the project, prints one file, or removes one. Removing keeps the last version on the server. Other people's sessions never see it.",
     ],
     options: [project()],
@@ -669,10 +670,10 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
   {
     name: "memory import",
     section: "project setup",
-    summary: "bring this machine's claude memory for the repository",
+    summary: "bring this machine's claude and codex memory for the repository",
     synopsis: ["[--project <p>] [--dry-run]"],
     description: [
-      "Run inside the repository's checkout. Reads the memory Claude Code keeps on this machine for that directory and adds each file Mend does not have yet; a file Mend already has with other contents is left as Mend has it. Transcripts, logins and settings are not read.",
+      "Run inside the repository's checkout. Reads the memory Claude Code keeps on this machine for that directory, and the summaries Codex made of conversations held in it, and adds each file Mend does not have yet. A file Mend already has with other contents is left as Mend has it. Codex keeps one memory for everything, so only its summaries of this repository's conversations are read, never its consolidated memory. Transcripts, logins and settings are not read.",
     ],
     options: [
       project(),
@@ -686,7 +687,9 @@ export const COMMANDS: ReadonlyArray<CommandDoc> = [
     section: "project setup",
     summary: "print one memory file",
     synopsis: ["<file> [--project <p>]"],
-    description: ["Prints the file as Mend stores it, by the name mend memory lists."],
+    description: [
+      "Prints the file as Mend stores it, by the name mend memory lists. A name alone is Claude's; prefix another harness's with its name, as in codex:MEMORY.md.",
+    ],
     options: [project()],
     see: ["memory"],
   },

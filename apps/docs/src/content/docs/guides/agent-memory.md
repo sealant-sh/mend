@@ -57,10 +57,28 @@ server keeps its last version.
 
 A conversation that stays open for days saves its memory when it ends, not before.
 
-Mend keeps up to 2,000 files and 8 MB per person per project, and no file over 1 MB.
+## Codex
+
+Codex keeps its memory too, and Mend carries it per person per project the same way. Codex's memory
+works differently from Claude's:
+
+- **It builds memory from your past conversations** when a session starts. It takes up to two that
+  have been quiet for six hours, summarises them with model calls on your own login, and merges the
+  summaries into its memory. So a conversation becomes memory in a later session, six or more hours
+  after it ended.
+- **Mend turns the feature on** in every Codex session it starts. It is off by default in Codex.
+- **Mend carries your earlier Codex conversations on the project** into each new session, a few at a
+  time, so Codex has something to learn from. They show in that session's `codex resume` list.
+- **`mend memory import`** brings the summaries Codex made on your machine of conversations held in
+  the repository. Codex's own memory folder covers every repository you use it in, so it is never
+  imported.
+
+In `mend memory`, Codex's files are listed with `codex` in the first column. Name one as
+`codex:MEMORY.md` to show or remove it.
+
+Mend keeps up to 2,000 files and 32 MB per person per project. No file may be over 1 MB, except
+Codex's summary database, which may reach 16 MB.
 
 ## Other harnesses
 
-Only Claude Code's memory is carried today. Codex builds its memory from the conversations already
-in its home, which a session does not bring from another, so Codex memory stays with each session.
 pi and opencode keep no memory of their own.

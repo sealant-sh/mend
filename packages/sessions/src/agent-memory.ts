@@ -6,8 +6,9 @@ import * as path from "node:path";
 
 import type { MergeText, StoredMemoryFile } from "@mend/db";
 import {
-  AGENT_MEMORY_MAX_FILE_BYTES,
+  AGENT_MEMORY_FILES,
   AGENT_MEMORY_ROOTS,
+  agentMemoryMaxFileBytes,
   piProfileFileBytes,
   validateAgentMemoryPath,
 } from "@mend/domain/workbench";
@@ -239,12 +240,18 @@ export const readAgentMemoryFromHome = (
         else if (entry.isFile()) {
           const abs = path.join(harnessHomePath, at);
           const stat = await fs.stat(abs);
-          if (stat.size > AGENT_MEMORY_MAX_FILE_BYTES) continue;
+          if (stat.size > agentMemoryMaxFileBytes(at)) continue;
           files.push(asMemoryFile(at, await fs.readFile(abs)));
         }
       }
     };
     for (const { root } of AGENT_MEMORY_ROOTS) await walk(root);
+    for (const { path: file } of AGENT_MEMORY_FILES) {
+      const abs = path.join(harnessHomePath, file);
+      const stat = await fs.lstat(abs).catch(() => null);
+      if (stat === null || !stat.isFile() || stat.size > agentMemoryMaxFileBytes(file)) continue;
+      files.push(asMemoryFile(file, await fs.readFile(abs)));
+    }
     const delivered = await fs
       .readFile(path.join(harnessHomePath, AGENT_MEMORY_DELIVERED), "utf8")
       .then(

@@ -97,14 +97,79 @@ much smaller: the memory.
   when it ends, not before; saving at checkpoints is a follow-up.
 - Two sessions writing the same memory file at once both keep their lines. A merge can repeat a line
   both wrote; the agent reads and rewrites its memory as it goes.
-- Codex, pi and opencode gain nothing yet. Codex needs its rollouts carried too, which brings back
-  the transcript questions above.
+- pi and opencode gain nothing. Codex gains its memory as the next section decides.
+
+## Codex
+
+Amended 2026-10-02, on the owner's choice: carry the memory folder and the conversations Codex needs
+to build it.
+
+### How Codex keeps memory (codex-cli 0.159)
+
+- The feature is `memories`, stable and off by default.
+- Codex keeps one memory for everything it does, in `~/.codex/memories/`:
+  - `MEMORY.md` and `memory_summary.md`;
+  - `raw_memories.md`, `rollout_summaries/` and `skills/`;
+  - a git baseline it diffs against.
+- It builds that memory when a session starts:
+  - It takes up to two past conversations that have been quiet for 6 hours and are under 10 days
+    old, from the threads in its state database.
+  - It summarises each one with a model call on the session's login.
+  - It records the summaries in `memories_1.sqlite` (`stage1_outputs`).
+  - An ephemeral agent then merges them into the folder. An ephemeral agent writes no rollout of its
+    own.
+- A fresh home's state database lists every rollout in `sessions/` the first time it opens.
+
+### Decision
+
+6. **Codex's memory is on in every Codex session Mend starts:** `-c features.memories=true` on the
+   terminal, `app-server` and follow-up launches. A launch that names the feature itself keeps its
+   own setting.
+7. **It travels as agent memory, as Claude's does:**
+   - the folder `.codex/memories/`;
+   - two single files, `.codex/memories_1.sqlite` and its `-wal`.
+
+   The summary database gets its own limit of 16 MB, and a person's total in a project rises to 32
+   MB. Without the database, every session would summarise the same two newest conversations again
+   and never get past them.
+
+8. **Mend carries conversations in.** At launch, a Codex session receives the person's own Codex
+   conversations on the project, harvested from their other sessions. Mend picks the ones Codex
+   would take: quiet for 6 hours, under 10 days old, and not yet in the stored summary database,
+   which Mend reads on the server. It takes the newest first, at most four, and at most 8 MB
+   compressed. Each is written where Codex keeps rollouts, under its original name, with its harvest
+   time as its modification time.
+9. **A carried conversation is never the session's own.** Its id is listed in
+   `.mend/carried-transcripts` before its file appears. Every lookup of "this session's
+   conversation" skips the listed ones:
+   - the workspace's newest-rollout snippet;
+   - the server-side `locateLiveTranscript`, behind the crash harvest, the transcript reader and the
+     external-agent observer;
+   - the capture-mode harvest, which also takes the newest of the rest now, where it used to take
+     the first.
+10. **Import takes Codex's summaries, never its folder.** `mend memory import` builds a summary
+    database holding only the summaries of conversations whose working directory is the repository
+    or inside it. Every summary comes in unselected, so the next session merges them into the
+    project's own folder. The folder itself mixes every repository and is never imported.
+
+### Consequences
+
+- Codex memory spends model calls on the person's own login when a session starts, as on their
+  laptop. Codex skips that work when its rate-limit windows are low.
+- A conversation becomes memory in a later session, six or more hours after it ended.
+- Carried conversations show in that session's `codex resume` list. They are the person's own, on
+  the same project.
+- The state database lists a home's rollouts only the first time it opens, so a resumed session
+  learns only from what was carried at its first launch.
+- Two Codex sessions ending at once: the later read-back's summary database replaces the earlier
+  one, which is kept as a version. What the earlier one summarised is summarised again later.
 
 ## Delivery
 
 - Mend: this ADR; the store, delivery and read-back in the session engine; `mend memory` and
   `mend memory import`; docs. One stack after the pi profile (migration 0098).
-- Later: web and phone views; saving at checkpoints; Codex; transcript import.
+- Codex (decisions 6 to 10): the second stack, after the box testing of 0.36.
+- Later: web and phone views; saving at checkpoints; transcript import.
 
 ## Decision log
 
@@ -112,3 +177,5 @@ much smaller: the memory.
   sharing it breaks resume, transcript discovery and login freshness (Context).
 - 2026-10-02: Claude only for now. Codex memory is built from rollouts that a memory-only carry
   would not bring, and the owner does not use it.
+- 2026-10-02: Codex memory carried. The owner chose to carry the memory folder and the conversations
+  Codex builds it from over carrying the folder only, which would never fill, or waiting a release.

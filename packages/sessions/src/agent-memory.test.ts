@@ -110,3 +110,23 @@ describe("merging two sessions' memory", () => {
     expect(merged).toBe("- one\n- two\n- three\n");
   });
 });
+
+describe("Codex memory in a harness home (docs/adr/0009, Codex)", () => {
+  it("reads back Codex's memory folder and its summary database, and nothing else of .codex", async () => {
+    const home = makeHome();
+    fs.mkdirSync(path.join(home, ".codex/memories/rollout_summaries"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".codex/memories/MEMORY.md"), "- tests run with pnpm\n");
+    fs.writeFileSync(path.join(home, ".codex/memories/rollout_summaries/a.md"), "summary\n");
+    fs.writeFileSync(path.join(home, ".codex/memories_1.sqlite"), Buffer.from([0, 1, 2, 3]));
+    fs.mkdirSync(path.join(home, ".codex/sessions/2026/10/02"), { recursive: true });
+    fs.writeFileSync(path.join(home, ".codex/sessions/2026/10/02/rollout-x.jsonl"), "{}\n");
+    fs.writeFileSync(path.join(home, ".codex/auth.json"), "{}");
+    const read = await Effect.runPromise(readAgentMemoryFromHome(home));
+    expect(read.files.map((file) => file.path).toSorted()).toEqual([
+      ".codex/memories/MEMORY.md",
+      ".codex/memories/rollout_summaries/a.md",
+      ".codex/memories_1.sqlite",
+    ]);
+    expect(read.files.find((file) => file.path.endsWith(".sqlite"))?.encoding).toBe("base64");
+  });
+});

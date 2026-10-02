@@ -132,11 +132,13 @@ not before, so a session started meanwhile does not see what that one has learne
 When two of your sessions changed the same memory file, both sides' lines are kept, so a line both
 of them wrote can appear twice. The agent tidies its memory as it goes.
 
-## Only Claude Code's memory is carried between sessions
+## Codex memory builds slowly, and on your login
 
-Mend carries Claude Code's memory per person per project. Codex builds its memory from the
-conversations already in its home, which a new session does not bring, so Codex memory stays with
-each session. pi keeps no memory of its own.
+Codex makes memory from a conversation only once it has been quiet for six hours, and only two at
+each session start, with model calls on your own login. Mend carries your earlier Codex
+conversations on the project into each new session so it can, a few at a time. A session resumed
+later learns only from what was carried at its first launch. pi and opencode keep no memory of their
+own.
 
 Everything else in a session's harness home stays with that session: its conversations, and settings
 or plugins changed inside it. A conversation resumes in its own session, not from another.

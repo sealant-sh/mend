@@ -121,13 +121,28 @@ export const PI_SEED =
   `node -e '${CHATGPT_LOGIN_PROGRAM}' "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/auth.json" openai-codex "\${PI_CODING_AGENT_DIR:-$HOME/.pi/agent}/settings.json" 2>/dev/null; ` +
   `export PI_SKIP_VERSION_CHECK=1; exec "$@"`;
 
+/**
+ * Codex's memory, on for every Codex session Mend starts (docs/adr/0009, "Codex"): the feature is
+ * off by default, and a session reads what Mend carried into its `.codex/memories` only with it
+ * on. A launch that names the feature itself is left as it is.
+ */
+export const CODEX_MEMORY_FLAG = ["-c", "features.memories=true"] as const;
+
+export const withCodexMemory = (argv: ReadonlyArray<string>): ReadonlyArray<string> => {
+  const [head, ...rest] = argv;
+  if (head !== "codex" || argv.some((arg) => arg.startsWith("features.memories"))) return argv;
+  return [head, ...CODEX_MEMORY_FLAG, ...rest];
+};
+
 /** `argv` behind its harness's seed; a harness without one runs as it is. */
 export const withHarnessSetup = (
   harness: string,
   argv: ReadonlyArray<string>,
 ): ReadonlyArray<string> => {
   if (harness === "claude") return ["sh", "-c", CLAUDE_ONBOARDING_SEED, "sh", ...argv];
-  if (harness === "codex") return ["sh", "-c", CODEX_TRUST_SEED, "sh", ...argv];
+  if (harness === "codex") {
+    return ["sh", "-c", CODEX_TRUST_SEED, "sh", ...withCodexMemory(argv)];
+  }
   if (harness === "opencode") return ["sh", "-c", OPENCODE_SEED, "sh", ...argv];
   if (harness === "pi") return ["sh", "-c", PI_SEED, "sh", ...argv];
   return argv;

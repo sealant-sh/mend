@@ -11,16 +11,41 @@ import { Timestamp } from "../timestamp.ts";
  */
 
 /**
- * Where each harness keeps memory, relative to the harness home. Claude Code keys its auto memory
- * by working directory, and every session's agent runs in `/workspace/repo`.
+ * Where each harness keeps memory, relative to the harness home.
+ * - Claude Code keys its auto memory by working directory, and every session's agent runs in
+ *   `/workspace/repo`.
+ * - Codex consolidates its memory into one folder: `MEMORY.md`, `memory_summary.md`,
+ *   `rollout_summaries/`, `skills/` and the git baseline it diffs against (`.git`).
  */
 export const AGENT_MEMORY_ROOTS = [
   { harness: "claude", root: ".claude/projects/-workspace-repo/memory" },
+  { harness: "codex", root: ".codex/memories" },
 ] as const;
+
+/**
+ * Memory kept in single files outside a root: Codex's record of which conversations it has
+ * summarised and what each summary said (`stage1_outputs`). Without it, every session would
+ * summarise the same two newest conversations again and never get past them.
+ */
+export const AGENT_MEMORY_FILES = [
+  { harness: "codex", path: ".codex/memories_1.sqlite" },
+  { harness: "codex", path: ".codex/memories_1.sqlite-wal" },
+] as const;
+
+/** Codex's summary database, as `AGENT_MEMORY_FILES` names it. */
+export const CODEX_MEMORY_DATABASE = ".codex/memories_1.sqlite";
 
 export const AGENT_MEMORY_MAX_FILES = 2000;
 export const AGENT_MEMORY_MAX_FILE_BYTES = 1024 * 1024;
-export const AGENT_MEMORY_MAX_BYTES = 8 * 1024 * 1024;
+/** Codex's summary database holds every summary it keeps: its own, larger limit. */
+export const AGENT_MEMORY_MAX_DATABASE_BYTES = 16 * 1024 * 1024;
+export const AGENT_MEMORY_MAX_BYTES = 32 * 1024 * 1024;
+
+/** The most a stored memory file at `filePath` may hold. */
+export const agentMemoryMaxFileBytes = (filePath: string): number =>
+  AGENT_MEMORY_FILES.some((file) => file.path === filePath)
+    ? AGENT_MEMORY_MAX_DATABASE_BYTES
+    : AGENT_MEMORY_MAX_FILE_BYTES;
 const AGENT_MEMORY_MAX_PATH_LENGTH = 512;
 
 /** One memory file, as delivered, read back or imported. */
@@ -80,6 +105,9 @@ export const agentMemoryNameOf = (
 ): { readonly harness: string; readonly name: string } | null => {
   for (const { harness, root } of AGENT_MEMORY_ROOTS) {
     if (filePath.startsWith(`${root}/`)) return { harness, name: filePath.slice(root.length + 1) };
+  }
+  for (const { harness, path: file } of AGENT_MEMORY_FILES) {
+    if (filePath === file) return { harness, name: file.slice(file.lastIndexOf("/") + 1) };
   }
   return null;
 };

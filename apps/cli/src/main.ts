@@ -7,6 +7,8 @@ import * as os from "node:os";
 import * as path from "node:path";
 
 import {
+  AGENT_MEMORY_FILES,
+  AGENT_MEMORY_ROOTS,
   agentStartingFacts,
   type AgentStartingProcess,
   claudeGrantFacts,
@@ -16,7 +18,7 @@ import {
   validatePiProfile,
 } from "@mend/domain/workbench";
 
-import { claudeMemoryDirFor, scanClaudeMemory } from "./agent-memory.ts";
+import { claudeMemoryDirFor, scanClaudeMemory, scanCodexMemory } from "./agent-memory.ts";
 import { type AgentShareHandle, shareAgent, startAgentShare } from "./agent-share.ts";
 import { type FirstOutputGate, firstOutputGate, startingLabelOf } from "./attach-starting.ts";
 import {
@@ -2351,22 +2353,45 @@ interface AgentMemoryEntryDto {
 const kilobytes = (bytes: number) =>
   bytes < 1024 ? `${bytes} B` : `${(bytes / 1024).toFixed(1)} KB`;
 
-/** A file named as `mend memory` lists it (`MEMORY.md`), or by its full path. */
-const memoryPathOf = (name: string): string =>
-  name.startsWith(".") ? name : `.claude/projects/-workspace-repo/memory/${name}`;
+/**
+ * A file named as `mend memory` lists it: `MEMORY.md` (Claude's), `codex:MEMORY.md` (another
+ * harness's, by the harness column), `memories_1.sqlite` (a single memory file), or its full path.
+ */
+const memoryPathOf = (name: string): string => {
+  if (name.startsWith(".")) return name;
+  const single = AGENT_MEMORY_FILES.find((file) => file.path.endsWith(`/${name}`));
+  if (single !== undefined) return single.path;
+  const qualified = /^([a-z]+):(.+)$/.exec(name);
+  const harness = qualified?.[1] ?? "claude";
+  const rest = qualified?.[2] ?? name;
+  const root = AGENT_MEMORY_ROOTS.find((candidate) => candidate.harness === harness)?.root;
+  return root === undefined ? name : `${root}/${rest}`;
+};
 
 const memoryImport = async (config: CliConfig, args: ReadonlyArray<string>) => {
   const repoRoot = cwdFacts(process.cwd()).repoRoot;
   if (repoRoot === null) return fail("run mend memory import inside the repository's checkout");
-  const dir = claudeMemoryDirFor(repoRoot);
-  if (dir === null) return fail(`claude keeps no memory for ${repoRoot} on this machine`);
-  const scan = scanClaudeMemory(dir);
-  for (const note of scan.notes) say(dim(`  ${note}`));
-  if (scan.files.length === 0) return fail(`${dir} holds no files`);
+  const claudeDir = claudeMemoryDirFor(repoRoot);
+  const claude = claudeDir === null ? null : scanClaudeMemory(claudeDir);
+  const codex = scanCodexMemory(repoRoot);
+  for (const note of [...(claude?.notes ?? []), ...codex.notes]) say(dim(`  ${note}`));
+  const files = [...(claude?.files ?? []), ...codex.files];
+  if (files.length === 0) {
+    return fail(`neither claude nor codex keeps memory for ${repoRoot} on this machine`);
+  }
   const project = await findProject(config, takeFlagValue(args, "--project"));
-  say(`claude memory · ${dir} · ${scan.files.length} file${scan.files.length === 1 ? "" : "s"}`);
+  if (claude !== null && claude.files.length > 0) {
+    say(
+      `claude memory · ${claude.dir} · ${claude.files.length} file${claude.files.length === 1 ? "" : "s"}`,
+    );
+  }
+  if (codex.files.length > 0) {
+    say(
+      `codex memory · ${codex.home} · ${codex.summaries} conversation summar${codex.summaries === 1 ? "y" : "ies"} of this repository`,
+    );
+  }
   if (args.includes("--dry-run")) {
-    for (const file of scan.files) say(`  ${file.path.split("/memory/").at(-1) ?? file.path}`);
+    for (const file of files) say(`  ${file.path.split("/memory/").at(-1) ?? file.path}`);
     say(dim("  --dry-run: nothing sent"));
     return;
   }
@@ -2376,7 +2401,7 @@ const memoryImport = async (config: CliConfig, args: ReadonlyArray<string>) => {
       readonly added: ReadonlyArray<string>;
       readonly unchanged: ReadonlyArray<string>;
       readonly conflicting: ReadonlyArray<string>;
-    }>(config, "POST", `/projects/${project.id}/memory/import`, { files: scan.files }),
+    }>(config, "POST", `/projects/${project.id}/memory/import`, { files }),
   );
   say(
     `${green("imported")} into ${project.name} · ${report.added.length} added · ${report.unchanged.length} unchanged${
