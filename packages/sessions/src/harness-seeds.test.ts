@@ -5,7 +5,13 @@ import * as path from "node:path";
 
 import { afterEach, describe, expect, it } from "vitest";
 
-import { CLAUDE_ONBOARDING_SEED, CODEX_TRUST_SEED } from "./harness-seeds.ts";
+import {
+  CLAUDE_ONBOARDING_SEED,
+  CODEX_TRUST_SEED,
+  COPY_REFRESH_TOKEN,
+  OPENCODE_SEED,
+  PI_SEED,
+} from "./harness-seeds.ts";
 
 const homes: Array<string> = [];
 afterEach(() => {
@@ -238,5 +244,119 @@ describe("codex trust seed", () => {
     // Already trusted: nothing is written.
     runSeed(CODEX_TRUST_SEED, home);
     expect(fs.readFileSync(config, "utf8")).toBe(text);
+  });
+});
+
+/** A Codex login copy as the platform injects it: an access token whose payload carries `exp`. */
+const codexCopy = (home: string, exp: number, account = "acct-1") => {
+  const payload = Buffer.from(JSON.stringify({ exp })).toString("base64url");
+  write(
+    path.join(home, ".codex", "auth.json"),
+    JSON.stringify({
+      auth_mode: "chatgpt",
+      tokens: {
+        access_token: `header.${payload}.signature`,
+        refresh_token: COPY_REFRESH_TOKEN,
+        account_id: account,
+      },
+    }),
+  );
+  return `header.${payload}.signature`;
+};
+
+/** Run pi's or opencode's seed with no XDG or pi overrides, so each reads its default paths. */
+const runToolSeed = (seed: string, home: string) => {
+  const env: Record<string, string> = { ...process.env, HOME: home } as Record<string, string>;
+  for (const name of ["XDG_DATA_HOME", "PI_CODING_AGENT_DIR"]) delete env[name];
+  const result = spawnSync("sh", ["-c", seed, "sh", "sh", "-c", "echo ran"], {
+    encoding: "utf8",
+    env,
+  });
+  expect(result.status).toBe(0);
+  return result.stdout;
+};
+
+describe("pi and opencode seeds: the ChatGPT login from the Codex copy", () => {
+  it("writes pi's openai-codex login from the Codex copy, a copy that cannot refresh", () => {
+    const home = makeHome();
+    const access = codexCopy(home, 1_800_000_000);
+    expect(runToolSeed(PI_SEED, home)).toBe("ran\n");
+    const auth = path.join(home, ".pi", "agent", "auth.json");
+    expect(readJson(auth)).toEqual({
+      "openai-codex": {
+        type: "oauth",
+        access,
+        refresh: COPY_REFRESH_TOKEN,
+        expires: 1_800_000_000_000,
+        accountId: "acct-1",
+      },
+    });
+    expect(fs.statSync(auth).mode & 0o777).toBe(0o600);
+    // pi's own default is Google: with no choice of the user's, it runs on this login.
+    expect(readJson(path.join(home, ".pi", "agent", "settings.json"))).toEqual({
+      defaultProvider: "openai-codex",
+    });
+  });
+
+  it("writes opencode's openai login under its data directory", () => {
+    const home = makeHome();
+    const access = codexCopy(home, 1_800_000_000);
+    expect(runToolSeed(OPENCODE_SEED, home)).toBe("ran\n");
+    expect(readJson(path.join(home, ".local", "share", "opencode", "auth.json"))).toMatchObject({
+      openai: { type: "oauth", access, refresh: COPY_REFRESH_TOKEN },
+    });
+  });
+
+  it("never replaces a login made in the session, nor a provider the user chose", () => {
+    const home = makeHome();
+    codexCopy(home, 1_800_000_000);
+    const own = {
+      type: "oauth",
+      access: "mine",
+      refresh: "real-refresh",
+      expires: 1,
+      accountId: "x",
+    };
+    write(path.join(home, ".pi", "agent", "auth.json"), JSON.stringify({ "openai-codex": own }));
+    write(
+      path.join(home, ".pi", "agent", "settings.json"),
+      JSON.stringify({ defaultProvider: "anthropic" }),
+    );
+    runToolSeed(PI_SEED, home);
+    expect(readJson(path.join(home, ".pi", "agent", "auth.json"))).toEqual({ "openai-codex": own });
+    expect(readJson(path.join(home, ".pi", "agent", "settings.json"))).toEqual({
+      defaultProvider: "anthropic",
+    });
+  });
+
+  it("replaces its own earlier copy with the newer one, and keeps other providers", () => {
+    const home = makeHome();
+    write(
+      path.join(home, ".pi", "agent", "auth.json"),
+      JSON.stringify({
+        "openai-codex": {
+          type: "oauth",
+          access: "old",
+          refresh: COPY_REFRESH_TOKEN,
+          expires: 1,
+          accountId: "a",
+        },
+        anthropic: { type: "api_key", key: "sk-ant" },
+      }),
+    );
+    const access = codexCopy(home, 1_900_000_000);
+    runToolSeed(PI_SEED, home);
+    expect(readJson(path.join(home, ".pi", "agent", "auth.json"))).toMatchObject({
+      "openai-codex": { access, expires: 1_900_000_000_000 },
+      anthropic: { type: "api_key", key: "sk-ant" },
+    });
+  });
+
+  it("writes nothing without a Codex login, and the harness still runs", () => {
+    const home = makeHome();
+    expect(runToolSeed(PI_SEED, home)).toBe("ran\n");
+    expect(runToolSeed(OPENCODE_SEED, home)).toBe("ran\n");
+    expect(fs.existsSync(path.join(home, ".pi", "agent", "auth.json"))).toBe(false);
+    expect(fs.existsSync(path.join(home, ".local", "share", "opencode", "auth.json"))).toBe(false);
   });
 });

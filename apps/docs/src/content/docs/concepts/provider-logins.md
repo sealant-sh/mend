@@ -80,6 +80,17 @@ their own, so a running session carries on without a restart.
 Keeping Claude fresh spends a trivial slice of your subscription: the CLI refreshes on use, so each
 refresh is one tiny exchange. Codex refreshes without a model request.
 
+## pi and opencode
+
+pi and opencode run on your ChatGPT subscription through the Codex login you connected: there is no
+separate login to connect. When either starts, Mend writes that login into the tool's own
+`auth.json` in its own format, as the same copy that cannot refresh. A login you make inside the
+session with `/login` is yours and is never replaced, and neither tool's login file is kept with the
+session.
+
+A Claude subscription cannot be used this way: Anthropic does not allow a Claude Pro or Max login in
+third-party agents. Use an Anthropic API key with pi or opencode instead.
+
 ## When a login stops working
 
 A provider can end a login on its own: you signed out of that session elsewhere, changed your
