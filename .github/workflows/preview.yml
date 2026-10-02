@@ -38,7 +38,7 @@ permissions:
 jobs:
   plan:
     if: github.repository == 'sealant-sh/mend'
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       version: ${{ steps.resolve.outputs.version }}
       sealant_sha: ${{ steps.resolve.outputs.sealant_sha }}
@@ -80,8 +80,8 @@ jobs:
           }
           version="${BASH_REMATCH[1]}.$((BASH_REMATCH[2] + 1)).0-preview.$RUN_NUMBER"
 
-          amd64='{"arch":"amd64","runner":"ubuntu-latest"}'
-          arm64='{"arch":"arm64","runner":"ubuntu-24.04-arm"}'
+          amd64='{"arch":"amd64","runner":"blacksmith-4vcpu-ubuntu-2404"}'
+          arm64='{"arch":"arm64","runner":"blacksmith-4vcpu-ubuntu-2404-arm"}'
           case $PLATFORMS in
             linux/amd64) platforms="[$amd64]" ;;
             linux/arm64) platforms="[$arm64]" ;;
@@ -113,14 +113,14 @@ jobs:
           repository: sealant-sh/sealantd
           ref: ${{ needs.plan.outputs.sealantd_sha }}
           persist-credentials: false
-      - uses: docker/setup-buildx-action@v3
+      - uses: useblacksmith/setup-docker-builder@v1
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: build
-        uses: docker/build-push-action@v6
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           file: docker/Dockerfile
@@ -147,7 +147,7 @@ jobs:
 
   sealantd-image:
     needs: [plan, sealantd]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       ref: ${{ steps.merge.outputs.ref }}
     steps:
@@ -194,14 +194,14 @@ jobs:
           repository: sealant-sh/sealant
           ref: ${{ needs.plan.outputs.sealant_sha }}
           persist-credentials: false
-      - uses: docker/setup-buildx-action@v3
+      - uses: useblacksmith/setup-docker-builder@v1
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - id: build
-        uses: docker/build-push-action@v6
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           file: apps/${{ matrix.image }}/Dockerfile
@@ -228,7 +228,7 @@ jobs:
 
   core-images:
     needs: [plan, core]
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     outputs:
       api: ${{ steps.merge.outputs.api }}
       worker: ${{ steps.merge.outputs.worker }}
@@ -277,7 +277,7 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-buildx-action@v3
+      - uses: useblacksmith/setup-docker-builder@v1
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -317,7 +317,7 @@ jobs:
             echo "LABELS"
           } >> "$GITHUB_OUTPUT"
       - id: build
-        uses: docker/build-push-action@v6
+        uses: useblacksmith/build-push-action@v2
         with:
           context: .
           file: Dockerfile
@@ -343,7 +343,7 @@ jobs:
   mend-image:
     needs: [plan, sealantd-image, core-images, mend]
     if: ${{ !cancelled() && needs.mend.result == 'success' }}
-    runs-on: ubuntu-latest
+    runs-on: blacksmith-4vcpu-ubuntu-2404
     steps:
       - uses: actions/download-artifact@v4
         with:
