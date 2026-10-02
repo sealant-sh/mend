@@ -56,7 +56,6 @@ import {
 import { Cause, Deferred, Duration, Effect, Exit, Layer, Option, Result, Schema } from "effect";
 import * as Context from "effect/Context";
 
-import { extendBoundIndex, releaseBoundIndex, reserveBoundIndex } from "./bound-index-digests.ts";
 import { CaptureRemotes, type PlanRemote } from "./capture-remotes.ts";
 import {
   SEAL_VERIFICATION_LIMIT,
@@ -735,11 +734,16 @@ export const MULTIPART_MAX_PARTS = 10_000;
  * The largest key a bindable call answers as one PUT bound to its bytes, past the multipart
  * threshold. A part URL cannot be bound (a part's bytes are not the object's), so a multipart key
  * records write authority and holds its seal until the URL expires; one bound PUT holds nothing.
- * sealantd caps a pack near 64 MiB and takes a single URL for a key it asked parts for. A key
- * above this still goes in parts: one PUT this size fits its URL's life at the assumed rate
- * (`putUrlTtlSeconds`), and a retried PUT starts over where a retried part does not.
+ * sealantd takes a single URL for a key it asked parts for, and gives that PUT the time its length
+ * needs. The ceiling is S3's own for one PUT: a git pack holding one large new file is a single
+ * object of the file's size (2026-10-02: a 629 MiB pack went in parts under a 256 MiB ceiling,
+ * and its Stop waited 18 minutes for the part URLs to expire). A bucket checks a URL's expiry
+ * when the PUT arrives, so a long upload is not cut off by it.
  */
-export const BOUND_SINGLE_PUT_MAX_BYTES = 256 * 1024 * 1024;
+export const BOUND_SINGLE_PUT_MAX_BYTES = 5 * 1024 * 1024 * 1024;
+
+/** How long the background verification of one register's packs may run (`register`). */
+const PACK_WARM_UP_LIMIT = Duration.minutes(5);
 const S3_MIN_PART_BYTES = 5 * 1024 * 1024;
 
 /**
@@ -995,6 +999,21 @@ const bulkKeysOf = (section: BulkSectionReady): ReadonlyArray<string> => [
 ];
 
 /** Bytes priced in a ledger (key → bytes). */
+/** Run an effect and note how long it took, in milliseconds, under `name` in `into`. */
+const timedInto =
+  (into: Record<string, number>, name: string) =>
+  <A, E, R>(effect: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+    Effect.suspend(() => {
+      const started = performance.now();
+      return effect.pipe(
+        Effect.ensuring(
+          Effect.sync(() => {
+            into[name] = Math.round(performance.now() - started);
+          }),
+        ),
+      );
+    });
+
 const sumOf = (ledger: ReadonlyMap<string, number>): number => {
   let total = 0;
   for (const bytes of ledger.values()) total += bytes;
@@ -1151,19 +1170,35 @@ export const CaptureChannelLive: Layer.Layer<
     const minted = new Map<string, Set<string>>();
     /**
      * Whether each launch's latest `plan.get` listed `present` in `upload_answers` (cross-repo
-     * decision 20): only such a launch is answered `present`; any other — an older daemon, or a
-     * launch this process never saw plan (a Mend restart) — gets the legacy answer, a write-once
-     * URL for a stored key whose bytes were verified. Bound to the launch its token names.
+     * decision 20): only such a launch is answered `present`; any other — an older daemon —
+     * gets the legacy answer, a write-once URL for a stored key whose bytes were verified. Bound
+     * to the launch its token names. Kept on record too (`capture_launch_answers`, 0100), and
+     * read from there by a process that never saw the launch plan: an executor plans once, at
+     * boot, and after a Mend restart it was answered as an older daemon, with unbound URLs its
+     * Stop then waited 10.5 minutes on (measured on a self-hosted box, 2026-10-02).
      */
     const readsPresent = new Map<string, boolean>();
     /** Whether each launch's latest `plan.get` listed `sha256` (`UPLOAD_ANSWER_SHA256`). */
     const sendsSha256 = new Map<string, boolean>();
-    const noteUploadAnswers = (launch: string, input: PlanGetRequest) => {
+    const rememberUploadAnswers = (launch: string, answers: ReadonlyArray<string>) => {
       if (readsPresent.size > MINTED_KEYS_REMEMBERED) readsPresent.clear();
       if (sendsSha256.size > MINTED_KEYS_REMEMBERED) sendsSha256.clear();
-      readsPresent.set(launch, (input.upload_answers ?? []).includes(UPLOAD_ANSWER_PRESENT));
-      sendsSha256.set(launch, (input.upload_answers ?? []).includes(UPLOAD_ANSWER_SHA256));
+      readsPresent.set(launch, answers.includes(UPLOAD_ANSWER_PRESENT));
+      sendsSha256.set(launch, answers.includes(UPLOAD_ANSWER_SHA256));
     };
+    const noteUploadAnswers = (launch: string, input: PlanGetRequest) =>
+      Effect.gen(function* () {
+        const answers = input.upload_answers ?? [];
+        rememberUploadAnswers(launch, answers);
+        yield* repo.noteLaunchAnswers(launch, answers);
+      });
+    /** What `launch` listed when it planned, from the record when this process never saw it. */
+    const recallUploadAnswers = (launch: string) =>
+      Effect.gen(function* () {
+        if (readsPresent.has(launch)) return;
+        const answers = yield* repo.launchAnswers(launch);
+        if (answers !== null) rememberUploadAnswers(launch, answers);
+      });
     /**
      * The byte ledger, per physical launch: object key → bytes priced for it, once. `upload.urls`
      * reserves a sized key at its declared size; `capture.register` prices every pack under the
@@ -1367,7 +1402,7 @@ export const CaptureChannelLive: Layer.Layer<
           });
         }
         yield* refuseOtherLaunch(input, scope.launchId ?? scope.executorId);
-        noteUploadAnswers(scope.launchId ?? scope.executorId, input);
+        yield* noteUploadAnswers(scope.launchId ?? scope.executorId, input);
         const plan = yield* scope
           .plan(input.platform)
           .pipe(Effect.catch(() => storeError("preparing the standby plan")({ _tag: "plan" })));
@@ -1664,7 +1699,7 @@ export const CaptureChannelLive: Layer.Layer<
       const planGet = Effect.fn("SessionCaptureApi.planGet")(function* (input: PlanGetRequest) {
         yield* requireWorktree(input.worktree_id);
         yield* refuseOtherLaunch(input, launchId);
-        noteUploadAnswers(launchId, input);
+        yield* noteUploadAnswers(launchId, input);
         const asked = input.epoch ?? 0;
         const reads = readerFormatOf(input);
         const lease = yield* repo.leaseOf(worktreeId);
@@ -1893,6 +1928,7 @@ export const CaptureChannelLive: Layer.Layer<
         // uploaded). On a bucket that ignores `If-None-Match` (Garage) that URL could replace the
         // verified bytes until it expires: its expiry is recorded, and no seal stands while it
         // lives (`CaptureSealsStoreLive`, review 2026-09-28 (7) #8).
+        yield* recallUploadAnswers(launchId);
         const answersPresent = readsPresent.get(launchId) === true;
         // Before any bucket read: an index binding judged live at this moment stays judged so
         // through the HEADs below, never later than it was.
@@ -1987,8 +2023,6 @@ export const CaptureChannelLive: Layer.Layer<
         // or, for a pack index, the one the executor declared — the same for every URL of the key.
         const declared = input.sha256 ?? {};
         const boundTo = new Map<string, string>();
-        /** Index bindings this call made, which it gives back if it hands out no URL for them. */
-        const freshIndexes = new Map<string, { readonly sha256: string; readonly until: number }>();
         if (bindable) {
           for (const plan of plans) {
             if (plan.parts > 0) continue;
@@ -2011,7 +2045,12 @@ export const CaptureChannelLive: Layer.Layer<
             // index bound to other bytes could live, none is handed out for these, and a seal
             // never stands over stored bytes a live binding does not name (`sealStandingOf`).
             const reservedUntil = Date.now() + BOUND_URL_LIFETIME_MS;
-            const reserved = reserveBoundIndex(plan.key, said, callStartedAt, reservedUntil);
+            const reserved = yield* repo.reserveBoundIndex(
+              plan.key,
+              said,
+              new Date(callStartedAt),
+              new Date(reservedUntil),
+            );
             if (reserved.outcome === "conflict") {
               return yield* new CaptureRouteError({
                 status: 409,
@@ -2020,9 +2059,6 @@ export const CaptureChannelLive: Layer.Layer<
                 key: plan.key,
               });
             }
-            // No room: this index records authority, as an unbound URL does.
-            if (reserved.outcome !== "reserved") continue;
-            if (reserved.fresh) freshIndexes.set(plan.key, { sha256: said, until: reservedUntil });
             boundTo.set(plan.key, said);
           }
         }
@@ -2050,9 +2086,12 @@ export const CaptureChannelLive: Layer.Layer<
             yield* verifyStored(key);
             present.push(key);
             wanted.delete(key);
+            // The binding stays. Giving it back was only safe while one process held every
+            // binding in one step: another call may have signed a URL under this very row since,
+            // and nothing in the row says whose it is (Astra review, 2026-10-02). A binding that
+            // names the stored bytes holds no seal. One that names other bytes holds a seal over
+            // this index until it lapses, as a URL for those bytes would.
             boundTo.delete(key);
-            const fresh = freshIndexes.get(key);
-            if (fresh !== undefined) releaseBoundIndex(key, fresh.sha256, fresh.until);
           }
           plans = plans.filter((plan) => !storedNow.has(plan.key));
         }
@@ -2204,7 +2243,22 @@ export const CaptureChannelLive: Layer.Layer<
               .pipe(Effect.catch(storeError("presigning a PUT", plan.key)));
             // A URL is good from when it was signed: the binding lasts at least that long.
             if (digest !== undefined && contentDigestOfKey(plan.key) === null) {
-              extendBoundIndex(plan.key, digest, Date.now() + BOUND_URL_LIFETIME_MS);
+              const signedAt = Date.now();
+              const extended = yield* repo.extendBoundIndex(
+                plan.key,
+                digest,
+                new Date(signedAt),
+                new Date(signedAt + BOUND_URL_LIFETIME_MS),
+              );
+              // The binding this URL was signed under is gone, or lapsed while this call stalled
+              // (a seal may have stood over other bytes since): the URL is on no record, and
+              // none of the call's URLs leaves Mend. The executor asks again.
+              if (!extended) {
+                for (const key of unpriced.keys()) ledger.delete(key);
+                return yield* Effect.die(
+                  "capture channel: a pack index URL was signed, and its binding is no longer on record · none handed out",
+                );
+              }
             }
             continue;
           }
@@ -2476,9 +2530,16 @@ export const CaptureChannelLive: Layer.Layer<
           withCaptureReadPass(
             Effect.gen(function* () {
               const problems: Array<string> = [];
+              // How long each check took: a Stop waits on them (2026-10-02).
+              const took: Record<string, number> = {};
+              yield* Effect.addFinalizer(() =>
+                Effect.logInfo("capture channel: seal checks · timings").pipe(
+                  Effect.annotateLogs({ ...annotations, ...took }),
+                ),
+              );
               const payloads = yield* verifyPackPayloads(
                 chunked.flatMap((section) => section.packs),
-              ).pipe(Effect.result);
+              ).pipe(timedInto(took, "payloadsMs"), Effect.result);
               if (Result.isFailure(payloads)) {
                 const error = payloads.failure;
                 yield* Effect.logWarning(
@@ -2502,7 +2563,9 @@ export const CaptureChannelLive: Layer.Layer<
                 problems.push("chunk payloads not read");
               }
               if (metaDocument === null) return { problems };
-              const crossLinks = yield* crossLinksProblem(manifest, metaDocument);
+              const crossLinks = yield* crossLinksProblem(manifest, metaDocument).pipe(
+                timedInto(took, "crossLinksMs"),
+              );
               if (crossLinks !== null) problems.push(`cross-class links: ${crossLinks}`);
               if (
                 (metaDocument.hardlinks ?? []).length > 0 ||
@@ -2511,13 +2574,17 @@ export const CaptureChannelLive: Layer.Layer<
                 const trackedLinks =
                   restoreTree === null
                     ? "the tree a restore checks out was not listed"
-                    : yield* linkTopologyProblem(manifest, metaDocument, restoreTree);
+                    : yield* linkTopologyProblem(manifest, metaDocument, restoreTree).pipe(
+                        timedInto(took, "linkTopologyMs"),
+                      );
                 if (trackedLinks !== null) problems.push(`tracked links: ${trackedLinks}`);
               }
-              const inodeMeta = yield* inodeMetadataProblem(manifest, metaDocument);
+              const inodeMeta = yield* inodeMetadataProblem(manifest, metaDocument).pipe(
+                timedInto(took, "inodeMetadataMs"),
+              );
               if (inodeMeta !== null) problems.push(`inode metadata: ${inodeMeta}`);
               return { problems };
-            }),
+            }).pipe(Effect.scoped),
           ),
         );
 
@@ -2744,6 +2811,20 @@ export const CaptureChannelLive: Layer.Layer<
               .join(", ")}`,
           );
         }
+        // A chunked class lists packs and dir packs, never a pack index. An index key names its
+        // pack's digest, not its own bytes', and nothing below would check one as the pack it
+        // is listed as (Astra review, 2026-10-02).
+        const listedIndexes = chunked
+          .flatMap((section) => [...section.packs, ...dirPacksOf(section)])
+          .filter((key) => key.endsWith(".idx"));
+        if (listedIndexes.length > 0) {
+          return yield* bad(
+            `a chunked section lists ${listedIndexes.length} pack index key(s) as packs: ${listedIndexes
+              .slice(0, 3)
+              .map((key) => JSON.stringify(key))
+              .join(", ")}`,
+          );
+        }
         const badDigests = chunked
           .filter((section) => sectionFormatOf(section) === FORMAT_DIR_PACKS)
           .filter(
@@ -2803,6 +2884,24 @@ export const CaptureChannelLive: Layer.Layer<
           seen.add(key);
           return true;
         });
+        // The packs a capture that seals nothing lists are verified on worker threads from now
+        // on, beside the register's own checks and after it answers. The sealing register that
+        // follows waits for what is left of that, not for all of it (2026-10-02: a Stop's seal
+        // decompressed 788 MB the register before it had just walked). What it finds wrong is
+        // the seal's to say (`sealChecks`), so nothing here is reported. A sealing register runs
+        // those checks itself.
+        // Bounded: a store that stops answering must not hold the verification permits for good.
+        if (manifest.final_seal === undefined) {
+          yield* Effect.forkDetach(
+            withCaptureReadPass(
+              verifyPackPayloads(chunked.flatMap((section) => section.packs)),
+            ).pipe(
+              Effect.provideService(BlobStore, blobs),
+              Effect.timeoutOption(PACK_WARM_UP_LIMIT),
+              Effect.catchCause(() => Effect.void),
+            ),
+          );
+        }
         // Every chunked section the parent holds: one this capture holds unchanged was checked
         // restorable when the parent registered, and the parent — the head — keeps its objects
         // alive; only what is new is walked.
@@ -2864,6 +2963,8 @@ export const CaptureChannelLive: Layer.Layer<
         };
         /** This register's seal checks, kept across its guard retries. */
         let job: SealJob | undefined;
+        // How long each step of this register took; logged for the kinds a person waits on.
+        const registerTook: Record<string, number> = {};
         /** What the store records of the seal, with the CAS or once its checks pass. */
         const sealFields = {
           executorId: launchId,
@@ -3008,7 +3109,9 @@ export const CaptureChannelLive: Layer.Layer<
           const verification =
             already !== null || !VERIFIED_AT_REGISTER.has(manifest.kind)
               ? null
-              : yield* verifier.verify(scope.projectId, manifest);
+              : yield* verifier
+                  .verify(scope.projectId, manifest)
+                  .pipe(timedInto(registerTook, "gitVerifyMs"));
           const gitFsck = already?.gitFsck ?? verification?.outcome ?? "unverified";
           if (verification !== null && verification.outcome !== "verified") {
             yield* Effect.logWarning(
@@ -3035,7 +3138,9 @@ export const CaptureChannelLive: Layer.Layer<
             const tree = rawTreeOf(manifest.sections.git);
             if (tree === undefined) return new Map<string, RestoreTreePath>();
             return verification?.outcome === "verified"
-              ? yield* verifier.treeObjects(scope.projectId, manifest, tree)
+              ? yield* verifier
+                  .treeObjects(scope.projectId, manifest, tree)
+                  .pipe(timedInto(registerTook, "restoreTreeMs"))
               : null;
           });
           // The worktree metadata document against the namespace it applies to (review
@@ -3052,7 +3157,7 @@ export const CaptureChannelLive: Layer.Layer<
               manifest,
               metaDocument,
               restoreTree,
-            ).pipe(Effect.provideService(BlobStore, blobs));
+            ).pipe(Effect.provideService(BlobStore, blobs), timedInto(registerTook, "namespaceMs"));
             if (problem !== null) {
               return yield* new CaptureRouteError({
                 status: 422,
@@ -3101,7 +3206,10 @@ export const CaptureChannelLive: Layer.Layer<
           const verdict =
             job === undefined
               ? null
-              : yield* Deferred.await(job.verdict).pipe(Effect.timeoutOption(remaining()));
+              : yield* Deferred.await(job.verdict).pipe(
+                  Effect.timeoutOption(remaining()),
+                  timedInto(registerTook, "sealChecksMs"),
+                );
           const pendingSeal = verdict !== null && Option.isNone(verdict);
           // Checks that concluded nothing (the store failed a read, review 2026-09-28 (12) #4):
           // registered without the seal, answered `withheld` (`unavailable`), checked again on
@@ -3250,8 +3358,20 @@ export const CaptureChannelLive: Layer.Layer<
                           input.epoch,
                           input.capture_id,
                           sealProblem,
-                        );
+                        ).pipe(timedInto(registerTook, "sealStandingMs"));
                       });
+        // A Stop waits on a final capture's register: where its time went.
+        if (manifest.kind === "final" && Object.keys(registerTook).length > 0) {
+          yield* Effect.logInfo("capture channel: register · timings").pipe(
+            Effect.annotateLogs({
+              worktreeId,
+              n: input.n,
+              captureId: input.capture_id,
+              epoch: input.epoch,
+              ...registerTook,
+            }),
+          );
+        }
         if (sealAnswer !== null && sealAnswer.outcome.state !== "recorded") {
           yield* Effect.logInfo(`capture channel: final seal · ${sealAnswer.outcome.state}`).pipe(
             Effect.annotateLogs({

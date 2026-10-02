@@ -6,11 +6,12 @@ import { Readable } from "node:stream";
 import { pipeline as pipelinePromise } from "node:stream/promises";
 import * as zlib from "node:zlib";
 
-import { Effect, Schema } from "effect";
+import { Effect, Exit, Result, Schema, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
 import { BlobNotFoundError, BlobStore, BlobStoreError, isValidBlobKey } from "./blob-store.ts";
 import { git, type GitError, gitHostFaultWords, gitRejectsContent } from "./git.ts";
+import { PACK_VERIFY_WORKERS, verifyPackOnWorker } from "./pack-verify-pool.ts";
 
 /**
  * The capture format of sealantd ADR-0015 ("Capture format"), read-side only: Mend never writes
@@ -2182,10 +2183,15 @@ const packEntriesOf = (
 
 /**
  * Pack keys whose every chunk was decompressed and hashed (`verifyPackPayloads`), by store and
- * key, with when the bytes were read. A key is the sha256 of the pack's bytes and a condemned key
- * is never written again, but a key is only as immutable as its store keeps it (review
- * 2026-09-28 (6) #9): the proof stands only while `proofStands` — taken from this very store once
- * no PUT URL could replace the bytes. Bounded, the oldest dropped first.
+ * key, with when the bytes were read. Bounded, the oldest dropped first.
+ *
+ * What was proven is about bytes: these bytes hash to the key's digest, and every chunk in them
+ * decodes. Whatever is stored under the key later either is those bytes or does not hash to the
+ * key. So for a key whose name is its digest the proof never lapses, and what a seal still has to
+ * establish is only that the stored object hashes to its name once nothing can replace it
+ * (`storedCaptureProblem`, which every seal on a store that replaces objects waits for). Before
+ * 2026-10-02 the proof lapsed with `proofStands`, and every seal in the 20 minutes after a start
+ * decompressed every pack again. A key that names no digest keeps the old rule.
  */
 const PAYLOAD_VERIFIED_KEYS = 200_000;
 const payloadVerified = new Map<string, number>();
@@ -2218,26 +2224,125 @@ export const verifyPackPayloads = (
     const store = yield* BlobStore;
     let packs = 0;
     let chunks = 0;
-    for (const key of new Set(keys)) {
-      const cacheKey = proofKey(store, key);
-      const verifiedAt = payloadVerified.get(cacheKey);
-      if (verifiedAt !== undefined && (yield* proofStands(store, key, verifiedAt))) continue;
-      const atMs = Date.now();
-      const bytes = yield* store.get(key);
-      yield* verifyDigest(key, bytes);
-      rememberContentVerified(store, key, atMs);
-      const entries = yield* readPackIndex(key, bytes);
-      for (const entry of entries) {
-        yield* readChunk(key, bytes, entry);
-        chunks += 1;
-      }
-      packs += 1;
-      rememberPayloadVerified(cacheKey, atMs);
-      // Its index, read from the very bytes just verified: a member lookup later in the pass
-      // does not read it again.
-      yield* notePackIndex(store, key, entriesByHash(entries), atMs);
-    }
+    yield* Effect.forEach(
+      [...new Set(keys)],
+      (key) =>
+        Effect.gen(function* () {
+          const cacheKey = proofKey(store, key);
+          const proven = Effect.gen(function* () {
+            const verifiedAt = payloadVerified.get(cacheKey);
+            // Never a pack index key: its name is its pack's digest, not its own bytes'
+            // (Astra review, 2026-10-02).
+            return (
+              verifiedAt !== undefined &&
+              (contentDigestOfKey(key) !== null || (yield* proofStands(store, key, verifiedAt)))
+            );
+          });
+          if (yield* proven) return;
+          // Another caller is verifying this very pack (a register's warm-up, a retry): its
+          // answer is this one's. One that failed or was cut short is done again here.
+          const running = payloadsInFlight.get(cacheKey);
+          if (running !== undefined && (yield* Effect.promise(() => running)) && (yield* proven)) {
+            return;
+          }
+          const { promise, resolve } = Promise.withResolvers<boolean>();
+          payloadsInFlight.set(cacheKey, promise);
+          yield* Effect.gen(function* () {
+            const atMs = Date.now();
+            const entries = yield* verifyPackBytes(key, yield* store.get(key)).pipe(
+              // The worker could not run the check (it would not start, it died): that says
+              // nothing about the pack. Read again and checked here, as before there were
+              // workers.
+              Effect.catchTag("PackWorkerUnavailable", () =>
+                store.get(key).pipe(Effect.flatMap((bytes) => verifyPackBytesHere(key, bytes))),
+              ),
+            );
+            rememberContentVerified(store, key, atMs);
+            chunks += entries.length;
+            packs += 1;
+            rememberPayloadVerified(cacheKey, atMs);
+            // Its index, read from the very bytes just verified: a member lookup later in the
+            // pass does not read it again.
+            yield* notePackIndex(store, key, entriesByHash(entries), atMs);
+          }).pipe(
+            // Every caller's packs in memory at once are bounded together, not per call.
+            packVerifications.withPermit,
+            Effect.onExit((exit) =>
+              Effect.sync(() => {
+                if (payloadsInFlight.get(cacheKey) === promise) payloadsInFlight.delete(cacheKey);
+                resolve(Exit.isSuccess(exit));
+              }),
+            ),
+          );
+        }),
+      { concurrency: PACK_VERIFY_WORKERS, discard: true },
+    );
     return { packs, chunks };
+  });
+
+/** Pack verifications under way, by store and key, each answering whether it passed. */
+const payloadsInFlight = new Map<string, Promise<boolean>>();
+
+/** Packs held in memory for verification at once, whoever asked. */
+const packVerifications: Semaphore.Semaphore = Semaphore.makeUnsafe(PACK_VERIFY_WORKERS);
+
+/** The worker pool could not run a check; nothing was observed about the pack. */
+class PackWorkerUnavailable extends Schema.TaggedErrorClass<PackWorkerUnavailable>()(
+  "PackWorkerUnavailable",
+  { reason: Schema.String },
+) {}
+
+/** One pack verified on this thread: its digest, its index, every chunk (`readChunk`). */
+const verifyPackBytesHere = (
+  key: string,
+  bytes: Uint8Array,
+): Effect.Effect<ReadonlyArray<PackIndexEntry>, CaptureFormatError | CaptureIntegrityError> =>
+  Effect.gen(function* () {
+    yield* verifyDigest(key, bytes);
+    const entries = yield* readPackIndex(key, bytes);
+    for (const entry of entries) yield* readChunk(key, bytes, entry);
+    return entries;
+  });
+
+/**
+ * One pack verified on a worker thread (`pack-verify-pool.ts`): the same checks as
+ * `verifyPackBytesHere`, in the same order of precedence (a pack that does not hash to its key
+ * is that, whatever its index says). The index is decoded and bounds-checked here; the worker
+ * hashes the pack and decompresses and hashes each chunk. `bytes` is handed to the worker.
+ */
+const verifyPackBytes = (
+  key: string,
+  bytes: Uint8Array,
+): Effect.Effect<
+  ReadonlyArray<PackIndexEntry>,
+  CaptureFormatError | CaptureIntegrityError | PackWorkerUnavailable
+> =>
+  Effect.gen(function* () {
+    const index = yield* readPackIndex(key, bytes).pipe(Effect.result);
+    if (Result.isFailure(index)) {
+      // No index to hand a worker: the digest is checked here, and it decides first.
+      yield* verifyDigest(key, bytes);
+      return yield* Effect.fail(index.failure);
+    }
+    const entries = index.success;
+    // The worker takes the buffer itself: a view into a larger one is copied out first.
+    const whole =
+      bytes.buffer instanceof ArrayBuffer &&
+      bytes.byteOffset === 0 &&
+      bytes.byteLength === bytes.buffer.byteLength
+        ? bytes.buffer
+        : bytes.slice().buffer;
+    const problem = yield* Effect.tryPromise({
+      try: () => verifyPackOnWorker(digestOfKey(key), entries, whole),
+      catch: (cause) =>
+        new PackWorkerUnavailable({
+          reason: cause instanceof Error ? cause.message : String(cause),
+        }),
+    });
+    if (problem === null) return entries;
+    return yield* problem.tag === "integrity"
+      ? new CaptureIntegrityError({ key, expected: problem.expected, actual: problem.actual })
+      : new CaptureFormatError({ key, reason: problem.reason });
   });
 
 /** What a restorability check walked. */
@@ -2928,13 +3033,13 @@ const memberDigest = (
   });
 
 /**
- * Member digests an earlier pass took (`digestOf`), by store, the packs the member's chunks were
- * read from, how the digest was taken and the chunks it hashes, with when the reads began. A
- * digest is a proof about those packs' bytes like any other (review 2026-09-28 (6) #9): it
- * stands only while `proofStands` for every one of them. On a store that refuses overwrites a
- * seal then reads no chunk a member's digest needs again (alpha, Mend 0.34.2); on one that does
- * not, the proof is void while an upload URL could replace a pack, and the digest is taken
- * again. Bounded, the oldest dropped first.
+ * Member digests an earlier pass took (`digestOf`), by how the digest was taken and the chunks it
+ * hashes. Every chunk read for one is checked against the hash that names it (`readChunk`), so a
+ * digest is a fact about that list of chunk hashes, whatever store or pack the bytes came from,
+ * and it never lapses. Before 2026-10-02 it was held as a proof about the packs and lapsed with
+ * `proofStands`, so every seal in the 20 minutes after a start hashed every linked member again.
+ * That the chunks are still in packs the section lists is asked each time (`packsHolding`); that
+ * those packs still hold them is the seal's read-back. Bounded, the oldest dropped first.
  */
 const MEMBER_DIGESTS_KEPT = 200_000;
 const memberDigestProofs = new Map<string, { readonly digest: string; readonly atMs: number }>();
@@ -3074,21 +3179,14 @@ const makeClassMembers = (manifest: CaptureManifest) => {
         // Two members with one chunk list hold one set of bytes: hashed once per pass.
         const memo = `${as}\u0000${member.size}\u0000${member.chunks}`;
         if (pass.digests.has(memo)) return pass.digests.get(memo) ?? null;
-        // Hashed in an earlier pass from the very packs this section reads them from, and those
-        // reads still stand (`proofStands`: on a store that refuses overwrites, always).
-        const store = yield* BlobStore;
+        // Hashed in an earlier pass, and its chunks are in packs this section lists.
         const where = yield* sectionChunkLocations(section).pipe(Effect.orElseSucceed(() => null));
         const packs = where === null ? null : packsHolding(where, member.chunkList);
-        const proofId = packs === null ? null : `${proofKey(store, packs.join(","))}\u0000${memo}`;
+        const proofId = packs === null ? null : memo;
         const proven = proofId === null ? undefined : memberDigestProofs.get(proofId);
-        if (proven !== undefined && packs !== null) {
-          const stands = yield* Effect.forEach(packs, (key) =>
-            proofStands(store, key, proven.atMs),
-          );
-          if (stands.every(Boolean)) {
-            pass.digests.set(memo, proven.digest);
-            return proven.digest;
-          }
+        if (proven !== undefined) {
+          pass.digests.set(memo, proven.digest);
+          return proven.digest;
         }
         const atMs = Date.now();
         const digest = yield* memberDigest(section, member, as).pipe(
@@ -3406,6 +3504,24 @@ export const keysOfSections = (sections: unknown): ReadonlyArray<string> => {
   ];
 };
 
+/**
+ * The pack index keys (`….idx`) a capture row's chunked sections list as packs or dir packs: none,
+ * for every capture sealantd writes. An index key names its pack's digest, not its own bytes',
+ * so nothing that reads one back can tell a chunk pack stored there from other bytes that pass
+ * as a git pack index. A register refuses such a capture; a seal an older server recorded over
+ * one never stands (`sealStandingOf`; Astra review, 2026-10-02).
+ */
+export const chunkedIndexKeysOf = (sections: unknown): ReadonlyArray<string> => {
+  if (typeof sections !== "object" || sections === null) return [];
+  return [
+    ...chunkedSectionsOf(sections).flatMap((section) => [
+      ...rowPacksOf(section),
+      ...rowDirPacksOf(section),
+    ]),
+    ...rowPacksOf(worktreeMetaOf(sections)),
+  ].filter((key) => key.endsWith(".idx"));
+};
+
 /** A row's `workspace.worktree_meta`, whatever it holds. */
 const worktreeMetaOf = (sections: object): unknown => {
   const workspace: unknown = Reflect.get(sections, "workspace");
@@ -3520,9 +3636,18 @@ const storedGitPackProblem = (
  * index of another pack), or null. Fails only when the store could not be read (`BlobStoreError`)
  * or the Mend host could not finish a check (`CaptureCheckUnfinishedError`): nothing is concluded
  * then.
+ *
+ * With `proofs`, an object whose name is its digest is not read again when this process already
+ * read it whole, at or after `sinceMs`, and found it to be what its name says: it is asked for
+ * (`head`), so one that is gone is still found gone. `usedFromMs` is lowered to the earliest such
+ * read the answer rests on. A sealing register has just read every pack it lists, and a Stop on a
+ * self-hosted bucket read them all a second time here (2026-10-02). The caller decides what
+ * `sinceMs` is safe (`sealStandingOf`: nothing could replace the bytes from then on). The
+ * manifest, every git pack and every pack index are read each time.
  */
 export const storedCaptureProblem = (
   manifestKey: string,
+  options?: { readonly proofs?: { readonly sinceMs: number; usedFromMs: number } },
 ): Effect.Effect<string | null, BlobStoreError | CaptureCheckUnfinishedError, BlobStore> =>
   Effect.gen(function* () {
     const store = yield* BlobStore;
@@ -3557,8 +3682,22 @@ export const storedCaptureProblem = (
     if (format === null && gitPacks.size > 0) {
       return `the git section's object format ${JSON.stringify(sections.git.object_format)} is not one Mend reads`;
     }
+    const proofs = options?.proofs;
     for (const key of keys) {
       if (key.endsWith(".idx") && gitPacks.has(key.slice(0, -".idx".length))) continue;
+      if (
+        proofs !== undefined &&
+        key !== manifestKey &&
+        !gitPacks.has(key) &&
+        contentDigestOfKey(key) !== null
+      ) {
+        const provenAt = contentVerified.get(proofKey(store, key));
+        if (provenAt !== undefined && provenAt >= proofs.sinceMs) {
+          if ((yield* store.head(key)) === null) return `${key} is not stored`;
+          proofs.usedFromMs = Math.min(proofs.usedFromMs, provenAt);
+          continue;
+        }
+      }
       const problem = yield* (
         gitPacks.has(key) ? storedGitPackProblem(key, format ?? "sha1") : storedObjectProblem(key)
       ).pipe(Effect.catchTag("BlobNotFoundError", () => Effect.succeed(`${key} is not stored`)));

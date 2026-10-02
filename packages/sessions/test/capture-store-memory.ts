@@ -32,6 +32,14 @@ export interface MemoryCaptureStore {
   readonly seals: Map<string, SealedCompletion>;
   /** `capture_put_authority`: `<worktree>:<epoch>` → the latest upload URL expiry (0089). */
   readonly putAuthority: Map<string, Date>;
+  /** `capture_bound_indexes`: key → the digest its bound URLs name, and until when (0099). */
+  readonly boundIndexes: Map<string, { sha256: string; until: Date }>;
+  /** Worktrees that are gone: Mend no longer speaks for their scopes (`sealAuthorityOver`). */
+  readonly goneWorktrees: Set<string>;
+  /** `capture_bound_index_cutover`: until when the record of bound index URLs is not whole. */
+  readonly boundIndexCutover: { until: number };
+  /** `capture_launch_answers`: launch → what its last `plan.get` listed (0100). */
+  readonly launchAnswers: Map<string, ReadonlyArray<string>>;
   /** `capture_deletion_claims`: key → token → when the claim lapses (store clock, ms). */
   readonly claims: Map<string, Map<string, number>>;
   readonly packs: Map<string, PackRow>;
@@ -76,6 +84,10 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
   const seals = new Map<string, SealedCompletion>();
   /** `capture_put_authority`: `<worktree>:<epoch>` → the latest upload URL expiry. */
   const putAuthority = new Map<string, Date>();
+  const boundIndexes = new Map<string, { sha256: string; until: Date }>();
+  const goneWorktrees = new Set<string>();
+  const boundIndexCutover = { until: 0 };
+  const launchAnswers = new Map<string, ReadonlyArray<string>>();
   const holdRecordSeal = { held: false };
   /** A live deletion claim on `key`: some pass may still delete its bytes. */
   const claimed = (key: string) =>
@@ -401,6 +413,53 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
         });
         return times.length === 0 ? null : new Date(Math.max(...times));
       }),
+    sealAuthorityOver: (scopes, at) =>
+      Effect.sync(() => {
+        const times = scopes.flatMap((scope) => {
+          const until = putAuthority.get(`${scope.worktreeId}:${scope.epoch}`);
+          return until === undefined ? [] : [until.getTime()];
+        });
+        return {
+          until: times.length === 0 ? null : new Date(Math.max(...times)),
+          spokenFor:
+            scopes.every((scope) => !goneWorktrees.has(scope.worktreeId)) &&
+            at.getTime() >= boundIndexCutover.until,
+        };
+      }),
+    noteLaunchAnswers: (launchId, answers) =>
+      Effect.sync(() => {
+        launchAnswers.set(launchId, [...answers]);
+      }),
+    launchAnswers: (launchId) => Effect.sync(() => launchAnswers.get(launchId) ?? null),
+    reserveBoundIndex: (key, sha256, now, until) =>
+      Effect.sync(() => {
+        const row = boundIndexes.get(key);
+        const bound = row !== undefined && row.until.getTime() > now.getTime() ? row : null;
+        if (bound !== null && bound.sha256 !== sha256) return { outcome: "conflict" } as const;
+        boundIndexes.set(key, {
+          sha256,
+          until: new Date(Math.max(until.getTime(), bound?.until.getTime() ?? 0)),
+        });
+        return { outcome: "reserved", fresh: bound === null } as const;
+      }),
+    extendBoundIndex: (key, sha256, at, until) =>
+      Effect.sync(() => {
+        const row = boundIndexes.get(key);
+        if (row === undefined || row.sha256 !== sha256 || row.until.getTime() <= at.getTime()) {
+          return false;
+        }
+        if (row.until.getTime() < until.getTime()) boundIndexes.set(key, { sha256, until });
+        return true;
+      }),
+    boundIndexesAmong: (keys, at) =>
+      Effect.sync(() =>
+        keys.flatMap((key) => {
+          const row = boundIndexes.get(key);
+          return row !== undefined && row.until.getTime() > at.getTime()
+            ? [{ key, sha256: row.sha256, until: row.until }]
+            : [];
+        }),
+      ),
     markSealReverified: (worktreeId, epoch, captureId, at) =>
       Effect.sync(() => {
         const key = `${worktreeId}:${epoch}`;
@@ -570,5 +629,9 @@ export const makeMemoryCaptureStore = (): MemoryCaptureStore => {
     claims,
     seals,
     putAuthority,
+    boundIndexes,
+    goneWorktrees,
+    boundIndexCutover,
+    launchAnswers,
   };
 };

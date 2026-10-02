@@ -2084,6 +2084,46 @@ export const captureSeals = pgTable(
 );
 
 /**
+ * The SHA-256 every bytes-bound upload URL of a pack index (`packs/<sha>.idx`, the one capture
+ * key whose name does not say its digest) was signed for, and until when one of them could still
+ * be used (migration 0099, ADR 0002 decision 48). A seal never stands over an index a live
+ * binding names other bytes for. Kept here, not in the server's memory, so a restart forgets none.
+ */
+export const captureBoundIndexes = pgTable(
+  "capture_bound_indexes",
+  {
+    key: text().primaryKey(),
+    sha256: text().notNull(),
+    until: timestamp({ mode: "date", withTimezone: true }).notNull(),
+  },
+  (table) => [index("capture_bound_indexes_until").on(table.until)],
+);
+
+/**
+ * What each executor launch listed in `plan.get`'s `upload_answers` (migration 0100): the answer
+ * shapes it reads. Kept so a Mend restart answers a running executor as it did before.
+ */
+export const captureLaunchAnswers = pgTable(
+  "capture_launch_answers",
+  {
+    launchId: text().primaryKey(),
+    answers: jsonb().$type<ReadonlyArray<string>>().notNull(),
+    notedAt: timestamp({ mode: "date", withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => [index("capture_launch_answers_noted_at").on(table.notedAt)],
+);
+
+/**
+ * Until when a pack index URL bound by the server before migration 0099, which kept its bindings
+ * in memory, could still be used: one row, written by the migration when the database already
+ * had worktrees. Seals wait the store's start window out until then.
+ */
+export const captureBoundIndexCutover = pgTable("capture_bound_index_cutover", {
+  onlyRow: boolean().primaryKey().default(true),
+  until: timestamp({ mode: "date", withTimezone: true }).notNull(),
+});
+
+/**
  * Until when an upload URL Mend handed out under one worktree epoch's prefix could still write
  * to the bucket (migration 0089, review 2026-09-28 (7) #8): the latest expiry of every PUT and
  * part URL minted for `captures/<worktree>/<epoch>/…`, recorded before the URL is handed out. On

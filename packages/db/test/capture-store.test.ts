@@ -1387,6 +1387,272 @@ describe.skipIf(!reachable)("capture store (0053)", () => {
       }),
     );
   }, 120_000);
+
+  it("pack index bindings (0099): one digest per key while a binding lives; extended and read back", async () => {
+    const key = `captures/wt-bound-${process.pid}/1/g0/packs/${"a".repeat(64)}.idx`;
+    const first = "1".repeat(64);
+    const other = "2".repeat(64);
+    const t0 = new Date("2026-10-02T12:00:00.000Z");
+    const minutes = (n: number) => new Date(t0.getTime() + n * 60_000);
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const reserved = yield* repo.reserveBoundIndex(key, first, t0, minutes(10));
+        // The same bytes again: extended, never shortened, and no longer fresh.
+        const again = yield* repo.reserveBoundIndex(key, first, minutes(1), minutes(5));
+        const conflict = yield* repo.reserveBoundIndex(key, other, minutes(2), minutes(12));
+        const live = yield* repo.boundIndexesAmong([key, "captures/none.idx"], minutes(9));
+        yield* repo.extendBoundIndex(key, first, minutes(9), minutes(15));
+        yield* repo.extendBoundIndex(key, other, minutes(9), minutes(60));
+        const extended = yield* repo.boundIndexesAmong([key], minutes(14));
+        // Dead at 15 minutes: other bytes may be bound, and that reservation is fresh.
+        const dead = yield* repo.boundIndexesAmong([key], minutes(15));
+        const replaced = yield* repo.reserveBoundIndex(key, other, minutes(15), minutes(25));
+        const kept = yield* repo.boundIndexesAmong([key], minutes(16));
+        return { reserved, again, conflict, live, extended, dead, replaced, kept };
+      }),
+    );
+    expect(result.reserved).toEqual({ outcome: "reserved", fresh: true });
+    expect(result.again).toEqual({ outcome: "reserved", fresh: false });
+    expect(result.conflict).toEqual({ outcome: "conflict" });
+    expect(result.live).toEqual([{ key, sha256: first, until: minutes(10) }]);
+    expect(result.extended).toEqual([{ key, sha256: first, until: minutes(15) }]);
+    expect(result.dead).toEqual([]);
+    expect(result.replaced).toEqual({ outcome: "reserved", fresh: true });
+    expect(result.kept).toEqual([{ key, sha256: other, until: minutes(25) }]);
+  });
+
+  it("pack index bindings (0099): two reservations of one key at once never both bind other bytes", async () => {
+    const key = `captures/wt-race-${process.pid}/1/g0/packs/${"b".repeat(64)}.idx`;
+    const now = new Date();
+    const until = new Date(now.getTime() + 60_000);
+    const outcomes = await run(
+      Effect.flatMap(CaptureStoreRepo, (repo) =>
+        Effect.all(
+          Array.from({ length: 8 }, (_, n) =>
+            repo.reserveBoundIndex(key, String(n % 2).repeat(64), now, until),
+          ),
+          { concurrency: "unbounded" },
+        ),
+      ),
+    );
+    // Whichever digest got there first holds the key: its four reserve, the other four conflict.
+    expect(outcomes.filter((outcome) => outcome.outcome === "reserved")).toHaveLength(4);
+    expect(outcomes.filter((outcome) => outcome.outcome === "conflict")).toHaveLength(4);
+    expect(
+      outcomes.filter((outcome) => outcome.outcome === "reserved" && outcome.fresh),
+    ).toHaveLength(1);
+  });
+
+  it("pack index bindings (0099): the same bytes bound again never shorten a binding, and an extension finds its binding or says so", async () => {
+    const key = `captures/wt-extend-${process.pid}/1/g0/packs/${"c".repeat(64)}.idx`;
+    const digest = "3".repeat(64);
+    const t0 = new Date("2026-10-02T13:00:00.000Z");
+    const minutes = (n: number) => new Date(t0.getTime() + n * 60_000);
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.reserveBoundIndex(key, digest, t0, minutes(20));
+        // The URL was signed late: its binding is extended past what the reservation said.
+        const extended = yield* repo.extendBoundIndex(key, digest, minutes(7), minutes(27));
+        // A second call for the same bytes worked its expiry out earlier (Astra review: it
+        // overwrote 27 with 21, and the seal stood while the first URL could still be used).
+        yield* repo.reserveBoundIndex(key, digest, minutes(1), minutes(21));
+        const kept = yield* repo.boundIndexesAmong([key], minutes(22));
+        // An extension to an earlier time shortens nothing either.
+        const earlier = yield* repo.extendBoundIndex(key, digest, minutes(2), minutes(5));
+        const still = yield* repo.boundIndexesAmong([key], minutes(22));
+        // No binding of these bytes to extend: said, so the URL does not leave.
+        const other = yield* repo.extendBoundIndex(key, "4".repeat(64), minutes(8), minutes(30));
+        const none = yield* repo.extendBoundIndex(`${key}.gone`, digest, minutes(8), minutes(30));
+        // A binding that lapsed is not revived by a call that stalled past it (Astra review,
+        // third pass): a seal may have stood over other bytes since.
+        const lapsed = yield* repo.extendBoundIndex(key, digest, minutes(28), minutes(48));
+        const gone = yield* repo.boundIndexesAmong([key], minutes(28));
+        return { extended, kept, earlier, still, other, none, lapsed, gone };
+      }),
+    );
+    expect(result.extended).toBe(true);
+    expect(result.kept).toEqual([{ key, sha256: digest, until: minutes(27) }]);
+    expect(result.earlier).toBe(true);
+    expect(result.still).toEqual([{ key, sha256: digest, until: minutes(27) }]);
+    expect(result.other).toBe(false);
+    expect(result.none).toBe(false);
+    expect(result.lapsed).toBe(false);
+    expect(result.gone).toEqual([]);
+  });
+
+  it("pack index bindings (0099): only bindings long dead are swept, never one renewed", async () => {
+    const dead = `captures/wt-sweep-${process.pid}/1/g0/packs/${"d".repeat(64)}.idx`;
+    const renewed = `captures/wt-sweep-${process.pid}/1/g0/packs/${"e".repeat(64)}.idx`;
+    const other = `captures/wt-sweep-${process.pid}/1/g0/packs/${"f".repeat(64)}.idx`;
+    const digest = "5".repeat(64);
+    const t0 = new Date("2026-10-01T09:00:00.000Z");
+    const hours = (n: number) => new Date(t0.getTime() + n * 3_600_000);
+    const left = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const repo = yield* CaptureStoreRepo;
+        yield* repo.reserveBoundIndex(dead, digest, t0, hours(0.25));
+        yield* repo.reserveBoundIndex(renewed, digest, t0, hours(0.25));
+        // Three hours on: `renewed` is bound again, and the sweep that runs with any
+        // reservation takes `dead` only.
+        yield* repo.reserveBoundIndex(renewed, digest, hours(3), hours(3.25));
+        yield* repo.reserveBoundIndex(other, digest, hours(3), hours(3.25));
+        const rows = yield* sql<{ readonly key: string }>`
+          SELECT key FROM capture_bound_indexes
+           WHERE key IN (${dead}, ${renewed}, ${other}) ORDER BY key`;
+        return rows.map((row) => row.key);
+      }),
+    );
+    expect(left).toEqual([renewed, other].toSorted());
+  });
+
+  it("launch answers (0100): what a launch listed when it planned is kept, and the latest plan replaces it", async () => {
+    const launch = `launch:answers-${process.pid}`;
+    const result = await run(
+      Effect.gen(function* () {
+        const repo = yield* CaptureStoreRepo;
+        const never = yield* repo.launchAnswers(launch);
+        yield* repo.noteLaunchAnswers(launch, ["present", "sha256"]);
+        const first = yield* repo.launchAnswers(launch);
+        yield* repo.noteLaunchAnswers(launch, []);
+        return { never, first, replanned: yield* repo.launchAnswers(launch) };
+      }),
+    );
+    expect(result).toEqual({ never: null, first: ["present", "sha256"], replanned: [] });
+  });
+
+  it("sealAuthorityOver: what is on record and whether it is whole, in one read", async () => {
+    const result = await run(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        const repo = yield* CaptureStoreRepo;
+        const here = yield* freshWorktree;
+        const gone = yield* freshWorktree;
+        const scopes = [
+          { worktreeId: here, epoch: 1 },
+          { worktreeId: here, epoch: 2 },
+          { worktreeId: gone, epoch: 1 },
+        ];
+        const now = new Date();
+        const later = new Date(now.getTime() + 10 * 60_000);
+        const none = yield* repo.sealAuthorityOver(scopes, now);
+        yield* repo.recordPutAuthority(gone, 1, later);
+        const recorded = yield* repo.sealAuthorityOver(scopes, now);
+        // The server this one replaced may have bound an index URL nothing recorded: until
+        // the cutover the record is not whole, whatever it holds.
+        yield* sql`INSERT INTO capture_bound_index_cutover (until) VALUES (${later})`;
+        const beforeCutover = yield* repo.sealAuthorityOver(scopes, now);
+        const afterCutover = yield* repo.sealAuthorityOver(scopes, later);
+        yield* sql`DELETE FROM capture_bound_index_cutover`;
+        // A worktree that is gone took its authority with it: seen gone, never as "no authority".
+        yield* sql`DELETE FROM worktrees WHERE id = ${gone}`;
+        return {
+          none,
+          recorded,
+          beforeCutover,
+          afterCutover,
+          afterDelete: yield* repo.sealAuthorityOver(scopes, now),
+          own: yield* repo.sealAuthorityOver(scopes.slice(0, 2), now),
+          empty: yield* repo.sealAuthorityOver([], now),
+          later,
+        };
+      }),
+    );
+    expect(result.none).toEqual({ until: null, spokenFor: true });
+    expect(result.recorded).toEqual({ until: result.later, spokenFor: true });
+    expect(result.beforeCutover).toEqual({ until: result.later, spokenFor: false });
+    expect(result.afterCutover).toEqual({ until: result.later, spokenFor: true });
+    expect(result.afterDelete).toEqual({ until: null, spokenFor: false });
+    expect(result.own).toEqual({ until: null, spokenFor: true });
+    expect(result.empty).toEqual({ until: null, spokenFor: true });
+  });
+});
+
+/** Every migration before 0099, then `seed`, then 0099: the minutes its cutover is ahead. */
+const upTo0099 = (seed: Effect.Effect<void, unknown, SqlClient.SqlClient>) =>
+  Effect.gen(function* () {
+    const sql = yield* SqlClient.SqlClient;
+    const ordered = Object.entries(migrations).toSorted(([a], [b]) => a.localeCompare(b));
+    for (const [name, migration] of ordered) {
+      if (name.localeCompare("0099") >= 0) continue;
+      yield* migration;
+    }
+    yield* seed;
+    const [, migration] = ordered.find(([name]) => name.startsWith("0099")) ?? [];
+    if (migration === undefined) return yield* Effect.die("no 0099");
+    yield* migration;
+    const [row] = yield* sql<{ readonly minutes: number | null }>`
+      SELECT (SELECT round(extract(epoch FROM max(until) - now()) / 60)::int
+                FROM capture_bound_index_cutover) AS minutes`;
+    return row?.minutes ?? null;
+  });
+
+// Astra review 2026-10-02: the server before 0099 kept its pack index bindings in memory. A URL
+// it bound in its last minutes outlives it, and nothing in the new table says so.
+describe.skipIf(!reachable)("migration 0099 over a server that bound index URLs in memory", () => {
+  const stamp = `${process.pid}_${Date.now()}`;
+  const databases = {
+    used: `mend_bound_cutover_used_${stamp}`,
+    fresh: `mend_bound_cutover_fresh_${stamp}`,
+  };
+  const on = (database: string) => {
+    const url = new URL(ADMIN_URL);
+    url.pathname = `/${database}`;
+    const layer = MendDBLive.pipe(
+      Layer.provideMerge(
+        PgClient.layer({
+          url: Redacted.make(url.toString()),
+          transformResultNames: Str.snakeToCamel,
+          transformQueryNames: Str.camelToSnake,
+        }),
+      ),
+    );
+    return <A, E>(effect: Effect.Effect<A, E, SqlClient.SqlClient>) =>
+      Effect.runPromise(effect.pipe(Effect.provide(layer), Effect.scoped));
+  };
+
+  beforeAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        for (const database of Object.values(databases)) {
+          yield* sql.unsafe(`CREATE DATABASE ${database}`);
+        }
+      }),
+    );
+  });
+
+  afterAll(async () => {
+    await withAdmin(
+      Effect.gen(function* () {
+        const sql = yield* SqlClient.SqlClient;
+        for (const database of Object.values(databases)) {
+          yield* sql.unsafe(`DROP DATABASE IF EXISTS ${database} WITH (FORCE)`);
+        }
+      }),
+    );
+  });
+
+  it("a database with worktrees waits out the old server's longest URL once; one without waits for nothing", async () => {
+    const used = await on(databases.used)(
+      upTo0099(
+        Effect.gen(function* () {
+          const sql = yield* SqlClient.SqlClient;
+          yield* sql`
+            INSERT INTO projects (id, name, store_path, default_branch, organization_id)
+            VALUES ('p-used', 'web', '/store/p/repo.git', 'main',
+                    (SELECT id FROM organizations LIMIT 1))`;
+          yield* sql`
+            INSERT INTO worktrees (id, project_id, name, directory, branch, base_sha)
+            VALUES ('wt-used', 'p-used', 'wt-used', 'wt-used', 'mend/wt/wt-used', 'abc')`;
+        }),
+      ),
+    );
+    expect(used).toBe(20);
+    expect(await on(databases.fresh)(upTo0099(Effect.void))).toBeNull();
+  });
 });
 
 // Review 2026-09-28 (10) #5, seals recorded before 0092: each gets every epoch prefix its

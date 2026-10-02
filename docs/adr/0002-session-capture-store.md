@@ -1443,7 +1443,7 @@ Mend-side details the decision record left open, decided in this ADR:
       holds: it is withheld until that URL is dead.
     - **Restarts.** A URL a process before this one minted (bound URLs record nothing) is covered by
       the store's startup window, now its longest life plus the clock margin: seals wait the first
-      20 minutes after a Mend start.
+      20 minutes after a Mend start. Superseded the same day by decision 49.
     - **Large objects go as one bound PUT** (2026-10-02, the first Stop on a Garage box): a bindable
       call answers a key it can bind as one PUT up to `BOUND_SINGLE_PUT_MAX_BYTES` (256 MiB), past
       the 16 MiB multipart threshold. A session's first save carries dozens of 40–67 MiB packs, and
@@ -1452,4 +1452,82 @@ Mend-side details the decision record left open, decided in this ADR:
     - **What remains.** The 20 minutes after a Mend start; a Stop that uploaded through part URLs
       (an object over 256 MiB, or one Mend cannot bind); an executor of an older daemon; the
       read-back's own time, which grows with what a capture names (follow-up: read back only what is
-      new since the last standing seal).
+      new since the last standing seal). Decision 49 removes the first and the last, and raises the
+      single PUT to 5 GiB.
+
+49. (2026-10-02) A Stop on Garage in seconds: no wait after a restart, nothing read twice.
+    - **Measured.** The first Stops on a self-hosted box (an i9-9900K, Garage beside Mend) took 1
+      min 58 s with 788 MB of dependencies not yet saved, and 18 minutes right after a Mend restart.
+      Of the first: 69 s snapshotting on one throttled core (sealantd), 22 s of seal checks on
+      Mend's own thread, 5.7 s reading every pack back a second time, 5 s uploading packs one at a
+      time. The owner's verdict: not acceptable.
+    - **The restart window goes.** It stood for URLs a process before this one handed out. Each of
+      those that could replace an object a seal names is on record: an unbound one in its epoch's
+      write authority (`capture_put_authority`, written before the URL leaves), and one bound to a
+      pack index in `capture_bound_indexes` (migration 0099, which replaces the in-memory registry
+      of decision 48). `sealStandingOf` drops the store's startup term (`BlobStore.startupUntil`)
+      when that record is whole for every scope the seal's objects live under (`sealAuthorityOver`):
+      each worktree is there with its rows, and the cutover below is past. A scope whose worktree is
+      gone took its record with it: the window is waited out as before. Whether the record is whole
+      and what it holds are read in one statement, so a worktree removed meanwhile is seen gone or
+      seen with its authority. What this process itself minted for a key past the window still
+      counts. A multipart complete never replaces a stored object on such a bucket (`completeOnce`),
+      restart or not.
+    - **The bindings in Postgres.** A reservation takes an advisory lock on the key and the row's
+      own lock from its read to its write, so two calls cannot bind one index to two digests and an
+      extension made meanwhile is never overwritten with an earlier expiry. The same bytes bound
+      again never shorten a binding. An extension that finds no binding fails the call, and no URL
+      of it leaves Mend. Bindings dead for an hour are swept with a predicate asked of the row as it
+      is deleted, so one renewed meanwhile stays. A binding is never given back, even when its call
+      hands out no URL: another call may have signed a URL under that very row since, and the row
+      cannot say whose it is. An extension finds only a binding live at the moment of signing: a
+      call that stalled past its reservation's life signs nothing, since a seal may have stood over
+      other bytes since.
+    - **The upgrade, once.** The server before migration 0099 kept its bindings in memory, and a URL
+      it bound in its last minutes outlives it. The migration writes a cutover 20 minutes ahead
+      (`capture_bound_index_cutover`) when the database already has worktrees. Until then seals wait
+      the startup window out as they did. A new install has no such wait.
+    - **What an executor said it reads survives a restart too.** An executor plans once, at boot,
+      and lists there whether it reads `present` and sends `sha256`. Mend kept that in memory, so
+      after a restart every running executor was answered as an older daemon: unbound URLs, and a
+      Stop that waited 10.5 minutes (measured on the box, the first Stop after a restart with the
+      window gone). It is on record now (`capture_launch_answers`, migration 0100) and read by a
+      process that never saw the launch plan.
+    - **The read-back reads nothing twice.** `storedCaptureProblem` takes
+      `proofs: { sinceMs, usedFromMs }`: an object whose name is its digest, read whole by this
+      process at or after `sinceMs` and found to be what its name says, is asked for (`head`) and
+      not read again. `sealStandingOf` passes `sinceMs = until`, the latest moment any URL could
+      have replaced anything the seal names, and marks the seal re-verified from the earliest read
+      the answer rests on (`markSealReverified`), so a URL handed out since voids it under the scope
+      rows' locks exactly as before. The manifest, every git pack and every pack index are read each
+      time.
+    - **A pack's payload proof does not lapse.** `verifyPackPayloads` proved two things at once: the
+      stored bytes hash to the key, and every chunk in those bytes decodes. The second is a fact
+      about bytes that hash to the key, whatever is stored later, so for a key that names its digest
+      it is kept for the life of the process. The first is the read-back's question, asked once
+      nothing can replace the object. The same holds for a link member's digest (`digestOf`): every
+      chunk read for it is checked against the hash that names it, so the digest is a fact about
+      that list of chunk hashes. Before, both lapsed with `proofStands`, and every seal in the 20
+      minutes after a start decompressed every pack and hashed every linked member again. A pack
+      index key is not such a key: it names its pack's digest, not its own bytes'. It keeps the old
+      rule, and a register refuses a chunked section that lists one as a pack. A seal an older
+      server recorded over such a capture is void.
+    - **Verification leaves Mend's thread, and starts early.** Packs are verified on worker threads
+      (`pack-verify-pool.ts`), up to eight at once, at most that many packs in memory whoever asks.
+      A register that seals nothing starts verifying the packs it lists in the background, so the
+      sealing register that follows waits for what is left. A second asker of a pack under
+      verification waits for the first. The background pass is cut off after five minutes, which
+      gives its places back and sends its waiters to verify for themselves.
+    - **Reviewed.** GPT-6 Astra read the first cut and found five ways a seal could stand over
+      replaceable bytes and one hang: the index key rule above, the upgrade, the two reads of a
+      scope, the sweep, an extension overwritten, and the unbounded background pass. A second pass
+      found two more: a reservation given back under another call's signed URL, and seals recorded
+      before the index key rule. A third found a lapsed binding revived by a call that stalled past
+      its reservation. Each is fixed as described here, with a test named for it.
+    - **sealantd** (its changeset of the same day): a final flush is not throttled, reads small
+      files on reader threads, hashes and compresses a large file's parts on them, hashes each pack
+      on its own thread, takes SHA-256 from `ring`, and uploads large objects four at a time.
+    - **What remains.** After a restart, the first seal of each worktree reads every object it names
+      once (the proofs are in memory). The walk of the tree and the register's restorability check
+      are still one thread each. An executor of an older daemon, an object over 5 GiB, and a scope
+      whose worktree is gone wait as decision 48 says.

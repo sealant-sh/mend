@@ -33,7 +33,6 @@ import { Cause, Effect, Exit, Fiber, Layer, Option, Scope } from "effect";
 import * as Context from "effect/Context";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 
-import { boundIndexDigest, reserveBoundIndex } from "../src/bound-index-digests.ts";
 import {
   CaptureChannel,
   type CapturePlanNotice,
@@ -3027,8 +3026,12 @@ describeSeals(
 const presigned: Array<{ readonly key: string; readonly sha256: string | undefined }> = [];
 /** Keys whose next `head` in the suite below answers absent: a look before the key landed. */
 const boundHeadMisses = new Set<string>();
+/** Called as a PUT URL of the suite below is signed, with its key. */
+const boundOnPresign: { hook: ((key: string) => void) | undefined } = { hook: undefined };
 /** Let a short-lived binding in the registry die. */
 const settle = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+/** When the store's window for a process before this one ends in the suite below; 0: long over. */
+const boundStartupUntil = { at: 0 };
 
 describeSeals(
   "bytes-bound upload URLs: no write authority, no wait",
@@ -3039,8 +3042,13 @@ describeSeals(
         Effect.map(BlobStore, (store) => ({
           ...store,
           // Garage: it replaces objects, but checks a signed checksum. This process's own window
-          // (a URL minted before it started), and the clock margin past it, are over.
-          replaceableUntil: () => Effect.sync(() => Date.now() - 10 * 60_000),
+          // (a URL minted before it started), and the clock margin past it, are over — unless a
+          // test says the process only just started (`boundStartupUntil`).
+          replaceableUntil: () =>
+            Effect.sync(() =>
+              boundStartupUntil.at > 0 ? boundStartupUntil.at : Date.now() - 10 * 60_000,
+            ),
+          startupUntil: Effect.sync(() => boundStartupUntil.at),
           bindsBytes: Effect.succeed(true),
           head: (key: string) =>
             boundHeadMisses.delete(key) ? Effect.succeed(null) : store.head(key),
@@ -3052,7 +3060,10 @@ describeSeals(
             sha256?: string,
           ) =>
             Effect.sync(() => {
-              if (method === "PUT") presigned.push({ key, sha256 });
+              if (method === "PUT") {
+                presigned.push({ key, sha256 });
+                boundOnPresign.hook?.(key);
+              }
             }).pipe(Effect.andThen(store.presign(key, method, ttl, length, sha256))),
         })),
       ).pipe(Layer.provide(BlobStoreFsLive(root))),
@@ -3191,24 +3202,195 @@ describeSeals(
         const bytes = fs.readFileSync(path.join(world.blobRoot, key));
         return { key, sha256: createHash("sha256").update(bytes).digest("hex") };
       };
-      // The registry is the process's: every binding here lives a moment, and is gone when the
-      // test ends.
+      const reserve = (sha256: string) =>
+        run(
+          Effect.flatMap(CaptureStoreRepo, (repo) =>
+            repo.reserveBoundIndex(index.key, sha256, new Date(), new Date(Date.now() + 300)),
+          ),
+        );
       // A bound URL for other bytes of it, still live: not standing.
       const index = indexOf(at.git);
-      expect(
-        reserveBoundIndex(index.key, "0".repeat(64), Date.now(), Date.now() + 300).outcome,
-      ).toBe("reserved");
-      expect(reserveBoundIndex(index.key, index.sha256, Date.now(), Date.now() + 300).outcome).toBe(
-        "conflict",
-      );
+      expect((await reserve("0".repeat(64))).outcome).toBe("reserved");
+      expect((await reserve(index.sha256)).outcome).toBe("conflict");
       expect(await sealOf(at)).toBeNull();
       // Once that URL is dead, a URL bound to the bytes stored there: nothing could replace them.
       await settle(350);
-      expect(reserveBoundIndex(index.key, index.sha256, Date.now(), Date.now() + 300).outcome).toBe(
-        "reserved",
-      );
+      expect((await reserve(index.sha256)).outcome).toBe("reserved");
       expect((await sealOf(at))?.captureId).toBe(file.cap.id);
-      await settle(350);
+    });
+
+    it("a restart holds no seal: what a process before this one handed out is on record", async () => {
+      const at = await claimed();
+      await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const file = sealedFile(at, "sealed just after a restart\n");
+      await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
+      await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
+      // Mend started a moment ago: the store's window for the process before it is 20 minutes
+      // away, and nothing else holds the seal.
+      boundStartupUntil.at = Date.now() + 20 * 60_000;
+      try {
+        expect((await sealOf(at))?.captureId).toBe(file.cap.id);
+        // An unbound URL the process before this one handed out is on record with its epoch: held.
+        world.memory.putAuthority.set(
+          `${at.worktreeId}:${at.epoch}`,
+          new Date(Date.now() + 5 * 60_000),
+        );
+        expect(await sealOf(at)).toBeNull();
+        world.memory.putAuthority.delete(`${at.worktreeId}:${at.epoch}`);
+        // One it bound to other bytes of a pack index the seal names is on record too: held.
+        const packs = (at.git as { readonly packs: ReadonlyArray<string> }).packs;
+        const index = `${packs[0] ?? ""}.idx`;
+        world.memory.boundIndexes.set(index, {
+          sha256: "0".repeat(64),
+          until: new Date(Date.now() + 5 * 60_000),
+        });
+        expect(await sealOf(at)).toBeNull();
+        world.memory.boundIndexes.delete(index);
+        expect((await sealOf(at))?.captureId).toBe(file.cap.id);
+        // A worktree that is gone took its record with it: the window is waited out, as before.
+        world.memory.goneWorktrees.add(at.worktreeId);
+        expect(await sealOf(at)).toBeNull();
+        world.memory.goneWorktrees.delete(at.worktreeId);
+        // The first start after the upgrade: the server before it kept index bindings in
+        // memory, so until its longest URL is dead the record is not whole (Astra review).
+        world.memory.boundIndexCutover.until = Date.now() + 20 * 60_000;
+        expect(await sealOf(at)).toBeNull();
+        world.memory.boundIndexCutover.until = Date.now() - 1;
+        expect((await sealOf(at))?.captureId).toBe(file.cap.id);
+      } finally {
+        world.memory.goneWorktrees.delete(at.worktreeId);
+        world.memory.boundIndexCutover.until = 0;
+        boundStartupUntil.at = 0;
+      }
+    });
+
+    it("2026-10-02: after a Mend restart a running executor is still answered bound URLs, and its seal waits for none", async () => {
+      const at = await claimed();
+      // The executor plans once, at boot, and says what it reads.
+      await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const file = sealedFile(at, "saved after a restart\n");
+      // Mend restarts: a fresh channel over the same store and bucket. The executor does not
+      // plan again. Before, it was answered as an older daemon: an unbound URL, its authority
+      // recorded, and a Stop that waited 10.5 minutes for it to expire.
+      presigned.length = 0;
+      const restarted = <A, E>(use: (api: SessionCaptureApi) => Effect.Effect<A, E>) =>
+        Effect.runPromise(
+          Effect.scoped(
+            Effect.gen(function* () {
+              const channel = yield* Layer.build(Layer.fresh(world.channel));
+              return yield* use(
+                Context.get(channel, CaptureChannel).apiFor({
+                  worktreeId: at.worktreeId,
+                  projectId: world.project.id,
+                  executorId: "executor-1",
+                  footprintBytes: 0,
+                }),
+              );
+            }),
+          ),
+        );
+      const minted = await restarted((api) =>
+        api.uploadUrls({
+          worktree_id: at.worktreeId,
+          epoch: at.epoch,
+          keys: [file.key],
+          sizes: { [file.key]: file.bytes.length },
+        }),
+      );
+      await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
+      const registered = await restarted((api) =>
+        registerOn(at.worktreeId, at.epoch, api)(file.cap),
+      );
+      const outcome = { minted, registered };
+      expect(Object.keys(outcome.minted.urls)).toEqual([file.key]);
+      expect(presigned).toEqual([
+        { key: file.key, sha256: file.key.slice(file.key.lastIndexOf("/") + 1) },
+      ]);
+      expect(authority(at)).toBeUndefined();
+      expect(outcome.registered.seal).toEqual({ state: "recorded" });
+      expect((await sealOf(at))?.captureId).toBe(file.cap.id);
+    });
+
+    it("Astra review: a chunked section that lists a pack index as a pack is refused", async () => {
+      const at = await claimed();
+      await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const file = sealedFile(at, "a pack under an index's name\n");
+      // The pack's own bytes stored under `<its digest>.idx`: a chunk pack where only a git pack
+      // index may be, whose payload proof would outlive what is stored there.
+      const disguised = `${file.key}.idx`;
+      const workspace = file.cap.manifest.sections.workspace;
+      const manifest = {
+        ...file.cap.manifest,
+        sections: {
+          ...file.cap.manifest.sections,
+          workspace: { ...workspace, packs: workspace.packs.map(() => disguised) },
+        },
+      };
+      const bytes = new Uint8Array(Buffer.from(JSON.stringify(manifest)));
+      const id = sha256Hex(bytes);
+      const built = {
+        manifest,
+        bytes,
+        id,
+        key: captureKeys(at.worktreeId, at.epoch).manifest(id),
+      };
+      await run(
+        uploadObjects(
+          new Map([...file.snapshot.objects, [disguised, file.bytes], [built.key, built.bytes]]),
+        ),
+      );
+      const refused = await run(
+        registerOn(at.worktreeId, at.epoch, at.api)(built).pipe(Effect.flip),
+      );
+      expect(refused).toMatchObject({ status: 400 });
+      expect(String(refused.message)).toContain("pack index key(s) as packs");
+    });
+
+    it("Astra review: a seal an older server recorded over a pack listed under an index's name is void", async () => {
+      const at = await claimed();
+      await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const file = sealedFile(at, "sealed before the rule\n");
+      await run(uploadObjects(new Map([...file.snapshot.objects, [file.cap.key, file.cap.bytes]])));
+      await run(registerOn(at.worktreeId, at.epoch, at.api)(file.cap));
+      expect((await sealOf(at))?.captureId).toBe(file.cap.id);
+      // As an older server would have registered it: the workspace pack listed as `<sha>.idx`.
+      const row = world.memory.captures.get(file.cap.id);
+      if (row === undefined) throw new Error("the sealed capture is not registered");
+      const sections = JSON.parse(JSON.stringify(row.sections)) as {
+        workspace: { packs: Array<string> };
+      };
+      sections.workspace.packs = sections.workspace.packs.map((key) => `${key}.idx`);
+      world.memory.captures.set(file.cap.id, { ...row, sections });
+      expect(await sealOf(at)).toBeNull();
+      expect((await recordedSeal(at))?.voidReason).toContain("lists a pack index as a pack");
+    });
+
+    it("Astra review: an index URL whose binding is gone by the time it is signed does not leave Mend", async () => {
+      const at = await claimed();
+      await plan(at, [UPLOAD_ANSWER_PRESENT, UPLOAD_ANSWER_SHA256]);
+      const index = `${captureKeys(at.worktreeId, at.epoch).pack("7".repeat(64))}.idx`;
+      const ask = at.api.uploadUrls({
+        worktree_id: at.worktreeId,
+        epoch: at.epoch,
+        keys: [index],
+        sizes: { [index]: 12 },
+        sha256: { [index]: "8".repeat(64) },
+      });
+      // The binding goes between the reservation and the signature (a sweep that should never
+      // take it, a row lost): the URL is on no record.
+      boundOnPresign.hook = (key) => {
+        if (key === index) world.memory.boundIndexes.delete(index);
+      };
+      try {
+        const refused = await run(ask.pipe(Effect.exit));
+        expect(Exit.isFailure(refused)).toBe(true);
+      } finally {
+        boundOnPresign.hook = undefined;
+      }
+      // Asked again, it is bound and handed out.
+      const again = await run(ask);
+      expect(Object.keys(again.urls)).toEqual([index]);
+      expect(world.memory.boundIndexes.get(index)?.sha256).toBe("8".repeat(64));
     });
 
     it("Astra re-review: an index stored after the call's first look is answered present, and gets no URL for other bytes", async () => {
@@ -3241,8 +3423,9 @@ describeSeals(
       );
       expect(answered.urls).toEqual({});
       expect(answered.present).toEqual([index]);
-      // No URL left Mend for those bytes, and the binding the call reserved is given back.
-      expect(boundIndexDigest(index, Date.now())).toBeNull();
+      // No URL left Mend for those bytes. The binding stays until it lapses: another call may
+      // have signed a URL under it, and the row cannot say (Astra review, 2026-10-02).
+      expect(world.memory.boundIndexes.get(index)?.sha256).toBe("9".repeat(64));
     });
 
     it("answers a key past the multipart threshold as one bound PUT, so it holds no seal", async () => {
@@ -4017,15 +4200,73 @@ describeSeals(
       // Before: every chunk a shared link's digest needs was read again (12 ranged GETs).
       expect(readsOf(packs)).toBe(0);
       expect(bucketReads.gets).toBeLessThan(firstReads);
-      // A bucket that does not refuse overwrites, inside a URL's window: nothing proven before
-      // stands, and the next seal reads every pack again — each whole at most once.
+      // A bucket that does not refuse overwrites, inside a URL's window: the seal is withheld,
+      // and no pack is read whole for it. What a pack's bytes decode to was proven of bytes that hash
+      // to its key, and that does not lapse (2026-10-02; before, every pack was read again).
       passBucketReplaceable = () => Date.now() + 3_600_000;
       const third = nextSealing(at, second);
       await run(uploadObjects(new Map([[third.key, third.bytes]])));
       resetReads();
       const windowed = await run(registerOn(at.worktreeId, at.epoch, at.api)(third));
       expect(windowed.seal).toEqual({ state: "withheld", reason: "write-authority" });
-      for (const key of packs) expect(bucketReads.whole.get(key)).toBe(1);
+      // (Its trailing index may be: a ranged read of a few kilobytes.)
+      for (const key of capture.bulkPacks) expect(bucketReads.whole.get(key)).toBeUndefined();
+      // Once no URL can replace them the read-back reads every pack, once: a read from before
+      // says nothing of what is stored now.
+      const windowEnded = Date.now();
+      passBucketReplaceable = () => windowEnded;
+      await settle(2);
+      resetReads();
+      const settled = await run(registerOn(at.worktreeId, at.epoch, at.api)(third));
+      expect(settled.seal).toEqual({ state: "recorded" });
+      for (const key of capture.bulkPacks) expect(bucketReads.whole.get(key)).toBe(1);
+    });
+
+    it("2026-10-02: a seal's read-back does not read again what its register just read, until a URL could have replaced it", async () => {
+      // Garage with no URL live: it replaces objects, and none could since a minute ago.
+      const quietSince = Date.now() - 60_000;
+      passBucketReplaceable = () => quietSince;
+      const at = await claimed();
+      const capture = sharedLinksCapture(at, "read once");
+      const packs = [...capture.bulkPacks, ...capture.bulkDirPacks];
+      await run(uploadObjects(capture.objects));
+      resetReads();
+      const first = await run(registerOn(at.worktreeId, at.epoch, at.api)(capture.built));
+      expect(first.seal).toEqual({ state: "recorded" });
+      // Before: the seal checks read every pack, and the read-back read every one again.
+      for (const key of capture.bulkPacks) expect(bucketReads.whole.get(key)).toBe(1);
+      // The mark rests on the register's own reads: not before the bucket went quiet.
+      const marked = world.memory.seals.get(`${at.worktreeId}:${at.epoch}`)?.reverifiedAt;
+      expect(marked?.getTime()).toBeGreaterThanOrEqual(quietSince);
+      // A later Stop over the same sections reads none of them.
+      const second = nextSealing(at, capture.built);
+      await run(uploadObjects(new Map([[second.key, second.bytes]])));
+      resetReads();
+      const again = await run(registerOn(at.worktreeId, at.epoch, at.api)(second));
+      expect(again.seal).toEqual({ state: "recorded" });
+      expect(readsOf(packs)).toBe(0);
+      // An upload URL handed out under the epoch since, now expired: every read before it could
+      // be of bytes it replaced, so each pack is read back again, once.
+      await settle(5);
+      world.memory.putAuthority.set(`${at.worktreeId}:${at.epoch}`, new Date());
+      await settle(5);
+      const third = nextSealing(at, second);
+      await run(uploadObjects(new Map([[third.key, third.bytes]])));
+      resetReads();
+      const after = await run(registerOn(at.worktreeId, at.epoch, at.api)(third));
+      expect(after.seal).toEqual({ state: "recorded" });
+      for (const key of capture.bulkPacks) expect(bucketReads.whole.get(key)).toBe(1);
+      // A pack that is gone is still found gone: no seal stands on an old read of it.
+      const fourth = nextSealing(at, third);
+      await run(uploadObjects(new Map([[fourth.key, fourth.bytes]])));
+      const lost = path.join(world.blobRoot, capture.bulkPacks[0] ?? "");
+      const kept = fs.readFileSync(lost);
+      fs.rmSync(lost);
+      const missing = await run(
+        registerOn(at.worktreeId, at.epoch, at.api)(fourth).pipe(Effect.result),
+      );
+      fs.writeFileSync(lost, kept);
+      expect(JSON.stringify(missing)).not.toContain('"state":"recorded"');
     });
 
     it("a retry of a register still running joins it, an abandoned attempt included: one verification", async () => {

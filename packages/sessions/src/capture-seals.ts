@@ -5,13 +5,13 @@ import type { WorktreeId } from "@mend/domain";
 import {
   BlobStore,
   CaptureCheckUnfinishedError,
+  chunkedIndexKeysOf,
   keysOfSections,
   storedCaptureProblem,
 } from "@mend/store";
 import { Duration, Effect, Layer, Semaphore } from "effect";
 import * as Context from "effect/Context";
 
-import { boundIndexDigest } from "./bound-index-digests.ts";
 import { makeSingleFlight } from "./single-flight.ts";
 
 /**
@@ -117,21 +117,23 @@ export const SEAL_VERIFICATION_LIMIT_WORDS = "30 minutes";
 
 /**
  * The first pack index among `listed` that a live bytes-bound upload URL names other bytes for
- * (`reserveBoundIndex`), with until when; null when there is none. Reads only the indexes that
- * have a live binding, and each is small.
+ * (`CaptureStoreRepo.reserveBoundIndex`, migration 0099), with until when; null when there is
+ * none. Reads only the indexes that have a live binding, and each is small.
  */
 const boundIndexHold = (listed: ReadonlyArray<string>, at: number) =>
   Effect.gen(function* () {
     const blobs = yield* BlobStore;
-    for (const key of listed) {
-      if (!key.endsWith(".idx")) continue;
-      const binding = boundIndexDigest(key, at);
-      if (binding === null) continue;
-      const stored = yield* blobs.get(key).pipe(
+    const repo = yield* CaptureStoreRepo;
+    const bindings = yield* repo.boundIndexesAmong(
+      listed.filter((key) => key.endsWith(".idx")),
+      new Date(at),
+    );
+    for (const binding of bindings) {
+      const stored = yield* blobs.get(binding.key).pipe(
         Effect.map((bytes) => createHash("sha256").update(bytes).digest("hex")),
         Effect.orElseSucceed(() => null),
       );
-      if (stored !== binding.sha256) return { key, until: binding.until };
+      if (stored !== binding.sha256) return { key: binding.key, until: binding.until.getTime() };
     }
     return null;
   });
@@ -149,19 +151,18 @@ const readBacks = makeSingleFlight<SealStanding, never>();
  * store adds what this process minted and a URL minted before it started could still do. So:
  * - while any such URL could still be used: withheld;
  * - once none can, every object the sealed capture names is read back (`storedCaptureProblem`):
- *   all what their names say → it is marked re-verified from the moment the read began, and
- *   stands until another URL is handed out under one of those epochs. The mark is a
- *   compare-and-set against all of that authority (`markSealReverified`): a URL handed out while
- *   the objects were being read back voids the read, and the seal stays withheld. Any other
- *   bytes → void, for good;
+ *   all what their names say → it is marked re-verified from the earliest read that answer rests
+ *   on, and stands until another URL is handed out under one of those epochs. The mark is a
+ *   compare-and-set against all of that authority (`markSealReverified`): a URL handed out since
+ *   that read voids it, and the seal stays withheld. Any other bytes → void, for good;
  * - a store that could not be read concludes nothing: withheld, asked again on the next read.
  *
- * Under epochs that hold no write authority — no expiry recorded, and Mend still speaks for each
- * (its row or its worktree is there): every URL handed out under them was bound to its bytes,
- * which a store that `bindsBytes` checks — nothing could have replaced the objects once this
- * process's own window (`replaceableUntil`, plus the clock margin) is past: the seal stands as
- * recorded. An epoch whose row went with its worktree says nothing: the wait and the read-back,
- * as before.
+ * Two things keep that from costing a Stop (ADR 0002 decision 49). The store's window after a
+ * start (`BlobStore.startupUntil`) is not waited out when Mend still speaks for every epoch the
+ * seal's objects live under (`sealAuthorityOver`): every URL a process before this one handed out
+ * that could replace one of them is on record, in that epoch's authority or in the pack index
+ * bindings. And the read-back does not read again what this process already read whole, and
+ * found to be what its name says, since the last moment a URL could have replaced it.
  */
 export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function* (
   seal: SealedCompletion,
@@ -186,6 +187,17 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
       reason: "the sealed capture is not registered",
     } satisfies SealStanding;
   }
+  // A capture an older server registered may list a pack index key as a chunk pack, which a
+  // register refuses now: no read-back can vouch for one (`chunkedIndexKeysOf`). On any store.
+  const disguised = chunkedIndexKeysOf(row.sections);
+  if (disguised.length > 0) {
+    const reason = `a chunked section lists a pack index as a pack: ${disguised[0] ?? ""}`;
+    yield* repo.voidSeal(seal.worktreeId, seal.epoch, seal.captureId, reason);
+    yield* Effect.logError(
+      "capture seals: the sealed capture lists a pack index as a chunk pack · the seal is void",
+    ).pipe(Effect.annotateLogs({ ...annotations, key: disguised[0] ?? "" }));
+    return { state: "void", code: "void", reason } satisfies SealStanding;
+  }
   // Every object the capture lists, not only its manifest: the store remembers URLs by key.
   const listed = [row.manifestKey, ...keysOfSections(row.sections)];
   let storeUntil = 0;
@@ -195,8 +207,20 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
   // review 2026-09-28 (10) #5): a URL of an earlier epoch could replace that pack as surely as
   // one of the seal's own.
   const scopes = seal.scopes ?? [{ worktreeId: seal.worktreeId, epoch: seal.epoch }];
-  const recorded = yield* repo.putAuthorityUntilOver(scopes);
-  const until = Math.max(storeUntil, recorded?.getTime() ?? 0);
+  // The store's window after a start stands for URLs a process before this one handed out.
+  // Each of those that could replace an object the seal names is on record: an unbound one in
+  // its epoch's write authority (written before the URL left), one bound to a pack index in the
+  // index bindings (0099). So while Mend still speaks for every scope (each worktree is there,
+  // its rows with it), the window adds nothing, and a restart holds no seal for 20 minutes
+  // (2026-10-02). What this process itself minted for these keys past that window still counts.
+  // Whether the record is whole and what it holds are read together, in one statement: a
+  // worktree removed meanwhile is seen gone, or seen with its authority, never neither. The
+  // record is not whole before the cutover of migration 0099 either: the server this one
+  // replaced kept its index bindings in memory (Astra review, 2026-10-02).
+  const startupUntil = yield* blobs.startupUntil;
+  const record = yield* repo.sealAuthorityOver(scopes, new Date(now()));
+  if (startupUntil > 0 && storeUntil <= startupUntil && record.spokenFor) storeUntil = 0;
+  const until = Math.max(storeUntil, record.until?.getTime() ?? 0);
   const at = now();
   // A pack index a live bytes-bound URL names other bytes for could be replaced by them: never
   // standing over it until that URL is dead (ADR 0002 decision 48).
@@ -232,7 +256,11 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
   // One read-back per seal and authority at a time (e2e8 F2): the engine's attestations and the
   // executor's re-asks ask together, and a caller that gives up leaves it running for the next.
   const readBack = Effect.gen(function* () {
-    const problem = yield* storedCaptureProblem(row.manifestKey).pipe(
+    // What this process already read whole since nothing could replace it (`until`) is not read
+    // again: a sealing register has just read every pack it lists. The mark below is then asked
+    // from the earliest read the answer rests on, so a URL handed out since voids it as before.
+    const proofs = { sinceMs: until, usedFromMs: at };
+    const problem = yield* storedCaptureProblem(row.manifestKey, { proofs }).pipe(
       Effect.provideService(BlobStore, blobs),
       Effect.timeoutOrElse({
         duration: SEAL_VERIFICATION_LIMIT,
@@ -280,12 +308,20 @@ export const sealStandingOf = Effect.fn("CaptureSeals.sealStandingOf")(function*
           "an upload URL bound to other bytes for a pack index it names was handed out while its objects were read back",
       } satisfies SealStanding;
     }
-    // Marked only if no URL of the epoch was handed out since the read began (`at`).
+    // Marked only if no URL of the epoch was handed out since the earliest read it rests on.
     const marked = yield* repo.markSealReverified(
       seal.worktreeId,
       seal.epoch,
       seal.captureId,
-      new Date(at),
+      new Date(Math.min(at, proofs.usedFromMs)),
+    );
+    yield* Effect.logInfo("capture seals: read back").pipe(
+      Effect.annotateLogs({
+        ...annotations,
+        marked,
+        readBackMs: now() - at,
+        restsOnReadsFrom: new Date(Math.min(at, proofs.usedFromMs)).toISOString(),
+      }),
     );
     if (!marked) {
       yield* Effect.logWarning(
