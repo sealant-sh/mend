@@ -74,9 +74,15 @@ catalog:
 # with rc.115 (beta.93 is below @effect/vitest's ^4.0.0-beta.98); hence effect in apps/cli.
 catalogs:
   t3:
+    "@effect/platform-node": 4.0.0-rc.115
     "@effect/vitest": 4.0.0-rc.115
     effect: 4.0.0-rc.115
     vitest: 5.0.1
+
+# @effect/platform-node rc.115 asks for @effect/platform-node-shared ^4.0.0-rc.115, which resolves
+# to the stable 4.0.0 and its effect ^4.0.0 peer. t3code pins it to rc.115 the same way.
+overrides:
+  "@effect/platform-node@4.0.0-rc.115>@effect/platform-node-shared": 4.0.0-rc.115
 
 onlyBuiltDependencies:
   - electron

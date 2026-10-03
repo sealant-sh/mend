@@ -8,6 +8,7 @@
   "exports": {
     ".": "./src/index.ts",
     "./keybindings": "./shared/keybindings.ts",
+    "./pin": "./t3code.pin.json",
     "./relay": "./src/relay.ts",
     "./settings": "./src/settings.ts"
   },
