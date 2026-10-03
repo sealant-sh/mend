@@ -8,13 +8,21 @@ import { afterAll, describe, expect, it } from "vitest";
 import { BlobStore, BlobStoreFsLive } from "../src/blob-store.ts";
 import {
   captureKeys,
+  readCaptureFileBytes,
   sha256Hex,
   storedObjectProblem,
   verifyPackPayloads,
   verifySectionRestorable,
+  withCaptureReadPass,
 } from "../src/captures.ts";
 import { PACK_VERIFY_WORKERS } from "../src/pack-verify-pool.ts";
-import { sectionOf, snapshotDirectory, uploadObjects, writeCdcPack } from "./capture-fixture.ts";
+import {
+  buildManifest,
+  sectionOf,
+  snapshotDirectory,
+  uploadObjects,
+  writeCdcPack,
+} from "./capture-fixture.ts";
 
 /**
  * Review 2026-09-28 (6) #9, cross-repo decision 19: stored objects are write-once, and what Mend
@@ -159,6 +167,50 @@ describe("capture proofs are bound to the store and stand only once nothing can 
       stalling,
     );
     expect(after.packs).toBe(packs.length);
+  });
+
+  it("2026-10-03: files read in one pass fetch each pack once, not once per file", async () => {
+    const tree = freshDir("many-files");
+    for (let n = 0; n < 12; n += 1) {
+      fs.writeFileSync(path.join(tree, `memory-${n}.md`), `# note ${n}\n${"x".repeat(200)}\n`);
+    }
+    const snapshot = snapshotDirectory(tree, captureKeys("wt-pass", 1), { format: 2 });
+    const packReads = new Map<string, number>();
+    const counting = Layer.effect(
+      BlobStore,
+      Effect.map(BlobStore, (inner): typeof BlobStore.Service => ({
+        ...inner,
+        get: (key: string) => {
+          if (snapshot.packs.includes(key) || snapshot.dirPacks.includes(key)) {
+            packReads.set(key, (packReads.get(key) ?? 0) + 1);
+          }
+          return inner.get(key);
+        },
+      })),
+    ).pipe(Layer.provide(BlobStoreFsLive(freshDir("many-files-blobs"))));
+    await run(uploadObjects(snapshot.objects), counting);
+    const manifest = buildManifest({
+      worktreeId: "wt-pass",
+      n: 1,
+      parent: null,
+      epoch: 1,
+      workspace: sectionOf(snapshot),
+    }).manifest;
+    const readAll = Effect.forEach(
+      Array.from({ length: 12 }, (_, n) => `memory-${n}.md`),
+      (file) => readCaptureFileBytes(manifest, "workspace", file),
+    );
+    // Each file on its own: the section's dir packs and content packs are fetched for each.
+    await run(readAll, counting);
+    const apart = Math.max(0, ...packReads.values());
+    packReads.clear();
+    // In one pass: each once.
+    const bytes = await run(withCaptureReadPass(readAll), counting);
+    expect(bytes.map((b) => Buffer.from(b).toString("utf8").split("\n")[0])).toEqual(
+      Array.from({ length: 12 }, (_, n) => `# note ${n}`),
+    );
+    expect(Math.max(0, ...packReads.values())).toBe(1);
+    expect(apart).toBeGreaterThan(1);
   });
 
   it("#9 a dir pack read from one store does not stand for the same key in another", async () => {

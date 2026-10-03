@@ -1239,6 +1239,21 @@ const proofStands = (
     return atMs >= (yield* store.replaceableUntil(key));
   });
 
+/** The pass's chunk source for `section`'s packs, made once per pass; a fresh one outside a pass. */
+const passChunkSource = (
+  section: ChunkedSection,
+): Effect.Effect<ChunkSource, CaptureReadError, BlobStore> =>
+  Effect.gen(function* () {
+    const pass = yield* CaptureReadPass;
+    if (pass === null) return yield* makeChunkSource(section.packs);
+    const id = section.packs.join(",");
+    const known = pass.chunkSources.get(id);
+    if (known !== undefined) return known;
+    const source = yield* makeChunkSource(section.packs);
+    pass.chunkSources.set(id, source);
+    return source;
+  });
+
 /**
  * One verification pass over a store's objects — a register's checks, a seal's read-back — and
  * what it has read so far (e2e8 F2). On a bucket that does not refuse overwrites every cached
@@ -1269,6 +1284,12 @@ export interface CaptureReadPassState {
   chunkBytes: number;
   /** Member digests by how they were taken and the chunks they hash (`as`, size, chunk list). */
   readonly digests: Map<string, string | null>;
+  /**
+   * Chunk sources by section identity: a pass that reads several files of one section fetches
+   * each pack once, not once per file (2026-10-03: a Codex memory read-back of 33 small files
+   * fetched the same 64 MiB pack 33 times, 28 s of a Stop on the box).
+   */
+  readonly chunkSources: Map<string, ChunkSource>;
 }
 
 /** The pass the current fiber reads in; null outside one (`withCaptureReadPass`). */
@@ -1300,6 +1321,7 @@ export const withCaptureReadPass = <A, E, R>(
       chunks: new Map(),
       chunkBytes: 0,
       digests: new Map(),
+      chunkSources: new Map(),
     };
     return yield* Effect.provideService(self, CaptureReadPass, pass);
   });
@@ -2010,7 +2032,9 @@ export const readCaptureFile = (
     });
     const segments = relPath.split("/").filter((part) => part !== "");
     if (section.root === "" || segments.length === 0) return yield* notAFile;
-    const dirs = yield* makeDirReader(section);
+    // Inside a read pass, the section's dir reader and chunk source are shared with every other
+    // read of the pass: a file costs its own chunks, not the dir packs and indexes again.
+    const dirs = yield* passDirReader(section);
     const entry = yield* entryAt(dirs, section.root, segments);
     if (entry === null || (entry.kind !== "file" && entry.kind !== "hardlink-group")) {
       return yield* notAFile;
@@ -2023,7 +2047,7 @@ export const readCaptureFile = (
         reason: `${relPath}: ${expected} bytes advertised, its canonical member holds ${holder.size}`,
       });
     }
-    const source = yield* makeChunkSource(section.packs);
+    const source = yield* passChunkSource(section);
     const chunks = [...(holder.chunks ?? [])];
     let at = 0;
     let read = 0;
@@ -2107,8 +2131,9 @@ export const listCaptureFiles = (
     const out: Array<{ readonly path: string; readonly entry: DirEntry }> = [];
     const section = manifest.sections[cls];
     if (section === "pending" || section.root === "") return [];
-    // One reader for the whole walk: in format 2 its dir packs are opened once.
-    const dirs = yield* makeDirReader(section);
+    // One reader for the whole walk: in format 2 its dir packs are opened once, and once for
+    // the whole pass when the walk is inside one.
+    const dirs = yield* passDirReader(section);
     const root = yield* walkToDir(dirs, section.root, under);
     if (root === null) return [];
     const prefix = under
