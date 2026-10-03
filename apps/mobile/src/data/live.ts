@@ -17,6 +17,7 @@ import { Platform } from "react-native";
 
 import type { StatusTone } from "@/components/status";
 import type { LaunchOptions } from "@/data/harness-options";
+import type { ChangeLandingDto, ChangePullRequestDto } from "@/data/pull-requests";
 import type { CheckpointDto } from "@/data/review-state";
 
 // ─── config ─────────────────────────────────────────────────────────────────
@@ -525,6 +526,8 @@ export interface SessionAnnotationDto {
   readonly openComments: number;
   readonly totalComments: number;
   readonly pendingFollowUp: boolean;
+  /** The change's newest pull request; older servers omit it. */
+  readonly pullRequest?: ChangePullRequestDto | null;
 }
 
 interface ProjectDetailDto {
@@ -625,6 +628,8 @@ export const useSession = (id: string | null) =>
         /** The worktree's whole chain, every conversation's checkpoints in it. */
         readonly checkpoints: ReadonlyArray<CheckpointDto>;
         readonly change: SessionChangeDto | null;
+        /** The change's landings, newest first; older servers omit it. */
+        readonly landings?: ReadonlyArray<ChangeLandingDto>;
         readonly processes: ReadonlyArray<SessionProcessDto>;
         readonly currentAgent: SessionProcessDto | null;
         /** What this account may do (docs/adr/0003); absent from servers before organizations. */

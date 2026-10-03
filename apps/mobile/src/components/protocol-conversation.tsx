@@ -35,6 +35,7 @@ import {
 } from "@/components/composer";
 import { MendMarkdown } from "@/components/markdown";
 import { ComposerDock, usePaneEdges } from "@/components/pane";
+import { SessionPullRequest } from "@/components/pull-request-card";
 import { MonoText, UiText } from "@/components/typography";
 import {
   useAgentConversation,
@@ -44,12 +45,13 @@ import {
 import { findLastMatching } from "@/data/collections";
 import { composerReadiness, readinessHint, storedImages, type Attachment } from "@/data/composer";
 import { useComposerAttachments } from "@/data/image-attach";
+import { useSession } from "@/data/live";
+import { hasUnrecordedSend, reconcileConversation, type TurnView } from "@/data/pending-turns";
 import {
-  hasUnrecordedSend,
-  reconcileConversation,
-  type ConversationRow as Row,
-  type TurnView,
-} from "@/data/pending-turns";
+  pullRequestCards,
+  withPullRequests,
+  type ConversationRowWithPullRequests as Row,
+} from "@/data/pull-requests";
 import { radius, spacing, useEvidenceTheme } from "@/theme/evidence";
 
 /**
@@ -356,12 +358,14 @@ function RequestRow({
 }
 
 function ConversationRow({
+  sessionId,
   entry,
   responding,
   onRespond,
   onRetry,
   onEdit,
 }: {
+  readonly sessionId: string;
   readonly entry: Row;
   readonly responding: boolean;
   readonly onRespond: (requestId: string, response: AgentRequestResponse) => void;
@@ -369,6 +373,8 @@ function ConversationRow({
   readonly onEdit: (clientId: string) => void;
 }) {
   switch (entry.kind) {
+    case "pull-request":
+      return <SessionPullRequest sessionId={sessionId} card={entry.card} />;
     case "turn":
       return <TurnRow view={entry.view} onRetry={onRetry} onEdit={onEdit} />;
     case "item":
@@ -410,9 +416,11 @@ export function ProtocolConversation({
     () => buildAgentConversation(conversation.data ?? EMPTY_CONVERSATION),
     [conversation.data],
   );
+  const landings = useSession(sessionId).data?.landings;
+  const cards = useMemo(() => pullRequestCards(landings ?? []), [landings]);
   const rows = useMemo(
-    () => reconcileConversation(entries, sender.pending),
-    [entries, sender.pending],
+    () => withPullRequests(reconcileConversation(entries, sender.pending), cards),
+    [entries, sender.pending, cards],
   );
   const openTurn = openTurnOf(data.turns);
   // A send the conversation has not read back yet already has the agent busy: the working line
@@ -517,6 +525,7 @@ export function ProtocolConversation({
         }
         renderItem={({ item }) => (
           <ConversationRow
+            sessionId={sessionId}
             entry={item}
             responding={respond.isPending}
             onRespond={onRespond}
